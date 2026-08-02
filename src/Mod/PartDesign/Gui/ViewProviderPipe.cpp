@@ -28,6 +28,7 @@
 
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/FeaturePipe.h>
 #include <Mod/Part/Gui/ReferenceHighlighter.h>
 
@@ -45,6 +46,9 @@ ViewProviderPipe::~ViewProviderPipe() = default;
 std::vector<App::DocumentObject*> ViewProviderPipe::claimChildren() const
 {
     std::vector<App::DocumentObject*> temp;
+    if (getObject<PartDesign::DesignSweep>()) {
+        return temp;
+    }
 
     PartDesign::Pipe* pcPipe = getObject<PartDesign::Pipe>();
 
@@ -74,7 +78,12 @@ std::vector<App::DocumentObject*> ViewProviderPipe::claimChildren() const
 
 void ViewProviderPipe::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)
 {
-    addDefaultAction(menu, QObject::tr("Edit Pipe"));
+    addDefaultAction(
+        menu,
+        getObject<PartDesign::DesignSweep>()
+            ? QObject::tr("Edit Sweep")
+            : QObject::tr("Edit Pipe")
+    );
     PartDesignGui::ViewProvider::setupContextMenu(menu, receiver, member);
 }
 

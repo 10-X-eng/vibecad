@@ -177,6 +177,31 @@ App::DocumentObjectExecReturn* DrawViewDetail::execute()
     return DrawView::execute();
 }
 
+bool DrawViewDetail::timelineDependenciesActive(
+    TimelineDependencyStack& stack) const
+{
+    if (!DrawViewPart::timelineDependenciesActive(stack)) {
+        return false;
+    }
+    return timelineDependencyIsActive(BaseView.getValue(), stack);
+}
+
+std::string DrawViewDetail::geometrySourceStateSignature() const
+{
+    std::string state = DrawViewPart::geometrySourceStateSignature();
+    auto* base = BaseView.getValue();
+    std::vector<App::DocumentObject*> baseIdentity;
+    if (base) {
+        baseIdentity.push_back(base);
+    }
+    state += "|detail-base=" + sourceStateSignature(baseIdentity);
+    if (auto* baseView = freecad_cast<DrawViewPart*>(base)) {
+        state += "|detail-base-sources="
+            + sourceStateSignature(baseView->getActiveSources());
+    }
+    return state;
+}
+
 //try to create a detail of the solids & shells in shape
 //if there are no solids/shells in shape, use the edges in shape
 void DrawViewDetail::detailExec(TopoDS_Shape& shape, DrawViewPart* dvp, DrawViewSection* dvs)
@@ -184,6 +209,8 @@ void DrawViewDetail::detailExec(TopoDS_Shape& shape, DrawViewPart* dvp, DrawView
     if (waitingForHlr() || waitingForDetail()) {
         return;
     }
+    m_detailDependencyState = geometrySourceStateSignature();
+    m_detailAcceptedState.clear();
 
     if (!DU::isGuiUp()) {
         makeDetailShape(shape, dvp, dvs);
@@ -411,11 +438,31 @@ void DrawViewDetail::onMakeDetailFinished(void)
 {
     waitingForDetail(false);
     QObject::disconnect(connectDetailWatcher);
+    auto* base = BaseView.getValue();
+    if (!isActiveInDocumentTimeline()
+        || m_detailDependencyState != geometrySourceStateSignature()
+        || !base) {
+        if (isActiveInDocumentTimeline()) {
+            recomputeForCurrentTimelineState();
+        }
+        requestPaint();
+        return;
+    }
 
+    m_detailAcceptedState = m_detailDependencyState;
     m_tempGeometryObject = buildGeometryObject(m_scaledShape, m_viewAxis);
     if (!DU::isGuiUp()) {
         onHlrFinished();
     }
+}
+
+TopoDS_Shape DrawViewDetail::getDetailShape() const
+{
+    if (!isActiveInDocumentTimeline()
+        || m_detailAcceptedState != geometrySourceStateSignature()) {
+        return {};
+    }
+    return m_detailShape;
 }
 
 bool DrawViewDetail::waitingForResult() const

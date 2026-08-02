@@ -33,6 +33,7 @@
 #include <Mod/TechDraw/App/LineGroup.h>
 
 #include "QGIView.h"
+#include "TaskDocumentGuard.h"
 #include "TaskGeomHatch.h"
 #include "PreferencesGui.h"
 #include "ViewProviderDrawingView.h"
@@ -67,7 +68,12 @@ ViewProviderGeomHatch::~ViewProviderGeomHatch()
 bool ViewProviderGeomHatch::setEdit(int ModNum)
 {
     Q_UNUSED(ModNum);
-    Gui::TaskView::TaskDialog *dlg = Gui::Control().activeDialog();
+    auto* hatch = getViewObject();
+    if (!hatch) {
+        return false;
+    }
+    Gui::TaskView::TaskDialog* dlg =
+        Gui::Control().activeDialog(hatch->getDocument());
     TaskDlgGeomHatch *projDlg = qobject_cast<TaskDlgGeomHatch *>(dlg);
     if (projDlg && (projDlg->getViewProvider() != this))
         projDlg = nullptr; // somebody left task panel open
@@ -78,9 +84,11 @@ bool ViewProviderGeomHatch::setEdit(int ModNum)
     // start the edit dialog
     if (projDlg) {
         projDlg->setCreateMode(false);
-        Gui::Control().showDialog(projDlg);
     } else {
-        Gui::Control().showDialog(new TaskDlgGeomHatch(getViewObject(), this, false));
+        TaskInternal::showDocumentDialog(
+            new TaskDlgGeomHatch(hatch, this, false),
+            hatch->getDocument()
+        );
     }
 
     return true;
@@ -88,7 +96,7 @@ bool ViewProviderGeomHatch::setEdit(int ModNum)
 
 bool ViewProviderGeomHatch::doubleClicked()
 {
-    setEdit(0);
+    startDefaultEditMode();
     return true;
 }
 

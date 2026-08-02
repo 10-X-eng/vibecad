@@ -24,6 +24,7 @@
 
 
 #include "TrajectoryDressUpObject.h"
+#include "TimelineSupport.h"
 #include "Waypoint.h"
 
 
@@ -80,6 +81,7 @@ TrajectoryDressUpObject::TrajectoryDressUpObject()
         "How to change the Position & Orientation"
     );
     AddType.setEnums(AddTypeEnums);
+    Source.setScope(App::LinkScope::Global);
 }
 
 App::DocumentObjectExecReturn* TrajectoryDressUpObject::execute()
@@ -87,8 +89,17 @@ App::DocumentObjectExecReturn* TrajectoryDressUpObject::execute()
     Robot::Trajectory result;
 
     App::DocumentObject* link = Source.getValue();
+    if (TimelineSupport::isSuppressedOrInactive(*this)) {
+        Trajectory.setValue(result);
+        return App::DocumentObject::StdReturn;
+    }
     if (!link) {
         return new App::DocumentObjectExecReturn("No object linked");
+    }
+    if (!TimelineSupport::isUsableInput(*this, link)) {
+        return new App::DocumentObjectExecReturn(
+            "Linked trajectory is suppressed or outside the current History position"
+        );
     }
     if (!link->isDerivedFrom<Robot::TrajectoryObject>()) {
         return new App::DocumentObjectExecReturn("Linked object is not a Trajectory object");

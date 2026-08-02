@@ -23,27 +23,59 @@
  ***************************************************************************/
 
 #include <QPushButton>
+#include <QMessageBox>
 
 
+#include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentObserver.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Selection/Selection.h>
 #include <Mod/Mesh/App/Core/Algorithm.h>
 #include <Mod/Mesh/App/Core/Approximation.h>
 #include <Mod/Mesh/App/Core/Segmentation.h>
+#include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/MeshFeature.h>
+#include <Mod/Mesh/Gui/CommandGuard.h>
 #include <Mod/Mesh/Gui/ViewProvider.h>
 
+#include "OperationSupport.h"
 #include "SegmentationManual.h"
 #include "ui_SegmentationManual.h"
 
 
 using namespace ReverseEngineeringGui;
 
+class SegmentationManual::Private
+{
+public:
+    explicit Private(App::Document* target)
+        : document(target)
+    {}
+
+    void findGeometry(
+        int minFaces,
+        double tolerance,
+        std::function<MeshCore::AbstractSurfaceFit*(
+            const std::vector<Base::Vector3f>&,
+            const std::vector<Base::Vector3f>&
+        )> fitFunction
+    );
+
+    App::DocumentWeakPtrT document;
+};
+
 SegmentationManual::SegmentationManual(QWidget* parent, Qt::WindowFlags fl)
+    : SegmentationManual(App::GetApplication().getActiveDocument(), parent, fl)
+{}
+
+SegmentationManual::SegmentationManual(App::Document* document, QWidget* parent, Qt::WindowFlags fl)
     : QWidget(parent, fl)
     , ui(new Ui_SegmentationManual)
+    , d(std::make_unique<Private>(document))
 {
     ui->setupUi(this);
     setupConnections();
@@ -125,71 +157,64 @@ void SegmentationManual::onSelectCompToggled(bool on)
     meshSel.setAddComponentOnClick(on);
 }
 
-class SegmentationManual::Private
+void SegmentationManual::Private::findGeometry(
+    int minFaces,
+    double tolerance,
+    std::function<MeshCore::AbstractSurfaceFit*(
+        const std::vector<Base::Vector3f>&,
+        const std::vector<Base::Vector3f>&
+    )> fitFunction
+)
 {
-public:
-    static void findGeometry(
-        int minFaces,
-        double tolerance,
-        std::function<MeshCore::AbstractSurfaceFit*(
-            const std::vector<Base::Vector3f>&,
-            const std::vector<Base::Vector3f>&
-        )> fitFunc
-    )
-    {
-        Gui::Document* gdoc = Gui::Application::Instance->activeDocument();
-        if (!gdoc) {
-            return;
+    auto* target = *document;
+    auto* guiDocument = target ? Gui::Application::Instance->getDocument(target) : nullptr;
+    if (!target || !guiDocument || App::GetApplication().getActiveDocument() != target) {
+        return;
+    }
+
+    for (auto* source : target->getObjectsOfType<Mesh::Feature>()) {
+        if (!MeshGui::isNativeMeshInputActive(source)) {
+            continue;
+        }
+        auto* viewProvider = dynamic_cast<MeshGui::ViewProviderMesh*>(
+            guiDocument->getViewProvider(source)
+        );
+        const Mesh::MeshObject& mesh = source->Mesh.getValue();
+        if (!viewProvider || !mesh.hasSelectedFacets()) {
+            continue;
         }
 
-        App::Document* adoc = gdoc->getDocument();
-        std::vector<Mesh::Feature*> meshes = adoc->getObjectsOfType<Mesh::Feature>();
-        for (auto it : meshes) {
-            MeshGui::ViewProviderMesh* vpm = static_cast<MeshGui::ViewProviderMesh*>(
-                gdoc->getViewProvider(it)
-            );
-            const Mesh::MeshObject& mesh = it->Mesh.getValue();
+        const MeshCore::MeshKernel& kernel = mesh.getKernel();
+        std::vector<MeshCore::FacetIndex> facets;
+        mesh.getFacetsFromSelection(facets);
+        const auto vertices = mesh.getPointsFromFacets(facets);
+        const auto coordinates = kernel.GetPoints(vertices);
 
-            if (mesh.hasSelectedFacets()) {
-                const MeshCore::MeshKernel& kernel = mesh.getKernel();
+        std::vector<Base::Vector3f> points(coordinates.begin(), coordinates.end());
+        const auto normals = kernel.GetFacetNormals(facets);
+        std::unique_ptr<MeshCore::AbstractSurfaceFit> surface(fitFunction(points, normals));
+        if (!surface) {
+            continue;
+        }
 
-                std::vector<MeshCore::FacetIndex> facets;
-                std::vector<MeshCore::PointIndex> vertexes;
-                mesh.getFacetsFromSelection(facets);
-                vertexes = mesh.getPointsFromFacets(facets);
-                MeshCore::MeshPointArray coords = kernel.GetPoints(vertexes);
-
-                std::vector<Base::Vector3f> points, normals;
-                normals = kernel.GetFacetNormals(facets);
-                points.insert(points.end(), coords.begin(), coords.end());
-                coords.clear();
-
-                MeshCore::AbstractSurfaceFit* surfFit = fitFunc(points, normals);
-                if (surfFit) {
-                    MeshCore::MeshSegmentAlgorithm finder(kernel);
-
-                    std::vector<MeshCore::MeshSurfaceSegmentPtr> segm;
-                    segm.emplace_back(
-                        std::make_shared<MeshCore::MeshDistanceGenericSurfaceFitSegment>(
-                            surfFit,
-                            kernel,
-                            minFaces,
-                            tolerance
-                        )
-                    );
-                    finder.FindSegments(segm);
-
-                    for (const auto& segmIt : segm) {
-                        const std::vector<MeshCore::MeshSegment>& data = segmIt->GetSegments();
-                        for (const auto& dataIt : data) {
-                            vpm->addSelection(dataIt);
-                        }
-                    }
-                }
+        MeshCore::MeshSegmentAlgorithm finder(kernel);
+        std::vector<MeshCore::MeshSurfaceSegmentPtr> segments;
+        segments.emplace_back(
+            std::make_shared<MeshCore::MeshDistanceGenericSurfaceFitSegment>(
+                surface.release(),
+                kernel,
+                minFaces,
+                tolerance
+            )
+        );
+        finder.FindSegments(segments);
+        for (const auto& segmenter : segments) {
+            for (const auto& segment : segmenter->GetSegments()) {
+                viewProvider->addSelection(segment);
             }
         }
     }
-};
+}
 
 void SegmentationManual::onPlaneDetectClicked()
 {
@@ -207,7 +232,7 @@ void SegmentationManual::onPlaneDetectClicked()
 
         return nullptr;
     };
-    Private::findGeometry(ui->numPln->value(), ui->tolPln->value(), func);
+    d->findGeometry(ui->numPln->value(), ui->tolPln->value(), func);
 }
 
 void SegmentationManual::onCylinderDetectClicked()
@@ -232,7 +257,7 @@ void SegmentationManual::onCylinderDetectClicked()
 
         return nullptr;
     };
-    Private::findGeometry(ui->numCyl->value(), ui->tolCyl->value(), func);
+    d->findGeometry(ui->numCyl->value(), ui->tolCyl->value(), func);
 }
 
 void SegmentationManual::onSphereDetectClicked()
@@ -251,59 +276,159 @@ void SegmentationManual::onSphereDetectClicked()
 
         return nullptr;
     };
-    Private::findGeometry(ui->numSph->value(), ui->tolSph->value(), func);
+    d->findGeometry(ui->numSph->value(), ui->tolSph->value(), func);
 }
 
 void SegmentationManual::createSegment()
 {
-    Gui::Document* gdoc = Gui::Application::Instance->activeDocument();
-    if (!gdoc) {
+    struct AcceptedSelection
+    {
+        Mesh::Feature* source;
+        std::vector<long> selected;
+        std::vector<long> remainder;
+    };
+
+    auto clearSelection = [this]() {
+        meshSel.clearSelection();
+    };
+    auto* document = *d->document;
+    if (!document || App::GetApplication().getActiveDocument() != document
+        || !MeshGui::hasCleanNativeMutationBoundary(document)) {
+        clearSelection();
+        QMessageBox::warning(
+            this,
+            tr("Manual Segmentation"),
+            tr("The original document is no longer available.")
+        );
         return;
     }
-    // delete all selected faces
-    App::Document* adoc = gdoc->getDocument();
-    gdoc->openCommand(QT_TRANSLATE_NOOP("Command", "Segmentation"));
 
-    std::vector<Mesh::Feature*> meshes = adoc->getObjectsOfType<Mesh::Feature>();
-    bool selected = false;
-    for (auto it : meshes) {
-        const Mesh::MeshObject& mesh = it->Mesh.getValue();
-        const MeshCore::MeshKernel& kernel = mesh.getKernel();
-
-        MeshCore::MeshAlgorithm algo(kernel);
-        unsigned long ct = algo.CountFacetFlag(MeshCore::MeshFacet::SELECTED);
-        if (ct > 0) {
-            selected = true;
-
-            std::vector<MeshCore::FacetIndex> facets;
-            algo.GetFacetsFlag(facets, MeshCore::MeshFacet::SELECTED);
-
-            std::unique_ptr<Mesh::MeshObject> segment(mesh.meshFromSegment(facets));
-            auto* feaSegm = adoc->addObject<Mesh::Feature>("Segment");
-            Mesh::MeshObject* feaMesh = feaSegm->Mesh.startEditing();
-            feaMesh->swap(*segment);
-            feaMesh->clearFacetSelection();
-            feaSegm->Mesh.finishEditing();
-
-            if (ui->checkBoxHideSegm->isChecked()) {
-                feaSegm->Visibility.setValue(false);
+    try {
+        std::vector<AcceptedSelection> selections;
+        for (auto* source : document->getObjectsOfType<Mesh::Feature>()) {
+            if (!ReverseEngineeringGui::OperationSupport::isUsableSource(source, document)) {
+                continue;
+            }
+            const Mesh::MeshObject& mesh = source->Mesh.getValue();
+            if (!mesh.hasSelectedFacets()) {
+                continue;
             }
 
-            if (ui->checkBoxCutSegm->isChecked()) {
-                Mesh::MeshObject* editmesh = it->Mesh.startEditing();
-                editmesh->deleteFacets(facets);
-                it->Mesh.finishEditing();
+            std::vector<MeshCore::FacetIndex> selectedFacets;
+            mesh.getFacetsFromSelection(selectedFacets);
+            std::ranges::sort(selectedFacets);
+            selectedFacets.erase(
+                std::unique(selectedFacets.begin(), selectedFacets.end()),
+                selectedFacets.end()
+            );
+            if (selectedFacets.empty()) {
+                continue;
+            }
+
+            std::vector<bool> selectedByIndex(mesh.countFacets(), false);
+            std::vector<long> selected;
+            selected.reserve(selectedFacets.size());
+            for (const auto facet : selectedFacets) {
+                if (facet >= mesh.countFacets()) {
+                    throw Base::ValueError("A selected mesh facet is no longer available");
+                }
+                selectedByIndex[facet] = true;
+                selected.push_back(static_cast<long>(facet));
+            }
+
+            std::vector<long> remainder;
+            remainder.reserve(mesh.countFacets() - selectedFacets.size());
+            for (unsigned long facet = 0; facet < mesh.countFacets(); ++facet) {
+                if (!selectedByIndex[facet]) {
+                    remainder.push_back(static_cast<long>(facet));
+                }
+            }
+            selections.push_back({
+                source,
+                std::move(selected),
+                std::move(remainder),
+            });
+        }
+        if (selections.empty()) {
+            clearSelection();
+            QMessageBox::information(
+                this,
+                tr("Manual Segmentation"),
+                tr("Select one or more mesh facets to create a segment.")
+            );
+            return;
+        }
+
+        const bool cutSelected = ui->checkBoxCutSegm->isChecked();
+        const bool hideSelected = ui->checkBoxHideSegm->isChecked();
+        Gui::ExactTransaction mutation(
+            *document,
+            QT_TRANSLATE_NOOP("Command", "Create manual mesh segment")
+        );
+        std::vector<App::DocumentObject*> sources;
+        std::vector<App::DocumentObject*> outputs;
+        sources.reserve(selections.size());
+        outputs.reserve(selections.size() * (cutSelected ? 2U : 1U));
+
+        for (const auto& selection : selections) {
+            sources.push_back(selection.source);
+            auto* segment = document->addObject<Mesh::FacetSubset>("Segment");
+            segment->Label.setValue(selection.source->Label.getStrValue() + " Segment");
+            segment->Source.setValue(selection.source);
+            segment->FacetIndices.setValues(selection.selected);
+            segment->AcceptedTopology.setValue(selection.source->Mesh.getValue());
+            segment->SelectionKind.setValue("Manual selection");
+            segment->Visibility.setValue(!hideSelected);
+            outputs.push_back(segment);
+
+            if (cutSelected && !selection.remainder.empty()) {
+                auto* remainder = document->addObject<Mesh::FacetSubset>("SegmentRemainder");
+                remainder->Label.setValue(selection.source->Label.getStrValue() + " Remainder");
+                remainder->Source.setValue(selection.source);
+                remainder->FacetIndices.setValues(selection.remainder);
+                remainder->AcceptedTopology.setValue(selection.source->Mesh.getValue());
+                remainder->SelectionKind.setValue("Manual selection remainder");
+                outputs.push_back(remainder);
             }
         }
-    }
 
-    if (!selected) {
-        gdoc->abortCommand();
+        document->recompute();
+        if (std::ranges::any_of(outputs, [](const App::DocumentObject* output) {
+                const auto* subset = freecad_cast<const Mesh::FacetSubset*>(output);
+                return !subset || subset->isError() || subset->Mesh.getValue().countFacets() == 0;
+            })) {
+            throw Base::RuntimeError("Manual segmentation produced an invalid mesh result");
+        }
+
+        ReverseEngineeringGui::OperationSupport::publishOutputGroup(
+            *document,
+            sources,
+            outputs,
+            cutSelected ? "CutSegments" : "ExtractedSegments",
+            cutSelected ? "Cut Mesh Segments" : "Extracted Mesh Segments",
+            cutSelected ? "Cut selected mesh segments" : "Extract selected mesh segments",
+            cutSelected
+        );
+        document->recompute();
+        ReverseEngineeringGui::OperationSupport::commit(mutation);
+        clearSelection();
     }
-    else {
-        gdoc->commitCommand();
+    catch (const Base::Exception& error) {
+        clearSelection();
+        QMessageBox::warning(this, tr("Manual Segmentation"), QString::fromUtf8(error.what()));
     }
-    meshSel.clearSelection();
+    catch (const std::exception& error) {
+        clearSelection();
+        QMessageBox::warning(this, tr("Manual Segmentation"), QString::fromUtf8(error.what()));
+    }
+    catch (...) {
+        clearSelection();
+        QMessageBox::warning(
+            this,
+            tr("Manual Segmentation"),
+            tr("Manual segmentation failed unexpectedly.")
+        );
+    }
 }
 
 void SegmentationManual::onSelectTriangleClicked()
@@ -324,8 +449,16 @@ void SegmentationManual::reject()
 /* TRANSLATOR ReverseEngineeringGui::TaskSegmentationManual */
 
 TaskSegmentationManual::TaskSegmentationManual()
+    : TaskSegmentationManual(App::GetApplication().getActiveDocument())
+{}
+
+TaskSegmentationManual::TaskSegmentationManual(App::Document* document)
 {
-    widget = new SegmentationManual();
+    if (document) {
+        setDocumentName(document->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
+    widget = new SegmentationManual(document);
     addTaskBox(widget, false);
 }
 

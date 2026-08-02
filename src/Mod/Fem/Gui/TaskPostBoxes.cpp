@@ -26,15 +26,20 @@
 #include <Inventor/nodes/SoCoordinate3.h>
 #include <Inventor/nodes/SoMarkerSet.h>
 
+#include <algorithm>
 #include <sstream>
 #include <limits>
+#include <set>
 #include <QApplication>
 #include <QMessageBox>
 #include <QMetaMethod>
+#include <QSignalBlocker>
 #include <QToolTip>
 
+#include <App/Application.h>
 #include <App/Document.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/UnitsApi.h>
 #include <Gui/Action.h>
 #include <Gui/Application.h>
@@ -47,6 +52,7 @@
 #include <Gui/View3DInventorViewer.h>
 #include <Mod/Fem/App/FemPostFilter.h>
 #include <Mod/Fem/App/FemPostBranchFilter.h>
+#include <Mod/Fem/App/FemPostGroupExtension.h>
 #include <Mod/Fem/App/FemPostPipeline.h>
 
 #include "ui_TaskPostCalculator.h"
@@ -70,6 +76,61 @@
 
 using namespace FemGui;
 using namespace Gui;
+
+namespace
+{
+Fem::FemPostPipeline* postPipelineForObject(App::DocumentObject* object)
+{
+    if (!object || !object->isAttachedToDocument()) {
+        return nullptr;
+    }
+    if (auto* pipeline = dynamic_cast<Fem::FemPostPipeline*>(object)) {
+        return pipeline;
+    }
+
+    App::Document* document = object->getDocument();
+    std::vector<App::DocumentObject*> pending {object};
+    std::set<App::DocumentObject*> visited;
+    std::set<Fem::FemPostPipeline*> pipelines;
+    while (!pending.empty()) {
+        App::DocumentObject* current = pending.back();
+        pending.pop_back();
+        if (!current || current->getDocument() != document || !visited.insert(current).second) {
+            continue;
+        }
+        for (App::DocumentObject* parent : current->getInList()) {
+            if (!parent || parent->getDocument() != document) {
+                continue;
+            }
+            if (auto* pipeline = dynamic_cast<Fem::FemPostPipeline*>(parent)) {
+                pipelines.insert(pipeline);
+            }
+            else {
+                pending.push_back(parent);
+            }
+        }
+    }
+    return pipelines.size() == 1 ? *pipelines.begin() : nullptr;
+}
+
+std::string meshedPartVisibilityCommand(const App::Document* document, bool visible)
+{
+    if (!document) {
+        throw Base::RuntimeError("The FEM post-processing document is no longer available");
+    }
+
+    const std::string documentExpression = "App.getDocument('" + std::string(document->getName())
+        + "')";
+    return "for amesh in " + documentExpression + ".Objects:\n\
+    if \"Mesh\" in amesh.TypeId:\n\
+         aparttoshow = amesh.Name.replace(\"_Mesh\",\"\")\n\
+         for apart in "
+        + documentExpression + ".Objects:\n\
+             if aparttoshow == apart.Name:\n\
+                 apart.ViewObject.Visibility = "
+        + (visible ? "True" : "False") + "\n";
+}
+}  // namespace
 
 // ***************************************************************************
 // point marker
@@ -128,12 +189,7 @@ App::DocumentObject* PointMarker::getObject() const
 
 std::string PointMarker::ObjectInvisible()
 {
-    return "for amesh in App.activeDocument().Objects:\n\
-    if \"Mesh\" in amesh.TypeId:\n\
-         aparttoshow = amesh.Name.replace(\"_Mesh\",\"\")\n\
-         for apart in App.activeDocument().Objects:\n\
-             if aparttoshow == apart.Name:\n\
-                 apart.ViewObject.Visibility = False\n";
+    return meshedPartVisibilityCommand(getObject() ? getObject()->getDocument() : nullptr, false);
 }
 
 
@@ -181,24 +237,14 @@ void DataAlongLineMarker::customEvent(QEvent*)
 {
     const SbVec3f& pt1 = getPoint(0);
     const SbVec3f& pt2 = getPoint(1);
+    App::DocumentObject* object = getObject();
+    if (!object || !object->getDocument()) {
+        return;
+    }
 
     Q_EMIT PointsChanged(pt1[0], pt1[1], pt1[2], pt2[0], pt2[1], pt2[2]);
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "App.ActiveDocument.%s.Point1 = App.Vector(%f, %f, %f)",
-        getObject()->getNameInDocument(),
-        pt1[0],
-        pt1[1],
-        pt1[2]
-    );
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "App.ActiveDocument.%s.Point2 = App.Vector(%f, %f, %f)",
-        getObject()->getNameInDocument(),
-        pt2[0],
-        pt2[1],
-        pt2[2]
-    );
+    Gui::cmdAppObjectArgs(object, "Point1 = App.Vector(%f, %f, %f)", pt1[0], pt1[1], pt1[2]);
+    Gui::cmdAppObjectArgs(object, "Point2 = App.Vector(%f, %f, %f)", pt2[0], pt2[1], pt2[2]);
     Gui::Command::doCommand(Gui::Command::Doc, ObjectInvisible().c_str());
 }
 
@@ -361,10 +407,26 @@ void TaskDlgPost::connectSlots()
 
 void TaskDlgPost::open()
 {
-    // only open a new command if none is pending (e.g. if the object was newly created)
-    if (!m_view->getDocument()->hasPendingCommand()) {
-        auto text = std::string("Edit ") + m_view->getObject()->Label.getValue();
-        m_view->getDocument()->openCommand(text.c_str());
+    auto* view = getView();
+    auto* guiDocument = view ? view->getDocument() : nullptr;
+    auto* object = view ? view->getObject() : nullptr;
+    if (!guiDocument || !object) {
+        throw Base::RuntimeError("The FEM post-processing editor is no longer available");
+    }
+
+    // Creation and normal tree editing already arrive with an exact
+    // transaction. A programmatic setEdit() may not, so establish and adopt
+    // one before the panel can mutate its object.
+    if (!guiDocument->hasPendingCommand()) {
+        const std::string text = std::string("Edit ") + object->Label.getValue();
+        const int transactionId = guiDocument->openCommand(text.c_str());
+        if (transactionId == App::NullTransaction
+            || !guiDocument->adoptOwnedEditTransaction(transactionId)) {
+            if (transactionId != App::NullTransaction) {
+                App::GetApplication().abortTransaction(transactionId);
+            }
+            throw Base::RuntimeError("Could not establish ownership of the FEM post edit");
+        }
     }
 }
 
@@ -387,6 +449,13 @@ void TaskDlgPost::clicked(int button)
 bool TaskDlgPost::accept()
 {
     try {
+        auto* view = getView();
+        auto* object = view ? view->getObject() : nullptr;
+        auto* document = object ? object->getDocument() : nullptr;
+        if (!document) {
+            throw Base::RuntimeError("The FEM post-processing document is no longer available");
+        }
+
         for (auto& widget : Content) {
             if (auto task_box = dynamic_cast<Gui::TaskView::TaskBox*>(widget)) {
                 // get the task widget and check if it is a post widget
@@ -396,23 +465,30 @@ bool TaskDlgPost::accept()
                 }
             }
         }
-        m_view->getDocument()->commitCommand();
+        // Common TaskView finalization commits the exact adopted transaction
+        // after this callback unwinds.
+        Gui::cmdGuiDocument(document, "resetEdit()");
     }
     catch (const Base::Exception& e) {
-        m_view->getDocument()->abortCommand();
+        // Failed input remains correctable in the still-open panel.
         QMessageBox::warning(nullptr, tr("Input Error"), QString::fromLatin1(e.what()));
         return false;
     }
 
-    Gui::cmdGuiDocument(getDocumentName(), "resetEdit()");
     return true;
 }
 
 bool TaskDlgPost::reject()
 {
-    // roll back the done things
-    m_view->getDocument()->abortCommand();
-    Gui::cmdGuiDocument(getDocumentName(), "resetEdit()");
+    auto* view = getView();
+    auto* object = view ? view->getObject() : nullptr;
+    auto* document = object ? object->getDocument() : nullptr;
+    if (document) {
+        // TaskView has marked this editor's exact transaction for rollback.
+        // Tear down the ViewProvider first; common finalization then performs
+        // the rollback without exposing provisional objects to the panel.
+        Gui::cmdGuiDocument(document, "resetEdit()");
+    }
 
     return true;
 }
@@ -878,12 +954,7 @@ void TaskPostDataAlongLine::onSelectPointsClicked()
 
 std::string TaskPostDataAlongLine::ObjectVisible()
 {
-    return "for amesh in App.activeDocument().Objects:\n\
-    if \"Mesh\" in amesh.TypeId:\n\
-         aparttoshow = amesh.Name.replace(\"_Mesh\",\"\")\n\
-         for apart in App.activeDocument().Objects:\n\
-             if aparttoshow == apart.Name:\n\
-                 apart.ViewObject.Visibility = True\n";
+    return meshedPartVisibilityCommand(getDocument(), true);
 }
 
 void TaskPostDataAlongLine::onCreatePlotClicked()
@@ -1231,17 +1302,7 @@ void TaskPostDataAtPoint::onSelectPointClicked()
 
 std::string TaskPostDataAtPoint::objectVisible(bool visible) const
 {
-    std::ostringstream oss;
-    std::string v = visible ? "True" : "False";
-    oss << "for amesh in App.activeDocument().Objects:\n\
-    if \"Mesh\" in amesh.TypeId:\n\
-         aparttoshow = amesh.Name.replace(\"_Mesh\",\"\")\n\
-         for apart in App.activeDocument().Objects:\n\
-             if aparttoshow == apart.Name:\n\
-                 apart.ViewObject.Visibility ="
-        << v << "\n";
-
-    return oss.str();
+    return meshedPartVisibilityCommand(getDocument(), visible);
 }
 
 void TaskPostDataAtPoint::onChange(double x, double y, double z)
@@ -1544,45 +1605,48 @@ void TaskPostClip::applyPythonCode()
 
 void TaskPostClip::collectImplicitFunctions()
 {
-    std::vector<Fem::FemPostPipeline*> pipelines;
-    pipelines = getDocument()->getObjectsOfType<Fem::FemPostPipeline>();
-    if (!pipelines.empty()) {
-        Fem::FemPostPipeline* pipeline = pipelines.front();
-        Fem::FemPostFunctionProvider* provider = pipeline->getFunctionProvider();
-        if (provider) {
+    const QSignalBlocker blocker(ui->FunctionBox);
+    ui->FunctionBox->clear();
+    Fem::FemPostPipeline* pipeline = postPipelineForObject(getObject());
+    if (!pipeline) {
+        return;
+    }
+    Fem::FemPostFunctionProvider* provider = pipeline->getFunctionProvider();
+    if (!provider) {
+        return;
+    }
 
-            ui->FunctionBox->clear();
-            QStringList items;
-            std::size_t currentItem = 0;
-            App::DocumentObject* currentFunction
-                = getObject<Fem::FemPostClipFilter>()->Function.getValue();
-            const std::vector<App::DocumentObject*>& funcs = provider->Group.getValues();
-            for (std::size_t i = 0; i < funcs.size(); ++i) {
-                items.push_back(QString::fromLatin1(funcs[i]->getNameInDocument()));
-                if (currentFunction == funcs[i]) {
-                    currentItem = i;
-                }
-            }
-            ui->FunctionBox->addItems(items);
-            ui->FunctionBox->setCurrentIndex(currentItem);
+    QStringList items;
+    int currentItem = -1;
+    App::DocumentObject* currentFunction = getObject<Fem::FemPostClipFilter>()->Function.getValue();
+    const std::vector<App::DocumentObject*>& funcs = provider->Group.getValues();
+    for (std::size_t i = 0; i < funcs.size(); ++i) {
+        App::DocumentObject* function = funcs[i];
+        if (!function || function->getDocument() != getDocument()) {
+            continue;
+        }
+        items.push_back(QString::fromLatin1(function->getNameInDocument()));
+        if (currentFunction == function) {
+            currentItem = static_cast<int>(items.size()) - 1;
         }
     }
+    ui->FunctionBox->addItems(items);
+    ui->FunctionBox->setCurrentIndex(currentItem);
 }
 
 void TaskPostClip::onCreateButtonTriggered(QAction*)
 {
     int numFuncs = ui->FunctionBox->count();
-    int currentItem = ui->FunctionBox->currentIndex();
     collectImplicitFunctions();
 
     // if a new function was successfully added use it
     int indexCount = ui->FunctionBox->count();
-    if (indexCount > currentItem + 1) {
+    if (indexCount > numFuncs) {
         ui->FunctionBox->setCurrentIndex(indexCount - 1);
     }
 
     // When the first function ever was added, a signal must be emitted
-    if (numFuncs == 0) {
+    if (numFuncs == 0 && indexCount > 0) {
         Q_EMIT emitAddedFunction();
     }
 
@@ -1591,42 +1655,43 @@ void TaskPostClip::onCreateButtonTriggered(QAction*)
 
 void TaskPostClip::onFunctionBoxCurrentIndexChanged(int idx)
 {
-    // set the correct property
-    std::vector<Fem::FemPostPipeline*> pipelines;
-    pipelines = getDocument()->getObjectsOfType<Fem::FemPostPipeline>();
-    if (!pipelines.empty()) {
-        Fem::FemPostPipeline* pipeline = pipelines.front();
-        Fem::FemPostFunctionProvider* provider = pipeline->getFunctionProvider();
-        if (provider) {
-
-            const std::vector<App::DocumentObject*>& funcs = provider->Group.getValues();
-            if (idx >= 0) {
-                getObject<Fem::FemPostClipFilter>()->Function.setValue(funcs[idx]);
-            }
-            else {
-                getObject<Fem::FemPostClipFilter>()->Function.setValue(nullptr);
+    Fem::FemPostClipFilter* filter = getObject<Fem::FemPostClipFilter>();
+    Fem::FemPostPipeline* pipeline = postPipelineForObject(filter);
+    Fem::FemPostFunctionProvider* provider = pipeline ? pipeline->getFunctionProvider() : nullptr;
+    if (provider) {
+        const std::vector<App::DocumentObject*>& funcs = provider->Group.getValues();
+        App::DocumentObject* selected = nullptr;
+        if (idx >= 0 && idx < ui->FunctionBox->count()) {
+            const QByteArray name = ui->FunctionBox->itemText(idx).toLatin1();
+            App::DocumentObject* candidate = getDocument()->getObject(name.constData());
+            if (std::ranges::find(funcs, candidate) != funcs.end()) {
+                selected = candidate;
             }
         }
+        filter->Function.setValue(selected);
+    }
+    else {
+        filter->Function.setValue(nullptr);
     }
 
-    // load the correct view
-    Fem::FemPostFunction* fobj = static_cast<Fem::FemPostFunction*>(
-        getObject<Fem::FemPostClipFilter>()->Function.getValue()
-    );
-    Gui::ViewProvider* view = nullptr;
-    if (fobj) {
-        view = Gui::Application::Instance->getViewProvider(fobj);
-    }
+    auto* fobj = dynamic_cast<Fem::FemPostFunction*>(filter->Function.getValue());
+    auto* view = fobj ? dynamic_cast<FemGui::ViewProviderFemPostFunction*>(
+                            Gui::Application::Instance->getViewProvider(fobj)
+                        )
+                      : nullptr;
 
     if (fwidget) {
         fwidget->deleteLater();
+        fwidget = nullptr;
     }
 
     if (view) {
-        fwidget = static_cast<FemGui::ViewProviderFemPostFunction*>(view)->createControlWidget();
-        fwidget->setParent(ui->Container);
-        fwidget->setViewProvider(static_cast<FemGui::ViewProviderFemPostFunction*>(view));
-        ui->Container->layout()->addWidget(fwidget);
+        fwidget = view->createControlWidget();
+        if (fwidget) {
+            fwidget->setParent(ui->Container);
+            fwidget->setViewProvider(view);
+            ui->Container->layout()->addWidget(fwidget);
+        }
     }
     recompute();
 }
@@ -1853,45 +1918,48 @@ void TaskPostCut::applyPythonCode()
 
 void TaskPostCut::collectImplicitFunctions()
 {
-    std::vector<Fem::FemPostPipeline*> pipelines;
-    pipelines = getDocument()->getObjectsOfType<Fem::FemPostPipeline>();
-    if (!pipelines.empty()) {
-        Fem::FemPostPipeline* pipeline = pipelines.front();
-        Fem::FemPostFunctionProvider* provider = pipeline->getFunctionProvider();
-        if (provider) {
+    const QSignalBlocker blocker(ui->FunctionBox);
+    ui->FunctionBox->clear();
+    Fem::FemPostPipeline* pipeline = postPipelineForObject(getObject());
+    if (!pipeline) {
+        return;
+    }
+    Fem::FemPostFunctionProvider* provider = pipeline->getFunctionProvider();
+    if (!provider) {
+        return;
+    }
 
-            ui->FunctionBox->clear();
-            QStringList items;
-            std::size_t currentItem = 0;
-            App::DocumentObject* currentFunction
-                = getObject<Fem::FemPostCutFilter>()->Function.getValue();
-            const std::vector<App::DocumentObject*>& funcs = provider->Group.getValues();
-            for (std::size_t i = 0; i < funcs.size(); ++i) {
-                items.push_back(QString::fromLatin1(funcs[i]->getNameInDocument()));
-                if (currentFunction == funcs[i]) {
-                    currentItem = i;
-                }
-            }
-            ui->FunctionBox->addItems(items);
-            ui->FunctionBox->setCurrentIndex(currentItem);
+    QStringList items;
+    int currentItem = -1;
+    App::DocumentObject* currentFunction = getObject<Fem::FemPostCutFilter>()->Function.getValue();
+    const std::vector<App::DocumentObject*>& funcs = provider->Group.getValues();
+    for (std::size_t i = 0; i < funcs.size(); ++i) {
+        App::DocumentObject* function = funcs[i];
+        if (!function || function->getDocument() != getDocument()) {
+            continue;
+        }
+        items.push_back(QString::fromLatin1(function->getNameInDocument()));
+        if (currentFunction == function) {
+            currentItem = static_cast<int>(items.size()) - 1;
         }
     }
+    ui->FunctionBox->addItems(items);
+    ui->FunctionBox->setCurrentIndex(currentItem);
 }
 
 void TaskPostCut::onCreateButtonTriggered(QAction*)
 {
     int numFuncs = ui->FunctionBox->count();
-    int currentItem = ui->FunctionBox->currentIndex();
     collectImplicitFunctions();
 
     // if a new function was successfully added use it
     int indexCount = ui->FunctionBox->count();
-    if (indexCount > currentItem + 1) {
+    if (indexCount > numFuncs) {
         ui->FunctionBox->setCurrentIndex(indexCount - 1);
     }
 
     // When the first function ever was added, a signal must be emitted
-    if (numFuncs == 0) {
+    if (numFuncs == 0 && indexCount > 0) {
         Q_EMIT emitAddedFunction();
     }
 
@@ -1900,42 +1968,43 @@ void TaskPostCut::onCreateButtonTriggered(QAction*)
 
 void TaskPostCut::onFunctionBoxCurrentIndexChanged(int idx)
 {
-    // set the correct property
-    std::vector<Fem::FemPostPipeline*> pipelines;
-    pipelines = getDocument()->getObjectsOfType<Fem::FemPostPipeline>();
-    if (!pipelines.empty()) {
-        Fem::FemPostPipeline* pipeline = pipelines.front();
-        Fem::FemPostFunctionProvider* provider = pipeline->getFunctionProvider();
-        if (provider) {
-
-            const std::vector<App::DocumentObject*>& funcs = provider->Group.getValues();
-            if (idx >= 0) {
-                getObject<Fem::FemPostCutFilter>()->Function.setValue(funcs[idx]);
-            }
-            else {
-                getObject<Fem::FemPostCutFilter>()->Function.setValue(nullptr);
+    Fem::FemPostCutFilter* filter = getObject<Fem::FemPostCutFilter>();
+    Fem::FemPostPipeline* pipeline = postPipelineForObject(filter);
+    Fem::FemPostFunctionProvider* provider = pipeline ? pipeline->getFunctionProvider() : nullptr;
+    if (provider) {
+        const std::vector<App::DocumentObject*>& funcs = provider->Group.getValues();
+        App::DocumentObject* selected = nullptr;
+        if (idx >= 0 && idx < ui->FunctionBox->count()) {
+            const QByteArray name = ui->FunctionBox->itemText(idx).toLatin1();
+            App::DocumentObject* candidate = getDocument()->getObject(name.constData());
+            if (std::ranges::find(funcs, candidate) != funcs.end()) {
+                selected = candidate;
             }
         }
+        filter->Function.setValue(selected);
+    }
+    else {
+        filter->Function.setValue(nullptr);
     }
 
-    // load the correct view
-    Fem::FemPostFunction* fobj = static_cast<Fem::FemPostFunction*>(
-        getObject<Fem::FemPostCutFilter>()->Function.getValue()
-    );
-    Gui::ViewProvider* view = nullptr;
-    if (fobj) {
-        view = Gui::Application::Instance->getViewProvider(fobj);
-    }
+    auto* fobj = dynamic_cast<Fem::FemPostFunction*>(filter->Function.getValue());
+    auto* view = fobj ? dynamic_cast<FemGui::ViewProviderFemPostFunction*>(
+                            Gui::Application::Instance->getViewProvider(fobj)
+                        )
+                      : nullptr;
 
     if (fwidget) {
         fwidget->deleteLater();
+        fwidget = nullptr;
     }
 
     if (view) {
-        fwidget = static_cast<FemGui::ViewProviderFemPostFunction*>(view)->createControlWidget();
-        fwidget->setParent(ui->Container);
-        fwidget->setViewProvider(static_cast<FemGui::ViewProviderFemPostFunction*>(view));
-        ui->Container->layout()->addWidget(fwidget);
+        fwidget = view->createControlWidget();
+        if (fwidget) {
+            fwidget->setParent(ui->Container);
+            fwidget->setViewProvider(view);
+            ui->Container->layout()->addWidget(fwidget);
+        }
     }
     recompute();
 }

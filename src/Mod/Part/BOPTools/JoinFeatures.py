@@ -29,10 +29,11 @@ __doc__ = "Implementation of document objects (features) for connect, ebmed and 
 
 from . import JoinAPI
 import FreeCAD
-import Part
+from PartLinkScope import migrate_many_to_global
 
 if FreeCAD.GuiUp:
     import FreeCADGui
+    import PartGui
     from PySide import QtCore, QtGui
 
     # -------------------------- common stuff -------------------------------------
@@ -58,57 +59,135 @@ def getParamRefine():
     )
 
 
+def _selected_shape_objects():
+    objects = []
+    for selection in FreeCADGui.Selection.getSelectionEx():
+        selected = selection.Object
+        if not PartGui.isModelingObjectActive(selected):
+            continue
+        obj = PartGui.resolveModelingObject(selected)
+        if (
+            obj is not None
+            and hasattr(obj, "Shape")
+            and not obj.Shape.isNull()
+            and obj not in objects
+        ):
+            objects.append(obj)
+    return objects
+
+
+def _has_join_operands():
+    objects = _selected_shape_objects()
+    if len(objects) >= 2:
+        return True
+    if len(objects) != 1:
+        return False
+    shape = objects[0].Shape
+    return shape.ShapeType == "Compound" and len(shape.childShapes()) >= 2
+
+
+def _visible_presentations(operands):
+    presentations = []
+    for operand in operands:
+        presentation = PartGui.resolveModelingPresentationObject(
+            operand
+        )
+        if (
+            presentation is not None
+            and presentation not in presentations
+            and bool(presentation.Visibility)
+        ):
+            presentations.append(presentation)
+    return presentations
+
+
+def _replace_visible_presentations(result, presentations):
+    if (
+        presentations
+        and PartGui.setModelingReplacedInputs(
+            result,
+            presentations,
+        )
+    ):
+        for presentation in presentations:
+            presentation.Visibility = False
+
+
+def _object_expression(obj):
+    """Return a recorded command expression for one exact document object."""
+
+    return (
+        f"App.getDocument({obj.Document.Name!r})"
+        f".getObject({obj.Name!r})"
+    )
+
+
 def cmdCreateJoinFeature(name, mode):
     """cmdCreateJoinFeature(name, mode): generalized implementation of GUI commands."""
-    sel = FreeCADGui.Selection.getSelectionEx()
+    document = FreeCAD.ActiveDocument
+    operands = _selected_shape_objects()
+    presentations = _visible_presentations(operands)
 
-    FreeCAD.ActiveDocument.openTransaction("Create " + mode)
-    FreeCADGui.addModule("BOPTools.JoinFeatures")
-    FreeCADGui.doCommand(
-        "j = BOPTools.JoinFeatures.make{mode}(name='{name}')".format(mode=mode, name=name)
-    )
-    if mode == "Embed" or mode == "Cutout":
-        FreeCADGui.doCommand("j.Base = App.ActiveDocument." + sel[0].Object.Name)
-        FreeCADGui.doCommand("j.Tool = App.ActiveDocument." + sel[1].Object.Name)
-    elif mode == "Connect":
-        FreeCADGui.doCommand(
-            "j.Objects = {sel}".format(
-                sel="[" + ", ".join(["App.ActiveDocument." + so.Object.Name for so in sel]) + "]"
-            )
-        )
-    else:
-        raise ValueError("cmdCreateJoinFeature: Unexpected mode {mode}".format(mode=repr(mode)))
-
+    document.openTransaction("Create " + mode)
     try:
-        FreeCADGui.doCommand("j.Proxy.execute(j)")
-        FreeCADGui.doCommand("j.purgeTouched()")
+        FreeCADGui.addModule("BOPTools.JoinFeatures")
+        result = FreeCADGui.runDocumentObjectCommand(
+            document,
+            f"BOPTools.JoinFeatures.make{mode}(name={name!r})",
+            "Part::Feature",
+        )
+        result_expression = _object_expression(result)
+        if mode == "Embed" or mode == "Cutout":
+            FreeCADGui.doCommand(
+                f"{result_expression}.Base = "
+                f"{_object_expression(operands[0])}"
+            )
+            FreeCADGui.doCommand(
+                f"{result_expression}.Tool = "
+                f"{_object_expression(operands[1])}"
+            )
+        elif mode == "Connect":
+            FreeCADGui.doCommand(
+                f"{result_expression}.Objects = ["
+                + ", ".join(_object_expression(operand) for operand in operands)
+                + "]"
+            )
+        else:
+            raise ValueError(
+                "cmdCreateJoinFeature: Unexpected mode "
+                f"{mode!r}"
+            )
+
+        FreeCADGui.doCommand(
+            f"{result_expression}.Proxy.execute({result_expression})"
+        )
+        FreeCADGui.doCommand(f"{result_expression}.purgeTouched()")
+        if result.Shape.isNull() or not result.Shape.isValid():
+            raise RuntimeError(
+                f"{mode} did not produce valid geometry"
+            )
+
+        presentation_expression = ", ".join(
+            _object_expression(presentation)
+            for presentation in presentations
+        )
+        FreeCADGui.doCommand(
+            "BOPTools.JoinFeatures._replace_visible_presentations("
+            f"{result_expression}, [{presentation_expression}])"
+        )
+        FreeCADGui.addModule("PartGui")
+        FreeCADGui.doCommand(
+            "PartGui.publishDesignDefinitionBlock("
+            f"[{result_expression}])"
+        )
+        document.commitTransaction()
     except Exception as err:
-        mb = QtGui.QMessageBox()
-        mb.setIcon(mb.Icon.Warning)
-        error_text1 = translate("Part_JoinFeatures", "Computing the result failed with an error:")
-        error_text2 = translate(
-            "Part_JoinFeatures",
-            "Click 'Continue' to create the feature anyway, or 'Abort' to cancel.",
+        document.abortTransaction()
+        QtGui.QMessageBox.warning(
+            FreeCADGui.getMainWindow(),
+            translate("Part_JoinFeatures", "Join failed", None),
+            str(err),
         )
-        mb.setText(error_text1 + "\n\n" + str(err) + "\n\n" + error_text2)
-        mb.setWindowTitle(translate("Part_JoinFeatures", "Bad Selection", None))
-        btnAbort = mb.addButton(QtGui.QMessageBox.StandardButton.Abort)
-        btnOK = mb.addButton(
-            translate("Part_JoinFeatures", "Continue", None),
-            QtGui.QMessageBox.ButtonRole.ActionRole,
-        )
-        mb.setDefaultButton(btnOK)
-        mb.exec_()
-
-        if mb.clickedButton() is btnAbort:
-            FreeCAD.ActiveDocument.abortTransaction()
-            return
-
-    FreeCADGui.doCommand(
-        "for obj in j.ViewObject.Proxy.claimChildren():\n" "    obj.ViewObject.hide()"
-    )
-
-    FreeCAD.ActiveDocument.commitTransaction()
 
 
 def getIconPath(icon_dot_svg):
@@ -134,7 +213,11 @@ class FeatureConnect:
 
     def __init__(self, obj):
         obj.addProperty(
-            "App::PropertyLinkList", "Objects", "Connect", "Object to be connected.", locked=True
+            "App::PropertyLinkListGlobal",
+            "Objects",
+            "Connect",
+            "Object to be connected.",
+            locked=True,
         )
         obj.addProperty(
             "App::PropertyBool",
@@ -155,6 +238,9 @@ class FeatureConnect:
 
         obj.Proxy = self
         self.Type = "FeatureConnect"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Objects")
 
     def execute(self, selfobj):
         rst = JoinAPI.connect([obj.Shape for obj in selfobj.Objects], selfobj.Tolerance)
@@ -228,7 +314,7 @@ class CommandConnect:
         }
 
     def Activated(self):
-        if len(FreeCADGui.Selection.getSelectionEx()) >= 1:
+        if _has_join_operands():
             cmdCreateJoinFeature(name="Connect", mode="Connect")
         else:
             mb = QtGui.QMessageBox()
@@ -244,10 +330,11 @@ class CommandConnect:
             mb.exec_()
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return (
+            FreeCAD.ActiveDocument is not None
+            and PartGui.canStartRetainedModelingTask()
+            and _has_join_operands()
+        )
 
 
 # -------------------------- /Connect -----------------------------------------
@@ -269,8 +356,12 @@ class FeatureEmbed:
     """The Part Embed object."""
 
     def __init__(self, obj):
-        obj.addProperty("App::PropertyLink", "Base", "Embed", "Object to embed into.", locked=True)
-        obj.addProperty("App::PropertyLink", "Tool", "Embed", "Object to be embedded.", locked=True)
+        obj.addProperty(
+            "App::PropertyLinkGlobal", "Base", "Embed", "Object to embed into.", locked=True
+        )
+        obj.addProperty(
+            "App::PropertyLinkGlobal", "Tool", "Embed", "Object to be embedded.", locked=True
+        )
         obj.addProperty(
             "App::PropertyBool",
             "Refine",
@@ -290,6 +381,9 @@ class FeatureEmbed:
 
         obj.Proxy = self
         self.Type = "FeatureEmbed"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Base", "Tool")
 
     def execute(self, selfobj):
         rst = JoinAPI.embed_legacy(selfobj.Base.Shape, selfobj.Tool.Shape, selfobj.Tolerance)
@@ -343,7 +437,7 @@ class CommandEmbed:
         }
 
     def Activated(self):
-        if len(FreeCADGui.Selection.getSelectionEx()) == 2:
+        if len(_selected_shape_objects()) == 2:
             cmdCreateJoinFeature(name="Embed", mode="Embed")
         else:
             mb = QtGui.QMessageBox()
@@ -359,10 +453,11 @@ class CommandEmbed:
             mb.exec_()
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return (
+            FreeCAD.ActiveDocument is not None
+            and PartGui.canStartRetainedModelingTask()
+            and len(_selected_shape_objects()) == 2
+        )
 
 
 # -------------------------- /Embed -------------------------------------------
@@ -384,9 +479,15 @@ class FeatureCutout:
     """The Part Cutout object."""
 
     def __init__(self, obj):
-        obj.addProperty("App::PropertyLink", "Base", "Cutout", "Object to be cut.", locked=True)
         obj.addProperty(
-            "App::PropertyLink", "Tool", "Cutout", "Object to make cutout for.", locked=True
+            "App::PropertyLinkGlobal", "Base", "Cutout", "Object to be cut.", locked=True
+        )
+        obj.addProperty(
+            "App::PropertyLinkGlobal",
+            "Tool",
+            "Cutout",
+            "Object to make cutout for.",
+            locked=True,
         )
         obj.addProperty(
             "App::PropertyBool",
@@ -406,6 +507,9 @@ class FeatureCutout:
 
         obj.Proxy = self
         self.Type = "FeatureCutout"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Base", "Tool")
 
     def execute(self, selfobj):
         rst = JoinAPI.cutout_legacy(selfobj.Base.Shape, selfobj.Tool.Shape, selfobj.Tolerance)
@@ -459,7 +563,7 @@ class CommandCutout:
         }
 
     def Activated(self):
-        if len(FreeCADGui.Selection.getSelectionEx()) == 2:
+        if len(_selected_shape_objects()) == 2:
             cmdCreateJoinFeature(name="Cutout", mode="Cutout")
         else:
             mb = QtGui.QMessageBox()
@@ -475,10 +579,11 @@ class CommandCutout:
             mb.exec_()
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return (
+            FreeCAD.ActiveDocument is not None
+            and PartGui.canStartRetainedModelingTask()
+            and len(_selected_shape_objects()) == 2
+        )
 
 
 # -------------------------- /Cutout ------------------------------------------

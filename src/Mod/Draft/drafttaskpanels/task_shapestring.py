@@ -42,6 +42,10 @@ import WorkingPlane
 from draftguitools import gui_tool_utils
 from draftutils import params
 from draftutils.translate import translate
+from draftutils.transaction import close_task_dialog
+from draftutils.transaction import gui_document_for
+from draftutils.transaction import reset_document_edit
+from draftutils.transaction import run_document_mutation
 from DraftVecUtils import toString
 
 # So the resource file doesn't trigger errors from code checkers (flake8)
@@ -234,24 +238,25 @@ class ShapeStringTaskPanelCmd(ShapeStringTaskPanel):
     def create_object(self):
         """Create object in the current document."""
         Gui.addModule("Draft")
-        Gui.addModule("WorkingPlane")
         cmd = "Draft.make_shapestring("
         cmd += "String=" + self.quote_string(self.text) + ", "
         cmd += "FontFile=" + self.quote_string(self.font_file) + ", "
         cmd += "Size=" + str(self.height) + ", "
         cmd += "Tracking=0.0"
         cmd += ")"
+        rotation = self.wp.get_placement().Rotation.Q
         self.sourceCmd.commit(
             translate("draft", "Create ShapeString"),
             [
                 "ss = " + cmd,
                 "pl = FreeCAD.Placement()",
                 "pl.Base = " + toString(self.point),
-                "pl.Rotation = WorkingPlane.get_working_plane().get_placement().Rotation",
+                "pl.Rotation.Q = " + repr(tuple(rotation)),
                 "ss.Placement = pl",
                 "Draft.autogroup(ss)",
                 "FreeCAD.ActiveDocument.recompute()",
             ],
+            inputs=(),
         )
 
     def reject(self):
@@ -271,30 +276,48 @@ class ShapeStringTaskPanelEdit(ShapeStringTaskPanel):
             self.obj.Placement.Base, self.obj.Size.Value, self.obj.String, self.obj.FontFile
         )
         self.pointPicked = True
-        self.call = Gui.activeView().addEventCallback("SoEvent", self.action)
+        self.gui_document = gui_document_for(self.obj.Document)
+        if self.gui_document is None:
+            raise RuntimeError("The ShapeString document is no longer open")
+        self.view = self.gui_document.activeView()
+        self.call = self.view.addEventCallback("SoEvent", self.action)
 
     def accept(self):
+        obj = self.obj
+        text = self.text
+        font_file = self.font_file
+        height = self.height
+        point = App.Vector(self.point)
 
-        Gui.doCommand("ss = FreeCAD.ActiveDocument.getObject(" + repr(self.obj.Name) + ")")
-        Gui.doCommand("ss.String=" + self.quote_string(self.text))
-        Gui.doCommand("ss.FontFile=" + self.quote_string(self.font_file))
-        Gui.doCommand("ss.Size=" + str(self.height))
-        Gui.doCommand("ss.Placement.Base=" + toString(self.point))
-        Gui.doCommand("FreeCAD.ActiveDocument.recompute()")
+        def apply_values():
+            obj.String = text
+            obj.FontFile = font_file
+            obj.Size = height
+            obj.Placement.Base = point
+
+        run_document_mutation(
+            obj.Document,
+            translate("draft", "Edit ShapeString"),
+            apply_values,
+            objects=(obj,),
+        )
 
         self.reject()
         return True
 
     def finish(self):
 
-        Gui.activeView().removeEventCallback("SoEvent", self.call)
-        Gui.Snapper.off()
-        Gui.Control.closeDialog()
+        try:
+            self.view.removeEventCallback("SoEvent", self.call)
+        except (AttributeError, ReferenceError, RuntimeError):
+            pass
+        Gui.Snapper.off(view=self.view)
+        close_task_dialog(self.obj.Document)
         return None
 
     def reject(self):
 
-        self.obj.ViewObject.Document.resetEdit()
+        reset_document_edit(self.obj.Document)
         self.platform_win_dialog("Restore")
         return True
 

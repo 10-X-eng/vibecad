@@ -25,12 +25,14 @@
 #include <QFileIconProvider>
 #include <QImageReader>
 #include <QPainter>
+#include <QPainterPath>
+#include <QPalette>
+#include <QPen>
 #include <QStyleOptionViewItem>
 #include <QLabel>
 #include <QModelIndex>
 #include <QVBoxLayout>
 #include <QApplication>
-#include <QPushButton>
 #include <QString>
 #include <QAbstractItemView>
 
@@ -75,22 +77,35 @@ void FileCardDelegate::paint(
 ) const
 {
     painter->save();
-    // Step 1: Styling
-    QStyleOptionButton buttonOption;
-    buttonOption.initFrom(option.widget);
-    buttonOption.rect = option.rect;
-    buttonOption.state = QStyle::State_Enabled;
+    painter->setRenderHint(QPainter::Antialiasing);
 
-    if ((option.state & QStyle::State_MouseOver) != 0) {
-        buttonOption.state |= QStyle::State_MouseOver;
+    constexpr qreal cardRadius = 8.0;
+    const QRectF cardRect = option.rect.adjusted(0.5, 0.5, -0.5, -0.5);
+    QPainterPath cardPath;
+    cardPath.addRoundedRect(cardRect, cardRadius, cardRadius);
+
+    const bool isHovered = (option.state & QStyle::State_MouseOver) != 0;
+    const bool isSelected = (option.state & QStyle::State_Selected) != 0;
+    const QPalette& palette = option.palette;
+    const QColor cardColor = palette.color(
+        isHovered || isSelected ? QPalette::AlternateBase : QPalette::Base
+    );
+    QColor borderColor = palette.color(QPalette::Mid);
+    qreal borderWidth = 1.0;
+
+    if (isSelected) {
+        borderColor = palette.color(QPalette::Highlight);
+        borderWidth = 2.0;
     }
-    if ((option.state & QStyle::State_Selected) != 0) {
-        buttonOption.state |= QStyle::State_On;
+
+    painter->fillPath(cardPath, cardColor);
+    if (isHovered && !isSelected) {
+        QColor hoverColor = palette.color(QPalette::Highlight);
+        hoverColor.setAlpha(32);
+        painter->fillPath(cardPath, hoverColor);
     }
-    if ((option.state & QStyle::State_Sunken) != 0) {
-        buttonOption.state |= QStyle::State_Sunken;
-    }
-    qApp->style()->drawControl(QStyle::CE_PushButton, &buttonOption, painter, &styleButton);
+    painter->setPen(QPen(borderColor, borderWidth));
+    painter->drawPath(cardPath);
 
     // Step 2: Fetch required data
     auto thumbnailSize = static_cast<int>(_parameterGroup->GetInt("FileThumbnailIconsSize", 128));  // NOLINT
@@ -134,8 +149,19 @@ void FileCardDelegate::paint(
     // Step 5: Draw
     QRect pixmapRect(thumbnailRect.topLeft(), scaledPixmap.size());
     pixmapRect.moveCenter(thumbnailRect.center());
+    QPainterPath thumbnailPath;
+    thumbnailPath.addRoundedRect(thumbnailRect, cardRadius, cardRadius);
+    painter->save();
+    painter->setClipPath(thumbnailPath);
     painter->drawPixmap(pixmapRect.topLeft(), scaledPixmap);
+    painter->restore();
+
+    const QColor textColor = palette.color(QPalette::Text);
+    QColor secondaryTextColor = textColor;
+    secondaryTextColor.setAlpha(160);
+    painter->setPen(textColor);
     painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, elidedName);
+    painter->setPen(secondaryTextColor);
     painter->drawText(sizeRect, Qt::AlignLeft | Qt::AlignTop, size);
     painter->restore();
 }

@@ -53,6 +53,7 @@ import FreeCAD as App
 import FreeCADGui as Gui
 from draftutils import params
 from draftutils import utils
+from draftutils.transaction import start_object_edit
 from draftutils.translate import translate
 
 
@@ -268,7 +269,7 @@ class ViewProviderDraftAnnotation(object):
 
         if hasattr(App, "activeDraftCommand") and App.activeDraftCommand:
             App.activeDraftCommand.finish()
-        Gui.Control.closeDialog()
+        Gui.Control.closeDialog(vobj.Document)
         if hasattr(self, "wb_before_edit"):
             Gui.activateWorkbench(self.wb_before_edit.name())
             delattr(self, "wb_before_edit")
@@ -286,7 +287,7 @@ class ViewProviderDraftAnnotation(object):
         menu.addAction(action_edit)
 
     def edit(self):
-        Gui.ActiveDocument.setEdit(self.Object, 0)
+        start_object_edit(self.Object, 0)
 
     def getIcon(self):
         """Return the path to the icon used by the view provider."""

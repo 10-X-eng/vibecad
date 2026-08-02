@@ -46,7 +46,17 @@ if App.GuiUp:
     from draftviewproviders.view_draftlink import ViewProviderDraftLink
 
 
-def make_array(base_object, arg1, arg2, arg3, arg4=None, arg5=None, arg6=None, use_link=True):
+def make_array(
+    base_object,
+    arg1,
+    arg2,
+    arg3,
+    arg4=None,
+    arg5=None,
+    arg6=None,
+    use_link=True,
+    hide_base=True,
+):
     """Create a Draft Array of the given object.
 
     Rectangular array
@@ -134,7 +144,8 @@ def make_array(base_object, arg1, arg2, arg3, arg4=None, arg5=None, arg6=None, u
             ViewProviderDraftArray(new_obj.ViewObject)
             gui_utils.format_object(new_obj, new_obj.Base)
             new_obj.ViewObject.Proxy.resetColors(new_obj.ViewObject)
-        new_obj.Base.ViewObject.hide()
+        if hide_base:
+            new_obj.Base.ViewObject.hide()
         gui_utils.select(new_obj)
 
     return new_obj

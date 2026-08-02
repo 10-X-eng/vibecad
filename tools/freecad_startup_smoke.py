@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Verify FreeCAD starts through the venv wrapper and can import IFC support."""
+"""Verify FreeCAD starts through the venv wrapper."""
 
 from __future__ import annotations
 
@@ -17,12 +17,10 @@ import json
 import sys
 
 import FreeCAD as App
-import ifcopenshell
 
 print(json.dumps({
     "ok": True,
     "freecad_version": App.Version(),
-    "ifcopenshell_version": getattr(ifcopenshell, "version", None) or getattr(ifcopenshell, "__version__", None),
     "python_executable": sys.executable,
     "python_path_contains_venv": any(".venv" in item for item in sys.path),
 }, sort_keys=True))
@@ -67,7 +65,7 @@ def run_smoke(wrapper: Path, timeout: int) -> dict[str, Any]:
         proc.returncode == 0
         and payload is not None
         and payload.get("ok") is True
-        and bool(payload.get("ifcopenshell_version"))
+        and bool(payload.get("freecad_version"))
         and payload.get("python_path_contains_venv") is True
     )
     return {

@@ -20,18 +20,22 @@
  *                                                                         *
  ***************************************************************************/
 
-# include <sstream>
+#include <algorithm>
+#include <functional>
+#include <sstream>
+#include <unordered_set>
 
-# include <Precision.hxx>
+#include <Precision.hxx>
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/Link.h>
 #include <Base/Console.h>
 #include <Base/Parameter.h>
 
 #include "DrawPage.h"
-#include "DrawPagePy.h" // generated from DrawPagePy.xml
+#include "DrawPagePy.h"  // generated from DrawPagePy.xml
 #include "DrawProjGroup.h"
 #include "DrawTemplate.h"
 #include "DrawView.h"
@@ -48,8 +52,8 @@ using namespace TechDraw;
 // DrawPage
 //===========================================================================
 
-App::PropertyFloatConstraint::Constraints DrawPage::scaleRange = {
-    Precision::Confusion(), std::numeric_limits<double>::max(), (0.1)};// increment by 0.1
+App::PropertyFloatConstraint::Constraints DrawPage::scaleRange
+    = {Precision::Confusion(), std::numeric_limits<double>::max(), (0.1)};  // increment by 0.1
 
 PROPERTY_SOURCE(TechDraw::DrawPage, App::DocumentObject)
 
@@ -61,13 +65,16 @@ DrawPage::DrawPage(void)
     nowUnsetting = false;
     forceRedraw(false);
 
-    ADD_PROPERTY_TYPE(KeepUpdated, (Preferences::keepPagesUpToDate()), group,
-                      (App::PropertyType)(App::Prop_Output), "Keep page in sync with model");
-    ADD_PROPERTY_TYPE(Template, (nullptr), group, (App::PropertyType)(App::Prop_None),
-                      "Attached Template");
+    ADD_PROPERTY_TYPE(
+        KeepUpdated,
+        (Preferences::keepPagesUpToDate()),
+        group,
+        (App::PropertyType)(App::Prop_Output),
+        "Keep page in sync with model"
+    );
+    ADD_PROPERTY_TYPE(Template, (nullptr), group, (App::PropertyType)(App::Prop_None), "Attached Template");
     Template.setScope(App::LinkScope::Global);
-    ADD_PROPERTY_TYPE(Views, (nullptr), group, (App::PropertyType)(App::Prop_None),
-                      "Attached Views");
+    ADD_PROPERTY_TYPE(Views, (nullptr), group, (App::PropertyType)(App::Prop_None), "Attached Views");
     Views.setScope(App::LinkScope::Global);
 
     // Projection Properties
@@ -75,16 +82,50 @@ DrawPage::DrawPage(void)
     ADD_PROPERTY(ProjectionType, ((long)Preferences::projectionAngle()));
 
     double defScale = Preferences::getPreferenceGroup("General")->GetFloat("DefaultScale", 1.0);
-    ADD_PROPERTY_TYPE(Scale, (defScale), group, (App::PropertyType)(App::Prop_None),
-                      "Scale factor for this Page");
+    ADD_PROPERTY_TYPE(
+        Scale,
+        (defScale),
+        group,
+        (App::PropertyType)(App::Prop_None),
+        "Scale factor for this Page"
+    );
 
-    ADD_PROPERTY_TYPE(NextBalloonIndex, (1), group, (App::PropertyType)(App::Prop_None),
-                      "Auto-numbering for Balloons");
+    ADD_PROPERTY_TYPE(
+        NextBalloonIndex,
+        (1),
+        group,
+        (App::PropertyType)(App::Prop_None),
+        "Auto-numbering for Balloons"
+    );
 
     Scale.setConstraints(&scaleRange);
 }
 
-DrawPage::~DrawPage() {}
+DrawPage::~DrawPage()
+{}
+
+void DrawPage::onSettingDocument()
+{
+    App::DocumentObject::onSettingDocument();
+    auto* document = getDocument();
+    if (!document) {
+        return;
+    }
+
+    connectTimelineChanged = document->signalChangedObject.connect(
+        [this](const App::DocumentObject& object, const App::Property& property) {
+            const auto* timeline = dynamic_cast<const App::DocumentTimeline*>(&object);
+            if (!timeline || (&property != &timeline->Position && &property != &timeline->Operations)
+                || !DrawUtil::isActiveInDocumentTimeline(this)) {
+                return;
+            }
+            for (auto* view : getAllActiveViews()) {
+                view->touch();
+            }
+            touch();
+        }
+    );
+}
 
 void DrawPage::onBeforeChange(const App::Property* prop)
 {
@@ -95,16 +136,12 @@ void DrawPage::onChanged(const App::Property* prop)
 {
     if (prop == &KeepUpdated && KeepUpdated.getValue()) {
         if (!isRestoring() && !isUnsetting()) {
-            //would be nice if this message was displayed immediately instead of after the recomputeFeature
-            Base::Console().message("Rebuilding Views for: %s/%s\n", getNameInDocument(),
-                                    Label.getValue());
+            // would be nice if this message was displayed immediately instead of after the
+            // recomputeFeature
+            Base::Console()
+                .message("Rebuilding Views for: %s/%s\n", getNameInDocument(), Label.getValue());
             updateAllViews();
             purgeTouched();
-        }
-    }
-    else if (prop == &Template) {
-        if (!isRestoring() && !isUnsetting()) {
-            //nothing to page to do??
         }
     }
     else if (prop == &Scale) {
@@ -112,10 +149,11 @@ void DrawPage::onChanged(const App::Property* prop)
         // WF: not sure this loop is required.  Views figure out their scale as required. but maybe
         //     this is needed just to mark the Views to recompute??
         if (!isRestoring()) {
-            for (auto* obj : getViews()) {
+            for (auto* obj : getActiveViews()) {
                 auto* view = freecad_cast<DrawView*>(obj);
                 if (view && view->ScaleType.isValue("Page")) {
-                    if (std::abs(view->Scale.getValue() - Scale.getValue()) > std::numeric_limits<float>::epsilon()) {
+                    if (std::abs(view->Scale.getValue() - Scale.getValue())
+                        > std::numeric_limits<float>::epsilon()) {
                         view->Scale.setValue(Scale.getValue());
                     }
                 }
@@ -123,8 +161,9 @@ void DrawPage::onChanged(const App::Property* prop)
         }
     }
     else if (prop == &ProjectionType) {
-        // touch all ortho views in the Page as they may be dependent on Projection Type  //(is this true?)
-        for (auto* obj : getViews()) {
+        // touch all ortho views in the Page as they may be dependent on Projection Type  //(is this
+        // true?)
+        for (auto* obj : getActiveViews()) {
             auto* view = freecad_cast<DrawProjGroup*>(obj);
             if (view && view->ProjectionType.isValue("Default")) {
                 view->ProjectionType.touch();
@@ -136,19 +175,18 @@ void DrawPage::onChanged(const App::Property* prop)
     App::DocumentObject::onChanged(prop);
 }
 
-//Page is just a container. It doesn't "do" anything.
-App::DocumentObjectExecReturn* DrawPage::execute(void) { return App::DocumentObject::execute(); }
+// Page is just a container. It doesn't "do" anything.
+App::DocumentObjectExecReturn* DrawPage::execute(void)
+{
+    return App::DocumentObject::execute();
+}
 
 // this is now irrelevant, b/c DP::execute doesn't do anything.
 short DrawPage::mustExecute() const
 {
     if (!isRestoring()) {
-        if (
-            Views.isTouched() ||
-            Scale.isTouched() ||
-            ProjectionType.isTouched() ||
-            Template.isTouched()
-        ) {
+        if (Views.isTouched() || Scale.isTouched() || ProjectionType.isTouched()
+            || Template.isTouched()) {
             return true;
         }
     }
@@ -204,7 +242,7 @@ double DrawPage::getPageHeight() const
     throw Base::RuntimeError("Template not set for Page");
 }
 
-//orientation as text
+// orientation as text
 const char* DrawPage::getPageOrientation() const
 {
     App::DocumentObject* obj;
@@ -217,7 +255,7 @@ const char* DrawPage::getPageOrientation() const
     throw Base::RuntimeError("Template not set for Page");
 }
 
-//orientation as 0(Portrait) or 1(Landscape)
+// orientation as 0(Portrait) or 1(Landscape)
 int DrawPage::getOrientation() const
 {
     App::DocumentObject* obj = Template.getValue();
@@ -241,8 +279,7 @@ int DrawPage::addPrecomputedView(App::DocumentObject* docObj)
 
 int DrawPage::addViewImpl(App::DocumentObject* docObj, bool setPosition, bool evaluateFit)
 {
-    if (!docObj->isDerivedFrom<DrawView>()
-        && !docObj->isDerivedFrom<App::Link>()) {
+    if (!docObj->isDerivedFrom<DrawView>() && !docObj->isDerivedFrom<App::Link>()) {
         return -1;
     }
 
@@ -260,26 +297,26 @@ int DrawPage::addViewImpl(App::DocumentObject* docObj, bool setPosition, bool ev
         }
     }
 
-    //position all new views without owners in center of Page (exceptDVDimension)
-    if (!view->claimParent()
-        && !docObj->isDerivedFrom<DrawViewDimension>()
-        && !docObj->isDerivedFrom<DrawViewBalloon>()
-        && setPosition) {
+    // position all new views without owners in center of Page (exceptDVDimension)
+    if (!view->claimParent() && !docObj->isDerivedFrom<DrawViewDimension>()
+        && !docObj->isDerivedFrom<DrawViewBalloon>() && setPosition) {
         view->X.setValue(getPageWidth() / 2.0);
         view->Y.setValue(getPageHeight() / 2.0);
     }
 
-    //add view to list
+    // add view to list
     std::vector<App::DocumentObject*> newViews(Views.getValues());
     newViews.push_back(docObj);
     Views.setValues(newViews);
 
 
     if (evaluateFit) {
-        //check if View fits on Page
+        // check if View fits on Page
         if (!view->checkFit(this)) {
-            Base::Console().warning("%s is larger than page. Will be scaled.\n",
-                                    view->getNameInDocument());
+            Base::Console().warning(
+                "%s is larger than page. Will be scaled.\n",
+                view->getNameInDocument()
+            );
             view->ScaleType.setValue("Automatic");
         }
 
@@ -289,7 +326,8 @@ int DrawPage::addViewImpl(App::DocumentObject* docObj, bool setPosition, bool ev
     return Views.getSize();
 }
 
-//Note Views might be removed from document elsewhere so need to check if a View is still in Document here
+// Note Views might be removed from document elsewhere so need to check if a View is still in
+// Document here
 int DrawPage::removeView(App::DocumentObject* docObj)
 {
     if (!docObj->isDerivedFrom<DrawView>() && !docObj->isDerivedFrom<App::Link>()) {
@@ -320,9 +358,14 @@ int DrawPage::removeView(App::DocumentObject* docObj)
     return Views.getSize();
 }
 
-void DrawPage::requestPaint(void) { signalGuiPaint(this); }
+void DrawPage::requestPaint(void)
+{
+    if (DrawUtil::isActiveInDocumentTimeline(this)) {
+        signalGuiPaint(this);
+    }
+}
 
-//this doesn't work right because there is no guaranteed of the restoration order
+// this doesn't work right because there is no guaranteed of the restoration order
 void DrawPage::onDocumentRestored()
 {
     if (canUpdate()) {
@@ -343,22 +386,22 @@ void DrawPage::redrawCommand()
 void DrawPage::updateAllViews()
 {
     //    Base::Console().message("DP::updateAllViews()\n");
-    //unordered list of views within page
-    std::vector<App::DocumentObject*> featViews = getAllViews();
+    // unordered list of views within page
+    std::vector<App::DocumentObject*> featViews = getAllActiveViews();
 
-    //first, make sure all the Parts have been executed so GeometryObjects exist
+    // first, make sure all the Parts have been executed so GeometryObjects exist
     for (auto& v : featViews) {
         if (v->isFreezed()) {
             continue;
         }
         auto* part = freecad_cast<DrawViewPart*>(v);
         if (part) {
-            //view, section, detail, dpgi
+            // view, section, detail, dpgi
             part->recomputeFeature();
         }
     }
-    //second, do the rest of the views that may depend on a part view
-    //TODO: check if we have 2 layers of dependency (ex. leader > weld > tile?)
+    // second, do the rest of the views that may depend on a part view
+    // TODO: check if we have 2 layers of dependency (ex. leader > weld > tile?)
     for (auto& v : featViews) {
         if (v->isFreezed()) {
             continue;
@@ -423,13 +466,84 @@ std::vector<App::DocumentObject*> DrawPage::getAllViews() const
         allViews.push_back(v);
         if (v->isDerivedFrom<DrawProjGroup>()) {
             auto* dpg = static_cast<DrawProjGroup*>(v);
-            if (dpg) {//can't really happen!
+            if (dpg) {  // can't really happen!
                 std::vector<App::DocumentObject*> pgViews = dpg->Views.getValues();
                 allViews.insert(allViews.end(), pgViews.begin(), pgViews.end());
             }
         }
     }
     return allViews;
+}
+
+std::vector<App::DocumentObject*> DrawPage::getActiveViews() const
+{
+    std::vector<App::DocumentObject*> allViews;
+    if (!DrawUtil::isActiveInDocumentTimeline(this)) {
+        return allViews;
+    }
+
+    for (auto* storedView : Views.getValues()) {
+        if (!DrawUtil::isActiveInDocumentTimeline(storedView)) {
+            continue;
+        }
+
+        auto* view = storedView;
+        const bool addChildren = view->isDerivedFrom<App::Link>();
+        if (addChildren) {
+            view = static_cast<App::Link*>(view)->getLinkedObject();
+        }
+        auto* drawingView = freecad_cast<DrawView*>(view);
+        if (!drawingView || !drawingView->isActiveInDocumentTimeline()) {
+            continue;
+        }
+
+        allViews.push_back(drawingView);
+        if (addChildren) {
+            for (auto* dependent : drawingView->getInList()) {
+                auto* dependentView = freecad_cast<DrawView*>(dependent);
+                if (dependentView && dependentView->isActiveInDocumentTimeline()) {
+                    allViews.push_back(dependentView);
+                }
+            }
+        }
+    }
+    return allViews;
+}
+
+std::vector<App::DocumentObject*> DrawPage::getAllActiveViews() const
+{
+    std::vector<App::DocumentObject*> allViews;
+    std::unordered_set<App::DocumentObject*> visited;
+    std::function<void(App::DocumentObject*)> appendView =
+        [&allViews, &visited, &appendView](App::DocumentObject* view) {
+            if (!view || !visited.insert(view).second) {
+                return;
+            }
+            allViews.push_back(view);
+            auto* collection = freecad_cast<DrawViewCollection*>(view);
+            if (!collection) {
+                return;
+            }
+            for (auto* child : collection->getActiveViews()) {
+                appendView(child);
+            }
+        };
+    for (auto* view : getActiveViews()) {
+        appendView(view);
+    }
+    return allViews;
+}
+
+DrawTemplate* DrawPage::getActiveTemplate() const
+{
+    if (!DrawUtil::isActiveInDocumentTimeline(this)) {
+        return nullptr;
+    }
+    auto* object = Template.getValue();
+    if (!DrawUtil::isActiveInDocumentTimeline(object)) {
+        return nullptr;
+    }
+    return freecad_cast<DrawTemplate*>(object);
 }
 
 void DrawPage::unsetupObject()
@@ -443,28 +557,36 @@ void DrawPage::unsetupObject()
 
     try {
         for (auto& v : Views.getValues()) {
-            //NOTE: the order of objects in Page.Views does not reflect the object hierarchy
-            //      this means that a ProjGroup could be deleted before its child ProjGroupItems.
-            //      this causes problems when removing objects from document
+            // NOTE: the order of objects in Page.Views does not reflect the object hierarchy
+            //       this means that a ProjGroup could be deleted before its child ProjGroupItems.
+            //       this causes problems when removing objects from document
             if (v->isAttachedToDocument()) {
                 std::string viewName = v->getNameInDocument();
-                Base::Interpreter().runStringArg("App.getDocument(\"%s\").removeObject(\"%s\")",
-                                                 docName.c_str(), viewName.c_str());
+                Base::Interpreter().runStringArg(
+                    "App.getDocument(\"%s\").removeObject(\"%s\")",
+                    docName.c_str(),
+                    viewName.c_str()
+                );
             }
         }
-        std::vector<App::DocumentObject*> emptyViews;//probably superfluous
+        std::vector<App::DocumentObject*> emptyViews;  // probably superfluous
         Views.setValues(emptyViews);
     }
     catch (...) {
-        Base::Console().warning("DP::unsetupObject - %s - error while deleting children\n",
-                                getNameInDocument());
+        Base::Console().warning(
+            "DP::unsetupObject - %s - error while deleting children\n",
+            getNameInDocument()
+        );
     }
 
     App::DocumentObject* tmp = Template.getValue();
-    if (tmp) {
+    if (tmp && App::DocumentTimeline::timelineOwner(tmp) == this) {
         std::string templateName = Template.getValue()->getNameInDocument();
-        Base::Interpreter().runStringArg("App.getDocument(\"%s\").removeObject(\"%s\")",
-                                         docName.c_str(), templateName.c_str());
+        Base::Interpreter().runStringArg(
+            "App.getDocument(\"%s\").removeObject(\"%s\")",
+            docName.c_str(),
+            templateName.c_str()
+        );
     }
     Template.setValue(nullptr);
 }
@@ -477,8 +599,14 @@ int DrawPage::getNextBalloonIndex(void)
     return result;
 }
 
-void DrawPage::handleChangedPropertyType(Base::XMLReader& reader, const char* TypeName,
-                                         App::Property* prop)
+bool DrawPage::isTimelineStructuralChild(const App::DocumentObject* object) const
+{
+    const auto& views = Views.getValues();
+    return std::ranges::find(views, object) != views.end()
+        || App::DocumentObject::isTimelineStructuralChild(object);
+}
+
+void DrawPage::handleChangedPropertyType(Base::XMLReader& reader, const char* TypeName, App::Property* prop)
 {
     if (prop == &Scale) {
         App::PropertyFloat tmp;
@@ -507,11 +635,11 @@ bool DrawPage::canUpdate() const
     return false;
 }
 
-//true if object belongs to this page
+// true if object belongs to this page
 bool DrawPage::hasObject(App::DocumentObject* obj)
 {
     for (auto& outObj : getOutList()) {
-        //TODO: check if pointer comparison is reliable enough
+        // TODO: check if pointer comparison is reliable enough
         if (outObj == obj) {
             return true;
         }
@@ -520,20 +648,21 @@ bool DrawPage::hasObject(App::DocumentObject* obj)
     return false;
 }
 
-//allow/prevent drawing updates for all Pages
+// allow/prevent drawing updates for all Pages
 bool DrawPage::GlobalUpdateDrawings(void)
 {
     return Preferences::getPreferenceGroup("General")->GetBool("GlobalUpdateDrawings", true);
 }
 
-//allow/prevent a single page to update despite GlobalUpdateDrawings setting
+// allow/prevent a single page to update despite GlobalUpdateDrawings setting
 bool DrawPage::AllowPageOverride(void)
 {
     return Preferences::getPreferenceGroup("General")->GetBool("AllowPageOverride", true);
 }
 
-//! get a translated label string from the context (ex TaskActiveView), the base name (ex ActiveView) and
-//! the unique name within the document (ex ActiveView001), and use it to update the Label property.
+//! get a translated label string from the context (ex TaskActiveView), the base name (ex
+//! ActiveView) and the unique name within the document (ex ActiveView001), and use it to update the
+//! Label property.
 void DrawPage::translateLabel(std::string context, std::string baseName, std::string uniqueName)
 {
     Label.setValue(DrawUtil::translateArbitrary(context, baseName, uniqueName));
@@ -546,7 +675,8 @@ namespace App
 {
 /// @cond DOXERR
 PROPERTY_SOURCE_TEMPLATE(TechDraw::DrawPagePython, TechDraw::DrawPage)
-template<> const char* TechDraw::DrawPagePython::getViewProviderName(void) const
+template<>
+const char* TechDraw::DrawPagePython::getViewProviderName(void) const
 {
     return "TechDrawGui::ViewProviderPage";
 }
@@ -554,4 +684,4 @@ template<> const char* TechDraw::DrawPagePython::getViewProviderName(void) const
 
 // explicit template instantiation
 template class TechDrawExport FeaturePythonT<TechDraw::DrawPage>;
-}// namespace App
+}  // namespace App

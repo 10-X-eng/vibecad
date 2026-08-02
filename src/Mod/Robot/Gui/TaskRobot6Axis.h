@@ -45,15 +45,18 @@ namespace RobotGui
 
 
 class Ui_TaskRobot6Axis;
+class ViewProviderRobotObject;
 class TaskRobot6Axis: public Gui::TaskView::TaskBox
 {
     Q_OBJECT
 
 public:
     explicit TaskRobot6Axis(Robot::RobotObject* pcRobotObject, QWidget* parent = nullptr);
+    TaskRobot6Axis(Robot::RobotObject* pcRobotObject, QWidget* parent, bool previewOnly);
     ~TaskRobot6Axis() override;
 
     void setRobot(Robot::RobotObject* pcRobotObject);
+    void restorePreview();
 
 public Q_SLOTS:
     void setAxis(float A1, float A2, float A3, float A4, float A5, float A6, const Base::Placement& Tcp);
@@ -70,12 +73,14 @@ protected:
     void viewTcp(const Base::Placement& pos);
     void viewTool(const Base::Placement& pos);
     void setColor(int i, float angle, QLineEdit& lineEdit);
+    void changeAxis(int axis, float value, QLineEdit& lineEdit);
 
-private:
 private:
     QWidget* proxy;
     Ui_TaskRobot6Axis* ui;
     Robot::Robot6Axis* Rob;
+    ViewProviderRobotObject* viewProvider {nullptr};
+    bool previewOnly {false};
 };
 
 }  // namespace RobotGui

@@ -16,6 +16,7 @@ from types import MappingProxyType
 from typing import Any
 
 from vibescript_domain_api import DomainValue, create_domain_api
+import vibescript_worker_progress as worker_progress
 
 REQUEST_ENV = "VIBECAD_VIBESCRIPT_DOMAIN_REQUEST"
 RESULT_ENV = "VIBECAD_VIBESCRIPT_DOMAIN_RESULT"
@@ -767,6 +768,95 @@ def _assembly_worker_validation(
     }
 
 
+def _validate_and_build_mesh_workbench(
+    result: dict[str, Any],
+    expected_outputs: list[dict[str, Any]],
+    root: Path,
+    *,
+    max_shape_subelements: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
+    """Run native Mesh graphs and MeshPart conversions under one Mesh surface."""
+
+    from vibescript_mesh_worker import validate_and_build_meshes
+    from vibescript_meshpart_worker import validate_and_convert_meshpart
+
+    native_operations = {
+        "mesh",
+        "from_object",
+        "transform",
+        "union",
+        "difference",
+        "intersection",
+        "repair",
+        "diagnostics",
+    }
+    conversion_operations = {"mesh_from_shape", "shape_from_mesh"}
+    native_indices: list[int] = []
+    conversion_indices: list[int] = []
+    for index, declaration in enumerate(expected_outputs):
+        name = str(declaration.get("name") or "")
+        value = result.get(name)
+        if not isinstance(value, DomainValue):
+            raise TypeError(
+                f"Mesh result {name!r} must be returned by the active Mesh api."
+            )
+        payload = value.to_payload()
+        operation = str(payload.get("operation") or "")
+        if payload.get("domain") != "mesh":
+            raise ValueError(
+                f"Mesh result {name!r} belongs to domain "
+                f"{payload.get('domain')!r}, not 'mesh'."
+            )
+        if operation in native_operations:
+            native_indices.append(index)
+        elif operation in conversion_operations:
+            conversion_indices.append(index)
+        else:
+            raise ValueError(
+                f"Mesh result {name!r} uses unsupported operation {operation!r}."
+            )
+
+    outputs_by_name: dict[str, dict[str, Any]] = {}
+    mesh_validation = None
+    if native_indices:
+        declarations = [expected_outputs[index] for index in native_indices]
+        names = [str(item["name"]) for item in declarations]
+        native_outputs, mesh_validation = validate_and_build_meshes(
+            {name: result[name] for name in names},
+            declarations,
+            root,
+            output_indices=native_indices,
+        )
+        outputs_by_name.update(
+            (str(item["name"]), item) for item in native_outputs
+        )
+
+    meshpart_validation = None
+    if conversion_indices:
+        declarations = [expected_outputs[index] for index in conversion_indices]
+        names = [str(item["name"]) for item in declarations]
+        converted_outputs, meshpart_validation = validate_and_convert_meshpart(
+            {name: result[name] for name in names},
+            declarations,
+            root,
+            max_shape_subelements=max_shape_subelements,
+            definition_domain="mesh",
+            output_indices=conversion_indices,
+        )
+        outputs_by_name.update(
+            (str(item["name"]), item) for item in converted_outputs
+        )
+
+    expected_names = [str(item["name"]) for item in expected_outputs]
+    if set(outputs_by_name) != set(expected_names):
+        raise RuntimeError("Mesh validation did not produce every declared output.")
+    return (
+        [outputs_by_name[name] for name in expected_names],
+        mesh_validation,
+        meshpart_validation,
+    )
+
+
 def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
     import FreeCAD as App
 
@@ -775,17 +865,24 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             f"Unsupported domain worker schema: {request.get('schema')!r}."
         )
     domain = str(request.get("domain") or "")
+    worker_progress.configure(root / "progress.json", domain)
+    worker_progress.set_phase("reference_setup")
     source = str(request.get("source") or "")
     inputs = request.get("inputs")
     expected_outputs = request.get("expected_outputs")
     exports = request.get("api_exports")
     output_types = request.get("output_types")
+    compatibility_methods = request.get("compatibility_methods", [])
     if not isinstance(inputs, dict):
         raise TypeError("inputs must be an object.")
     if not isinstance(expected_outputs, list) or not expected_outputs:
         raise TypeError("expected_outputs must be a non-empty array.")
     if not isinstance(exports, list) or not isinstance(output_types, list):
         raise TypeError("The domain API contract is missing.")
+    if not isinstance(compatibility_methods, list) or any(
+        not isinstance(item, str) for item in compatibility_methods
+    ):
+        raise TypeError("compatibility_methods must be an array of strings.")
     if domain in {
         "partdesign",
         "part",
@@ -831,8 +928,17 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             configure_surface_references(root, references)
         elif domain == "mesh":
             from vibescript_mesh_worker import configure_mesh_references
+            from vibescript_meshpart_worker import configure_meshpart_references
 
-            configure_mesh_references(root, references)
+            configure_mesh_references(
+                root,
+                [
+                    item
+                    for item in references
+                    if str(item.get("artifact_kind") or "") == "mesh_bms"
+                ],
+            )
+            configure_meshpart_references(root, references)
         elif domain == "meshpart":
             from vibescript_meshpart_worker import configure_meshpart_references
 
@@ -877,7 +983,13 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         "VibeScriptDomainCandidate", "VibeScript Domain Candidate", True, True
     )
     try:
-        api = create_domain_api(domain, exports, output_types)
+        api = create_domain_api(
+            domain,
+            exports,
+            output_types,
+            compatibility_methods=compatibility_methods,
+        )
+        worker_progress.set_phase("source_execution")
         result, stdout, budget = _execute_source(
             source=source,
             document_name=str(request.get("document_name") or "VibeScriptDocument"),
@@ -904,7 +1016,6 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         surface_validation = None
         spreadsheet_validation = None
         material_validation = None
-        bim_validation = None
         mesh_validation = None
         meshpart_validation = None
         points_validation = None
@@ -915,8 +1026,13 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         cam_validation = None
         techdraw_validation = None
         partdesign_validation = None
+        partdesign_native_history = None
+        worker_progress.set_phase("native_build")
         if domain == "partdesign":
-            from vibescript_partdesign_worker import validate_and_build_partdesign
+            from vibescript_partdesign_worker import (
+                export_partdesign_native_history,
+                validate_and_build_partdesign,
+            )
 
             outputs, partdesign_validation = validate_and_build_partdesign(
                 document,
@@ -924,6 +1040,14 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
                 [dict(item) for item in expected_outputs],
                 root,
                 max_shape_subelements=shape_detail_limit,
+                object_name_prefix=(
+                    f"VibePD_{str(request.get('program_id') or '')[:12]}_"
+                ),
+            )
+            partdesign_native_history = export_partdesign_native_history(
+                document,
+                outputs,
+                root,
             )
         elif domain == "draft":
             from vibescript_draft_worker import validate_and_build_draft
@@ -965,23 +1089,16 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
                 document_uid=str(request.get("document_uid") or ""),
                 material_targets=targets,
             )
-        elif domain == "bim":
-            from vibescript_bim_worker import validate_and_build_bim
-
-            outputs, bim_validation = validate_and_build_bim(
-                document,
+        elif domain == "mesh":
+            (
+                outputs,
+                mesh_validation,
+                meshpart_validation,
+            ) = _validate_and_build_mesh_workbench(
                 result,
                 [dict(item) for item in expected_outputs],
                 root,
                 max_shape_subelements=shape_detail_limit,
-            )
-        elif domain == "mesh":
-            from vibescript_mesh_worker import validate_and_build_meshes
-
-            outputs, mesh_validation = validate_and_build_meshes(
-                result,
-                [dict(item) for item in expected_outputs],
-                root,
             )
         elif domain == "meshpart":
             from vibescript_meshpart_worker import validate_and_convert_meshpart
@@ -1081,6 +1198,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         }
         if domain == "partdesign":
             response["partdesign_validation"] = partdesign_validation
+            response["partdesign_native_history"] = partdesign_native_history
         elif domain == "assembly":
             from vibescript_assembly_worker import validate_and_solve_assembly
 
@@ -1090,6 +1208,12 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
                 outputs,
                 root,
             )
+            response["assembly_members"] = [
+                item for item in outputs if item.get("internal") is True
+            ]
+            response["outputs"] = [
+                item for item in outputs if item.get("internal") is not True
+            ]
         elif domain == "sketcher":
             from vibescript_sketcher_worker import validate_and_solve_sketch
 
@@ -1106,10 +1230,11 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             response["spreadsheet_validation"] = spreadsheet_validation
         elif domain == "material":
             response["material_validation"] = material_validation
-        elif domain == "bim":
-            response["bim_validation"] = bim_validation
         elif domain == "mesh":
-            response["mesh_validation"] = mesh_validation
+            if mesh_validation is not None:
+                response["mesh_validation"] = mesh_validation
+            if meshpart_validation is not None:
+                response["meshpart_validation"] = meshpart_validation
         elif domain == "meshpart":
             response["meshpart_validation"] = meshpart_validation
         elif domain == "points":
@@ -1126,6 +1251,10 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             response["cam_validation"] = cam_validation
         elif domain == "techdraw":
             response["techdraw_validation"] = techdraw_validation
+        worker_progress.finish()
+        response["worker_progress"] = json.loads(
+            (root / "progress.json").read_text(encoding="utf-8")
+        )
         return response
     finally:
         App.closeDocument(document.Name)
@@ -1142,6 +1271,7 @@ def main() -> int:
         _resource_limits(request)
         payload = _run(request, root)
     except BaseException as exc:
+        worker_progress.failed(exc)
         payload = {
             "ok": False,
             "exception_type": exc.__class__.__name__,

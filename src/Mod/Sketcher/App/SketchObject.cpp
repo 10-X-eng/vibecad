@@ -38,9 +38,12 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/ElementNamingUtils.h>
 #include <App/Expression.h>
 #include <App/FeaturePythonPyImp.h>
+#include <App/GeoFeatureGroupExtension.h>
+#include <App/GroupExtension.h>
 #include <App/IndexedName.h>
 #include <App/MappedName.h>
 #include <App/ObjectIdentifier.h>
@@ -61,6 +64,7 @@
 #include "Constraint.h"
 #include "SketchObjectPy.h"
 #include "ExternalGeometryFacade.h"
+#include <Base/Uuid.h>
 
 
 #undef DEBUG
@@ -78,6 +82,22 @@ PROPERTY_SOURCE(Sketcher::SketchObject, Part::Part2DObject)
 
 SketchObject::SketchObject() : geoLastId(0)
 {
+    Base::Uuid sketchId;
+    ADD_PROPERTY_TYPE(
+        VibeCADSketchId,
+        (sketchId),
+        "VibeCAD Design",
+        static_cast<App::PropertyType>(App::Prop_ReadOnly),
+        "Persistent identity of this reusable Sketch"
+    );
+    Base::Uuid designId;
+    ADD_PROPERTY_TYPE(
+        DesignId,
+        (designId),
+        "VibeCAD Design",
+        static_cast<App::PropertyType>(App::Prop_ReadOnly | App::Prop_Hidden),
+        "Persistent identity of the Design which owns this reusable Sketch"
+    );
     ADD_PROPERTY_TYPE(
         Geometry, (nullptr), "Sketch", (App::PropertyType)(App::Prop_None), "Sketch geometry");
     ADD_PROPERTY_TYPE(Constraints,
@@ -171,6 +191,134 @@ void SketchObject::setupObject()
     ArcFitTolerance.setValue(hGrpp->GetFloat("ArcFitTolerance", Precision::Confusion()*10.0));
     MakeInternals.setValue(hGrpp->GetBool("MakeInternals", true));
     inherited::setupObject();
+    auto* document = getDocument();
+    if (!document || document->testStatus(App::Document::Restoring)) {
+        return;
+    }
+    if (auto* timeline = App::DocumentTimeline::ensure(document)) {
+        DesignId.setValue(timeline->DesignId.getValue());
+    }
+}
+
+bool SketchObject::isDesignScopeDefinition() const noexcept
+{
+    try {
+        return getDocument()
+            && !App::GeoFeatureGroupExtension::getGroupOfObject(
+                const_cast<SketchObject*>(this)
+            )
+            && !App::GroupExtension::getGroupOfObject(
+                const_cast<SketchObject*>(this)
+            );
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+void SketchObject::finalizeDesignDefinition()
+{
+    auto* document = getDocument();
+    if (!document || document->testStatus(App::Document::Restoring)) {
+        throw Base::RuntimeError(
+            "A Design Sketch must belong to one live document"
+        );
+    }
+    if (!isDesignScopeDefinition()) {
+        throw Base::ValueError(
+            "A reusable Design Sketch must remain at document scope"
+        );
+    }
+
+    auto* timeline = App::DocumentTimeline::ensure(document);
+    if (!timeline) {
+        throw Base::RuntimeError(
+            "A reusable Design Sketch requires global History"
+        );
+    }
+    if (VibeCADSketchId.getValueStr().empty()) {
+        VibeCADSketchId.setValue(Base::Uuid::createUuid());
+    }
+    if (DesignId.getValueStr().empty()) {
+        DesignId.setValue(timeline->DesignId.getValue());
+    }
+    else if (DesignId.getValueStr()
+             != timeline->DesignId.getValueStr()) {
+        throw Base::RuntimeError(
+            "A reusable Sketch belongs to a different Design"
+        );
+    }
+
+    auto* roleProperty = getPropertyByName(
+        App::DocumentTimeline::RolePropertyName
+    );
+    if (!roleProperty) {
+        roleProperty = addDynamicProperty(
+            "App::PropertyString",
+            App::DocumentTimeline::RolePropertyName,
+            "VibeCAD Design",
+            "Document timeline classification",
+            App::Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    auto* role = dynamic_cast<App::PropertyString*>(roleProperty);
+    const std::string roleValue =
+        role ? role->getValue() : std::string();
+    if (!role
+        || (!roleValue.empty()
+            && roleValue != App::DocumentTimeline::OperationRole)) {
+        throw Base::TypeError(
+            "A reusable Sketch has incompatible History classification"
+        );
+    }
+    role->setStatus(App::Property::Hidden, true);
+    role->setStatus(App::Property::LockDynamic, true);
+    role->setStatus(App::Property::NoRecompute, true);
+    role->setValue(App::DocumentTimeline::OperationRole);
+
+    if (auto* ownerProperty = getPropertyByName(
+            App::DocumentTimeline::OwnerPropertyName
+        )) {
+        auto* owner =
+            dynamic_cast<App::PropertyLinkHidden*>(ownerProperty);
+        if (!owner || owner->getValue()) {
+            throw Base::TypeError(
+                "A reusable Sketch cannot be a History resource"
+            );
+        }
+        owner->setStatus(App::Property::Hidden, true);
+        owner->setStatus(App::Property::LockDynamic, true);
+        owner->setStatus(App::Property::NoRecompute, true);
+    }
+    if (!isValid()) {
+        throw Base::RuntimeError(getStatusString());
+    }
+
+    const auto& history = timeline->Operations.getValues();
+    const auto count =
+        std::ranges::count(history, this);
+    if (count > 1) {
+        throw Base::RuntimeError(
+            "A reusable Sketch appears more than once in global History"
+        );
+    }
+    if (count == 1) {
+        return;
+    }
+    if (document
+            ->isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                this
+            )) {
+        timeline->finalizeProvisionalOperationBlock(
+            this,
+            {this}
+        );
+    }
+    else {
+        timeline->publishProvisionalOperationBlock(this, {});
+    }
 }
 
 short SketchObject::mustExecute() const
@@ -399,35 +547,54 @@ Part::TopoShape SketchObject::buildInternals(const Part::TopoShape &edges) const
     if (!MakeInternals.getValue())
         return Part::TopoShape();
 
+    const auto wires = edges.getSubTopoShapes(TopAbs_WIRE);
+    Part::TopoShape faces(getID(), getDocument()->getStringHasher());
     try {
-        Part::TopoShape result(getID(), getDocument()->getStringHasher());
-        result = result.makeElementFace(edges.getSubTopoShapes(TopAbs_WIRE),
+        if (!wires.empty()) {
+            // FaceMaker needs the complete wire graph: open partitioning wires
+            // can split a closed boundary into independently selectable
+            // profiles.
+            faces = faces.makeElementFace(wires,
                 /*op*/"",
                 /*maker*/"Part::FaceMakerBuildFace",
                 /*pln*/nullptr
-        );
+            );
+        }
+    } catch (Base::Exception &) {
+        // A sketch containing only open path geometry has no bounded region;
+        // that is valid sketch content, not a recompute failure. Preserve its
+        // selectable wires below.
+    } catch (Standard_Failure &) {
+        // Internal faces are derived selection geometry. Failure to derive a
+        // bounded region must not discard otherwise valid sketch paths.
+    }
 
-        // Append open wires (edges not part of any closed face)
+    Part::TopoShape openWires(getID(), getDocument()->getStringHasher());
+    try {
+        // Preserve path geometry as selectable internals without asking a face
+        // maker to process open wires.
         Part::WireJoiner joiner;
         joiner.setTightBound(true);
         joiner.setMergeEdges(true);
         joiner.addShape(edges);
-        Part::TopoShape openWires(getID(), getDocument()->getStringHasher());
-        joiner.getOpenWires(openWires, "SKF");
-
-        if (openWires.isNull()) {
-            return result;  // No open wires, return either face or empty toposhape
-        }
-        if (result.isNull()) {
-            return openWires;   // No face, but we have open wires to return as a shape
-        }
-        return result.makeElementCompound({result, openWires}); // Compound and return both
+        // A face result already contains its original boundary/partition
+        // edges, so append only genuinely derived open fragments in that
+        // case. With no face result, the original open path is the internal
+        // result and must be retained.
+        joiner.getOpenWires(openWires, "SKF", !faces.isNull());
     } catch (Base::Exception &e) {
-        FC_WARN("Failed to make face for sketch: " << e.what());
+        FC_WARN("Failed to build open sketch wires: " << e.what());
     } catch (Standard_Failure &e) {
-        FC_WARN("Failed to make face for sketch: " << e.GetMessageString());
+        FC_WARN("Failed to build open sketch wires: " << e.GetMessageString());
     }
-    return Part::TopoShape();
+
+    if (openWires.isNull()) {
+        return faces;
+    }
+    if (faces.isNull()) {
+        return openWires;
+    }
+    return faces.makeElementCompound({faces, openWires});
 }
 
 static const char *hasSketchMarker(const char *name) {

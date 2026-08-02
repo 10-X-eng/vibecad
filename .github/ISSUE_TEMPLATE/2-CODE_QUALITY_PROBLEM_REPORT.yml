@@ -27,7 +27,6 @@ body:
       description: Select the primary area affected by the code quality issue.
       options:
         - Assembly
-        - BIM
         - CAM
         - Core (App, Gui, Base, ...)
         - Draft

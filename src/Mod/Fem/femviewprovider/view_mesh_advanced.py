@@ -53,6 +53,9 @@ class VPMeshAdvanced(view_base_femmeshelement.VPBaseFemMeshElement):
     A View Provider for the FemMeshAdvanced object
     """
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def setEdit(self, vobj, mode=0):
         return super().setEdit(vobj, mode, task_mesh_advanced._TaskPanel)
 

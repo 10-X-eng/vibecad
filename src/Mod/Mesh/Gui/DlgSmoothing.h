@@ -29,6 +29,7 @@
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
 
+#include <App/DocumentObserver.h>
 #include <Mod/Mesh/MeshGlobal.h>
 
 class QButtonGroup;
@@ -136,6 +137,7 @@ public:
 private:
     DlgSmoothing* widget;
     Selection* selection;
+    std::vector<App::DocumentObjectWeakPtrT> targets;
 };
 
 }  // namespace MeshGui

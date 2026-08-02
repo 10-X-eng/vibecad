@@ -12,7 +12,7 @@ else()
 endif()
 
 add_subdirectory(Stylesheets)
-add_subdirectory(PreferencePacks)
+add_subdirectory(Themes)
 add_subdirectory(PreferencePackTemplates)
 
 if(BUILD_WITH_CONDA)
@@ -722,6 +722,7 @@ SOURCE_GROUP("Dialog\\Settings" FILES ${Dialog_Settings_SRCS})
 SET(Dock_Windows_CPP_SRCS
     ComboView.cpp
     DockWindow.cpp
+    ModelTreeBrowser.cpp
     PropertyView.cpp
     ReportView.cpp
     Selection/SelectionView.cpp
@@ -736,6 +737,7 @@ SET(Dock_Windows_CPP_SRCS
 SET(Dock_Windows_HPP_SRCS
     ComboView.h
     DockWindow.h
+    ModelTreeBrowser.h
     PropertyView.h
     ReportView.h
     Selection/SelectionView.h
@@ -1146,6 +1148,7 @@ SOURCE_GROUP("View3D\\Inventor" FILES ${Inventor_SRCS})
 # The widget sources
 SET(Widget_CPP_SRCS
     ComboLinks.cpp
+    FeatureTimeline.cpp
     FileDialog.cpp
     MainWindow.cpp
     MainWindowPy.cpp
@@ -1177,6 +1180,7 @@ if(WIN32)
 endif(WIN32)
 SET(Widget_HPP_SRCS
     ComboLinks.h
+    FeatureTimeline.h
     FileDialog.h
     FileDialogInternal.h
     MainWindow.h
@@ -1314,6 +1318,7 @@ SET(FreeCADGui_CPP_SRCS
     AutoSaver.cpp
     BitmapFactory.cpp
     Document.cpp
+    ExactTransaction.cpp
     DocumentModel.cpp
     DocumentPyImp.cpp
     DocumentObserver.cpp
@@ -1334,6 +1339,7 @@ SET(FreeCADGui_CPP_SRCS
     InputHintPy.cpp
     Macro.cpp
     MergeDocuments.cpp
+    TimelineImport.cpp
     ModuleIO.cpp
     Namespace.h
     resource.cpp
@@ -1341,6 +1347,8 @@ SET(FreeCADGui_CPP_SRCS
     SpaceballEvent.cpp
     StatusBarLabel.cpp
     PreferencePackManager.cpp
+    ThemeManager.cpp
+    VibeCADRibbon.cpp
     ProgramInformation.cpp
     Thumbnail.cpp
     Utilities.cpp
@@ -1358,6 +1366,7 @@ SET(FreeCADGui_SRCS
     AutoSaver.h
     BitmapFactory.h
     Document.h
+    ExactTransaction.h
     DocumentModel.h
     DocumentObserver.h
     DocumentObserverPython.h
@@ -1379,6 +1388,7 @@ SET(FreeCADGui_SRCS
     InputHintWidget.h
     Macro.h
     MergeDocuments.h
+    TimelineImport.h
     MetaTypes.h
     ModuleIO.h
     Notifications.h
@@ -1387,6 +1397,8 @@ SET(FreeCADGui_SRCS
     Control.h
     SpaceballEvent.h
     PreferencePackManager.h
+    ThemeManager.h
+    VibeCADRibbon.h
     ProgramInformation.h
     Thumbnail.h
     Tools.h

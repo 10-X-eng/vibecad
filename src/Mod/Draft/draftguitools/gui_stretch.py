@@ -110,8 +110,6 @@ class Stretch(gui_base_original.Modifier):
                                 self.sel.append(
                                     [obj.Base.Base, obj.Placement.multiply(obj.Base.Placement)]
                                 )
-                elif utils.getType(obj) == "Wall" and not obj.Base:  # baseless walls
-                    self.sel.append([obj, App.Placement()])
             elif utils.getType(obj) in ["Offset2D", "Array"]:
                 base = None
                 if hasattr(obj, "Source") and obj.Source:
@@ -228,18 +226,6 @@ class Stretch(gui_base_original.Modifier):
                             nodes.append(p)
                     if iso:
                         self.ops.append([o, np])
-                elif tp == "Wall":
-                    np = []
-                    iso = False
-                    # For baseless walls, get endpoints from our new API method
-                    for p in o.Proxy.calc_endpoints(o):
-                        isi = self.rectracker.isInside(p)
-                        np.append(isi)
-                        if isi:
-                            iso = True
-                            nodes.append(p)
-                    if iso:
-                        self.ops.append([o, np])
                 else:
                     p = o.Placement.Base
                     p = vispla.multVec(p)
@@ -289,6 +275,7 @@ class Stretch(gui_base_original.Modifier):
     def doStretch(self):
         """Do the actual stretching once the points are selected."""
         commitops = []
+        replacement_outputs = False
         if self.displacement:
             if self.displacement.Length > 0:
                 _doc = "FreeCAD.ActiveDocument."
@@ -477,6 +464,11 @@ class Stretch(gui_base_original.Modifier):
                         if not done:
                             # otherwise create a wire copy and stretch it instead
                             _msg(translate("draft", "Turning a rectangle into a wire"))
+                            if not replacement_outputs:
+                                Gui.addModule("draftutils.timeline")
+                                commitops.insert(0, "_vibecad_stretch_inputs = []")
+                                commitops.insert(1, "_vibecad_stretch_outputs = []")
+                                replacement_outputs = True
                             pts = []
                             vts = ops[0].Shape.Vertexes
                             for i in range(4):
@@ -493,41 +485,31 @@ class Stretch(gui_base_original.Modifier):
                             _format += "(w, "
                             _format += _doc + ops[0].Name
                             _format += ")"
-                            _hide = _doc + ops[0].Name + ".ViewObject.hide()"
+                            _capture = "_vibecad_stretch_inputs.extend("
+                            _capture += "draftutils.timeline.visible_inputs(["
+                            _capture += _doc + ops[0].Name + "]))"
                             commitops.append("w = " + _cmd)
                             commitops.append(_format)
-                            commitops.append(_hide)
-                    elif tp == "Wall":
-                        npts = []
-                        # Reconstruct the new endpoints after applying displacement
-                        for i, pt in enumerate(ops[0].Proxy.calc_endpoints(ops[0])):
-                            if ops[1][i]:
-                                npts.append(pt.add(self.displacement))
-                            else:
-                                npts.append(pt)
-                        # Construct the points list string
-                        points_str = (
-                            "["
-                            + ", ".join([f"FreeCAD.Vector({p.x}, {p.y}, {p.z})" for p in npts])
-                            + "]"
-                        )
-
-                        commitops.append("import FreeCAD")
-                        commitops.append(
-                            f"wall_obj = FreeCAD.ActiveDocument.getObject('{ops[0].Name}')"
-                        )
-                        commitops.append(
-                            f"wall_obj.Proxy.set_from_endpoints(wall_obj, {points_str})"
-                        )
+                            commitops.insert(-2, _capture)
+                            commitops.append("_vibecad_stretch_outputs.append(w)")
                     else:
                         _pl = _doc + ops[0].Name
                         _pl += ".Placement.Base=FreeCAD."
                         _pl += str(ops[0].Placement.Base.add(self.displacement))
                         commitops.append(_pl)
         if commitops:
+            if replacement_outputs:
+                commitops.append(
+                    "draftutils.timeline.accept_outputs("
+                    "_vibecad_stretch_outputs, _vibecad_stretch_inputs)"
+                )
             commitops.append("FreeCAD.ActiveDocument.recompute()")
             Gui.addModule("Draft")
-            self.commit(translate("draft", "Stretch"), commitops)
+            self.commit(
+                translate("draft", "Stretch"),
+                commitops,
+                inputs=(operation[0] for operation in self.ops),
+            )
         self.finish()
 
     def get_action_hints(self):

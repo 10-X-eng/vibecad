@@ -91,6 +91,9 @@ struct DocumentP
     bool undoing {false};  ///< document in the middle of undo or redo
     bool committing {false};
     bool opentransaction {false};
+    unsigned int addObjectCriticalDepth {0};
+    unsigned int breakDependencyDepth {0};
+    unsigned int timelineCopyImportDepth {0};
     std::bitset<32> StatusBits;
     int iUndoMode {0};
     unsigned int UndoMemSize {0};

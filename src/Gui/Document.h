@@ -59,6 +59,10 @@ class ViewProviderDocumentObject;
 class Application;
 class DocumentPy;
 class TransactionViewProvider;
+namespace TaskView
+{
+class TaskDialog;
+}
 
 enum class CreateViewMode
 {
@@ -284,6 +288,39 @@ public:
     void setEditingTransform(const Base::Matrix4D& mat);
     /// reset from edit mode, this cause all document to reset edit
     void resetEdit();
+    /**
+     * Leave edit mode and abort the transaction that opened it.
+     *
+     * This is the semantic counterpart to resetEdit() for an explicit Cancel:
+     * finishEditing() still runs while its object is alive, then the owning
+     * transaction is rolled back instead of committed.
+     */
+    void cancelEdit();
+    /**
+     * Mark the exact transaction adopted by the current edit session for
+     * rollback after ViewProvider teardown.
+     *
+     * Returns the marked transaction ID, or App::NullTransaction when this
+     * document has no live adopted edit transaction.
+     */
+    int prepareCancelEdit();
+    /**
+     * Clear an unconsumed Cancel mark for the exact transaction returned by
+     * prepareCancelEdit().
+     */
+    void clearCancelEdit(int transactionId);
+    /// Test exact edit-transaction ownership without exposing broad state.
+    bool ownsEditTransaction(int transactionId) const;
+    /**
+     * Tear down the editor, then close its exact transaction with the
+     * requested durable outcome.
+     */
+    bool finishEditTransaction(int transactionId, bool commit);
+    /**
+     * Transfer a transaction whose GUI caller explicitly opened it for the
+     * successfully entered editor.
+     */
+    bool adoptOwnedEditTransaction(int transactionId);
     /// reset edit of this document
     void _resetEdit();
     /// set if the edit asks for restore or not.
@@ -354,6 +391,18 @@ protected:
 
 private:
     bool trySetEdit(Gui::ViewProvider* p, int ModNum, const char* subname);
+    /**
+     * Transfer one exact application transaction to the active edit session.
+     *
+     * Only TaskDialog command-boundary bookkeeping may establish ownership;
+     * setEdit() never guesses from whichever transaction happens to be open.
+     */
+    bool adoptEditTransaction(int transactionId);
+    void releaseEditTransactionLock();
+    void armPendingEditTransactionRetry();
+    void clearPendingEditTransactionRetry();
+    void retryPendingEditTransaction();
+    void completePendingEditTransaction(int transactionId, bool commit);
     void resetIfEditing();
     // handles the scene graph nodes to correctly group child and parents
     void handleChildren3D(ViewProvider* viewProvider, bool deleting = false);
@@ -380,6 +429,7 @@ private:
     //@}
 
     friend class TransactionViewProvider;
+    friend class TaskView::TaskDialog;
 };
 
 }  // namespace Gui

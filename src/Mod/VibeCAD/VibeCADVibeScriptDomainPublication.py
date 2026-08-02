@@ -13,6 +13,10 @@ import re
 from typing import Any, Mapping
 import zipfile
 
+from VibeCADDocumentReferences import (
+    DocumentReferenceError,
+    resolve_reference_target,
+)
 import VibeCADReferenceContracts as reference_contracts
 import VibeCADScriptedPublication as scripted_publication
 import VibeCADVibeScriptDomains as contracts
@@ -29,6 +33,12 @@ PROP_MATERIAL_BASELINE = "VibeCADMaterialBaseline"
 PROP_MATERIAL_ACCEPTED = "VibeCADMaterialAccepted"
 PROP_APPEARANCE_BASELINE = "VibeCADAppearanceBaseline"
 PROP_APPEARANCE_ACCEPTED = "VibeCADAppearanceAccepted"
+PROP_PARTDESIGN_PRESENTATION_STATE = "VibeCADPartDesignPresentationState"
+PROP_PARTDESIGN_MATERIAL_BASELINE = "VibeCADPartDesignMaterialBaseline"
+PROP_PARTDESIGN_MATERIAL_ACCEPTED = "VibeCADPartDesignMaterialAccepted"
+PROP_PARTDESIGN_APPEARANCE_BASELINE = "VibeCADPartDesignAppearanceBaseline"
+PROP_PARTDESIGN_APPEARANCE_ACCEPTED = "VibeCADPartDesignAppearanceAccepted"
+PROP_PARTDESIGN_HISTORY_PRESENTATION = "VibeCADPartDesignHistoryPresentation"
 PROP_MESH_VALIDATION = "VibeCADMeshValidation"
 PROP_MESHPART_VALIDATION = "VibeCADMeshPartValidation"
 PROP_POINTS_VALIDATION = "VibeCADPointsValidation"
@@ -41,14 +51,68 @@ PROP_TECHDRAW_VALIDATION = "VibeCADTechDrawValidation"
 PROP_ASSEMBLY_BOM_VALIDATION = "VibeCADAssemblyBOMValidation"
 PROP_ASSEMBLY_BOM_RESTORE_TARGET = "VibeCADAssemblyBOMRestoreTarget"
 PROP_ASSEMBLY_BOM_RESTORE_ERROR = "VibeCADAssemblyBOMRestoreError"
+PROP_ASSEMBLY_GROUP_ROLE = "VibeCADAssemblyGroupRole"
+PROP_MECHANISM_ASSEMBLY_OUTPUT = "VibeCADMechanismAssemblyOutput"
+PROP_MECHANISM_STATIC_CHECK = "VibeCADMechanismStaticCheck"
+PROP_MECHANISM_VERIFICATION_REPORT = "VibeCADMechanismVerificationReport"
+PROP_PARTDESIGN_HISTORY_KEY = "VibeCADPartDesignHistoryKey"
 MATERIAL_OWNERSHIP_SCHEMA = "vibecad-material-ownership-v1"
+PARTDESIGN_PRESENTATION_OWNERSHIP_SCHEMA = (
+    "vibecad-partdesign-presentation-ownership-v1"
+)
+PARTDESIGN_HISTORY_PRESENTATION_SCHEMA = (
+    "vibecad-partdesign-body-renderer-v1"
+)
+_LEGACY_PARTDESIGN_HISTORY_PRESENTATION_SCHEMA = (
+    "vibecad-partdesign-history-presentation-v1"
+)
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
 _ASSEMBLY_DEPENDENCY_SUFFIX = "__dependencies"
 _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE = "dependency_anchor"
+_ASSEMBLY_FASTENER_SOURCE_SUFFIX = "__fastener_source"
+_ASSEMBLY_FASTENER_SOURCE_OUTPUT_TYPE = "standard_fastener_source"
+_ASSEMBLY_RESOURCE_GRAPH_OUTPUT_TYPES = frozenset({"exploded_view", "bom"})
+
+_TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN = {
+    "partdesign": "design_program_operation",
+    "sketcher": "public_outputs",
+    "part": "public_outputs",
+    "draft": "public_outputs",
+    "surface": "public_outputs",
+    "assembly": "assembly_resource_graphs",
+    "spreadsheet": "public_outputs",
+    "material": "material_operations",
+    "mesh": "public_outputs",
+    "meshpart": "public_outputs",
+    "points": "public_outputs",
+    "reverse_engineering": "public_outputs",
+    "inspection": "public_outputs",
+    "robot": "public_outputs",
+    "fem": "public_outputs",
+    "cam": "cam_job_graphs",
+    "techdraw": "techdraw_owner_graphs",
+}
+_SHIPPED_VIBESCRIPT_DOMAINS = {
+    pack.domain for pack in contracts.VIBESCRIPT_WORKBENCH_PACKS.values()
+}
+if set(_TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN) != _SHIPPED_VIBESCRIPT_DOMAINS:
+    missing = sorted(
+        _SHIPPED_VIBESCRIPT_DOMAINS
+        - set(_TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN)
+    )
+    stale = sorted(
+        set(_TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN)
+        - _SHIPPED_VIBESCRIPT_DOMAINS
+    )
+    raise RuntimeError(
+        "Every shipped VibeScript domain requires one explicit semantic History "
+        f"publication strategy; missing={missing}, stale={stale}."
+    )
 
 _PERSISTED_INPUT_SNAPSHOT_KEYS = (
     "document_uid",
     "object_name",
+    "document_path",
     "artifact_kind",
     "shape_type",
     "brep_sha256",
@@ -78,6 +142,7 @@ _NATIVE_TYPE_BY_OUTPUT: dict[str, str] = {
     "assembly": "Assembly::AssemblyObject",
     "component_link": "App::Link",
     "joint": "App::FeaturePython",
+    "mechanism_verification": "App::FeaturePython",
     "motion": "App::FeaturePython",
     "exploded_view": "App::FeaturePython",
     "bom": "Assembly::BomObject",
@@ -141,64 +206,15 @@ _BREP_OUTPUT_TYPES = frozenset(
     }
 )
 
-_BIM_ASSIGNED_PROPERTIES = (
-    "Label",
-    "Placement",
-    "Shape",
-    "Group",
-    "Base",
-    "Points",
-    "Closed",
-    "MakeFace",
-    "Address",
-    "PostalCode",
-    "City",
-    "Region",
-    "Country",
-    "Latitude",
-    "Longitude",
-    "Elevation",
-    "IfcType",
-    "CompositionType",
-    "BuildingType",
-    "Height",
-    "LevelOffset",
-    "Width",
-    "Align",
-    "Offset",
-    "Normal",
-    "Length",
-    "HoleDepth",
-    "WindowParts",
-    "Hosts",
-    "VibeCADBIMValidation",
-    contracts.PROP_PROGRAM_ID,
-    contracts.PROP_PROGRAM_DOMAIN,
-    contracts.PROP_PROGRAM_WORKBENCH,
-    contracts.PROP_PROGRAM_REVISION,
-    contracts.PROP_PROGRAM_OUTPUT,
-    PROP_OUTPUT_TYPE,
-    PROP_DEFINITION,
-    PROP_INPUT_OBJECTS,
-    PROP_INPUT_SNAPSHOTS,
-    reference_contracts.PROP_DERIVED_STATE,
-    reference_contracts.PROP_STALE_REASON,
-    reference_contracts.PROP_SOURCE_REVISION,
-)
-_BIM_LINK_PROPERTY_TYPES = frozenset(
-    {
-        "App::PropertyLink",
-        "App::PropertyLinkChild",
-        "App::PropertyLinkList",
-        "App::PropertyLinkListChild",
-    }
-)
 _MESH_ROLLBACK_PROPERTIES = (
     contracts.PROP_PROGRAM_ID,
     contracts.PROP_PROGRAM_DOMAIN,
     contracts.PROP_PROGRAM_WORKBENCH,
     contracts.PROP_PROGRAM_REVISION,
     contracts.PROP_PROGRAM_OUTPUT,
+    contracts.PROP_PROGRAM_LABEL,
+    contracts.PROP_PROGRAM_CONTRACT,
+    contracts.PROP_PROGRAM_EDITOR_DRAFT,
     PROP_OUTPUT_TYPE,
     PROP_DEFINITION,
     PROP_INPUT_OBJECTS,
@@ -284,6 +300,59 @@ def _add_string_property(obj: Any, name: str, description: str) -> None:
 def _add_property(obj: Any, property_type: str, name: str, description: str) -> None:
     if name not in _properties(obj):
         obj.addProperty(property_type, name, "VibeCAD", description)
+
+
+def _hide_property(obj: Any, name: str) -> None:
+    setter = getattr(obj, "setEditorMode", None)
+    if callable(setter):
+        setter(name, 2)
+
+
+def _make_timeline_property_internal(obj: Any, name: str) -> None:
+    """Persist the native status contract required by document History."""
+
+    setter = getattr(obj, "setPropertyStatus", None)
+    if not callable(setter):
+        raise RuntimeError(
+            f"History metadata {name!r} cannot be made internal on "
+            f"{getattr(obj, 'Name', '<unknown>')!r}."
+        )
+    setter(name, ("Hidden", "LockDynamic", "NoRecompute"))
+    _hide_property(obj, name)
+
+
+def _set_partdesign_program_history_commands(operation: Any) -> None:
+    """Bind one global program operation to exact source lifecycle commands."""
+
+    commands = {
+        "VibeCADTimelineEditCommand": (
+            "VibeCAD_EditScriptedModel",
+            "Approved command which edits this VibeScript program.",
+        ),
+        "VibeCADTimelineDeleteCommand": (
+            "VibeCAD_DeleteScriptedModel",
+            "Approved command which deletes this VibeScript program.",
+        ),
+    }
+    for name, (command, description) in commands.items():
+        if name in _properties(operation):
+            if operation.getTypeIdOfProperty(name) != "App::PropertyString":
+                raise RuntimeError(
+                    "A VibeScript History operation has incompatible command "
+                    "metadata."
+                )
+        else:
+            operation.addProperty(
+                "App::PropertyString",
+                name,
+                "Timeline",
+                description,
+                attr=16,
+                hidden=True,
+                locked=True,
+            )
+        setattr(operation, name, command)
+        _make_timeline_property_internal(operation, name)
 
 
 def compact_persisted_input_snapshots(doc: Any) -> dict[str, Any]:
@@ -396,6 +465,29 @@ def _create_assembly_dependency_anchor(
         if hasattr(view, "ShowInTree"):
             view.ShowInTree = False
     return anchor
+
+
+def _configure_assembly_dependency_anchor(
+    anchor: Any,
+    prepared: Mapping[str, Any],
+    assembly_item: Mapping[str, Any],
+) -> None:
+    """Configure the one internal dependency resource owned by an Assembly."""
+
+    assembly_output = str(assembly_item["name"])
+    anchor.Label = "VibeScript Assembly dependencies"
+    view = getattr(anchor, "ViewObject", None)
+    if view is not None:
+        view.Visibility = False
+        if hasattr(view, "ShowInTree"):
+            view.ShowInTree = False
+    _set_metadata(
+        anchor,
+        prepared,
+        _assembly_dependency_output_name(assembly_output),
+        _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE,
+        _definition(assembly_item),
+    )
 
 
 def migrate_assembly_dependency_anchors(doc: Any) -> dict[str, Any]:
@@ -543,6 +635,19 @@ class AssemblyMotionProxy:
     def onDocumentRestored(self, obj: Any) -> None:  # noqa: N802
         _ensure_assembly_motion_properties(obj)
 
+    def getSimulation(self, obj: Any) -> Any:  # noqa: N802
+        for owner in list(getattr(obj, "InList", []) or []):
+            proxy = getattr(owner, "Proxy", None)
+            if callable(getattr(proxy, "setMotionsChangedCallback", None)):
+                return owner
+        return None
+
+    def getAssembly(self, obj: Any) -> Any:  # noqa: N802
+        simulation = self.getSimulation(obj)
+        proxy = getattr(simulation, "Proxy", None)
+        getter = getattr(proxy, "getAssembly", None)
+        return getter(simulation) if callable(getter) else None
+
     def execute(self, _obj: Any) -> None:
         return None
 
@@ -557,12 +662,43 @@ class AssemblySimulationProxy:
     """Persistent proxy for precomputed native Assembly simulation settings."""
 
     def __init__(self, obj: Any | None = None) -> None:
+        self.motionsChangedCallback = None
         if obj is not None:
             obj.Proxy = self
             _ensure_assembly_simulation_properties(obj)
+            self._mark_native_contract(obj)
+            _ensure_native_simulation_view_provider(obj)
 
     def onDocumentRestored(self, obj: Any) -> None:  # noqa: N802
+        self.motionsChangedCallback = None
         _ensure_assembly_simulation_properties(obj)
+        self._mark_native_contract(obj)
+        _ensure_native_simulation_view_provider(obj)
+
+    @staticmethod
+    def _mark_native_contract(obj: Any) -> None:
+        import UtilsAssembly
+
+        UtilsAssembly.markTimelineOperationEditor(
+            obj,
+            "Assembly_EditHistoryOperation",
+        )
+
+    def onChanged(self, obj: Any, prop: str) -> None:  # noqa: N802
+        if prop != "Group":
+            return
+        self._mark_native_contract(obj)
+        callback = getattr(self, "motionsChangedCallback", None)
+        if callable(callback):
+            callback()
+
+    def setMotionsChangedCallback(self, callback: Any) -> None:  # noqa: N802
+        self.motionsChangedCallback = callback
+
+    def getAssembly(self, obj: Any) -> Any:  # noqa: N802
+        import UtilsAssembly
+
+        return UtilsAssembly.findOwningAssembly(obj)
 
     def execute(self, _obj: Any) -> None:
         return None
@@ -572,6 +708,25 @@ class AssemblySimulationProxy:
 
     def loads(self, _state: Any) -> None:
         return None
+
+
+def _ensure_native_simulation_view_provider(obj: Any) -> None:
+    """Attach FreeCAD's real Simulation view provider when a GUI is present."""
+
+    try:
+        import FreeCAD as App
+
+        if not bool(App.GuiUp):
+            return
+        view = getattr(obj, "ViewObject", None)
+        if view is None:
+            return
+        from CommandCreateSimulation import ViewProviderSimulation
+
+        if not isinstance(getattr(view, "Proxy", None), ViewProviderSimulation):
+            ViewProviderSimulation(view)
+    except ImportError:
+        return
 
 
 def _ensure_assembly_bom_restore_properties(obj: Any) -> None:
@@ -719,6 +874,11 @@ def _set_metadata(
     output_type: str,
     definition: Mapping[str, Any],
 ) -> None:
+    expected_outputs = list(prepared.get("expected_outputs") or [])
+    contract_owner = bool(
+        expected_outputs
+        and str(expected_outputs[0].get("name") or "") == output_name
+    )
     fields = (
         (
             contracts.PROP_PROGRAM_ID,
@@ -745,6 +905,11 @@ def _set_metadata(
             "Stable VibeScript output name.",
             output_name,
         ),
+        (
+            contracts.PROP_PROGRAM_LABEL,
+            "Stable VibeScript program label.",
+            str(prepared["program_name"]),
+        ),
         (PROP_OUTPUT_TYPE, "Declared VibeScript output type.", output_type),
         (
             PROP_DEFINITION,
@@ -760,6 +925,21 @@ def _set_metadata(
     for name, description, value in fields:
         _add_string_property(obj, name, description)
         setattr(obj, name, value)
+    _add_string_property(
+        obj,
+        contracts.PROP_PROGRAM_CONTRACT,
+        "Portable accepted VibeScript source, inputs, and output contract.",
+    )
+    setattr(
+        obj,
+        contracts.PROP_PROGRAM_CONTRACT,
+        (
+            str(prepared.get("document_program_contract") or "")
+            if contract_owner
+            else ""
+        ),
+    )
+    _hide_property(obj, contracts.PROP_PROGRAM_CONTRACT)
     input_link_property_type = (
         "App::PropertyXLinkList"
         if prepared["pack"].domain == "assembly"
@@ -793,11 +973,27 @@ def _set_metadata(
                 }
             )
             continue
-        target = (
-            document.getObject(str(reference.get("object_name") or ""))
-            if document is not None
-            else None
-        )
+        try:
+            target_reference = {
+                key: reference[key]
+                for key in (
+                    "document_uid",
+                    "object_name",
+                    "document_path",
+                )
+                if reference.get(key)
+            }
+            target = (
+                resolve_reference_target(
+                    document,
+                    target_reference,
+                    f"Accepted input object {reference.get('object_name')!r}",
+                )
+                if document is not None
+                else None
+            )
+        except DocumentReferenceError as exc:
+            raise RuntimeError(str(exc)) from exc
         if target is None:
             raise RuntimeError(
                 f"Accepted input object {reference.get('object_name')!r} disappeared "
@@ -898,7 +1094,14 @@ def mark_programs_stale_from_source(source: Any, property_name: str) -> list[str
     """Mark v2 outputs stale when a linked native snapshot source changes."""
 
     changed_property = str(property_name or "")
-    if not changed_property or changed_property.startswith("VibeCAD"):
+    if (
+        not changed_property
+        or changed_property.startswith("VibeCAD")
+        or changed_property == "_GroupTouched"
+    ):
+        # GroupExtension emits _GroupTouched every time it executes. Actual
+        # membership edits emit Group separately, so this derived recompute
+        # notification is never evidence that an accepted input changed.
         return []
     label_only = changed_property == "Label"
     marked: list[str] = []
@@ -1010,39 +1213,961 @@ def _retired_program_objects(
     desired_outputs: set[str],
 ) -> list[Any]:
     owned = _program_objects(doc, str(prepared["program_id"]), prepared["pack"].domain)
-    internal = list(owned)
-    for obj in owned:
-        if str(getattr(obj, "TypeId", "")) == "Assembly::AssemblyObject":
-            joint_group = _assembly_joint_group(obj)
-            if joint_group is not None:
-                internal.append(joint_group)
-            simulation_group = _assembly_simulation_group(obj)
-            if simulation_group is not None:
-                internal.append(simulation_group)
-            view_group = _assembly_view_group(obj)
-            if view_group is not None:
-                internal.append(view_group)
-            bom_group = _assembly_bom_group(obj)
-            if bom_group is not None:
-                internal.append(bom_group)
     retired = []
     for obj in owned:
         output_name = str(getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or "")
         root_name = output_name.partition(".")[0]
         if not output_name or root_name in desired_outputs:
             continue
-        external = _external_uses(doc, [obj], internal)
-        if external:
-            raise _reference_error(
-                f"Cannot retire VibeScript output {output_name!r}; human-created "
-                "or foreign document objects still reference it",
-                external,
-            )
         retired.append(obj)
     return retired
 
 
-def _remove_owned_objects(doc: Any, objects: list[Any]) -> list[str]:
+def _deletion_object_identity(obj: Any, *, context: str) -> tuple[str, int]:
+    name = str(getattr(obj, "Name", "") or "")
+    try:
+        object_id = int(getattr(obj, "ID"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"{context} has no stable native document identity."
+        ) from exc
+    if not name or object_id <= 0:
+        raise RuntimeError(f"{context} has an invalid native document identity.")
+    return name, object_id
+
+
+def _resolve_timeline_identity(
+    doc: Any,
+    identity: tuple[str, int],
+) -> Any | None:
+    candidate = doc.getObject(identity[0])
+    if candidate is None:
+        return None
+    try:
+        candidate_id = int(getattr(candidate, "ID"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return candidate if candidate_id == identity[1] else None
+
+
+def _is_created_timeline_object(
+    doc: Any,
+    obj: Any,
+    created_objects: list[Any],
+) -> bool:
+    identity = _deletion_object_identity(
+        obj,
+        context="A VibeScript publication object",
+    )
+    return any(
+        _deletion_object_identity(
+            candidate,
+            context="A VibeScript publication object",
+        )
+        == identity
+        and _resolve_timeline_identity(doc, identity) is obj
+        for candidate in created_objects
+    )
+
+
+def _is_current_transaction_timeline_object(doc: Any, obj: Any) -> bool:
+    """Return the native timeline's exact current-transaction proof."""
+
+    identity = _deletion_object_identity(
+        obj,
+        context="A VibeScript publication object",
+    )
+    if _resolve_timeline_identity(doc, identity) is not obj:
+        raise RuntimeError(
+            "A VibeScript publication object is no longer live in its document."
+        )
+    query = getattr(
+        doc,
+        "isProvisionallyEnrolledInTimelineByCurrentTransaction",
+        None,
+    )
+    if not callable(query):
+        raise RuntimeError(
+            "The native current-transaction timeline identity query is unavailable."
+        )
+    return bool(query(obj))
+
+
+def _timeline_role(obj: Any, *, context: str) -> str:
+    properties = _properties(obj)
+    if "VibeCADTimelineRole" not in properties:
+        return ""
+    if obj.getTypeIdOfProperty("VibeCADTimelineRole") != "App::PropertyString":
+        raise RuntimeError(f"{context} has an invalid native History role property.")
+    role = str(getattr(obj, "VibeCADTimelineRole", "") or "")
+    if role not in {"", "operation", "resource", "internal"}:
+        raise RuntimeError(f"{context} has unsupported native History role {role!r}.")
+    return role
+
+
+def _timeline_owner(obj: Any, *, context: str) -> Any | None:
+    properties = _properties(obj)
+    if "VibeCADTimelineOwner" not in properties:
+        return None
+    if obj.getTypeIdOfProperty("VibeCADTimelineOwner") != "App::PropertyLinkHidden":
+        raise RuntimeError(f"{context} has an invalid native History owner property.")
+    return getattr(obj, "VibeCADTimelineOwner", None)
+
+
+def _mark_timeline_operation(obj: Any, *, context: str) -> None:
+    role = _timeline_role(obj, context=context)
+    owner = _timeline_owner(obj, context=context)
+    if role not in {"", "operation"} or owner is not None:
+        raise RuntimeError(f"{context} cannot be published as a History operation.")
+    _add_property(
+        obj,
+        "App::PropertyString",
+        "VibeCADTimelineRole",
+        "Document History classification.",
+    )
+    if (
+        obj.getTypeIdOfProperty("VibeCADTimelineRole")
+        != "App::PropertyString"
+    ):
+        raise RuntimeError(f"{context} has an invalid History role property.")
+    obj.VibeCADTimelineRole = "operation"
+    _make_timeline_property_internal(obj, "VibeCADTimelineRole")
+    if "VibeCADTimelineOwner" in _properties(obj):
+        _make_timeline_property_internal(obj, "VibeCADTimelineOwner")
+
+
+def _mark_timeline_resource(
+    obj: Any,
+    owner: Any,
+    *,
+    context: str,
+) -> None:
+    if obj is owner or getattr(obj, "Document", None) is not getattr(
+        owner,
+        "Document",
+        None,
+    ):
+        raise RuntimeError(f"{context} has an invalid History owner.")
+    role = _timeline_role(obj, context=context)
+    current_owner = _timeline_owner(obj, context=context)
+    if role not in {"", "resource"} or (
+        current_owner is not None and current_owner is not owner
+    ):
+        raise RuntimeError(f"{context} has incompatible History ownership.")
+    _mark_timeline_operation(owner, context=f"{context} owner")
+    _add_property(
+        obj,
+        "App::PropertyString",
+        "VibeCADTimelineRole",
+        "Document History classification.",
+    )
+    _add_property(
+        obj,
+        "App::PropertyLinkHidden",
+        "VibeCADTimelineOwner",
+        "Semantic History operation which owns this implementation object.",
+    )
+    if (
+        obj.getTypeIdOfProperty("VibeCADTimelineRole")
+        != "App::PropertyString"
+        or obj.getTypeIdOfProperty("VibeCADTimelineOwner")
+        != "App::PropertyLinkHidden"
+    ):
+        raise RuntimeError(f"{context} has invalid History metadata.")
+    obj.VibeCADTimelineOwner = owner
+    obj.VibeCADTimelineRole = "resource"
+    _make_timeline_property_internal(obj, "VibeCADTimelineRole")
+    _make_timeline_property_internal(obj, "VibeCADTimelineOwner")
+
+
+def _canonical_timeline_resource_graph(
+    operation: Any,
+    authored_resources: list[Any],
+    *,
+    context: str,
+) -> tuple[list[Any], list[Any]]:
+    """Validate and canonicalize one explicitly authored resource graph.
+
+    ``authored_resources`` is an identity list supplied by the domain
+    publisher.  Its order is the stable authored sibling order; ownership is
+    read only from the typed native owner link.  Names, labels, native types,
+    document deltas, and group membership never participate in classification.
+    """
+
+    operation_identity = _deletion_object_identity(
+        operation,
+        context=f"{context} operation",
+    )
+    resources: list[Any] = []
+    resource_by_identity: dict[tuple[str, int], Any] = {}
+    for resource in authored_resources:
+        identity = _deletion_object_identity(
+            resource,
+            context=f"{context} resource",
+        )
+        if identity == operation_identity or identity in resource_by_identity:
+            raise RuntimeError(f"{context} contains a duplicate or self-owned resource.")
+        resource_by_identity[identity] = resource
+        resources.append(resource)
+
+    resource_set = set(resources)
+    owner_by_resource: dict[Any, Any] = {}
+    children: dict[Any, list[Any]] = {operation: []}
+    children.update({resource: [] for resource in resources})
+    for resource in resources:
+        resource_context = (
+            f"{context} resource {str(getattr(resource, 'Name', '') or '')!r}"
+        )
+        if _timeline_role(resource, context=resource_context) != "resource":
+            raise RuntimeError(f"{resource_context} is not explicitly a resource.")
+        owner = _timeline_owner(resource, context=resource_context)
+        if owner is not operation and owner not in resource_set:
+            raise RuntimeError(
+                f"{resource_context} does not resolve to the declared operation."
+            )
+        owner_by_resource[resource] = owner
+        children[owner].append(resource)
+
+    ordered: list[Any] = []
+    ordered_owners: list[Any] = []
+    visiting: set[Any] = set()
+    visited: set[Any] = set()
+
+    def visit(resource: Any) -> None:
+        if resource in visiting:
+            raise RuntimeError(f"{context} contains a cyclic resource-owner graph.")
+        if resource in visited:
+            raise RuntimeError(f"{context} contains a multiply owned resource.")
+        visiting.add(resource)
+        for child in children[resource]:
+            visit(child)
+        visiting.remove(resource)
+        visited.add(resource)
+        ordered.append(resource)
+        ordered_owners.append(owner_by_resource[resource])
+
+    for root in children[operation]:
+        visit(root)
+    if len(visited) != len(resources):
+        raise RuntimeError(f"{context} contains an unreachable resource.")
+    return ordered, ordered_owners
+
+
+def _timeline_resource_key(obj: Any, *, context: str) -> str:
+    properties = _properties(obj)
+    if contracts.PROP_PROGRAM_OUTPUT not in properties:
+        raise RuntimeError(f"{context} has no stable authored resource key.")
+    if (
+        obj.getTypeIdOfProperty(contracts.PROP_PROGRAM_OUTPUT)
+        != "App::PropertyString"
+    ):
+        raise RuntimeError(f"{context} has an invalid stable authored resource key.")
+    key = str(getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or "")
+    if not key:
+        raise RuntimeError(f"{context} has an empty stable authored resource key.")
+    return key
+
+
+_ASSEMBLY_SOURCE_IDENTITY_PROPERTIES = {
+    "VibeCADAssemblySourceDocument": "App::PropertyString",
+    "VibeCADAssemblySourceObjectId": "App::PropertyInteger",
+    "VibeCADAssemblySourceObjectName": "App::PropertyString",
+}
+
+
+def _assembly_managed_resource_identity(
+    obj: Any,
+    *,
+    context: str,
+) -> tuple[str, int, str] | None:
+    """Read the exact native AssemblyLink source identity, when present."""
+
+    properties = _properties(obj)
+    present = [
+        name in properties for name in _ASSEMBLY_SOURCE_IDENTITY_PROPERTIES
+    ]
+    if not any(present):
+        return None
+    if not all(present):
+        raise RuntimeError(f"{context} has incomplete AssemblyLink source identity.")
+    for name, type_id in _ASSEMBLY_SOURCE_IDENTITY_PROPERTIES.items():
+        if obj.getTypeIdOfProperty(name) != type_id:
+            raise RuntimeError(
+                f"{context} has an invalid AssemblyLink source identity property "
+                f"{name!r}."
+            )
+    document_uid = str(
+        getattr(obj, "VibeCADAssemblySourceDocument", "") or ""
+    )
+    object_id = int(getattr(obj, "VibeCADAssemblySourceObjectId", -1))
+    object_name = str(
+        getattr(obj, "VibeCADAssemblySourceObjectName", "") or ""
+    )
+    if not document_uid or object_id < 0 or not object_name:
+        raise RuntimeError(f"{context} has an empty AssemblyLink source identity.")
+    return document_uid, object_id, object_name
+
+
+def _assembly_timeline_resource_key(obj: Any, *, context: str) -> str:
+    """Return an authored key for one Assembly resource.
+
+    VibeScript helpers use their persisted output key.  Native occurrence
+    resources use the exact source identity written by ``AssemblyLink``.
+    No name, label, native type, group, or dependency inference participates.
+    """
+
+    if contracts.PROP_PROGRAM_OUTPUT in _properties(obj):
+        return f"vibescript:{_timeline_resource_key(obj, context=context)}"
+    path: list[tuple[str, int, str]] = []
+    current = obj
+    visited: set[tuple[str, int]] = set()
+    while True:
+        document_identity = _deletion_object_identity(
+            current,
+            context=f"{context} owner path",
+        )
+        if document_identity in visited:
+            raise RuntimeError(f"{context} has cyclic Assembly ownership.")
+        visited.add(document_identity)
+        identity = _assembly_managed_resource_identity(
+            current,
+            context=f"{context} owner path",
+        )
+        if identity is None:
+            if current is obj:
+                raise RuntimeError(f"{context} has no exact Assembly resource identity.")
+            break
+        path.append(identity)
+        owner = _timeline_owner(current, context=f"{context} owner path")
+        if owner is None or _timeline_role(
+            owner,
+            context=f"{context} owner path",
+        ) != "resource":
+            break
+        current = owner
+    path.reverse()
+    return json.dumps(path, ensure_ascii=True, separators=(",", ":"))
+
+
+def _capture_timeline_resource_reconciliation(
+    doc: Any,
+    operation: Any,
+    *,
+    key_for_resource=_timeline_resource_key,
+    context: str,
+) -> dict[str, Any]:
+    """Capture one surviving operation's exact current resource graph."""
+
+    closure_query = getattr(doc, "semanticTimelineCopyClosure", None)
+    if not callable(closure_query):
+        raise RuntimeError("The native semantic History closure query is unavailable.")
+    closure = list(closure_query([operation]))
+    if not any(candidate is operation for candidate in closure):
+        raise RuntimeError(f"{context} is not present in native History.")
+
+    resources: list[Any] = []
+    for candidate in closure:
+        if candidate is operation:
+            continue
+        current = candidate
+        visited: set[tuple[str, int]] = set()
+        while _timeline_role(
+            current,
+            context=f"{context} closure member",
+        ) == "resource":
+            identity = _deletion_object_identity(
+                current,
+                context=f"{context} closure member",
+            )
+            if identity in visited:
+                raise RuntimeError(f"{context} contains a cyclic resource-owner graph.")
+            visited.add(identity)
+            owner = _timeline_owner(
+                current,
+                context=f"{context} closure member",
+            )
+            if owner is operation:
+                resources.append(candidate)
+                break
+            if owner is None:
+                break
+            current = owner
+
+    ordered, _owners = _canonical_timeline_resource_graph(
+        operation,
+        resources,
+        context=context,
+    )
+    if ordered != resources:
+        raise RuntimeError(
+            f"{context} resources are not in canonical native History order."
+        )
+    direct_roots = [
+        resource
+        for resource in ordered
+        if _timeline_owner(resource, context=f"{context} resource") is operation
+    ]
+    keys: list[str] = []
+    key_indices: dict[str, int] = {}
+    for index, resource in enumerate(ordered):
+        key = key_for_resource(
+            resource,
+            context=f"{context} resource {resource.Name!r}",
+        )
+        if key in key_indices:
+            raise RuntimeError(f"{context} has duplicate authored resource key {key!r}.")
+        key_indices[key] = index
+        keys.append(key)
+    return {
+        "operation_identity": _deletion_object_identity(
+            operation,
+            context=f"{context} operation",
+        ),
+        "resources": ordered,
+        "resource_identities": [
+            _deletion_object_identity(resource, context=f"{context} resource")
+            for resource in ordered
+        ],
+        "resource_keys": keys,
+        "direct_roots": direct_roots,
+    }
+
+
+def _stage_timeline_resource_reconciliation(
+    doc: Any,
+    operation: Any,
+    captured: Mapping[str, Any],
+    *,
+    context: str,
+) -> None:
+    if _resolve_timeline_identity(
+        doc,
+        tuple(captured["operation_identity"]),
+    ) is not operation:
+        raise RuntimeError(f"{context} changed identity before reconciliation.")
+    stage = getattr(doc, "stageTimelineOperationResourceReconciliation", None)
+    if not callable(stage):
+        raise RuntimeError(
+            "The native staged History resource-reconciliation API is unavailable."
+        )
+    stage(operation, list(captured["direct_roots"]))
+
+
+def _finalize_timeline_resource_reconciliation(
+    doc: Any,
+    operation: Any,
+    captured: Mapping[str, Any],
+    authored_final_resources: list[Any],
+    *,
+    key_for_resource=_timeline_resource_key,
+    context: str,
+) -> list[Any]:
+    """Atomically reconcile retained, new, replaced, and retired resources."""
+
+    final_resources, _owners = _canonical_timeline_resource_graph(
+        operation,
+        authored_final_resources,
+        context=context,
+    )
+    old_resources = list(captured["resources"])
+    old_identities = [tuple(value) for value in captured["resource_identities"]]
+    old_keys = [str(value) for value in captured["resource_keys"]]
+    old_index_by_identity = {
+        identity: index for index, identity in enumerate(old_identities)
+    }
+    old_index_by_key = {key: index for index, key in enumerate(old_keys)}
+
+    final_identities: list[tuple[str, int]] = []
+    final_keys: list[str] = []
+    final_index_by_identity: dict[tuple[str, int], int] = {}
+    final_index_by_key: dict[str, int] = {}
+    state_sources: list[int] = []
+    for index, resource in enumerate(final_resources):
+        identity = _deletion_object_identity(
+            resource,
+            context=f"{context} final resource",
+        )
+        key = key_for_resource(
+            resource,
+            context=f"{context} final resource {resource.Name!r}",
+        )
+        if identity in final_index_by_identity or key in final_index_by_key:
+            raise RuntimeError(
+                f"{context} contains duplicate final identity or authored key {key!r}."
+            )
+        final_identities.append(identity)
+        final_keys.append(key)
+        final_index_by_identity[identity] = index
+        final_index_by_key[key] = index
+        state_sources.append(
+            old_index_by_identity.get(identity, old_index_by_key.get(key, -1))
+        )
+
+    consumer_replacements = [
+        final_index_by_identity.get(
+            identity,
+            final_index_by_key.get(key, -1),
+        )
+        for identity, key in zip(old_identities, old_keys)
+    ]
+    finalize = getattr(
+        doc,
+        "finalizeProvisionalTimelineOperationResourceReconciliation",
+        None,
+    )
+    if not callable(finalize):
+        raise RuntimeError(
+            "The native staged History resource-reconciliation finalizer is unavailable."
+        )
+    finalize(
+        operation,
+        final_resources,
+        state_sources,
+        consumer_replacements,
+    )
+
+    final_identity_set = set(final_identities)
+    return [
+        resource
+        for resource, identity in zip(old_resources, old_identities)
+        if identity not in final_identity_set
+        and _resolve_timeline_identity(doc, identity) is resource
+    ]
+
+
+def _publish_new_timeline_resource_block(
+    doc: Any,
+    operation: Any,
+    authored_resources: list[Any],
+    *,
+    context: str,
+) -> list[str]:
+    """Atomically publish one new exact operation/resource graph."""
+
+    ordered, owners = _canonical_timeline_resource_graph(
+        operation,
+        authored_resources,
+        context=context,
+    )
+    publish = getattr(doc, "publishProvisionalTimelineOperationBlock", None)
+    if not callable(publish):
+        raise RuntimeError(
+            "The native atomic History operation publication API is unavailable."
+        )
+    publish(operation, ordered, owners)
+    return [str(obj.Name) for obj in [*ordered, operation]]
+
+
+def _remove_reconciled_timeline_resources(
+    doc: Any,
+    resources: list[Any],
+    *,
+    context: str,
+) -> list[str]:
+    """Delete resources which the native reconciler already made internal."""
+
+    removed: list[str] = []
+    for resource in resources:
+        identity = _deletion_object_identity(
+            resource,
+            context=f"{context} retired resource",
+        )
+        live = _resolve_timeline_identity(doc, identity)
+        if live is None:
+            continue
+        role = _timeline_role(
+            live,
+            context=f"{context} retired resource {identity[0]!r}",
+        )
+        owner = _timeline_owner(
+            live,
+            context=f"{context} retired resource {identity[0]!r}",
+        )
+        if role != "internal" or owner is not None:
+            raise RuntimeError(
+                f"{context} retired resource {identity[0]!r} was not "
+                "released by native History reconciliation."
+            )
+        doc.removeObject(identity[0])
+        if _resolve_timeline_identity(doc, identity) is not None:
+            raise RuntimeError(
+                f"{context} retired resource {identity[0]!r} survived deletion."
+            )
+        removed.append(identity[0])
+    return removed
+
+
+def _finalize_timeline_resource_block(
+    doc: Any,
+    operation: Any,
+    ordered_resources: list[Any],
+    created_objects: list[Any],
+) -> list[str]:
+    """Finalize only exact resources created by the current publication.
+
+    Callers establish the domain-owned role/owner metadata first.  This
+    boundary deliberately does not infer ownership from names, types, groups,
+    or dependency edges: ``ordered_resources`` is the exact semantic resource
+    list authored by the publisher, and ``created_objects`` is the exact set
+    returned by its native factories in the still-active transaction.
+    """
+
+    operation_identity = _deletion_object_identity(
+        operation,
+        context="A VibeScript timeline operation",
+    )
+    if _resolve_timeline_identity(doc, operation_identity) is not operation:
+        raise RuntimeError(
+            "A VibeScript timeline operation is no longer live in its document."
+        )
+
+    created_identities: set[tuple[str, int]] = set()
+    for candidate in created_objects:
+        identity = _deletion_object_identity(
+            candidate,
+            context="A VibeScript publication object",
+        )
+        if _resolve_timeline_identity(doc, identity) is candidate:
+            created_identities.add(identity)
+
+    operation_properties = _properties(operation)
+    if (
+        "VibeCADTimelineRole" not in operation_properties
+        or operation.getTypeIdOfProperty("VibeCADTimelineRole")
+        != "App::PropertyString"
+        or str(getattr(operation, "VibeCADTimelineRole", "") or "")
+        != "operation"
+    ):
+        raise RuntimeError(
+            f"VibeScript timeline operation {operation.Name!r} has no exact "
+            "operation role."
+        )
+    if "VibeCADTimelineOwner" in operation_properties and (
+        operation.getTypeIdOfProperty("VibeCADTimelineOwner")
+        != "App::PropertyLinkHidden"
+        or getattr(operation, "VibeCADTimelineOwner", None) is not None
+    ):
+        raise RuntimeError(
+            f"VibeScript timeline operation {operation.Name!r} retains resource "
+            "owner metadata."
+        )
+
+    new_resources: list[Any] = []
+    seen_resources: set[tuple[str, int]] = set()
+    for resource in ordered_resources:
+        identity = _deletion_object_identity(
+            resource,
+            context="A VibeScript timeline resource",
+        )
+        if (
+            identity in seen_resources
+            or _resolve_timeline_identity(doc, identity) is not resource
+            or resource is operation
+        ):
+            raise RuntimeError(
+                "A VibeScript timeline resource list contains a duplicate, "
+                "detached, or self-owned object."
+            )
+        seen_resources.add(identity)
+        properties = _properties(resource)
+        if (
+            "VibeCADTimelineRole" not in properties
+            or resource.getTypeIdOfProperty("VibeCADTimelineRole")
+            != "App::PropertyString"
+            or str(getattr(resource, "VibeCADTimelineRole", "") or "")
+            != "resource"
+            or "VibeCADTimelineOwner" not in properties
+            or resource.getTypeIdOfProperty("VibeCADTimelineOwner")
+            != "App::PropertyLinkHidden"
+            or getattr(resource, "VibeCADTimelineOwner", None) is not operation
+        ):
+            raise RuntimeError(
+                f"VibeScript timeline resource {resource.Name!r} does not have "
+                f"the exact owner {operation.Name!r}."
+            )
+        if _is_current_transaction_timeline_object(doc, resource):
+            new_resources.append(resource)
+
+    operation_is_new = _is_current_transaction_timeline_object(doc, operation)
+    if operation_is_new and operation_identity not in created_identities:
+        raise RuntimeError(
+            "A new VibeScript timeline operation was not created by the current "
+            "publication."
+        )
+    if operation_is_new and len(new_resources) != len(ordered_resources):
+        raise RuntimeError(
+            "A new VibeScript timeline operation cannot adopt a pre-existing "
+            "resource without the native staged-adoption contract."
+        )
+    if not operation_is_new and not new_resources:
+        return []
+
+    ordered_new_objects = list(new_resources)
+    if operation_is_new:
+        ordered_new_objects.append(operation)
+    finalizer = getattr(
+        doc,
+        "finalizeProvisionalTimelineOperationBlock",
+        None,
+    )
+    if not callable(finalizer):
+        raise RuntimeError(
+            "The native provisional timeline finalizer is unavailable."
+        )
+    finalizer(operation, ordered_new_objects)
+    return [str(obj.Name) for obj in ordered_new_objects]
+
+
+def _prepare_timeline_deletion(
+    doc: Any,
+    objects: list[Any],
+) -> dict[str, Any]:
+    """Resolve every native deletion contract before document mutation.
+
+    The graph itself is owned and validated by ``App::DocumentTimeline``.
+    Python stores only exact object identities so wrappers cannot silently
+    retarget after one of the planned objects has been removed.
+    """
+
+    if not objects:
+        return {
+            "delete_objects": [],
+            "resource_objects": [],
+            "root_objects": [],
+            "delete_identities": [],
+            "reveal_identities": [],
+        }
+
+    try:
+        import FreeCAD as App
+    except ImportError:
+        App = None
+
+    planner = getattr(App, "timelineOperationDeletionPlan", None)
+    if not callable(planner):
+        # Compatibility with builds that exposed the App-owned planner only
+        # through the GUI module.
+        import FreeCADGui
+
+        planner = getattr(FreeCADGui, "timelineOperationDeletionPlan", None)
+    if not callable(planner):
+        raise RuntimeError(
+            "The native document-history deletion planner is unavailable."
+        )
+
+    delete_objects: list[Any] = []
+    delete_identities: list[tuple[str, int]] = []
+    resource_objects: list[Any] = []
+    root_objects: list[Any] = []
+    reveal_identities: list[tuple[str, int]] = []
+    seen_delete: set[tuple[str, int]] = set()
+    seen_reveal: set[tuple[str, int]] = set()
+
+    def require_live(item: Any, *, context: str) -> tuple[str, int]:
+        if getattr(item, "Document", None) is not doc:
+            raise RuntimeError(f"{context} left its owning document.")
+        identity = _deletion_object_identity(item, context=context)
+        if _resolve_timeline_identity(doc, identity) is None:
+            raise RuntimeError(f"{context} is no longer live in its document.")
+        return identity
+
+    roots: list[Any] = []
+    seen_roots: set[tuple[str, int]] = set()
+    for obj in objects:
+        identity = require_live(obj, context="A VibeScript deletion target")
+        if identity not in seen_roots:
+            roots.append(obj)
+            seen_roots.add(identity)
+
+    def semantic_owner(resource: Any) -> Any:
+        current = resource
+        visited: set[tuple[str, int]] = set()
+        while str(getattr(current, "VibeCADTimelineRole", "") or "") == "resource":
+            identity = require_live(
+                current,
+                context="A native document-history resource",
+            )
+            if identity in visited:
+                raise RuntimeError(
+                    f"Cannot delete {identity[0]!r}; its native "
+                    "document-history ownership is cyclic."
+                )
+            visited.add(identity)
+
+            properties = set(getattr(current, "PropertiesList", []) or [])
+            property_type = getattr(current, "getTypeIdOfProperty", None)
+            try:
+                valid_metadata = (
+                    "VibeCADTimelineRole" in properties
+                    and "VibeCADTimelineOwner" in properties
+                    and callable(property_type)
+                    and property_type("VibeCADTimelineRole")
+                    == "App::PropertyString"
+                    and property_type("VibeCADTimelineOwner")
+                    == "App::PropertyLinkHidden"
+                )
+            except (AttributeError, KeyError, ReferenceError, RuntimeError, TypeError):
+                valid_metadata = False
+            if not valid_metadata:
+                raise RuntimeError(
+                    f"Cannot delete {identity[0]!r}; its native "
+                    "document-history ownership metadata is malformed."
+                )
+
+            owner = getattr(current, "VibeCADTimelineOwner", None)
+            if owner is None:
+                raise RuntimeError(
+                    f"Cannot delete {identity[0]!r}; its native "
+                    "document-history owner is missing."
+                )
+            require_live(
+                owner,
+                context="A native document-history resource owner",
+            )
+            current = owner
+        return current
+
+    # A resource is implementation state, never an independently deletable
+    # program result. Validate the complete ownership chain against the
+    # aggregate requested roots before asking the native planner for any
+    # deletion plan. This keeps a resource-only VibeScript cleanup from
+    # orphaning the durable operation it implements.
+    for root in roots:
+        if str(getattr(root, "VibeCADTimelineRole", "") or "") != "resource":
+            continue
+        owner = semantic_owner(root)
+        owner_identity = require_live(
+            owner,
+            context="A native document-history operation",
+        )
+        if owner_identity not in seen_roots:
+            label = str(
+                getattr(owner, "Label", "")
+                or getattr(owner, "Name", "")
+                or owner_identity[0]
+            )
+            raise RuntimeError(
+                "This result belongs to the history operation "
+                f"{label!r} and cannot be deleted by itself. Delete or edit "
+                "that operation in History instead."
+            )
+
+    plans: list[Mapping[str, Any]] = []
+    for root in roots:
+        raw_plan = planner(root)
+        if not isinstance(raw_plan, Mapping):
+            raise RuntimeError(
+                "The native document-history deletion planner returned an "
+                "invalid result."
+            )
+        if not isinstance(raw_plan.get("applicable"), bool) or not isinstance(
+            raw_plan.get("valid"), bool
+        ):
+            raise RuntimeError(
+                "The native document-history deletion planner returned an "
+                "invalid status."
+            )
+        for field in (
+            "replaced_inputs",
+            "objects_to_reveal",
+            "owned_resources",
+        ):
+            if not isinstance(raw_plan.get(field), list):
+                raise RuntimeError(
+                    "The native document-history deletion planner returned an "
+                    f"invalid {field!r} collection."
+                )
+        if not raw_plan["valid"]:
+            name = str(getattr(root, "Name", "") or "")
+            raise RuntimeError(
+                f"Cannot delete {name!r}; its native document-history metadata "
+                "is malformed."
+            )
+        plans.append(raw_plan)
+
+    # Native plans already order owned resources deepest-first. Preserve that
+    # order across roots, then add the requested program objects.
+    for plan in plans:
+        if not plan["applicable"]:
+            continue
+        for resource in plan["owned_resources"]:
+            identity = require_live(
+                resource,
+                context="A native document-history resource",
+            )
+            if identity not in seen_delete:
+                delete_objects.append(resource)
+                resource_objects.append(resource)
+                delete_identities.append(identity)
+                seen_delete.add(identity)
+        for replacement in plan["objects_to_reveal"]:
+            identity = require_live(
+                replacement,
+                context="A native document-history replacement input",
+            )
+            if identity not in seen_reveal:
+                reveal_identities.append(identity)
+                seen_reveal.add(identity)
+
+    for root in roots:
+        identity = require_live(root, context="A VibeScript deletion target")
+        if identity not in seen_delete:
+            delete_objects.append(root)
+            root_objects.append(root)
+            delete_identities.append(identity)
+            seen_delete.add(identity)
+
+    return {
+        "delete_objects": delete_objects,
+        "resource_objects": resource_objects,
+        "root_objects": root_objects,
+        "delete_identities": delete_identities,
+        "reveal_identities": reveal_identities,
+    }
+
+
+def _finish_timeline_deletion(
+    doc: Any,
+    deletion: Mapping[str, Any],
+) -> list[str]:
+    delete_identities = list(deletion["delete_identities"])
+    delete_set = set(delete_identities)
+    survivors = [
+        identity[0]
+        for identity in delete_identities
+        if _resolve_timeline_identity(doc, identity) is not None
+    ]
+    if survivors:
+        raise RuntimeError(
+            "Native document-history objects survived deletion: "
+            + ", ".join(sorted(survivors))
+        )
+
+    revealed: list[str] = []
+    for identity in list(deletion["reveal_identities"]):
+        if identity in delete_set:
+            continue
+        replacement = _resolve_timeline_identity(doc, identity)
+        if replacement is None:
+            raise RuntimeError(
+                f"Native document-history input {identity[0]!r} disappeared "
+                "during deletion."
+            )
+        view = getattr(replacement, "ViewObject", None)
+        if view is None or not hasattr(view, "Visibility"):
+            raise RuntimeError(
+                f"Native document-history input {identity[0]!r} has no "
+                "persistent visibility."
+            )
+        view.Visibility = True
+        revealed.append(identity[0])
+    return revealed
+
+
+def _remove_objects_dependency_order(
+    doc: Any,
+    objects: list[Any],
+) -> list[str]:
     remaining = {str(obj.Name): obj for obj in objects}
     removed: list[str] = []
     while remaining:
@@ -1060,6 +2185,78 @@ def _remove_owned_objects(doc: Any, objects: list[Any]) -> list[str]:
         if doc.getObject(name) is not None:
             doc.removeObject(name)
             removed.append(name)
+    return removed
+
+
+def _remove_timeline_resources(
+    doc: Any,
+    deletion: Mapping[str, Any],
+) -> list[str]:
+    removed: list[str] = []
+    # The native plan is already deepest-first. Remove implementation
+    # resources while their semantic owners and editor metadata are still
+    # live, then remove the requested program objects.
+    for resource in list(deletion["resource_objects"]):
+        identity = _deletion_object_identity(
+            resource,
+            context="A native document-history resource",
+        )
+        if _resolve_timeline_identity(doc, identity) is None:
+            continue
+        doc.removeObject(identity[0])
+        if _resolve_timeline_identity(doc, identity) is not None:
+            raise RuntimeError(
+                f"Native document-history resource {identity[0]!r} survived "
+                "deletion."
+            )
+        removed.append(identity[0])
+    return removed
+
+
+def _remove_timeline_deletion(
+    doc: Any,
+    deletion: Mapping[str, Any],
+) -> list[str]:
+    removed = _remove_timeline_resources(doc, deletion)
+    removed.extend(
+        _remove_objects_dependency_order(
+            doc,
+            list(deletion["root_objects"]),
+        )
+    )
+    _finish_timeline_deletion(doc, deletion)
+    return removed
+
+
+def _remove_owned_objects(doc: Any, objects: list[Any]) -> list[str]:
+    return _remove_timeline_deletion(
+        doc,
+        _prepare_timeline_deletion(doc, objects),
+    )
+
+
+def _remove_failed_domain_creations(doc: Any, object_names: list[str]) -> list[str]:
+    """Remove only objects created by the failed publication attempt.
+
+    Aborting a native document transaction may already have removed some of
+    these objects.  Resolve names again after the abort, remove the survivors
+    in dependency-safe order, and prove that none remain.  This deliberately
+    operates on the captured creation list rather than rediscovering objects
+    from program metadata, which could include the previously accepted state.
+    """
+
+    names = list(dict.fromkeys(str(name) for name in object_names if str(name)))
+    objects = [obj for name in names if (obj := doc.getObject(name)) is not None]
+    # These are unaccepted objects captured from a failed attempt, not live
+    # timeline operations. Their transaction may already have rolled back
+    # some members, so cleanup must use only this exact captured set.
+    removed = _remove_objects_dependency_order(doc, objects)
+    survivors = [name for name in names if doc.getObject(name) is not None]
+    if survivors:
+        raise RuntimeError(
+            "Failed publication objects remain after cleanup: "
+            + ", ".join(sorted(survivors))
+        )
     return removed
 
 
@@ -1289,83 +2486,6 @@ def _create_draft_object(
     return obj
 
 
-def _create_bim_object(
-    doc: Any,
-    output_type: str,
-    name: str,
-    definition: Mapping[str, Any],
-) -> Any:
-    """Create one native Arch proxy without recompute or geometry generation."""
-
-    import FreeCAD as App
-
-    if output_type == "site":
-        import ArchSite
-
-        obj = doc.addObject("Part::FeaturePython", name)
-        ArchSite._Site(obj)
-        if App.GuiUp:
-            ArchSite._ViewProviderSite(obj.ViewObject)
-    elif output_type in {"building", "level"}:
-        import ArchBuildingPart
-
-        obj = doc.addObject("App::GeometryPython", name)
-        ArchBuildingPart.BuildingPart(obj)
-        if output_type == "building":
-            obj.IfcType = "Building"
-            obj.CompositionType = "ELEMENT"
-            if "BuildingType" not in _properties(obj):
-                obj.addProperty(
-                    "App::PropertyEnumeration",
-                    "BuildingType",
-                    "Building",
-                    "The native IFC building classification.",
-                    locked=True,
-                )
-            obj.BuildingType = ArchBuildingPart.BuildingTypes
-        else:
-            obj.IfcType = "Building Storey"
-            obj.CompositionType = "ELEMENT"
-        if App.GuiUp:
-            ArchBuildingPart.ViewProviderBuildingPart(obj.ViewObject)
-    elif output_type == "wall":
-        import ArchWall
-
-        obj = doc.addObject("Part::FeaturePython", name)
-        ArchWall._Wall(obj)
-        if App.GuiUp:
-            ArchWall._ViewProviderWall(obj.ViewObject)
-    elif output_type in {"slab", "structure"}:
-        import ArchStructure
-
-        obj = doc.addObject("Part::FeaturePython", name)
-        ArchStructure._Structure(obj)
-        if output_type == "slab":
-            obj.IfcType = "Slab"
-        else:
-            role = str(dict(definition.get("properties") or {}).get("role") or "")
-            obj.IfcType = {
-                "column": "Column",
-                "beam": "Beam",
-                "member": "Member",
-            }.get(role, "Beam")
-        if App.GuiUp:
-            ArchStructure._ViewProviderStructure(obj.ViewObject)
-    elif output_type == "opening":
-        import ArchWindow
-
-        obj = doc.addObject("Part::FeaturePython", name)
-        ArchWindow._Window(obj)
-        obj.IfcType = "Opening Element"
-        if App.GuiUp:
-            ArchWindow._ViewProviderWindow(obj.ViewObject)
-    else:
-        raise RuntimeError(f"No native BIM factory exists for {output_type!r}.")
-    if obj is None:
-        raise RuntimeError(f"The native BIM factory returned no {output_type} object.")
-    return obj
-
-
 def _create_object(
     doc: Any,
     prepared: Mapping[str, Any],
@@ -1373,13 +2493,12 @@ def _create_object(
     output_type: str,
     definition: Mapping[str, Any],
     assembly: Any | None,
+    assembly_fastener_sources: Mapping[str, Any] | None = None,
 ) -> Any:
     native_type = _native_type(output_type, prepared["pack"].domain)
     name = _internal_name(prepared, output_name)
     if prepared["pack"].domain == "draft":
         obj = _create_draft_object(doc, definition, output_type, name)
-    elif prepared["pack"].domain == "bim":
-        obj = _create_bim_object(doc, output_type, name, definition)
     elif prepared["pack"].domain == "fem":
         import ObjectsFem
 
@@ -1418,8 +2537,20 @@ def _create_object(
         del Robot
         obj = doc.addObject(native_type, name)
     elif output_type == "component_link" and assembly is not None:
-        source = _definition_argument(definition, 0, "source")
-        target = _reference_target(doc, source, f"output {output_name} source")
+        if str(definition.get("operation") or "") == "fastener":
+            target = dict(assembly_fastener_sources or {}).get(output_name)
+            if target is None:
+                raise RuntimeError(
+                    f"Assembly fastener source for output {output_name!r} "
+                    "was not prepared."
+                )
+        else:
+            source = _definition_argument(definition, 0, "source")
+            target = _reference_target(
+                doc,
+                source,
+                f"output {output_name} source",
+            )
         native_type = (
             "Assembly::AssemblyLink"
             if bool(
@@ -1441,6 +2572,13 @@ def _create_object(
         and assembly is not None
     ):
         obj = assembly.newObject(native_type, name)
+    elif (
+        prepared["pack"].domain == "assembly"
+        and output_type == "mechanism_verification"
+        and assembly is not None
+    ):
+        verification_group = _ensure_assembly_verification_group(assembly)
+        obj = verification_group.newObject(native_type, name)
     elif (
         prepared["pack"].domain == "assembly"
         and output_type == "simulation"
@@ -1501,22 +2639,21 @@ def _label(item: Mapping[str, Any], fallback: str) -> str:
 
 
 def _reference_target(doc: Any, value: Any, label: str) -> Any:
-    if not isinstance(value, dict) or set(value) != {"document_uid", "object_name"}:
-        raise RuntimeError(f"{label} must be one validated stable document reference.")
-    if str(value.get("document_uid") or "") != str(getattr(doc, "Uid", "") or ""):
-        raise RuntimeError(f"{label} refers to another document.")
-    target = doc.getObject(str(value.get("object_name") or ""))
-    if target is None:
-        raise RuntimeError(f"{label} target disappeared before publication.")
-    return target
+    try:
+        return resolve_reference_target(doc, value, label)
+    except DocumentReferenceError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _component_native_type(doc: Any, item: Mapping[str, Any]) -> str:
+    definition = _definition(item)
+    if str(definition.get("operation") or "") == "fastener":
+        return "App::Link"
     data = item.get("assembly_data")
     data = dict(data) if isinstance(data, dict) else {}
     source = data.get("source")
     if source is None:
-        source = _definition_argument(_definition(item), 0, "source")
+        source = _definition_argument(definition, 0, "source")
     target = _reference_target(doc, source, f"output {item.get('name')} source")
     return (
         "Assembly::AssemblyLink"
@@ -1527,6 +2664,164 @@ def _component_native_type(doc: Any, item: Mapping[str, Any]) -> str:
         )
         else "App::Link"
     )
+
+
+def _assembly_fastener_source_output(output_name: str) -> str:
+    return f"{output_name}.{_ASSEMBLY_FASTENER_SOURCE_SUFFIX}"
+
+
+def _assembly_fastener_identity(
+    definition: Mapping[str, Any],
+    *,
+    output_name: str,
+) -> dict[str, Any]:
+    arguments = list(definition.get("arguments") or [])
+    properties = definition.get("properties")
+    if (
+        str(definition.get("operation") or "") != "fastener"
+        or len(arguments) != 2
+        or not isinstance(properties, Mapping)
+        or "model_thread" not in properties
+    ):
+        raise RuntimeError(
+            f"Assembly component output {output_name!r} has a malformed "
+            "api.fastener definition."
+        )
+    try:
+        from VibeCADFasteners import resolve_fastener
+
+        return resolve_fastener(
+            standard=arguments[0],
+            nominal_thread=arguments[1],
+            length_mm=properties.get("length_mm"),
+            model_thread=properties["model_thread"],
+            left_handed=properties.get("left_handed"),
+            options=properties.get("options"),
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Assembly component output {output_name!r} no longer resolves in "
+            f"the bundled fastener catalog: {exc}"
+        ) from exc
+
+
+def _prepare_assembly_fastener_sources(
+    doc: Any,
+    prepared: Mapping[str, Any],
+    outputs: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[Any], list[Any]]:
+    """Create or reuse hidden parametric definitions for catalog occurrences."""
+
+    from VibeCADFasteners import (
+        PROP_CANONICAL_KEY,
+        create_fastener_feature,
+        install_fastener_view_provider,
+    )
+
+    owned = _program_objects(
+        doc,
+        str(prepared["program_id"]),
+        prepared["pack"].domain,
+    )
+    sources: dict[str, Any] = {}
+    created: list[Any] = []
+    replaced: list[Any] = []
+    for item in outputs:
+        if str(item.get("type") or "") != "component_link":
+            continue
+        definition = _definition(item)
+        if str(definition.get("operation") or "") != "fastener":
+            continue
+        output_name = str(item["name"])
+        source_output = _assembly_fastener_source_output(output_name)
+        matches = [
+            obj
+            for obj in owned
+            if str(getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or "")
+            == source_output
+        ]
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"Multiple managed fastener definitions claim output "
+                f"{source_output!r}."
+            )
+        identity = _assembly_fastener_identity(
+            definition,
+            output_name=output_name,
+        )
+        source = matches[0] if matches else None
+        replaced_source = None
+        if source is not None and (
+            str(getattr(source, "TypeId", "") or "") != "Part::FeaturePython"
+            or str(getattr(source, PROP_CANONICAL_KEY, "") or "")
+            != str(identity["canonical_key"])
+        ):
+            external = _external_uses(doc, [source], owned)
+            if external:
+                raise _reference_error(
+                    f"Cannot replace the internal catalog definition for Assembly "
+                    f"component {output_name!r}; foreign objects reference it",
+                    external,
+                )
+            replaced_source = source
+            source = None
+        if source is None:
+            object_name = _internal_name(
+                prepared,
+                (
+                    f"{output_name}_Fastener_"
+                    f"{str(identity['canonical_key']).rsplit(':', 1)[-1][:8]}"
+                ),
+            )
+            source, observed = create_fastener_feature(
+                doc,
+                standard=identity["standard"],
+                nominal_thread=identity["nominal_size"],
+                length_mm=identity["length_mm"],
+                model_thread=bool(identity["model_thread"]),
+                left_handed=bool(identity["left_handed"]),
+                options=dict(identity["options"]),
+                object_name=object_name,
+                label=str(identity["part_number"]),
+            )
+            if observed["canonical_key"] != identity["canonical_key"]:
+                raise RuntimeError(
+                    f"Assembly component output {output_name!r} generated a "
+                    "different catalog identity during publication."
+                )
+            created.append(source)
+            owned.append(source)
+        if replaced_source is not None:
+            # Retarget managed occurrences while the old definition remains live.
+            # The occurrence resource reconciler releases and deletes that exact
+            # old definition only after all retained consumers have been mapped.
+            for candidate in owned:
+                if (
+                    candidate is not replaced_source
+                    and getattr(candidate, "LinkedObject", None)
+                    is replaced_source
+                ):
+                    candidate.LinkedObject = source
+            owned = [
+                candidate for candidate in owned if candidate is not replaced_source
+            ]
+            replaced.append(replaced_source)
+        _set_metadata(
+            source,
+            prepared,
+            source_output,
+            _ASSEMBLY_FASTENER_SOURCE_OUTPUT_TYPE,
+            definition,
+        )
+        source.Label = str(identity["part_number"])
+        view = getattr(source, "ViewObject", None)
+        if view is not None:
+            view.Visibility = False
+            if hasattr(view, "ShowInTree"):
+                view.ShowInTree = False
+        install_fastener_view_provider(source)
+        sources[output_name] = source
+    return sources, created, replaced
 
 
 def _placement(value: Any) -> Any:
@@ -1626,6 +2921,46 @@ def _assembly_bom_group(assembly: Any) -> Any | None:
         if str(getattr(child, "TypeId", "")) == "Assembly::BomGroup":
             return child
     return None
+
+
+def _assembly_verification_group(assembly: Any) -> Any | None:
+    for child in list(getattr(assembly, "Group", []) or []):
+        if (
+            str(getattr(child, "TypeId", "")) == "App::DocumentObjectGroup"
+            and str(getattr(child, PROP_ASSEMBLY_GROUP_ROLE, "") or "")
+            == "verification"
+        ):
+            return child
+    for child in list(getattr(assembly, "OutList", []) or []):
+        if (
+            str(getattr(child, "TypeId", "")) == "App::DocumentObjectGroup"
+            and str(getattr(child, PROP_ASSEMBLY_GROUP_ROLE, "") or "")
+            == "verification"
+        ):
+            return child
+    return None
+
+
+def _ensure_assembly_verification_group(assembly: Any) -> Any:
+    group = _assembly_verification_group(assembly)
+    if group is None:
+        group = assembly.newObject(
+            "App::DocumentObjectGroup",
+            "VibeCADVerification",
+        )
+        if group is None:
+            raise RuntimeError(
+                "FreeCAD did not create the Assembly Verification group."
+            )
+        _add_string_property(
+            group,
+            PROP_ASSEMBLY_GROUP_ROLE,
+            "Stable engineering-type role for this Assembly child group.",
+        )
+        setattr(group, PROP_ASSEMBLY_GROUP_ROLE, "verification")
+        _hide_property(group, PROP_ASSEMBLY_GROUP_ROLE)
+    group.Label = "Verification"
+    return group
 
 
 def _assembly_component_reference(
@@ -1785,16 +3120,53 @@ def _configure_component(
     item: Mapping[str, Any],
     outputs: Mapping[str, Any],
     prepared: Mapping[str, Any],
-) -> None:
+    assembly_fastener_sources: Mapping[str, Any] | None = None,
+) -> list[Any]:
     properties = _definition_properties(item)
+    definition = _definition(item)
     assembly_data = item.get("assembly_data")
     assembly_data = dict(assembly_data) if isinstance(assembly_data, dict) else {}
-    source = assembly_data.get("source", properties.get("source"))
-    if source is None:
-        arguments = list(_definition(item).get("arguments") or [])
-        source = arguments[0] if arguments else None
-    target = _reference_target(doc, source, f"output {item['name']} source")
-    flexible = bool(assembly_data.get("flexible", properties.get("flexible", False)))
+    if str(definition.get("operation") or "") == "fastener":
+        if assembly_fastener_sources is not None:
+            target = assembly_fastener_sources.get(str(item["name"]))
+        else:
+            target = next(
+                (
+                    source
+                    for source in _program_objects(
+                        doc,
+                        str(prepared["program_id"]),
+                        prepared["pack"].domain,
+                    )
+                    if str(
+                        getattr(source, contracts.PROP_PROGRAM_OUTPUT, "") or ""
+                    )
+                    == _assembly_fastener_source_output(str(item["name"]))
+                ),
+                None,
+            )
+        if target is None:
+            raise RuntimeError(
+                f"Assembly fastener source for output {item['name']!r} disappeared "
+                "before publication."
+            )
+        flexible = False
+    else:
+        source = assembly_data.get("source", properties.get("source"))
+        if source is None:
+            arguments = list(definition.get("arguments") or [])
+            source = arguments[0] if arguments else None
+        target = _reference_target(
+            doc,
+            source,
+            f"output {item['name']} source",
+        )
+        flexible = bool(
+            assembly_data.get(
+                "flexible",
+                properties.get("flexible", False),
+            )
+        )
     is_assembly_link = str(getattr(obj, "TypeId", "") or "") == (
         "Assembly::AssemblyLink"
     )
@@ -1827,13 +3199,6 @@ def _configure_component(
         if not was_linked or mode_changed:
             obj.Placement = initial_placement
             obj.Rigid = not flexible
-        synchronize = getattr(obj, "synchronizeContents", None)
-        if not callable(synchronize):
-            raise RuntimeError(
-                "AssemblyLink.synchronizeContents is unavailable; rebuild the native "
-                "Assembly module before publishing flexible VibeScript components."
-            )
-        synchronize()
     if item.get("solved_placement_matrix") is not None:
         obj.Placement = _placement_from_matrix(item["solved_placement_matrix"])
     else:
@@ -1880,6 +3245,26 @@ def _configure_component(
             resolved["leaf"].Placement = _placement_from_matrix(
                 list(local.get("matrix") or [])
             )
+    return []
+
+
+def _configure_component_grounding(
+    doc: Any,
+    obj: Any,
+    item: Mapping[str, Any],
+    outputs: Mapping[str, Any],
+    prepared: Mapping[str, Any],
+) -> tuple[Any | None, list[str]]:
+    """Create, update, or retire one explicit grounding operation.
+
+    Grounding changes mechanism state and is therefore a public History
+    operation.  It is not implementation state owned by the component
+    occurrence.
+    """
+
+    properties = _definition_properties(item)
+    assembly_data = item.get("assembly_data")
+    assembly_data = dict(assembly_data) if isinstance(assembly_data, dict) else {}
     grounded = bool(assembly_data.get("grounded", properties.get("grounded")))
     assembly = next(
         (
@@ -1904,6 +3289,15 @@ def _configure_component(
         if assembly is None:
             raise RuntimeError("A grounded component requires an assembly output.")
         assert joint_group is not None
+        if existing is not None and _timeline_role(
+            existing,
+            context=f"Assembly grounding {ground_output!r}",
+        ) == "resource":
+            raise RuntimeError(
+                f"Assembly grounding {ground_output!r} remains component-owned "
+                "implementation state. Reconcile the occurrence before publishing "
+                "the independent grounding operation."
+            )
         if existing is None:
             import JointObject
 
@@ -1920,6 +3314,15 @@ def _configure_component(
             {"operation": "ground", "component_output": item["name"]},
         )
     elif existing is not None:
+        if _timeline_role(
+            existing,
+            context=f"Assembly grounding {ground_output!r}",
+        ) == "resource":
+            raise RuntimeError(
+                f"Assembly grounding {ground_output!r} remains component-owned "
+                "implementation state. Reconcile the occurrence before retiring "
+                "the grounding operation."
+            )
         external = _external_uses(
             doc,
             [existing],
@@ -1935,7 +3338,12 @@ def _configure_component(
                 "reference its managed grounding joint",
                 external,
             )
-        doc.removeObject(str(existing.Name))
+        retired = _remove_timeline_deletion(
+            doc,
+            _prepare_timeline_deletion(doc, [existing]),
+        )
+        return None, retired
+    return (existing if grounded else None), []
 
 
 def _configure_joint_while_suspended(
@@ -2186,6 +3594,203 @@ def _configure_assembly_motion(
     )
 
 
+def _configure_assembly_mechanism_verification(
+    obj: Any,
+    item: Mapping[str, Any],
+    outputs: Mapping[str, Any],
+) -> None:
+    """Persist one authenticated static mechanism report as native document state."""
+
+    data = item.get("assembly_data")
+    if not isinstance(data, Mapping) or set(data) != {
+        "assembly_output",
+        "static_check",
+        "report",
+    }:
+        raise RuntimeError(
+            "A mechanism verification output has no authenticated report."
+        )
+    static_check = data.get("static_check")
+    report = data.get("report")
+    if not isinstance(static_check, Mapping) or not isinstance(report, Mapping):
+        raise RuntimeError(
+            "A mechanism verification output has malformed persisted evidence."
+        )
+    assembly_name = str(data.get("assembly_output") or "")
+    assembly = outputs.get(assembly_name)
+    if assembly is None or str(getattr(assembly, "TypeId", "")) != (
+        "Assembly::AssemblyObject"
+    ):
+        raise RuntimeError(
+            f"Mechanism verification {item['name']!r} assembly "
+            f"{assembly_name!r} is unavailable."
+        )
+    verdict = str(report.get("verdict") or "")
+    if verdict not in {"pass", "fail", "indeterminate"}:
+        raise RuntimeError(
+            f"Mechanism verification {item['name']!r} has invalid verdict "
+            f"{verdict!r}."
+        )
+    summary = report.get("summary")
+    scope = report.get("scope")
+    engine = dict(
+        dict(report.get("geometry_evidence") or {}).get(
+            "geometry_engine"
+        )
+        or {}
+    )
+    if not isinstance(summary, Mapping) or not isinstance(scope, Mapping):
+        raise RuntimeError(
+            f"Mechanism verification {item['name']!r} has no report summary."
+        )
+
+    _add_property(
+        obj,
+        "App::PropertyEnumeration",
+        "VibeCADMechanismVerdict",
+        "Top-level static mechanism-verification verdict.",
+    )
+    for name, description in (
+        (
+            PROP_MECHANISM_ASSEMBLY_OUTPUT,
+            "Stable VibeScript output identity of the containing Assembly.",
+        ),
+        (
+            "VibeCADMechanismReportSchema",
+            "Versioned persisted mechanism-verification report schema.",
+        ),
+        (
+            "VibeCADMechanismScenarioSHA256",
+            "SHA-256 of the exact normalized mechanism scenario.",
+        ),
+        (
+            "VibeCADMechanismSolveReportSHA256",
+            "SHA-256 of the exact authenticated native solve report.",
+        ),
+        (
+            "VibeCADMechanismStaticCheckSHA256",
+            "SHA-256 of the exact declared static requirements.",
+        ),
+        (
+            "VibeCADMechanismAnalysisScope",
+            "Certified analysis scope; static does not imply motion certification.",
+        ),
+        (
+            "VibeCADMechanismGeometryEngine",
+            "Exact BREP geometry engine and version used for evidence.",
+        ),
+        (
+            PROP_MECHANISM_STATIC_CHECK,
+            "Complete normalized static requirement and contact-policy contract.",
+        ),
+        (
+            PROP_MECHANISM_VERIFICATION_REPORT,
+            "Complete portable v1 mechanism-verification report and exact evidence.",
+        ),
+    ):
+        _add_string_property(obj, name, description)
+    for name, description in (
+        ("VibeCADMechanismDeclarationCount", "Declared static pair count."),
+        ("VibeCADMechanismPassCount", "Proven static declaration count."),
+        ("VibeCADMechanismFailCount", "Failed static declaration count."),
+        (
+            "VibeCADMechanismIndeterminateCount",
+            "Static declarations that could not be proven or disproven.",
+        ),
+        ("VibeCADMechanismIgnoredCount", "Explicitly excluded pair count."),
+    ):
+        _add_property(obj, "App::PropertyInteger", name, description)
+
+    static_json = json.dumps(
+        static_check,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    report_json = json.dumps(
+        report,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    setattr(obj, PROP_MECHANISM_ASSEMBLY_OUTPUT, assembly_name)
+    obj.VibeCADMechanismVerdict = ["pass", "fail", "indeterminate"]
+    obj.VibeCADMechanismVerdict = verdict
+    obj.VibeCADMechanismReportSchema = str(report.get("schema") or "")
+    obj.VibeCADMechanismScenarioSHA256 = str(
+        report.get("scenario_sha256") or ""
+    )
+    obj.VibeCADMechanismSolveReportSHA256 = str(
+        report.get("solve_report_sha256") or ""
+    )
+    obj.VibeCADMechanismStaticCheckSHA256 = str(
+        report.get("static_check_sha256") or ""
+    )
+    obj.VibeCADMechanismAnalysisScope = str(scope.get("analysis") or "")
+    obj.VibeCADMechanismGeometryEngine = (
+        f"{str(engine.get('name') or '')} {str(engine.get('version') or '')}"
+    ).strip()
+    setattr(obj, PROP_MECHANISM_STATIC_CHECK, static_json)
+    setattr(obj, PROP_MECHANISM_VERIFICATION_REPORT, report_json)
+    obj.VibeCADMechanismDeclarationCount = int(
+        summary.get("declaration_count", 0)
+    )
+    obj.VibeCADMechanismPassCount = int(summary.get("pass_count", 0))
+    obj.VibeCADMechanismFailCount = int(summary.get("fail_count", 0))
+    obj.VibeCADMechanismIndeterminateCount = int(
+        summary.get("indeterminate_count", 0)
+    )
+    obj.VibeCADMechanismIgnoredCount = int(summary.get("ignored_count", 0))
+
+    set_editor_mode = getattr(obj, "setEditorMode", None)
+    if callable(set_editor_mode):
+        for property_name in (
+            PROP_MECHANISM_ASSEMBLY_OUTPUT,
+            "VibeCADMechanismVerdict",
+            "VibeCADMechanismReportSchema",
+            "VibeCADMechanismScenarioSHA256",
+            "VibeCADMechanismSolveReportSHA256",
+            "VibeCADMechanismStaticCheckSHA256",
+            "VibeCADMechanismAnalysisScope",
+            "VibeCADMechanismGeometryEngine",
+            PROP_MECHANISM_STATIC_CHECK,
+            PROP_MECHANISM_VERIFICATION_REPORT,
+            "VibeCADMechanismDeclarationCount",
+            "VibeCADMechanismPassCount",
+            "VibeCADMechanismFailCount",
+            "VibeCADMechanismIndeterminateCount",
+            "VibeCADMechanismIgnoredCount",
+        ):
+            set_editor_mode(property_name, 1)
+
+    if (
+        str(getattr(obj, PROP_MECHANISM_ASSEMBLY_OUTPUT, "") or "")
+        != assembly_name
+        or str(obj.VibeCADMechanismVerdict) != verdict
+        or json.loads(
+            str(getattr(obj, PROP_MECHANISM_STATIC_CHECK, "") or "")
+        )
+        != static_check
+        or json.loads(
+            str(
+                getattr(
+                    obj,
+                    PROP_MECHANISM_VERIFICATION_REPORT,
+                    "",
+                )
+                or ""
+            )
+        )
+        != report
+    ):
+        raise RuntimeError(
+            f"Live mechanism verification {item['name']!r} changed during "
+            "publication."
+        )
+
+
 def _configure_assembly_simulation(
     obj: Any, item: Mapping[str, Any], outputs: Mapping[str, Any]
 ) -> None:
@@ -2209,6 +3814,8 @@ def _configure_assembly_simulation(
         AssemblySimulationProxy(obj)
     else:
         _ensure_assembly_simulation_properties(obj)
+        obj.Proxy._mark_native_contract(obj)
+        _ensure_native_simulation_view_provider(obj)
     parameters = data.get("parameters")
     if not isinstance(parameters, Mapping):
         raise RuntimeError("An Assembly simulation has no validated parameters.")
@@ -2296,7 +3903,7 @@ def _configure_assembly_exploded_view(
     item: Mapping[str, Any],
     outputs: Mapping[str, Any],
     prepared: Mapping[str, Any],
-) -> None:
+) -> list[Any]:
     """Publish only authenticated native view settings; never calculate geometry."""
 
     data = item.get("assembly_data")
@@ -2313,7 +3920,7 @@ def _configure_assembly_exploded_view(
             f"{assembly_name!r} is unavailable."
         )
     moves = data.get("moves")
-    if not isinstance(moves, list) or not 1 <= len(moves) <= 64:
+    if not isinstance(moves, list) or not 1 <= len(moves) <= 4096:
         raise RuntimeError(
             f"Assembly exploded view {item['name']!r} has no bounded move graph."
         )
@@ -2473,7 +4080,11 @@ def _configure_assembly_exploded_view(
         internal = list(program_objects)
         if view_group is not None:
             internal.append(view_group)
-        external = _external_uses(doc, surplus, internal)
+        external = _external_uses(
+            doc,
+            surplus,
+            [*internal, *surplus],
+        )
         if external:
             raise _reference_error(
                 f"Cannot shorten exploded view {view_name!r}; human-created or "
@@ -2485,8 +4096,6 @@ def _configure_assembly_exploded_view(
         raise RuntimeError(
             f"Live Assembly exploded view {view_name!r} changed its validated move order."
         )
-    if surplus:
-        _remove_owned_objects(doc, surplus)
     _add_string_property(
         obj,
         "VibeCADAssemblyExplodedViewValidation",
@@ -2499,6 +4108,7 @@ def _configure_assembly_exploded_view(
         separators=(",", ":"),
         allow_nan=False,
     )
+    return desired_steps
 
 
 def _assembly_bom_column(number: int) -> str:
@@ -2639,7 +4249,7 @@ def _configure_assembly_bom(
     item: Mapping[str, Any],
     outputs: Mapping[str, Any],
     prepared: Mapping[str, Any],
-) -> None:
+) -> list[Any]:
     data = item.get("assembly_data")
     if not isinstance(data, Mapping):
         raise RuntimeError("An Assembly BOM has no authenticated native data.")
@@ -2719,6 +4329,7 @@ def _configure_assembly_bom(
             "table_sha256": str(data.get("table_sha256") or ""),
         },
     )
+    return [guard]
 
 
 def _assembly_bom_rollback_states(objects: list[Any]) -> list[dict[str, Any]]:
@@ -3002,6 +4613,7 @@ _MATERIAL_SIMPLE_VIEW_PROPERTIES = (
     "DisplayMode",
     "Visibility",
     "Selectable",
+    "OverrideMaterial",
 )
 
 
@@ -3037,7 +4649,12 @@ def _set_simple_view_state(view: Any, state: Mapping[str, Any]) -> None:
     for name in _MATERIAL_SIMPLE_VIEW_PROPERTIES:
         if name not in state:
             continue
-        value = state[name]
+        desired = state[name]
+        if hasattr(view, name):
+            current = _material_json_view_value(getattr(view, name))
+            if _material_state_equal(current, desired):
+                continue
+        value = desired
         if name in {"LineColor", "PointColor"}:
             value = tuple(float(channel) for channel in list(value))
         setattr(view, name, value)
@@ -3079,12 +4696,52 @@ def _capture_complete_view_state(target: Any) -> dict[str, Any] | None:
     }
 
 
+def _view_state_values(
+    state: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if state is None:
+        return None
+    return {
+        "shape_appearance": state.get("shape_appearance"),
+        "simple": dict(state.get("simple") or {}),
+    }
+
+
+def _restore_view_state_values(
+    target: Any,
+    state: Mapping[str, Any] | None,
+) -> None:
+    if state is None:
+        return
+    view = getattr(target, "ViewObject", None)
+    if view is None:
+        raise RuntimeError(
+            f"Presentation target {getattr(target, 'Name', '')!r} has no view provider."
+        )
+    shape_appearance = state.get("shape_appearance")
+    if shape_appearance is not None and (
+        not hasattr(view, "ShapeAppearance")
+        or _shape_appearance_payload(view.ShapeAppearance)
+        != _shape_appearance_payload(shape_appearance)
+    ):
+        view.ShapeAppearance = list(shape_appearance)
+    _set_simple_view_state(view, dict(state.get("simple") or {}))
+
+
 def _restore_complete_view_state(state: Mapping[str, Any] | None) -> None:
     if state is None:
         return
     view = state["view"]
+    target = getattr(view, "Object", None)
+    if target is not None:
+        _restore_view_state_values(target, state)
+        return
     shape_appearance = state.get("shape_appearance")
-    if shape_appearance is not None:
+    if shape_appearance is not None and (
+        not hasattr(view, "ShapeAppearance")
+        or _shape_appearance_payload(view.ShapeAppearance)
+        != _shape_appearance_payload(shape_appearance)
+    ):
         view.ShapeAppearance = list(shape_appearance)
     _set_simple_view_state(view, dict(state.get("simple") or {}))
 
@@ -3231,23 +4888,53 @@ def _restore_material_baseline(
     _set_simple_view_state(view, dict(ownership.get("baseline_simple") or {}))
 
 
-def _material_target_snapshot(target: Any) -> dict[str, Any]:
+def _material_target_snapshot(
+    target: Any,
+    *,
+    required_after_abort: bool = True,
+) -> dict[str, Any]:
+    document = getattr(target, "Document", None)
+    if document is None:
+        raise RuntimeError(
+            f"Material target {getattr(target, 'Name', '')!r} has no owning document."
+        )
     return {
-        "target": target,
+        "document": document,
+        "identity": _deletion_object_identity(
+            target,
+            context="A material presentation target",
+        ),
+        "type_id": str(getattr(target, "TypeId", "") or ""),
+        "required_after_abort": bool(required_after_abort),
         "material": getattr(target, "ShapeMaterial", None),
-        "view": _capture_complete_view_state(target),
+        "view": _view_state_values(_capture_complete_view_state(target)),
     }
 
 
 def _restore_material_target_snapshots(states: list[dict[str, Any]]) -> None:
     failures: list[str] = []
+    resolved: list[tuple[dict[str, Any], Any]] = []
     for state in states:
-        target = state["target"]
+        identity = tuple(state["identity"])
+        target = _resolve_timeline_identity(state["document"], identity)
+        if target is None:
+            if state.get("required_after_abort", True):
+                failures.append(
+                    f"{identity[0]}: native object identity was not restored"
+                )
+            continue
+        resolved.append((state, target))
+    # Restore implementation objects before App::Links. Link view properties
+    # proxy their target and should normally become equal without being set.
+    resolved.sort(key=lambda item: item[0].get("type_id") == "App::Link")
+    for state, target in resolved:
         try:
             material = state.get("material")
             if material is not None and hasattr(target, "ShapeMaterial"):
-                target.ShapeMaterial = material
-            _restore_complete_view_state(state.get("view"))
+                current = getattr(target, "ShapeMaterial")
+                if current != material:
+                    target.ShapeMaterial = material
+            _restore_view_state_values(target, state.get("view"))
         except Exception as exc:
             failures.append(
                 f"{getattr(target, 'Name', '<target>')}: {type(exc).__name__}: {exc}"
@@ -3314,16 +5001,65 @@ def _material_baseline_for_desired(
     return {"simple": baseline_simple, "shape_appearance": baseline_shape}
 
 
-def _apply_requested_appearance(target: Any, requested: Mapping[str, Any]) -> None:
-    view = getattr(target, "ViewObject", None)
+def _appearance_property_view(
+    target: Any,
+    native_name: str,
+    property_views: Mapping[str, Any] | None,
+) -> Any:
+    view = (
+        property_views.get(native_name)
+        if property_views is not None
+        else getattr(target, "ViewObject", None)
+    )
     if view is None:
         raise RuntimeError(
             f"Appearance target {target.Name!r} has no live view provider."
         )
+    return view
+
+
+def _effective_appearance_controlled_properties(
+    view: Any,
+    controlled: list[str],
+) -> list[str]:
+    result = list(dict.fromkeys(str(name) for name in controlled))
+    if (
+        "ShapeAppearance" in result
+        and hasattr(view, "OverrideMaterial")
+        and "OverrideMaterial" not in result
+    ):
+        result.append("OverrideMaterial")
+    return sorted(result)
+
+
+def _apply_requested_appearance(
+    target: Any,
+    requested: Mapping[str, Any],
+    *,
+    property_views: Mapping[str, Any] | None = None,
+) -> None:
     shape_material = requested.get("shape_material")
-    if shape_material is not None:
+    shape_color = requested.get("shape_color")
+    transparency = requested.get("transparency")
+    if (
+        shape_material is not None
+        or shape_color is not None
+        or transparency is not None
+    ):
+        view = _appearance_property_view(
+            target,
+            "ShapeAppearance",
+            property_views,
+        )
+        if not hasattr(view, "ShapeAppearance"):
+            raise RuntimeError(
+                f"Appearance target {target.Name!r} no longer supports ShapeAppearance."
+            )
         if not isinstance(shape_material, Mapping):
-            raise RuntimeError("Validated card appearance is not a material mapping.")
+            if shape_material is not None:
+                raise RuntimeError(
+                    "Validated card appearance is not a material mapping."
+                )
         allowed = {
             "ambient_color": "AmbientColor",
             "diffuse_color": "DiffuseColor",
@@ -3332,7 +5068,9 @@ def _apply_requested_appearance(target: Any, requested: Mapping[str, Any]) -> No
             "shininess": "Shininess",
             "transparency": "Transparency",
         }
-        if not shape_material or not set(shape_material) <= set(allowed):
+        if shape_material is not None and (
+            not shape_material or not set(shape_material) <= set(allowed)
+        ):
             raise RuntimeError(
                 "Validated card appearance has unsupported material fields."
             )
@@ -3351,18 +5089,28 @@ def _apply_requested_appearance(target: Any, requested: Mapping[str, Any]) -> No
                 "Shininess": float(current.Shininess),
                 "Transparency": float(current.Transparency),
             }
-            for field, value in shape_material.items():
+            for field, value in dict(shape_material or {}).items():
                 native_name = allowed[str(field)]
                 values[native_name] = (
                     tuple(float(channel) for channel in list(value))
                     if str(field).endswith("_color")
                     else float(value)
                 )
+            if shape_color is not None:
+                previous = list(values["DiffuseColor"])
+                values["DiffuseColor"] = tuple(
+                    [
+                        *[float(channel) for channel in list(shape_color)],
+                        float(previous[3]) if len(previous) == 4 else 1.0,
+                    ]
+                )
+            if transparency is not None:
+                values["Transparency"] = float(transparency) / 100.0
             updated.append(App.Material(**values))
         view.ShapeAppearance = updated
+        if hasattr(view, "OverrideMaterial"):
+            view.OverrideMaterial = True
     assignments = (
-        ("shape_color", "ShapeColor"),
-        ("transparency", "Transparency"),
         ("line_color", "LineColor"),
         ("point_color", "PointColor"),
         ("line_width", "LineWidth"),
@@ -3375,6 +5123,7 @@ def _apply_requested_appearance(target: Any, requested: Mapping[str, Any]) -> No
         value = requested.get(key)
         if value is None:
             continue
+        view = _appearance_property_view(target, native_name, property_views)
         if not hasattr(view, native_name):
             raise RuntimeError(
                 f"Appearance target {target.Name!r} no longer supports {native_name}."
@@ -3396,11 +5145,36 @@ def _apply_requested_appearance(target: Any, requested: Mapping[str, Any]) -> No
         setattr(view, native_name, value)
 
 
-def _verify_requested_appearance(target: Any, requested: Mapping[str, Any]) -> None:
-    view = getattr(target, "ViewObject", None)
-    if view is None:
-        raise RuntimeError(f"Appearance target {target.Name!r} lost its view provider.")
+def _verify_requested_appearance(
+    target: Any,
+    requested: Mapping[str, Any],
+    *,
+    property_views: Mapping[str, Any] | None = None,
+) -> None:
     shape_material = requested.get("shape_material")
+    shape_color = requested.get("shape_color")
+    transparency = requested.get("transparency")
+    materials = []
+    if (
+        shape_material is not None
+        or shape_color is not None
+        or transparency is not None
+    ):
+        view = _appearance_property_view(
+            target,
+            "ShapeAppearance",
+            property_views,
+        )
+        materials = list(view.ShapeAppearance)
+        if not materials:
+            raise RuntimeError(
+                f"Appearance target {target.Name!r} has no ShapeAppearance readback."
+            )
+        if hasattr(view, "OverrideMaterial") and not bool(view.OverrideMaterial):
+            raise RuntimeError(
+                f"Appearance target {target.Name!r} did not enable its native "
+                "material override."
+            )
     if shape_material is not None:
         native_names = {
             "ambient_color": "AmbientColor",
@@ -3410,11 +5184,6 @@ def _verify_requested_appearance(target: Any, requested: Mapping[str, Any]) -> N
             "shininess": "Shininess",
             "transparency": "Transparency",
         }
-        materials = list(view.ShapeAppearance)
-        if not materials:
-            raise RuntimeError(
-                f"Appearance target {target.Name!r} has no ShapeAppearance readback."
-            )
         for index, material in enumerate(materials):
             for field, expected in shape_material.items():
                 observed = getattr(material, native_names[str(field)])
@@ -3433,45 +5202,89 @@ def _verify_requested_appearance(target: Any, requested: Mapping[str, Any]) -> N
                         f"{native_names[str(field)]} read back as {observed!r}, expected "
                         f"{expected!r}."
                     )
+    if shape_color is not None:
+        expected = [float(value) for value in list(shape_color)]
+        for index, material in enumerate(materials):
+            observed = [
+                float(value) for value in tuple(material.DiffuseColor)[:3]
+            ]
+            if not _material_state_equal(observed, expected):
+                raise RuntimeError(
+                    f"Appearance target {target.Name!r}.ShapeAppearance[{index}]."
+                    f"DiffuseColor read back as {observed!r}, expected {expected!r}."
+                )
+    if transparency is not None:
+        expected = float(transparency)
+        for index, material in enumerate(materials):
+            observed = float(material.Transparency) * 100.0
+            if not _material_state_equal(observed, expected):
+                raise RuntimeError(
+                    f"Appearance target {target.Name!r}.ShapeAppearance[{index}]."
+                    f"Transparency read back as {observed!r}, expected {expected!r}."
+                )
+
+    simple_views = {
+        native_name: _appearance_property_view(
+            target,
+            native_name,
+            property_views,
+        )
+        for key, native_name in (
+            ("line_color", "LineColor"),
+            ("point_color", "PointColor"),
+            ("line_width", "LineWidth"),
+            ("point_size", "PointSize"),
+            ("display_mode", "DisplayMode"),
+            ("visibility", "Visibility"),
+            ("selectable", "Selectable"),
+        )
+        if requested.get(key) is not None
+    }
     readbacks = {
-        "shape_color": (
-            [float(value) for value in tuple(view.ShapeColor)[:3]]
-            if requested.get("shape_color") is not None
-            else None
-        ),
-        "transparency": (
-            int(view.Transparency)
-            if requested.get("transparency") is not None
-            else None
-        ),
         "line_color": (
-            [float(value) for value in tuple(view.LineColor)[:3]]
+            [
+                float(value)
+                for value in tuple(simple_views["LineColor"].LineColor)[:3]
+            ]
             if requested.get("line_color") is not None
             else None
         ),
         "point_color": (
-            [float(value) for value in tuple(view.PointColor)[:3]]
+            [
+                float(value)
+                for value in tuple(simple_views["PointColor"].PointColor)[:3]
+            ]
             if requested.get("point_color") is not None
             else None
         ),
         "line_width": (
-            float(view.LineWidth) if requested.get("line_width") is not None else None
+            float(simple_views["LineWidth"].LineWidth)
+            if requested.get("line_width") is not None
+            else None
         ),
         "point_size": (
-            float(view.PointSize) if requested.get("point_size") is not None else None
+            float(simple_views["PointSize"].PointSize)
+            if requested.get("point_size") is not None
+            else None
         ),
         "display_mode": (
-            str(view.DisplayMode) if requested.get("display_mode") is not None else None
+            str(simple_views["DisplayMode"].DisplayMode)
+            if requested.get("display_mode") is not None
+            else None
         ),
         "visibility": (
-            bool(view.Visibility) if requested.get("visibility") is not None else None
+            bool(simple_views["Visibility"].Visibility)
+            if requested.get("visibility") is not None
+            else None
         ),
         "selectable": (
-            bool(view.Selectable) if requested.get("selectable") is not None else None
+            bool(simple_views["Selectable"].Selectable)
+            if requested.get("selectable") is not None
+            else None
         ),
     }
     for key, requested_value in requested.items():
-        if key == "shape_material" or requested_value is None:
+        if key in {"shape_material", "shape_color", "transparency"} or requested_value is None:
             continue
         if not _material_state_equal(readbacks[key], requested_value):
             raise RuntimeError(
@@ -3555,12 +5368,15 @@ def _configure_material_carrier(
         ownership["accepted_material"] = accepted_state
     else:
         requested = dict(validation.get("resolved") or {})
-        controlled = list(validation.get("controlled_properties") or [])
         view = getattr(target, "ViewObject", None)
         if view is None:
             raise RuntimeError(
                 f"Appearance target {target.Name!r} has no live view provider."
             )
+        controlled = _effective_appearance_controlled_properties(
+            view,
+            list(validation.get("controlled_properties") or []),
+        )
         _add_property(
             obj,
             "App::PropertyMaterialList",
@@ -4900,644 +6716,6 @@ def _configure_robot(
             separators=(",", ":"),
             allow_nan=False,
         ),
-    )
-
-
-def _bim_data(item: Mapping[str, Any]) -> dict[str, Any]:
-    value = item.get("bim_data")
-    if not isinstance(value, dict):
-        raise RuntimeError(
-            f"BIM output {item.get('name')!r} has no validated native data."
-        )
-    return dict(value)
-
-
-def _bim_base_output_name(output_name: str) -> str:
-    return f"{output_name}.__base"
-
-
-def _bim_existing_base(
-    doc: Any,
-    prepared: Mapping[str, Any],
-    output_name: str,
-) -> Any | None:
-    expected = _bim_base_output_name(output_name)
-    matches = [
-        obj
-        for obj in _program_objects(
-            doc,
-            str(prepared["program_id"]),
-            "bim",
-        )
-        if str(getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or "") == expected
-    ]
-    if len(matches) > 1:
-        raise RuntimeError(f"Multiple native BIM bases claim output {expected!r}.")
-    return matches[0] if matches else None
-
-
-def _create_bim_base(
-    doc: Any,
-    prepared: Mapping[str, Any],
-    item: Mapping[str, Any],
-) -> Any:
-    output_name = str(item["name"])
-    output_type = str(item["type"])
-    name = _internal_name(prepared, _bim_base_output_name(output_name))
-    return _create_bim_base_named(doc, output_type, name, output_name)
-
-
-def _create_bim_base_named(
-    doc: Any,
-    output_type: str,
-    name: str,
-    output_name: str,
-) -> Any:
-    import FreeCAD as App
-
-    if output_type in {"wall", "slab"}:
-        from draftobjects.wire import Wire
-
-        obj = doc.addObject("Part::FeaturePython", name)
-        obj.addExtension("Part::AttachExtensionPython")
-        Wire(obj)
-        if App.GuiUp:
-            from draftviewproviders.view_wire import ViewProviderWire
-
-            ViewProviderWire(obj.ViewObject)
-    elif output_type == "opening":
-        obj = doc.addObject("Part::Feature", name)
-    else:
-        raise RuntimeError(
-            f"BIM output {output_name!r} of type {output_type!r} cannot own a base."
-        )
-    if obj is None:
-        raise RuntimeError(f"FreeCAD did not create BIM base for {output_name!r}.")
-    return obj
-
-
-def _bim_base_compatible(obj: Any, item: Mapping[str, Any]) -> bool:
-    data = _bim_data(item)
-    if str(getattr(obj, "TypeId", "") or "") != str(data.get("base_native_type") or ""):
-        return False
-    if type(getattr(obj, "Proxy", None)).__name__ != str(
-        data.get("base_proxy_class") or ""
-    ):
-        return False
-    if str(item["type"]) in {"wall", "slab"}:
-        try:
-            from draftutils.utils import get_type
-
-            return str(get_type(obj) or "") == str(data.get("base_arch_type") or "")
-        except Exception:
-            return False
-    return True
-
-
-def _configure_bim_base(
-    obj: Any,
-    item: Mapping[str, Any],
-    prepared: Mapping[str, Any],
-) -> None:
-    data = _bim_data(item)
-    output_name = str(item["name"])
-    output_type = str(item["type"])
-    shape = item.get("detached_bim_base_shape")
-    if shape is None:
-        raise RuntimeError(f"BIM output {output_name!r} has no detached base Shape.")
-    if output_type == "wall":
-        points = data.get("points")
-        if not isinstance(points, list):
-            raise RuntimeError(
-                f"BIM Wall {output_name!r} has no validated baseline points."
-            )
-        obj.Points = [
-            _native_vector(point, f"{output_name} baseline point") for point in points
-        ]
-        obj.Closed = bool(data["closed"])
-        obj.MakeFace = False
-    elif output_type == "slab":
-        points = data.get("boundary")
-        if not isinstance(points, list):
-            raise RuntimeError(f"BIM Slab {output_name!r} has no validated boundary.")
-        obj.Points = [
-            _native_vector(point, f"{output_name} boundary point") for point in points
-        ]
-        obj.Closed = True
-        obj.MakeFace = True
-    obj.Shape = shape
-    obj.Placement = _placement(data["base_placement"])
-    obj.Label = f"{_label(item, output_name)} Profile"
-    _set_metadata(
-        obj,
-        prepared,
-        _bim_base_output_name(output_name),
-        "bim_internal_base",
-        _definition(item),
-    )
-    if not _bim_base_compatible(obj, item):
-        raise RuntimeError(
-            f"Published BIM base for {output_name!r} changed native type."
-        )
-    if (
-        getattr(obj, "Shape", None) is None
-        or obj.Shape.isNull()
-        or not obj.Shape.isValid()
-    ):
-        raise RuntimeError(f"Published BIM base for {output_name!r} is invalid.")
-
-
-def _bim_live_contract(obj: Any) -> tuple[str, str, str, str]:
-    try:
-        from draftutils.utils import get_type
-
-        arch_type = str(get_type(obj) or "")
-    except Exception:
-        arch_type = ""
-    return (
-        str(getattr(obj, "TypeId", "") or ""),
-        type(getattr(obj, "Proxy", None)).__name__,
-        arch_type,
-        str(getattr(obj, "IfcType", "") or ""),
-    )
-
-
-def _bim_object_compatible(obj: Any, item: Mapping[str, Any]) -> bool:
-    data = _bim_data(item)
-    return _bim_live_contract(obj) == (
-        str(data.get("native_type") or ""),
-        str(data.get("proxy_class") or ""),
-        str(data.get("arch_type") or ""),
-        str(data.get("ifc_type") or ""),
-    )
-
-
-def _bim_graph_objects(
-    items: list[dict[str, Any]],
-    outputs: Mapping[str, Any],
-) -> dict[str, Any]:
-    graph: dict[str, Any] = {}
-    for item in items:
-        data = _bim_data(item)
-        graph_id = str(data.get("graph_id") or "")
-        if not graph_id or graph_id in graph:
-            raise RuntimeError(
-                "BIM publication contains missing or duplicate graph identity."
-            )
-        graph[graph_id] = outputs[str(item["name"])]
-    return graph
-
-
-def _bim_prepare_relationships(
-    outputs: Mapping[str, Any],
-    bases: Mapping[str, Any],
-) -> None:
-    managed = {id(obj) for obj in [*outputs.values(), *bases.values()]}
-    for obj in outputs.values():
-        if hasattr(obj, "Group"):
-            obj.Group = [
-                child
-                for child in list(getattr(obj, "Group", []) or [])
-                if id(child) not in managed
-            ]
-
-
-def _copy_bim_property_value(value: Any, property_type: str) -> Any:
-    """Detach every assigned BIM property that FreeCAD transactions may miss."""
-
-    import FreeCAD as App
-
-    if property_type == "Part::PropertyPartShape":
-        return value.copy()
-    if property_type == "App::PropertyPlacement":
-        return App.Placement(value)
-    if property_type == "App::PropertyVector":
-        return App.Vector(value)
-    if property_type == "App::PropertyVectorList":
-        return [App.Vector(item) for item in list(value or [])]
-    if property_type.endswith("List"):
-        return list(value or [])
-    return value
-
-
-def _capture_bim_property_value(value: Any, property_type: str) -> Any:
-    if property_type in {"App::PropertyLink", "App::PropertyLinkChild"}:
-        return str(getattr(value, "Name", "") or "") if value is not None else ""
-    if property_type in {"App::PropertyLinkList", "App::PropertyLinkListChild"}:
-        return [str(item.Name) for item in list(value or [])]
-    return _copy_bim_property_value(value, property_type)
-
-
-def _resolve_bim_link_value(document: Any, value: Any, property_type: str) -> Any:
-    def resolve(name: Any) -> Any:
-        clean_name = str(name or "")
-        if not clean_name:
-            return None
-        target = document.getObject(clean_name)
-        if target is None:
-            raise RuntimeError(f"linked object {clean_name!r} was not restored")
-        return target
-
-    if property_type in {"App::PropertyLink", "App::PropertyLinkChild"}:
-        return resolve(value)
-    return [resolve(item) for item in list(value or [])]
-
-
-def _bim_rollback_states(objects: list[Any]) -> list[dict[str, Any]]:
-    """Capture the accepted assigned state before mutating native BIM objects."""
-
-    states: list[dict[str, Any]] = []
-    for obj in objects:
-        name = str(getattr(obj, "Name", "") or "")
-        if not name:
-            raise RuntimeError(
-                "Cannot capture rollback state for an unnamed BIM object."
-            )
-        properties: dict[str, dict[str, Any]] = {}
-        available = _properties(obj)
-        for property_name in _BIM_ASSIGNED_PROPERTIES:
-            if property_name not in available:
-                continue
-            property_type = str(obj.getTypeIdOfProperty(property_name) or "")
-            properties[property_name] = {
-                "type": property_type,
-                "value": _capture_bim_property_value(
-                    getattr(obj, property_name), property_type
-                ),
-            }
-        states.append(
-            {
-                "document": getattr(obj, "Document", None),
-                "name": name,
-                "type_id": str(getattr(obj, "TypeId", "") or ""),
-                "proxy_class": type(getattr(obj, "Proxy", None)).__name__,
-                "properties": properties,
-            }
-        )
-    return states
-
-
-def _bim_shapes_match(actual: Any, expected: Any) -> bool:
-    if bool(actual.isNull()) != bool(expected.isNull()):
-        return False
-    if actual.isNull():
-        return True
-    try:
-        if actual.isEqual(expected):
-            return True
-    except Exception:
-        pass
-    return (
-        str(actual.ShapeType) == str(expected.ShapeType)
-        and len(actual.Vertexes) == len(expected.Vertexes)
-        and len(actual.Edges) == len(expected.Edges)
-        and len(actual.Faces) == len(expected.Faces)
-        and len(actual.Solids) == len(expected.Solids)
-        and math.isclose(
-            float(actual.Volume),
-            float(expected.Volume),
-            rel_tol=1.0e-12,
-            abs_tol=1.0e-7,
-        )
-        and math.isclose(
-            float(actual.Area), float(expected.Area), rel_tol=1.0e-12, abs_tol=1.0e-7
-        )
-        and math.isclose(
-            float(actual.Length),
-            float(expected.Length),
-            rel_tol=1.0e-12,
-            abs_tol=1.0e-7,
-        )
-    )
-
-
-def _bim_property_values_match(actual: Any, expected: Any, property_type: str) -> bool:
-    if property_type == "Part::PropertyPartShape":
-        return _bim_shapes_match(actual, expected)
-    if property_type == "App::PropertyPlacement":
-        return all(
-            math.isclose(left, right, rel_tol=1.0e-12, abs_tol=1.0e-9)
-            for left, right in zip(_matrix_values(actual), _matrix_values(expected))
-        )
-    if property_type == "App::PropertyVector":
-        return all(
-            math.isclose(float(left), float(right), rel_tol=1.0e-12, abs_tol=1.0e-9)
-            for left, right in zip(
-                (actual.x, actual.y, actual.z),
-                (expected.x, expected.y, expected.z),
-            )
-        )
-    if property_type == "App::PropertyVectorList":
-        actual_items = list(actual or [])
-        expected_items = list(expected or [])
-        return len(actual_items) == len(expected_items) and all(
-            _bim_property_values_match(left, right, "App::PropertyVector")
-            for left, right in zip(actual_items, expected_items)
-        )
-    if property_type in {"App::PropertyLink", "App::PropertyLinkChild"}:
-        return (str(getattr(actual, "Name", "") or "") if actual else "") == str(
-            expected or ""
-        )
-    if property_type in {"App::PropertyLinkList", "App::PropertyLinkListChild"}:
-        return [str(item.Name) for item in list(actual or [])] == list(expected or [])
-    if property_type == "App::PropertyStringList":
-        return list(actual or []) == list(expected or [])
-    try:
-        return actual == expected
-    except Exception:
-        return False
-
-
-def _captured_bim_property(state: Mapping[str, Any], name: str) -> Any:
-    captured = state.get("properties", {}).get(name)
-    if not isinstance(captured, Mapping):
-        raise RuntimeError(
-            f"Accepted BIM object {state.get('name')!r} lost rollback property {name!r}."
-        )
-    return captured.get("value")
-
-
-def _recreate_missing_bim_objects(states: list[dict[str, Any]]) -> list[str]:
-    """Recreate native proxies removed before a failed deletion was raised."""
-
-    output_types: dict[str, str] = {}
-    for state in states:
-        output_name = str(_captured_bim_property(state, contracts.PROP_PROGRAM_OUTPUT))
-        output_type = str(_captured_bim_property(state, PROP_OUTPUT_TYPE))
-        if output_name and output_type != "bim_internal_base":
-            output_types[output_name] = output_type
-
-    recreated: list[str] = []
-    for state in states:
-        document = state["document"]
-        name = str(state["name"])
-        if document is None or document.getObject(name) is not None:
-            continue
-        output_name = str(_captured_bim_property(state, contracts.PROP_PROGRAM_OUTPUT))
-        output_type = str(_captured_bim_property(state, PROP_OUTPUT_TYPE))
-        if output_type == "bim_internal_base":
-            root_name = output_name.partition(".")[0]
-            root_type = output_types.get(root_name)
-            if root_type not in {"wall", "slab", "opening"}:
-                raise RuntimeError(
-                    f"Accepted BIM base {output_name!r} lost its owning output type."
-                )
-            obj = _create_bim_base_named(document, root_type, name, root_name)
-        else:
-            raw_definition = str(_captured_bim_property(state, PROP_DEFINITION) or "")
-            try:
-                definition = json.loads(raw_definition)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"Accepted BIM object {output_name!r} has no restorable definition."
-                ) from exc
-            if not isinstance(definition, dict):
-                raise RuntimeError(
-                    f"Accepted BIM object {output_name!r} has malformed rollback definition."
-                )
-            obj = _create_bim_object(document, output_type, name, definition)
-        if str(getattr(obj, "Name", "") or "") != name:
-            raise RuntimeError(
-                f"FreeCAD recreated BIM object {name!r} as {getattr(obj, 'Name', '')!r}."
-            )
-        recreated.append(name)
-    return recreated
-
-
-def _restore_bim_rollback_states(states: list[dict[str, Any]]) -> list[str]:
-    """Restore and verify native BIM assigned state after a failed publication."""
-
-    restored: list[str] = []
-    failures: list[str] = []
-    deferred_links: list[tuple[Any, str, dict[str, Any]]] = []
-    deferred_shapes: list[tuple[Any, str, dict[str, Any]]] = []
-    resolved: list[tuple[Any, dict[str, Any]]] = []
-    try:
-        _recreate_missing_bim_objects(states)
-    except Exception as exc:
-        failures.append(f"native object recreation: {type(exc).__name__}: {exc}")
-    for state in states:
-        document = state["document"]
-        name = str(state["name"])
-        obj = document.getObject(name) if document is not None else None
-        if obj is None:
-            failures.append(f"{name}: accepted object disappeared")
-            continue
-        if str(getattr(obj, "TypeId", "") or "") != str(state["type_id"]):
-            failures.append(f"{name}: native type changed during rollback")
-            continue
-        if type(getattr(obj, "Proxy", None)).__name__ != str(state["proxy_class"]):
-            failures.append(f"{name}: native proxy changed during rollback")
-            continue
-        resolved.append((obj, state))
-        for property_name, captured in state["properties"].items():
-            property_type = str(captured["type"])
-            if property_type == "Part::PropertyPartShape":
-                deferred_shapes.append((obj, property_name, captured))
-            elif property_type in _BIM_LINK_PROPERTY_TYPES:
-                deferred_links.append((obj, property_name, captured))
-            else:
-                try:
-                    if property_name not in _properties(obj):
-                        obj.addProperty(
-                            property_type,
-                            property_name,
-                            "VibeCAD",
-                            "Restored accepted BIM VibeScript state.",
-                        )
-                    setattr(
-                        obj,
-                        property_name,
-                        _copy_bim_property_value(captured["value"], property_type),
-                    )
-                except Exception as exc:
-                    failures.append(
-                        f"{name}.{property_name}: {type(exc).__name__}: {exc}"
-                    )
-    for obj, property_name, captured in deferred_links:
-        try:
-            if property_name not in _properties(obj):
-                obj.addProperty(
-                    str(captured["type"]),
-                    property_name,
-                    "VibeCAD",
-                    "Restored accepted BIM VibeScript state.",
-                )
-            setattr(
-                obj,
-                property_name,
-                _resolve_bim_link_value(
-                    obj.Document, captured["value"], str(captured["type"])
-                ),
-            )
-        except Exception as exc:
-            failures.append(f"{obj.Name}.{property_name}: {type(exc).__name__}: {exc}")
-    for obj, property_name, captured in deferred_shapes:
-        try:
-            setattr(obj, property_name, captured["value"].copy())
-        except Exception as exc:
-            failures.append(f"{obj.Name}.{property_name}: {type(exc).__name__}: {exc}")
-    for obj, state in resolved:
-        name = str(state["name"])
-        for property_name, captured in state["properties"].items():
-            try:
-                actual = getattr(obj, property_name)
-                if not _bim_property_values_match(
-                    actual, captured["value"], str(captured["type"])
-                ):
-                    raise RuntimeError("restored assigned state does not match")
-            except Exception as exc:
-                failures.append(f"{name}.{property_name}: {type(exc).__name__}: {exc}")
-        restored.append(name)
-    if failures:
-        raise RuntimeError(
-            "BIM publication failed and accepted assigned state could not be fully "
-            f"restored: {'; '.join(failures)}"
-        )
-    return restored
-
-
-def _remove_failed_bim_creations(doc: Any, object_names: list[str]) -> list[str]:
-    leftovers = [doc.getObject(name) for name in object_names]
-    return _remove_owned_objects(doc, [obj for obj in leftovers if obj is not None])
-
-
-def _remove_failed_domain_creations(doc: Any, object_names: list[str]) -> list[str]:
-    """Remove live objects created before a domain publication failure."""
-
-    leftovers = [doc.getObject(name) for name in object_names]
-    return _remove_owned_objects(doc, [obj for obj in leftovers if obj is not None])
-
-
-def _bim_apply_group(
-    obj: Any,
-    graph: Mapping[str, Any],
-    graph_ids: Any,
-    *,
-    output_name: str,
-) -> None:
-    if not hasattr(obj, "Group"):
-        if graph_ids:
-            raise RuntimeError(f"BIM output {output_name!r} cannot own a native Group.")
-        return
-    if not isinstance(graph_ids, list):
-        raise RuntimeError(
-            f"BIM output {output_name!r} has malformed Group identities."
-        )
-    current = list(getattr(obj, "Group", []) or [])
-    for graph_id in graph_ids:
-        child = graph.get(str(graph_id))
-        if child is None:
-            raise RuntimeError(
-                f"BIM output {output_name!r} refers to missing child graph {graph_id!r}."
-            )
-        if child not in current:
-            current.append(child)
-    obj.Group = current
-
-
-def _configure_bim(
-    obj: Any,
-    item: Mapping[str, Any],
-    outputs: Mapping[str, Any],
-    bases: Mapping[str, Any],
-    graph: Mapping[str, Any],
-) -> None:
-    import Part
-
-    output_name = str(item["name"])
-    output_type = str(item["type"])
-    data = _bim_data(item)
-    obj.Placement = _placement(data["placement"])
-    if output_type == "site":
-        obj.Address = str(data["address"])
-        obj.PostalCode = str(data["postal_code"])
-        obj.City = str(data["city"])
-        obj.Region = str(data["region"])
-        obj.Country = str(data["country"])
-        obj.Latitude = float(data["latitude"])
-        obj.Longitude = float(data["longitude"])
-        obj.Elevation = float(data["elevation"])
-        obj.Shape = Part.Shape()
-    elif output_type == "building":
-        obj.IfcType = "Building"
-        obj.CompositionType = "ELEMENT"
-        obj.BuildingType = str(data["building_type"])
-        obj.Shape = item["detached_shape"] if data["shape_present"] else Part.Shape()
-    elif output_type == "level":
-        obj.IfcType = "Building Storey"
-        obj.CompositionType = "ELEMENT"
-        obj.Height = float(data["height"])
-        obj.LevelOffset = float(data["level_offset"])
-        obj.Shape = item["detached_shape"] if data["shape_present"] else Part.Shape()
-    elif output_type == "wall":
-        obj.Base = bases[output_name]
-        obj.Width = float(data["width"])
-        obj.Height = float(data["height"])
-        obj.Align = str(data["alignment"]).title()
-        obj.Offset = float(data["offset"])
-        obj.IfcType = "Wall"
-        obj.Shape = item["detached_shape"]
-    elif output_type == "slab":
-        obj.Base = bases[output_name]
-        obj.Height = float(data["thickness"])
-        obj.Normal = _native_vector(data["normal"], f"{output_name} normal")
-        obj.IfcType = "Slab"
-        obj.Shape = item["detached_shape"]
-    elif output_type == "structure":
-        arguments = list(_definition(item).get("arguments") or [])
-        obj.Length = float(data["length"])
-        obj.Width = float(data["width"])
-        obj.Height = float(data["height"])
-        obj.IfcType = str(data["ifc_type"])
-        obj.Shape = item["detached_shape"]
-        if len(arguments) != 4:
-            raise RuntimeError(f"BIM Structure {output_name!r} lost its dimensions.")
-    else:
-        host = graph.get(str(data["host_graph_id"]))
-        if host is None:
-            raise RuntimeError(f"BIM Opening {output_name!r} lost its host Wall.")
-        obj.Base = bases[output_name]
-        obj.Width = float(data["width"])
-        obj.Height = float(data["height"])
-        obj.HoleDepth = float(data["hole_depth"])
-        obj.WindowParts = []
-        obj.Hosts = [host]
-        obj.IfcType = "Opening Element"
-        obj.Shape = Part.Shape()
-    _bim_apply_group(
-        obj,
-        graph,
-        data["group_graph_ids"],
-        output_name=output_name,
-    )
-    if not _bim_object_compatible(obj, item):
-        raise RuntimeError(
-            f"Published BIM output {output_name!r} changed native Arch type."
-        )
-    if output_type in {"wall", "slab", "structure"}:
-        if obj.Shape.isNull() or not obj.Shape.isValid() or len(obj.Shape.Solids) < 1:
-            raise RuntimeError(
-                f"Published BIM output {output_name!r} is not a valid solid."
-            )
-    if output_type == "opening":
-        if (
-            list(obj.Hosts) != [graph[str(data["host_graph_id"])]]
-            or not obj.Shape.isNull()
-        ):
-            raise RuntimeError(
-                f"Published BIM Opening {output_name!r} changed host semantics."
-            )
-    _add_string_property(
-        obj,
-        "VibeCADBIMValidation",
-        "Validated isolated native BIM object, relationship, and geometry state.",
-    )
-    obj.VibeCADBIMValidation = json.dumps(
-        data,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
     )
 
 
@@ -7845,14 +9023,30 @@ def _configure_object(
     outputs: Mapping[str, Any],
     prepared: Mapping[str, Any],
     robot_trajectory_swaps: list[dict[str, Any]],
-) -> None:
+    assembly_fastener_sources: Mapping[str, Any] | None = None,
+) -> list[Any]:
     output_type = str(item["type"])
+    owned_resources: list[Any] = []
     if prepared["pack"].domain == "draft":
         _configure_draft(doc, obj, item, outputs)
-    elif prepared["pack"].domain == "bim":
-        raise RuntimeError("BIM publication requires its validated hierarchy context.")
     elif prepared["pack"].domain == "surface":
         _configure_surface(obj, item)
+    elif (
+        prepared["pack"].domain == "mesh"
+        and isinstance(item.get("meshpart_data"), Mapping)
+        and output_type == "mesh"
+    ):
+        _configure_mesh(
+            obj,
+            item,
+            data_key="meshpart_data",
+            validation_property=PROP_MESHPART_VALIDATION,
+        )
+    elif (
+        prepared["pack"].domain == "mesh"
+        and isinstance(item.get("meshpart_data"), Mapping)
+    ):
+        _configure_meshpart_shape(obj, item)
     elif prepared["pack"].domain == "mesh":
         _configure_mesh(obj, item)
     elif prepared["pack"].domain == "meshpart" and output_type == "mesh":
@@ -7881,21 +9075,45 @@ def _configure_object(
     elif output_type == "mesh":
         obj.Mesh = item["detached_mesh"]
     elif output_type == "component_link":
-        _configure_component(doc, obj, item, outputs, prepared)
+        owned_resources = _configure_component(
+            doc,
+            obj,
+            item,
+            outputs,
+            prepared,
+            assembly_fastener_sources,
+        )
     elif output_type == "joint":
         _configure_joint(obj, item, outputs, prepared)
+    elif (
+        prepared["pack"].domain == "assembly"
+        and output_type == "mechanism_verification"
+    ):
+        _configure_assembly_mechanism_verification(obj, item, outputs)
     elif prepared["pack"].domain == "assembly" and output_type == "motion":
         _configure_assembly_motion(obj, item, outputs)
     elif prepared["pack"].domain == "assembly" and output_type == "simulation":
         _configure_assembly_simulation(obj, item, outputs)
     elif prepared["pack"].domain == "assembly" and output_type == "exploded_view":
-        _configure_assembly_exploded_view(doc, obj, item, outputs, prepared)
+        owned_resources = _configure_assembly_exploded_view(
+            doc,
+            obj,
+            item,
+            outputs,
+            prepared,
+        )
     elif prepared["pack"].domain == "assembly" and output_type == "bom":
-        _configure_assembly_bom(obj, item, outputs, prepared)
+        owned_resources = _configure_assembly_bom(
+            obj,
+            item,
+            outputs,
+            prepared,
+        )
     elif output_type == "sheet":
         _configure_sheet(obj, item)
     elif output_type == "solver_diagnostics":
         _configure_solver_diagnostics(obj, item)
+    return owned_resources
 
 
 def _surface_still_matches(service: Any, prepared: Mapping[str, Any]) -> None:
@@ -7916,7 +9134,7 @@ def _surface_still_matches(service: Any, prepared: Mapping[str, Any]) -> None:
     )
     if observed_tuple != expected_tuple:
         raise RuntimeError(
-            "The workbench or modeling engine changed while the domain worker ran."
+            "The active workbench changed while the VibeScript worker ran."
         )
 
 
@@ -7989,6 +9207,19 @@ def _publish_material_candidate(
     desired_names = {str(item["name"]) for item in validated["outputs"]}
     retired = _retired_program_objects(doc, prepared, desired_names)
     internal = _program_objects(doc, str(prepared["program_id"]), "material")
+    retired_deletion = _prepare_timeline_deletion(doc, retired)
+    retired_targets = list(retired_deletion["delete_objects"])
+    retired_uses = _external_uses(
+        doc,
+        retired_targets,
+        [*internal, *retired_targets],
+    )
+    if retired_uses:
+        raise _reference_error(
+            "Cannot retire Material VibeScript outputs while human-created or "
+            "foreign document objects still reference them",
+            retired_uses,
+        )
     updated = [
         existing[str(item["name"])]
         for item in validated["outputs"]
@@ -8015,6 +9246,13 @@ def _publish_material_candidate(
                 f"Material output {name!r} cannot target another managed Material carrier."
             )
         channel = "physical" if item["type"] == "material_assignment" else "appearance"
+        inline_presentation = _partdesign_presentation_state(target)
+        if inline_presentation is not None and inline_presentation.get(channel) is not None:
+            raise RuntimeError(
+                f"Material output {name!r} cannot own {channel} state on Part Design "
+                f"output {target.Name!r}; that channel is already source-owned by its "
+                "Part Design program."
+            )
         key = (str(target.Name), channel)
         if key in desired_keys:
             raise RuntimeError(
@@ -8107,6 +9345,16 @@ def _publish_material_candidate(
                 if isinstance(validation, dict)
                 else []
             )
+            if output_type == "appearance":
+                view = getattr(target, "ViewObject", None)
+                if view is None:
+                    raise RuntimeError(
+                        f"Appearance target {target.Name!r} has no live view provider."
+                    )
+                controlled = _effective_appearance_controlled_properties(
+                    view,
+                    controlled,
+                )
             channel = (
                 "physical" if output_type == "material_assignment" else "appearance"
             )
@@ -8120,13 +9368,24 @@ def _publish_material_candidate(
             obj.Label = _label(item, output_name)
             _set_metadata(obj, prepared, output_name, output_type, _definition(item))
             _configure_material_carrier(obj, item, target, baseline, prepared)
+            _mark_timeline_operation(
+                obj,
+                context=f"Material output {output_name!r}",
+            )
+            if _is_current_transaction_timeline_object(doc, obj):
+                _publish_new_timeline_resource_block(
+                    doc,
+                    obj,
+                    [],
+                    context=f"Material output {output_name!r}",
+                )
             outputs[output_name] = obj
 
         downstream_refresh = _refresh_external_consumers(
             downstream_uses,
             revision=str(prepared["revision"]),
         )
-        removed = _remove_owned_objects(doc, retired)
+        removed = _remove_timeline_deletion(doc, retired_deletion)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
@@ -8947,12 +10206,132 @@ def _publish_cam_candidate(
         desired_keys.add(f"{item['name']}.bit")
 
     owned_by_key = _cam_auxiliary_objects(doc, prepared)
-    retired = [
-        obj
-        for key, obj in owned_by_key.items()
-        if key not in desired_keys
-    ]
-    retired_uses = _external_uses(doc, retired, internal_before)
+    job = existing.get(job_name)
+    job_reconciliation = (
+        _capture_timeline_resource_reconciliation(
+            doc,
+            job,
+            context=f"CAM Job {job_name!r}",
+        )
+        if job is not None
+        else None
+    )
+    existing_job_resource_identities = {
+        tuple(identity)
+        for identity in (
+            list(job_reconciliation["resource_identities"])
+            if job_reconciliation is not None
+            else []
+        )
+    }
+    operation_names = {str(item["name"]) for item in operation_items}
+    intended_job_resource_keys = (
+        desired_keys - operation_names - {job_name}
+    )
+
+    def semantic_root(candidate: Any) -> Any:
+        current = candidate
+        visited: set[tuple[str, int]] = set()
+        while _timeline_role(
+            current,
+            context=f"CAM object {candidate.Name!r}",
+        ) == "resource":
+            identity = _deletion_object_identity(
+                current,
+                context=f"CAM object {candidate.Name!r}",
+            )
+            if identity in visited:
+                raise RuntimeError("The accepted CAM resource graph is cyclic.")
+            visited.add(identity)
+            owner = _timeline_owner(
+                current,
+                context=f"CAM object {candidate.Name!r}",
+            )
+            if owner is None:
+                raise RuntimeError(
+                    f"CAM resource {candidate.Name!r} has no semantic owner."
+                )
+            current = owner
+        return current
+
+    # Earlier development builds published Stock, controllers, tool bits, and
+    # model clones as separate History roots.  They cannot be silently
+    # re-parented because that would bypass native creation provenance.
+    # Recreate only those exact identities, while preserving the Job and its
+    # public machining operations.
+    replacement_roots: list[Any] = []
+    for key in sorted(intended_job_resource_keys):
+        candidate = owned_by_key.get(key)
+        if candidate is None:
+            continue
+        identity = _deletion_object_identity(
+            candidate,
+            context=f"CAM resource {key!r}",
+        )
+        if identity in existing_job_resource_identities:
+            continue
+        root_candidate = semantic_root(candidate)
+        root_key = str(
+            getattr(root_candidate, contracts.PROP_PROGRAM_OUTPUT, "") or ""
+        )
+        if root_candidate is job or root_key in operation_names:
+            raise RuntimeError(
+                f"CAM resource {key!r} has incompatible accepted History "
+                "ownership and cannot be migrated safely."
+            )
+        if all(root_candidate is not existing_root for existing_root in replacement_roots):
+            replacement_roots.append(root_candidate)
+
+    replacement_root_set = set(replacement_roots)
+    for key, candidate in list(owned_by_key.items()):
+        if semantic_root(candidate) not in replacement_root_set:
+            continue
+        owned_by_key.pop(key, None)
+        existing.pop(key, None)
+
+    retired_job_resource_identities = {
+        tuple(identity)
+        for identity, key in zip(
+            (
+                list(job_reconciliation["resource_identities"])
+                if job_reconciliation is not None
+                else []
+            ),
+            (
+                list(job_reconciliation["resource_keys"])
+                if job_reconciliation is not None
+                else []
+            ),
+        )
+        if str(key) not in desired_keys
+    }
+    retired_roots = list(replacement_roots)
+    for key, obj in list(owned_by_key.items()):
+        if key in desired_keys:
+            continue
+        identity = _deletion_object_identity(
+            obj,
+            context=f"Retired CAM object {key!r}",
+        )
+        if identity in retired_job_resource_identities:
+            continue
+        root_candidate = semantic_root(obj)
+        if root_candidate is job:
+            raise RuntimeError(
+                f"Retired CAM object {key!r} is absent from the captured Job "
+                "resource graph."
+            )
+        if all(root_candidate is not existing_root for existing_root in retired_roots):
+            retired_roots.append(root_candidate)
+
+    retired = retired_roots
+    retired_deletion = _prepare_timeline_deletion(doc, retired)
+    retired_targets = list(retired_deletion["delete_objects"])
+    retired_uses = _external_uses(
+        doc,
+        retired_targets,
+        [*internal_before, *retired_targets],
+    )
     if retired_uses:
         raise _reference_error(
             "Cannot retire native CAM objects still referenced by human-created or foreign objects",
@@ -8962,6 +10341,7 @@ def _publish_cam_candidate(
     roots: dict[str, Any] = {}
     auxiliary: dict[str, Any] = {}
     created: list[Any] = []
+    removed: list[str] = []
     transaction_open = False
 
     def ensure_auxiliary(
@@ -8986,30 +10366,14 @@ def _publish_cam_candidate(
                 f"Publish CAM VibeScript: {prepared['program_name']}"
             )
             transaction_open = True
-
-        for item in items:
-            name = str(item["name"])
-            output_type = str(item["type"])
-            data = _cam_data(item)
-            obj = existing.get(name)
-            if obj is None:
-                obj = cam.create_root(
-                    doc,
-                    _internal_name(prepared, name),
-                    output_type,
-                    data,
-                )
-                created.append(obj)
-            elif str(getattr(obj, "TypeId", "") or "") != cam.root_type(output_type):
-                raise RuntimeError(
-                    f"Stable CAM output {name!r} cannot change native type."
-                )
-            _unfreeze_object(obj, "CAM")
-            if output_type != "toolpath" and not cam.proxy_is_compatible(
-                obj, output_type, data
-            ):
-                cam.attach_root_proxy(obj, output_type, data)
-            roots[name] = obj
+        if job_reconciliation is not None:
+            _stage_timeline_resource_reconciliation(
+                doc,
+                job,
+                job_reconciliation,
+                context=f"CAM Job {job_name!r}",
+            )
+        removed.extend(_remove_timeline_deletion(doc, retired_deletion))
 
         operations_group = ensure_auxiliary(
             f"{job_name}.operations",
@@ -9026,11 +10390,6 @@ def _publish_cam_candidate(
             "App::DocumentObjectGroup",
             lambda name: doc.addObject("App::DocumentObjectGroup", name),
         )
-        setup_sheet = ensure_auxiliary(
-            f"{job_name}.setup_sheet",
-            "App::FeaturePython",
-            lambda name: cam.create_setup_sheet(doc, name),
-        )
         for obj, kind in (
             (operations_group, "group:operations"),
             (model_group, "group:model"),
@@ -9038,9 +10397,6 @@ def _publish_cam_candidate(
         ):
             _unfreeze_object(obj, "CAM")
             cam.mark_proxy_kind(obj, kind)
-        _unfreeze_object(setup_sheet, "CAM")
-        if str(getattr(setup_sheet, cam.PROP_PROXY_KIND, "") or "") != "setup_sheet":
-            cam.attach_proxy_kind(setup_sheet, "setup_sheet")
 
         model_objects: dict[tuple[str, str], Any] = {}
         for reference_key, key in model_key_by_reference.items():
@@ -9123,10 +10479,93 @@ def _publish_cam_candidate(
                 setattr(bit, property_name, value)
             tool_bits[name] = bit
 
-        job = roots[job_name]
+        # A CAM Job is one exact History block containing its native setup
+        # resources.  Public machining operations are separate later blocks.
+        # Create the complete Job block first so native creation provenance is
+        # contiguous; each operation is created and published only after the
+        # Job block has consumed that prefix.
+        job_resource_root_items = [
+            stock_item,
+            *tool_items,
+            toolpath_item,
+        ]
+        if (
+            len(job_resource_root_items) + len(operation_items) + 1
+            != len(items)
+            or {
+                str(item["name"])
+                for item in [
+                    *job_resource_root_items,
+                    *operation_items,
+                    job_item,
+                ]
+            }
+            != set(by_name)
+        ):
+            raise RuntimeError(
+                "CAM publication root chronology does not cover the exact "
+                "validated job graph."
+            )
+        for item in job_resource_root_items:
+            name = str(item["name"])
+            output_type = str(item["type"])
+            data = _cam_data(item)
+            obj = existing.get(name)
+            if obj is None:
+                obj = cam.create_root(
+                    doc,
+                    _internal_name(prepared, name),
+                    output_type,
+                    data,
+                )
+                created.append(obj)
+            elif str(getattr(obj, "TypeId", "") or "") != cam.root_type(
+                output_type
+            ):
+                raise RuntimeError(
+                    f"Stable CAM output {name!r} cannot change native type."
+                )
+            _unfreeze_object(obj, "CAM")
+            if output_type != "toolpath" and not cam.proxy_is_compatible(
+                obj,
+                output_type,
+                data,
+            ):
+                cam.attach_root_proxy(obj, output_type, data)
+            roots[name] = obj
+
+        setup_sheet = ensure_auxiliary(
+            f"{job_name}.setup_sheet",
+            "App::FeaturePython",
+            lambda name: cam.create_setup_sheet(doc, name),
+        )
+        _unfreeze_object(setup_sheet, "CAM")
+        if str(getattr(setup_sheet, cam.PROP_PROXY_KIND, "") or "") != "setup_sheet":
+            cam.attach_proxy_kind(setup_sheet, "setup_sheet")
+
+        job_data = _cam_data(job_item)
+        job = existing.get(job_name)
+        if job is None:
+            job = cam.create_root(
+                doc,
+                _internal_name(prepared, job_name),
+                "job",
+                job_data,
+            )
+            created.append(job)
+        elif str(getattr(job, "TypeId", "") or "") != cam.root_type("job"):
+            raise RuntimeError(
+                f"Stable CAM output {job_name!r} cannot change native type."
+            )
+        _unfreeze_object(job, "CAM")
+        if not cam.proxy_is_compatible(job, "job", job_data):
+            cam.attach_root_proxy(job, "job", job_data)
+        roots[job_name] = job
+
         stock = roots[str(stock_item["name"])]
         toolpath = roots[str(toolpath_item["name"])]
-        job_data = _cam_data(job_item)
+        from Path.Base import Util as path_timeline
+
         stock_data = _cam_data(stock_item)
         postprocess = dict(_cam_data(toolpath_item)["postprocess"])
         _cam_clear_expressions(job, {"GeometryTolerance"})
@@ -9182,54 +10621,21 @@ def _publish_cam_candidate(
             obj.LeadOutFeed = obj.HorizFeed
             obj.Tool = tool_bits[name]
 
-        for item in operation_items:
-            name = str(item["name"])
-            obj = roots[name]
-            data = _cam_data(item)
-            properties = dict(data["properties"])
-            _cam_clear_expressions(
-                obj,
-                {"StartDepth", "FinalDepth", "StepDown", "PeckDepth"},
-            )
-            obj.Label = str(data["label"])
-            obj.ToolController = roots[str(data["tool_output"])]
-            grouped: dict[tuple[str, str], list[str]] = {}
-            for descriptor in list(data["selections"]):
-                key = _cam_reference_key(dict(descriptor["source"]))
-                grouped.setdefault(key, []).append(str(descriptor["face"]))
-            obj.Base = [
-                (model_objects[key], faces) for key, faces in grouped.items()
-            ]
-            obj.StartDepth = f"{float(properties['start_depth_mm']):.17g} mm"
-            obj.FinalDepth = f"{float(properties['final_depth_mm']):.17g} mm"
-            obj.StepDown = f"{float(properties.get('step_down_mm', 0.0)):.17g} mm"
-            obj.StepOver = int(properties.get("step_over_percent", 0))
-            if "side" in properties:
-                obj.Side = str(properties["side"])
-            if "boundary" in properties:
-                obj.BoundaryShape = str(properties["boundary"])
-            obj.PeckEnabled = bool(properties.get("peck_enabled", False))
-            obj.PeckDepth = f"{float(properties.get('peck_depth_mm', 0.0)):.17g} mm"
-            obj.Strategy = str(data["strategy"]).title()
-            obj.CoolantMode = str(properties["coolant"])
-            obj.Path = item["detached_path"]
-
         toolpath.Label = str(_cam_data(toolpath_item)["label"])
         toolpath.Path = toolpath_item["detached_path"]
         operations_group.Label = "Operations"
-        operations_group.Group = [roots[str(item["name"])] for item in operation_items]
         model_group.Label = "Model"
         model_group.Group = list(model_objects.values())
         tools_group.Label = "Tools"
         tools_group.Group = [roots[str(item["name"])] for item in tool_items]
         setup_sheet.Label = "Setup Sheet"
 
-        all_objects = {**roots, **auxiliary}
         definition_by_root = {
             str(item["name"]): _definition(item) for item in items
         }
         type_by_root = {str(item["name"]): str(item["type"]) for item in items}
-        for key, obj in all_objects.items():
+
+        def set_publication_metadata(key: str, obj: Any) -> None:
             root = key.partition(".")[0]
             definition = definition_by_root[root]
             output_type = type_by_root[root] if key == root else "cam_auxiliary"
@@ -9251,6 +10657,162 @@ def _publish_cam_candidate(
                     allow_nan=False,
                 ),
             )
+
+        # Metadata is part of the exact resource identity used by History and
+        # therefore precedes semantic publication.  Freezing remains the final
+        # step, after the Operations group receives its public members.
+        for key, obj in {**roots, **auxiliary}.items():
+            set_publication_metadata(key, obj)
+
+        job_resources = [
+            *list(model_objects.values()),
+            model_group,
+            stock,
+            *[
+                resource
+                for item in tool_items
+                for resource in (
+                    tool_bits[str(item["name"])],
+                    roots[str(item["name"])],
+                )
+            ],
+            tools_group,
+            operations_group,
+            setup_sheet,
+            toolpath,
+        ]
+        path_timeline.markTimelineOperation(job)
+        for resource in job_resources:
+            path_timeline.markTimelineResource(resource, job)
+
+        previously_replaced = list(
+            getattr(job, "VibeCADTimelineReplacedInputs", ()) or ()
+        )
+        replaced_sources: list[Any] = []
+        for clone in model_objects.values():
+            source = getattr(clone, "VibeCADCAMOriginal", None)
+            view = getattr(source, "ViewObject", None)
+            if (
+                source is None
+                or getattr(source, "Document", None) is not doc
+                or doc.getObject(source.Name) is not source
+            ):
+                raise RuntimeError(
+                    f"CAM model clone {clone.Name!r} lost its exact public source."
+                )
+            if (
+                bool(getattr(view, "Visibility", False))
+                or any(source is previous for previous in previously_replaced)
+            ) and all(source is not existing_source for existing_source in replaced_sources):
+                replaced_sources.append(source)
+        path_timeline.markTimelineReplacedInputs(job, replaced_sources)
+
+        retired_job_resources: list[Any]
+        if job_reconciliation is None:
+            _publish_new_timeline_resource_block(
+                doc,
+                job,
+                job_resources,
+                context=f"CAM Job {job_name!r}",
+            )
+            retired_job_resources = []
+        else:
+            retired_job_resources = (
+                _finalize_timeline_resource_reconciliation(
+                    doc,
+                    job,
+                    job_reconciliation,
+                    job_resources,
+                    context=f"CAM Job {job_name!r}",
+                )
+            )
+        removed.extend(
+            _remove_reconciled_timeline_resources(
+                doc,
+                retired_job_resources,
+                context=f"CAM Job {job_name!r}",
+            )
+        )
+        # Publication verifies that pre-existing History state is unchanged
+        # while it consumes the new semantic block.  Apply the declared visual
+        # replacement only after that atomic check succeeds.
+        for source in replaced_sources:
+            view = getattr(source, "ViewObject", None)
+            if view is not None:
+                view.Visibility = False
+
+        # Each public machining operation is a later, independently editable
+        # History step.  Create, configure, and publish it before creating the
+        # next one so provisional creation generations cannot interleave.
+        for item in operation_items:
+            name = str(item["name"])
+            data = _cam_data(item)
+            obj = existing.get(name)
+            if obj is None:
+                obj = cam.create_root(
+                    doc,
+                    _internal_name(prepared, name),
+                    "operation",
+                    data,
+                )
+                created.append(obj)
+            elif str(getattr(obj, "TypeId", "") or "") != cam.root_type(
+                "operation"
+            ):
+                raise RuntimeError(
+                    f"Stable CAM output {name!r} cannot change native type."
+                )
+            _unfreeze_object(obj, "CAM")
+            if not cam.proxy_is_compatible(obj, "operation", data):
+                cam.attach_root_proxy(obj, "operation", data)
+            roots[name] = obj
+
+            properties = dict(data["properties"])
+            _cam_clear_expressions(
+                obj,
+                {"StartDepth", "FinalDepth", "StepDown", "PeckDepth"},
+            )
+            obj.Label = str(data["label"])
+            obj.ToolController = roots[str(data["tool_output"])]
+            grouped: dict[tuple[str, str], list[str]] = {}
+            for descriptor in list(data["selections"]):
+                key = _cam_reference_key(dict(descriptor["source"]))
+                grouped.setdefault(key, []).append(str(descriptor["face"]))
+            obj.Base = [
+                (model_objects[key], faces) for key, faces in grouped.items()
+            ]
+            obj.StartDepth = f"{float(properties['start_depth_mm']):.17g} mm"
+            obj.FinalDepth = f"{float(properties['final_depth_mm']):.17g} mm"
+            obj.StepDown = (
+                f"{float(properties.get('step_down_mm', 0.0)):.17g} mm"
+            )
+            obj.StepOver = int(properties.get("step_over_percent", 0))
+            if "side" in properties:
+                obj.Side = str(properties["side"])
+            if "boundary" in properties:
+                obj.BoundaryShape = str(properties["boundary"])
+            obj.PeckEnabled = bool(properties.get("peck_enabled", False))
+            obj.PeckDepth = (
+                f"{float(properties.get('peck_depth_mm', 0.0)):.17g} mm"
+            )
+            obj.Strategy = str(data["strategy"]).title()
+            obj.CoolantMode = str(properties["coolant"])
+            obj.Path = item["detached_path"]
+            set_publication_metadata(name, obj)
+            path_timeline.markTimelineOperation(obj)
+            if _is_created_timeline_object(doc, obj, created):
+                _publish_new_timeline_resource_block(
+                    doc,
+                    obj,
+                    [],
+                    context=f"CAM machining operation {obj.Name!r}",
+                )
+
+        operations_group.Group = [
+            roots[str(item["name"])] for item in operation_items
+        ]
+        all_objects = {**roots, **auxiliary}
+        for key, obj in all_objects.items():
             _cam_publication_checkpoint("before_freeze", key, obj)
             _freeze_object(obj, "CAM")
 
@@ -9258,7 +10820,6 @@ def _publish_cam_candidate(
             downstream_uses,
             revision=str(prepared["revision"]),
         )
-        removed = _remove_owned_objects(doc, retired)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
@@ -9654,11 +11215,15 @@ def _remove_techdraw_objects(doc: Any, objects: list[Any]) -> list[str]:
             or target_types[name] != "TechDraw::DrawProjGroupItem"
         ):
             continue
+        # DrawProjGroup.Views is the native ownership contract.  A projection
+        # item's generic InList is not authoritative after History has staged
+        # its resource block for deletion and may already omit the collection.
         parents = [
-            parent
-            for parent in list(getattr(child, "InList", []) or [])
-            if str(getattr(parent, "TypeId", "") or "")
+            candidate
+            for candidate in list(doc.Objects)
+            if str(getattr(candidate, "TypeId", "") or "")
             == "TechDraw::DrawProjGroup"
+            and child in list(candidate.Views or [])
         ]
         if len(parents) != 1:
             raise RuntimeError(
@@ -9697,6 +11262,26 @@ def _remove_techdraw_objects(doc: Any, objects: list[Any]) -> list[str]:
     return removed
 
 
+def _remove_techdraw_timeline_deletion(
+    doc: Any,
+    deletion: Mapping[str, Any],
+) -> list[str]:
+    """Consume one native deletion plan using TechDraw's required APIs."""
+
+    # Delete public owners before their internal resources.  Transaction undo
+    # then restores resources first, so Page.Template, projection-group Views,
+    # and dimension references can resolve their exact targets in one pass.
+    removed = _remove_techdraw_objects(
+        doc,
+        [
+            *list(deletion["root_objects"]),
+            *list(deletion["resource_objects"]),
+        ],
+    )
+    _finish_timeline_deletion(doc, deletion)
+    return removed
+
+
 def _publish_techdraw_candidate(
     service: Any,
     prepared: Mapping[str, Any],
@@ -9715,7 +11300,6 @@ def _publish_techdraw_candidate(
     rollback_names = {str(state["name"]) for state in rollback_states}
     desired_names = set(by_name)
     retired = _retired_program_objects(doc, prepared, desired_names)
-    retired_names = {str(obj.Name) for obj in retired}
     outputs: dict[str, Any] = {}
     created: list[Any] = []
 
@@ -9744,13 +11328,30 @@ def _publish_techdraw_candidate(
             updated.append(obj)
 
     page_owner = {}
+    page_reconciliations: dict[str, dict[str, Any]] = {}
+    page_template_output: dict[str, str] = {}
     for item in items:
         if str(item["type"]) != "page":
             continue
+        page_name = str(item["name"])
+        page_template_output[page_name] = str(
+            _techdraw_data(item)["template_output"]
+        )
+        page = existing.get(page_name)
+        if page is not None:
+            page_reconciliations[page_name] = (
+                _capture_timeline_resource_reconciliation(
+                    doc,
+                    page,
+                    context=f"TechDraw Page {page_name!r}",
+                )
+            )
         for content_name in list(_techdraw_data(item)["content_outputs"]):
-            page_owner[str(content_name)] = str(item["name"])
+            page_owner[str(content_name)] = page_name
 
     desired_child_maps: dict[str, dict[str, Any]] = {}
+    retired_projection_children: dict[str, list[Any]] = {}
+    projection_reconciliations: dict[str, dict[str, Any]] = {}
     for item in items:
         if str(item["type"]) != "projection":
             continue
@@ -9758,6 +11359,13 @@ def _publish_techdraw_candidate(
         group = existing.get(name)
         if group is None:
             continue
+        projection_reconciliations[name] = (
+            _capture_timeline_resource_reconciliation(
+                doc,
+                group,
+                context=f"TechDraw Projection {name!r}",
+            )
+        )
         existing_children = _techdraw_projection_child_map(group)
         desired_types = {
             _techdraw_projection_type(direction): direction
@@ -9771,23 +11379,71 @@ def _publish_techdraw_candidate(
                 )
             direction = desired_types.get(native_direction)
             if direction is None:
-                if str(child.Name) not in retired_names:
-                    retired.append(child)
-                    retired_names.add(str(child.Name))
+                retired_projection_children.setdefault(name, []).append(child)
             else:
                 child_map[direction] = child
                 updated.append(child)
         desired_child_maps[name] = child_map
 
-    downstream_uses = _preflight_output_updates(doc, updated, internal_before)
-    for obj in retired:
-        uses = _external_uses(doc, [obj], internal_before)
-        if uses:
-            raise _reference_error(
-                f"Cannot retire TechDraw object {obj.Name!r}; human-created or foreign "
-                "objects still reference it",
-                uses,
+    # A Template is implementation state of its Page.  Recreate templates
+    # authored by older builds as standalone History roots; exact existing
+    # Page resources remain stable and are reconciled in place.
+    forced_retired_roots: list[Any] = []
+    for page_name, template_name in page_template_output.items():
+        template = existing.get(template_name)
+        if template is None:
+            continue
+        capture = page_reconciliations.get(page_name)
+        captured_identities = {
+            tuple(identity)
+            for identity in (
+                list(capture["resource_identities"]) if capture else []
             )
+        }
+        identity = _deletion_object_identity(
+            template,
+            context=f"TechDraw Template {template_name!r}",
+        )
+        if identity in captured_identities:
+            continue
+        forced_retired_roots.append(template)
+        existing.pop(template_name, None)
+
+    surviving_resource_identities = {
+        tuple(identity)
+        for capture in [
+            *page_reconciliations.values(),
+            *projection_reconciliations.values(),
+        ]
+        for identity in list(capture["resource_identities"])
+    }
+    retired = [
+        obj
+        for obj in retired
+        if _deletion_object_identity(
+            obj,
+            context="A retired TechDraw object",
+        )
+        not in surviving_resource_identities
+    ]
+    for root in forced_retired_roots:
+        if all(root is not existing_root for existing_root in retired):
+            retired.append(root)
+
+    downstream_uses = _preflight_output_updates(doc, updated, internal_before)
+    retired_deletion = _prepare_timeline_deletion(doc, retired)
+    retired_targets = list(retired_deletion["delete_objects"])
+    retired_uses = _external_uses(
+        doc,
+        retired_targets,
+        [*internal_before, *retired_targets],
+    )
+    if retired_uses:
+        raise _reference_error(
+            "Cannot retire TechDraw VibeScript outputs while human-created or "
+            "foreign objects still reference them",
+            retired_uses,
+        )
 
     transaction_open = False
     removed: list[str] = []
@@ -9797,38 +11453,68 @@ def _publish_techdraw_candidate(
                 f"Publish TechDraw VibeScript: {prepared['program_name']}"
             )
             transaction_open = True
+        removed.extend(
+            _remove_techdraw_timeline_deletion(
+                doc,
+                retired_deletion,
+            )
+        )
         for obj in internal_before:
-            _unfreeze_object(obj, "TechDraw")
+            if doc.getObject(str(getattr(obj, "Name", "") or "")) is obj:
+                _unfreeze_object(obj, "TechDraw")
 
-        creation_order = {
-            "template": 0,
-            "page": 1,
-            "view": 2,
-            "projection": 3,
-            "annotation": 4,
-            "dimension": 5,
-        }
-        for item in sorted(
-            items, key=lambda value: creation_order[str(value["type"])]
-        ):
+        def ensure_output(item: Mapping[str, Any]) -> Any:
             name = str(item["name"])
-            obj = existing.get(name)
+            obj = outputs.get(name)
+            if obj is None:
+                obj = existing.get(name)
             if obj is None:
                 obj = _techdraw_create_output(
                     doc, prepared, name, str(item["type"])
                 )
                 created.append(obj)
             outputs[name] = obj
+            return obj
 
-        # A native page requires its template before any view can be added.
-        # Establish that prerequisite now; exact ordered membership is applied
-        # after every output and projection child has been configured.
+        # Each Page and its Template form one contiguous native History block.
+        # Publish that prerequisite before creating any page content; content
+        # is linked into the still-live Page after its own blocks are accepted.
         for item in items:
             if str(item["type"]) != "page":
                 continue
             data = _techdraw_data(item)
-            page = outputs[str(item["name"])]
-            page.Template = outputs[str(data["template_output"])]
+            page_name = str(item["name"])
+            template_name = str(data["template_output"])
+            template_item = by_name[template_name]
+            template = ensure_output(template_item)
+            page = ensure_output(item)
+            reconciliation = page_reconciliations.get(page_name)
+            if reconciliation is not None:
+                _stage_timeline_resource_reconciliation(
+                    doc,
+                    page,
+                    reconciliation,
+                    context=f"TechDraw Page {page_name!r}",
+                )
+            template_data = _techdraw_data(template_item)
+            template_properties = dict(
+                _definition(template_item)["properties"]
+            )
+            template.Label = str(template_properties["label"])
+            template.Width = float(template_data["width_mm"])
+            template.Height = float(template_data["height_mm"])
+            template.Orientation = str(template_data["orientation"])
+            template.EditableTexts = dict(template_data["editable_texts"])
+            _set_metadata(
+                template,
+                prepared,
+                template_name,
+                "template",
+                _definition(template_item),
+            )
+            _techdraw_set_validation(template, template_item)
+
+            page.Template = template
             page.ProjectionType = (
                 "First angle"
                 if data["convention"] == "first_angle"
@@ -9838,21 +11524,99 @@ def _publish_techdraw_candidate(
             page.KeepUpdated = False
             for view in list(page.Views or []):
                 page.removeView(view)
-            for output_name in list(data["content_outputs"]):
-                page.addPrecomputedView(outputs[str(output_name)])
+            _set_metadata(
+                page,
+                prepared,
+                page_name,
+                "page",
+                _definition(item),
+            )
+            _techdraw_set_validation(page, item)
+            _mark_timeline_operation(
+                page,
+                context=f"TechDraw Page {page_name!r}",
+            )
+            _mark_timeline_resource(
+                template,
+                page,
+                context=f"TechDraw Template {template_name!r}",
+            )
+            if reconciliation is None:
+                _publish_new_timeline_resource_block(
+                    doc,
+                    page,
+                    [template],
+                    context=f"TechDraw Page {page_name!r}",
+                )
+            else:
+                retired_page_resources = (
+                    _finalize_timeline_resource_reconciliation(
+                        doc,
+                        page,
+                        reconciliation,
+                        [template],
+                        context=f"TechDraw Page {page_name!r}",
+                    )
+                )
+                removed.extend(
+                    _remove_reconciled_timeline_resources(
+                        doc,
+                        retired_page_resources,
+                        context=f"TechDraw Page {page_name!r}",
+                    )
+                )
 
         for projection_name, page_name in page_owner.items():
             item = by_name[projection_name]
             if str(item["type"]) != "projection":
                 continue
             page = outputs[page_name]
-            group = outputs[projection_name]
+            group = ensure_output(item)
             if group not in list(page.Views or []):
-                raise RuntimeError(
-                    f"Projection group {projection_name!r} is missing from its "
-                    f"declared page {page_name!r}."
+                page.addPrecomputedView(group)
+            reconciliation = projection_reconciliations.get(projection_name)
+            if reconciliation is not None:
+                _stage_timeline_resource_reconciliation(
+                    doc,
+                    group,
+                    reconciliation,
+                    context=f"TechDraw Projection {projection_name!r}",
+                )
+            retiring_children = list(
+                retired_projection_children.get(projection_name, [])
+            )
+            retiring_child_set = set(retiring_children)
+            if retiring_child_set:
+                for dimension_item in items:
+                    if str(dimension_item["type"]) != "dimension":
+                        continue
+                    dimension_name = str(dimension_item["name"])
+                    dimension = outputs.get(dimension_name)
+                    if dimension is None:
+                        dimension = existing.get(dimension_name)
+                    if dimension is None:
+                        continue
+                    if any(
+                        (
+                            isinstance(reference, tuple)
+                            and bool(reference)
+                            and reference[0] in retiring_child_set
+                        )
+                        for reference in list(
+                            getattr(dimension, "References2D", ()) or ()
+                        )
+                    ):
+                        dimension.References2D = []
+                removed.extend(
+                    name
+                    for name in _remove_techdraw_objects(
+                        doc,
+                        retiring_children,
+                    )
+                    if name not in removed
                 )
             child_map = desired_child_maps.setdefault(projection_name, {})
+            new_children: list[Any] = []
             for direction in list(_techdraw_data(item)["directions"]):
                 if direction in child_map:
                     continue
@@ -9865,21 +11629,150 @@ def _publish_techdraw_candidate(
                     )
                 child_map[direction] = child
                 created.append(child)
+                new_children.append(child)
 
-        for item in items:
+            if new_children:
+                definition = _definition(item)
+                properties = dict(definition["properties"])
+                data = _techdraw_data(item)
+                sources = _techdraw_source_objects(
+                    doc,
+                    definition,
+                    output_name=projection_name,
+                )
+                group.Label = str(properties["label"])
+                group.Source = sources
+                group.ProjectionType = (
+                    "First angle"
+                    if data["convention"] == "first_angle"
+                    else "Third angle"
+                )
+                group.ScaleType = "Custom"
+                group.Scale = float(data["scale"])
+                group.X = float(data["position_mm"][0])
+                group.Y = float(data["position_mm"][1])
+                group.spacingX = float(data["spacing_mm"][0])
+                group.spacingY = float(data["spacing_mm"][1])
+                group.AutoDistribute = False
+                detached_children = item.get("detached_projection_children")
+                if not isinstance(detached_children, dict):
+                    raise RuntimeError(
+                        f"Projection group {projection_name!r} has no detached "
+                        "child state."
+                    )
+                for direction in list(data["directions"]):
+                    child = child_map[direction]
+                    child_data = dict(data["children"][direction])
+                    child.Source = sources
+                    _techdraw_configure_style(child, child_data, properties)
+                    child.setPrecomputedProjection(
+                        detached_children[direction]
+                    )
+                    child.Label = (
+                        f"{group.Label}: "
+                        f"{direction.replace('_', ' ').title()}"
+                    )
+                    _set_metadata(
+                        child,
+                        prepared,
+                        f"{projection_name}.{direction}",
+                        "projection_item",
+                        {
+                            "operation": "projection_item",
+                            "parent_output": projection_name,
+                            "direction": direction,
+                        },
+                    )
+                    _add_string_property(
+                        child,
+                        PROP_TECHDRAW_VALIDATION,
+                        "Authenticated worker-precomputed TechDraw projection "
+                        "summary.",
+                    )
+                    setattr(
+                        child,
+                        PROP_TECHDRAW_VALIDATION,
+                        json.dumps(
+                            _techdraw_projection_summary(child_data),
+                            ensure_ascii=True,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        ),
+                    )
+                _set_metadata(
+                    group,
+                    prepared,
+                    projection_name,
+                    "projection",
+                    definition,
+                )
+                _techdraw_set_validation(group, item)
+
+            final_children = [
+                child_map[direction]
+                for direction in list(_techdraw_data(item)["directions"])
+            ]
+            _mark_timeline_operation(
+                group,
+                context=f"TechDraw Projection {projection_name!r}",
+            )
+            for direction, child in zip(
+                list(_techdraw_data(item)["directions"]),
+                final_children,
+            ):
+                _mark_timeline_resource(
+                    child,
+                    group,
+                    context=(
+                        f"TechDraw Projection {projection_name!r} "
+                        f"item {direction!r}"
+                    ),
+                )
+            if reconciliation is None:
+                _publish_new_timeline_resource_block(
+                    doc,
+                    group,
+                    final_children,
+                    context=f"TechDraw Projection {projection_name!r}",
+                )
+            else:
+                retired_projection_resources = (
+                    _finalize_timeline_resource_reconciliation(
+                        doc,
+                        group,
+                        reconciliation,
+                        final_children,
+                        context=f"TechDraw Projection {projection_name!r}",
+                    )
+                )
+                removed.extend(
+                    _remove_reconciled_timeline_resources(
+                        doc,
+                        retired_projection_resources,
+                        context=f"TechDraw Projection {projection_name!r}",
+                    )
+                )
+
+        def configure_and_publish_simple_output(
+            item: Mapping[str, Any],
+        ) -> None:
             name = str(item["name"])
             output_type = str(item["type"])
+            if output_type not in {"view", "annotation", "dimension"}:
+                raise RuntimeError(
+                    f"TechDraw output {name!r} is not a simple page operation."
+                )
             definition = _definition(item)
             properties = dict(definition["properties"])
             data = _techdraw_data(item)
-            obj = outputs[name]
+            obj = ensure_output(item)
+            page = outputs[page_owner[name]]
+            if obj not in list(page.Views or []):
+                page.addPrecomputedView(obj)
+
             obj.Label = str(properties["label"])
-            if output_type == "template":
-                obj.Width = float(data["width_mm"])
-                obj.Height = float(data["height_mm"])
-                obj.Orientation = str(data["orientation"])
-                obj.EditableTexts = dict(data["editable_texts"])
-            elif output_type == "view":
+            if output_type == "view":
                 obj.Source = _techdraw_source_objects(
                     doc, definition, output_name=name
                 )
@@ -9890,6 +11783,86 @@ def _publish_techdraw_candidate(
                         f"TechDraw view {name!r} has no detached projection state."
                     )
                 obj.setPrecomputedProjection(snapshot)
+            elif output_type == "annotation":
+                obj.Text = list(data["text"])
+                obj.X = float(data["position_mm"][0])
+                obj.Y = float(data["position_mm"][1])
+                obj.TextSize = float(data["text_size_mm"])
+                obj.TextAlignment = str(data["alignment"]).title()
+            else:
+                source = outputs[str(data["source_output"])]
+                if str(data["projection_direction"]):
+                    source = desired_child_maps[str(data["source_output"])][
+                        str(data["projection_direction"])
+                    ]
+                obj.Type = {
+                    "distance": "Distance",
+                    "distance_x": "DistanceX",
+                    "distance_y": "DistanceY",
+                    "radius": "Radius",
+                    "diameter": "Diameter",
+                    "angle": "Angle",
+                    "angle_3_point": "Angle3Pt",
+                    "area": "Area",
+                }[str(data["kind"])]
+                obj.MeasureType = (
+                    "True" if data["measure"] == "true" else "Projected"
+                )
+                obj.References2D = [
+                    (source, str(reference))
+                    for reference in list(properties["references"])
+                ]
+                obj.X = float(data["position_mm"][0])
+                obj.Y = float(data["position_mm"][1])
+                obj.FormatSpec = str(data["format_spec"])
+                obj.OverTolerance = float(data["over_tolerance"])
+                obj.UnderTolerance = float(data["under_tolerance"])
+                obj.ShowUnits = bool(data["show_units"])
+                snapshot = item.get("detached_dimension")
+                if not isinstance(snapshot, dict):
+                    raise RuntimeError(
+                        f"TechDraw dimension {name!r} has no detached dimension state."
+                    )
+                obj.setPrecomputedDimension(snapshot)
+
+            _set_metadata(obj, prepared, name, output_type, definition)
+            _techdraw_set_validation(obj, item)
+            _techdraw_publication_checkpoint("after_apply", name, obj)
+            _mark_timeline_operation(
+                obj,
+                context=f"TechDraw output {name!r}",
+            )
+            if _is_created_timeline_object(doc, obj, created):
+                _publish_new_timeline_resource_block(
+                    doc,
+                    obj,
+                    [],
+                    context=f"TechDraw output {name!r}",
+                )
+
+        # Views and annotations have no page-content dependency.  Dimensions
+        # follow them so every exact projected reference exists before the
+        # dimension's own contiguous History block is created.
+        for output_type in ("view", "annotation", "dimension"):
+            for item in items:
+                if str(item["type"]) == output_type:
+                    configure_and_publish_simple_output(item)
+
+        for item in items:
+            name = str(item["name"])
+            output_type = str(item["type"])
+            if output_type in {"view", "annotation", "dimension"}:
+                continue
+            definition = _definition(item)
+            properties = dict(definition["properties"])
+            data = _techdraw_data(item)
+            obj = outputs[name]
+            obj.Label = str(properties["label"])
+            if output_type == "template":
+                obj.Width = float(data["width_mm"])
+                obj.Height = float(data["height_mm"])
+                obj.Orientation = str(data["orientation"])
+                obj.EditableTexts = dict(data["editable_texts"])
             elif output_type == "projection":
                 sources = _techdraw_source_objects(doc, definition, output_name=name)
                 obj.Source = sources
@@ -9945,59 +11918,39 @@ def _publish_techdraw_candidate(
                             allow_nan=False,
                         ),
                     )
-            elif output_type == "annotation":
-                obj.Text = list(data["text"])
-                obj.X = float(data["position_mm"][0])
-                obj.Y = float(data["position_mm"][1])
-                obj.TextSize = float(data["text_size_mm"])
-                obj.TextAlignment = str(data["alignment"]).title()
-            elif output_type == "dimension":
-                source = outputs[str(data["source_output"])]
-                if str(data["projection_direction"]):
-                    source = desired_child_maps[str(data["source_output"])][
-                        str(data["projection_direction"])
-                    ]
-                obj.Type = {
-                    "distance": "Distance",
-                    "distance_x": "DistanceX",
-                    "distance_y": "DistanceY",
-                    "radius": "Radius",
-                    "diameter": "Diameter",
-                    "angle": "Angle",
-                    "angle_3_point": "Angle3Pt",
-                    "area": "Area",
-                }[str(data["kind"])]
-                obj.MeasureType = (
-                    "True" if data["measure"] == "true" else "Projected"
+            elif output_type != "page":
+                raise RuntimeError(
+                    f"TechDraw output {name!r} has an unsupported publication type."
                 )
-                obj.References2D = [
-                    (source, str(reference))
-                    for reference in list(properties["references"])
-                ]
-                obj.X = float(data["position_mm"][0])
-                obj.Y = float(data["position_mm"][1])
-                obj.FormatSpec = str(data["format_spec"])
-                obj.OverTolerance = float(data["over_tolerance"])
-                obj.UnderTolerance = float(data["under_tolerance"])
-                obj.ShowUnits = bool(data["show_units"])
-                snapshot = item.get("detached_dimension")
-                if not isinstance(snapshot, dict):
-                    raise RuntimeError(
-                        f"TechDraw dimension {name!r} has no detached dimension state."
-                    )
-                obj.setPrecomputedDimension(snapshot)
             _set_metadata(obj, prepared, name, output_type, definition)
             _techdraw_set_validation(obj, item)
             _techdraw_publication_checkpoint("after_apply", name, obj)
+
+        # Native page membership is presentation order, not object-creation
+        # provenance.  Restore the source-declared order after every content
+        # operation exists and has published its own exact History block.
+        for item in items:
+            if str(item["type"]) != "page":
+                continue
+            page = outputs[str(item["name"])]
+            for view in list(page.Views or []):
+                page.removeView(view)
+            for output_name in list(_techdraw_data(item)["content_outputs"]):
+                page.addPrecomputedView(outputs[str(output_name)])
 
         desired_objects = list(outputs.values())
         for child_map in desired_child_maps.values():
             desired_objects.extend(child_map.values())
         desired_ids = {id(obj) for obj in desired_objects}
-        removed = _remove_techdraw_objects(
-            doc,
-            [obj for obj in retired if id(obj) not in desired_ids],
-        )
+        retired_targets = list(retired_deletion["delete_objects"])
+        overlap = [
+            str(obj.Name) for obj in retired_targets if id(obj) in desired_ids
+        ]
+        if overlap:
+            raise RuntimeError(
+                "A native TechDraw history resource is also a desired output: "
+                + ", ".join(sorted(overlap))
+            )
         downstream_refresh = _refresh_external_consumers(
             downstream_uses,
             revision=str(prepared["revision"]),
@@ -10206,6 +12159,103 @@ def _assembly_model_evidence(item: Mapping[str, Any]) -> dict[str, Any] | None:
             "angle_limits_degrees": data.get("angle_limits_degrees"),
             "connectors": connectors,
         }
+    if output_type == "mechanism_verification":
+        report = data.get("report")
+        if not isinstance(report, Mapping):
+            return None
+        compact_results = []
+        for raw in list(report.get("results") or []):
+            if not isinstance(raw, Mapping):
+                continue
+            evidence = raw.get("evidence")
+            body = (
+                dict(evidence.get("body") or {})
+                if isinstance(evidence, Mapping)
+                else {}
+            )
+            interface_evidence = (
+                dict(evidence.get("interfaces") or {})
+                if isinstance(evidence, Mapping)
+                else {}
+            )
+            interface_section = dict(
+                interface_evidence.get("section") or {}
+            )
+            compact_results.append(
+                {
+                    key: raw.get(key)
+                    for key in (
+                        "id",
+                        "declaration_kind",
+                        "assertion",
+                        "first_component",
+                        "second_component",
+                        "verdict",
+                        "reason_code",
+                        "message",
+                        "tolerance_mm",
+                        "minimum_clearance_mm",
+                        "first_interface",
+                        "second_interface",
+                    )
+                }
+                | {
+                    "minimum_distance_mm": body.get(
+                        "minimum_distance_mm"
+                    ),
+                    "common_volume_mm3": body.get("common_volume_mm3"),
+                    "witnesses": list(body.get("witnesses") or [])[:4],
+                }
+                | (
+                    {
+                        "interface_minimum_distance_mm": interface_evidence.get(
+                            "minimum_distance_mm"
+                        ),
+                        "contact_locus_on_interfaces": interface_evidence.get(
+                            "contact_locus_on_interfaces"
+                        ),
+                        "body_witnesses_on_interfaces": interface_evidence.get(
+                            "body_witnesses_on_interfaces"
+                        ),
+                        "section_all_on_interfaces": interface_section.get(
+                            "all_on_interfaces"
+                        ),
+                    }
+                    if interface_evidence
+                    else {}
+                )
+            )
+        return {
+            "assembly_output": str(data.get("assembly_output") or ""),
+            "schema": str(report.get("schema") or ""),
+            "verdict": str(report.get("verdict") or ""),
+            "scope": dict(report.get("scope") or {}),
+            "summary": dict(report.get("summary") or {}),
+            "scenario_sha256": str(report.get("scenario_sha256") or ""),
+            "solve_report_sha256": str(
+                report.get("solve_report_sha256") or ""
+            ),
+            "static_check_sha256": str(
+                report.get("static_check_sha256") or ""
+            ),
+            "results": compact_results,
+            "first_failure": (
+                {
+                    key: report["first_failure"].get(key)
+                    for key in (
+                        "id",
+                        "assertion",
+                        "first_component",
+                        "second_component",
+                        "verdict",
+                        "reason_code",
+                        "message",
+                    )
+                }
+                if isinstance(report.get("first_failure"), Mapping)
+                else None
+            ),
+        }
     if output_type in {"assembly", "solver_diagnostics", "motion", "simulation"}:
         return dict(data)
     if output_type == "exploded_view":
@@ -10222,6 +12272,420 @@ def _assembly_model_evidence(item: Mapping[str, Any]) -> dict[str, Any] | None:
             if key in data
         }
     return None
+
+
+def _partdesign_presentation_state(obj: Any) -> dict[str, Any] | None:
+    if PROP_PARTDESIGN_PRESENTATION_STATE not in _properties(obj):
+        return None
+    try:
+        state = json.loads(
+            str(getattr(obj, PROP_PARTDESIGN_PRESENTATION_STATE, "") or "")
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"Part Design output {getattr(obj, 'Name', '')!r} has invalid "
+            f"presentation state: {exc}"
+        ) from exc
+    if (
+        not isinstance(state, dict)
+        or state.get("schema") != PARTDESIGN_PRESENTATION_OWNERSHIP_SCHEMA
+        or set(state) != {"schema", "physical", "appearance"}
+        or (
+            state["physical"] is not None
+            and not isinstance(state["physical"], dict)
+        )
+        or (
+            state["appearance"] is not None
+            and not isinstance(state["appearance"], dict)
+        )
+    ):
+        raise RuntimeError(
+            f"Part Design output {getattr(obj, 'Name', '')!r} has malformed "
+            "presentation ownership state."
+        )
+    return state
+
+
+def _partdesign_appearance_property_views(
+    obj: Any,
+    controlled: list[str],
+    *,
+    expected_locations: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Resolve each display property to the stable link or its private shape."""
+
+    publication_view = getattr(obj, "ViewObject", None)
+    if publication_view is None:
+        raise RuntimeError(
+            f"Part Design output {obj.Name!r} has no live view provider."
+        )
+    implementation = scripted_publication.publication_target(obj)
+    implementation_view = getattr(implementation, "ViewObject", None)
+    views = {
+        "publication": publication_view,
+        "implementation": implementation_view,
+    }
+    property_views: dict[str, Any] = {}
+    locations: dict[str, str] = {}
+    implementation_preferred = {"LineColor", "PointColor", "DisplayMode"}
+    for name in controlled:
+        expected = (
+            str(expected_locations.get(name) or "")
+            if expected_locations is not None
+            else ""
+        )
+        if expected:
+            if expected not in views:
+                raise RuntimeError(
+                    f"Part Design output {obj.Name!r} has invalid appearance "
+                    f"location {expected!r} for {name!r}."
+                )
+            candidates = [(expected, views[expected])]
+        elif name in implementation_preferred:
+            candidates = [
+                ("implementation", implementation_view),
+                ("publication", publication_view),
+            ]
+        else:
+            candidates = [
+                ("publication", publication_view),
+                ("implementation", implementation_view),
+            ]
+        for location, view in candidates:
+            if view is not None and hasattr(view, name):
+                property_views[name] = view
+                locations[name] = location
+                break
+        else:
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} does not support requested "
+                f"appearance property {name!r}."
+            )
+    return property_views, locations
+
+
+def _capture_mapped_simple_view_state(
+    property_views: Mapping[str, Any],
+    names: list[str],
+) -> dict[str, Any]:
+    return {
+        name: _capture_simple_view_state(property_views[name], [name])[name]
+        for name in names
+    }
+
+
+def _set_mapped_simple_view_state(
+    property_views: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    for name, value in state.items():
+        _set_simple_view_state(property_views[name], {name: value})
+
+
+def _preflight_partdesign_presentation(obj: Any) -> dict[str, Any] | None:
+    """Validate persisted ownership without blocking source reconciliation.
+
+    The VibeScript program is the editable source of truth for a Part Design
+    output.  A live material or display-property change may differ from the
+    last accepted revision, but that must not make the source impossible to
+    edit.  Publication restores the persisted baseline and then applies the
+    newly validated source state; rollback snapshots preserve the live state
+    if publication fails.
+    """
+
+    state = _partdesign_presentation_state(obj)
+    if state is None:
+        return None
+    physical = state.get("physical")
+    if physical is not None:
+        if (
+            set(physical) != {"baseline", "accepted"}
+            or not isinstance(physical.get("baseline"), dict)
+            or not isinstance(physical.get("accepted"), dict)
+        ):
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} has malformed physical "
+                "material ownership state."
+            )
+        if not {
+            PROP_PARTDESIGN_MATERIAL_BASELINE,
+            PROP_PARTDESIGN_MATERIAL_ACCEPTED,
+        } <= _properties(obj):
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} lost its material baseline."
+            )
+        stored = _material_card_state(
+            getattr(obj, PROP_PARTDESIGN_MATERIAL_ACCEPTED)
+        )
+        if stored != physical.get("accepted"):
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} has inconsistent persisted "
+                "material ownership state."
+            )
+
+    appearance = state.get("appearance")
+    if appearance is not None:
+        controlled = list(appearance.get("controlled_properties") or [])
+        if not controlled or any(
+            name not in {"ShapeAppearance", *_MATERIAL_SIMPLE_VIEW_PROPERTIES}
+            for name in controlled
+        ):
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} has invalid appearance ownership."
+            )
+        property_views, _locations = _partdesign_appearance_property_views(
+            obj,
+            controlled,
+            expected_locations=dict(
+                appearance.get("property_locations") or {}
+            ),
+        )
+        if "ShapeAppearance" in controlled:
+            if not {
+                PROP_PARTDESIGN_APPEARANCE_BASELINE,
+                PROP_PARTDESIGN_APPEARANCE_ACCEPTED,
+            } <= _properties(obj):
+                raise RuntimeError(
+                    f"Part Design output {obj.Name!r} lost its appearance baseline."
+                )
+            stored_digest = _shape_appearance_sha256(
+                getattr(obj, PROP_PARTDESIGN_APPEARANCE_ACCEPTED)
+            )
+            expected_digest = str(
+                appearance.get("accepted_shape_appearance_sha256") or ""
+            )
+            if stored_digest != expected_digest:
+                raise RuntimeError(
+                    f"Part Design output {obj.Name!r} has inconsistent persisted "
+                    "ShapeAppearance ownership state."
+                )
+        simple_names = [
+            name for name in controlled if name != "ShapeAppearance"
+        ]
+        _capture_mapped_simple_view_state(property_views, simple_names)
+    return state
+
+
+def _restore_partdesign_presentation_baseline(
+    obj: Any,
+    state: Mapping[str, Any] | None,
+) -> None:
+    if state is None:
+        return
+    if state.get("physical") is not None:
+        _set_physical_material_preserving_view(
+            obj,
+            getattr(obj, PROP_PARTDESIGN_MATERIAL_BASELINE),
+        )
+    appearance = state.get("appearance")
+    if appearance is None:
+        return
+    controlled = list(appearance.get("controlled_properties") or [])
+    property_views, _locations = _partdesign_appearance_property_views(
+        obj,
+        controlled,
+        expected_locations=dict(appearance.get("property_locations") or {}),
+    )
+    if "ShapeAppearance" in controlled:
+        property_views["ShapeAppearance"].ShapeAppearance = list(
+            getattr(obj, PROP_PARTDESIGN_APPEARANCE_BASELINE)
+        )
+    _set_mapped_simple_view_state(
+        property_views,
+        dict(appearance.get("baseline_simple") or {}),
+    )
+
+
+def _configure_partdesign_presentation(
+    obj: Any,
+    item: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Apply and persist one output's validated material and appearance state."""
+
+    presentation = item.get("partdesign_presentation")
+    if (
+        not isinstance(presentation, Mapping)
+        or presentation.get("schema") != "vibecad-partdesign-presentation-v1"
+    ):
+        raise RuntimeError(
+            f"Part Design output {item.get('name')!r} lost validated "
+            "presentation evidence."
+        )
+    physical_record = presentation.get("physical_material")
+    appearance_validation = presentation.get("appearance")
+    ownership: dict[str, Any] = {
+        "schema": PARTDESIGN_PRESENTATION_OWNERSHIP_SCHEMA,
+        "physical": None,
+        "appearance": None,
+    }
+
+    if physical_record is not None:
+        if not isinstance(physical_record, Mapping):
+            raise RuntimeError("Validated Part Design material state is malformed.")
+        native_material = item.get("partdesign_native_material")
+        if native_material is None:
+            raise RuntimeError(
+                f"Part Design output {item.get('name')!r} lost its resolved "
+                "native material card."
+            )
+        if not hasattr(obj, "ShapeMaterial"):
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} does not support ShapeMaterial."
+            )
+        baseline_material = getattr(obj, "ShapeMaterial")
+        _add_property(
+            obj,
+            "Materials::PropertyMaterial",
+            PROP_PARTDESIGN_MATERIAL_BASELINE,
+            "Native material restored when source material ownership is removed.",
+        )
+        _add_property(
+            obj,
+            "Materials::PropertyMaterial",
+            PROP_PARTDESIGN_MATERIAL_ACCEPTED,
+            "Native material authenticated for the accepted Part Design revision.",
+        )
+        setattr(
+            obj,
+            PROP_PARTDESIGN_MATERIAL_BASELINE,
+            baseline_material,
+        )
+        _set_physical_material_preserving_view(obj, native_material)
+        assigned = getattr(obj, "ShapeMaterial")
+        accepted = _material_card_state(assigned)
+        expected = {
+            "uuid": str(physical_record.get("uuid") or ""),
+            "name": str(physical_record.get("name") or ""),
+            "card_sha256": str(physical_record.get("card_sha256") or ""),
+        }
+        if accepted != expected:
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} physical material readback "
+                "differs from the validated catalog card."
+            )
+        setattr(obj, PROP_PARTDESIGN_MATERIAL_ACCEPTED, assigned)
+        ownership["physical"] = {
+            "baseline": _material_card_state(baseline_material),
+            "accepted": accepted,
+        }
+
+    if appearance_validation is not None:
+        if not isinstance(appearance_validation, Mapping):
+            raise RuntimeError("Validated Part Design appearance state is malformed.")
+        requested = dict(appearance_validation.get("resolved") or {})
+        view = getattr(obj, "ViewObject", None)
+        if view is None:
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} has no live view provider."
+            )
+        controlled = _effective_appearance_controlled_properties(
+            view,
+            list(appearance_validation.get("controlled_properties") or []),
+        )
+        if not controlled:
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} has an empty appearance request."
+            )
+        property_views, property_locations = (
+            _partdesign_appearance_property_views(obj, controlled)
+        )
+        simple_names = [
+            name for name in controlled if name != "ShapeAppearance"
+        ]
+        baseline_simple = _capture_mapped_simple_view_state(
+            property_views,
+            simple_names,
+        )
+        baseline_shape = (
+            list(property_views["ShapeAppearance"].ShapeAppearance)
+            if "ShapeAppearance" in controlled
+            else []
+        )
+        _add_property(
+            obj,
+            "App::PropertyMaterialList",
+            PROP_PARTDESIGN_APPEARANCE_BASELINE,
+            "Complete ShapeAppearance restored when source appearance is removed.",
+        )
+        _add_property(
+            obj,
+            "App::PropertyMaterialList",
+            PROP_PARTDESIGN_APPEARANCE_ACCEPTED,
+            "Complete ShapeAppearance authenticated for the accepted revision.",
+        )
+        setattr(
+            obj,
+            PROP_PARTDESIGN_APPEARANCE_BASELINE,
+            baseline_shape,
+        )
+        _apply_requested_appearance(
+            obj,
+            requested,
+            property_views=property_views,
+        )
+        _verify_requested_appearance(
+            obj,
+            requested,
+            property_views=property_views,
+        )
+        accepted_simple = _capture_mapped_simple_view_state(
+            property_views,
+            simple_names,
+        )
+        accepted_shape = (
+            list(property_views["ShapeAppearance"].ShapeAppearance)
+            if "ShapeAppearance" in controlled
+            else []
+        )
+        setattr(
+            obj,
+            PROP_PARTDESIGN_APPEARANCE_ACCEPTED,
+            accepted_shape,
+        )
+        ownership["appearance"] = {
+            "controlled_properties": controlled,
+            "property_locations": property_locations,
+            "baseline_simple": baseline_simple,
+            "accepted_simple": accepted_simple,
+            "baseline_shape_appearance_sha256": (
+                _shape_appearance_sha256(baseline_shape)
+                if "ShapeAppearance" in controlled
+                else ""
+            ),
+            "accepted_shape_appearance_sha256": (
+                _shape_appearance_sha256(accepted_shape)
+                if "ShapeAppearance" in controlled
+                else ""
+            ),
+        }
+
+    _add_string_property(
+        obj,
+        PROP_PARTDESIGN_PRESENTATION_STATE,
+        "Reversible source-owned Part Design material and appearance state.",
+    )
+    setattr(
+        obj,
+        PROP_PARTDESIGN_PRESENTATION_STATE,
+        json.dumps(
+            ownership,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+    return ownership
+
+
+def _partdesign_presentation_channels(
+    presentation: Mapping[str, Any],
+) -> set[str]:
+    channels: set[str] = set()
+    if presentation.get("physical_material") is not None:
+        channels.add("physical")
+    if presentation.get("appearance") is not None:
+        channels.add("appearance")
+    return channels
 
 
 class _PartDesignShapeCarrier:
@@ -10246,7 +12710,6 @@ class _PartDesignShapeCarrier:
 def _partdesign_program_root(doc: Any, program_id: str) -> Any | None:
     matches = []
     for obj in list(getattr(doc, "Objects", []) or []):
-        properties = _properties(obj)
         v2_id = str(getattr(obj, contracts.PROP_PROGRAM_ID, "") or "")
         v1_id = str(getattr(obj, "VibeCADVibeScriptModelId", "") or "")
         publication_id = str(
@@ -10344,9 +12807,20 @@ def _tag_partdesign_root(root: Any, prepared: Mapping[str, Any]) -> None:
             "Accepted VibeScript program revision.",
             str(prepared["revision"]),
         ),
+        (
+            contracts.PROP_PROGRAM_LABEL,
+            "Stable VibeScript program label.",
+            str(prepared["program_name"]),
+        ),
+        (
+            contracts.PROP_PROGRAM_CONTRACT,
+            "Portable accepted VibeScript source, inputs, and output contract.",
+            str(prepared.get("document_program_contract") or ""),
+        ),
     ):
         _add_string_property(root, name, description)
         setattr(root, name, value)
+    _hide_property(root, contracts.PROP_PROGRAM_CONTRACT)
     scripted_publication.ensure_string_property(
         root, scripted_publication.PROP_INTERFACES
     )
@@ -10356,7 +12830,8 @@ def _partdesign_interface_table(
     validated: Mapping[str, Any],
     publications: Mapping[str, Any],
 ) -> dict[str, Any]:
-    table: dict[str, Any] = {}
+    outputs: dict[str, dict[str, Any]] = {}
+    declarations: dict[str, list[dict[str, Any]]] = {}
     for item in list(validated.get("outputs") or []):
         output_name = str(item["name"])
         published = publications[output_name]
@@ -10365,18 +12840,14 @@ def _partdesign_interface_table(
             raise RuntimeError(
                 f"Part Design output {output_name!r} has no interface evidence."
             )
+        output_interfaces: dict[str, Any] = {}
         for raw_name, raw in dict(data.get("interfaces") or {}).items():
             name = str(raw_name)
-            if name in table:
-                raise RuntimeError(
-                    f"Part Design semantic interface {name!r} is declared by more "
-                    "than one output."
-                )
             if not isinstance(raw, Mapping):
                 raise RuntimeError(
                     f"Part Design semantic interface {name!r} is malformed."
                 )
-            table[name] = {
+            definition = {
                 "output": output_name,
                 "selection": dict(raw.get("selection") or {}),
                 **(
@@ -10384,16 +12855,2044 @@ def _partdesign_interface_table(
                     if raw.get("description")
                     else {}
                 ),
+                **(
+                    {"connector": dict(raw["connector"])}
+                    if isinstance(raw.get("connector"), Mapping)
+                    else {}
+                ),
                 "resolved": {
                     "object": str(published.Name),
                     "subelements": list(raw.get("subelements") or []),
                     "geometry": list(raw.get("geometry") or []),
+                    **(
+                        {"connector_frame": dict(raw["connector_frame"])}
+                        if isinstance(raw.get("connector_frame"), Mapping)
+                        else {}
+                    ),
                 },
             }
+            output_interfaces[name] = definition
+            declarations.setdefault(name, []).append(definition)
+        outputs[output_name] = output_interfaces
+    table: dict[str, Any] = {
+        reference_contracts.INTERFACE_TABLE_SCHEMA_KEY: (
+            reference_contracts.INTERFACE_TABLE_SCHEMA
+        ),
+        reference_contracts.INTERFACE_TABLE_OUTPUTS_KEY: outputs,
+    }
+    # Preserve the original flat lookup for names that remain program-unique.
+    # Output-local names that are reused intentionally live only in _outputs.
+    for name, definitions in declarations.items():
+        if len(definitions) == 1:
+            table[name] = definitions[0]
     return table
 
 
-def _publish_partdesign_candidate(
+def _partdesign_history_reference(
+    body: Any,
+    objects: Mapping[str, Any],
+    reference: Mapping[str, Any] | None,
+) -> Any:
+    if reference is None:
+        return None
+    scope = str(reference.get("scope") or "")
+    if scope == "body":
+        return body
+    if scope == "origin":
+        return body.Origin
+    if scope == "history":
+        name = str(reference.get("name") or "")
+        if name not in objects:
+            raise RuntimeError(
+                f"Native Part Design history refers to missing object {name!r}."
+            )
+        return objects[name]
+    if scope == "external_reference":
+        document = getattr(body, "Document", None)
+        document_uid = str(reference.get("document_uid") or "")
+        if document is None or str(getattr(document, "Uid", "") or "") != document_uid:
+            raise RuntimeError(
+                "Native Part Design history external support belongs to another document."
+            )
+        object_name = str(reference.get("object_name") or "")
+        target = document.getObject(object_name)
+        if target is None or target is body or target in objects.values():
+            raise RuntimeError(
+                f"Native Part Design history cannot resolve external support {object_name!r}."
+            )
+        return target
+    if scope == "origin_feature":
+        features = list(getattr(body.Origin, "OriginFeatures", []) or [])
+        index = int(reference.get("index") or 0)
+        role = str(reference.get("role") or "")
+        matches = [
+            feature
+            for feature in features
+            if str(getattr(feature, "Role", "") or "") == role
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if 0 <= index < len(features):
+            return features[index]
+        raise RuntimeError(
+            f"Native Part Design history cannot resolve origin role {role!r}."
+        )
+    raise RuntimeError(
+        f"Native Part Design history has unsupported reference scope {scope!r}."
+    )
+
+
+def _apply_partdesign_history_links(
+    body: Any,
+    objects: Mapping[str, Any],
+    obj: Any,
+    links: Mapping[str, Any],
+) -> None:
+    for property_name, specification in links.items():
+        if bool(specification.get("read_only")) or property_name == "ExternalGeometry":
+            # restoreContent restores native read-only link collections such as
+            # Sketcher ExternalGeometry. They cannot be assigned through Python.
+            continue
+        kind = str(specification.get("kind") or "")
+        value = specification.get("value")
+        if kind == "link":
+            restored = _partdesign_history_reference(body, objects, value)
+        elif kind == "link_list":
+            restored = [
+                _partdesign_history_reference(body, objects, item)
+                for item in list(value or [])
+            ]
+        elif kind == "link_sub":
+            restored = (
+                None
+                if value is None
+                else (
+                    _partdesign_history_reference(
+                        body,
+                        objects,
+                        value.get("target"),
+                    ),
+                    list(value.get("subelements") or []),
+                )
+            )
+        elif kind == "link_sub_list":
+            restored = [
+                (
+                    _partdesign_history_reference(
+                        body,
+                        objects,
+                        item.get("target"),
+                    ),
+                    list(item.get("subelements") or []),
+                )
+                for item in list(value or [])
+            ]
+        else:
+            raise RuntimeError(
+                f"Native Part Design history has unsupported link kind {kind!r}."
+            )
+        try:
+            setattr(obj, property_name, restored)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not restore {obj.Name}.{property_name} from validated "
+                f"Part Design history: {exc}"
+            ) from exc
+
+
+def _verify_partdesign_history_body(
+    body: Any,
+    item: Mapping[str, Any],
+    *,
+    output_name: str,
+) -> None:
+    tip = getattr(body, "Tip", None)
+    if tip is None or tip not in list(getattr(body, "Group", []) or []):
+        raise RuntimeError(
+            f"Restored native Part Design Body for {output_name!r} has no "
+            "valid Tip feature."
+        )
+    # The Body's aggregate Shape is refreshed by the document-level recompute
+    # that follows publication.  The restored Tip already contains the
+    # worker-validated result, so verify that native feature directly instead
+    # of forcing a recompute on the GUI publication thread.
+    shape = getattr(tip, "Shape", None)
+    if shape is None or shape.isNull() or not shape.isValid():
+        raise RuntimeError(
+            f"Restored native Part Design Tip for {output_name!r} is invalid."
+        )
+    facts = dict(item.get("facts") or {})
+    observed = {
+        "solids": len(list(getattr(shape, "Solids", []) or [])),
+        "shells": len(list(getattr(shape, "Shells", []) or [])),
+        "faces": len(list(getattr(shape, "Faces", []) or [])),
+        "wires": len(list(getattr(shape, "Wires", []) or [])),
+        "edges": len(list(getattr(shape, "Edges", []) or [])),
+        "vertices": len(list(getattr(shape, "Vertexes", []) or [])),
+    }
+    for name, value in observed.items():
+        if int(facts.get(name, -1)) != value:
+            raise RuntimeError(
+                f"Restored native Part Design Tip for {output_name!r} changed "
+                f"{name} ({value} != {facts.get(name)!r})."
+            )
+    expected_volume = float(facts.get("volume_mm3") or 0.0)
+    observed_volume = float(getattr(shape, "Volume", 0.0) or 0.0)
+    tolerance = max(1.0e-7, abs(expected_volume) * 1.0e-9)
+    if abs(observed_volume - expected_volume) > tolerance:
+        raise RuntimeError(
+            f"Restored native Part Design Tip for {output_name!r} changed volume "
+            f"({observed_volume:g} != {expected_volume:g} mm³)."
+        )
+
+
+def _set_view_visibility(obj: Any, visible: bool) -> bool:
+    view = getattr(obj, "ViewObject", None)
+    if view is None or not hasattr(view, "Visibility"):
+        return False
+    desired = bool(visible)
+    if bool(view.Visibility) == desired:
+        return False
+    view.Visibility = desired
+    return True
+
+
+def _is_partdesign_result_feature(obj: Any) -> bool:
+    checker = getattr(obj, "isDerivedFrom", None)
+    if not callable(checker):
+        return False
+    try:
+        if (
+            checker("PartDesign::ShapeBinder")
+            or checker("PartDesign::SubShapeBinder")
+            or checker("Part::Part2DObject")
+            or checker("Part::BodyBase")
+            or checker("Part::Datum")
+        ):
+            return False
+        return bool(
+            checker("PartDesign::Feature")
+            or checker("Part::Feature")
+        )
+    except Exception:
+        return False
+
+
+def _partdesign_history_result_features(body: Any) -> list[Any]:
+    return [
+        obj
+        for obj in list(getattr(body, "Group", []) or [])
+        if _is_partdesign_result_feature(obj)
+    ]
+
+
+def _mark_partdesign_history_presentation(body: Any) -> bool:
+    changed = PROP_PARTDESIGN_HISTORY_PRESENTATION not in _properties(body)
+    _add_string_property(
+        body,
+        PROP_PARTDESIGN_HISTORY_PRESENTATION,
+        "Internal presentation contract that makes the native Body the visible result.",
+    )
+    if (
+        str(getattr(body, PROP_PARTDESIGN_HISTORY_PRESENTATION, "") or "")
+        != PARTDESIGN_HISTORY_PRESENTATION_SCHEMA
+    ):
+        setattr(
+            body,
+            PROP_PARTDESIGN_HISTORY_PRESENTATION,
+            PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
+        )
+        changed = True
+    _hide_property(body, PROP_PARTDESIGN_HISTORY_PRESENTATION)
+    return changed
+
+
+def _configure_partdesign_history_presentation(
+    body: Any,
+    *,
+    visible: bool = True,
+) -> bool:
+    """Render the native Body Tip and keep earlier result states hidden."""
+
+    body_view = getattr(body, "ViewObject", None)
+    result_features = _partdesign_history_result_features(body)
+    if body_view is None or not hasattr(body_view, "Visibility"):
+        return False
+    if any(
+        getattr(feature, "ViewObject", None) is None
+        or not hasattr(feature.ViewObject, "Visibility")
+        for feature in result_features
+    ):
+        return False
+
+    tip = getattr(body, "Tip", None)
+    changed = False
+    for feature in result_features:
+        changed = _set_view_visibility(
+            feature,
+            bool(visible and feature is tip),
+        ) or changed
+    changed = _set_view_visibility(body, visible) or changed
+    return _mark_partdesign_history_presentation(body) or changed
+
+
+def _copy_native_body_presentation(source: Any, body: Any) -> None:
+    """Copy portable appearance without importing Link-only display modes."""
+
+    if hasattr(source, "ShapeMaterial") and hasattr(body, "ShapeMaterial"):
+        try:
+            body.ShapeMaterial = source.ShapeMaterial
+        except Exception as exc:
+            raise scripted_publication.PublicationError(
+                f"Could not copy ShapeMaterial from "
+                f"{getattr(source, 'Name', '<object>')} to "
+                f"{getattr(body, 'Name', '<object>')}.",
+                details={"native_error": str(exc)},
+            ) from exc
+
+    source_view = getattr(source, "ViewObject", None)
+    body_view = getattr(body, "ViewObject", None)
+    if source_view is None or body_view is None:
+        return
+    # App::Link and PartDesign::Body expose different DisplayMode
+    # enumerations ("Link" is not a Body mode). Color and line presentation
+    # are portable, while the Body keeps its native Tip renderer mode.
+    for name in (
+        "ShapeColor",
+        "LineColor",
+        "PointColor",
+        "Transparency",
+        "LineWidth",
+        "PointSize",
+    ):
+        if not hasattr(source_view, name) or not hasattr(body_view, name):
+            continue
+        try:
+            setattr(body_view, name, getattr(source_view, name))
+        except Exception as exc:
+            raise scripted_publication.PublicationError(
+                f"Could not copy view property {name!r} from "
+                f"{getattr(source, 'Name', '<object>')} to "
+                f"{getattr(body, 'Name', '<object>')}.",
+                details={"property": name, "native_error": str(exc)},
+            ) from exc
+
+
+def _partdesign_presentation_identity(obj: Any, role: str) -> tuple[str, str] | None:
+    if (
+        str(getattr(obj, scripted_publication.PROP_ROLE, "") or "") != role
+        or str(getattr(obj, scripted_publication.PROP_ENGINE, "") or "")
+        != "vibescript:partdesign"
+    ):
+        return None
+    model_id = str(
+        getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+    ).strip()
+    output_key = str(
+        getattr(obj, scripted_publication.PROP_OUTPUT_KEY, "") or ""
+    ).strip()
+    if not model_id or not output_key:
+        return None
+    return model_id, output_key
+
+
+def _create_native_body_for_publication(
+    doc: Any,
+    publication: Any,
+    *,
+    visible: bool,
+) -> Any:
+    """Give an older published solid a native Body that humans can edit."""
+
+    shape = getattr(publication, "Shape", None)
+    if shape is None or shape.isNull() or not shape.isValid():
+        raise RuntimeError(
+            f"Part Design publication {publication.Name!r} has no valid shape "
+            "for native Body migration."
+        )
+    try:
+        root = scripted_publication.model_root_for(publication)
+    except scripted_publication.PublicationError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    base_name = f"{str(publication.Name)}_Body"
+    body_name = (
+        str(doc.getUniqueObjectName(base_name))
+        if hasattr(doc, "getUniqueObjectName")
+        else base_name
+    )
+    body = doc.addObject("PartDesign::Body", body_name)
+    if body is None:
+        raise RuntimeError(
+            f"FreeCAD did not create a native Body for {publication.Name!r}."
+        )
+    root.addObject(body)
+    # App::Part may uniquify a child's Label as it is adopted. Apply the
+    # human-facing output label afterward; the stable publication is internal
+    # and object identity remains anchored by its immutable Name.
+    output_label = str(
+        getattr(publication, "Label", "") or publication.Name
+    )
+    body.Label = output_label
+    if str(getattr(body, "Label", "") or "") != output_label:
+        # Duplicate labels are disabled in a default FreeCAD profile. Prefer a
+        # descriptive native label over the opaque auto-generated "001".
+        body.Label = f"{output_label} Body"
+
+    result = body.newObject("PartDesign::Feature", f"{body_name}_Result")
+    if result is None:
+        raise RuntimeError(
+            f"FreeCAD did not create a native result for {publication.Name!r}."
+        )
+    result.Label = "Result"
+    result.Shape = shape
+    _add_string_property(
+        result,
+        "VibeCADNativeFeatureRole",
+        "Native feature role for a validated accepted result.",
+    )
+    result.VibeCADNativeFeatureRole = "adopted_result"
+    _hide_property(result, "VibeCADNativeFeatureRole")
+    body.Tip = result
+
+    scripted_publication.tag_object(
+        body,
+        role=scripted_publication.ROLE_IMPLEMENTATION,
+        engine="vibescript:partdesign",
+        model_id=str(
+            getattr(publication, scripted_publication.PROP_MODEL_ID, "") or ""
+        ),
+        output_key=str(
+            getattr(publication, scripted_publication.PROP_OUTPUT_KEY, "") or ""
+        ),
+        revision=str(
+            getattr(publication, scripted_publication.PROP_REVISION, "") or ""
+        ),
+    )
+    _copy_native_body_presentation(publication, body)
+    _configure_partdesign_history_presentation(body, visible=visible)
+    return body
+
+
+def _link_publication_to_native_body(publication: Any, body: Any) -> bool:
+    """Keep stable downstream references live while the native Body is edited."""
+
+    try:
+        root = scripted_publication.model_root_for(publication)
+    except scripted_publication.PublicationError as exc:
+        raise RuntimeError(str(exc)) from exc
+    desired_subname = f"{body.Name}."
+    linked = getattr(publication, "LinkedObject", None)
+    if (
+        isinstance(linked, (tuple, list))
+        and len(linked) >= 2
+        and linked[0] is root
+        and str(linked[1]) == desired_subname
+    ):
+        return False
+    publication.LinkedObject = (root, desired_subname)
+    publication.LinkTransform = True
+    return True
+
+
+def restore_partdesign_history_presentation(doc: Any) -> dict[str, Any]:
+    """Make native Bodies the sole visible Part Design results."""
+
+    bodies: dict[tuple[str, str], list[Any]] = {}
+    publications: dict[tuple[str, str], list[Any]] = {}
+    publication_targets: dict[tuple[str, str], list[Any]] = {}
+    program_operations: list[Any] = []
+    for obj in list(getattr(doc, "Objects", []) or []):
+        if (
+            str(getattr(obj, "TypeId", "") or "")
+            == "PartDesign::DesignScriptOperation"
+            and str(
+                getattr(obj, scripted_publication.PROP_ROLE, "") or ""
+            )
+            == scripted_publication.ROLE_IMPLEMENTATION
+        ):
+            program_operations.append(obj)
+        if str(getattr(obj, "TypeId", "") or "") == "PartDesign::Body":
+            identity = _partdesign_presentation_identity(
+                obj,
+                scripted_publication.ROLE_IMPLEMENTATION,
+            )
+            if identity is not None:
+                bodies.setdefault(identity, []).append(obj)
+        if str(getattr(obj, "TypeId", "") or "") == "App::Link":
+            identity = _partdesign_presentation_identity(
+                obj,
+                scripted_publication.ROLE_PUBLICATION,
+            )
+            if identity is not None:
+                publications.setdefault(identity, []).append(obj)
+        target_identity = _partdesign_presentation_identity(
+            obj,
+            scripted_publication.ROLE_PUBLICATION_TARGET,
+        )
+        if target_identity is not None:
+            publication_targets.setdefault(target_identity, []).append(obj)
+
+    changed_objects: set[str] = set()
+    for operation in program_operations:
+        before = {
+            name: str(getattr(operation, name, "") or "")
+            for name in (
+                "VibeCADTimelineEditCommand",
+                "VibeCADTimelineDeleteCommand",
+            )
+        }
+        _set_partdesign_program_history_commands(operation)
+        if before != {
+            name: str(getattr(operation, name, "") or "")
+            for name in before
+        }:
+            changed_objects.add(str(operation.Name))
+
+    # Private detached-shape carriers are never a human viewport result. Hide
+    # every explicitly tagged target, including orphaned or duplicate targets
+    # that cannot be paired unambiguously with a publication. Their document
+    # identity remains intact for reference repair and diagnostics.
+    for target_matches in publication_targets.values():
+        for target in target_matches:
+            if _set_view_visibility(target, False):
+                target_name = str(getattr(target, "Name", "") or "")
+                if target_name:
+                    changed_objects.add(target_name)
+
+    migrated_bodies: list[str] = []
+    skipped_identities: list[str] = []
+    for identity in sorted(set(publications) - set(bodies)):
+        publication_matches = publications[identity]
+        if len(publication_matches) != 1:
+            skipped_identities.append(f"{identity[0]}:{identity[1]}")
+            continue
+        publication = publication_matches[0]
+        publication_visible = bool(
+            getattr(
+                getattr(publication, "ViewObject", None),
+                "Visibility",
+                False,
+            )
+        )
+        body = _create_native_body_for_publication(
+            doc,
+            publication,
+            visible=publication_visible,
+        )
+        bodies[identity] = [body]
+        body_name = str(getattr(body, "Name", "") or "")
+        publication_name = str(getattr(publication, "Name", "") or "")
+        changed_objects.update((body_name, publication_name))
+        migrated_bodies.append(body_name)
+
+    for identity in sorted(set(bodies).intersection(publications)):
+        body_matches = bodies[identity]
+        publication_matches = publications[identity]
+        if len(body_matches) != 1 or len(publication_matches) != 1:
+            skipped_identities.append(f"{identity[0]}:{identity[1]}")
+            continue
+        body = body_matches[0]
+        publication = publication_matches[0]
+        body_name = str(getattr(body, "Name", "") or "")
+        publication_name = str(getattr(publication, "Name", "") or "")
+        body_tip = getattr(body, "Tip", None)
+        if (
+            str(getattr(body_tip, "TypeId", "") or "")
+            == "PartDesign::DesignBodyPublication"
+        ):
+            # A global Design Body is already the stable viewport result. Its
+            # Tip publishes one exact Body-state chain and the VibeScript
+            # App::Link remains only the source program's compatibility
+            # boundary. Relinking that App::Link through the old program
+            # container would recreate legacy Body/container ownership and
+            # make the saved graph differ from the graph which was accepted.
+            body_visible = bool(
+                getattr(
+                    getattr(body, "ViewObject", None),
+                    "Visibility",
+                    False,
+                )
+            )
+            _copy_native_body_presentation(publication, body)
+            if _configure_partdesign_history_presentation(
+                body,
+                visible=body_visible,
+            ):
+                changed_objects.add(body_name)
+            if _set_view_visibility(publication, False):
+                changed_objects.add(publication_name)
+            continue
+        if _link_publication_to_native_body(publication, body):
+            changed_objects.add(publication_name)
+        current_schema = str(
+            getattr(body, PROP_PARTDESIGN_HISTORY_PRESENTATION, "") or ""
+        )
+        if current_schema != PARTDESIGN_HISTORY_PRESENTATION_SCHEMA:
+            body_view = getattr(body, "ViewObject", None)
+            publication_view = getattr(publication, "ViewObject", None)
+            if current_schema == _LEGACY_PARTDESIGN_HISTORY_PRESENTATION_SCHEMA:
+                output_visible = bool(
+                    getattr(publication_view, "Visibility", False)
+                    or any(
+                        bool(
+                            getattr(
+                                getattr(feature, "ViewObject", None),
+                                "Visibility",
+                                False,
+                            )
+                        )
+                        for feature in _partdesign_history_result_features(body)
+                    )
+                )
+            else:
+                output_visible = bool(
+                    getattr(body_view, "Visibility", False)
+                    or getattr(publication_view, "Visibility", False)
+                )
+            _copy_native_body_presentation(publication, body)
+            if _configure_partdesign_history_presentation(
+                body,
+                visible=output_visible,
+            ):
+                changed_objects.add(body_name)
+            if _set_view_visibility(publication, False):
+                changed_objects.add(publication_name)
+            if body_name not in migrated_bodies:
+                migrated_bodies.append(body_name)
+            continue
+
+        body_visible = bool(
+            getattr(getattr(body, "ViewObject", None), "Visibility", False)
+        )
+        if _configure_partdesign_history_presentation(
+            body,
+            visible=body_visible,
+        ):
+            changed_objects.add(body_name)
+        if _set_view_visibility(publication, False):
+            changed_objects.add(publication_name)
+
+    return {
+        "changed_objects": sorted(name for name in changed_objects if name),
+        "migrated_bodies": sorted(name for name in migrated_bodies if name),
+        "skipped_identities": skipped_identities,
+    }
+
+
+def _partdesign_history_key(obj: Any, *, context: str) -> str:
+    properties = _properties(obj)
+    if PROP_PARTDESIGN_HISTORY_KEY in properties:
+        if (
+            obj.getTypeIdOfProperty(PROP_PARTDESIGN_HISTORY_KEY)
+            != "App::PropertyString"
+        ):
+            raise RuntimeError(f"{context} has an invalid authored history identity.")
+        key = str(getattr(obj, PROP_PARTDESIGN_HISTORY_KEY, "") or "")
+        if key:
+            return key
+
+    # Native-history artifacts author document-safe object names.  Documents
+    # produced before the explicit key property therefore already carry the
+    # exact authored key in Name; this is identity data, not a label/type
+    # inference.
+    key = str(getattr(obj, "Name", "") or "")
+    if not key:
+        raise RuntimeError(f"{context} has no stable authored history identity.")
+    return key
+
+
+def _partdesign_timeline_blocks(
+    authored_objects: list[Any],
+    *,
+    output_name: str,
+) -> list[dict[str, Any]]:
+    """Return exact resource-first/root-last blocks for one authored Body."""
+
+    from PartDesign.PartDesignTimeline import mark_operation, mark_resource
+
+    authored_set = set(authored_objects)
+    keys: dict[Any, str] = {}
+    key_objects: dict[str, Any] = {}
+    operations: list[Any] = []
+    resources: list[Any] = []
+    for obj in authored_objects:
+        context = f"Part Design output {output_name!r} object {obj.Name!r}"
+        key = _partdesign_history_key(obj, context=context)
+        if key in key_objects and key_objects[key] is not obj:
+            raise RuntimeError(
+                f"Part Design output {output_name!r} duplicates authored "
+                f"history identity {key!r}."
+            )
+        key_objects[key] = obj
+        keys[obj] = key
+        role = _timeline_role(obj, context=context)
+        if role in {"", "operation"}:
+            mark_operation(obj)
+            operations.append(obj)
+            continue
+        if role == "resource":
+            owner = _timeline_owner(obj, context=context)
+            if owner not in authored_set:
+                raise RuntimeError(
+                    f"Part Design resource {obj.Name!r} has an owner outside "
+                    f"output {output_name!r}."
+                )
+            mark_resource(obj, owner)
+            resources.append(obj)
+            continue
+        raise RuntimeError(
+            f"Part Design authored object {obj.Name!r} cannot be internal."
+        )
+
+    blocks: list[dict[str, Any]] = []
+    assigned_resources: set[Any] = set()
+    for operation in operations:
+        owned = []
+        for resource in resources:
+            current = resource
+            visited: set[Any] = set()
+            while current in authored_set and _timeline_role(
+                current,
+                context=f"Part Design resource {resource.Name!r}",
+            ) == "resource":
+                if current in visited:
+                    raise RuntimeError(
+                        f"Part Design output {output_name!r} has cyclic "
+                        "resource ownership."
+                    )
+                visited.add(current)
+                current = _timeline_owner(
+                    current,
+                    context=f"Part Design resource {resource.Name!r}",
+                )
+            if current is operation:
+                owned.append(resource)
+        ordered_resources, resource_owners = _canonical_timeline_resource_graph(
+            operation,
+            owned,
+            context=(
+                f"Part Design output {output_name!r} operation "
+                f"{operation.Name!r}"
+            ),
+        )
+        assigned_resources.update(ordered_resources)
+        blocks.append(
+            {
+                "operation": operation,
+                "resources": ordered_resources,
+                "resource_owners": resource_owners,
+                "ordered": [*ordered_resources, operation],
+                "keys": [
+                    *(keys[resource] for resource in ordered_resources),
+                    keys[operation],
+                ],
+                "root_key": keys[operation],
+            }
+        )
+    if assigned_resources != set(resources):
+        raise RuntimeError(
+            f"Part Design output {output_name!r} contains a resource which "
+            "does not resolve to an authored operation."
+        )
+    return blocks
+
+
+def _materialize_partdesign_native_history(
+    doc: Any,
+    root: Any,
+    prepared: Mapping[str, Any],
+    validated: Mapping[str, Any],
+) -> dict[str, Any]:
+    history = validated.get("partdesign_native_history")
+    if not isinstance(history, Mapping):
+        return {"available": False, "bodies": {}, "created_objects": []}
+
+    output_items = {
+        str(item["name"]): item for item in list(validated.get("outputs") or [])
+    }
+    bodies: dict[str, Any] = {}
+    timeline_blocks: dict[str, list[dict[str, Any]]] = {}
+    created_objects: list[Any] = []
+    program_id = str(prepared["program_id"])
+    revision = str(prepared["revision"])
+    for body_specification in list(history.get("outputs") or []):
+        object_specs = list(body_specification.get("objects") or [])
+        output_name = str(body_specification["output_name"])
+        body = doc.addObject(
+            "PartDesign::Body",
+            str(body_specification["body_name"]),
+        )
+        if body is None:
+            raise RuntimeError(
+                f"FreeCAD did not restore the native Body for {output_name!r}."
+            )
+        body.Label = str(body_specification["body_label"])
+        created_objects.append(body)
+        provisional_query = getattr(
+            doc,
+            "isProvisionallyEnrolledInTimelineByCurrentTransaction",
+            None,
+        )
+        classify_internal = getattr(
+            doc,
+            "classifyProvisionalTimelineInternalObject",
+            None,
+        )
+        if (
+            callable(provisional_query)
+            and provisional_query(body)
+            and callable(classify_internal)
+        ):
+            classify_internal(body)
+        root.addObject(body)
+
+        objects: dict[str, Any] = {}
+        for specification in object_specs:
+            original_name = str(specification["name"])
+            obj = body.newObject(
+                str(specification["type_id"]),
+                original_name,
+            )
+            if obj is None:
+                raise RuntimeError(
+                    f"FreeCAD did not restore native history object {original_name!r}."
+                )
+            if str(getattr(obj, "TypeId", "") or "") != str(
+                specification["type_id"]
+            ):
+                raise RuntimeError(
+                    f"FreeCAD created the wrong native history type for "
+                    f"{original_name!r}."
+                )
+            created_objects.append(obj)
+            objects[original_name] = obj
+
+        for specification in object_specs:
+            original_name = str(specification["name"])
+            obj = objects[original_name]
+            try:
+                obj.restoreContent(bytearray(specification["content"]))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not restore native history object {original_name!r}: {exc}"
+                ) from exc
+            obj.Label = str(specification.get("label") or original_name)
+            _add_string_property(
+                obj,
+                PROP_PARTDESIGN_HISTORY_KEY,
+                "Stable authored identity for native Part Design history.",
+            )
+            if (
+                obj.getTypeIdOfProperty(PROP_PARTDESIGN_HISTORY_KEY)
+                != "App::PropertyString"
+            ):
+                raise RuntimeError(
+                    f"Native Part Design history object {original_name!r} has "
+                    "an invalid authored identity property."
+                )
+            setattr(obj, PROP_PARTDESIGN_HISTORY_KEY, original_name)
+            _hide_property(obj, PROP_PARTDESIGN_HISTORY_KEY)
+
+        for specification in object_specs:
+            original_name = str(specification["name"])
+            obj = objects[original_name]
+            _apply_partdesign_history_links(
+                body,
+                objects,
+                obj,
+                dict(specification.get("links") or {}),
+            )
+            view = getattr(obj, "ViewObject", None)
+            if view is not None and hasattr(view, "Visibility"):
+                view.Visibility = bool(specification.get("visible"))
+            if str(
+                getattr(obj, "VibeCADFastenerSchema", "") or ""
+            ) == "vibecad-standard-fastener-v1":
+                from VibeCADFasteners import install_fastener_view_provider
+
+                install_fastener_view_provider(obj)
+
+        tip_name = str(body_specification.get("tip_name") or "")
+        if tip_name and tip_name in objects:
+            body.Tip = objects[tip_name]
+        tip = getattr(body, "Tip", None)
+        tip_shape = getattr(tip, "Shape", None)
+        if (
+            str(body_specification.get("representation") or "") != "body"
+            or tip_shape is None
+            or tip_shape.isNull()
+            or not tip_shape.isValid()
+        ):
+            accepted = body.newObject(
+                "PartDesign::Feature",
+                f"{str(body.Name)}_Result",
+            )
+            if accepted is None:
+                raise RuntimeError(
+                    f"FreeCAD did not create the accepted native result for "
+                    f"{output_name!r}."
+                )
+            accepted.Label = "Result"
+            accepted.Shape = output_items[output_name]["detached_shape"]
+            created_objects.append(accepted)
+            _add_string_property(
+                accepted,
+                "VibeCADNativeFeatureRole",
+                "Native feature role for a validated accepted result.",
+            )
+            accepted.VibeCADNativeFeatureRole = "adopted_result"
+            _hide_property(accepted, "VibeCADNativeFeatureRole")
+            _add_string_property(
+                accepted,
+                PROP_PARTDESIGN_HISTORY_KEY,
+                "Stable authored identity for native Part Design history.",
+            )
+            setattr(
+                accepted,
+                PROP_PARTDESIGN_HISTORY_KEY,
+                f"{output_name}.__accepted_result__",
+            )
+            _hide_property(accepted, PROP_PARTDESIGN_HISTORY_KEY)
+            body.Tip = accepted
+        scripted_publication.tag_object(
+            body,
+            role=scripted_publication.ROLE_IMPLEMENTATION,
+            engine="vibescript:partdesign",
+            model_id=program_id,
+            output_key=output_name,
+            revision=revision,
+        )
+        _configure_partdesign_history_presentation(body)
+        bodies[output_name] = body
+        authored_objects = [
+            objects[str(specification["name"])]
+            for specification in object_specs
+        ]
+        if body.Tip is not None and all(
+            body.Tip is not candidate for candidate in authored_objects
+        ):
+            authored_objects.append(body.Tip)
+        timeline_blocks[output_name] = _partdesign_timeline_blocks(
+            authored_objects,
+            output_name=output_name,
+        )
+
+    for body_specification in list(history.get("outputs") or []):
+        output_name = str(body_specification["output_name"])
+        body = bodies.get(output_name)
+        if body is None:
+            raise RuntimeError(
+                f"Native Part Design Body history for {output_name!r} is empty."
+            )
+        _verify_partdesign_history_body(
+            body,
+            output_items[output_name],
+            output_name=output_name,
+        )
+
+    return {
+        "available": True,
+        "bodies": bodies,
+        "created_objects": [
+            str(getattr(obj, "Name", "") or "") for obj in created_objects
+        ],
+        "created_object_refs": created_objects,
+        "timeline_blocks": timeline_blocks,
+        "artifact_sha256": str(history.get("artifact_sha256") or ""),
+    }
+
+
+def _timeline_object_identity(obj: Any) -> tuple[str, int]:
+    name = str(getattr(obj, "Name", "") or "")
+    object_id = getattr(obj, "ID", None)
+    if (
+        not name
+        or isinstance(object_id, bool)
+        or not isinstance(object_id, int)
+        or object_id <= 0
+    ):
+        raise RuntimeError(
+            "The document timeline contains an object without a stable native identity."
+        )
+    return name, int(object_id)
+
+
+def _document_timeline(doc: Any) -> Any | None:
+    matches = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if str(getattr(obj, "TypeId", "") or "") == "App::DocumentTimeline"
+    ]
+    if len(matches) > 1:
+        raise RuntimeError("The document contains multiple native operation timelines.")
+    timeline = matches[0] if matches else None
+    if timeline is None:
+        return None
+    required = {
+        "Operations",
+        "Position",
+        "VisibilityAtEnd",
+        "SuppressionAtEnd",
+    }
+    missing = required.difference(_properties(timeline))
+    if missing:
+        raise RuntimeError(
+            "The native operation timeline is missing required properties: "
+            + ", ".join(sorted(missing))
+            + "."
+        )
+    return timeline
+
+
+def _partdesign_timeline_body_identity(
+    body: Any,
+) -> tuple[str, str, str] | None:
+    if (
+        str(getattr(body, "TypeId", "") or "") != "PartDesign::Body"
+        or scripted_publication.role_of(body)
+        != scripted_publication.ROLE_IMPLEMENTATION
+    ):
+        return None
+    engine = str(
+        getattr(body, scripted_publication.PROP_ENGINE, "") or ""
+    ).strip()
+    model_id = str(
+        getattr(body, scripted_publication.PROP_MODEL_ID, "") or ""
+    ).strip()
+    output_key = str(
+        getattr(body, scripted_publication.PROP_OUTPUT_KEY, "") or ""
+    ).strip()
+    if engine != "vibescript:partdesign" or not model_id or not output_key:
+        return None
+    return engine, model_id, output_key
+
+
+def _capture_partdesign_timeline_replacement(
+    doc: Any,
+    previous_implementation: list[Any],
+) -> dict[str, Any] | None:
+    """Capture exact authored Body segments before transactional replacement."""
+
+    timeline = _document_timeline(doc)
+    if timeline is None or not previous_implementation:
+        return None
+    operations = list(getattr(timeline, "Operations", []) or [])
+    visibility = [
+        bool(value)
+        for value in list(getattr(timeline, "VisibilityAtEnd", []) or [])
+    ]
+    suppression = [
+        bool(value)
+        for value in list(getattr(timeline, "SuppressionAtEnd", []) or [])
+    ]
+    if len(visibility) != len(operations) or len(suppression) != len(operations):
+        raise RuntimeError(
+            "The native operation timeline has mismatched operation and state counts."
+        )
+    position = int(getattr(timeline, "Position", 0) or 0)
+    if not 0 <= position <= len(operations):
+        raise RuntimeError("The native operation timeline position is out of range.")
+
+    bodies: dict[tuple[str, str, str], Any] = {}
+    for obj in previous_implementation:
+        identity = _partdesign_timeline_body_identity(obj)
+        if identity is None:
+            continue
+        if identity in bodies and bodies[identity] is not obj:
+            raise RuntimeError(
+                "Multiple generated Part Design Bodies claim timeline identity "
+                f"{identity[1]}:{identity[2]}."
+            )
+        bodies[identity] = obj
+    if not bodies:
+        return None
+
+    member_identity_to_body: dict[tuple[str, int], tuple[str, str, str]] = {}
+    member_key_by_identity: dict[tuple[str, int], str] = {}
+    for identity, body in bodies.items():
+        members = [body, *list(getattr(body, "Group", []) or [])]
+        for member in members:
+            member_identity = _timeline_object_identity(member)
+            existing = member_identity_to_body.get(member_identity)
+            if existing is not None and existing != identity:
+                raise RuntimeError(
+                    "A native operation belongs to multiple generated Part Design "
+                    "Body segments."
+                )
+            member_identity_to_body[member_identity] = identity
+            member_key_by_identity[member_identity] = (
+                f"{identity[2]}.__body__"
+                if member is body
+                else _partdesign_history_key(
+                    member,
+                    context=(
+                        f"Existing Part Design output {identity[2]!r} "
+                        f"object {member.Name!r}"
+                    ),
+                )
+            )
+
+    operation_identities = [
+        _timeline_object_identity(operation) for operation in operations
+    ]
+    segments: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for index, operation_identity in enumerate(operation_identities):
+        body_identity = member_identity_to_body.get(operation_identity)
+        if body_identity is None:
+            continue
+        segment = segments.setdefault(
+            body_identity,
+            {
+                "indices": [],
+                "objects": [],
+                "operation_identities": [],
+                "operation_keys": [],
+            },
+        )
+        segment["indices"].append(index)
+        segment["objects"].append(operations[index])
+        segment["operation_identities"].append(operation_identity)
+        segment["operation_keys"].append(member_key_by_identity[operation_identity])
+
+    for identity, segment in segments.items():
+        indices = list(segment["indices"])
+        if indices != list(range(indices[0], indices[-1] + 1)):
+            raise RuntimeError(
+                "Generated Part Design history is interleaved with unrelated "
+                f"operations for {identity[1]}:{identity[2]}; regeneration cannot "
+                "replace that history without changing document chronology."
+            )
+        segment["first_index"] = indices[0]
+        segment["last_index"] = indices[-1]
+        segment["before_position"] = sum(index < position for index in indices)
+        if len(set(segment["operation_keys"])) != len(segment["operation_keys"]):
+            raise RuntimeError(
+                f"Generated Part Design history for {identity[1]}:{identity[2]} "
+                "has duplicate authored identities."
+            )
+
+        segment_objects = list(segment["objects"])
+        segment_set = set(segment_objects)
+        root_objects: list[Any] = []
+        root_keys: list[str] = []
+        root_end_offsets: list[int] = []
+        for local_index, candidate in enumerate(segment_objects):
+            role = _timeline_role(
+                candidate,
+                context=(
+                    f"Existing Part Design output {identity[2]!r} "
+                    f"History member {candidate.Name!r}"
+                ),
+            )
+            if role == "internal":
+                raise RuntimeError(
+                    f"Internal Part Design object {candidate.Name!r} appears "
+                    "in native History."
+                )
+            if role == "resource":
+                current = candidate
+                visited: set[Any] = set()
+                while _timeline_role(
+                    current,
+                    context=f"Part Design resource {candidate.Name!r}",
+                ) == "resource":
+                    if current in visited:
+                        raise RuntimeError(
+                            f"Part Design output {identity[2]!r} has cyclic "
+                            "resource ownership."
+                        )
+                    visited.add(current)
+                    current = _timeline_owner(
+                        current,
+                        context=f"Part Design resource {candidate.Name!r}",
+                    )
+                    if current is None:
+                        break
+                if current not in segment_set:
+                    raise RuntimeError(
+                        f"Part Design resource {candidate.Name!r} resolves "
+                        "outside its generated Body segment."
+                    )
+                continue
+            root_objects.append(candidate)
+            root_keys.append(segment["operation_keys"][local_index])
+            root_end_offsets.append(local_index + 1)
+        if not root_objects:
+            raise RuntimeError(
+                f"Generated Part Design history for {identity[1]}:{identity[2]} "
+                "has no semantic operations."
+            )
+        before_position = int(segment["before_position"])
+        if (
+            before_position not in {0, len(segment_objects)}
+            and before_position not in set(root_end_offsets)
+        ):
+            raise RuntimeError(
+                f"Generated Part Design history for {identity[1]}:{identity[2]} "
+                "has a native History position inside a semantic operation."
+            )
+        segment["root_objects"] = root_objects
+        segment["root_keys"] = root_keys
+        segment["root_end_offsets"] = root_end_offsets
+
+    if not segments:
+        return None
+    ordered_segments = [
+        segment
+        for _identity, segment in sorted(
+            segments.items(),
+            key=lambda item: int(item[1]["first_index"]),
+        )
+    ]
+    for identity, segment in segments.items():
+        segment["body_identity"] = identity
+    return {
+        "timeline_identity": _timeline_object_identity(timeline),
+        "segments": ordered_segments,
+    }
+
+
+def _stage_partdesign_timeline_replacement(
+    doc: Any,
+    captured: Mapping[str, Any] | None,
+) -> None:
+    if not captured:
+        return
+    timeline = _document_timeline(doc)
+    if timeline is None or _timeline_object_identity(timeline) != tuple(
+        captured["timeline_identity"]
+    ):
+        raise RuntimeError(
+            "The native operation History changed identity before Part Design "
+            "regeneration."
+        )
+    stage = getattr(doc, "stageTimelineOperationSegmentReplacement", None)
+    if not callable(stage):
+        raise RuntimeError(
+            "The native staged History segment-replacement API is unavailable."
+        )
+    stage(
+        [
+            list(segment["root_objects"])
+            for segment in list(captured["segments"])
+        ]
+    )
+
+
+def _replace_partdesign_timeline_segments(
+    doc: Any,
+    captured: Mapping[str, Any] | None,
+    native_history: Mapping[str, Any],
+) -> None:
+    """Finalize exact staged replacement and publish wholly new Body history."""
+
+    blocks_by_output = {
+        str(name): [dict(block) for block in list(blocks)]
+        for name, blocks in dict(native_history.get("timeline_blocks") or {}).items()
+    }
+    new_bodies: dict[tuple[str, str, str], Any] = {}
+    for body in dict(native_history.get("bodies") or {}).values():
+        identity = _partdesign_timeline_body_identity(body)
+        if identity is None:
+            raise RuntimeError(
+                "A regenerated Part Design Body has no stable scripted output identity."
+            )
+        if identity in new_bodies and new_bodies[identity] is not body:
+            raise RuntimeError(
+                "Multiple regenerated Part Design Bodies claim History identity "
+                f"{identity[1]}:{identity[2]}."
+            )
+        new_bodies[identity] = body
+
+    replaced_outputs: set[str] = set()
+    if captured:
+        timeline = _document_timeline(doc)
+        if timeline is None or _timeline_object_identity(timeline) != tuple(
+            captured["timeline_identity"]
+        ):
+            raise RuntimeError(
+                "The native operation History changed identity during Part Design "
+                "publication."
+            )
+        mappings = []
+        for segment_index, raw_segment in enumerate(
+            list(captured["segments"])
+        ):
+            segment = dict(raw_segment)
+            identity = tuple(segment["body_identity"])
+            output_name = str(identity[2])
+            replaced_outputs.add(output_name)
+            blocks = (
+                blocks_by_output.get(output_name, [])
+                if identity in new_bodies
+                else []
+            )
+            ordered_new_blocks = [
+                list(block["ordered"]) for block in blocks
+            ]
+            flattened_new = [
+                obj for block in ordered_new_blocks for obj in block
+            ]
+            flattened_new_keys = [
+                str(key)
+                for block in blocks
+                for key in list(block["keys"])
+            ]
+            if len(flattened_new) != len(flattened_new_keys):
+                raise RuntimeError(
+                    f"Part Design output {output_name!r} has inconsistent "
+                    "authored History keys."
+                )
+            if len(set(flattened_new_keys)) != len(flattened_new_keys):
+                raise RuntimeError(
+                    f"Part Design output {output_name!r} duplicates an "
+                    "authored History key."
+                )
+
+            old_keys = [
+                str(key) for key in list(segment["operation_keys"])
+            ]
+            old_index_by_key = {
+                key: index for index, key in enumerate(old_keys)
+            }
+            state_sources = [
+                old_index_by_key.get(key, -1)
+                for key in flattened_new_keys
+            ]
+            consumer_replacements = [-1] * len(old_keys)
+
+            before_position = int(segment["before_position"])
+            old_member_count = len(old_keys)
+            active_root_count = -1
+            if before_position not in {0, old_member_count}:
+                old_root_keys = [
+                    str(key) for key in list(segment["root_keys"])
+                ]
+                old_active_by_key = {
+                    key: int(end_offset) <= before_position
+                    for key, end_offset in zip(
+                        old_root_keys,
+                        list(segment["root_end_offsets"]),
+                    )
+                }
+                new_root_keys = [
+                    str(block["root_key"]) for block in blocks
+                ]
+                if any(key not in old_active_by_key for key in new_root_keys):
+                    raise RuntimeError(
+                        f"Part Design output {output_name!r} changed operations "
+                        "across the active native History boundary. Move History "
+                        "to either side of that Body before regenerating it."
+                    )
+                active_states = [
+                    old_active_by_key[key] for key in new_root_keys
+                ]
+                if any(
+                    not active_states[index - 1] and active_states[index]
+                    for index in range(1, len(active_states))
+                ):
+                    raise RuntimeError(
+                        f"Part Design output {output_name!r} cannot preserve one "
+                        "coherent active native History boundary."
+                    )
+                active_root_count = sum(active_states)
+
+            mappings.append(
+                (
+                    segment_index,
+                    ordered_new_blocks,
+                    state_sources,
+                    consumer_replacements,
+                    active_root_count,
+                )
+            )
+
+        finalize = getattr(
+            doc,
+            "finalizeProvisionalTimelineOperationSegmentReplacement",
+            None,
+        )
+        if not callable(finalize):
+            raise RuntimeError(
+                "The native staged History segment-replacement finalizer is unavailable."
+            )
+        finalize(mappings)
+
+    for output_name, blocks in blocks_by_output.items():
+        if output_name in replaced_outputs:
+            continue
+        for block in blocks:
+            _publish_new_timeline_resource_block(
+                doc,
+                block["operation"],
+                list(block["resources"]),
+                context=(
+                    f"New Part Design output {output_name!r} operation "
+                    f"{block['operation'].Name!r}"
+                ),
+            )
+
+
+def _partdesign_design_program_operation(
+    doc: Any,
+    program_id: str,
+) -> Any | None:
+    matches = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if str(getattr(obj, "TypeId", "") or "")
+        == "PartDesign::DesignScriptOperation"
+        and str(getattr(obj, "ProgramId", "") or "") == program_id
+    ]
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"Multiple Design History operations claim VibeScript program "
+            f"{program_id!r}."
+        )
+    return matches[0] if matches else None
+
+
+def _partdesign_implementation_bodies(
+    doc: Any,
+    program_id: str,
+) -> dict[str, Any]:
+    claims: dict[str, list[Any]] = {}
+    for obj in list(getattr(doc, "Objects", []) or []):
+        if (
+            str(getattr(obj, "TypeId", "") or "") != "PartDesign::Body"
+            or scripted_publication.role_of(obj)
+            != scripted_publication.ROLE_IMPLEMENTATION
+            or str(
+                getattr(obj, scripted_publication.PROP_ENGINE, "") or ""
+            )
+            != "vibescript:partdesign"
+            or str(
+                getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+            )
+            != program_id
+        ):
+            continue
+        key = str(
+            getattr(obj, scripted_publication.PROP_OUTPUT_KEY, "") or ""
+        ).strip()
+        if not key:
+            raise RuntimeError(
+                f"Managed Part Design Body {obj.Name!r} has no output key."
+            )
+        claims.setdefault(key, []).append(obj)
+    duplicates = {
+        key: values for key, values in claims.items() if len(values) > 1
+    }
+    if duplicates:
+        details = "; ".join(
+            f"{key!r}: {', '.join(repr(str(body.Name)) for body in bodies)}"
+            for key, bodies in sorted(duplicates.items())
+        )
+        raise RuntimeError(
+            "Legacy Part Design output ownership is ambiguous because no native "
+            f"Design History operation can choose the authoritative Body ({details})."
+        )
+    return {key: values[0] for key, values in claims.items()}
+
+
+def _repair_partdesign_implementation_body_claims(
+    doc: Any,
+    program_id: str,
+    authoritative: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    """Remove managed Bodies no longer backed by the native operation."""
+
+    repairs: list[dict[str, str]] = []
+    obsolete: list[Any] = []
+    for obj in list(getattr(doc, "Objects", []) or []):
+        if (
+            str(getattr(obj, "TypeId", "") or "") != "PartDesign::Body"
+            or scripted_publication.role_of(obj)
+            != scripted_publication.ROLE_IMPLEMENTATION
+            or str(
+                getattr(obj, scripted_publication.PROP_ENGINE, "") or ""
+            )
+            != "vibescript:partdesign"
+            or str(
+                getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+            )
+            != program_id
+        ):
+            continue
+        key = str(
+            getattr(obj, scripted_publication.PROP_OUTPUT_KEY, "") or ""
+        ).strip()
+        expected = authoritative.get(key)
+        if expected is obj:
+            continue
+        obsolete.append(obj)
+        repairs.append(
+            {
+                "object_name": str(obj.Name),
+                "claimed_output": key,
+                "authoritative_object": (
+                    str(expected.Name) if expected is not None else ""
+                ),
+            }
+        )
+    if not obsolete:
+        return repairs
+
+    deletion_candidates: list[Any] = []
+    candidate_ids: set[int] = set()
+    for body in obsolete:
+        owned = [body]
+        pending = list(getattr(body, "Group", []) or [])
+        while pending:
+            candidate = pending.pop()
+            if candidate in owned:
+                continue
+            owned.append(candidate)
+            pending.extend(list(getattr(candidate, "Group", []) or []))
+        for candidate in owned:
+            if id(candidate) in candidate_ids:
+                continue
+            deletion_candidates.append(candidate)
+            candidate_ids.add(id(candidate))
+    deletion = _prepare_timeline_deletion(doc, deletion_candidates)
+    deletion_targets = list(deletion["delete_objects"])
+    program_internal = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if str(
+            getattr(obj, contracts.PROP_PROGRAM_ID, "")
+            or getattr(obj, scripted_publication.PROP_MODEL_ID, "")
+            or ""
+        )
+        == program_id
+    ]
+    external = _external_uses(
+        doc,
+        deletion_targets,
+        [*program_internal, *deletion_targets],
+    )
+    if external:
+        raise _reference_error(
+            "Cannot retire obsolete managed Part Design Bodies while foreign "
+            "document objects still reference them",
+            external,
+        )
+    _remove_timeline_deletion(doc, deletion)
+    return repairs
+
+
+def _partdesign_body_output(item: Mapping[str, Any]) -> bool:
+    data = item.get("partdesign_data")
+    return (
+        isinstance(data, Mapping)
+        and str(data.get("representation") or "") == "body"
+        and str(item.get("type") or "") == "solid"
+    )
+
+
+def _publish_partdesign_design_candidate(
+    service: Any,
+    prepared: Mapping[str, Any],
+    validated: Mapping[str, Any],
+    doc: Any,
+) -> dict[str, Any]:
+    """Publish one complete program as one Design-global History operation."""
+
+    import PartDesign
+
+    items = [dict(item) for item in list(validated["outputs"])]
+    if not items:
+        raise RuntimeError(
+            "A Part Design VibeScript program must publish at least one output."
+        )
+    body_items = [item for item in items if _partdesign_body_output(item)]
+    program_id = str(prepared["program_id"])
+    revision = str(prepared["revision"])
+    root = _partdesign_program_root(doc, program_id)
+    publications = (
+        _partdesign_publications(doc, root, program_id)
+        if root is not None
+        else {}
+    )
+    operation = _partdesign_design_program_operation(doc, program_id)
+    legacy_bodies = (
+        _partdesign_implementation_bodies(doc, program_id)
+        if operation is None
+        else {}
+    )
+
+    previous_presentation = {
+        name: _preflight_partdesign_presentation(obj)
+        for name, obj in publications.items()
+    }
+    for item in items:
+        output_name = str(item["name"])
+        published = publications.get(output_name)
+        if published is None:
+            continue
+        presentation = item.get("partdesign_presentation")
+        if not isinstance(presentation, Mapping):
+            raise RuntimeError(
+                f"Part Design output {output_name!r} has no validated "
+                "presentation state."
+            )
+        desired_channels = _partdesign_presentation_channels(presentation)
+        if not desired_channels:
+            continue
+        for candidate in list(getattr(doc, "Objects", []) or []):
+            if (
+                str(
+                    getattr(
+                        candidate,
+                        contracts.PROP_PROGRAM_DOMAIN,
+                        "",
+                    )
+                    or ""
+                )
+                != "material"
+                or getattr(candidate, PROP_MATERIAL_TARGET, None)
+                is not published
+            ):
+                continue
+            ownership = _material_ownership(candidate)
+            if str(ownership.get("channel") or "") in desired_channels:
+                raise RuntimeError(
+                    f"Part Design output {output_name!r} cannot replace a "
+                    "presentation channel owned by a Material program."
+                )
+
+    previous_interfaces: dict[str, Any] = {}
+    if root is not None:
+        try:
+            previous_interfaces = json.loads(
+                str(
+                    getattr(
+                        root,
+                        scripted_publication.PROP_INTERFACES,
+                        "{}",
+                    )
+                    or "{}"
+                )
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Part Design program {program_id} has invalid interface "
+                f"metadata: {exc}"
+            ) from exc
+        if not isinstance(previous_interfaces, dict):
+            raise RuntimeError(
+                f"Part Design program {program_id} has a non-object "
+                "interface table."
+            )
+
+    existing_values = list(publications.values())
+    reference_preflight = (
+        reference_contracts.preflight_regeneration(
+            service,
+            existing_values,
+            model_root=root,
+        )
+        if root is not None and existing_values
+        else None
+    )
+    desired = {str(item["name"]) for item in items}
+    retired_names = sorted(set(publications) - desired)
+    for name in retired_names:
+        uses = scripted_publication.external_reference_uses(
+            doc,
+            [publications[name]],
+            internal_objects=(
+                [root, *existing_values]
+                if root is not None
+                else existing_values
+            ),
+        )
+        if uses:
+            raise _reference_error(
+                f"Cannot retire Part Design VibeScript output {name!r} "
+                "while downstream objects reference it",
+                uses,
+            )
+
+    # Older documents stored each accepted worker feature graph in a generated
+    # Body under the program root. Replace that implementation exactly once;
+    # stable public links remain the downstream compatibility boundary.
+    legacy_objects: list[Any] = []
+    if operation is None:
+        for body in legacy_bodies.values():
+            for obj in [
+                body,
+                *list(getattr(body, "OutListRecursive", []) or []),
+            ]:
+                if obj not in legacy_objects:
+                    legacy_objects.append(obj)
+    legacy_deletion = _prepare_timeline_deletion(doc, legacy_objects)
+    legacy_targets = list(legacy_deletion["delete_objects"])
+    legacy_uses = _external_uses(
+        doc,
+        legacy_targets,
+        [
+            *legacy_targets,
+            *existing_values,
+            *([root] if root is not None else []),
+        ],
+    )
+    if legacy_uses:
+        raise _reference_error(
+            "Cannot migrate generated Part Design history while foreign "
+            "objects reference its private implementation; reference the "
+            "stable published output instead",
+            legacy_uses,
+        )
+
+    rollback_targets: dict[int, Any] = {}
+    for obj in publications.values():
+        rollback_targets[id(obj)] = obj
+        implementation = scripted_publication.publication_target(obj, root)
+        rollback_targets[id(implementation)] = implementation
+    rollback_states = [
+        _material_target_snapshot(obj)
+        for obj in rollback_targets.values()
+    ]
+
+    transaction_open = False
+    created: list[str] = []
+    removed: list[str] = []
+    removed_implementation: list[str] = []
+    created_bodies: list[str] = []
+    ownership_repairs: list[dict[str, str]] = []
+    try:
+        if hasattr(doc, "openTransaction"):
+            doc.openTransaction(
+                f"Publish Part Design VibeScript: "
+                f"{prepared['program_name']}"
+            )
+            transaction_open = True
+        if root is None:
+            root = doc.addObject(
+                "App::Part",
+                _internal_name(prepared, "Program"),
+            )
+            if root is None:
+                raise RuntimeError(
+                    "FreeCAD did not create the Part Design program metadata "
+                    "object."
+                )
+            created.append(str(root.Name))
+        root.Label = str(prepared["program_name"])
+        _tag_partdesign_root(root, prepared)
+
+        for name in retired_names:
+            removed.extend(
+                scripted_publication.delete_publication(
+                    doc,
+                    root,
+                    publications.pop(name),
+                )
+            )
+        if legacy_targets:
+            removed_implementation.extend(
+                _remove_timeline_deletion(doc, legacy_deletion)
+            )
+
+        if operation is None:
+            operation = doc.addObject(
+                "PartDesign::DesignScriptOperation",
+                _internal_name(prepared, "ProgramOperation"),
+            )
+            if operation is None:
+                raise RuntimeError(
+                    "FreeCAD did not create the Design VibeScript History "
+                    "operation."
+                )
+            created.append(str(operation.Name))
+        operation.Label = str(prepared["program_name"])
+        _set_partdesign_program_history_commands(operation)
+
+        output_keys = [str(item["name"]) for item in body_items]
+        output_labels = [
+            str(
+                dict(item.get("partdesign_data") or {}).get(
+                    "body_label"
+                )
+                or item["name"]
+            )
+            for item in body_items
+        ]
+        before_body_names = {
+            str(obj.Name)
+            for obj in list(getattr(doc, "Objects", []) or [])
+            if str(getattr(obj, "TypeId", "") or "")
+            == "PartDesign::Body"
+        }
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        PartDesign.setDesignScriptOutputs(
+            edit,
+            str(root.Name),
+            program_id,
+            revision,
+            output_keys,
+            output_labels,
+            [item["detached_shape"] for item in body_items],
+            [None] * len(body_items),
+            [str(item["name"]) for item in items],
+            [str(item["type"]) for item in items],
+        )
+        bodies = list(PartDesign.finalizeDesignScriptOperationEdit(edit))
+        if len(bodies) != len(body_items):
+            raise RuntimeError(
+                "The Design VibeScript operation did not publish one Body per "
+                "api.body output."
+            )
+        created_bodies = [
+            str(body.Name)
+            for body in bodies
+            if str(body.Name) not in before_body_names
+        ]
+        scripted_publication.tag_object(
+            operation,
+            role=scripted_publication.ROLE_IMPLEMENTATION,
+            engine="vibescript:partdesign",
+            model_id=program_id,
+            revision=revision,
+        )
+
+        bodies_by_output = {
+            str(item["name"]): body
+            for item, body in zip(body_items, bodies)
+        }
+        for item in items:
+            name = str(item["name"])
+            output_type = str(item["type"])
+            body = bodies_by_output.get(name)
+            if body is not None:
+                scripted_publication.tag_object(
+                    body,
+                    role=scripted_publication.ROLE_IMPLEMENTATION,
+                    engine="vibescript:partdesign",
+                    model_id=program_id,
+                    output_key=name,
+                    revision=revision,
+                )
+            carrier = _PartDesignShapeCarrier(item)
+            published = publications.get(name)
+            if published is None:
+                published = scripted_publication.create_publication(
+                    doc,
+                    root,
+                    carrier,
+                    internal_name=_internal_name(prepared, name),
+                    label=carrier.Label,
+                    engine="vibescript:partdesign",
+                    model_id=program_id,
+                    output_key=name,
+                    revision=revision,
+                )
+                publications[name] = published
+                created.append(str(published.Name))
+                for rollback_target in (
+                    published,
+                    scripted_publication.publication_target(
+                        published,
+                        root,
+                    ),
+                ):
+                    if id(rollback_target) in rollback_targets:
+                        continue
+                    rollback_targets[id(rollback_target)] = rollback_target
+                    rollback_states.append(
+                        _material_target_snapshot(
+                            rollback_target,
+                            required_after_abort=False,
+                        )
+                    )
+            else:
+                _restore_partdesign_presentation_baseline(
+                    published,
+                    previous_presentation.get(name),
+                )
+                scripted_publication.tag_object(
+                    published,
+                    role=scripted_publication.ROLE_PUBLICATION,
+                    engine="vibescript:partdesign",
+                    model_id=program_id,
+                    output_key=name,
+                    revision=revision,
+                )
+                scripted_publication.update_publication(
+                    published,
+                    root,
+                    carrier,
+                    revision=revision,
+                )
+                published.Label = carrier.Label
+            _set_metadata(
+                published,
+                prepared,
+                name,
+                output_type,
+                _definition(item),
+            )
+            _configure_partdesign_presentation(published, item)
+            if body is not None:
+                _copy_native_body_presentation(published, body)
+                _configure_partdesign_history_presentation(
+                    body,
+                    visible=True,
+                )
+                _set_view_visibility(published, False)
+            else:
+                # Non-solid outputs retain the stable publication as their
+                # sole viewport result. They belong to the same source
+                # operation but intentionally have no physical Body identity.
+                _set_view_visibility(published, True)
+
+        ownership_repairs = _repair_partdesign_implementation_body_claims(
+            doc,
+            program_id,
+            bodies_by_output,
+        )
+
+        interface_table = _partdesign_interface_table(
+            validated,
+            publications,
+        )
+        reference_contracts.validate_removed_interfaces(
+            doc,
+            list(publications.values()),
+            program_id,
+            reference_contracts.interface_identities(previous_interfaces),
+            reference_contracts.interface_identities(interface_table),
+            preflight=reference_preflight,
+        )
+        setattr(
+            root,
+            scripted_publication.PROP_INTERFACES,
+            json.dumps(
+                interface_table,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+        )
+        downstream = reference_contracts.refresh_after_publication(
+            service,
+            program_id,
+            list(publications.values()),
+            revision=revision,
+            preflight=reference_preflight,
+        )
+        if hasattr(doc, "commitTransaction") and transaction_open:
+            doc.commitTransaction()
+            transaction_open = False
+    except Exception as publication_error:
+        abort_error = None
+        if transaction_open and hasattr(doc, "abortTransaction"):
+            try:
+                doc.abortTransaction()
+                transaction_open = False
+            except Exception as exc:
+                abort_error = exc
+        rollback_error = None
+        try:
+            _restore_material_target_snapshots(rollback_states)
+        except Exception as exc:
+            rollback_error = exc
+        if abort_error is not None or rollback_error is not None:
+            raise RuntimeError(
+                f"{publication_error} Explicit Part Design presentation "
+                "rollback failed: "
+                + "; ".join(
+                    message
+                    for message in (
+                        (
+                            f"transaction abort: {type(abort_error).__name__}: "
+                            f"{abort_error}"
+                            if abort_error is not None
+                            else ""
+                        ),
+                        (
+                            f"presentation restore: {rollback_error}"
+                            if rollback_error is not None
+                            else ""
+                        ),
+                    )
+                    if message
+                )
+            ) from publication_error
+        raise
+
+    live_outputs: dict[str, Any] = {}
+    output_rows: list[dict[str, Any]] = []
+    body_objects = {
+        str(item["name"]): str(body.Name)
+        for item, body in zip(body_items, bodies)
+    }
+    for item in items:
+        name = str(item["name"])
+        output_type = str(item["type"])
+        published = publications[name]
+        row = {
+            "object_name": str(published.Name),
+            "label": str(published.Label),
+            "type_id": str(published.TypeId),
+            "output_type": output_type,
+            "facts": dict(item.get("facts") or {}),
+            "partdesign_data": dict(item.get("partdesign_data") or {}),
+            "derived_state": str(
+                getattr(
+                    published,
+                    reference_contracts.PROP_DERIVED_STATE,
+                    "",
+                )
+                or ""
+            ),
+            "stale_reason": str(
+                getattr(
+                    published,
+                    reference_contracts.PROP_STALE_REASON,
+                    "",
+                )
+                or ""
+            ),
+            "source_revision": str(
+                getattr(
+                    published,
+                    reference_contracts.PROP_SOURCE_REVISION,
+                    "",
+                )
+                or ""
+            ),
+        }
+        live_outputs[name] = row
+        output_rows.append({"name": name, **row})
+    return {
+        "ok": True,
+        "outputs": output_rows,
+        "live_outputs": live_outputs,
+        "interfaces": interface_table,
+        "created_objects": created,
+        "retired_objects": removed,
+        "native_history": {
+            "available": True,
+            "strategy": "design_program_operation",
+            "operation_object": str(operation.Name),
+            "body_objects": body_objects,
+            "created_objects": created_bodies,
+            "retired_objects": removed_implementation,
+            "ownership_repairs": ownership_repairs,
+            "artifact_sha256": "",
+        },
+        "downstream_references": downstream,
+        "recompute_deferred": True,
+        "stdout": str(validated.get("stdout") or ""),
+        "budget": dict(validated.get("budget") or {}),
+    }
+
+
+def _publish_partdesign_legacy_candidate(
     service: Any,
     prepared: Mapping[str, Any],
     validated: Mapping[str, Any],
@@ -10406,6 +14905,72 @@ def _publish_partdesign_candidate(
     publications = (
         _partdesign_publications(doc, root, program_id) if root is not None else {}
     )
+    native_history_available = isinstance(
+        validated.get("partdesign_native_history"),
+        Mapping,
+    )
+    previous_implementation = (
+        scripted_publication.implementation_closure(root)
+        if root is not None and native_history_available
+        else []
+    )
+    timeline_replacement = _capture_partdesign_timeline_replacement(
+        doc,
+        previous_implementation,
+    )
+    if previous_implementation:
+        publication_targets = [
+            scripted_publication.publication_target(obj, root)
+            for obj in publications.values()
+        ]
+        implementation_uses = scripted_publication.external_reference_uses(
+            doc,
+            previous_implementation,
+            internal_objects=[
+                root,
+                *previous_implementation,
+                *publications.values(),
+                *publication_targets,
+            ],
+        )
+        if implementation_uses:
+            raise _reference_error(
+                "Cannot regenerate native Part Design history while downstream "
+                "objects reference its generated implementation",
+                implementation_uses,
+            )
+    previous_presentation = {
+        name: _preflight_partdesign_presentation(obj)
+        for name, obj in publications.items()
+    }
+    for item in validated["outputs"]:
+        output_name = str(item["name"])
+        published = publications.get(output_name)
+        if published is None:
+            continue
+        presentation = item.get("partdesign_presentation")
+        if not isinstance(presentation, Mapping):
+            raise RuntimeError(
+                f"Part Design output {output_name!r} has no validated presentation state."
+            )
+        desired_channels = _partdesign_presentation_channels(presentation)
+        if not desired_channels:
+            continue
+        for candidate in list(getattr(doc, "Objects", []) or []):
+            if (
+                str(getattr(candidate, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+                != "material"
+                or getattr(candidate, PROP_MATERIAL_TARGET, None) is not published
+            ):
+                continue
+            ownership = _material_ownership(candidate)
+            if str(ownership.get("channel") or "") in desired_channels:
+                raise RuntimeError(
+                    f"Part Design output {output_name!r} cannot own "
+                    f"{ownership['channel']} presentation while Material program "
+                    f"{getattr(candidate, contracts.PROP_PROGRAM_ID, '')!r} owns "
+                    "the same channel."
+                )
     previous_interfaces: dict[str, Any] = {}
     if root is not None:
         try:
@@ -10450,12 +15015,32 @@ def _publish_partdesign_candidate(
     transaction_open = False
     created: list[str] = []
     removed: list[str] = []
+    removed_implementation: list[str] = []
+    native_history = {
+        "available": False,
+        "bodies": {},
+        "created_objects": [],
+        "created_object_refs": [],
+        "timeline_blocks": {},
+    }
+    rollback_targets: dict[int, Any] = {}
+    for obj in publications.values():
+        rollback_targets[id(obj)] = obj
+        implementation = scripted_publication.publication_target(obj, root)
+        rollback_targets[id(implementation)] = implementation
+    rollback_states = [
+        _material_target_snapshot(obj) for obj in rollback_targets.values()
+    ]
     try:
         if hasattr(doc, "openTransaction"):
             doc.openTransaction(
                 f"Publish Part Design VibeScript: {prepared['program_name']}"
             )
             transaction_open = True
+        _stage_partdesign_timeline_replacement(
+            doc,
+            timeline_replacement,
+        )
         if root is None:
             root = doc.addObject(
                 "App::Part", _internal_name(prepared, "Program")
@@ -10465,6 +15050,17 @@ def _publish_partdesign_candidate(
             created.append(str(root.Name))
         root.Label = str(prepared["program_name"])
         _tag_partdesign_root(root, prepared)
+        if native_history_available:
+            removed_implementation = scripted_publication.delete_implementation(
+                doc,
+                root,
+            )
+            native_history = _materialize_partdesign_native_history(
+                doc,
+                root,
+                prepared,
+                validated,
+            )
         for name in retired_names:
             removed.extend(
                 scripted_publication.delete_publication(
@@ -10473,6 +15069,7 @@ def _publish_partdesign_candidate(
             )
         for item in validated["outputs"]:
             name = str(item["name"])
+            output_type = str(item["type"])
             carrier = _PartDesignShapeCarrier(item)
             published = publications.get(name)
             if published is None:
@@ -10489,7 +15086,24 @@ def _publish_partdesign_candidate(
                 )
                 publications[name] = published
                 created.append(str(published.Name))
+                for rollback_target in (
+                    published,
+                    scripted_publication.publication_target(published, root),
+                ):
+                    if id(rollback_target) in rollback_targets:
+                        continue
+                    rollback_targets[id(rollback_target)] = rollback_target
+                    rollback_states.append(
+                        _material_target_snapshot(
+                            rollback_target,
+                            required_after_abort=False,
+                        )
+                    )
             else:
+                _restore_partdesign_presentation_baseline(
+                    published,
+                    previous_presentation.get(name),
+                )
                 scripted_publication.tag_object(
                     published,
                     role=scripted_publication.ROLE_PUBLICATION,
@@ -10509,16 +15123,39 @@ def _publish_partdesign_candidate(
                 published,
                 prepared,
                 name,
-                "solid",
+                output_type,
                 _definition(item),
             )
+            body = dict(native_history.get("bodies") or {}).get(name)
+            previous_state = previous_presentation.get(name)
+            defer_publication_presentation = (
+                body is not None and previous_state is not None
+            )
+            if not defer_publication_presentation:
+                _configure_partdesign_presentation(published, item)
+            if body is not None:
+                _configure_partdesign_presentation(body, item)
+                _configure_partdesign_history_presentation(body, visible=True)
+                published.LinkedObject = (root, f"{body.Name}.")
+                published.LinkTransform = True
+                _set_view_visibility(published, False)
+                if defer_publication_presentation:
+                    # Relinking can refresh link-proxied material and display
+                    # properties from the regenerated Body. Reconcile the
+                    # persisted baseline and newly validated source state only
+                    # after the stable publication points at that Body.
+                    _restore_partdesign_presentation_baseline(
+                        published,
+                        previous_state,
+                    )
+                    _configure_partdesign_presentation(published, item)
         interface_table = _partdesign_interface_table(validated, publications)
         reference_contracts.validate_removed_interfaces(
             doc,
             list(publications.values()),
             program_id,
-            set(previous_interfaces),
-            set(interface_table),
+            reference_contracts.interface_identities(previous_interfaces),
+            reference_contracts.interface_identities(interface_table),
             preflight=reference_preflight,
         )
         setattr(
@@ -10539,23 +15176,61 @@ def _publish_partdesign_candidate(
             revision=str(prepared["revision"]),
             preflight=reference_preflight,
         )
+        _replace_partdesign_timeline_segments(
+            doc,
+            timeline_replacement,
+            native_history,
+        )
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
-    except Exception:
+    except Exception as publication_error:
+        abort_error = None
         if transaction_open and hasattr(doc, "abortTransaction"):
-            doc.abortTransaction()
+            try:
+                doc.abortTransaction()
+                transaction_open = False
+            except Exception as exc:
+                abort_error = exc
+        rollback_error = None
+        try:
+            _restore_material_target_snapshots(rollback_states)
+        except Exception as exc:
+            rollback_error = exc
+        if abort_error is not None or rollback_error is not None:
+            raise RuntimeError(
+                f"{publication_error} Explicit Part Design presentation rollback "
+                "failed: "
+                + "; ".join(
+                    message
+                    for message in (
+                        (
+                            f"transaction abort: {type(abort_error).__name__}: "
+                            f"{abort_error}"
+                            if abort_error is not None
+                            else ""
+                        ),
+                        (
+                            f"presentation restore: {rollback_error}"
+                            if rollback_error is not None
+                            else ""
+                        ),
+                    )
+                    if message
+                )
+            ) from publication_error
         raise
     live_outputs: dict[str, Any] = {}
     output_rows: list[dict[str, Any]] = []
     for item in validated["outputs"]:
         name = str(item["name"])
+        output_type = str(item["type"])
         published = publications[name]
         row = {
             "object_name": str(published.Name),
             "label": str(published.Label),
             "type_id": str(published.TypeId),
-            "output_type": "solid",
+            "output_type": output_type,
             "facts": dict(item.get("facts") or {}),
             "partdesign_data": dict(item.get("partdesign_data") or {}),
             "derived_state": str(
@@ -10580,11 +15255,42 @@ def _publish_partdesign_candidate(
         "interfaces": interface_table,
         "created_objects": created,
         "retired_objects": removed,
+        "native_history": {
+            "available": bool(native_history.get("available")),
+            "body_objects": {
+                name: str(body.Name)
+                for name, body in dict(native_history.get("bodies") or {}).items()
+            },
+            "created_objects": list(native_history.get("created_objects") or []),
+            "retired_objects": removed_implementation,
+            "artifact_sha256": str(
+                native_history.get("artifact_sha256") or ""
+            ),
+        },
         "downstream_references": downstream,
         "recompute_deferred": True,
         "stdout": str(validated.get("stdout") or ""),
         "budget": dict(validated.get("budget") or {}),
     }
+
+
+def _publish_partdesign_candidate(
+    service: Any,
+    prepared: Mapping[str, Any],
+    validated: Mapping[str, Any],
+    doc: Any,
+) -> dict[str, Any]:
+    outputs = list(validated.get("outputs") or [])
+    if not outputs:
+        raise RuntimeError(
+            "A Part Design VibeScript program must publish at least one output."
+        )
+    return _publish_partdesign_design_candidate(
+        service,
+        prepared,
+        validated,
+        doc,
+    )
 
 
 def publish_candidate(
@@ -10606,14 +15312,29 @@ def publish_candidate(
         raise RuntimeError(
             "The document changed while the domain worker ran; regenerate on the live state."
         )
-    if prepared["pack"].domain == "partdesign":
+    domain = str(prepared["pack"].domain)
+    if domain not in _TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN:
+        raise RuntimeError(
+            f"VibeScript domain {domain!r} has no semantic History publication "
+            "strategy."
+        )
+    if domain == "partdesign":
         return _publish_partdesign_candidate(service, prepared, validated, doc)
-    if prepared["pack"].domain == "material":
+    if domain == "material":
         return _publish_material_candidate(service, prepared, validated, doc)
-    if prepared["pack"].domain == "cam":
+    if domain == "cam":
         return _publish_cam_candidate(service, prepared, validated, doc)
-    if prepared["pack"].domain == "techdraw":
+    if domain == "techdraw":
         return _publish_techdraw_candidate(service, prepared, validated, doc)
+    public_output_names = [str(item["name"]) for item in validated["outputs"]]
+    if domain == "assembly" and validated.get("assembly_members"):
+        validated = {
+            **validated,
+            "outputs": [
+                *list(validated["outputs"]),
+                *list(validated["assembly_members"]),
+            ],
+        }
     existing = _objects_by_output(doc, prepared)
     desired_output_names = {str(item["name"]) for item in validated["outputs"]}
     retired = _retired_program_objects(doc, prepared, desired_output_names)
@@ -10631,9 +15352,23 @@ def publish_candidate(
                 _assembly_simulation_group(candidate),
                 _assembly_view_group(candidate),
                 _assembly_bom_group(candidate),
+                _assembly_verification_group(candidate),
             ):
                 if group is not None and group not in internal_objects:
                     internal_objects.append(group)
+    retired_deletion = _prepare_timeline_deletion(doc, retired)
+    retired_targets = list(retired_deletion["delete_objects"])
+    retired_uses = _external_uses(
+        doc,
+        retired_targets,
+        [*internal_objects, *retired_targets],
+    )
+    if retired_uses:
+        raise _reference_error(
+            f"Cannot retire {prepared['pack'].title} VibeScript outputs while "
+            "human-created or foreign document objects still reference them",
+            retired_uses,
+        )
     updated_objects = [
         existing[str(item["name"])]
         for item in validated["outputs"]
@@ -10652,17 +15387,6 @@ def publish_candidate(
             ).partition(".")[0]
             in updated_names
         )
-    if prepared["pack"].domain == "bim":
-        updated_names = {str(item["name"]) for item in validated["outputs"]}
-        updated_objects.extend(
-            obj
-            for obj in internal_objects
-            if str(getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or "").partition(
-                "."
-            )[0]
-            in updated_names
-            and "." in str(getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or "")
-        )
     spreadsheet_rollbacks = (
         _spreadsheet_rollback_states(updated_objects)
         if prepared["pack"].domain == "spreadsheet"
@@ -10673,11 +15397,6 @@ def publish_candidate(
         if prepared["pack"].domain == "assembly"
         else []
     )
-    bim_rollbacks = (
-        _bim_rollback_states(internal_objects)
-        if prepared["pack"].domain == "bim"
-        else []
-    )
     mesh_rollbacks = (
         _mesh_rollback_states(internal_objects)
         if prepared["pack"].domain in {"mesh", "meshpart", "reverse_engineering"}
@@ -10685,7 +15404,7 @@ def publish_candidate(
     )
     meshpart_shape_rollbacks = (
         _meshpart_shape_rollback_states(internal_objects)
-        if prepared["pack"].domain in {"meshpart", "reverse_engineering"}
+        if prepared["pack"].domain in {"mesh", "meshpart", "reverse_engineering"}
         else []
     )
     points_rollbacks = (
@@ -10719,12 +15438,14 @@ def publish_candidate(
         internal_objects,
     )
     outputs: dict[str, Any] = {}
-    bim_bases: dict[str, Any] = {}
     created: list[Any] = []
     removed: list[str] = []
     assembly_dependency_anchor: Any | None = None
+    assembly_fastener_sources: dict[str, Any] = {}
+    assembly_replaced_fastener_source_identities: list[tuple[str, int]] = []
     robot_trajectory_swaps: list[dict[str, Any]] = []
     retired_robot_trajectories: list[dict[str, Any]] = []
+    pending_output_publications: dict[int, tuple[Any, str]] = {}
     transaction_open = False
     try:
         if hasattr(doc, "openTransaction"):
@@ -10732,28 +15453,53 @@ def publish_candidate(
                 f"Publish {prepared['pack'].title} VibeScript: {prepared['program_name']}"
             )
             transaction_open = True
+
+        def ensure_output_object(item: Mapping[str, Any], owner: Any | None) -> Any:
+            output_name = str(item["name"])
+            output_type = str(item["type"])
+            obj = outputs.get(output_name) or existing.get(output_name)
+            if obj is None:
+                obj = _create_object(
+                    doc,
+                    prepared,
+                    output_name,
+                    output_type,
+                    _definition(item),
+                    owner,
+                    assembly_fastener_sources or None,
+                )
+                created.append(obj)
+            expected_native = (
+                _component_native_type(doc, item)
+                if output_type == "component_link"
+                else _native_type(output_type, prepared["pack"].domain)
+            )
+            if prepared["pack"].domain == "fem":
+                expected_native = str(_fem_data(item).get("native_type") or "")
+            if prepared["pack"].domain == "draft":
+                compatible = _draft_object_compatible(obj, item)
+            elif output_type == "component_link":
+                compatible = str(getattr(obj, "TypeId", "")) == expected_native
+            elif output_type == "joint":
+                compatible = str(getattr(obj, "TypeId", "")) == "App::FeaturePython"
+            else:
+                compatible = str(getattr(obj, "TypeId", "")) == expected_native
+            if not compatible:
+                raise RuntimeError(
+                    f"Stable output {output_name!r} cannot change from native type "
+                    f"{getattr(obj, 'TypeId', '')!r} to {expected_native!r}."
+                )
+            outputs[output_name] = obj
+            return obj
+
         assembly_item = next(
             (item for item in validated["outputs"] if item["type"] == "assembly"),
             None,
         )
-        if assembly_item is not None:
-            name = str(assembly_item["name"])
-            assembly = existing.get(name)
-            if assembly is None:
-                assembly = _create_object(
-                    doc, prepared, name, "assembly", _definition(assembly_item), None
-                )
-                created.append(assembly)
-            elif str(getattr(assembly, "TypeId", "")) != "Assembly::AssemblyObject":
-                raise RuntimeError("A stable assembly output changed native type.")
-            outputs[name] = assembly
-        assembly = next(
-            (
-                obj
-                for obj in outputs.values()
-                if obj.TypeId == "Assembly::AssemblyObject"
-            ),
-            None,
+        assembly = (
+            ensure_output_object(assembly_item, None)
+            if assembly_item is not None
+            else None
         )
         if prepared["pack"].domain == "assembly" and assembly_item is not None:
             assembly_output = str(assembly_item["name"])
@@ -10769,63 +15515,6 @@ def publish_candidate(
                     assembly_output,
                 )
                 created.append(assembly_dependency_anchor)
-        for item in validated["outputs"]:
-            output_name = str(item["name"])
-            output_type = str(item["type"])
-            obj = outputs.get(output_name) or existing.get(output_name)
-            if obj is None:
-                obj = _create_object(
-                    doc,
-                    prepared,
-                    output_name,
-                    output_type,
-                    _definition(item),
-                    assembly,
-                )
-                created.append(obj)
-            expected_native = (
-                _component_native_type(doc, item)
-                if output_type == "component_link"
-                else _native_type(output_type, prepared["pack"].domain)
-            )
-            if prepared["pack"].domain == "fem":
-                expected_native = str(_fem_data(item).get("native_type") or "")
-            if prepared["pack"].domain == "draft":
-                compatible = _draft_object_compatible(obj, item)
-            elif prepared["pack"].domain == "bim":
-                compatible = _bim_object_compatible(obj, item)
-            elif output_type == "component_link":
-                compatible = str(getattr(obj, "TypeId", "")) == expected_native
-            elif output_type == "joint":
-                compatible = str(getattr(obj, "TypeId", "")) == "App::FeaturePython"
-            else:
-                compatible = str(getattr(obj, "TypeId", "")) == expected_native
-            if not compatible:
-                raise RuntimeError(
-                    f"Stable output {output_name!r} cannot change from native type "
-                    f"{getattr(obj, 'TypeId', '')!r} to {expected_native!r}."
-                )
-            outputs[output_name] = obj
-        if prepared["pack"].domain == "bim":
-            for item in validated["outputs"]:
-                if str(item["type"]) not in {"wall", "slab", "opening"}:
-                    continue
-                output_name = str(item["name"])
-                base = _bim_existing_base(doc, prepared, output_name)
-                if base is None:
-                    base = _create_bim_base(doc, prepared, item)
-                    created.append(base)
-                elif not _bim_base_compatible(base, item):
-                    raise RuntimeError(
-                        f"Stable BIM base for {output_name!r} cannot change native type."
-                    )
-                bim_bases[output_name] = base
-            _bim_prepare_relationships(outputs, bim_bases)
-            bim_graph = _bim_graph_objects(list(validated["outputs"]), outputs)
-            for item in validated["outputs"]:
-                output_name = str(item["name"])
-                if output_name in bim_bases:
-                    _configure_bim_base(bim_bases[output_name], item, prepared)
         configure_order = list(validated["outputs"])
         if prepared["pack"].domain == "assembly":
             priority = {
@@ -10834,29 +15523,14 @@ def publish_candidate(
                 "joint": 2,
                 "motion": 3,
                 "simulation": 4,
-                "exploded_view": 5,
-                "bom": 6,
-                "solver_diagnostics": 7,
+                "mechanism_verification": 5,
+                "exploded_view": 6,
+                "bom": 7,
+                "solver_diagnostics": 8,
             }
-            configure_order.sort(key=lambda item: priority.get(str(item["type"]), 7))
+            configure_order.sort(key=lambda item: priority.get(str(item["type"]), 8))
         elif prepared["pack"].domain == "draft":
             configure_order = _draft_configure_order(configure_order)
-        elif prepared["pack"].domain == "bim":
-            priority = {
-                "site": 0,
-                "building": 1,
-                "level": 2,
-                "wall": 3,
-                "slab": 4,
-                "structure": 5,
-                "opening": 6,
-            }
-            configure_order.sort(
-                key=lambda item: (
-                    priority.get(str(item["type"]), 7),
-                    int(str(_bim_data(item)["graph_id"]).removeprefix("bim")),
-                )
-            )
         elif prepared["pack"].domain == "inspection":
             priority = {
                 "inspection_feature": 0,
@@ -10887,7 +15561,62 @@ def publish_candidate(
             )
         for item in configure_order:
             output_name = str(item["name"])
-            obj = outputs[output_name]
+            output_type = str(item["type"])
+            occurrence_reconciliation: dict[str, Any] | None = None
+            occurrence_reconciliation_staged = False
+            if prepared["pack"].domain == "assembly":
+                if (
+                    output_type == "component_link"
+                    and str(_definition(item).get("operation") or "") == "fastener"
+                ):
+                    existing_occurrence = existing.get(output_name)
+                    if existing_occurrence is not None:
+                        occurrence_reconciliation = (
+                            _capture_timeline_resource_reconciliation(
+                                doc,
+                                existing_occurrence,
+                                key_for_resource=_assembly_timeline_resource_key,
+                                context=(
+                                    f"Assembly occurrence {output_name!r} "
+                                    "resource graph"
+                                ),
+                            )
+                        )
+                        _stage_timeline_resource_reconciliation(
+                            doc,
+                            existing_occurrence,
+                            occurrence_reconciliation,
+                            context=(
+                                f"Assembly occurrence {output_name!r} "
+                                "resource graph"
+                            ),
+                        )
+                        occurrence_reconciliation_staged = True
+                    (
+                        prepared_fastener_sources,
+                        fastener_sources_created,
+                        replaced_fastener_sources,
+                    ) = _prepare_assembly_fastener_sources(doc, prepared, [item])
+                    assembly_fastener_sources.update(prepared_fastener_sources)
+                    created.extend(fastener_sources_created)
+                    assembly_replaced_fastener_source_identities.extend(
+                        _deletion_object_identity(
+                            source,
+                            context=(
+                                f"Assembly occurrence {output_name!r} replaced "
+                                "fastener resource"
+                            ),
+                        )
+                        for source in replaced_fastener_sources
+                    )
+                obj = ensure_output_object(item, assembly)
+            else:
+                # Create and configure each output in dependency order. Some
+                # native containers join History only when their members are
+                # installed, so pre-creating later dependants can put them
+                # before their owner even when the Python object list looks
+                # correctly sorted.
+                obj = ensure_output_object(item, assembly)
             inspection_feature = (
                 prepared["pack"].domain == "inspection"
                 and str(getattr(obj, "TypeId", "")) == "Inspection::Feature"
@@ -10907,18 +15636,50 @@ def publish_candidate(
             )
             if assembly_bom:
                 _unfreeze_object(obj, "Assembly BOM")
-            obj.Label = _label(item, output_name)
-            if prepared["pack"].domain == "bim":
-                _configure_bim(obj, item, outputs, bim_bases, bim_graph)
-            else:
-                _configure_object(
+
+            assembly_reconciliation: dict[str, Any] | None = None
+            assembly_operation_is_new = False
+            if prepared["pack"].domain == "assembly":
+                assembly_operation_is_new = _is_current_transaction_timeline_object(
                     doc,
                     obj,
-                    item,
-                    outputs,
-                    prepared,
-                    robot_trajectory_swaps,
                 )
+                if (
+                    not assembly_operation_is_new
+                    and output_type != "component_link"
+                    and (
+                        output_type == "assembly"
+                        or output_type in _ASSEMBLY_RESOURCE_GRAPH_OUTPUT_TYPES
+                    )
+                ):
+                    assembly_reconciliation = (
+                        _capture_timeline_resource_reconciliation(
+                            doc,
+                            obj,
+                            context=(
+                                f"Assembly output {output_name!r} resource graph"
+                            ),
+                        )
+                    )
+                    _stage_timeline_resource_reconciliation(
+                        doc,
+                        obj,
+                        assembly_reconciliation,
+                        context=(
+                            f"Assembly output {output_name!r} resource graph"
+                        ),
+                    )
+
+            obj.Label = _label(item, output_name)
+            configured_resources = _configure_object(
+                doc,
+                obj,
+                item,
+                outputs,
+                prepared,
+                robot_trajectory_swaps,
+                assembly_fastener_sources,
+            )
             _set_metadata(
                 obj,
                 prepared,
@@ -10932,20 +15693,332 @@ def publish_candidate(
                 _freeze_robot_dressup(obj)
             if assembly_bom:
                 _freeze_object(obj, "Assembly BOM")
+
+            if prepared["pack"].domain != "assembly":
+                _mark_timeline_operation(
+                    obj,
+                    context=f"{prepared['pack'].title} output {output_name!r}",
+                )
+                if _is_current_transaction_timeline_object(doc, obj):
+                    pending_output_publications[id(obj)] = (
+                        obj,
+                        f"{prepared['pack'].title} output {output_name!r}",
+                    )
+                continue
+
+            if output_type == "assembly":
+                if assembly_dependency_anchor is None:
+                    raise RuntimeError(
+                        "Assembly output has no dependency resource anchor."
+                    )
+                _mark_timeline_operation(
+                    obj,
+                    context=f"Assembly output {output_name!r}",
+                )
+                _mark_timeline_resource(
+                    assembly_dependency_anchor,
+                    obj,
+                    context="Assembly dependency resource",
+                )
+                if assembly_operation_is_new:
+                    _publish_new_timeline_resource_block(
+                        doc,
+                        obj,
+                        [assembly_dependency_anchor],
+                        context="Assembly dependency resource graph",
+                    )
+                else:
+                    if assembly_reconciliation is None:
+                        raise RuntimeError(
+                            "Assembly output has no staged dependency resource "
+                            "reconciliation."
+                        )
+                    released = _finalize_timeline_resource_reconciliation(
+                        doc,
+                        obj,
+                        assembly_reconciliation,
+                        [assembly_dependency_anchor],
+                        context="Assembly dependency resource graph",
+                    )
+                    removed.extend(
+                        _remove_reconciled_timeline_resources(
+                            doc,
+                            released,
+                            context="Assembly dependency resource graph",
+                        )
+                    )
+                continue
+
+            if output_type == "component_link":
+                import UtilsAssembly
+
+                fastener_source = assembly_fastener_sources.get(output_name)
+                if fastener_source is not None and getattr(
+                    obj, "LinkedObject", None
+                ) is not fastener_source:
+                    raise RuntimeError(
+                        f"Assembly fastener output {output_name!r} has no exact "
+                        "catalog occurrence to own its hidden definition."
+                    )
+                if assembly_operation_is_new and fastener_source is not None:
+                    _mark_timeline_operation(
+                        obj,
+                        context=f"Assembly fastener occurrence {output_name!r}",
+                    )
+                    _mark_timeline_resource(
+                        fastener_source,
+                        obj,
+                        context=(
+                            f"Assembly fastener output {output_name!r} definition"
+                        ),
+                    )
+                    _publish_new_timeline_resource_block(
+                        doc,
+                        obj,
+                        [fastener_source],
+                        context=f"Assembly fastener occurrence {output_name!r}",
+                    )
+                elif assembly_operation_is_new:
+                    UtilsAssembly.finalizeInsertedComponentTimeline(obj)
+                elif str(getattr(obj, "TypeId", "") or "") == (
+                    "Assembly::AssemblyLink"
+                ):
+                    UtilsAssembly.synchronizeAssemblyLinkTimelineResources(obj)
+                if (
+                    _timeline_role(
+                        obj,
+                        context=f"Assembly occurrence {output_name!r}",
+                    )
+                    != "operation"
+                    or _timeline_owner(
+                        obj,
+                        context=f"Assembly occurrence {output_name!r}",
+                    )
+                    is not None
+                ):
+                    raise RuntimeError(
+                        f"Native Assembly occurrence {output_name!r} was not "
+                        "published as one independent History operation."
+                    )
+
+                if occurrence_reconciliation is None:
+                    occurrence_reconciliation = (
+                        _capture_timeline_resource_reconciliation(
+                            doc,
+                            obj,
+                            key_for_resource=_assembly_timeline_resource_key,
+                            context=(
+                                f"Assembly occurrence {output_name!r} resource graph"
+                            ),
+                        )
+                    )
+                final_occurrence_resources = [
+                    resource
+                    for resource in occurrence_reconciliation["resources"]
+                    if _assembly_managed_resource_identity(
+                        resource,
+                        context=(
+                            f"Assembly occurrence {output_name!r} native resource"
+                        ),
+                    )
+                    is not None
+                ]
+                if fastener_source is not None:
+                    _mark_timeline_resource(
+                        fastener_source,
+                        obj,
+                        context=(
+                            f"Assembly fastener output {output_name!r} definition"
+                        ),
+                    )
+                    final_occurrence_resources.append(fastener_source)
+
+                if not occurrence_reconciliation_staged:
+                    _stage_timeline_resource_reconciliation(
+                        doc,
+                        obj,
+                        occurrence_reconciliation,
+                        context=(
+                            f"Assembly occurrence {output_name!r} resource graph"
+                        ),
+                    )
+                released = _finalize_timeline_resource_reconciliation(
+                    doc,
+                    obj,
+                    occurrence_reconciliation,
+                    final_occurrence_resources,
+                    key_for_resource=_assembly_timeline_resource_key,
+                    context=(
+                        f"Assembly occurrence {output_name!r} resource graph"
+                    ),
+                )
+                removed.extend(
+                    _remove_reconciled_timeline_resources(
+                        doc,
+                        released,
+                        context=(
+                            f"Assembly occurrence {output_name!r} resource graph"
+                        ),
+                    )
+                )
+
+                grounding, retired_grounding = _configure_component_grounding(
+                    doc,
+                    obj,
+                    item,
+                    outputs,
+                    prepared,
+                )
+                removed.extend(retired_grounding)
+                if grounding is not None:
+                    _mark_timeline_operation(
+                        grounding,
+                        context=(
+                            f"Assembly grounding operation for {output_name!r}"
+                        ),
+                    )
+                    if _is_current_transaction_timeline_object(doc, grounding):
+                        created.append(grounding)
+                        _publish_new_timeline_resource_block(
+                            doc,
+                            grounding,
+                            [],
+                            context=(
+                                f"Assembly grounding operation for "
+                                f"{output_name!r}"
+                            ),
+                        )
+                continue
+
+            _mark_timeline_operation(
+                obj,
+                context=f"Assembly output {output_name!r}",
+            )
+            final_resources = list(configured_resources)
+            explicit_outputs = list(outputs.values())
+            seen_resource_identities: set[tuple[str, int]] = set()
+            for resource in final_resources:
+                identity = _deletion_object_identity(
+                    resource,
+                    context=(
+                        f"Assembly output {output_name!r} implementation resource"
+                    ),
+                )
+                if (
+                    identity in seen_resource_identities
+                    or _resolve_timeline_identity(doc, identity) is not resource
+                    or resource is obj
+                    or any(
+                        resource is explicit and explicit is not obj
+                        for explicit in explicit_outputs
+                    )
+                ):
+                    raise RuntimeError(
+                        f"Assembly output {output_name!r} has a duplicate, "
+                        "detached, self-owned, or independently published resource."
+                    )
+                seen_resource_identities.add(identity)
+                _mark_timeline_resource(
+                    resource,
+                    obj,
+                    context=(
+                        f"Assembly output {output_name!r} implementation resource"
+                    ),
+                )
+                if _is_current_transaction_timeline_object(doc, resource):
+                    created.append(resource)
+
+            if assembly_operation_is_new:
+                _publish_new_timeline_resource_block(
+                    doc,
+                    obj,
+                    final_resources,
+                    context=f"Assembly output {output_name!r} resource graph",
+                )
+            else:
+                if assembly_reconciliation is None:
+                    if final_resources:
+                        raise RuntimeError(
+                            f"Assembly output {output_name!r} created an "
+                            "undeclared implementation resource graph."
+                        )
+                    # Joints, motions, diagnostics, simulations, and static
+                    # checks are standalone History operations. Their native
+                    # properties—including intentional suppression changes—
+                    # update normally and require no resource reconciliation.
+                    continue
+                released = _finalize_timeline_resource_reconciliation(
+                    doc,
+                    obj,
+                    assembly_reconciliation,
+                    final_resources,
+                    context=f"Assembly output {output_name!r} resource graph",
+                )
+                removed.extend(
+                    _remove_reconciled_timeline_resources(
+                        doc,
+                        released,
+                        context=f"Assembly output {output_name!r} resource graph",
+                    )
+                )
+        if prepared["pack"].domain != "assembly":
+            # Configure the complete output graph before publishing any new
+            # operation.  Native proxies may update a dependency's
+            # presentation while links are installed (Draft arrays hide their
+            # Base, for example).  Publishing during configuration would turn
+            # that still-in-progress state into an accepted History boundary.
+            # Consume provisional outputs only after configuration, in their
+            # exact document-creation order.
+            published_output_ids: set[int] = set()
+            for created_object in created:
+                pending = pending_output_publications.get(id(created_object))
+                if pending is None:
+                    continue
+                operation, context = pending
+                _publish_new_timeline_resource_block(
+                    doc,
+                    operation,
+                    [],
+                    context=context,
+                )
+                published_output_ids.add(id(operation))
+            missing_publications = [
+                operation
+                for object_id, (operation, _context) in (
+                    pending_output_publications.items()
+                )
+                if object_id not in published_output_ids
+            ]
+            if missing_publications:
+                raise RuntimeError(
+                    "New VibeScript outputs were not present in exact document "
+                    "creation order: "
+                    + ", ".join(str(obj.Name) for obj in missing_publications)
+                )
         if assembly_dependency_anchor is not None and assembly_item is not None:
-            assembly_output = str(assembly_item["name"])
-            assembly_dependency_anchor.Label = "VibeScript Assembly dependencies"
-            view = getattr(assembly_dependency_anchor, "ViewObject", None)
-            if view is not None:
-                view.Visibility = False
-                if hasattr(view, "ShowInTree"):
-                    view.ShowInTree = False
-            _set_metadata(
+            # Publish the anchor with the Assembly root in creation order, but
+            # install its source links only after every occurrence has finished
+            # synchronizing.  AssemblyLink materialization can touch source
+            # groups; linking the invalidation anchor before that point would
+            # incorrectly mark the revision stale during its own publication.
+            _configure_assembly_dependency_anchor(
                 assembly_dependency_anchor,
                 prepared,
-                _assembly_dependency_output_name(assembly_output),
-                _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE,
-                _definition(assembly_item),
+                assembly_item,
+            )
+        unreconciled_fastener_source_identities = [
+            identity
+            for identity in assembly_replaced_fastener_source_identities
+            if _resolve_timeline_identity(doc, identity) is not None
+        ]
+        if unreconciled_fastener_source_identities:
+            raise RuntimeError(
+                "Replaced Assembly fastener definitions were not released by "
+                "their exact occurrence resource reconciliations: "
+                + ", ".join(
+                    identity[0]
+                    for identity in unreconciled_fastener_source_identities
+                )
             )
         downstream_refresh = _refresh_external_consumers(
             downstream_uses,
@@ -10953,7 +16026,7 @@ def publish_candidate(
         )
         if prepared["pack"].domain == "robot":
             retired_robot_trajectories = _extract_robot_trajectories(retired)
-        removed = _remove_owned_objects(doc, retired)
+        removed = _remove_timeline_deletion(doc, retired_deletion)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
@@ -11038,27 +16111,6 @@ def publish_candidate(
             if rollback_failures:
                 raise RuntimeError(
                     f"{publication_error} Explicit Points rollback failure: "
-                    f"{' | '.join(rollback_failures)}"
-                ) from publication_error
-        if prepared["pack"].domain == "bim":
-            rollback_failures: list[str] = []
-            if bim_rollbacks:
-                try:
-                    _restore_bim_rollback_states(bim_rollbacks)
-                except Exception as rollback_error:
-                    rollback_failures.append(str(rollback_error))
-            try:
-                _remove_failed_bim_creations(
-                    doc, [name for name in created_names if name]
-                )
-            except Exception as cleanup_error:
-                rollback_failures.append(
-                    "failed candidate objects could not be removed: "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
-                )
-            if rollback_failures:
-                raise RuntimeError(
-                    f"{publication_error} Explicit BIM rollback failure: "
                     f"{' | '.join(rollback_failures)}"
                 ) from publication_error
         if prepared["pack"].domain == "inspection":
@@ -11157,8 +16209,6 @@ def publish_candidate(
             live_outputs[name]["draft_data"] = dict(item["draft_data"])
         if isinstance(item.get("surface_data"), dict):
             live_outputs[name]["surface_data"] = dict(item["surface_data"])
-        if isinstance(item.get("bim_data"), dict):
-            live_outputs[name]["bim_data"] = dict(item["bim_data"])
         if isinstance(item.get("mesh_data"), dict):
             live_outputs[name]["mesh_data"] = dict(item["mesh_data"])
         if isinstance(item.get("meshpart_data"), dict):
@@ -11180,6 +16230,8 @@ def publish_candidate(
     published_outputs = []
     for item in validated["outputs"]:
         name = str(item["name"])
+        if name not in public_output_names:
+            continue
         summary = {"name": name, **live_outputs[name]}
         if isinstance(item.get("diagnostics"), dict):
             summary["diagnostics"] = dict(item["diagnostics"])
@@ -11191,8 +16243,6 @@ def publish_candidate(
             summary["draft_data"] = dict(item["draft_data"])
         if isinstance(item.get("surface_data"), dict):
             summary["surface_data"] = dict(item["surface_data"])
-        if isinstance(item.get("bim_data"), dict):
-            summary["bim_data"] = dict(item["bim_data"])
         if isinstance(item.get("mesh_data"), dict):
             summary["mesh_data"] = dict(item["mesh_data"])
         if isinstance(item.get("meshpart_data"), dict):
@@ -11211,7 +16261,10 @@ def publish_candidate(
     return {
         "ok": True,
         "outputs": published_outputs,
-        "live_outputs": live_outputs,
+        "live_outputs": {
+            name: live_outputs[name]
+            for name in public_output_names
+        },
         "created_objects": [str(obj.Name) for obj in created],
         "retired_objects": removed,
         "downstream_references": {
@@ -11231,7 +16284,9 @@ def _delete_material_program(
     prepared: Mapping[str, Any],
 ) -> dict[str, Any]:
     objects = _program_objects(doc, str(prepared["program_id"]), "material")
-    external = _external_uses(doc, objects, list(objects))
+    timeline_deletion = _prepare_timeline_deletion(doc, objects)
+    deletion_targets = list(timeline_deletion["delete_objects"])
+    external = _external_uses(doc, deletion_targets, deletion_targets)
     if external:
         raise _reference_error(
             "Cannot delete this Material VibeScript program while human-created or "
@@ -11266,7 +16321,7 @@ def _delete_material_program(
             for obj, ownership, target in states:
                 if ownership["channel"] == channel:
                     _restore_material_baseline(obj, ownership, target)
-        _remove_owned_objects(doc, objects)
+        _remove_timeline_deletion(doc, timeline_deletion)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
@@ -11298,14 +16353,16 @@ def _delete_cam_program(
     prepared: Mapping[str, Any],
 ) -> dict[str, Any]:
     objects = _program_objects(doc, str(prepared["program_id"]), "cam")
-    external = _external_uses(doc, objects, list(objects))
+    timeline_deletion = _prepare_timeline_deletion(doc, objects)
+    deletion_targets = list(timeline_deletion["delete_objects"])
+    external = _external_uses(doc, deletion_targets, deletion_targets)
     if external:
         raise _reference_error(
             "Cannot delete this CAM VibeScript program while human-created or foreign "
             "objects reference its stable native graph",
             external,
         )
-    rollback_states = _cam_rollback_states(objects)
+    rollback_states = _cam_rollback_states(deletion_targets)
     deleted = [
         {
             "object_name": str(obj.Name),
@@ -11322,7 +16379,7 @@ def _delete_cam_program(
         if hasattr(doc, "openTransaction"):
             doc.openTransaction("Delete CAM VibeScript program")
             transaction_open = True
-        _remove_owned_objects(doc, objects)
+        _remove_timeline_deletion(doc, timeline_deletion)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
@@ -11354,14 +16411,16 @@ def _delete_techdraw_program(
     prepared: Mapping[str, Any],
 ) -> dict[str, Any]:
     objects = _program_objects(doc, str(prepared["program_id"]), "techdraw")
-    external = _external_uses(doc, objects, list(objects))
+    timeline_deletion = _prepare_timeline_deletion(doc, objects)
+    deletion_targets = list(timeline_deletion["delete_objects"])
+    external = _external_uses(doc, deletion_targets, deletion_targets)
     if external:
         raise _reference_error(
             "Cannot delete this TechDraw VibeScript program while human-created or "
             "foreign objects reference its stable native drawing graph",
             external,
         )
-    rollback_states = _techdraw_rollback_states(objects)
+    rollback_states = _techdraw_rollback_states(deletion_targets)
     deleted = [
         {
             "object_name": str(obj.Name),
@@ -11378,7 +16437,7 @@ def _delete_techdraw_program(
         if hasattr(doc, "openTransaction"):
             doc.openTransaction("Delete TechDraw VibeScript program")
             transaction_open = True
-        _remove_techdraw_objects(doc, objects)
+        _remove_techdraw_timeline_deletion(doc, timeline_deletion)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
@@ -11406,6 +16465,111 @@ def _delete_techdraw_program(
     }
 
 
+def _delete_partdesign_design_program(
+    doc: Any,
+    prepared: Mapping[str, Any],
+    root: Any,
+    operation: Any,
+) -> dict[str, Any]:
+    """Delete one global VibeScript operation and every owned Body output."""
+
+    import PartDesign
+
+    program_id = str(prepared["program_id"])
+    publications = _partdesign_publications(doc, root, program_id)
+    body_ids = {
+        str(value)
+        for value in list(getattr(operation, "OutputBodyIds", []) or [])
+    }
+    bodies = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if str(getattr(obj, "TypeId", "") or "") == "PartDesign::Body"
+        and str(getattr(obj, "VibeCADBodyId", "") or "") in body_ids
+    ]
+    if len(bodies) != len(body_ids):
+        raise RuntimeError(
+            "The VibeScript Design operation lost one of its persistent "
+            "Body outputs."
+        )
+    states = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if getattr(obj, "Operation", None) is operation
+        and str(getattr(obj, "TypeId", "") or "")
+        == "PartDesign::DesignBodyState"
+    ]
+    private_objects = [
+        root,
+        *list(getattr(root, "OutListRecursive", []) or []),
+        *publications.values(),
+        operation,
+        *states,
+        *bodies,
+        *[
+            child
+            for body in bodies
+            for child in list(
+                getattr(body, "OutListRecursive", []) or []
+            )
+        ],
+    ]
+    internal: list[Any] = []
+    internal_ids: set[int] = set()
+    for obj in private_objects:
+        if id(obj) not in internal_ids:
+            internal.append(obj)
+            internal_ids.add(id(obj))
+    external = _external_uses(doc, internal, internal)
+    if external:
+        raise _reference_error(
+            "Cannot delete this Part Design VibeScript program while "
+            "downstream objects reference its publications or Bodies",
+            external,
+        )
+
+    deleted = [
+        {
+            "object_name": str(obj.Name),
+            "label": str(obj.Label),
+            "type_id": str(obj.TypeId),
+            "output_name": str(name),
+        }
+        for name, obj in publications.items()
+    ]
+    transaction_open = False
+    try:
+        if hasattr(doc, "openTransaction"):
+            doc.openTransaction("Delete Part Design VibeScript program")
+            transaction_open = True
+        for published in list(publications.values()):
+            scripted_publication.delete_publication(
+                doc,
+                root,
+                published,
+            )
+        PartDesign.removeDesignOperation(operation)
+        for child in reversed(list(getattr(root, "Group", []) or [])):
+            child_name = str(getattr(child, "Name", "") or "")
+            if child_name and doc.getObject(child_name) is not None:
+                doc.removeObject(child_name)
+        root_name = str(root.Name)
+        if doc.getObject(root_name) is not None:
+            doc.removeObject(root_name)
+        if hasattr(doc, "commitTransaction") and transaction_open:
+            doc.commitTransaction()
+            transaction_open = False
+    except Exception:
+        if transaction_open and hasattr(doc, "abortTransaction"):
+            doc.abortTransaction()
+        raise
+    return {
+        "ok": True,
+        "deleted_objects": deleted,
+        "recompute_deferred": True,
+    }
+
+
 def _delete_partdesign_program(
     doc: Any,
     prepared: Mapping[str, Any],
@@ -11414,13 +16578,23 @@ def _delete_partdesign_program(
     root = _partdesign_program_root(doc, program_id)
     if root is None:
         return {"ok": True, "deleted_objects": [], "recompute_deferred": True}
+    operation = _partdesign_design_program_operation(doc, program_id)
+    if operation is not None:
+        return _delete_partdesign_design_program(
+            doc,
+            prepared,
+            root,
+            operation,
+        )
     publications = _partdesign_publications(doc, root, program_id)
     internal = [
         root,
         *list(getattr(root, "OutListRecursive", []) or []),
         *publications.values(),
     ]
-    external = _external_uses(doc, list(publications.values()), internal)
+    timeline_deletion = _prepare_timeline_deletion(doc, internal)
+    deletion_targets = list(timeline_deletion["delete_objects"])
+    external = _external_uses(doc, deletion_targets, deletion_targets)
     if external:
         raise _reference_error(
             "Cannot delete this Part Design VibeScript program while downstream "
@@ -11441,8 +16615,25 @@ def _delete_partdesign_program(
         if hasattr(doc, "openTransaction"):
             doc.openTransaction("Delete Part Design VibeScript program")
             transaction_open = True
+        _remove_timeline_resources(doc, timeline_deletion)
         for published in list(publications.values()):
-            scripted_publication.delete_publication(doc, root, published)
+            published_name = str(getattr(published, "Name", "") or "")
+            if not published_name or doc.getObject(published_name) is None:
+                continue
+            target_name = str(
+                getattr(
+                    published,
+                    scripted_publication.PROP_IMPLEMENTATION,
+                    "",
+                )
+                or ""
+            )
+            if target_name and doc.getObject(target_name) is not None:
+                scripted_publication.delete_publication(doc, root, published)
+            else:
+                doc.removeObject(published_name)
+        if doc.getObject(str(root.Name)) is not None:
+            scripted_publication.delete_implementation(doc, root)
         for child in reversed(list(getattr(root, "Group", []) or [])):
             child_name = str(getattr(child, "Name", "") or "")
             if child_name and doc.getObject(child_name) is not None:
@@ -11450,6 +16641,23 @@ def _delete_partdesign_program(
         root_name = str(root.Name)
         if doc.getObject(root_name) is not None:
             doc.removeObject(root_name)
+        remaining_roots = [
+            candidate
+            for identity in (
+                _deletion_object_identity(
+                    candidate,
+                    context="A native Part Design deletion target",
+                )
+                for candidate in list(timeline_deletion["root_objects"])
+            )
+            if (
+                candidate := _resolve_timeline_identity(doc, identity)
+            )
+            is not None
+        ]
+        if remaining_roots:
+            _remove_objects_dependency_order(doc, remaining_roots)
+        _finish_timeline_deletion(doc, timeline_deletion)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
@@ -11461,7 +16669,8 @@ def _delete_partdesign_program(
 
 
 def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, Any]:
-    _surface_still_matches(service, prepared)
+    if not bool(prepared.get("history_lifecycle")):
+        _surface_still_matches(service, prepared)
     doc = service._active_document()
     if doc is None or str(getattr(doc, "Name", "") or "") != prepared["document_name"]:
         raise RuntimeError("The active document changed before deletion.")
@@ -11503,9 +16712,8 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
     objects = _program_objects(
         doc, str(prepared["program_id"]), prepared["pack"].domain
     )
-    bim_rollbacks = (
-        _bim_rollback_states(objects) if prepared["pack"].domain == "bim" else []
-    )
+    timeline_deletion = _prepare_timeline_deletion(doc, objects)
+    deletion_targets = list(timeline_deletion["delete_objects"])
     mesh_rollbacks = (
         _mesh_rollback_states(objects)
         if prepared["pack"].domain in {"mesh", "meshpart", "reverse_engineering"}
@@ -11513,7 +16721,7 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
     )
     meshpart_shape_rollbacks = (
         _meshpart_shape_rollback_states(objects)
-        if prepared["pack"].domain in {"meshpart", "reverse_engineering"}
+        if prepared["pack"].domain in {"mesh", "meshpart", "reverse_engineering"}
         else []
     )
     points_rollbacks = (
@@ -11541,7 +16749,7 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
         if prepared["pack"].domain == "fem"
         else []
     )
-    internal = list(objects)
+    internal = list(deletion_targets)
     for obj in objects:
         if str(getattr(obj, "TypeId", "")) == "Assembly::AssemblyObject":
             joint_group = _assembly_joint_group(obj)
@@ -11556,7 +16764,10 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
             bom_group = _assembly_bom_group(obj)
             if bom_group is not None:
                 internal.append(bom_group)
-    external = _external_uses(doc, objects, internal)
+            verification_group = _assembly_verification_group(obj)
+            if verification_group is not None:
+                internal.append(verification_group)
+    external = _external_uses(doc, deletion_targets, internal)
     if external:
         raise _reference_error(
             "Cannot delete this VibeScript program while human-created or foreign "
@@ -11580,7 +16791,7 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
             transaction_open = True
         if prepared["pack"].domain == "robot":
             robot_trajectories = _extract_robot_trajectories(objects)
-        _remove_owned_objects(doc, objects)
+        _remove_timeline_deletion(doc, timeline_deletion)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
@@ -11590,14 +16801,6 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
                 doc.abortTransaction()
             except Exception:
                 pass
-        if bim_rollbacks:
-            try:
-                _restore_bim_rollback_states(bim_rollbacks)
-            except Exception as rollback_error:
-                raise RuntimeError(
-                    f"{deletion_error} Explicit BIM deletion rollback failure: "
-                    f"{rollback_error}"
-                ) from deletion_error
         if mesh_rollbacks:
             try:
                 _restore_mesh_rollback_states(mesh_rollbacks)

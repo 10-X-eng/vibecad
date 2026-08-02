@@ -7025,7 +7025,7 @@ set True for fusion or False for compound</source>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
       <translation>호의 끝 각도입니다 (전체 원의 경우
                 시작 각도와 동일한 값을 지정하십시오)</translation>
@@ -7209,25 +7209,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 이 속성은 읽기 전용이며, 최종 텍스트는 '레이블 유형'과
 '대상'에 정의된 객체에 따라 달라집니다.
 '사용자 지정 텍스트'는 '레이블 유형'이 '사용자 지정'로 설정된 경우에만 표시됩니다.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>이 레이블에 표시되는 정보의 유형입니다.
-
-'사용자 지정'를 선택하면 '사용자 지정 텍스트'의 내용이 사용됩니다.
-다른 유형의 경우 문자열은 '대상'에 정의된 객체에서 자동으로 계산됩니다.
-'태그'와 '재질'는 BIM 객체와 같이 이러한 속성이 있는 객체에서만 작동합니다.
-
-'위치', '길이', '면적'의 경우 이러한 속성은 '대상'의 기본 객체에서 추출되거나,
-'VertexN', 'EdgeN', 'FaceN' 하위요소가 지정된 경우 해당 하위요소에서 각각 추출됩니다.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7512,11 +7493,6 @@ This property is read-only, as the number depends on the points in 'Point Object
       <translation>숨김 선 표시</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>같은 유형과 재질의 벽 및 구조 객체 융합</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>타원과 B-스플라인을 선분으로 테셀레이션</translation>
@@ -7618,7 +7594,7 @@ This property is read-only, as the number depends on the points in 'Point Object
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
       <translation>타원호의 끝 각도입니다
@@ -8344,11 +8320,6 @@ However, a single sketch with disconnected traces is converted into several indi
       <source>Auto-Group</source>
       <translation>자동 그룹화</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>새 드래프트 및 BIM 객체를 선택한 레이어 또는 그룹에 추가합니다</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8708,11 +8679,6 @@ The initial projection direction is the opposite of the current active view dire
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>중심 스냅</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>면과 원형 모서리의 중심점, 작업 평면 프록시 및 건축 부재의 배치점에 스냅합니다</translation>
     </message>
   </context>
   <context>

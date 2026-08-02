@@ -25,8 +25,10 @@
 #pragma once
 
 #include <vector>
+#include <QPointer>
 #include <QWidget>
 
+#include <App/DocumentObserver.h>
 #include <Gui/Selection/SelectionObject.h>
 #include <Inventor/nodes/SoEventCallback.h>
 #include <Mod/Mesh/MeshGlobal.h>
@@ -99,8 +101,10 @@ private:
     bool removeComponent {false};
     SoEventCallbackCB* activeCB {nullptr};
     SoEventCallbackCB* selectionCB {nullptr};
-    Gui::View3DInventorViewer* ivViewer {nullptr};
-    mutable std::vector<Gui::SelectionObject> meshObjects;
+    QPointer<Gui::View3DInventorViewer> ivViewer;
+    std::vector<App::DocumentObjectWeakPtrT> meshObjects;
+    bool objectsBound {false};
+    bool viewerBound {false};
 
     static unsigned char cross_bitmap[];
     static unsigned char cross_mask_bitmap[];

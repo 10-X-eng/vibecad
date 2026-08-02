@@ -176,7 +176,7 @@
     <message>
       <location filename="../ui/dialog_AnnotationStyleEditor.ui" line="38"/>
       <source>The name of the style. Existing style names can be edited.</source>
-      <translation>Nazwa stylu. 
+      <translation>Nazwa stylu.
 Nazwy stylu mogą być edytowane.</translation>
     </message>
     <message>
@@ -432,7 +432,7 @@ Wartość może być równa zero.</translation>
       <location filename="../ui/TaskPanel_CircularArray.ui" line="93"/>
       <source>Number of concentric circles to create, including a copy of the original object.
 It must be at least 2.</source>
-      <translation>Liczba obiektów w szyku kołowym, włączając kopię oryginalnego obiektu. 
+      <translation>Liczba obiektów w szyku kołowym, włączając kopię oryginalnego obiektu.
 Musi wynosić co najmniej 2.</translation>
     </message>
     <message>
@@ -929,7 +929,7 @@ z przycisków powyżej</translation>
       <source>Moves the working plane without changing its
 orientation. If no point is selected, the plane
 will be moved to the center of the view.</source>
-      <translation>Przenosi płaszczyznę roboczą bez zmiany jej orientacji. 
+      <translation>Przenosi płaszczyznę roboczą bez zmiany jej orientacji.
 Jeśli nie zaznaczono żadnego punktu, płaszczyzna
 zostanie przeniesiona do środka widoku.</translation>
     </message>
@@ -1006,9 +1006,9 @@ zostanie przeniesiona do środka widoku.</translation>
     <message>
       <location filename="../ui/TaskSelectPlane.ui" line="20"/>
       <source>Choose an option below. Or define a working plane by selecting 1 to 3 vertices, 1 or more shapes, or a working plane proxy, and then confirm with a click in the 3D view.</source>
-      <translation>Wybierz opcję poniżej. 
-Lub zdefiniuj płaszczyznę roboczą, wybierając trzy wierzchołki, 
-jeden lub więcej kształtów, lub pośrednią płaszczyznę roboczą, 
+      <translation>Wybierz opcję poniżej.
+Lub zdefiniuj płaszczyznę roboczą, wybierając trzy wierzchołki,
+jeden lub więcej kształtów, lub pośrednią płaszczyznę roboczą,
 a następnie potwierdź kliknięciem w widoku 3D.</translation>
     </message>
     <message>
@@ -1361,9 +1361,9 @@ Annotation scale widget. If the scale is 1:100 the multiplier is 100.</source>
 defines the gap between the ends of the extension lines and the measured points.
 A positive value defines the maximum length of the extension lines. Only used
 for linear dimensions.</source>
-      <translation>Długość linii przedłużających. Użyj 0 dla kompletnych linii pomocniczych. 
+      <translation>Długość linii przedłużających. Użyj 0 dla kompletnych linii pomocniczych.
 Wartość ujemna określa odstęp między końcami linii pomocniczych a mierzonymi punktami.
-Wartość dodatnia określa maksymalną długość linii pomocniczych. 
+Wartość dodatnia określa maksymalną długość linii pomocniczych.
 Wartość używana tylko dla wymiarów liniowych.</translation>
     </message>
     <message>
@@ -1563,7 +1563,7 @@ If a delay of 1 is set, after entering a numeric value, the mouse will not
 update the field anymore during one second, to avoid moving the mouse
 accidentally and modifying the entered value.</source>
       <translation>Jest to opóźnienie, podczas którego kursor myszki jest nieaktywny
-po wprowadzeniu liczb w dowolnym polu współrzędnych. 
+po wprowadzeniu liczb w dowolnym polu współrzędnych.
 Ustawienie tej wartości na 0 wyłącza opóźnienie.
 Jeśli ustawione jest opóźnienie 1, po wprowadzeniu wartości manualnie
 kursor myszki nie będzie aktualizować tej wartości przez jedną sekundę,
@@ -1827,7 +1827,7 @@ definicje wzorów, do dodania do standardowych wzorów</translation>
       <location filename="../ui/preferences-drafttexts.ui" line="39"/>
       <source>The default annotation scale multiplier. This is the inverse of the scale set
 in the Draft Scale Widget. If the scale is 1:100 the multiplier is 100.</source>
-      <translation>Domyślny mnożnik skali adnotacji. 
+      <translation>Domyślny mnożnik skali adnotacji.
 Jest to odwrotność skali ustawionej w widżecie Skala adnotacji Rysunku Roboczego.
 Jeśli skala wynosi 1:100, mnożnik wynosi 100.</translation>
     </message>
@@ -2005,7 +2005,7 @@ lub pozostaw pole puste, aby użyć bieżącej jednostki zdefiniowanej w program
 value defines the gap between the ends of the extension lines and the measured
 points. A positive value defines the maximum length of the extension lines. Only
 used for linear dimensions.</source>
-      <translation>Domyślna długość linii pomocniczych. Użyj 0 dla kompletnych linii pomocniczych. 
+      <translation>Domyślna długość linii pomocniczych. Użyj 0 dla kompletnych linii pomocniczych.
 Wartość ujemna określa odstęp między końcami linii pomocniczych a mierzonymi punktami.
 Wartość dodatnia określa maksymalną długość linii przedłużających.
 Używane tylko używana dla wymiarów liniowych.</translation>
@@ -2112,9 +2112,9 @@ do obiektu dołączany jest surowy obrys pochodzący z oryginalnego kształtu</t
       <source>Maximum deviation for the approximation of ellipses, hyperbolas, parabolas, and
 Bézier and B-spline curves to arcs and lines. Can be useful for the CAM Workbench.
 Set to zero to disable approximation.</source>
-      <translation>Maksymalne odchylenie przy aproksymacji elips, hiperbol, parabol oraz krzywych Béziera i B-spline 
-do łuków i odcinków prostych. 
-Może być przydatne w środowisku CAM. 
+      <translation>Maksymalne odchylenie przy aproksymacji elips, hiperbol, parabol oraz krzywych Béziera i B-spline
+do łuków i odcinków prostych.
+Może być przydatne w środowisku CAM.
 Ustaw wartość zero, aby wyłączyć aproksymację.</translation>
     </message>
     <message>
@@ -2251,7 +2251,7 @@ a DXF file.</source>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="46"/>
       <source>Use the legacy Python importer. This importer is more feature-complete but slower and requires an external library.</source>
-      <translation>Użyj starszego importera Python. 
+      <translation>Użyj starszego importera Python.
 Ten importer jest bardziej kompletny, ale wolniejszy i wymaga biblioteki zewnętrznej.</translation>
     </message>
     <message>
@@ -2262,7 +2262,7 @@ Ten importer jest bardziej kompletny, ale wolniejszy i wymaga biblioteki zewnęt
     <message>
       <location filename="../ui/preferences-dxf.ui" line="62"/>
       <source>Use the legacy Python exporter. This exporter is more feature-complete but slower and requires an external library.</source>
-      <translation>Użyj starszego eksportera Python. 
+      <translation>Użyj starszego eksportera Python.
 Ten importer jest bardziej kompletny, ale wolniejszy i wymaga biblioteki zewnętrznej.</translation>
     </message>
     <message>
@@ -2280,7 +2280,7 @@ Ten importer jest bardziej kompletny, ale wolniejszy i wymaga biblioteki zewnęt
       <source>If checked, FreeCAD is allowed to download and update the Python libraries
 required by the legacy importer. This can also be done manually by installing
 the 'dxf_library' addon from the Addon Manager.</source>
-      <translation>Jeśli ta opcja jest zaznaczona, FreeCAD może pobierać i aktualizować biblioteki Python wymagane przez starszy importer. 
+      <translation>Jeśli ta opcja jest zaznaczona, FreeCAD może pobierać i aktualizować biblioteki Python wymagane przez starszy importer.
 Można to także zrobić samodzielnie, instalując dodatek „dxf_library” z Menedżera dodatków.</translation>
     </message>
     <message>
@@ -2318,9 +2318,9 @@ utrzymując strukturę bloku. Najlepsza do pełnej integracji ze środowiskiem p
 definitions are imported as reusable objects (Part Compounds) and instances
 become `App::Link` objects, maintaining the block structure. Best for
 script-based post-processing and Part workbench integration.</source>
-      <translation>Tworzy parametryczne obiekty Części (np. Part::Line, Part::Circle). 
-CzęśćDefinicje bloków są importowane jako obiekty wielokrotnego użytku (Part Compounds), a ich instancje stają się obiektami App::Link, 
-zachowując strukturę blokową. 
+      <translation>Tworzy parametryczne obiekty Części (np. Part::Line, Part::Circle).
+CzęśćDefinicje bloków są importowane jako obiekty wielokrotnego użytku (Part Compounds), a ich instancje stają się obiektami App::Link,
+zachowując strukturę blokową.
 Najlepsze rozwiązanie do przetwarzania skryptowego i integracji ze środowiskiem Część.</translation>
     </message>
     <message>
@@ -2333,9 +2333,9 @@ Najlepsze rozwiązanie do przetwarzania skryptowego i integracji ze środowiskie
       <source>Creates a non-parametric shape for each DXF entity. Block definitions are
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
-      <translation>Tworzy kształt nieparametryczny dla każdego obiektu DXF. 
-Definicje bloków są importowane jako obiekty wielokrotnego użytku (Part Compounds), 
-a instancje stają się obiektami `App::Link`, zachowując strukturę bloku. 
+      <translation>Tworzy kształt nieparametryczny dla każdego obiektu DXF.
+Definicje bloków są importowane jako obiekty wielokrotnego użytku (Part Compounds),
+a instancje stają się obiektami `App::Link`, zachowując strukturę bloku.
 Dobre do odwołań i pomiarów.</translation>
     </message>
     <message>
@@ -2348,8 +2348,8 @@ Dobre do odwołań i pomiarów.</translation>
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for importing and viewing very large files with maximum performance.</source>
-      <translation>Łączy całą geometrię z warstwy w jeden, nieedytowalny kształt. 
-Struktury bloków nie są zachowane; ich geometria staje się częścią kształtu warstwy. 
+      <translation>Łączy całą geometrię z warstwy w jeden, nieedytowalny kształt.
+Struktury bloków nie są zachowane; ich geometria staje się częścią kształtu warstwy.
 Najlepsze do importowania i wyświetlania bardzo dużych plików z maksymalną wydajnością.</translation>
     </message>
     <message>
@@ -2373,13 +2373,13 @@ Najlepsze do importowania i wyświetlania bardzo dużych plików z maksymalną w
 between the DXF file's unit and millimeters. Example: for files in
 millimeters: 1, in centimeters: 10, in meters: 1000, in inches: 25.4,
 in feet: 304.8</source>
-      <translation>Współczynnik skali do zastosowania przy imporcie plików DXF. 
-Współczynnik ten stanowi konwersję między jednostką pliku DXF a milimetrami. 
-Przykład: 
-dla plików w milimetrach: 1, 
-w centymetrach: 10, 
-w metrach: 1000, 
-w calach: 25,4, 
+      <translation>Współczynnik skali do zastosowania przy imporcie plików DXF.
+Współczynnik ten stanowi konwersję między jednostką pliku DXF a milimetrami.
+Przykład:
+dla plików w milimetrach: 1,
+w centymetrach: 10,
+w metrach: 1000,
+w calach: 25,4,
 w stopach: 304,8</translation>
     </message>
     <message>
@@ -2401,7 +2401,7 @@ w stopach: 304,8</translation>
       <location filename="../ui/preferences-dxf.ui" line="323"/>
       <source>If checked, entities from the paper space will also be imported. By default,
 only model space is imported</source>
-      <translation>Jeśli opcja ta jest zaznaczona, obiekty z przestrzeni papieru również zostaną zaimportowane. 
+      <translation>Jeśli opcja ta jest zaznaczona, obiekty z przestrzeni papieru również zostaną zaimportowane.
 Domyślnie importowana jest tylko przestrzeń modelu.</translation>
     </message>
     <message>
@@ -2413,7 +2413,7 @@ Domyślnie importowana jest tylko przestrzeń modelu.</translation>
       <location filename="../ui/preferences-dxf.ui" line="340"/>
       <source>If checked, anonymous blocks (whose names begin with *) will also be imported.
 These are often used for hatches and dimensions</source>
-      <translation>Jeśli opcja ta jest zaznaczona, anonimowe bloki (których nazwy zaczynają się od \*) również zostaną zaimportowane. 
+      <translation>Jeśli opcja ta jest zaznaczona, anonimowe bloki (których nazwy zaczynają się od \*) również zostaną zaimportowane.
 Często są one używane do kreskowania i wymiarowania.</translation>
     </message>
     <message>
@@ -2449,8 +2449,8 @@ W przeciwnym razie zostaną zastosowane domyślne kolory FreeCAD.</translation>
       <location filename="../ui/preferences-dxf.ui" line="411"/>
       <source>If checked, imported texts will get the standard Draft text size, instead of
 the size defined in the DXF document. (Legacy importer only)</source>
-      <translation>Jeśli ta opcja jest zaznaczona, importowany tekst otrzyma standardowy rozmiar 
-ze środowiska Rysunek Roboczy, 
+      <translation>Jeśli ta opcja jest zaznaczona, importowany tekst otrzyma standardowy rozmiar
+ze środowiska Rysunek Roboczy,
 zamiast rozmiaru zdefiniowanego w dokumencie DXF. (Tylko starszy importer)</translation>
     </message>
     <message>
@@ -2462,21 +2462,21 @@ zamiast rozmiaru zdefiniowanego w dokumencie DXF. (Tylko starszy importer)</tran
       <location filename="../ui/preferences-dxf.ui" line="442"/>
       <source>If checked, the legacy importer will attempt to join coincident geometric
 objects into wires. This can be slow for large files. (Legacy importer only)</source>
-      <translation>Jeśli ta opcja jest zaznaczona, starszy importer spróbuje połączyć stykające się obiekty geometryczne w linię złożoną. 
+      <translation>Jeśli ta opcja jest zaznaczona, starszy importer spróbuje połączyć stykające się obiekty geometryczne w linię złożoną.
 Może to być powolne w przypadku dużych plików. (Tylko starszy importer)</translation>
     </message>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="462"/>
       <source>If checked, polylines that have a width property will be rendered as faces
 representing that width. (Legacy importer only)</source>
-      <translation>Jeśli ta opcja jest zaznaczona, polilinie posiadające atrybut szerokości zostaną wyrenderowane jako powierzchnie reprezentujące tę szerokość. 
+      <translation>Jeśli ta opcja jest zaznaczona, polilinie posiadające atrybut szerokości zostaną wyrenderowane jako powierzchnie reprezentujące tę szerokość.
 (Tylko starszy importer)</translation>
     </message>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="482"/>
       <source>If checked, the legacy importer will attempt to create Sketcher objects
 instead of Draft or Part objects. This overrides the 'Import As' setting</source>
-      <translation>Jeśli ta opcja jest zaznaczona, starszy importer spróbuje utworzyć obiekty szkicownika zamiast obiektów Rysunku Roboczego lub Części. 
+      <translation>Jeśli ta opcja jest zaznaczona, starszy importer spróbuje utworzyć obiekty szkicownika zamiast obiektów Rysunku Roboczego lub Części.
 To ustawienie zastępuje opcję :Importuj jako".</translation>
     </message>
     <message>
@@ -2498,7 +2498,7 @@ To ustawienie zastępuje opcję :Importuj jako".</translation>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="551"/>
       <source>Maximum length of each of the polyline segments. '0' treats the whole spline as a straight segment.</source>
-      <translation>Maksymalna długość każdego z segmentów polilinii. 
+      <translation>Maksymalna długość każdego z segmentów polilinii.
 Wartość „0” traktuje całą krzywą jako pojedynczy odcinek prosty.</translation>
     </message>
     <message>
@@ -3600,8 +3600,8 @@ https://wiki.freecad.org/Import_Export_Preferences/pl</translation>
       <source>Error during DWG conversion.
 Try moving the DWG file to a directory path without spaces and non-english characters,
 or try saving to a lower DWG version.</source>
-      <translation>Błąd podczas konwersji DWG. 
-Spróbuj przenieść plik DWG do katalogu ze ścieżką bez spacji i znaków innych niż angielskie 
+      <translation>Błąd podczas konwersji DWG.
+Spróbuj przenieść plik DWG do katalogu ze ścieżką bez spacji i znaków innych niż angielskie
 lub spróbuj zapisać do niższej wersji DWG.</translation>
     </message>
     <message>
@@ -3749,7 +3749,7 @@ lub spróbuj zapisać do niższej wersji DWG.</translation>
     <message>
       <location filename="../../draftutils/utils.py" line="705"/>
       <source>Objects have different placements. Distance between the two base points:</source>
-      <translation>Obiekty posiadają różne umiejscowienia. 
+      <translation>Obiekty posiadają różne umiejscowienia.
 Odległość między dwoma punktami bazowymi:</translation>
     </message>
     <message>
@@ -3850,7 +3850,7 @@ Odległość między dwoma punktami bazowymi:</translation>
     <message>
       <location filename="../../draftguitools/gui_lines.py" line="315"/>
       <source>%1 pick next point, snap to first point to close</source>
-      <translation>%1 wybierz następny punkt, 
+      <translation>%1 wybierz następny punkt,
 przyciągnij do pierwszego punktu, aby zamknąć</translation>
     </message>
     <message>
@@ -4265,7 +4265,7 @@ przyciągnij do pierwszego punktu, aby zamknąć</translation>
     <message>
       <location filename="../../draftguitools/gui_annotationstyleeditor.py" line="271"/>
       <source>This style is used by some objects in this document. Proceed?</source>
-      <translation>Ten styl jest używany przez niektóre obiekty w tym dokumencie. 
+      <translation>Ten styl jest używany przez niektóre obiekty w tym dokumencie.
 Kontynuować?</translation>
     </message>
     <message>
@@ -4397,7 +4397,7 @@ Kąt końcowy będzie równy kątowi podstawowemu plus ta wartość.</translatio
     <message>
       <location filename="../../draftguitools/gui_groups.py" line="214"/>
       <source>No new selection. Select non-empty groups or objects inside groups.</source>
-      <translation>Brak nowego zaznaczenia. 
+      <translation>Brak nowego zaznaczenia.
 Zaznacz grupy, które nie są puste lub obiekty wewnątrz grup.</translation>
     </message>
     <message>
@@ -5318,26 +5318,26 @@ Zaznacz grupy, które nie są puste lub obiekty wewnątrz grup.</translation>
     <message>
       <location filename="../../draftobjects/patharray.py" line="626"/>
       <source>Start Offset too large for path length. Using 0 instead.</source>
-      <translation>Początkowe odsunięcie jest zbyt duże w stosunku do długości ścieżki. 
+      <translation>Początkowe odsunięcie jest zbyt duże w stosunku do długości ścieżki.
 Zamiast tego użyto wartości 0.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/patharray.py" line="636"/>
       <source>End Offset too large for path length minus Start Offset. Using 0 instead.</source>
-      <translation>Końcowe odsunięcie jest zbyt duże w stosunku do długości ścieżki pomniejszonej o początkowe odsunięcie. 
+      <translation>Końcowe odsunięcie jest zbyt duże w stosunku do długości ścieżki pomniejszonej o początkowe odsunięcie.
 Zamiast tego użyto wartości 0.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/patharray.py" line="776"/>
       <source>Length of tangent vector is 0. Copy not aligned.</source>
-      <translation>Długość wektora stycznego wynosi 0. 
+      <translation>Długość wektora stycznego wynosi 0.
 Kopia nie została wyrównana.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/patharray.py" line="793"/>
       <location filename="../../draftobjects/patharray.py" line="824"/>
       <source>Length of normal vector is 0. Using a default axis instead.</source>
-      <translation>Długość wektora normalnego wynosi 0. 
+      <translation>Długość wektora normalnego wynosi 0.
 Zamiast tego użyto domyślnej osi.</translation>
     </message>
     <message>
@@ -5531,7 +5531,7 @@ Przerwano działanie.</translation>
     <message>
       <location filename="../../draftmake/make_label.py" line="275"/>
       <source>Wrong input: label_type must be one of the following:</source>
-      <translation>Nieprawidłowe dane wejściowe: 
+      <translation>Nieprawidłowe dane wejściowe:
 typ_etykiety musi być jednym z następujących:</translation>
     </message>
     <message>
@@ -5603,7 +5603,7 @@ typ_etykiety musi być jednym z następujących:</translation>
     <message>
       <location filename="../../draftmake/make_dimension.py" line="376"/>
       <source>Wrong input: object does not have at least 1 element in 'Vertexes' to use for measuring.</source>
-      <translation>Nieprawidłowe dane wejściowe: obiekt nie posiada co najmniej jednego elementu "Wierzchołek", 
+      <translation>Nieprawidłowe dane wejściowe: obiekt nie posiada co najmniej jednego elementu "Wierzchołek",
 który mógłby zostać użyty do pomiaru.</translation>
     </message>
     <message>
@@ -5843,7 +5843,7 @@ który mógłby zostać użyty do pomiaru.</translation>
       <location filename="../../draftfunctions/upgrade.py" line="597"/>
       <location filename="../../draftfunctions/upgrade.py" line="656"/>
       <source>Found 1 non-parametric object: replacing it with a Draft object</source>
-      <translation>Znaleziono 1 obiekt nieparametryczny: 
+      <translation>Znaleziono 1 obiekt nieparametryczny:
 zastępuję go obiektem Rysunku Roboczego</translation>
     </message>
     <message>
@@ -5992,7 +5992,7 @@ istniejących obiektów we wszystkich otwartych dokumentach?</translation>
       <location filename="../../draftguitools/gui_patharray.py" line="114"/>
       <location filename="../../draftguitools/gui_pathtwistedarray.py" line="92"/>
       <source>Select exactly 2 objects, the base object and the path object, before calling this command</source>
-      <translation>Przed wywołaniem tego polecenia wybierz dokładnie dwa obiekty: 
+      <translation>Przed wywołaniem tego polecenia wybierz dokładnie dwa obiekty:
 obiekt bazowy oraz obiekt określający ścieżkę.</translation>
     </message>
     <message>
@@ -6008,7 +6008,7 @@ obiekt bazowy oraz obiekt określający ścieżkę.</translation>
     <message>
       <location filename="../../draftguitools/gui_pointarray.py" line="108"/>
       <source>Select exactly 2 objects, the base object and the point object, before calling this command</source>
-      <translation>Przed wywołaniem tego polecenia wybierz dokładnie dwa obiekty: 
+      <translation>Przed wywołaniem tego polecenia wybierz dokładnie dwa obiekty:
 obiekt bazowy oraz obiekt punktów.</translation>
     </message>
     <message>
@@ -6019,7 +6019,7 @@ obiekt bazowy oraz obiekt punktów.</translation>
     <message>
       <location filename="../../draftguitools/gui_split.py" line="66"/>
       <source>Click anywhere on a line to split it</source>
-      <translation>Kliknij gdziekolwiek w linię, 
+      <translation>Kliknij gdziekolwiek w linię,
 aby ją podzielić</translation>
     </message>
     <message>
@@ -6070,7 +6070,7 @@ aby ją podzielić</translation>
     <message>
       <location filename="../../draftobjects/facebinder.py" line="147"/>
       <source>Unable to build facebinder, resuming with sew disabled</source>
-      <translation>Nie można utworzyć wiązania powierzchni, 
+      <translation>Nie można utworzyć wiązania powierzchni,
 kontynuowanie z wyłączoną funkcją zszywania.</translation>
     </message>
     <message>
@@ -6472,13 +6472,13 @@ https://github.com/yorikvanhavre/Draft-dxf-importer
     <message>
       <location filename="../../draftguitools/gui_offset.py" line="333"/>
       <source>Offset direction is not defined. Move the mouse on either side of the object first to indicate a direction.</source>
-      <translation>Kierunek odsunięcia nie został określony. 
+      <translation>Kierunek odsunięcia nie został określony.
 Najpierw przesuń mysz po jednej ze stron obiektu, aby wskazać kierunek.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/pointarray.py" line="225"/>
       <source>Point object does not have a discrete point, it cannot be used for an array</source>
-      <translation>Obiekt punktowy nie ma dyskretnego punktu, 
+      <translation>Obiekt punktowy nie ma dyskretnego punktu,
 nie można go użyć w szyku.</translation>
     </message>
     <message>
@@ -6587,7 +6587,7 @@ Proszę zainstalować dodatek bibliotek DXF ręcznie z narzędzi menu -&gt; Mene
       <location filename="../../draftguitools/gui_join.py" line="62"/>
       <source>Joins the selected lines or polylines into a single object.
 The lines must share a common point at the start or at the end.</source>
-      <translation>Łączy zaznaczone linie lub polilinie w jeden obiekt. 
+      <translation>Łączy zaznaczone linie lub polilinie w jeden obiekt.
 Linie muszą mieć wspólny punkt na początku lub na końcu.</translation>
     </message>
   </context>
@@ -6815,7 +6815,7 @@ Obiekty dodane do tej warstwy mogą mieć te same właściwości wizualne.</tran
     <message>
       <location filename="../../draftguitools/gui_dimensions.py" line="92"/>
       <source>Creates a linear dimension for a straight edge, a circular edge, or 2 picked points, or an angular dimension for 2 straight edges</source>
-      <translation>Tworzy wymiar liniowy dla krawędzi prostej, krawędzi okrągłej lub dwóch wskazanych punktów, 
+      <translation>Tworzy wymiar liniowy dla krawędzi prostej, krawędzi okrągłej lub dwóch wskazanych punktów,
 albo wymiar kątowy dla dwóch prostych krawędzi.</translation>
     </message>
   </context>
@@ -6901,7 +6901,7 @@ przekształcać zamknięte krawędzie w wypełnione ściany i parametryczne wiel
       <location filename="../../draftguitools/gui_offset.py" line="76"/>
       <source>Offsets the selected object.
 It can also create an offset copy of the original object.</source>
-      <translation>Przesuwa zaznaczony obiekt. 
+      <translation>Przesuwa zaznaczony obiekt.
 Może również utworzyć odsuniętą kopię oryginalnego obiektu.</translation>
     </message>
   </context>
@@ -6917,7 +6917,7 @@ Może również utworzyć odsuniętą kopię oryginalnego obiektu.</translation>
       <source>Heals faulty Draft objects saved with an earlier version of FreeCAD.
 If an object is selected it tries to heal only that object,
 otherwise it tries to heal all objects in the active document.</source>
-      <translation>Naprawia uszkodzone obiekty środowiska Rysunek Roboczy zapisane w starszej wersji FreeCAD. 
+      <translation>Naprawia uszkodzone obiekty środowiska Rysunek Roboczy zapisane w starszej wersji FreeCAD.
 Jeśli zaznaczono obiekt, próbuje naprawić tylko ten obiekt, w przeciwnym razie próbuje naprawić wszystkie obiekty w aktywnym dokumencie.</translation>
     </message>
   </context>
@@ -6935,7 +6935,7 @@ The result of the operation depends on the types of objects, which may be downgr
 For example, a 3D solid is deconstructed into separate faces, wires, and then edges. Faces can also be subtracted.</source>
       <translation>Rozbija wybrane obiekty na prostsze kształty.
 Rezultat operacji zależy od typów obiektów, które mogą być rozbijane wielokrotnie.
-Na przykład, bryła 3D zostaje rozbita na oddzielne ściany, następnie na linie złożone, a potem na krawędzie. 
+Na przykład, bryła 3D zostaje rozbita na oddzielne ściany, następnie na linie złożone, a potem na krawędzie.
 Ściany mogą być również odejmowane.</translation>
     </message>
   </context>
@@ -7067,9 +7067,9 @@ ustaw wartość Prawda dla utworzenia połączenia, lub Fałsz dla kształtu zł
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>Kąt końcowy łuku (dla pełnego okręgu, 
+      <translation>Kąt końcowy łuku (dla pełnego okręgu,
                 nadaj mu tę samą wartość co pierwszemu kątowi)</translation>
     </message>
     <message>
@@ -7253,31 +7253,12 @@ i obiektu zdefiniowanego w "Target".
 Tekst niestandardowy jest wyświetlany tylko wtedy, gdy "Typ etykiety" jest ustawiony na "Własny".</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>Typ informacji wyświetlanych przez tę etykietę.
-
-Jeśli wybrano opcję "Własny", zostanie użyta zawartość "Tekstu użytkownika".
-Dla innych typów, ciąg znaków będzie obliczany automatycznie na podstawie obiektu zdefiniowanego w "Target".
-"Tag" i "Materiał" działają tylko dla obiektów, które mają te właściwości, jak obiekty BIM.
-
-Dla wartości "Pozycjz", "Długość" i "Powierzchnia" te właściwości zostaną wydobyte z głównego obiektu w "Target",
-lub z elementu podrzędnego "VertexN", "EdgeN" lub "FaceN", jeśli jest określony.</translation>
-    </message>
-    <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
       <source>General scaling factor that affects the annotation consistently
 because it scales the text, and the line decorations, if any,
 in the same proportion.</source>
       <translation>Ogólny współczynnik skalowania, który konsekwentnie wpływa
-na adnotację, ponieważ skaluje tekst i atrybuty linii, 
+na adnotację, ponieważ skaluje tekst i atrybuty linii,
 w tej samej proporcji, jeżeli występują.</translation>
     </message>
     <message>
@@ -7554,11 +7535,6 @@ Tę właściwość można tylko przeglądać, ponieważ liczba jest zależna od 
       <translation>Pokaż niewidoczne linie szwów</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Powiąż ścianę i obiekty struktury tego samego typu i materiału</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Dokonaj teselacji elips i krzywych złożonych w segmenty linii</translation>
@@ -7661,10 +7637,10 @@ powierzchnie będą pozostawione w miejscu cięcia.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>Kąt końcowy łuku eliptycznego 
+      <translation>Kąt końcowy łuku eliptycznego
 
                 (aby uzyskać pełny okrąg, nadaj mu tę samą wartość co pierwszemu kątowi)</translation>
     </message>
@@ -8269,7 +8245,7 @@ prostokątne, biegunowe, kołowe, po ścieżce i punktowe.</translation>
     <message>
       <location filename="../../draftguitools/gui_beziers.py" line="74"/>
       <source>Creates an n-degree Bézier curve. The more points, the higher the degree.</source>
-      <translation>Tworzy krzywą Béziera stopnia n. 
+      <translation>Tworzy krzywą Béziera stopnia n.
 Im więcej punktów, tym wyższy stopień krzywej.</translation>
     </message>
   </context>
@@ -8284,8 +8260,8 @@ Im więcej punktów, tym wyższy stopień krzywej.</translation>
       <location filename="../../draftguitools/gui_beziers.py" line="271"/>
       <source>Creates a Bézier curve made of 2nd degree (quadratic) and 3rd degree (cubic) segments. Clicking and dragging allows to define segments.
 Control points and properties of each knot can be edited after creation.</source>
-      <translation>Tworzy krzywą Béziera z segmentów drugiego stopnia (kwadratowych) i trzeciego stopnia (sześciennych). 
-Kliknięcie i przeciągnięcie pozwala zdefiniować segmenty. 
+      <translation>Tworzy krzywą Béziera z segmentów drugiego stopnia (kwadratowych) i trzeciego stopnia (sześciennych).
+Kliknięcie i przeciągnięcie pozwala zdefiniować segmenty.
 Punkty kontrolne i właściwości każdego węzła można edytować po utworzeniu.</translation>
     </message>
   </context>
@@ -8383,8 +8359,8 @@ Natomiast pojedynczy szkic z niepołączonymi śladami zostanie przekształcony 
     <message>
       <location filename="../../draftguitools/gui_groups.py" line="183"/>
       <source>Selects the contents of selected groups. For selected non-group objects, the contents of the group they are in are selected.</source>
-      <translation>Wybiera zawartość zaznaczonych grup. 
-W przypadku wybranych obiektów spoza grupy 
+      <translation>Wybiera zawartość zaznaczonych grup.
+W przypadku wybranych obiektów spoza grupy
 wybierana jest zawartość grupy, w której się znajdują.</translation>
     </message>
   </context>
@@ -8394,11 +8370,6 @@ wybierana jest zawartość grupy, w której się znajdują.</translation>
       <location filename="../../draftguitools/gui_groups.py" line="230"/>
       <source>Auto-Group</source>
       <translation>Auto-grupowanie</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Dodaje nowe obiekty Draft i BIM do wybranej warstwy lub grupy</translation>
     </message>
   </context>
   <context>
@@ -8454,7 +8425,7 @@ Grupa konstrukcyjna zostanie utworzona, jeśli jeszcze nie istnieje.</translatio
     <message>
       <location filename="../../draftguitools/gui_layers.py" line="111"/>
       <source>Adds selected objects to a layer, or removes them from any layer</source>
-      <translation>Dodaje wybrane obiekty do wskazanej warstwy 
+      <translation>Dodaje wybrane obiekty do wskazanej warstwy
 albo usuwa je z przypisanych warstw.</translation>
     </message>
   </context>
@@ -8486,7 +8457,7 @@ If a polyline is selected, it will apply the slope transformation to each of its
 The slope will always change the Z value, therefore this command only works well for
 straight Draft lines that are drawn on the XY-plane.</source>
       <translation>Ustawia nachylenie wybranej linii poprzez zmianę wartości Z jednego z jej punktów.
-Jeśli wybrano polilinię, zastosuje transformację nachylenia do każdego z jej segmentów. 
+Jeśli wybrano polilinię, zastosuje transformację nachylenia do każdego z jej segmentów.
 
 Nachylenie zawsze zmieni wartość Z, dlatego to polecenie działa dobrze tylko dla prostych linii Rysunku Roboczego,które są rysowane w płaszczyźnie XY.</translation>
     </message>
@@ -8750,7 +8721,7 @@ Początkowy kierunek rzutowania jest przeciwny do bieżącego aktywnego kierunku
     <message>
       <location filename="../../draftguitools/gui_snaps.py" line="200"/>
       <source>Snaps to the special cardinal points on circular edges, at multiples of 30° and 45°</source>
-      <translation>Przyciąga do głównych punktów na krawędziach okręgów, 
+      <translation>Przyciąga do głównych punktów na krawędziach okręgów,
 w wielokrotnościach 30° i 45°</translation>
     </message>
   </context>
@@ -8760,11 +8731,6 @@ w wielokrotnościach 30° i 45°</translation>
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>Przyciągnij do środka</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Przyciąga do punktu środkowego ścian i krawędzi okręgów oraz do punktu umieszczenia płaszczyzn roboczych i obiektów konstrukcyjnych.</translation>
     </message>
   </context>
   <context>
@@ -8894,7 +8860,7 @@ w wielokrotnościach 30° i 45°</translation>
     <message>
       <location filename="../../draftguitools/gui_subelements.py" line="70"/>
       <source>Highlights the subelements of the selected objects, to be able to move, rotate, and scale them</source>
-      <translation>Wyróżnia elementy podrzędne zaznaczonych obiektów, 
+      <translation>Wyróżnia elementy podrzędne zaznaczonych obiektów,
 umożliwiając ich przesuwanie, obracanie i skalowanie.</translation>
     </message>
   </context>
@@ -8955,8 +8921,8 @@ umożliwiając ich przesuwanie, obracanie i skalowanie.</translation>
 reusable objects (Part Compounds) and instances become `App::Link` objects,
 maintaining the block structure. Best for full integration with the Draft
 workbench.</source>
-      <translation>Tworzy w pełni parametryczne obiekty Rysunku Roboczego. 
-Definicje bloków są importowane jako obiektów wielokrotnego użytku, a instancje stają się obiektami `App::Link`, utrzymując strukturę bloku. 
+      <translation>Tworzy w pełni parametryczne obiekty Rysunku Roboczego.
+Definicje bloków są importowane jako obiektów wielokrotnego użytku, a instancje stają się obiektami `App::Link`, utrzymując strukturę bloku.
 Najlepsza do pełnej integracji ze środowiskiem pracy Rysunku Roboczego
 .</translation>
     </message>
@@ -8971,8 +8937,8 @@ Najlepsza do pełnej integracji ze środowiskiem pracy Rysunku Roboczego
 definitions are imported as reusable objects (Part Compounds) and instances
 become `App::Link` objects, maintaining the block structure. Best for
 script-based post-processing.</source>
-      <translation>Tworzy parametryczne obiekty środowiska Część (np. Part::Line, Part::Circle). 
-Definicje bloków są importowane jako obiekty wielokrotnego użytku (Part Compounds), a ich wystąpienia stają się obiektami `App::Link`, zachowując strukturę bloków. 
+      <translation>Tworzy parametryczne obiekty środowiska Część (np. Part::Line, Part::Circle).
+Definicje bloków są importowane jako obiekty wielokrotnego użytku (Part Compounds), a ich wystąpienia stają się obiektami `App::Link`, zachowując strukturę bloków.
 Najlepsze do przetwarzania skryptowego.</translation>
     </message>
     <message>
@@ -8985,9 +8951,9 @@ Najlepsze do przetwarzania skryptowego.</translation>
       <source>Creates a non-parametric shape for each DXF entity. Block definitions are
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
-      <translation>Tworzy kształt nieparametryczny dla każdego obiektu DXF. 
-Definicje bloków są importowane jako obiekty wielokrotnego użytku (Part Compounds), 
-a instancje stają się obiektami `App::Link`, zachowując strukturę bloku. 
+      <translation>Tworzy kształt nieparametryczny dla każdego obiektu DXF.
+Definicje bloków są importowane jako obiekty wielokrotnego użytku (Part Compounds),
+a instancje stają się obiektami `App::Link`, zachowując strukturę bloku.
 Dobre do odwołań i pomiarów.</translation>
     </message>
     <message>
@@ -9000,8 +8966,8 @@ Dobre do odwołań i pomiarów.</translation>
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for viewing very large files with maximum performance.</source>
-      <translation>Scala całą geometrię w każdej warstwie w jedną, nieedytowalną bryłę. 
-Struktury bloków nie są zachowywane, ich geometria staje się częścią kształtu warstwy. 
+      <translation>Scala całą geometrię w każdej warstwie w jedną, nieedytowalną bryłę.
+Struktury bloków nie są zachowywane, ich geometria staje się częścią kształtu warstwy.
 Najlepsze do przeglądania bardzo dużych plików przy maksymalnej wydajności.</translation>
     </message>
     <message>

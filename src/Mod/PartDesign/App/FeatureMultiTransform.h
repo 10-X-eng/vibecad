@@ -63,7 +63,15 @@ public:
         const std::vector<App::DocumentObject*> originals
     ) override;
 
+    /**
+     * Keep the MultiTransform controller and its implementation features
+     * explicitly classified as one semantic timeline operation.
+     */
+    void synchronizeTimelineResources();
+
 protected:
+    void onChanged(const App::Property* property) override;
+    void onDocumentRestored() override;
     void positionBySupport() override;
 };
 

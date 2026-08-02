@@ -123,14 +123,11 @@ PY
 }
 
 ../scripts/install_vibecad_provider_deps.sh "${conda_env}"
-../scripts/install_vibecad_build123d_runtime.sh \
-  "${conda_env}/python.exe" \
-  "${conda_env}/Library/Mod/VibeCAD"
-../scripts/install_vibecad_openscad_runtime.sh \
-  "${conda_env}/python.exe" \
-  "${conda_env}/Library/Mod/VibeCAD"
 ../scripts/install_vibecad_codex_runtime.sh \
   "${conda_env}/python.exe" \
+  "${conda_env}/Library/Mod/VibeCAD"
+../scripts/purge_vibecad_retired_authoring_artifacts.sh \
+  "${conda_env}" \
   "${conda_env}/Library/Mod/VibeCAD"
 
 # Copy Conda's Python and (U)CRT to FreeCAD/bin
@@ -165,15 +162,13 @@ copy_tree "${conda_env}/Library/data" "${copy_dir}/data"
 copy_tree "${conda_env}/Library/Ext" "${copy_dir}/Ext"
 copy_tree "${conda_env}/Library/lib" "${copy_dir}/lib"
 copy_tree "${conda_env}/Library/Mod" "${copy_dir}/Mod"
+../scripts/purge_vibecad_retired_authoring_artifacts.sh \
+  "${copy_dir}" \
+  "${copy_dir}/Mod/VibeCAD"
 if [[ ! -x "${copy_dir}/bin/pythonw.exe" ]]; then
   echo "Windowless Python executable is missing: ${copy_dir}/bin/pythonw.exe" >&2
   exit 1
 fi
-"${copy_dir}/bin/python.exe" \
-  ../scripts/write_vibecad_build123d_manifest.py \
-  "${copy_dir}/Mod/VibeCAD/build123d_runtime" \
-  "${copy_dir}/bin" \
-  "${copy_dir}/bin/pythonw.exe"
 mkdir -p ${copy_dir}/doc
 cp -a "${conda_env}"/Library/doc/{ThirdPartyLibraries.html,LICENSE.html} "${copy_dir}/doc"
 
@@ -277,24 +272,16 @@ if ! "$SIGN_DIR/FreeCADCmd.exe" --safe-mode --version; then
   echo "VibeCAD portable command-line launcher smoke test failed."
   exit 1
 fi
-if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "import importlib.util, openai, anthropic, keyring, jsonschema; import keyring.backends.Windows; assert importlib.util.find_spec('agents') is None; print('VibeCAD provider SDK, OS keyring backend, and schema validator imports ok')"; then
-  echo "VibeCAD provider SDK/keyring smoke test failed; the Windows bundle is missing AI provider dependencies."
+if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "import importlib.util, anthropic, keyring, jsonschema; import keyring.backends.Windows; assert importlib.util.find_spec('openai') is None; assert importlib.util.find_spec('agents') is None; print('VibeCAD Python dependencies and OS keyring backend import ok')"; then
+  echo "VibeCAD Python dependency/keyring smoke test failed; the Windows bundle is incomplete."
   exit 1
 fi
 if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "from VibeCADProvider import _provider_subprocess_smoke; _provider_subprocess_smoke(); print('VibeCAD provider subprocess smoke ok')"; then
   echo "VibeCAD provider subprocess smoke test failed; the Windows bundle cannot run AI providers."
   exit 1
 fi
-if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "from VibeCADBuild123d import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD build123d runtime smoke ok', result['version'])"; then
-  echo "VibeCAD build123d runtime smoke test failed; the Windows bundle cannot run build123d models."
-  exit 1
-fi
 if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "from VibeCADCodex import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD Codex app-server smoke ok', result['version'])"; then
   echo "VibeCAD Codex app-server smoke test failed; the Windows bundle cannot use ChatGPT subscriptions."
-  exit 1
-fi
-if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "from VibeCADOpenSCAD import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD OpenSCAD runtime smoke ok', result['version'])"; then
-  echo "VibeCAD OpenSCAD runtime smoke test failed; the Windows bundle cannot run OpenSCAD models."
   exit 1
 fi
 if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "from VibeCADProvider import _provider_subprocess_smoke; _provider_subprocess_smoke(prefer_windowless_python=True, require_windowless_python=True); print('VibeCAD windowless provider subprocess smoke ok')"; then

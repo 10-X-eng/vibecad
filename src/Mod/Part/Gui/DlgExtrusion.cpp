@@ -38,6 +38,8 @@
 #include <App/DocumentObject.h>
 #include <App/Link.h>
 #include <App/Part.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/UnitsApi.h>
 #include <Base/Tools.h>
 
@@ -49,15 +51,67 @@
 #include <Gui/ViewProvider.h>
 #include <Gui/WaitCursor.h>
 
+#include <Mod/Part/App/FeatureExtrusion.h>
 #include <Mod/Part/App/Part2DObject.h>
 
 #include "ui_DlgExtrusion.h"
 #include "DlgExtrusion.h"
+#include "ModelingSelection.h"
 
 
 FC_LOG_LEVEL_INIT("Part", true, true)
 
 using namespace PartGui;
+
+namespace
+{
+constexpr int sourceNameRole = Qt::UserRole;
+constexpr int sourceIdRole = Qt::UserRole + 1;
+constexpr int sourceAddressRole = Qt::UserRole + 2;
+
+App::Document* resolveRetainedTaskDocument(
+    const std::string& name,
+    App::Document* address,
+    const std::string& uid
+) noexcept
+{
+    if (name.empty() || !address || uid.empty()) {
+        return nullptr;
+    }
+    try {
+        auto* document = App::GetApplication().getDocument(name.c_str());
+        return document == address && document->Uid.getValueStr() == uid ? document : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+App::DocumentObject* resolveRetainedTaskSource(
+    App::Document& document,
+    const QTreeWidgetItem& item
+) noexcept
+{
+    try {
+        const auto name = item.data(0, sourceNameRole).toString().toLatin1();
+        const long id = item.data(0, sourceIdRole).toLongLong();
+        const auto address = reinterpret_cast<App::DocumentObject*>(
+            static_cast<quintptr>(item.data(0, sourceAddressRole).toULongLong())
+        );
+        auto* object = id >= 0 ? document.getObjectByID(id) : nullptr;
+        return object && object == address && object->getID() == id
+                && document.containsObject(object) && object->getNameInDocument()
+                && name == object->getNameInDocument()
+                && document.getObject(name.constData()) == object
+                && PartGui::isModelingObjectActive(object)
+            ? object
+            : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+}
 
 class DlgExtrusion::EdgeSelection: public Gui::SelectionFilterGate
 {
@@ -133,9 +187,13 @@ DlgExtrusion::DlgExtrusion(QWidget* parent, Qt::WindowFlags fl)
     findShapes();
 
     Gui::ItemViewSelection sel(ui->treeWidget);
-    sel.applyFrom(Gui::Selection().getObjectsOfType(Part::Feature::getClassTypeId()));
-    sel.applyFrom(Gui::Selection().getObjectsOfType(App::Link::getClassTypeId()));
-    sel.applyFrom(Gui::Selection().getObjectsOfType(App::Part::getClassTypeId()));
+    auto modelingSelection =
+        PartGui::getModelingSelection(document.c_str());
+    std::vector<App::DocumentObject*> selectedObjects;
+    for (auto& selected : modelingSelection) {
+        selectedObjects.push_back(selected.getObject());
+    }
+    sel.applyFrom(selectedObjects);
 
     this->onDirModeChanged();
     ui->spinLenFwd->selectAll();
@@ -422,8 +480,12 @@ void DlgExtrusion::findShapes()
     Gui::Document* activeGui = Gui::Application::Instance->getDocument(activeDoc);
     this->document = activeDoc->getName();
     this->label = activeDoc->Label.getValue();
+    this->documentAddress = activeDoc;
+    this->documentUid = activeDoc->Uid.getValueStr();
 
-    std::vector<App::DocumentObject*> objs = activeDoc->getObjectsOfType<App::DocumentObject>();
+    const auto objs = PartGui::resolveModelingObjects(
+        activeDoc->getObjectsOfType<App::DocumentObject>()
+    );
 
     for (auto obj : objs) {
         Part::TopoShape topoShape = Part::Feature::getTopoShape(
@@ -440,7 +502,13 @@ void DlgExtrusion::findShapes()
         if (canExtrude(shape)) {
             QTreeWidgetItem* item = new QTreeWidgetItem(ui->treeWidget);
             item->setText(0, QString::fromUtf8(obj->Label.getValue()));
-            item->setData(0, Qt::UserRole, QString::fromLatin1(obj->getNameInDocument()));
+            item->setData(0, sourceNameRole, QString::fromLatin1(obj->getNameInDocument()));
+            item->setData(0, sourceIdRole, QVariant::fromValue<qlonglong>(obj->getID()));
+            item->setData(
+                0,
+                sourceAddressRole,
+                QVariant::fromValue<qulonglong>(reinterpret_cast<quintptr>(obj))
+            );
             Gui::ViewProvider* vp = activeGui->getViewProvider(obj);
             if (vp) {
                 item->setIcon(0, vp->getIcon());
@@ -480,7 +548,9 @@ void DlgExtrusion::accept()
 {
     try {
         apply();
-        QDialog::accept();
+        if (applySucceeded) {
+            QDialog::accept();
+        }
     }
     catch (Base::AbortException&) {
     };
@@ -488,6 +558,10 @@ void DlgExtrusion::accept()
 
 void DlgExtrusion::apply()
 {
+    applySucceeded = false;
+    appliedResults.clear();
+    App::Document* activeDoc = nullptr;
+
     try {
         if (!validate()) {
             throw Base::AbortException();
@@ -498,16 +572,17 @@ void DlgExtrusion::apply()
         }
 
         Gui::WaitCursor wc;
-        App::Document* activeDoc = App::GetApplication().getDocument(this->document.c_str());
+        activeDoc =
+            resolveRetainedTaskDocument(this->document, documentAddress, documentUid);
         if (!activeDoc) {
             QMessageBox::critical(
                 this,
                 windowTitle(),
-                tr("The document '%1' doesn't exist.").arg(QString::fromUtf8(this->label.c_str()))
+                tr("The document used to start this extrusion task is no longer available.")
             );
             return;
         }
-        activeDoc->openTransaction("Extrude");
+        std::vector<App::DocumentObject*> objects = this->getShapesToExtrude();
 
         Base::Reference<ParameterGrp> hGrp = App::GetApplication()
                                                  .GetUserParameter()
@@ -516,7 +591,9 @@ void DlgExtrusion::apply()
                                                  ->GetGroup("Mod/Part");
         bool addBaseName = hGrp->GetBool("AddBaseObjectName", false);
 
-        std::vector<App::DocumentObject*> objects = this->getShapesToExtrude();
+        PartGui::ModelingTaskAttempt attempt(*activeDoc, "Extrude");
+        std::vector<App::DocumentObject*> results;
+        results.reserve(objects.size());
         for (App::DocumentObject* sourceObj : objects) {
             assert(sourceObj);
 
@@ -525,11 +602,10 @@ void DlgExtrusion::apply()
                     Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform
                 )
                     .isNull()) {
-                FC_ERR(
-                    "Object " << sourceObj->getFullName() << " is not a Part object because it has no OCC shape. Extrusion is not possible."
+                throw Base::RuntimeError(
+                    "Object "
+                    + sourceObj->getFullName() + " is not a Part object because it has no OCC shape. Extrusion is not possible."
                 );
-
-                continue;
             }
 
             std::string name;
@@ -540,10 +616,25 @@ void DlgExtrusion::apply()
                 // label = QStringLiteral("%1_Extrude").arg((*it)->text(0));
             }
 
-            FCMD_OBJ_DOC_CMD(sourceObj, "addObject('Part::Extrusion','" << name << "')");
-            auto newObj = sourceObj->getDocument()->getObject(name.c_str());
+            const QString factory = QStringLiteral("App.getDocument('%1').addObject("
+                                                   "'Part::Extrusion','%2')")
+                                        .arg(
+                                            QString::fromLatin1(sourceObj->getDocument()->getName()),
+                                            QString::fromStdString(name)
+                                        );
+            auto* newObj = Gui::Command::runDocumentObjectCommand(
+                Gui::Command::Doc,
+                *sourceObj->getDocument(),
+                factory.toUtf8(),
+                Part::Extrusion::getClassTypeId()
+            );
+            attempt.trackCreatedObject(*newObj);
 
             this->writeParametersToFeature(*newObj, sourceObj);
+            auto* presentation = PartGui::resolveModelingPresentationObject(sourceObj);
+            if (presentation && presentation->Visibility.getValue()) {
+                attempt.trackReplacedInputs(*newObj, {presentation});
+            }
 
             if (!sourceObj->isDerivedFrom<Part::Part2DObject>()) {
                 Gui::Command::copyVisual(newObj, "ShapeAppearance", sourceObj);
@@ -552,15 +643,39 @@ void DlgExtrusion::apply()
             }
 
             FCMD_OBJ_HIDE(sourceObj);
+            results.push_back(newObj);
         }
 
-        activeDoc->commitTransaction();
-        Gui::Command::updateActive();
+        if (results.empty()) {
+            throw Base::RuntimeError("No extrusion result was created");
+        }
+        attempt.markResultAsDesignDefinition(*results.back());
+
+        activeDoc->recompute();
+        for (auto* result : results) {
+            auto shape = Part::Feature::getTopoShape(result, Part::ShapeOption::NoFlag);
+            if (!result->isValid()) {
+                throw Base::RuntimeError(result->getStatusString());
+            }
+            if (shape.isNull() || shape.getShape().IsNull()) {
+                throw Base::RuntimeError(std::string(result->getFullLabel()) + " produced no shape");
+            }
+            if (!shape.isValid()) {
+                throw Base::RuntimeError(
+                    std::string(result->getFullLabel()) + " produced an invalid shape"
+                );
+            }
+        }
+
+        appliedResults = results;
+        attempt.commit();
+        applySucceeded = true;
     }
     catch (Base::AbortException&) {
         throw;
     }
     catch (Base::Exception& err) {
+        appliedResults.clear();
         QMessageBox::critical(
             this,
             windowTitle(),
@@ -569,6 +684,7 @@ void DlgExtrusion::apply()
         return;
     }
     catch (...) {
+        appliedResults.clear();
         QMessageBox::critical(
             this,
             windowTitle(),
@@ -646,6 +762,12 @@ void DlgExtrusion::getAxisLink(App::PropertyLinkSub& lnk) const
         if (!obj) {
             throw Base::ValueError(tr("Object not found: %1").arg(parts[0]).toUtf8().constData());
         }
+        obj = PartGui::resolveModelingObject(obj);
+        if (!obj) {
+            throw Base::ValueError(
+                tr("Selected Body has no Tip: %1").arg(parts[0]).toUtf8().constData()
+            );
+        }
         lnk.setValue(obj);
         if (parts.size() == 1) {
             return;
@@ -689,16 +811,21 @@ void DlgExtrusion::setAxisLink(const char* objname, const char* subname)
 std::vector<App::DocumentObject*> DlgExtrusion::getShapesToExtrude() const
 {
     QList<QTreeWidgetItem*> items = ui->treeWidget->selectedItems();
-    App::Document* doc = App::GetApplication().getDocument(this->document.c_str());
+    App::Document* doc =
+        resolveRetainedTaskDocument(this->document, documentAddress, documentUid);
     if (!doc) {
-        throw Base::RuntimeError("Document lost");
+        throw Base::RuntimeError(
+            "The document used to start this extrusion task is no longer available"
+        );
     }
 
     std::vector<App::DocumentObject*> objects;
     for (auto item : items) {
-        App::DocumentObject* obj = doc->getObject(item->data(0, Qt::UserRole).toString().toLatin1());
+        App::DocumentObject* obj = item ? resolveRetainedTaskSource(*doc, *item) : nullptr;
         if (!obj) {
-            throw Base::RuntimeError("Object not found");
+            throw Base::RuntimeError(
+                "Selected extrusion source is no longer the active object used to start this task"
+            );
         }
         objects.push_back(obj);
     }
@@ -820,19 +947,13 @@ bool DlgExtrusion::validate()
 
 void DlgExtrusion::writeParametersToFeature(App::DocumentObject& feature, App::DocumentObject* base) const
 {
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "f = App.getDocument('%s').getObject('%s')",
-        feature.getDocument()->getName(),
-        feature.getNameInDocument()
-    );
+    Gui::Command::doCommand(Gui::Command::Doc, "f = %s", Gui::Command::getObjectCmd(&feature).c_str());
 
     if (base) {
         Gui::Command::doCommand(
             Gui::Command::Doc,
-            "f.Base = App.getDocument('%s').getObject('%s')",
-            base->getDocument()->getName(),
-            base->getNameInDocument()
+            "f.Base = %s",
+            Gui::Command::getObjectCmd(base).c_str()
         );
     }
 
@@ -917,7 +1038,11 @@ TaskExtrusion::TaskExtrusion()
 bool TaskExtrusion::accept()
 {
     widget->accept();
-    return (widget->result() == QDialog::Accepted);
+    const bool accepted = widget->result() == QDialog::Accepted;
+    if (accepted) {
+        markCommandInteractionStateDurable(widget->lastAppliedResults());
+    }
+    return accepted;
 }
 
 bool TaskExtrusion::reject()
@@ -931,6 +1056,9 @@ void TaskExtrusion::clicked(int id)
     if (id == QDialogButtonBox::Apply) {
         try {
             widget->apply();
+            if (widget->wasLastApplySuccessful()) {
+                markCommandInteractionStateDurable(widget->lastAppliedResults());
+            }
         }
         catch (Base::AbortException&) {
         };

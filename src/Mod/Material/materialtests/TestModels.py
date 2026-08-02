@@ -77,9 +77,6 @@ class ModelTestCases(unittest.TestCase):
 
         self.assertTrue(self.uuids.Electromagnetic, "b2eb5f48-74b3-4193-9fbb-948674f427f3")
 
-        self.assertTrue(self.uuids.Architectural, "32439c3b-262f-4b7b-99a8-f7f44e5894c8")
-        self.assertTrue(self.uuids.ArchitecturalRendering, "27e48ac9-54e1-4a1f-aa49-d5d690242705")
-
         self.assertTrue(self.uuids.Costs, "881df808-8726-4c2e-be38-688bb6cce466")
 
         self.assertTrue(self.uuids.BasicRendering, "f006c7e4-35b7-43d5-bbf9-c5d572309e6e")

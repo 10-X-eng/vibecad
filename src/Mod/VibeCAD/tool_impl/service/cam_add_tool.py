@@ -115,7 +115,7 @@ TOOL_SPEC = {
             "job_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the CAM job from core.inspect scope='domain'."
+                    "Exact internal name of the CAM job from cam.list_jobs."
                 ),
             },
             "label": {
@@ -234,7 +234,7 @@ def run(
     job = service._get_cam_job(str(job_name or "").strip() or None)
     if job is None:
         return _invalid(
-            f"CAM job not found: {job_name}. Use core.inspect scope='domain' for exact names."
+            f"CAM job not found: {job_name}. Call cam.list_jobs for exact names."
         )
     existing_numbers = [
         int(getattr(tc, "ToolNumber", 0))
@@ -288,6 +288,7 @@ def run(
 
     def create() -> dict[str, Any]:
         import FreeCAD as App
+        import Path.Base.Util as PathUtil
 
         active = App.ActiveDocument
         if active is None:
@@ -295,6 +296,12 @@ def run(
         tool_obj = toolbit.attach_to_doc(doc=active)
         if tool_obj.ViewObject:
             tool_obj.ViewObject.Visibility = False
+
+        def finalize_partial_tool_bit() -> None:
+            """Retain a failed tool bit as one exact inspectable operation."""
+
+            PathUtil.publishProvisionalToolBit(tool_obj)
+
         result = {
             "document": active.Name,
             "job": job.Name,
@@ -317,6 +324,7 @@ def run(
                 "message": str(exc),
             }
             result["actual_geometry"] = _read_geometry(tool_obj, expected_values)
+            finalize_partial_tool_bit()
             return result
         result["actual_geometry"] = _read_geometry(tool_obj, expected_values)
         if not _geometry_matches(result["actual_geometry"], expected_values):
@@ -324,14 +332,25 @@ def run(
                 "code": "tool_geometry_readback_mismatch",
                 "message": "Native tool geometry did not read back exactly as requested.",
             }
+            finalize_partial_tool_bit()
             return result
         result["stage"] = "controller_creation"
+        try:
+            resource_extension = PathUtil.stageTimelineResourceGraphExtension(
+                job,
+            )
+        except Exception:
+            finalize_partial_tool_bit()
+            raise
+        controller = None
         try:
             controller = PathController.Create(
                 clean_label,
                 tool=tool_obj,
                 toolNumber=int(tool_number),
                 assignViewProvider=bool(App.GuiUp),
+                document=active,
+                timelineOwner=job,
             )
             controller.Label = clean_label
             controller.SpindleSpeed = cutting_values["spindle_rpm"]
@@ -345,6 +364,26 @@ def run(
                 "code": "tool_controller_creation_failed",
                 "message": str(exc),
             }
+            if (
+                controller is not None
+                and getattr(controller, "Document", None) is active
+                and active.getObject(controller.Name) is controller
+            ):
+                job.Proxy.markToolControllerResource(controller)
+                new_resources = PathUtil.toolControllerResourceGraph(
+                    controller,
+                )
+            else:
+                PathUtil.markTimelineResourceTree(tool_obj, job)
+                new_resources = (
+                    tool_obj,
+                    *PathUtil.timelineVisualResourceGraph(tool_obj),
+                )
+            PathUtil.finalizeTimelineResourceGraphExtension(
+                job,
+                resource_extension,
+                new_resources,
+            )
             return result
         result.update(
             {
@@ -370,6 +409,11 @@ def run(
                 },
                 "retained_partial_state": False,
             }
+        )
+        PathUtil.finalizeTimelineResourceGraphExtension(
+            job,
+            resource_extension,
+            PathUtil.toolControllerResourceGraph(controller),
         )
         return result
 

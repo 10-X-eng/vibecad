@@ -28,7 +28,19 @@ import Path
 
 from Path.Base import Language as PathLanguage
 from Path.Base.Gui import Util as PathGuiUtil
-from Path.Base.Util import toolControllerForOp
+from Path.Base.Util import (
+    activeForOp,
+    markTimelineReplacedInputs,
+    shouldRestoreTimelineReplacedInput,
+    toolControllerForOp,
+)
+from Path.CommandBoundary import (
+    TaskDocumentTransaction,
+    begin_task_launch,
+    can_start_document_command,
+    is_document_object,
+    open_timeline_mode_zero_editor,
+)
 from Path.Dressup import Utils as PathDressup
 from PathPythonGui.simple_edit_panel import SimpleEditPanel
 from PathScripts import PathUtils as PathUtils
@@ -217,6 +229,9 @@ class ObjectDressup:
             obj.RadiusOut = 10
 
     def execute(self, obj):
+        if not activeForOp(obj):
+            obj.Path = Path.Path()
+            return
         if not obj.Base:
             obj.Path = Path.Path()
             return
@@ -1664,11 +1679,14 @@ class TaskDressupLeadInOut(SimpleEditPanel):
 class ViewProviderDressup:
     def __init__(self, vobj):
         self.obj = vobj.Object
+        self.panel = None
+        self._taskTransaction = None
         vobj.Proxy = self
 
     def attach(self, vobj):
         self.obj = vobj.Object
         self.panel = None
+        self._taskTransaction = None
 
         if self.obj and self.obj.Base:
             for i in self.obj.Base.InList:
@@ -1680,13 +1698,38 @@ class ViewProviderDressup:
     def claimChildren(self):
         return [self.obj.Base]
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
+    def doubleClicked(self, vobj=None):
+        return open_timeline_mode_zero_editor(self.obj)
+
     def setEdit(self, vobj, mode=0):
         if mode == 1:
             FreeCADGui.runCommand("Std_TransformManip")
         elif mode == 0:
-            FreeCADGui.Control.closeDialog()
-            panel = TaskDressupLeadInOut(vobj.Object, self)
-            FreeCADGui.Control.showDialog(panel)
+            transaction = self._taskTransaction
+            self._taskTransaction = None
+            if transaction is None:
+                transaction = TaskDocumentTransaction(
+                    vobj.Object,
+                    "Edit LeadInOut Dress-up",
+                )
+            try:
+                panel = TaskDressupLeadInOut(
+                    vobj.Object,
+                    self,
+                    transaction=transaction,
+                )
+                self.panel = panel
+                transaction.close_dialog()
+                transaction.show_dialog(panel)
+            except Exception:
+                self.panel = None
+                transaction.close_dialog()
+                if transaction.owns_transaction():
+                    transaction.abort()
+                raise
         return True
 
     def unsetEdit(self, vobj, mode=0):
@@ -1697,7 +1740,16 @@ class ViewProviderDressup:
         """this makes sure that the base operation is added back to the project and visible"""
         Path.Log.debug("Deleting Dressup")
         if arg1.Object and arg1.Object.Base:
-            FreeCADGui.ActiveDocument.getObject(arg1.Object.Base.Name).Visibility = True
+            gui_document = FreeCADGui.getDocument(
+                arg1.Object.Document.Name
+            )
+            if shouldRestoreTimelineReplacedInput(
+                arg1.Object,
+                arg1.Object.Base,
+            ):
+                gui_document.getObject(
+                    arg1.Object.Base.Name
+                ).Visibility = True
             job = PathUtils.findParentJob(self.obj)
             if job:
                 job.Proxy.addOperation(arg1.Object.Base, arg1.Object)
@@ -1714,7 +1766,7 @@ class ViewProviderDressup:
         self.panel = None
 
     def getIcon(self):
-        if getattr(PathDressup.baseOp(self.obj), "Active", True):
+        if activeForOp(self.obj):
             return ":/icons/CAM_Dressup.svg"
         else:
             return ":/icons/CAM_OpActive.svg"
@@ -1732,20 +1784,38 @@ class CommandPathDressup:
         }
 
     def IsActive(self):
-        return bool(PathDressup.selection())
+        return (
+            can_start_document_command()
+            and is_document_object(PathDressup.selection())
+        )
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         # check that the selection contains exactly what we want
         op = PathDressup.selection(verbose=True)
         if not op:
             return
 
         # everything ok!
-        App.ActiveDocument.openTransaction("Create LeadInOut Dressup")
-        FreeCADGui.addModule("Path.Dressup.Gui.LeadInOut")
-        FreeCADGui.doCommand("Path.Dressup.Gui.LeadInOut.Create(App.ActiveDocument.%s)" % op.Name)
+        launch = begin_task_launch(
+            "Create Lead In/Out Dress-up",
+            op.Document,
+        )
+        try:
+            FreeCADGui.addModule("Path.Dressup.Gui.LeadInOut")
+            FreeCADGui.doCommand(
+                "Path.Dressup.Gui.LeadInOut.Create("
+                "FreeCAD.getDocument(%r).getObject(%r))"
+                % (op.Document.Name, op.Name)
+            )
+            launch.require_claimed()
+        except Exception:
+            launch.abort()
+            raise
         # FreeCAD.ActiveDocument.commitTransaction()  # Final `commitTransaction()` called via TaskPanel.accept()
-        App.ActiveDocument.recompute()
+        op.Document.recompute()
 
 
 def Create(baseObject, name="DressupLeadInOut", mode=0):
@@ -1766,17 +1836,51 @@ def Create(baseObject, name="DressupLeadInOut", mode=0):
         Path.Log.error(translate("CAM_DressupLeadInOut", "Select a profile object"))
         return None
 
-    App.ActiveDocument.openTransaction("Create a DressupLeadInOut")
-    obj = App.ActiveDocument.addObject("Path::FeaturePython", name)
-    dbo = ObjectDressup(obj, baseObject)
-    job = PathUtils.findParentJob(baseObject)
-    job.Proxy.addOperation(obj, baseObject)
-    dbo.setup(obj)
-    ViewProviderDressup(obj.ViewObject)
-    App.ActiveDocument.commitTransaction()
-    obj.ViewObject.Document.setEdit(obj.ViewObject, mode)
+    document = baseObject.Document
+    previous_transaction = int(document.getBookedTransactionID())
+    transaction = TaskDocumentTransaction(
+        baseObject,
+        "Create a DressupLeadInOut",
+        allow_caller_transaction=True,
+    )
+    owns_transaction = previous_transaction == 0
+    try:
+        base_was_visible = bool(
+            baseObject.ViewObject
+            and baseObject.ViewObject.Visibility
+        )
+        obj = document.addObject("Path::FeaturePython", name)
+        dbo = ObjectDressup(obj, baseObject)
+        job = PathUtils.findParentJob(baseObject)
+        job.Proxy.addOperation(obj, baseObject)
+        dbo.setup(obj)
+        markTimelineReplacedInputs(
+            obj,
+            [baseObject] if base_was_visible else [],
+        )
+        provider = ViewProviderDressup(obj.ViewObject)
 
-    return obj
+        # Mode 0 transfers the still-open create transaction to the task
+        # panel.  Non-panel modes retain the documented direct-Create
+        # behavior: commit only a transaction opened here, while preserving a
+        # caller-owned transaction for programmatic composition.
+        if mode != 0 and owns_transaction:
+            transaction.commit((obj,))
+        elif mode == 0:
+            provider._taskTransaction = transaction
+
+        if not obj.ViewObject.Document.setEdit(obj.ViewObject, mode):
+            raise RuntimeError(
+                "The Lead In/Out editor could not be opened"
+            )
+        return obj
+    except Exception:
+        if (
+            transaction.owns_transaction()
+            and (owns_transaction or mode == 0)
+        ):
+            transaction.abort()
+        raise
 
 
 if App.GuiUp:

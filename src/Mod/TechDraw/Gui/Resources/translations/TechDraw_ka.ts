@@ -122,24 +122,7 @@
       <translation type="unfinished">Inserts an editable text block annotation to the current page</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>ტექნიკური ნახაზი</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>BIM ხედი</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>ჩასვამს BIM კვეთის სიბრტყის ხედს</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>ნახატის გვერდის შექმნა</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>BIM ხედის შექმნა</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>გამოსახულების შექმნა</translation>
@@ -3293,11 +3270,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>მონიშნეთ ერთი კვეთების ჯგუფი და ერთი ხედი</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation type="unfinished">Page contains a BIM view which will not be exported. Continue?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>DXF ფაილის შენახვა</translation>
@@ -3331,16 +3303,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>ერთი ობიექტი მაინც მონიშნეთ</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>მონიშნეთ, მხოლოდ, 1 BIM კვეთის სიბრტყე</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>მონიშნულში BIM კვეთის სიბრტყე აღმოჩენილი არაა</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -4696,7 +4658,7 @@ Faces must be detected in order to use hatching, but there
 can be a performance penalty in complex models.</source>
       <translation>თუ მონიშნულია, ტექნიკური ნახაზი შეეცდება შექმნას ზედაპირები ფარული ხაზების
 წაშლის ალგორითმის მიერ დაბრუნებული ხაზის სეგმენტების გამოყენებით.
-საპოვნად ზედაპირები უნდა იყოს დაშტრიხული, მაგრამ კომპლექსურ 
+საპოვნად ზედაპირები უნდა იყოს დაშტრიხული, მაგრამ კომპლექსურ
 მოდელებში ამან შეიძლება წარმადობის დეგრადაცია გამოიწვიოს.</translation>
     </message>
     <message>
@@ -7309,7 +7271,7 @@ Automatic: if the detail view is larger than the page,
 Custom: custom scale factor is used</source>
       <translation>გვერდი: გამოიყენება გვერდის მასშტაბის ფაქტორი
 ავტომატური: თუ დეტალური ხედი გვერდზე დიდია,
-                     ის შემცირდება, რათა  გვერდსმოერგოს 
+                     ის შემცირდება, რათა  გვერდსმოერგოს
 მორგება: იყენებს მორგებული მასშტაბირების ფაქტორს</translation>
     </message>
     <message>
@@ -10068,14 +10030,7 @@ there is an open task dialog.</source>
       <translation>ხაზი</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

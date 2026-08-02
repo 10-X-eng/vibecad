@@ -72,6 +72,7 @@ public:
     ValueT setEditViewer(View3DInventorViewer*, int ModNum);
     ValueT unsetEditViewer(View3DInventorViewer*);
     ValueT doubleClicked();
+    ValueT supportsDocumentTimelineEdit() const;
     bool setupContextMenu(QMenu* menu);
 
     /** @name Update data methods*/
@@ -164,6 +165,7 @@ private:
     FC_PY_ELEMENT(setEditViewer) \
     FC_PY_ELEMENT(unsetEditViewer) \
     FC_PY_ELEMENT(doubleClicked) \
+    FC_PY_ELEMENT(supportsDocumentTimelineEdit) \
     FC_PY_ELEMENT(setupContextMenu) \
     FC_PY_ELEMENT(attach) \
     FC_PY_ELEMENT(updateData) \
@@ -732,6 +734,18 @@ protected:
     }
 
 public:
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        switch (imp->supportsDocumentTimelineEdit()) {
+            case ViewProviderFeaturePythonImp::Accepted:
+                return true;
+            case ViewProviderFeaturePythonImp::Rejected:
+                return false;
+            default:
+                return ViewProviderT::supportsDocumentTimelineEdit();
+        }
+    }
+
     void setupContextMenu(QMenu* menu, QObject* recipient, const char* member) override
     {
         if (!imp->setupContextMenu(menu)) {

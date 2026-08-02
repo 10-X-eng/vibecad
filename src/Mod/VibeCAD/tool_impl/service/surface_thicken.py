@@ -124,6 +124,10 @@ def run(
         offset.Fill = True
         offset.Intersection = False
         offset.SelfIntersection = False
+        domain_runtime.mark_modeling_replaced_inputs(
+            offset,
+            [base] if visibility_before.get("visible") is True else [],
+        )
         active.recompute()
         view = getattr(base, "ViewObject", None)
         if view is not None and hasattr(view, "Visibility"):

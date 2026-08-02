@@ -24,8 +24,10 @@
 #pragma once
 
 #include <QPixmap>
+#include <functional>
 #include <map>
 #include <string>
+#include <vector>
 
 #include <App/Application.h>
 
@@ -48,6 +50,7 @@ class MDIView;
 class MainWindow;
 class MenuItem;
 class PreferencePackManager;
+class ThemeManager;
 class ViewProvider;
 class ViewProviderDocumentObject;
 
@@ -154,6 +157,13 @@ public:
     fastsignals::signal<void(const Gui::ViewProviderDocumentObject&)> signalInEdit;
     /// signal on leaving edit mode
     fastsignals::signal<void(const Gui::ViewProviderDocumentObject&)> signalResetEdit;
+    /**
+     * Emitted after editor teardown and its exact transaction close finish.
+     *
+     * Arguments are the document, whether the edit was cancelled, and whether
+     * the exact transaction close succeeded.
+     */
+    fastsignals::signal<void(const Gui::Document&, bool, bool)> signalFinishEdit;
     /// signal on changing user edit mode
     fastsignals::signal<void(int)> signalUserEditModeChanged;
     //@}
@@ -237,6 +247,8 @@ public:
 
     /** @name workbench handling */
     //@{
+    /// Initialize a named workbench without activating its UI layout
+    bool initializeWorkbench(const char* name);
     /// Activate a named workbench
     bool activateWorkbench(const char* name);
     QPixmap workbenchIcon(const QString&) const;
@@ -261,6 +273,34 @@ public:
     //@{
     /// Get macro manager
     Gui::MacroManager* macroManager();
+    using DurableTaskResultPreparer
+        = std::function<void(const App::Document&, const std::vector<long>&)>;
+    enum class DurableTaskResultOwnership
+    {
+        Automatic,
+        DocumentRoot,
+        ExactOwner
+    };
+    struct DurableTaskResultIntent
+    {
+        long objectId {-1};
+        DurableTaskResultOwnership ownership {DurableTaskResultOwnership::Automatic};
+        long ownerObjectId {-1};
+    };
+    using DurableTaskResultIntentPreparer = std::function<
+        void(const App::Document&, const std::vector<long>&, const std::vector<DurableTaskResultIntent>&)>;
+    /// Register the synchronous validator/adopter for native task results.
+    void setDurableTaskResultPreparer(DurableTaskResultPreparer preparer);
+    /// Register a preparer which can honor an explicit Body or document-root intent.
+    void setDurableTaskResultIntentPreparer(DurableTaskResultIntentPreparer preparer);
+    /// Prepare results inside their still-open task transaction.
+    void prepareDurableTaskResults(const App::Document& document, const std::vector<long>& objectIds);
+    /// Prepare results with per-result ownership intent.
+    void prepareDurableTaskResults(
+        const App::Document& document,
+        const std::vector<long>& objectIds,
+        const std::vector<DurableTaskResultIntent>& intents
+    );
     /// Reference to the command manager
     Gui::CommandManager& commandManager();
     /// helper which create the commands
@@ -268,6 +308,7 @@ public:
     //@}
 
     Gui::PreferencePackManager* prefPackManager();
+    Gui::ThemeManager* themeManager();
     Gui::StyleParameters::ParameterManager* styleParameterManager();
 
     /** @name Init, Destruct an Access methods */

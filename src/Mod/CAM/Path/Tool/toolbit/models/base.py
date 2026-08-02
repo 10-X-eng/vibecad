@@ -572,15 +572,34 @@ class ToolBit(Asset, ABC):
         self._update_tool_properties()
 
     def attach_to_doc(
-        self, doc: FreeCAD.Document, label: Optional[str] = None
+        self,
+        doc: FreeCAD.Document,
+        label: Optional[str] = None,
+        timeline_owner: Optional[FreeCAD.DocumentObject] = None,
     ) -> FreeCAD.DocumentObject:
         """
         Creates a new FreeCAD DocumentObject in the given document and attaches
         this ToolBit instance to it.
         """
         label = label or self.label or self._tool_bit_shape.label
+        if (
+            timeline_owner is not None
+            and getattr(timeline_owner, "Document", None) is not doc
+        ):
+            raise RuntimeError(
+                "A tool bit and its timeline owner must share a document"
+            )
         tool_doc_obj = doc.addObject("Part::FeaturePython", label)
-        self.attach_to_obj(tool_doc_obj, label=label)
+        if timeline_owner is not None:
+            PathUtil.markTimelineResource(
+                tool_doc_obj,
+                timeline_owner,
+            )
+        self._timeline_owner_during_attach = timeline_owner
+        try:
+            self.attach_to_obj(tool_doc_obj, label=label)
+        finally:
+            self._timeline_owner_during_attach = None
         return tool_doc_obj
 
     def attach_to_obj(self, tool_doc_obj: FreeCAD.DocumentObject, label: Optional[str] = None):
@@ -659,9 +678,22 @@ class ToolBit(Asset, ABC):
 
     def _removeBitBody(self):
         if self.obj.BitBody:
+            owner = (
+                getattr(self, "_timeline_owner_during_attach", None)
+                or getattr(self.obj, "VibeCADTimelineOwner", None)
+            )
+            release = getattr(
+                getattr(owner, "Proxy", None),
+                "_releaseInitialTimelineResource",
+                None,
+            )
+            if release is not None:
+                for resource in self.timelineVisualResources():
+                    release(resource)
             self.obj.BitBody.removeObjectsFromDocument()
             self.obj.Document.removeObject(self.obj.BitBody.Name)
             self.obj.BitBody = None
+            self._timeline_visual_resources = ()
 
     def _setupProperty(self, prop, orig):
         # extract property parameters and values so it can be copied
@@ -906,10 +938,12 @@ class ToolBit(Asset, ABC):
 
         # Remove existing BitBody if it exists
         self._removeBitBody()
+        document = self.obj.Document
+        self._timeline_visual_resources = ()
 
         try:
             # Use the shape's make_body method to create the visual representation
-            body = self._tool_bit_shape.make_body(self.obj.Document)
+            body = self._tool_bit_shape.make_body(document)
 
             if not body:
                 Path.Log.error(
@@ -918,9 +952,39 @@ class ToolBit(Asset, ABC):
                 )
                 return
 
+            pending = [body]
+            visual_resources = []
+            while pending:
+                resource = pending.pop()
+                if resource is None or resource in visual_resources:
+                    continue
+                if (
+                    getattr(resource, "Document", None) is not document
+                    or document.getObject(
+                        getattr(resource, "Name", "")
+                    )
+                    is not resource
+                ):
+                    raise RuntimeError(
+                        "The tool shape returned an invalid visual resource"
+                    )
+                visual_resources.append(resource)
+                bit_body = getattr(resource, "BitBody", None)
+                if bit_body is not None:
+                    pending.append(bit_body)
+                pending.extend(getattr(resource, "Group", ()))
+            self._timeline_visual_resources = tuple(visual_resources)
+
             # Assign the created object to BitBody and copy its shape
             self.obj.BitBody = body
             self.obj.Shape = self.obj.BitBody.Shape  # Copy the evaluated Solid shape
+
+            owner = (
+                getattr(self, "_timeline_owner_during_attach", None)
+                or getattr(self.obj, "VibeCADTimelineOwner", None)
+            )
+            if owner is not None:
+                PathUtil.markTimelineResourceTree(self.obj, owner)
 
             # Hide the visual representation and remove from tree
             if hasattr(self.obj.BitBody, "ViewObject") and self.obj.BitBody.ViewObject:
@@ -936,6 +1000,18 @@ class ToolBit(Asset, ABC):
 
         # clear the touched state since visual updates shouldn't require recompute
         self.obj.purgeTouched()
+
+    def timelineVisualResources(self):
+        """Return exact document objects created for this tool's display body."""
+        return tuple(
+            resource
+            for resource in getattr(
+                self,
+                "_timeline_visual_resources",
+                (),
+            )
+            if resource is not None
+        )
 
     def to_dict(self):
         """

@@ -584,7 +584,9 @@ void Placement::showDefaultButtons(bool ok)
 
 void Placement::open()
 {
-    handler.openTransactionIfNeeded();
+    if (!valueOnlyMode) {
+        handler.openTransactionIfNeeded();
+    }
 }
 
 QWidget* Placement::getInvalidInput() const
@@ -606,7 +608,9 @@ void Placement::onPlacementChanged(int)
     // automatically.
     bool incr = ui->applyIncrementalPlacement->isChecked();
     Base::Placement plm = this->getPlacement();
-    handler.applyPlacement(plm, incr);
+    if (!valueOnlyMode) {
+        handler.applyPlacement(plm, incr);
+    }
 
     QVariant data = QVariant::fromValue<Base::Placement>(plm);
     Q_EMIT placementChanged(data, incr, false);
@@ -819,12 +823,16 @@ void Placement::keyPressEvent(QKeyEvent* ke)
 void Placement::reject()
 {
     Base::Placement plm;
-    handler.applyPlacement(plm, true);
+    if (!valueOnlyMode) {
+        handler.applyPlacement(plm, true);
+    }
 
     QVariant data = QVariant::fromValue<Base::Placement>(plm);
     Q_EMIT placementChanged(data, true, false);
 
-    handler.revertTransformation();
+    if (!valueOnlyMode) {
+        handler.revertTransformation();
+    }
 
     // One of the quantity spin boxes still can emit a signal when it has the focus
     // but its content is not fully updated.
@@ -838,7 +846,9 @@ void Placement::reject()
 void Placement::accept()
 {
     if (onApply()) {
-        handler.revertTransformation();
+        if (!valueOnlyMode) {
+            handler.revertTransformation();
+        }
         QDialog::accept();
     }
 }
@@ -873,7 +883,9 @@ bool Placement::onApply()
     // automatically.
     bool incr = ui->applyIncrementalPlacement->isChecked();
     Base::Placement plm = this->getPlacement();
-    handler.applyPlacement(getPlacementString(), incr);
+    if (!valueOnlyMode) {
+        handler.applyPlacement(getPlacementString(), incr);
+    }
 
     QVariant data = QVariant::fromValue<Base::Placement>(plm);
     Q_EMIT placementChanged(data, incr, true);
@@ -923,6 +935,13 @@ void Placement::setPropertyName(const std::string& name)
 void Placement::setIgnoreTransactions(bool value)
 {
     handler.setIgnoreTransactions(value);
+}
+
+void Placement::setValueOnlyMode(bool enabled)
+{
+    valueOnlyMode = enabled;
+    ui->buttonBox->button(QDialogButtonBox::Apply)->setVisible(!enabled);
+    ui->applyIncrementalPlacement->setVisible(!enabled);
 }
 
 /*!

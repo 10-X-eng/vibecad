@@ -25,6 +25,7 @@
 #include <bitset>
 #include <stack>
 #include <deque>
+#include <exception>
 #include <iostream>
 #include <utility>
 #include <set>
@@ -72,6 +73,7 @@
 #include <Base/UnitsApi.h>
 
 #include "Document.h"
+#include "DocumentTimeline.h"
 #include "private/DocumentP.h"
 #include "Application.h"
 #include "AutoTransaction.h"
@@ -81,12 +83,14 @@
 #include "License.h"
 #include "Link.h"
 #include "MergeDocuments.h"
+#include "Datums.h"
 #include "PropertyLinks.h"
+#include "SuppressibleExtension.h"
 #include "StringHasher.h"
 #include "Transactions.h"
 
 #ifdef _MSC_VER
-#include <zipios++/zipios-config.h>
+# include <zipios++/zipios-config.h>
 #endif
 #include <zipios++/zipfile.h>
 #include <zipios++/zipinputstream.h>
@@ -104,7 +108,7 @@ using namespace boost;
 using namespace zipios;
 
 #if FC_DEBUG
-#define FC_LOGFEATUREUPDATE
+# define FC_LOGFEATUREUPDATE
 #endif
 
 namespace fs = std::filesystem;
@@ -149,7 +153,7 @@ bool Document::testStatus(const Status pos) const
     return d->StatusBits.test(static_cast<size_t>(pos));
 }
 
-void Document::setStatus(const Status pos, const bool on) // NOLINT
+void Document::setStatus(const Status pos, const bool on)  // NOLINT
 {
     d->StatusBits.set(static_cast<size_t>(pos), on);
 }
@@ -207,7 +211,7 @@ bool Document::undo(const int id)
             mRedoMap[d->activeUndoTransaction->getID()] = d->activeUndoTransaction;
             mRedoTransactions.push_back(d->activeUndoTransaction);
             d->activeUndoTransaction = nullptr;
-            d->bookedTransaction = 0;
+            setBookedTransaction(NullTransaction);
 
             mUndoMap.erase(mUndoTransactions.back()->getID());
             delete mUndoTransactions.back();
@@ -261,7 +265,7 @@ bool Document::redo(const int id)
             mUndoMap[d->activeUndoTransaction->getID()] = d->activeUndoTransaction;
             mUndoTransactions.push_back(d->activeUndoTransaction);
             d->activeUndoTransaction = nullptr;
-            d->bookedTransaction = 0;
+            setBookedTransaction(NullTransaction);
 
             mRedoMap.erase(mRedoTransactions.back()->getID());
             delete mRedoTransactions.back();
@@ -283,9 +287,11 @@ bool Document::redo(const int id)
     return false;
 }
 
-void Document::changePropertyOfObject(TransactionalObject* obj,
-                                      const Property* prop,
-                                      const std::function<void()>& changeFunc)
+void Document::changePropertyOfObject(
+    TransactionalObject* obj,
+    const Property* prop,
+    const std::function<void()>& changeFunc
+)
 {
     if (!prop || !obj || !obj->isAttachedToDocument()) {
         return;
@@ -293,9 +299,13 @@ void Document::changePropertyOfObject(TransactionalObject* obj,
     if ((d->iUndoMode != 0) && !isPerformingTransaction() && !d->activeUndoTransaction) {
         if (!testStatus(Restoring) || testStatus(Importing)) {
             if (d->bookedTransaction == NullTransaction) {
-                d->bookedTransaction = GetApplication().getGlobalTransaction();
-            } else {
-                _openTransaction(GetApplication().getTransactionName(d->bookedTransaction), d->bookedTransaction);
+                setBookedTransaction(GetApplication().getGlobalTransaction());
+            }
+            else {
+                _openTransaction(
+                    GetApplication().getTransactionName(d->bookedTransaction),
+                    d->bookedTransaction
+                );
             }
         }
     }
@@ -304,16 +314,14 @@ void Document::changePropertyOfObject(TransactionalObject* obj,
     }
 }
 
-void Document::renamePropertyOfObject(TransactionalObject* obj,
-                                      const Property* prop, const char* oldName)
+void Document::renamePropertyOfObject(TransactionalObject* obj, const Property* prop, const char* oldName)
 {
     changePropertyOfObject(obj, prop, [this, obj, prop, oldName]() {
         d->activeUndoTransaction->renameProperty(obj, prop, oldName);
     });
 }
 
-void Document::addOrRemovePropertyOfObject(TransactionalObject* obj,
-                                           const Property* prop, const bool add)
+void Document::addOrRemovePropertyOfObject(TransactionalObject* obj, const Property* prop, const bool add)
 {
     changePropertyOfObject(obj, prop, [this, obj, prop, add]() {
         d->activeUndoTransaction->addOrRemoveProperty(obj, prop, add);
@@ -325,15 +333,18 @@ bool Document::isPerformingTransaction() const
     return d->undoing || d->rollback;
 }
 
+bool Document::isBreakingDependency() const noexcept
+{
+    return d->breakDependencyDepth != 0;
+}
+
 std::vector<std::string> Document::getAvailableUndoNames() const
 {
     std::vector<std::string> vList;
     if (d->activeUndoTransaction) {
         vList.push_back(d->activeUndoTransaction->Name);
     }
-    for (auto It = mUndoTransactions.rbegin();
-         It != mUndoTransactions.rend();
-         ++It) {
+    for (auto It = mUndoTransactions.rbegin(); It != mUndoTransactions.rend(); ++It) {
         vList.push_back((*It)->Name);
     }
     return vList;
@@ -342,18 +353,16 @@ std::vector<std::string> Document::getAvailableUndoNames() const
 std::vector<std::string> Document::getAvailableRedoNames() const
 {
     std::vector<std::string> vList;
-    for (auto It = mRedoTransactions.rbegin();
-         It != mRedoTransactions.rend();
-         ++It) {
+    for (auto It = mRedoTransactions.rbegin(); It != mRedoTransactions.rend(); ++It) {
         vList.push_back((*It)->Name);
     }
     return vList;
 }
 
-int Document::openTransaction(TransactionName name, int tid) // NOLINT
+int Document::openTransaction(TransactionName name, int tid)  // NOLINT
 {
     if (tid != NullTransaction && tid == d->bookedTransaction) {
-        return tid; // Early exit without warning
+        return tid;  // Early exit without warning
     }
     if (isTransactionLocked()) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
@@ -379,10 +388,11 @@ int Document::openTransaction(std::string name, int tid)
 
 int Document::_openTransaction(std::string name, int id)
 {
-    if (isTransactionLocked() && id != d->bookedTransaction) {
+    if (isTransactionLocked() && (id == NullTransaction || id != d->bookedTransaction)) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Transaction locked, ignore new transaction '" << name << "'");
         }
+        return NullTransaction;
     }
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
@@ -425,7 +435,8 @@ int Document::_openTransaction(std::string name, int id)
     signalOpenTransaction(*this, name);
 
     Document* transactionInitiator = GetApplication().transactionInitiator(id);
-    if (transactionInitiator && transactionInitiator != this && !transactionInitiator->hasPendingTransaction()) {
+    if (transactionInitiator && transactionInitiator != this
+        && !transactionInitiator->hasPendingTransaction()) {
         std::string aname = std::format("-> {}", d->activeUndoTransaction->Name);
         FC_LOG("auto transaction " << getName() << " -> " << transactionInitiator->getName());
         transactionInitiator->_openTransaction(aname, id);
@@ -447,17 +458,25 @@ void Document::renameTransaction(const std::string& name, const int id) const
 }
 int Document::setActiveTransaction(TransactionName name, int tid)
 {
+    if (isTransactionLocked() && (tid == NullTransaction || tid != d->bookedTransaction)) {
+        if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
+            FC_WARN("Transaction locked, ignore new transaction '" << name.name << "'");
+        }
+        return NullTransaction;
+    }
+
     // Probably a group transaction situation
     if (tid != NullTransaction) {
         if (!GetApplication().transactionIsActive(tid)) {
             FC_LOG("Could not set active transaction to inactive ID");
             return NullTransaction;
         }
-        if (d->bookedTransaction != NullTransaction && d->bookedTransaction != tid && !_commitTransaction(true)) {
+        if (d->bookedTransaction != NullTransaction && d->bookedTransaction != tid
+            && !_commitTransaction(true)) {
             FC_LOG("Could not book transaction for document");
             return NullTransaction;
         }
-        d->bookedTransaction = tid;
+        setBookedTransaction(tid);
 
         if (GetApplication().transactionTmpName(d->bookedTransaction)) {
             GetApplication().setTransactionName(d->bookedTransaction, name);
@@ -466,7 +485,8 @@ int Document::setActiveTransaction(TransactionName name, int tid)
     }
 
     // Rename the transaction if it had a tmp name
-    if (d->bookedTransaction != NullTransaction && GetApplication().transactionTmpName(d->bookedTransaction)) {
+    if (d->bookedTransaction != NullTransaction
+        && GetApplication().transactionTmpName(d->bookedTransaction)) {
         GetApplication().setTransactionName(d->bookedTransaction, name);
         return d->bookedTransaction;
     }
@@ -474,20 +494,25 @@ int Document::setActiveTransaction(TransactionName name, int tid)
         FC_LOG("Could not book transaction for document");
         return NullTransaction;
     }
-    d->bookedTransaction = Transaction::getNewID();
+    setBookedTransaction(Transaction::getNewID());
 
-    GetApplication().setTransactionDescription(d->bookedTransaction, TransactionDescription {.initiator = this, .name = name});
+    GetApplication().setTransactionDescription(
+        d->bookedTransaction,
+        TransactionDescription {.initiator = this, .name = name}
+    );
     return d->bookedTransaction;
 }
 
 void Document::lockTransaction()
 {
     d->TransactionLock++;
+    signalTransactionLockChanged(*this);
 }
 void Document::unlockTransaction()
 {
     if (d->TransactionLock > 0) {
         d->TransactionLock--;
+        signalTransactionLockChanged(*this);
     }
 }
 bool Document::isTransactionLocked() const
@@ -512,7 +537,7 @@ void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What,
         // explicitly for this document, it there are none
         // get a sticky transaction from application
         if (!d->bookedTransaction) {
-            d->bookedTransaction = GetApplication().getGlobalTransaction();
+            setBookedTransaction(GetApplication().getGlobalTransaction());
         }
 
         if (d->bookedTransaction != NullTransaction) {
@@ -523,12 +548,16 @@ void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What,
             }
             if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
                 if (What) {
-                    FC_LOG((ignore ? "ignore" : "auto")
-                            << " transaction (" << line << ") '" << What->getFullName());
+                    FC_LOG(
+                        (ignore ? "ignore" : "auto")
+                        << " transaction (" << line << ") '" << What->getFullName()
+                    );
                 }
                 else {
-                    FC_LOG((ignore ? "ignore" : "auto") << " transaction (" << line << ") '"
-                                                        << name << "' in " << getName());
+                    FC_LOG(
+                        (ignore ? "ignore" : "auto")
+                        << " transaction (" << line << ") '" << name << "' in " << getName()
+                    );
                 }
             }
             if (!ignore) {
@@ -565,8 +594,14 @@ void Document::_clearRedos()
     }
 }
 
-void Document::commitTransaction() // NOLINT
+void Document::commitTransaction()  // NOLINT
 {
+    if (isTransactionLocked()) {
+        if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
+            FC_WARN("Cannot commit a locked transaction");
+        }
+        return;
+    }
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Cannot commit transaction while transacting");
@@ -578,9 +613,10 @@ void Document::commitTransaction() // NOLINT
         // This will iterate over all documents and ask them to
         // commit their transaction if their ID matches
         GetApplication().commitTransaction(d->activeUndoTransaction->getID());
-    } else {
+    }
+    else {
         const bool wasRecoveryWriteBlocked = transactionStateBlocksRecoveryWrite(*d);
-        d->bookedTransaction = 0; // Reset booked transaction even if it was not used
+        setBookedTransaction(NullTransaction);
         if (wasRecoveryWriteBlocked) {
             signalBecameStable(*this);
         }
@@ -600,7 +636,7 @@ bool Document::_commitTransaction(const bool notify)
         return false;
     }
 
-    d->bookedTransaction = 0;
+    setBookedTransaction(NullTransaction);
     bool committed = false;
     if (d->activeUndoTransaction) {
         {
@@ -634,6 +670,12 @@ bool Document::_commitTransaction(const bool notify)
 
 void Document::abortTransaction() const
 {
+    if (isTransactionLocked()) {
+        if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
+            FC_WARN("Cannot abort a locked transaction");
+        }
+        return;
+    }
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Cannot abort transaction while transacting");
@@ -642,9 +684,10 @@ void Document::abortTransaction() const
     }
     if (d->activeUndoTransaction) {
         GetApplication().abortTransaction(d->activeUndoTransaction->getID());
-    } else {
+    }
+    else {
         const bool wasRecoveryWriteBlocked = transactionStateBlocksRecoveryWrite(*d);
-        d->bookedTransaction = 0; // Reset booked transaction even if it was not used
+        setBookedTransaction(NullTransaction);
         if (wasRecoveryWriteBlocked) {
             signalBecameStable(*this);
         }
@@ -659,7 +702,7 @@ void Document::_abortTransaction()
         }
     }
 
-    d->bookedTransaction = 0;
+    setBookedTransaction(NullTransaction);
     bool aborted = false;
     if (d->activeUndoTransaction) {
         {
@@ -700,33 +743,50 @@ int Document::getTransactionID(const bool undo, unsigned pos) const
             return 0;
         }
         auto rit = mUndoTransactions.rbegin();
-        for (; pos != 0U; ++rit, --pos) {}
+        for (; pos != 0U; ++rit, --pos) {
+        }
         return (*rit)->getID();
     }
     if (pos >= mRedoTransactions.size()) {
         return 0;
     }
     auto rit = mRedoTransactions.rbegin();
-    for (; pos != 0U; ++rit, --pos) {}
+    for (; pos != 0U; ++rit, --pos) {
+    }
     return (*rit)->getID();
 }
 int Document::getBookedTransactionID() const
 {
     return d->bookedTransaction;
 }
+
+void Document::setBookedTransaction(int transactionId) const
+{
+    const int previousTransactionId = d->bookedTransaction;
+    if (previousTransactionId == transactionId) {
+        return;
+    }
+    if (previousTransactionId != NullTransaction) {
+        if (auto* timeline = DocumentTimeline::get(const_cast<Document*>(this))) {
+            timeline->discardTransactionProvenance(previousTransactionId);
+        }
+    }
+    d->bookedTransaction = transactionId;
+    signalBookedTransactionChanged(*this, previousTransactionId, transactionId);
+}
+
 bool Document::isTransactionEmpty() const
 {
     return !d->activeUndoTransaction;
-        // Transactions are now only created when there are actual changes.
-        // Empty transaction is now significant for marking external changes. It
-        // is used to match ID with transactions in external documents and
-        // trigger undo/redo there.
+    // Transactions are now only created when there are actual changes.
+    // Empty transaction is now significant for marking external changes. It
+    // is used to match ID with transactions in external documents and
+    // trigger undo/redo there.
 
-        // return d->activeUndoTransaction->isEmpty();
-
+    // return d->activeUndoTransaction->isEmpty();
 }
 
-void Document::clearDocument() // NOLINT
+void Document::clearDocument()  // NOLINT
 {
     d->activeObject = nullptr;
 
@@ -844,12 +904,12 @@ unsigned int Document::getUndoMemSize() const
     return d->UndoMemSize;
 }
 
-void Document::setUndoLimit(const unsigned int UndoMemSize) // NOLINT
+void Document::setUndoLimit(const unsigned int UndoMemSize)  // NOLINT
 {
     d->UndoMemSize = UndoMemSize;
 }
 
-void Document::setMaxUndoStackSize(const unsigned int UndoMaxStackSize) // NOLINT
+void Document::setMaxUndoStackSize(const unsigned int UndoMaxStackSize)  // NOLINT
 {
     d->UndoMaxStackSize = UndoMaxStackSize;
 }
@@ -880,8 +940,8 @@ void Document::onChanged(const Property* prop)
         GetApplication().signalShowHidden(*this);
     }
     else if (prop == &Uid) {
-        std::string new_dir =
-            getTransientDirectoryName(this->Uid.getValueStr(), this->FileName.getStrValue());
+        std::string new_dir
+            = getTransientDirectoryName(this->Uid.getValueStr(), this->FileName.getStrValue());
         std::string old_dir = this->TransientDir.getStrValue();
         Base::FileInfo TransDirNew(new_dir);
         Base::FileInfo TransDirOld(old_dir);
@@ -889,9 +949,11 @@ void Document::onChanged(const Property* prop)
         if (!TransDirNew.exists()) {
             if (TransDirOld.exists()) {
                 if (!TransDirOld.renameFile(new_dir.c_str())) {
-                    Base::Console().warning("Failed to rename '%s' to '%s'\n",
-                                            old_dir.c_str(),
-                                            new_dir.c_str());
+                    Base::Console().warning(
+                        "Failed to rename '%s' to '%s'\n",
+                        old_dir.c_str(),
+                        new_dir.c_str()
+                    );
                 }
                 else {
                     this->TransientDir.setValue(new_dir);
@@ -912,9 +974,11 @@ void Document::onChanged(const Property* prop)
             // make sure that the uuid is unique
             std::string uuid = this->Uid.getValueStr();
             Base::Uuid id;
-            Base::Console().warning("Document with the UUID '%s' already exists, change to '%s'\n",
-                                    uuid.c_str(),
-                                    id.getValue().c_str());
+            Base::Console().warning(
+                "Document with the UUID '%s' already exists, change to '%s'\n",
+                uuid.c_str(),
+                id.getValue().c_str()
+            );
             // recursive call of onChanged()
             this->Uid.setValue(id);
         }
@@ -944,10 +1008,28 @@ void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Prop
 
 void Document::onChangedProperty(const DocumentObject* Who, const Property* What)
 {
+    const auto* suppressible = Who ? Who->getExtensionByType<SuppressibleExtension>(true) : nullptr;
+    const bool timelineOwnershipChanged = Who && What
+        && (What == Who->PropertyContainer::getDynamicPropertyByName(DocumentTimeline::RolePropertyName)
+            || What
+                == Who->PropertyContainer::getDynamicPropertyByName(
+                    DocumentTimeline::OwnerPropertyName
+                ));
+    const bool timelineStateChanged = Who && What
+        && (What == &Who->Visibility || (suppressible && What == &suppressible->Suppressed)
+            || timelineOwnershipChanged);
+    if (timelineStateChanged && !testStatus(Document::Restoring) && !isPerformingTransaction()) {
+        if (auto* timeline = DocumentTimeline::get(this); timeline && !timeline->isApplying()) {
+            if (timelineOwnershipChanged) {
+                timeline->recordOperation(const_cast<DocumentObject*>(Who));
+            }
+            timeline->captureVisibility();
+        }
+    }
     signalChangedObject(*Who, *What);
 }
 
-void Document::setTransactionMode(const int iMode) // NOLINT
+void Document::setTransactionMode(const int iMode)  // NOLINT
 {
     d->iTransactionMode = iMode;
 }
@@ -956,7 +1038,8 @@ void Document::setTransactionMode(const int iMode) // NOLINT
 // constructor
 //--------------------------------------------------------------------------
 Document::Document(const char* documentName)
-    : d(new DocumentP), myName(documentName)
+    : d(new DocumentP)
+    , myName(documentName)
 {
     // Remark: In a constructor we should never increment a Python object as we cannot be sure
     // if the Python interpreter gets a reference of it. E.g. if we increment but Python don't
@@ -975,36 +1058,36 @@ Document::Document(const char* documentName)
     std::string Author = GetApplication()
                              .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
                              ->GetASCII("prefAuthor", "");
-    std::string AuthorComp =
-        GetApplication()
-            .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-            ->GetASCII("prefCompany", "");
+    std::string AuthorComp = GetApplication()
+                                 .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
+                                 ->GetASCII("prefCompany", "");
     ADD_PROPERTY_TYPE(Label, ("Unnamed"), 0, Prop_ReadOnly, "The name of the document");
-    ADD_PROPERTY_TYPE(FileName,
-                      (""),
-                      0,
-                      PropertyType(Prop_Transient | Prop_ReadOnly),
-                      "The path to the file where the document is saved to");
+    ADD_PROPERTY_TYPE(
+        FileName,
+        (""),
+        0,
+        PropertyType(Prop_Transient | Prop_ReadOnly),
+        "The path to the file where the document is saved to"
+    );
     ADD_PROPERTY_TYPE(CreatedBy, (Author.c_str()), 0, Prop_None, "The creator of the document");
-    ADD_PROPERTY_TYPE(CreationDate,
-                      (CreationDateString.c_str()),
-                      0,
-                      Prop_ReadOnly,
-                      "Date of creation");
+    ADD_PROPERTY_TYPE(CreationDate, (CreationDateString.c_str()), 0, Prop_ReadOnly, "Date of creation");
     ADD_PROPERTY_TYPE(LastModifiedBy, (""), 0, Prop_None, 0);
     ADD_PROPERTY_TYPE(LastModifiedDate, ("Unknown"), 0, Prop_ReadOnly, "Date of last modification");
-    ADD_PROPERTY_TYPE(Company,
-                      (AuthorComp.c_str()),
-                      0,
-                      Prop_None,
-                      "Additional tag to save the name of the company");
+    ADD_PROPERTY_TYPE(
+        Company,
+        (AuthorComp.c_str()),
+        0,
+        Prop_None,
+        "Additional tag to save the name of the company"
+    );
     ADD_PROPERTY_TYPE(UnitSystem, (""), 0, Prop_None, "Unit system to use in this project");
     // Set up the possible enum values for the unit system
 
     UnitSystem.setEnums(Base::UnitsApi::getDescriptions());
     // Get the preferences/General unit system as the default for a new document
-    ParameterGrp::handle hGrpu =
-        GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Units");
+    ParameterGrp::handle hGrpu = GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Units"
+    );
     UnitSystem.setValue(hGrpu->GetInt("UserSchema", 0));
     ADD_PROPERTY_TYPE(Comment, (""), 0, Prop_None, "Additional tag to save a comment");
     ADD_PROPERTY_TYPE(Meta, (), 0, Prop_None, "Map with additional meta information");
@@ -1015,8 +1098,9 @@ Document::Document(const char* documentName)
     ADD_PROPERTY_TYPE(Uid, (id), 0, Prop_ReadOnly, "UUID of the document");
 
     // license stuff
-    auto paramGrp {GetApplication().GetParameterGroupByPath(
-        "User parameter:BaseApp/Preferences/Document")};
+    auto paramGrp {
+        GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
+    };
     auto index = static_cast<int>(paramGrp->GetInt("prefLicenseType", 0));
     auto name = "";
     std::string licenseUrl = "";
@@ -1026,38 +1110,44 @@ Document::Document(const char* documentName)
         licenseUrl = (paramGrp->GetASCII("prefLicenseUrl", url));
     }
     ADD_PROPERTY_TYPE(License, (name), 0, Prop_None, "License string of the Item");
-    ADD_PROPERTY_TYPE(LicenseURL,
-                      (licenseUrl.c_str()),
-                      0,
-                      Prop_None,
-                      "URL to the license text/contract");
-    ADD_PROPERTY_TYPE(ShowHidden,
-                      (false),
-                      0,
-                      PropertyType(Prop_None),
-                      "Whether to show hidden object items in the tree view");
-    ADD_PROPERTY_TYPE(UseHasher,
-                      (true),
-                      0,
-                      PropertyType(Prop_Hidden),
-                      "Whether to use hasher on topological naming");
+    ADD_PROPERTY_TYPE(LicenseURL, (licenseUrl.c_str()), 0, Prop_None, "URL to the license text/contract");
+    ADD_PROPERTY_TYPE(
+        ShowHidden,
+        (false),
+        0,
+        PropertyType(Prop_None),
+        "Whether to show hidden object items in the tree view"
+    );
+    ADD_PROPERTY_TYPE(
+        UseHasher,
+        (true),
+        0,
+        PropertyType(Prop_Hidden),
+        "Whether to use hasher on topological naming"
+    );
 
     // this creates and sets 'TransientDir' in onChanged()
-    ADD_PROPERTY_TYPE(TransientDir,
-                      (""),
-                      0,
-                      PropertyType(Prop_Transient | Prop_ReadOnly),
-                      "Transient directory, where the files live while the document is open");
-    ADD_PROPERTY_TYPE(Tip,
-                      (nullptr),
-                      0,
-                      PropertyType(Prop_Transient),
-                      "Link of the tip object of the document");
-    ADD_PROPERTY_TYPE(TipName,
-                      (""),
-                      0,
-                      PropertyType(Prop_Hidden | Prop_ReadOnly),
-                      "Link of the tip object of the document");
+    ADD_PROPERTY_TYPE(
+        TransientDir,
+        (""),
+        0,
+        PropertyType(Prop_Transient | Prop_ReadOnly),
+        "Transient directory, where the files live while the document is open"
+    );
+    ADD_PROPERTY_TYPE(
+        Tip,
+        (nullptr),
+        0,
+        PropertyType(Prop_Transient),
+        "Link of the tip object of the document"
+    );
+    ADD_PROPERTY_TYPE(
+        TipName,
+        (""),
+        0,
+        PropertyType(Prop_Hidden | Prop_ReadOnly),
+        "Link of the tip object of the document"
+    );
     Uid.touch();
 }
 
@@ -1100,8 +1190,7 @@ Document::~Document()
     delete d;
 }
 
-std::string Document::getTransientDirectoryName(const std::string& uuid,
-                                                const std::string& filename) const
+std::string Document::getTransientDirectoryName(const std::string& uuid, const std::string& filename) const
 {
     // Create a directory name of the form: {ExeName}_Doc_{UUID}_{HASH}_{PID}
     std::stringstream out;
@@ -1111,8 +1200,8 @@ std::string Document::getTransientDirectoryName(const std::string& uuid,
 #else
     hash.addData(QByteArrayView(filename.c_str(), filename.size()));
 #endif
-    out << Application::getUserCachePath() << Application::getExecutableName() << "_Doc_"
-        << uuid << "_" << hash.result().toHex().left(6).constData() << "_"
+    out << Application::getUserCachePath() << Application::getExecutableName() << "_Doc_" << uuid
+        << "_" << hash.result().toHex().left(6).constData() << "_"
         << Application::uniqueInstanceId();
     return out.str();
 }
@@ -1258,7 +1347,8 @@ void DocumentP::checkStringHasher(const Base::XMLReader& reader)
             "Notifications",
             "\nIt is recommended that the user right-click the root of "
             "the document and select Mark to recompute.\n"
-            "The user should then click the Refresh button in the main toolbar.\n"));
+            "The user should then click the Refresh button in the main toolbar.\n"
+        ));
     }
 }
 
@@ -1267,8 +1357,9 @@ std::pair<bool, int> Document::addStringHasher(const StringHasherRef& hasher) co
     if (!hasher) {
         return std::make_pair(false, 0);
     }
-    auto ret =
-        d->hashers.left.insert(HasherMap::left_map::value_type(hasher, static_cast<int>(d->hashers.size())));
+    auto ret = d->hashers.left.insert(
+        HasherMap::left_map::value_type(hasher, static_cast<int>(d->hashers.size()))
+    );
     if (ret.second) {
         hasher->clearMarks();
     }
@@ -1353,12 +1444,13 @@ void Document::exportObjects(const std::vector<DocumentObject*>& obj, std::ostre
             if (o && o->isAttachedToDocument()) {
                 FC_LOG("exporting " << o->getFullName());
                 if (!o->getPropertyByName("_ObjectUUID")) {
-                    auto prop = static_cast<PropertyUUID*>(
-                        o->addDynamicProperty("App::PropertyUUID",
-                                              "_ObjectUUID",
-                                              nullptr,
-                                              nullptr,
-                                              Prop_Output | Prop_Hidden));
+                    auto prop = static_cast<PropertyUUID*>(o->addDynamicProperty(
+                        "App::PropertyUUID",
+                        "_ObjectUUID",
+                        nullptr,
+                        nullptr,
+                        Prop_Output | Prop_Hidden
+                    ));
                     prop->setValue(Base::Uuid::createUuid());
                 }
             }
@@ -1371,8 +1463,7 @@ void Document::exportObjects(const std::vector<DocumentObject*>& obj, std::ostre
     writer.Stream() << R"(<Document SchemaVersion="4" ProgramVersion=")"
                     << Application::Config()["BuildVersionMajor"] << "."
                     << Application::Config()["BuildVersionMinor"] << "R"
-                    << Application::Config()["BuildRevision"] << R"(" FileVersion="1">)"
-                    << '\n';
+                    << Application::Config()["BuildRevision"] << R"(" FileVersion="1">)" << '\n';
     // Add this block to have the same layout as for normal documents
     writer.Stream() << "<Properties Count=\"0\">" << '\n';
     writer.Stream() << "</Properties>" << '\n';
@@ -1396,8 +1487,7 @@ constexpr auto fcAttrDepObjName {"Name"};
 constexpr auto fcAttrDepAllowPartial {"AllowPartial"};
 constexpr auto fcElementObjectDep {"Dep"};
 
-void Document::writeObjectDeps(const std::vector<DocumentObject*>& objs,
-                               Base::Writer& writer) const
+void Document::writeObjectDeps(const std::vector<DocumentObject*>& objs, Base::Writer& writer) const
 {
     for (auto o : objs) {
         // clang-format off
@@ -1406,11 +1496,8 @@ void Document::writeObjectDeps(const std::vector<DocumentObject*>& objs,
         // clang-format on
 
         auto objName = o->getNameInDocument();
-        writer.Stream() << writer.ind()
-                        << "<" << fcElementObjectDeps
-                        << " " << fcAttrDepObjName << "=\""
-                        << (objName ? objName : "") << "\" "
-                        << fcAttrDepCount << "=\""
+        writer.Stream() << writer.ind() << "<" << fcElementObjectDeps << " " << fcAttrDepObjName
+                        << "=\"" << (objName ? objName : "") << "\" " << fcAttrDepCount << "=\""
                         << outList.size();
         if (outList.empty()) {
             writer.Stream() << "\"/>\n";
@@ -1424,18 +1511,15 @@ void Document::writeObjectDeps(const std::vector<DocumentObject*>& objs,
         writer.incInd();
         for (auto dep : outList) {
             auto depName = dep ? dep->getNameInDocument() : "";
-            writer.Stream() << writer.ind()
-                            << "<" << fcElementObjectDep
-                            << " " << fcAttrDepObjName << "=\""
-                            << (depName ? depName : "") << "\"/>\n";
+            writer.Stream() << writer.ind() << "<" << fcElementObjectDep << " " << fcAttrDepObjName
+                            << "=\"" << (depName ? depName : "") << "\"/>\n";
         }
         writer.decInd();
         writer.Stream() << writer.ind() << "</" << fcElementObjectDeps << ">\n";
     }
 }
 
-void Document::writeObjectType(const std::vector<DocumentObject*>& objs,
-                               Base::Writer& writer) const
+void Document::writeObjectType(const std::vector<DocumentObject*>& objs, Base::Writer& writer) const
 {
     for (auto it : objs) {
         writer.Stream() << writer.ind() << "<Object "
@@ -1467,8 +1551,7 @@ void Document::writeObjectType(const std::vector<DocumentObject*>& objs,
     }
 }
 
-void Document::writeObjectData(const std::vector<DocumentObject*>& objs,
-                               Base::Writer& writer) const
+void Document::writeObjectData(const std::vector<DocumentObject*>& objs, Base::Writer& writer) const
 {
     // writing the features itself
     writer.Stream() << writer.ind() << "<ObjectData Count=\"" << objs.size() << "\">\n";
@@ -1489,8 +1572,7 @@ void Document::writeObjectData(const std::vector<DocumentObject*>& objs,
     writer.Stream() << writer.ind() << "</ObjectData>\n";
 }
 
-void Document::writeObjects(const std::vector<DocumentObject*>& objs,
-                            Base::Writer& writer) const
+void Document::writeObjects(const std::vector<DocumentObject*>& objs, Base::Writer& writer) const
 {
     std::ostream& str = writer.Stream();
 
@@ -1531,9 +1613,11 @@ struct DepInfo
     int canLoadPartial = 0;
 };
 
-static void loadDeps(const std::string& name,
-                      std::unordered_map<std::string, bool>& objs,
-                      const std::unordered_map<std::string, DepInfo>& deps)
+static void loadDeps(
+    const std::string& name,
+    std::unordered_map<std::string, bool>& objs,
+    const std::unordered_map<std::string, DepInfo>& deps
+)
 {
     const auto it = deps.find(name);
     if (it == deps.end()) {
@@ -1590,8 +1674,9 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
             }
             auto& info = deps[reader.getAttribute<const char*>(fcAttrDepObjName)];
             if (reader.hasAttribute(fcAttrDepAllowPartial)) {
-                info.canLoadPartial =
-                    static_cast<int>(reader.getAttribute<long>(fcAttrDepAllowPartial));
+                info.canLoadPartial = static_cast<int>(
+                    reader.getAttribute<long>(fcAttrDepAllowPartial)
+                );
             }
             for (int j = 0; j < dcount; ++j) {
                 reader.readElement(fcElementObjectDep);
@@ -1627,12 +1712,16 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
     }
 
     long lastId = 0;
+    bool warnedRemovedArchitecture = false;
+    Base::SequencerLauncher restoreObjects("Creating document objects...", 2 * Cnt);
     for (int i = 0; i < Cnt; i++) {
+        restoreObjects.next();
         reader.readElement("Object");
         std::string type = reader.getAttribute<const char*>("type");
         std::string name = reader.getAttribute<const char*>("name");
-        std::string viewType =
-            reader.hasAttribute("ViewType") ? reader.getAttribute<const char*>("ViewType") : "";
+        std::string viewType = reader.hasAttribute("ViewType")
+            ? reader.getAttribute<const char*>("ViewType")
+            : "";
 
         bool partial = false;
         if (!d->partialLoadObjects.empty()) {
@@ -1672,8 +1761,8 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
             // otherwise we may cause a dependency to itself
             // Example: Object 'Cut001' references object 'Cut' and removing the
             // digits we make an object 'Cut' referencing itself.
-            DocumentObject* obj =
-                addObject(type.c_str(), obj_name, /*isNew=*/false, viewType.c_str(), partial);
+            DocumentObject* obj
+                = addObject(type.c_str(), obj_name, /*isNew=*/false, viewType.c_str(), partial);
             if (obj) {
                 if (lastId < obj->_Id) {
                     lastId = obj->_Id;
@@ -1690,8 +1779,7 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
                     }
                 }
                 if (reader.hasAttribute("Invalid")) {
-                    obj->setStatus(ObjectStatus::Error,
-                                   reader.getAttribute<bool>("Invalid"));
+                    obj->setStatus(ObjectStatus::Error, reader.getAttribute<bool>("Invalid"));
                     if (obj->isError() && reader.hasAttribute("Error")) {
                         d->addRecomputeLog(reader.getAttribute<const char*>("Error"), obj);
                     }
@@ -1705,6 +1793,14 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
         }
         catch (const Base::Exception& e) {
             Base::Console().error("Cannot create object '%s': (%s)\n", name.c_str(), e.what());
+            if (!warnedRemovedArchitecture && type == "TechDraw::DrawViewArch") {
+                warnedRemovedArchitecture = true;
+                Base::Console().warning(
+                    "This document contains an architectural TechDraw view whose type has been "
+                    "removed. The document is unsupported and may be incomplete; close it without "
+                    "saving and use an earlier release to export neutral geometry.\n"
+                );
+            }
         }
     }
     if (!testStatus(Status::Importing)) {
@@ -1718,12 +1814,13 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
     reader.clearPartialRestoreDocumentObject();
     reader.readElement("ObjectData");
     Cnt = static_cast<int>(reader.getAttribute<long>("Count"));
+    restoreObjects.setText("Restoring document properties...");
     for (int i = 0; i < Cnt; i++) {
+        restoreObjects.next();
         reader.readElement("Object");
         std::string name = reader.getName(reader.getAttribute<const char*>("name"));
         if (DocumentObject* pObj = getObject(name.c_str()); pObj
-            && !pObj->testStatus(
-                PartialObject)) {  // check if this feature has been registered
+            && !pObj->testStatus(PartialObject)) {  // check if this feature has been registered
             pObj->setStatus(ObjectStatus::Restore, true);
             try {
                 FC_TRACE("restoring " << pObj->getFullName());
@@ -1750,9 +1847,11 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
             pObj->setStatus(ObjectStatus::Restore, false);
 
             if (reader.testStatus(Base::XMLReader::ReaderStatus::PartialRestoreInDocumentObject)) {
-                Base::Console().error("Object \"%s\" was subject to a partial restore. As a result "
-                                      "geometry may have changed or be incomplete.\n",
-                                      name.c_str());
+                Base::Console().error(
+                    "Object \"%s\" was subject to a partial restore. As a result "
+                    "geometry may have changed or be incomplete.\n",
+                    name.c_str()
+                );
                 reader.clearPartialRestoreDocumentObject();
             }
         }
@@ -1763,7 +1862,7 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
     return objs;
 }
 
-void Document::addRecomputeObject(DocumentObject* obj) // NOLINT
+void Document::addRecomputeObject(DocumentObject* obj)  // NOLINT
 {
     if (testStatus(Status::Restoring) && obj) {
         setStatus(Status::RecomputeOnRestore, true);
@@ -1800,17 +1899,16 @@ std::vector<DocumentObject*> Document::importObjects(Base::XMLReader& reader)
         if (o && o->isAttachedToDocument()) {
             o->setStatus(ObjImporting, true);
             FC_LOG("importing " << o->getFullName());
-            if (const auto propUUID =
-                    freecad_cast<PropertyUUID*>(o->getPropertyByName("_ObjectUUID"))) {
-                auto propSource =
-                    freecad_cast<PropertyUUID*>(o->getPropertyByName("_SourceUUID"));
+            if (const auto propUUID = freecad_cast<PropertyUUID*>(o->getPropertyByName("_ObjectUUID"))) {
+                auto propSource = freecad_cast<PropertyUUID*>(o->getPropertyByName("_SourceUUID"));
                 if (!propSource) {
-                    propSource = static_cast<PropertyUUID*>(
-                        o->addDynamicProperty("App::PropertyUUID",
-                                              "_SourceUUID",
-                                              nullptr,
-                                              nullptr,
-                                              Prop_Output | Prop_Hidden));
+                    propSource = static_cast<PropertyUUID*>(o->addDynamicProperty(
+                        "App::PropertyUUID",
+                        "_SourceUUID",
+                        nullptr,
+                        nullptr,
+                        Prop_Output | Prop_Hidden
+                    ));
                 }
                 if (propSource) {
                     propSource->setValue(propUUID->getValue());
@@ -1825,6 +1923,7 @@ std::vector<DocumentObject*> Document::importObjects(Base::XMLReader& reader)
     signalImportObjects(objs, reader);
     afterRestore(objs, true);
 
+    GetApplication().signalFinishImportObjects(*this, objs);
     signalFinishImportObjects(objs);
 
     for (const auto o : objs) {
@@ -1837,12 +1936,145 @@ std::vector<DocumentObject*> Document::importObjects(Base::XMLReader& reader)
     return objs;
 }
 
+void Document::adoptImportedTimelineOperations(
+    const std::vector<DocumentObject*>& importedObjects,
+    const std::vector<DocumentObject*>& sourceOrder,
+    const std::vector<bool>& sourceVisibility,
+    const std::vector<bool>& sourceSuppression
+)
+{
+    if (testStatus(Document::TempDoc) || importedObjects.empty()) {
+        return;
+    }
+    DocumentTimeline::ensure(this)
+        ->adoptImportedOperations(importedObjects, sourceOrder, sourceVisibility, sourceSuppression);
+}
+
+void Document::classifyProvisionalTimelineInternalObject(DocumentObject* object)
+{
+    auto* timeline = DocumentTimeline::get(this);
+    if (!timeline) {
+        throw Base::RuntimeError("This document has no native operation timeline");
+    }
+    timeline->classifyProvisionalInternalObject(object);
+}
+
+void Document::classifyExistingTimelineLeafInternalObject(DocumentObject* object)
+{
+    auto* timeline = DocumentTimeline::get(this);
+    if (!timeline) {
+        throw Base::RuntimeError("This document has no native operation timeline");
+    }
+    timeline->classifyExistingLeafInternalObject(object);
+}
+
+void Document::classifyExistingTimelineSemanticBlockInternalObject(DocumentObject* operation)
+{
+    auto* timeline = DocumentTimeline::get(this);
+    if (!timeline) {
+        throw Base::RuntimeError("This document has no native operation timeline");
+    }
+    timeline->classifyExistingSemanticBlockInternal(operation);
+}
+
+bool Document::isProvisionallyEnrolledInTimelineByCurrentTransaction(
+    const DocumentObject* object
+) const noexcept
+{
+    const auto* timeline = DocumentTimeline::get(this);
+    return containsObject(object) && object->getDocument() == this && timeline
+        && timeline->isProvisionallyEnrolledByCurrentTransaction(object);
+}
+
+bool Document::isApplyingTimelineState() const noexcept
+{
+    const auto* timeline = DocumentTimeline::get(this);
+    return timeline && timeline->isApplying();
+}
+
+bool Document::isObjectUsableAtCurrentTimelinePosition(const DocumentObject* object) const noexcept
+{
+    return object && containsObject(object) && object->getDocument() == this
+        && DocumentTimeline::isObjectUsableAtCurrentPosition(object);
+}
+
+void Document::stageTimelineOperationSegmentReplacement(
+    const std::vector<std::vector<DocumentObject*>>& oldRootSegments
+)
+{
+    auto* timeline = DocumentTimeline::get(this);
+    if (!timeline) {
+        throw Base::RuntimeError("This document has no native operation timeline");
+    }
+    timeline->stageOperationSegmentReplacement(oldRootSegments);
+}
+
+void Document::finalizeProvisionalTimelineOperationSegmentReplacement(
+    const std::vector<TimelineSegmentReplacementMapping>& mappings
+)
+{
+    auto* timeline = DocumentTimeline::get(this);
+    if (!timeline) {
+        throw Base::RuntimeError("This document has no native operation timeline");
+    }
+    timeline->finalizeProvisionalOperationSegmentReplacement(mappings);
+}
+
+void Document::publishProvisionalTimelineOperationBlock(
+    DocumentObject* operation,
+    const std::vector<DocumentObject*>& orderedResources,
+    const std::vector<DocumentObject*>& resourceOwners
+)
+{
+    auto* timeline = DocumentTimeline::get(this);
+    if (!timeline) {
+        throw Base::RuntimeError("This document has no native operation timeline");
+    }
+    timeline->publishProvisionalOperationBlock(operation, orderedResources, resourceOwners);
+}
+
+void Document::adoptExistingTimelineOperationBlock(
+    DocumentObject* operation,
+    const std::vector<DocumentObject*>& orderedResources,
+    const std::vector<DocumentObject*>& resourceOwners
+)
+{
+    auto* timeline = DocumentTimeline::get(this);
+    if (!timeline) {
+        throw Base::RuntimeError("This document has no native operation timeline");
+    }
+    timeline->adoptExistingOperationBlock(operation, orderedResources, resourceOwners);
+}
+
+void Document::stageTimelineOperationResourceReconciliation(
+    DocumentObject* owner,
+    const std::vector<DocumentObject*>& oldResourceRoots
+)
+{
+    auto* timeline = DocumentTimeline::get(this);
+    if (!timeline) {
+        throw Base::RuntimeError("This document has no native operation timeline");
+    }
+    timeline->stageOperationResourceReconciliation(owner, oldResourceRoots);
+}
+
+void Document::finalizeProvisionalTimelineOperationResourceReconciliation(
+    const TimelineResourceReconciliationMapping& mapping
+)
+{
+    auto* timeline = DocumentTimeline::get(this);
+    if (!timeline) {
+        throw Base::RuntimeError("This document has no native operation timeline");
+    }
+    timeline->finalizeProvisionalOperationResourceReconciliation(mapping);
+}
+
 unsigned int Document::getMemSize() const
 {
     unsigned int size = 0;
 
     // size of the DocObjects in the document
-    for (const auto & it : d->objectArray) {
+    for (const auto& it : d->objectArray) {
         size += it->getMemSize();
     }
 
@@ -1938,15 +2170,17 @@ bool Document::save()
         const std::string LastModifiedDateString = Base::Tools::currentDateTimeString();
         LastModifiedDate.setValue(LastModifiedDateString.c_str());
         // set author if needed
-        const bool saveAuthor =
-            GetApplication()
-                .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                ->GetBool("prefSetAuthorOnSave", false);
+        const bool saveAuthor = GetApplication()
+                                    .GetParameterGroupByPath(
+                                        "User parameter:BaseApp/Preferences/Document"
+                                    )
+                                    ->GetBool("prefSetAuthorOnSave", false);
         if (saveAuthor) {
-            const std::string Author =
-                GetApplication()
-                    .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                    ->GetASCII("prefAuthor", "");
+            const std::string Author = GetApplication()
+                                           .GetParameterGroupByPath(
+                                               "User parameter:BaseApp/Preferences/Document"
+                                           )
+                                           ->GetASCII("prefAuthor", "");
             LastModifiedBy.setValue(Author.c_str());
         }
 
@@ -1966,8 +2200,7 @@ bool Document::saveToFile(const char* filename) const
 {
     signalStartSave(*this, filename);
 
-    auto hGrp = GetApplication().GetParameterGroupByPath(
-        "User parameter:BaseApp/Preferences/Document");
+    auto hGrp = GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document");
     int compression = static_cast<int>(hGrp->GetInt("CompressionLevel", 7));
     compression = Base::clamp<int>(compression, Z_NO_COMPRESSION, Z_BEST_COMPRESSION);
 
@@ -2010,7 +2243,11 @@ bool Document::saveToFile(const char* filename) const
     // check if file is writeable, then block the save if it is not.
     Base::FileInfo originalFileInfo(nativePath);
     if (originalFileInfo.exists() && !originalFileInfo.isWritable()) {
-        throw Base::FileException("Unable to save document because file is marked as read-only or write permission is not available.", originalFileInfo);
+        throw Base::FileException(
+            "Unable to save document because file is marked as read-only or write permission is "
+            "not available.",
+            originalFileInfo
+        );
     }
 
     // make a tmp. file where to save the project data first and then rename to
@@ -2067,23 +2304,27 @@ bool Document::saveToFile(const char* filename) const
 
     if (policy) {
         // if saving the project data succeeded rename to the actual file name
-        int count_bak = static_cast<int>(GetApplication()
-                            .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                            ->GetInt("CountBackupFiles", 1));
+        int count_bak = static_cast<int>(
+            GetApplication()
+                .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
+                ->GetInt("CountBackupFiles", 1)
+        );
         bool backup = GetApplication()
                           .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
                           ->GetBool("CreateBackupFiles", true);
         if (!backup) {
             count_bak = -1;
         }
-        bool useFCBakExtension =
-            GetApplication()
-                .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                ->GetBool("UseFCBakExtension", true);
-        std::string saveBackupDateFormat =
-            GetApplication()
-                .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                ->GetASCII("SaveBackupDateFormat", "%Y%m%d-%H%M%S");
+        bool useFCBakExtension = GetApplication()
+                                     .GetParameterGroupByPath(
+                                         "User parameter:BaseApp/Preferences/Document"
+                                     )
+                                     ->GetBool("UseFCBakExtension", true);
+        std::string saveBackupDateFormat = GetApplication()
+                                               .GetParameterGroupByPath(
+                                                   "User parameter:BaseApp/Preferences/Document"
+                                               )
+                                               ->GetASCII("SaveBackupDateFormat", "%Y%m%d-%H%M%S");
 
         BackupPolicy backupPolicy;
         if (useFCBakExtension) {
@@ -2137,9 +2378,7 @@ bool Document::isAnyRestoring()
 }
 
 // Open the document
-void Document::restore(const char* filename,
-                       bool delaySignal,
-                       const std::vector<std::string>& objNames)
+void Document::restore(const char* filename, bool delaySignal, const std::vector<std::string>& objNames)
 {
     clearUndos();
     d->activeObject = nullptr;
@@ -2219,9 +2458,11 @@ void Document::restore(const char* filename,
 
     if (reader.testStatus(Base::XMLReader::ReaderStatus::PartialRestore)) {
         setStatus(Document::PartialRestore, true);
-        Base::Console().error("There were errors while loading the file. Some data might have been "
-                              "modified or not recovered at all. Look above for more specific "
-                              "information about the objects involved.\n");
+        Base::Console().error(
+            "There were errors while loading the file. Some data might have been "
+            "modified or not recovered at all. Look above for more specific "
+            "information about the objects involved.\n"
+        );
     }
 
     if (!delaySignal) {
@@ -2236,6 +2477,9 @@ bool Document::afterRestore(const bool checkPartial)
         FC_WARN("Reload partial document " << getName());
         GetApplication().signalPendingReloadDocument(*this);
         return false;
+    }
+    if (!testStatus(Document::TempDoc)) {
+        DocumentTimeline::ensure(this)->normalizeAfterRestore();
     }
     GetApplication().signalFinishRestoreDocument(*this);
     setStatus(Document::Restoring, false);
@@ -2264,8 +2508,10 @@ bool Document::afterRestore(const std::vector<DocumentObject*>& objArray, bool c
                 prop->afterRestore();
             }
             catch (const Base::Exception& e) {
-                FC_ERR("Failed to restore " << obj->getFullName() << '.' << prop->getName() << ": "
-                                            << e.what());
+                FC_ERR(
+                    "Failed to restore " << obj->getFullName() << '.' << prop->getName() << ": "
+                                         << e.what()
+                );
             }
         }
     }
@@ -2286,11 +2532,13 @@ bool Document::afterRestore(const std::vector<DocumentObject*>& objArray, bool c
                 prop->onContainerRestored();
             }
             bool touched = false;
-            auto returnCode =
-                obj->ExpressionEngine.execute(PropertyExpressionEngine::ExecuteOnRestore, &touched);
+            auto returnCode
+                = obj->ExpressionEngine.execute(PropertyExpressionEngine::ExecuteOnRestore, &touched);
             if (returnCode != DocumentObject::StdReturn) {
-                FC_ERR("Expression engine failed to restore " << obj->getFullName() << ": "
-                                                              << returnCode->Why);
+                FC_ERR(
+                    "Expression engine failed to restore " << obj->getFullName() << ": "
+                                                           << returnCode->Why
+                );
                 d->addRecomputeLog(returnCode);
             }
             obj->onDocumentRestored();
@@ -2313,8 +2561,8 @@ bool Document::afterRestore(const std::vector<DocumentObject*>& objArray, bool c
             // Segfaults later when FreeCAD interacts with Python.
             if (PyErr_Occurred()) {
                 Base::Console().error("Python error during object restore:\n");
-                PyErr_Print(); // Print the traceback to stderr/Console
-                PyErr_Clear(); // Reset the interpreter state
+                PyErr_Print();  // Print the traceback to stderr/Console
+                PyErr_Clear();  // Reset the interpreter state
             }
 
             d->addRecomputeLog("Unknown exception on restore", obj);
@@ -2392,17 +2640,20 @@ std::string Document::getFullName() const
     return myName;
 }
 
-void Document::setAutoCreated(bool value) {
+void Document::setAutoCreated(bool value)
+{
     autoCreated = value;
 }
 
-bool Document::isAutoCreated() const {
+bool Document::isAutoCreated() const
+{
     return autoCreated;
 }
 
-bool Document::isReadOnlyFile() const {
+bool Document::isReadOnlyFile() const
+{
     std::string filename = FileName.getValue();
-    Base::FileInfo documentFileInfo(filename);  
+    Base::FileInfo documentFileInfo(filename);
     return documentFileInfo.exists() && !documentFileInfo.isWritable();
 }
 
@@ -2417,7 +2668,7 @@ const char* Document::getFileName() const
 }
 
 /// Remove all modifications. After this call The document becomes valid again.
-void Document::purgeTouched() // NOLINT
+void Document::purgeTouched()  // NOLINT
 {
     for (const auto It : d->objectArray) {
         It->purgeTouched();
@@ -2447,7 +2698,7 @@ vector<DocumentObject*> Document::getTouched() const
     return result;
 }
 
-void Document::setClosable(bool c) // NOLINT
+void Document::setClosable(bool c)  // NOLINT
 {
     setStatus(Document::Closable, c);
 }
@@ -2462,11 +2713,13 @@ int Document::countObjects() const
     return static_cast<int>(d->objectArray.size());
 }
 
-void Document::getLinksTo(std::set<DocumentObject*>& links,
-                          const DocumentObject* obj,
-                          const int options,
-                          const int maxCount,
-                          const std::vector<DocumentObject*>& objs) const
+void Document::getLinksTo(
+    std::set<DocumentObject*>& links,
+    const DocumentObject* obj,
+    const int options,
+    const int maxCount,
+    const std::vector<DocumentObject*>& objs
+) const
 {
     std::map<const DocumentObject*, std::vector<DocumentObject*>> linkMap;
 
@@ -2480,8 +2733,8 @@ void Document::getLinksTo(std::set<DocumentObject*>& links,
         }
         else {
             const auto ext = o->getExtensionByType<LinkBaseExtension>(true);
-            linked =
-                ext ? ext->getTrueLinkedObject(false, nullptr, 0, true) : o->getLinkedObject(false);
+            linked = ext ? ext->getTrueLinkedObject(false, nullptr, 0, true)
+                         : o->getLinkedObject(false);
         }
 
         if (linked && linked != o) {
@@ -2571,12 +2824,14 @@ std::vector<DocumentObject*> Document::getInList(const DocumentObject* me) const
 // assumption is broken by the introduction of PropertyXLink which can link to
 // external object.
 //
-static void buildDependencyList(const std::vector<DocumentObject*>& objectArray,
-                                const int options,
-                                 std::vector<DocumentObject*>* depObjs,
-                                 DependencyList* depList,
-                                 std::map<DocumentObject*, Vertex>* objectMap,
-                                 bool* touchCheck = nullptr)
+static void buildDependencyList(
+    const std::vector<DocumentObject*>& objectArray,
+    const int options,
+    std::vector<DocumentObject*>* depObjs,
+    DependencyList* depList,
+    std::map<DocumentObject*, Vertex>* objectMap,
+    bool* touchCheck = nullptr
+)
 {
     std::map<DocumentObject*, std::vector<DocumentObject*>> outLists;
     std::deque<DocumentObject*> objs;
@@ -2591,7 +2846,7 @@ static void buildDependencyList(const std::vector<DocumentObject*>& objectArray,
     auto getOutListFineGrained = [](DocumentObject* obj, int op) {
         // Convert an OutListProp to a regular outlist with only DocumentObject*
         std::vector<DocumentObject*> outList;
-        std::unordered_set<DocumentObject*> outListSet; // For O(1) avg lookup
+        std::unordered_set<DocumentObject*> outListSet;  // For O(1) avg lookup
 
         std::vector<DepEdge> outListProp = obj->getOutListProp(op);
         for (const auto& [objFrom, propFrom, objTo, propNameTo] : outListProp) {
@@ -2664,8 +2919,10 @@ static void buildDependencyList(const std::vector<DocumentObject*>& objectArray,
     }
 }
 
-std::vector<DocumentObject*>
-Document::getDependencyList(const std::vector<DocumentObject*>& objs, int options)
+std::vector<DocumentObject*> Document::getDependencyList(
+    const std::vector<DocumentObject*>& objs,
+    int options
+)
 {
     std::vector<DocumentObject*> ret;
     if ((options & DepSort) == 0) {
@@ -2696,9 +2953,12 @@ Document::getDependencyList(const std::vector<DocumentObject*>& objs, int option
             std::map<int, std::vector<Vertex>> components;
             boost::strong_components(
                 depList,
-                boost::make_iterator_property_map(c.begin(),
-                                                  boost::get(boost::vertex_index, depList),
-                                                  c[0]));
+                boost::make_iterator_property_map(
+                    c.begin(),
+                    boost::get(boost::vertex_index, depList),
+                    c[0]
+                )
+            );
             for (size_t i = 0; i < c.size(); ++i) {
                 components[c[i]].push_back(i);
             }
@@ -2756,8 +3016,7 @@ std::vector<Document*> Document::getDependentDocuments(const bool sort)
     return getDependentDocuments({this}, sort);
 }
 
-std::vector<Document*> Document::getDependentDocuments(std::vector<Document*> docs,
-                                                       const bool sort)
+std::vector<Document*> Document::getDependentDocuments(std::vector<Document*> docs, const bool sort)
 {
     DependencyList depList;
     std::map<Document*, Vertex> docMap;
@@ -2832,7 +3091,8 @@ std::vector<Document*> Document::getDependentDocuments(std::vector<Document*> do
 
 void Document::renameObjectIdentifiers(
     const std::map<ObjectIdentifier, ObjectIdentifier>& paths,
-    const std::function<bool(const DocumentObject*)>& selector) // NOLINT
+    const std::function<bool(const DocumentObject*)>& selector
+)  // NOLINT
 {
     std::map<ObjectIdentifier, ObjectIdentifier> extendedPaths;
 
@@ -2849,10 +3109,7 @@ void Document::renameObjectIdentifiers(
     }
 }
 
-int Document::recompute(const std::vector<DocumentObject*>& objs,
-                        bool force,
-                        bool* hasError,
-                        int options)
+int Document::recompute(const std::vector<DocumentObject*>& objs, bool force, bool* hasError, int options)
 {
     ZoneScoped;
 
@@ -2874,8 +3131,7 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
     int objectCount = 0;
     if (testStatus(Document::PartialDoc)) {
         if (mustExecute()) {
-            FC_WARN("Please reload partial document '" << Label.getValue()
-                                                       << "' for recomputation.");
+            FC_WARN("Please reload partial document '" << Label.getValue() << "' for recomputation.");
         }
         return 0;
     }
@@ -2923,15 +3179,15 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
    */
 
     // alt:
-    auto topoSortedObjects =
-        getDependencyList(objs.empty() ? d->objectArray : objs, DepSort | options);
+    auto topoSortedObjects = getDependencyList(objs.empty() ? d->objectArray : objs, DepSort | options);
 
     for (auto obj : topoSortedObjects) {
         obj->setStatus(ObjectStatus::PendingRecompute, true);
     }
 
-    ParameterGrp::handle hGrp =
-        GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document");
+    ParameterGrp::handle hGrp = GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Document"
+    );
     bool canAbort = hGrp->GetBool("CanAbortRecompute", true);
 
     tracker.checkpoint("pre-recompute & topo sort");
@@ -2943,13 +3199,26 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
         for (int passes = 0; passes < 2 && idx < topoSortedObjects.size(); ++passes) {
             std::unique_ptr<Base::SequencerLauncher> seq;
             if (canAbort) {
-                seq = std::make_unique<Base::SequencerLauncher>("Recompute...",
-                                                                topoSortedObjects.size());
+                seq = std::make_unique<Base::SequencerLauncher>(
+                    "Recompute...",
+                    topoSortedObjects.size()
+                );
             }
             FC_LOG("Recompute pass " << passes);
             for (; idx < topoSortedObjects.size(); ++idx) {
                 auto obj = topoSortedObjects[idx];
                 if (!obj->isAttachedToDocument() || filter.find(obj) != filter.end()) {
+                    continue;
+                }
+                // A rolled-back document state must be computational, not
+                // merely visual. Native suppressible features still execute
+                // their explicit bypass branch. Other future operations keep
+                // their touched state so edits and upstream changes are
+                // recomputed exactly once when the marker advances again.
+                if (const auto* timeline = DocumentTimeline::get(obj->getDocument()); timeline
+                    && !timeline->isOperationActive(obj)
+                    && !obj->getExtensionByType<SuppressibleExtension>(true)) {
+                    filter.insert(obj);
                     continue;
                 }
                 // ask the object if it should be recomputed
@@ -3067,8 +3336,9 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
             }
             catch (Base::Exception& e) {
                 e.reportException();
-                FC_ERR("error when removing object " << o.getDocumentName() << '#'
-                                                     << o.getObjectName());
+                FC_ERR(
+                    "error when removing object " << o.getDocumentName() << '#' << o.getObjectName()
+                );
             }
         }
     }
@@ -3083,8 +3353,9 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
   An alternative to this method might be:
   https://en.wikipedia.org/wiki/Tarjan%E2%80%99s_strongly_connected_components_algorithm
  */
-std::vector<DocumentObject*>
-DocumentP::partialTopologicalSort(const std::vector<DocumentObject*>& objects)
+std::vector<DocumentObject*> DocumentP::partialTopologicalSort(
+    const std::vector<DocumentObject*>& objects
+)
 {
     std::vector<DocumentObject*> ret;
     ret.reserve(objects.size());
@@ -3113,11 +3384,13 @@ DocumentP::partialTopologicalSort(const std::vector<DocumentObject*>& objects)
         removeVertex = false;
 
         // try input degree
-        auto degInIt = find_if(countMap.begin(),
-                               countMap.end(),
-                               [](std::pair<DocumentObject*, std::pair<int, int>> vertex) -> bool {
-                                   return vertex.second.first == 0;
-                               });
+        auto degInIt = find_if(
+            countMap.begin(),
+            countMap.end(),
+            [](std::pair<DocumentObject*, std::pair<int, int>> vertex) -> bool {
+                return vertex.second.first == 0;
+            }
+        );
 
         if (degInIt != countMap.end()) {
             removeVertex = true;
@@ -3150,11 +3423,13 @@ DocumentP::partialTopologicalSort(const std::vector<DocumentObject*>& objects)
     while (removeVertex) {
         removeVertex = false;
 
-        auto degOutIt = std::find_if(countMap.begin(),
-                                     countMap.end(),
-                                     [](std::pair<DocumentObject*, std::pair<int, int>> vertex) -> bool {
-                                         return vertex.second.second == 0;
-                                     });
+        auto degOutIt = std::find_if(
+            countMap.begin(),
+            countMap.end(),
+            [](std::pair<DocumentObject*, std::pair<int, int>> vertex) -> bool {
+                return vertex.second.second == 0;
+            }
+        );
 
         if (degOutIt != countMap.end()) {
             removeVertex = true;
@@ -3188,8 +3463,7 @@ DocumentP::partialTopologicalSort(const std::vector<DocumentObject*>& objects)
     return ret;
 }
 
-std::vector<DocumentObject*>
-DocumentP::topologicalSort(const std::vector<DocumentObject*>& objects) const
+std::vector<DocumentObject*> DocumentP::topologicalSort(const std::vector<DocumentObject*>& objects) const
 {
     // topological sort algorithm described here:
     // https://de.wikipedia.org/wiki/Topologische_Sortierung#Algorithmus_f.C3.BCr_das_Topologische_Sortieren
@@ -3211,11 +3485,11 @@ DocumentP::topologicalSort(const std::vector<DocumentObject*>& objects) const
         countMap[objectIt] = in.size();
     }
 
-    auto rootObjeIt = std::find_if(countMap.begin(),
-                                   countMap.end(),
-                                   [](std::pair<DocumentObject*, int> count) -> bool {
-                                       return count.second == 0;
-                                   });
+    auto rootObjeIt = std::find_if(
+        countMap.begin(),
+        countMap.end(),
+        [](std::pair<DocumentObject*, int> count) -> bool { return count.second == 0; }
+    );
 
     if (rootObjeIt == countMap.end()) {
         std::cerr << "Document::topologicalSort: cyclic dependency detected (no root object)" << '\n';
@@ -3238,11 +3512,11 @@ DocumentP::topologicalSort(const std::vector<DocumentObject*>& objects) const
         }
         ret.push_back(rootObjeIt->first);
 
-        rootObjeIt = find_if(countMap.begin(),
-                             countMap.end(),
-                             [](std::pair<DocumentObject*, int> count) -> bool {
-                                 return count.second == 0;
-                             });
+        rootObjeIt = find_if(
+            countMap.begin(),
+            countMap.end(),
+            [](std::pair<DocumentObject*, int> count) -> bool { return count.second == 0; }
+        );
     }
 
     return ret;
@@ -3306,8 +3580,7 @@ std::string_view recomputeFailureCode(const App::DocumentObject* feature)
     return found == codes.end() ? std::string_view("FEATURE_EXECUTION_FAILED") : found->second;
 }
 
-std::pair<std::string, std::string> recomputeFailureReference(
-    const App::DocumentObject* feature)
+std::pair<std::string, std::string> recomputeFailureReference(const App::DocumentObject* feature)
 {
     if (!feature) {
         return {};
@@ -3354,7 +3627,7 @@ std::pair<std::string, std::string> recomputeFailureReference(
 }
 }  // namespace
 
-int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
+int Document::_recomputeFeature(DocumentObject* Feat)  // NOLINT
 {
     FC_LOG("Recomputing " << Feat->getFullName());
 
@@ -3364,8 +3637,7 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
         if (returnCode == DocumentObject::StdReturn) {
             returnCode = Feat->recompute();
             if (returnCode == DocumentObject::StdReturn) {
-                returnCode =
-                    Feat->ExpressionEngine.execute(PropertyExpressionEngine::ExecuteOutput);
+                returnCode = Feat->ExpressionEngine.execute(PropertyExpressionEngine::ExecuteOutput);
             }
         }
     }
@@ -3377,45 +3649,48 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
     }
     catch (const Base::MemoryException& e) {
         FC_ERR("Memory exception in " << Feat->getFullName() << " thrown: " << e.what());
-        d->addRecomputeLog("Out of memory exception",
-                           Feat,
-                           "OUT_OF_MEMORY",
-                           "Document::_recomputeFeature");
+        d->addRecomputeLog("Out of memory exception", Feat, "OUT_OF_MEMORY", "Document::_recomputeFeature");
         return 1;
     }
     catch (Base::Exception& e) {
         e.reportException();
         FC_LOG("Failed to recompute " << Feat->getFullName() << ": " << e.what());
         const auto [property, subelement] = recomputeFailureReference(Feat);
-        d->addRecomputeLog(e.what(),
-                           Feat,
-                           recomputeFailureCode(Feat),
-                           Feat->getTypeId().getName(),
-                           property,
-                           subelement);
+        d->addRecomputeLog(
+            e.what(),
+            Feat,
+            recomputeFailureCode(Feat),
+            Feat->getTypeId().getName(),
+            property,
+            subelement
+        );
         return 1;
     }
     catch (std::exception& e) {
         FC_ERR("Exception in " << Feat->getFullName() << " thrown: " << e.what());
         const auto [property, subelement] = recomputeFailureReference(Feat);
-        d->addRecomputeLog(e.what(),
-                           Feat,
-                           recomputeFailureCode(Feat),
-                           Feat->getTypeId().getName(),
-                           property,
-                           subelement);
+        d->addRecomputeLog(
+            e.what(),
+            Feat,
+            recomputeFailureCode(Feat),
+            Feat->getTypeId().getName(),
+            property,
+            subelement
+        );
         return 1;
     }
 #ifndef FC_DEBUG
     catch (...) {
         FC_ERR("Unknown exception in " << Feat->getFullName() << " thrown");
         const auto [property, subelement] = recomputeFailureReference(Feat);
-        d->addRecomputeLog("Unknown exception!",
-                           Feat,
-                           recomputeFailureCode(Feat),
-                           Feat->getTypeId().getName(),
-                           property,
-                           subelement);
+        d->addRecomputeLog(
+            "Unknown exception!",
+            Feat,
+            recomputeFailureCode(Feat),
+            Feat->getTypeId().getName(),
+            property,
+            subelement
+        );
         return 1;
     }
 #endif
@@ -3426,11 +3701,13 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
     else {
         returnCode->Which = Feat;
         const auto [property, subelement] = recomputeFailureReference(Feat);
-        d->addRecomputeLog(returnCode,
-                           recomputeFailureCode(Feat),
-                           Feat->getTypeId().getName(),
-                           property,
-                           subelement);
+        d->addRecomputeLog(
+            returnCode,
+            recomputeFailureCode(Feat),
+            Feat->getTypeId().getName(),
+            property,
+            subelement
+        );
         FC_LOG("Failed to recompute " << Feat->getFullName() << ": " << returnCode->Why);
         return 1;
     }
@@ -3445,6 +3722,12 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
     // verify that the feature is (active) part of the document
     if (!feature->isAttachedToDocument()) {
         return false;
+    }
+
+    if (const auto* timeline = DocumentTimeline::get(feature->getDocument()); timeline
+        && !timeline->isOperationActive(feature)
+        && !feature->getExtensionByType<SuppressibleExtension>(true)) {
+        return true;
     }
 
     if (recursive) {
@@ -3465,8 +3748,8 @@ DocumentObject* Document::addObject(
     const bool isPartial
 )
 {
-    const Base::Type type =
-        Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
+    const Base::Type type
+        = Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
     if (type.isBad()) {
         std::stringstream str;
         str << "Document::addObject: '" << sType << "' is not a document object type";
@@ -3481,23 +3764,27 @@ DocumentObject* Document::addObject(
     auto* pcObject = static_cast<DocumentObject*>(typeInstance);
     pcObject->setDocument(this);
 
-    _addObject(pcObject,
-               pObjectName,
-               AddObjectOption::SetNewStatus
-                   | (isPartial ? AddObjectOption::SetPartialStatus : AddObjectOption::UnsetPartialStatus)
-                   | (isNew ? AddObjectOption::DoSetup : AddObjectOption::None)
-                   | AddObjectOption::ActivateObject,
-               viewType);
+    _addObject(
+        pcObject,
+        pObjectName,
+        AddObjectOption::SetNewStatus
+            | (isPartial ? AddObjectOption::SetPartialStatus : AddObjectOption::UnsetPartialStatus)
+            | (isNew ? AddObjectOption::DoSetup : AddObjectOption::None)
+            | AddObjectOption::ActivateObject,
+        viewType
+    );
 
     // return the Object
     return pcObject;
 }
 
-std::vector<DocumentObject*>
-Document::addObjects(const char* sType, const std::vector<std::string>& objectNames, bool isNew)
+std::vector<DocumentObject*> Document::addObjects(
+    const char* sType,
+    const std::vector<std::string>& objectNames,
+    bool isNew
+)
 {
-    Base::Type type =
-        Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
+    Base::Type type = Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
     if (type.isBad()) {
         std::stringstream str;
         str << "'" << sType << "' is not a document object type";
@@ -3522,11 +3809,12 @@ Document::addObjects(const char* sType, const std::vector<std::string>& objectNa
 
         // Add the object but only activate the last one
         bool isLast = index == (objects.size() - 1);
-        _addObject(pcObject,
-                   objectNames[index].c_str(),
-                   AddObjectOption::SetNewStatus
-                       | (isNew ? AddObjectOption::DoSetup : AddObjectOption::None)
-                       | (isLast ? AddObjectOption::ActivateObject : AddObjectOption::None));
+        _addObject(
+            pcObject,
+            objectNames[index].c_str(),
+            AddObjectOption::SetNewStatus | (isNew ? AddObjectOption::DoSetup : AddObjectOption::None)
+                | (isLast ? AddObjectOption::ActivateObject : AddObjectOption::None)
+        );
     }
 
     return objects;
@@ -3543,8 +3831,29 @@ void Document::addObject(DocumentObject* obj, const char* name)
     _addObject(obj, name, AddObjectOption::SetNewStatus | AddObjectOption::ActivateObject);
 }
 
-void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, AddObjectOptions options, const char* viewType)
+void Document::_addObject(
+    DocumentObject* pcObject,
+    const char* pObjectName,
+    AddObjectOptions options,
+    const char* viewType
+)
 {
+    struct AddObjectCriticalScope
+    {
+        explicit AddObjectCriticalScope(DocumentP& state)
+            : state(state)
+        {
+            ++state.addObjectCriticalDepth;
+        }
+
+        ~AddObjectCriticalScope()
+        {
+            --state.addObjectCriticalDepth;
+        }
+
+        DocumentP& state;
+    } addObjectCriticalScope(*d);
+
     // get unique name
     string ObjectName;
     if (!Base::Tools::isNullOrEmpty(pObjectName)) {
@@ -3570,30 +3879,88 @@ void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, Add
     d->objectIdMap[pcObject->_Id] = pcObject;
     d->objectArray.push_back(pcObject);
 
-     // do no transactions if we do a rollback!
+    // do no transactions if we do a rollback!
     if (!d->rollback) {
         // Undo stuff
         _checkTransaction(nullptr, nullptr, __LINE__);
         if (d->activeUndoTransaction) {
             d->activeUndoTransaction->addObjectDel(pcObject);
         }
-     }
+    }
     // If we are restoring, don't set the Label object now; it will be restored later. This is to
     // avoid potential duplicate label conflicts later.
     if (options.testFlag(AddObjectOption::SetNewStatus) && !d->StatusBits.test(Restoring)) {
         pcObject->Label.setValue(ObjectName);
     }
 
+    const long objectId = pcObject->getID();
+    long timelineId = 0;
+    const bool capturesTransactionalCopyImport = d->timelineCopyImportDepth != 0
+        && d->StatusBits.test(Restoring) && d->StatusBits.test(Importing)
+        && d->bookedTransaction != NullTransaction
+        && GetApplication().transactionIsActive(d->bookedTransaction);
+    if (options.testFlag(AddObjectOption::SetNewStatus)
+        && (!d->StatusBits.test(Restoring) || capturesTransactionalCopyImport) && !d->rollback
+        && !isPerformingTransaction() && !d->StatusBits.test(TempDoc)
+        && !pcObject->isDerivedFrom<DocumentTimeline>()) {
+        if (auto* timeline = DocumentTimeline::ensure(this)) {
+            timelineId = timeline->getID();
+        }
+    }
+    if (getObjectByID(objectId) != pcObject) {
+        throw Base::RuntimeError("The document object was removed while creating its timeline");
+    }
+
+    const auto resolveTimeline = [this, &timelineId]() -> DocumentTimeline* {
+        if (timelineId <= 0) {
+            return nullptr;
+        }
+        auto* object = getObjectByID(timelineId);
+        return object && object->isDerivedFrom<DocumentTimeline>()
+            ? static_cast<DocumentTimeline*>(object)
+            : nullptr;
+    };
+    auto* timeline = resolveTimeline();
+    if (timeline) {
+        // Creation provenance must exist before setupObject() is allowed to
+        // invoke arbitrary nested document callbacks. Automatic enrollment
+        // remains deferred until the object has its durable ViewProvider
+        // identity, and recordCreatedObject() below safely deduplicates this
+        // proof on the ordinary completion path.
+        timeline->rememberProvisionalCreation(pcObject);
+    }
+
     // Call the object-specific initialization
-    if (!isPerformingTransaction() && options.testFlag(AddObjectOption::DoSetup)) {
-        pcObject->setupObject();
+    std::exception_ptr setupException;
+    try {
+        if (!isPerformingTransaction() && options.testFlag(AddObjectOption::DoSetup)) {
+            pcObject->setupObject();
+        }
+    }
+    catch (...) {
+        // FreeCAD deliberately retains an object whose setup callback throws.
+        // Finish the same document/timeline registration as the successful
+        // path, then rethrow the original setup exception after observers have
+        // received one coherent created-object notification.
+        setupException = std::current_exception();
+    }
+
+    // setupObject() may synchronously create other objects and notify external
+    // observers.  Never dereference the original pointer again unless its
+    // stable document identity still resolves to that exact object.
+    if (getObjectByID(objectId) != pcObject) {
+        throw Base::RuntimeError("The document object was removed during object setup");
     }
 
     if (options.testFlag(AddObjectOption::SetNewStatus)) {
         pcObject->setStatus(ObjectStatus::New, true);
     }
-    if (options.testFlag(AddObjectOption::SetPartialStatus) || options.testFlag(AddObjectOption::UnsetPartialStatus)) {
-        pcObject->setStatus(ObjectStatus::PartialObject, options.testFlag(AddObjectOption::SetPartialStatus));
+    if (options.testFlag(AddObjectOption::SetPartialStatus)
+        || options.testFlag(AddObjectOption::UnsetPartialStatus)) {
+        pcObject->setStatus(
+            ObjectStatus::PartialObject,
+            options.testFlag(AddObjectOption::SetPartialStatus)
+        );
     }
 
     if (Base::Tools::isNullOrEmpty(viewType)) {
@@ -3601,32 +3968,55 @@ void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, Add
     }
     pcObject->_pcViewProviderName = viewType ? viewType : "";
 
+    auto* liveTimeline = resolveTimeline();
+    if (!liveTimeline && timelineId > 0) {
+        throw Base::RuntimeError("The internal document timeline was removed during object setup");
+    }
+    if (liveTimeline) {
+        liveTimeline->recordCreatedObject(pcObject);
+    }
+    if (getObjectByID(objectId) != pcObject) {
+        throw Base::RuntimeError("The document object was removed while recording its timeline");
+    }
+
     signalNewObject(*pcObject);
+    if (getObjectByID(objectId) != pcObject) {
+        throw Base::RuntimeError("The document object was removed by a creation callback");
+    }
 
     // do no transactions if we do a rollback!
     if (!d->rollback && d->activeUndoTransaction) {
         signalTransactionAppend(*pcObject, d->activeUndoTransaction);
+        if (getObjectByID(objectId) != pcObject) {
+            throw Base::RuntimeError("The document object was removed by a transaction callback");
+        }
     }
 
     if (options.testFlag(AddObjectOption::ActivateObject)) {
         d->activeObject = pcObject;
         signalActivatedObject(*pcObject);
+        if (getObjectByID(objectId) != pcObject) {
+            throw Base::RuntimeError("The document object was removed by an activation callback");
+        }
+    }
+
+    if (setupException) {
+        std::rethrow_exception(setupException);
     }
 }
 
 bool Document::containsObject(const DocumentObject* pcObject) const
 {
-    // We could look for the object in objectMap (keyed by object name),
-    // or search in objectArray (a O(n) vector search) but looking by Id
-    // in objectIdMap would be fastest.
-    auto found = d->objectIdMap.find(pcObject->getID());
-    return found != d->objectIdMap.end() && found->second == pcObject;
+    // Compare stored addresses without dereferencing the candidate. Callers
+    // use this during link cleanup, where a property may briefly retain the
+    // address of an object which has already left the document.
+    return pcObject && std::ranges::find(d->objectArray, pcObject) != d->objectArray.end();
 }
 
 /// Remove an object out of the document
 void Document::removeObject(const DocumentObject* object)
 {
-    if (object->getDocument() == this) {
+    if (containsObject(object) && object->getDocument() == this) {
         removeObject(object->getNameInDocument());
     }
 }
@@ -3635,7 +4025,7 @@ void Document::removeObject(const DocumentObject* object)
 void Document::removeObject(const char* sName)
 {
     auto pos = d->objectMap.find(sName);
-    if (pos == d->objectMap.end()){
+    if (pos == d->objectMap.end()) {
         FC_MSG("Object " << sName << " already deleted in document " << getName());
         return;
     }
@@ -3645,6 +4035,20 @@ void Document::removeObject(const char* sName)
         return;
     }
 
+    // A timeline property update is a synchronous critical section.  Refuse
+    // only reentrant deletion at that point; deliberate removal outside the
+    // critical section remains available for migration and recovery tools.
+    if (pos->second->isDerivedFrom<DocumentTimeline>() && !isPerformingTransaction()) {
+        auto* timeline = static_cast<DocumentTimeline*>(pos->second);
+        if (timeline->isApplying() || d->addObjectCriticalDepth != 0) {
+            FC_WARN(
+                "Cannot remove the internal document timeline during a document creation "
+                "critical section"
+            );
+            return;
+        }
+    }
+
     if (pos->second->testStatus(ObjectStatus::PendingRecompute)) {
         // TODO: shall we allow removal if there is active undo transaction?
         FC_MSG("pending remove of " << sName << " after recomputing document " << getName());
@@ -3652,11 +4056,15 @@ void Document::removeObject(const char* sName)
         return;
     }
 
-    _removeObject(pos->second, RemoveObjectOption::MayRemoveWhileRecomputing | RemoveObjectOption::MayDestroyOutOfTransaction);
+    _removeObject(
+        pos->second,
+        RemoveObjectOption::MayRemoveWhileRecomputing | RemoveObjectOption::MayDestroyOutOfTransaction
+    );
 }
 void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions options)
 {
-    if (!options.testFlag(RemoveObjectOption::MayRemoveWhileRecomputing) && testStatus(Document::Recomputing)) {
+    if (!options.testFlag(RemoveObjectOption::MayRemoveWhileRecomputing)
+        && testStatus(Document::Recomputing)) {
         FC_ERR("Cannot delete " << pcObject->getFullName() << " while recomputing");
         return;
     }
@@ -3671,8 +4079,8 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         return;
     }
 
-    if (options.testFlag(RemoveObjectOption::PreserveChildrenVisibility)
-        && !d->rollback && d->activeUndoTransaction && pcObject->hasChildElement()) {
+    if (options.testFlag(RemoveObjectOption::PreserveChildrenVisibility) && !d->rollback
+        && d->activeUndoTransaction && pcObject->hasChildElement()) {
         // Preserve link group sub object global visibilities. Normally those
         // claimed object should be hidden in global coordinate space. However,
         // when the group is deleted, the user will naturally try to show the
@@ -3696,6 +4104,16 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
 
     if (d->activeObject == pcObject) {
         d->activeObject = nullptr;
+    }
+
+    // Unlink timeline state while the object is still completely attached.
+    // Generic dependency cleanup runs after unsetupObject() and deletion
+    // callbacks, where an owned operation resource may already have partially
+    // dismantled properties.  The timeline owns parallel state arrays, so it
+    // must perform its identity remap before that teardown begins.
+    if (auto* timeline = DocumentTimeline::get(this);
+        timeline && timeline != pcObject && !isPerformingTransaction()) {
+        timeline->forgetOperation(pcObject);
     }
 
     // Mark the object as about to be removed
@@ -3726,7 +4144,8 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
     }
 
     std::unique_ptr<DocumentObject> tobedestroyed;
-    if ((options.testFlag(RemoveObjectOption::MayDestroyOutOfTransaction) && !d->rollback && !d->activeUndoTransaction)
+    if ((options.testFlag(RemoveObjectOption::MayDestroyOutOfTransaction) && !d->rollback
+         && !d->activeUndoTransaction)
         || (options.testFlag(RemoveObjectOption::DestroyOnRollback) && d->rollback)) {
         // if not saved in undo -> delete object later
         std::unique_ptr<DocumentObject> delobj(pos->second);
@@ -3734,9 +4153,7 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         tobedestroyed->setStatus(ObjectStatus::Destroy, true);
     }
 
-    for (auto it = d->objectArray.begin();
-         it != d->objectArray.end();
-         ++it) {
+    for (auto it = d->objectArray.begin(); it != d->objectArray.end(); ++it) {
         if (*it == pcObject) {
             d->objectArray.erase(it);
             break;
@@ -3753,15 +4170,39 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
     d->objectMap.erase(pos);
 }
 
-void Document::breakDependency(DocumentObject* pcObject, const bool clear) // NOLINT
+void Document::breakDependency(DocumentObject* pcObject, const bool clear)  // NOLINT
 {
+    struct BreakDependencyScope
+    {
+        explicit BreakDependencyScope(DocumentP& state)
+            : state(state)
+        {
+            ++state.breakDependencyDepth;
+        }
+
+        ~BreakDependencyScope()
+        {
+            --state.breakDependencyDepth;
+        }
+
+        DocumentP& state;
+    } breakDependencyScope(*d);
+
     // Nullify all dependent objects
     PropertyLinkBase::breakLinks(pcObject, d->objectArray, clear);
 }
 
-std::vector<DocumentObject*>
-Document::copyObject(const std::vector<DocumentObject*>& objs, bool recursive, bool returnAll)
+std::vector<DocumentObject*> Document::copyObject(
+    const std::vector<DocumentObject*>& objs,
+    bool recursive,
+    bool returnAll
+)
 {
+    const int copyTransactionId = getBookedTransactionID();
+    const bool capturesTimelineCreations = !testStatus(TempDoc) && !isPerformingTransaction()
+        && !d->rollback && copyTransactionId != NullTransaction
+        && GetApplication().transactionIsActive(copyTransactionId);
+
     std::vector<DocumentObject*> deps;
     if (!recursive) {
         deps = objs;
@@ -3770,14 +4211,115 @@ Document::copyObject(const std::vector<DocumentObject*>& objs, bool recursive, b
         deps = getDependencyList(objs, DepNoXLinked | DepSort);
     }
 
+    auto* sourceTimeline = capturesTimelineCreations ? DocumentTimeline::get(this) : nullptr;
+    if (recursive && sourceTimeline) {
+        // Ordinary dependency traversal does not express semantic ownership.
+        // Alternate both closures until every operation resource and every
+        // dependency introduced by that resource is present exactly once.
+        std::unordered_set<DocumentObject*> identities(deps.begin(), deps.end());
+        while (true) {
+            const std::size_t sizeBefore = identities.size();
+            std::vector<DocumentObject*> tracked;
+            for (auto* operation : sourceTimeline->Operations.getValues()) {
+                if (identities.contains(operation)) {
+                    tracked.push_back(operation);
+                }
+            }
+            if (!tracked.empty()) {
+                const auto semantic = sourceTimeline->semanticCopyClosure(tracked);
+                identities.insert(semantic.begin(), semantic.end());
+                const auto dependencies = getDependencyList(
+                    semantic,
+                    DepNoXLinked | DepSort
+                );
+                identities.insert(dependencies.begin(), dependencies.end());
+            }
+            if (identities.size() == sizeBefore) {
+                break;
+            }
+        }
+
+        std::vector<DocumentObject*> unordered(identities.begin(), identities.end());
+        const auto ordered = getDependencyList(unordered, DepNoXLinked | DepSort);
+        deps.clear();
+        deps.reserve(identities.size());
+        for (auto* object : ordered) {
+            if (identities.contains(object)) {
+                deps.push_back(object);
+            }
+        }
+        if (deps.size() != identities.size()) {
+            throw Base::RuntimeError(
+                "Could not produce one exact dependency order for a recursive timeline copy"
+            );
+        }
+    }
+
+    std::vector<std::string> sourceOrderNames;
+    std::vector<bool> sourceVisibility;
+    std::vector<bool> sourceSuppression;
+    if (sourceTimeline) {
+        const auto& operations = sourceTimeline->Operations.getValues();
+        const auto& visibility = sourceTimeline->VisibilityAtEnd.getValues();
+        const auto& suppression = sourceTimeline->SuppressionAtEnd.getValues();
+        if (visibility.size() != operations.size() || suppression.size() != operations.size()) {
+            throw Base::RuntimeError(
+                "The source timeline has inconsistent accepted state"
+            );
+        }
+        const std::unordered_set<DocumentObject*> copied(deps.begin(), deps.end());
+        for (std::size_t index = 0; index < operations.size(); ++index) {
+            auto* operation = operations[index];
+            if (!copied.contains(operation)) {
+                continue;
+            }
+            sourceOrderNames.push_back(operation->getExportName(true));
+            sourceVisibility.push_back(visibility.test(index));
+            sourceSuppression.push_back(suppression.test(index));
+        }
+    }
+
     if (!testStatus(TempDoc) && !isSaved() && PropertyXLink::hasXLink(deps)) {
         throw Base::RuntimeError(
-            "Document must be saved at least once before link to external objects");
+            "Document must be saved at least once before link to external objects"
+        );
     }
 
     MergeDocuments md(this);
     // if not copying recursively then suppress possible warnings
     md.setVerbose(recursive);
+
+    if (capturesTimelineCreations) {
+        // copyObject restores through the generic import machinery. Ensure
+        // the target controller exists before partially restored objects can
+        // emit callbacks, then let _addObject capture creation proof at the
+        // first stable identity boundary. The scoped depth deliberately does
+        // not affect mergeProject or user-facing timeline imports, whose
+        // canonical adoption has a separate contract.
+        DocumentTimeline::ensure(this);
+    }
+
+    struct TimelineCopyImportScope
+    {
+        TimelineCopyImportScope(DocumentP& state, const bool enabled)
+            : state(state)
+            , enabled(enabled)
+        {
+            if (enabled) {
+                ++state.timelineCopyImportDepth;
+            }
+        }
+
+        ~TimelineCopyImportScope()
+        {
+            if (enabled) {
+                --state.timelineCopyImportDepth;
+            }
+        }
+
+        DocumentP& state;
+        bool enabled {false};
+    } timelineCopyImportScope(*d, capturesTimelineCreations);
 
     unsigned int memsize = 1000;  // ~ for the meta-information
     for (auto it : deps) {
@@ -3815,6 +4357,36 @@ Document::copyObject(const std::vector<DocumentObject*>& objs, bool recursive, b
         imported = md.importObjects(istr);
     }
 
+    if (capturesTimelineCreations) {
+        std::unordered_set<DocumentObject*> importedSet(imported.begin(), imported.end());
+        std::unordered_set<DocumentObject*> mappedSet;
+        std::vector<DocumentObject*> mappedSourceOrder;
+        mappedSourceOrder.reserve(sourceOrderNames.size());
+        for (const auto& sourceName : sourceOrderNames) {
+            const auto mappedName = md.getNameMap().find(sourceName);
+            if (mappedName == md.getNameMap().end()) {
+                throw Base::RuntimeError(
+                    "A recursive copy did not map one source timeline identity"
+                );
+            }
+            auto* mapped = getObject(mappedName->second.c_str());
+            if (!mapped || !importedSet.contains(mapped)
+                || !mappedSet.insert(mapped).second) {
+                throw Base::RuntimeError(
+                    "A recursive copy produced a missing, duplicate, or external "
+                    "timeline identity"
+                );
+            }
+            mappedSourceOrder.push_back(mapped);
+        }
+        adoptImportedTimelineOperations(
+            imported,
+            mappedSourceOrder,
+            sourceVisibility,
+            sourceSuppression
+        );
+    }
+
     if (returnAll || imported.size() != deps.size()) {
         return imported;
     }
@@ -3832,8 +4404,7 @@ Document::copyObject(const std::vector<DocumentObject*>& objs, bool recursive, b
     return result;
 }
 
-std::vector<DocumentObject*>
-Document::importLinks(const std::vector<DocumentObject*>& objs)
+std::vector<DocumentObject*> Document::importLinks(const std::vector<DocumentObject*>& objs)
 {
     std::set<DocumentObject*> links;
     getLinksTo(links, nullptr, GetLinkExternal, 0, objs);
@@ -3855,7 +4426,8 @@ Document::importLinks(const std::vector<DocumentObject*>& objs)
         ++it;
         if (obj->testStatus(PartialObject)) {
             throw Base::RuntimeError(
-                "Cannot import partial loaded object. Please reload the current document");
+                "Cannot import partial loaded object. Please reload the current document"
+            );
         }
     }
 
@@ -3966,18 +4538,33 @@ DocumentObject* Document::getActiveObject() const
     return d->activeObject;
 }
 
+void Document::setActiveObject(DocumentObject* object)
+{
+    if (object && object->getDocument() != this) {
+        throw Base::ValueError("Cannot activate an object from another document");
+    }
+    if (d->activeObject == object) {
+        return;
+    }
+
+    d->activeObject = object;
+    if (object) {
+        signalActivatedObject(*object);
+    }
+}
+
 DocumentObject* Document::getObject(const char* Name) const
 {
     const auto pos = d->objectMap.find(Name);
 
-    return pos != d->objectMap.end() ?pos->second:nullptr;
+    return pos != d->objectMap.end() ? pos->second : nullptr;
 }
 
 DocumentObject* Document::getObjectByID(const long id) const
 {
     const auto it = d->objectIdMap.find(id);
 
-    return it != d->objectIdMap.end() ?it->second:nullptr;
+    return it != d->objectIdMap.end() ? it->second : nullptr;
 }
 
 
@@ -4059,15 +4646,17 @@ std::vector<DocumentObject*> Document::getObjectsOfType(const std::vector<Base::
         for (auto& typeId : types) {
             if (it->isDerivedFrom(typeId)) {
                 Objects.push_back(it);
-                break; // Prevent adding several times the same object.
+                break;  // Prevent adding several times the same object.
             }
         }
     }
     return Objects;
 }
 
-std::vector<DocumentObject*> Document::getObjectsWithExtension(const Base::Type& typeId,
-                                                               const bool derived) const
+std::vector<DocumentObject*> Document::getObjectsWithExtension(
+    const Base::Type& typeId,
+    const bool derived
+) const
 {
 
     std::vector<DocumentObject*> Objects;
@@ -4080,8 +4669,11 @@ std::vector<DocumentObject*> Document::getObjectsWithExtension(const Base::Type&
 }
 
 
-std::vector<DocumentObject*>
-Document::findObjects(const Base::Type& typeId, const char* objname, const char* label) const
+std::vector<DocumentObject*> Document::findObjects(
+    const Base::Type& typeId,
+    const char* objname,
+    const char* label
+) const
 {
     boost::cmatch what;
     boost::regex rx_name;
@@ -4152,7 +4744,7 @@ std::vector<DocumentObject*> Document::getRootObjectsIgnoreLinks() const
 {
     std::vector<DocumentObject*> ret;
 
-    for (const auto &objectIt : d->objectArray) {
+    for (const auto& objectIt : d->objectArray) {
         auto list = objectIt->getInList();
         bool noParents = list.empty();
 
@@ -4174,10 +4766,12 @@ std::vector<DocumentObject*> Document::getRootObjectsIgnoreLinks() const
     return ret;
 }
 
-void DocumentP::findAllPathsAt(const std::vector<Node>& all_nodes,
-                               const size_t id,
-                               std::vector<Path>& all_paths,
-                               Path tmp)
+void DocumentP::findAllPathsAt(
+    const std::vector<Node>& all_nodes,
+    const size_t id,
+    std::vector<Path>& all_paths,
+    Path tmp
+)
 {
     if (std::ranges::find(tmp, id) != tmp.end()) {
         tmp.push_back(id);
@@ -4197,8 +4791,10 @@ void DocumentP::findAllPathsAt(const std::vector<Node>& all_nodes,
     }
 }
 
-std::vector<std::list<DocumentObject*>>
-Document::getPathsByOutList(const DocumentObject* from, const DocumentObject* to) const
+std::vector<std::list<DocumentObject*>> Document::getPathsByOutList(
+    const DocumentObject* from,
+    const DocumentObject* to
+) const
 {
     std::map<const DocumentObject*, size_t> indexMap;
     for (size_t i = 0; i < d->objectArray.size(); ++i) {

@@ -41,6 +41,7 @@ public:
     ~ViewProviderBase() override;
 
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override;
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;
 
     Gui::ViewProvider* startEditing(int ModNum) override;

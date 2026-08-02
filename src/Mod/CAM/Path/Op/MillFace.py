@@ -25,6 +25,7 @@
 import FreeCAD
 import Path
 import Path.Op.Area as PathAreaOp
+import Path.Op.Base as PathOp
 import Path.Op.PocketBase as PathPocketBase
 import PathScripts.PathUtils as PathUtils
 from PySide.QtCore import QT_TRANSLATE_NOOP
@@ -390,7 +391,6 @@ def SetupProperties():
 
 def Create(name, obj=None, parentJob=None):
     """Create(name) ... Creates and returns a Mill Facing operation."""
-    if obj is None:
-        obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = PathOp.createOperationObject(name, obj, parentJob)
     obj.Proxy = ObjectFace(obj, name, parentJob)
     return obj

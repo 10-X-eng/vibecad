@@ -2,6 +2,7 @@
 
 import FreeCAD
 import FreeCADGui
+from Path.CommandBoundary import TaskDocumentTransaction
 from PySide import QtGui
 
 translate = FreeCAD.Qt.translate
@@ -27,10 +28,20 @@ class SimpleEditPanel:
     _transaction_name = "Property Edit"
     _ui_file = ""
 
-    def __init__(self, obj, view):
+    def __init__(self, obj, view, transaction=None):
         self.obj = obj
         self.viewProvider = view
-        FreeCAD.ActiveDocument.openTransaction(self._transaction_name)
+        if transaction is None:
+            transaction = TaskDocumentTransaction(
+                obj,
+                self._transaction_name,
+            )
+        elif transaction.document is not obj.Document:
+            raise RuntimeError(
+                "The CAM edit-panel transaction belongs to another document"
+            )
+        self.transaction = transaction
+        self.document = self.transaction.document
         self.form = FreeCADGui.PySideUic.loadUi(self._ui_file)
         self._fc = {}
         self.setupUi()
@@ -104,36 +115,49 @@ class SimpleEditPanel:
         # callback for standard buttons
         if button == QtGui.QDialogButtonBox.Apply:
             self.updateModel()
-            FreeCAD.ActiveDocument.recompute()
         if button == QtGui.QDialogButtonBox.Cancel:
             self.abort()
 
     def abort(self):
-        FreeCAD.ActiveDocument.abortTransaction()
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
+        self.transaction.abort()
         self.cleanup(True)
+        return True
 
     def reject(self):
-        FreeCAD.ActiveDocument.abortTransaction()
-        FreeCADGui.Control.closeDialog()
-        FreeCAD.ActiveDocument.recompute()
+        return self.abort()
 
     def accept(self):
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
         self.getFields()
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCADGui.ActiveDocument.resetEdit()
-        FreeCADGui.Control.closeDialog()
-        FreeCAD.ActiveDocument.recompute()
+        self.transaction.commit((self.obj,))
+        self.viewProvider.clearTaskPanel()
+        self.transaction.reset_edit()
+        self.transaction.close_dialog()
+        self.transaction.recompute_after_close()
+        return True
 
     def cleanup(self, gui):
-        self.viewProvider.clearTaskPanel()
+        if self.transaction.is_open():
+            self.viewProvider.clearTaskPanel()
         if gui:
-            FreeCADGui.Control.closeDialog()
-            FreeCAD.ActiveDocument.recompute()
+            self.transaction.close_dialog()
+            self.transaction.recompute_after_close()
+
+    def closeDeletedDocumentTask(self):
+        self.viewProvider.clearTaskPanel()
+        self.transaction.close_dialog()
 
     def updateModel(self):
+        if not self.transaction.is_open():
+            return
         self.getFields()
         self.obj.Proxy.execute(self.obj)
-        FreeCAD.ActiveDocument.recompute()
+        self.transaction.recompute((self.obj,))
 
     def open(self):
         pass

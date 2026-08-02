@@ -38,3 +38,26 @@ def test_large_worker_output_cannot_fill_a_parent_pipe(tmp_path: Path) -> None:
     assert result["stderr"].endswith(f"STDERR_END{os.linesep}")
     assert len(result["stdout"]) <= 16_000
     assert len(result["stderr"]) <= 16_000
+    assert result["termination_reason"] == "process_exit"
+    assert result["cancelled_by"] is None
+    assert result["limit_reached"] is None
+    assert result["timeout_seconds"] == 10.0
+
+
+def test_worker_cancellation_reports_exact_actor_and_preserved_limit() -> None:
+    result = run_process(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        cwd=Path.cwd(),
+        environment=dict(os.environ),
+        cancellation_check=lambda: True,
+        timeout_seconds=7.0,
+        memory_limit_bytes=123_456,
+    )
+
+    assert result["started"] is True
+    assert result["cancelled"] is True
+    assert result["cancelled_by"] == "host"
+    assert result["termination_reason"] == "host_cancellation_request"
+    assert result["limit_reached"] is None
+    assert result["timeout_seconds"] == 7.0
+    assert result["memory_limit_bytes"] == 123_456

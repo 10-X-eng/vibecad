@@ -32,6 +32,8 @@
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 #include <algorithm>
+#include <limits>
+#include <memory>
 #include <stdexcept>
 
 
@@ -1126,6 +1128,54 @@ PyObject* FemMeshPy::copy(PyObject* args) const
 
     const FemMesh& mesh = *getFemMeshPtr();
     return new FemMeshPy(new FemMesh(mesh));
+}
+
+PyObject* FemMeshPy::removeElements(PyObject* args)
+{
+    PyObject* idsObject = nullptr;
+    int removeOrphanNodes = 1;
+    if (!PyArg_ParseTuple(args, "O|p", &idsObject, &removeOrphanNodes)) {
+        return nullptr;
+    }
+
+    using PyObjectPtr = std::unique_ptr<PyObject, void (*)(PyObject*)>;
+    const auto decref = [](PyObject* object) {
+        Py_XDECREF(object);
+    };
+    PyObjectPtr ids(PySequence_Fast(idsObject, "element_ids must be a sequence of integers"), decref);
+    if (!ids) {
+        return nullptr;
+    }
+
+    std::set<int> elementIds;
+    const Py_ssize_t count = PySequence_Fast_GET_SIZE(ids.get());
+    PyObject** items = PySequence_Fast_ITEMS(ids.get());
+    for (Py_ssize_t index = 0; index < count; ++index) {
+        if (!PyLong_Check(items[index]) || PyBool_Check(items[index])) {
+            PyErr_SetString(PyExc_TypeError, "element_ids must contain only integers");
+            return nullptr;
+        }
+
+        const long value = PyLong_AsLong(items[index]);
+        if (PyErr_Occurred()) {
+            return nullptr;
+        }
+        if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max()) {
+            PyErr_SetString(PyExc_OverflowError, "mesh element ID is outside the supported range");
+            return nullptr;
+        }
+        elementIds.insert(static_cast<int>(value));
+    }
+
+    try {
+        getFemMeshPtr()->removeElements(elementIds, removeOrphanNodes != 0);
+    }
+    catch (const Base::ValueError& error) {
+        PyErr_SetString(PyExc_ValueError, error.what());
+        return nullptr;
+    }
+
+    Py_Return;
 }
 
 PyObject* FemMeshPy::read(PyObject* args, PyObject* kwds)

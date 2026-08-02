@@ -29,22 +29,26 @@ __url__ = "https://www.freecad.org"
 #  \ingroup FEM
 #  \brief solver CalculiX view provider
 
-import FreeCADGui
-
 from femtaskpanels import task_solver_calculix
 from femviewprovider import view_base_femobject
 
 
 class VPSolverCalculiX(view_base_femobject.VPBaseFemObject):
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def __init__(self, vobj):
         super().__init__(vobj)
+        vobj.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
 
     def getIcon(self):
         return ":/icons/FEM_SolverStandard.svg"
 
     def setEdit(self, vobj, mode=0):
-        task = task_solver_calculix._TaskPanel(vobj.Object)
-        FreeCADGui.Control.showDialog(task)
-
-        return True
+        return super().setEdit(
+            vobj,
+            mode,
+            task_solver_calculix._TaskPanel,
+            hide_mesh=False,
+        )

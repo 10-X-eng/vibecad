@@ -150,6 +150,7 @@ SET(Document_CPP_SRCS
     Annotation.cpp
     BackupPolicy.cpp
     Document.cpp
+    DocumentTimeline.cpp
     RecoverySnapshot.cpp
     DocumentObject.cpp
     DepEdgePyImp.cpp
@@ -207,6 +208,7 @@ SET(Document_HPP_SRCS
     Annotation.h
     BackupPolicy.h
     Document.h
+    DocumentTimeline.h
     RecoverySnapshot.h
     DepEdge.h
     DocumentObject.h

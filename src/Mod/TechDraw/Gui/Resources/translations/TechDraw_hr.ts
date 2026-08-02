@@ -122,24 +122,7 @@
       <translation>Umeće napomenu teksta koji se može uređivati na postojećoj stranici</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>TechDraw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>BIM pogled</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Umetni pogled na BIM dio ravni</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -379,8 +362,8 @@
       <source>Inserts new contextual dimensions to the selection.
 Depending on your selection you might have several dimensions available. You can cycle through them using the M key.
 Left clicking on empty space will validate the current dimension. Right clicking or pressing Esc will cancel.</source>
-      <translation>Umeče novu dimenziju na temelju vašeg odabira. 
-Ovisno o vašem odabiru, možda imate nekoliko dostupnih ograničenja. Možete se kretati kroz njih pomoću tipke M. 
+      <translation>Umeče novu dimenziju na temelju vašeg odabira.
+Ovisno o vašem odabiru, možda imate nekoliko dostupnih ograničenja. Možete se kretati kroz njih pomoću tipke M.
 Kliknite lijevom tipkom miša na prazno mjesto, trenutačno ograničenje će se potvrditi. Desnim klikom miša ili pritiskom tipke Esc će otkazati.</translation>
     </message>
   </context>
@@ -2135,12 +2118,6 @@ Ako se ne odabere nijedan predmet, otvara se preglednik datoteka za odabir SVG-a
       <translation>Stranica izrade crteža</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>Stvaranje BIM prikaza</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Izradi sliku</translation>
@@ -3293,11 +3270,6 @@ Ako se ne odabere nijedan predmet, otvara se preglednik datoteka za odabir SVG-a
       <translation>Odaberi jednu grupu isječka i jedan pogled</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Stranica sadrži BIM pogled koji se neće izvoziti. Nastaviti?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation type="unfinished">Save DXF file</translation>
@@ -3331,16 +3303,6 @@ Ako se ne odabere nijedan predmet, otvara se preglednik datoteka za odabir SVG-a
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Odaberite barem jedan objekt</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Odaberite samo 1 BIM dio ravni presjeka</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Nema BIM odjeljka u odabiru</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -5657,9 +5619,9 @@ To utječe samo na alatnu traku; svi alati ostaju dostupni putem izbornika i pre
 &apos;Auto&apos;: The tool will apply radius to arcs and diameter to circles.
 &apos;Diameter&apos;: The tool will apply diameter to all.
 &apos;Radius&apos;: The tool will apply radius to all.</source>
-      <translation>Tijekom korištenja alata za dimenzioniranje možete odabrati kako upravljati krugovima i lukovima: 
-&apos;Automatski&apos;: Alat će primijeniti polumjer na luk i promjer na krug. 
-&apos;Promjer&apos;: Alat će primijeniti promjer na sve. 
+      <translation>Tijekom korištenja alata za dimenzioniranje možete odabrati kako upravljati krugovima i lukovima:
+&apos;Automatski&apos;: Alat će primijeniti polumjer na luk i promjer na krug.
+&apos;Promjer&apos;: Alat će primijeniti promjer na sve.
 &apos;Polumjer&apos;: Alat će primijeniti polumjer na sve.</translation>
     </message>
     <message>
@@ -9280,7 +9242,7 @@ koristeći zadane X/Y razmake</translation>
       <location filename="../../ViewProviderBalloon.cpp" line="187"/>
       <source>You cannot delete this balloon now because
 there is an open task dialog.</source>
-      <translation>Ovaj balončić ne možete izbrisati sada 
+      <translation>Ovaj balončić ne možete izbrisati sada
 jer je otvoren dijalog zadataka.</translation>
     </message>
     <message>
@@ -9960,7 +9922,7 @@ jer je otvoren dijalog zadataka.</translation>
       <location filename="../../ViewProviderDimension.cpp" line="326"/>
       <source>You cannot delete this dimension now because
 there is an open task dialog.</source>
-      <translation>Ovu dimenziju sada ne možete izbrisati  
+      <translation>Ovu dimenziju sada ne možete izbrisati
 jer je otvoren dijalog zadataka.</translation>
     </message>
     <message>
@@ -10115,14 +10077,7 @@ jer je otvoren dijalog zadataka.</translation>
       <translation>Linija</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

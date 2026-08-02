@@ -25,10 +25,16 @@
 #include <QMessageBox>
 
 
+#include <App/Document.h>
+#include <Base/Exception.h>
 #include <Gui/CommandT.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/WaitCursor.h>
+#include <Mod/Part/App/PartFeature.h>
+#include <Mod/Points/App/PointsFeature.h>
 
 #include "FitBSplineCurve.h"
+#include "OperationSupport.h"
 #include "ui_FitBSplineCurve.h"
 
 
@@ -99,8 +105,7 @@ bool FitBSplineCurveWidget::accept()
         tryAccept();
     }
     catch (const Base::Exception& e) {
-        d->obj.getDocument()->abortTransaction();
-        QMessageBox::warning(this, tr("Input Error"), QString::fromLatin1(e.what()));
+        QMessageBox::warning(this, tr("Fit B-Spline Curve"), QString::fromUtf8(e.what()));
         return false;
     }
 
@@ -147,23 +152,51 @@ void FitBSplineCurveWidget::tryAccept()
 
 void FitBSplineCurveWidget::exeCommand(const QString& cmd)
 {
+    auto* source = ReverseEngineeringGui::OperationSupport::usableTaskSource(d->obj);
+    auto* pointCloud = freecad_cast<Points::Feature*>(source);
+    auto* document = source ? source->getDocument() : nullptr;
+    if (!pointCloud || !document || pointCloud->Points.getValue().size() < 2) {
+        throw Base::RuntimeError("The original point cloud is no longer available for curve fitting");
+    }
+
     Gui::WaitCursor wc;
+    Gui::ExactTransaction mutation(*document, QT_TRANSLATE_NOOP("Command", "Fit B-spline curve"));
+    const auto previousIds = ReverseEngineeringGui::OperationSupport::objectIds(*document);
     Gui::Command::addModule(Gui::Command::App, "ReverseEngineering");
-    d->obj.getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Fit B-spline"));
     Gui::Command::runCommand(Gui::Command::Doc, cmd.toLatin1());
-    d->obj.getDocument()->commitTransaction();
+
+    auto created = ReverseEngineeringGui::OperationSupport::createdObjects(*document, previousIds);
+    std::vector<Part::Feature*> outputs;
+    for (auto* object : created) {
+        if (auto* feature = freecad_cast<Part::Feature*>(object)) {
+            outputs.push_back(feature);
+        }
+    }
+    if (outputs.size() != 1 || outputs.front()->Shape.getValue().IsNull()) {
+        throw Base::RuntimeError("Curve fitting did not produce exactly one usable B-spline");
+    }
+    auto* output = outputs.front();
+    output->Label.setValue(pointCloud->Label.getStrValue() + " B-Spline Curve");
+    ReverseEngineeringGui::OperationSupport::setSource(*output, *pointCloud);
+    ReverseEngineeringGui::OperationSupport::publishSourcePreserving(
+        *document,
+        {pointCloud},
+        {output},
+        "FittedCurve",
+        "Fitted Curve",
+        "Fit B-spline curve"
+    );
+    document->recompute();
+    if (output->isError() || output->Shape.getValue().IsNull()) {
+        throw Base::RuntimeError("The fitted B-spline curve is invalid");
+    }
+    ReverseEngineeringGui::OperationSupport::commit(mutation);
     Gui::Command::updateActive();
 }
 
 void FitBSplineCurveWidget::tryCommand(const QString& cmd)
 {
-    try {
-        exeCommand(cmd);
-    }
-    catch (const Base::Exception& e) {
-        d->obj.getDocument()->abortTransaction();
-        e.reportException();
-    }
+    exeCommand(cmd);
 }
 
 
@@ -181,6 +214,10 @@ void FitBSplineCurveWidget::changeEvent(QEvent* e)
 TaskFitBSplineCurve::TaskFitBSplineCurve(const App::DocumentObjectT& obj)
     : widget {new FitBSplineCurveWidget(obj)}
 {
+    if (auto* document = obj.getDocument()) {
+        setDocumentName(document->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
     addTaskBox(widget);
 }
 

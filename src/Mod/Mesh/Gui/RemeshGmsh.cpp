@@ -22,6 +22,8 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
+
 #include <QElapsedTimer>
 #include <QMessageBox>
 #include <QPointer>
@@ -32,16 +34,61 @@
 #include <App/Document.h>
 #include <App/DocumentObserver.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/FileInfo.h>
 #include <Base/Stream.h>
 #include <Gui/ReportView.h>
+#include <Gui/ExactTransaction.h>
+#include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 
 #include "RemeshGmsh.h"
+#include "CommandGuard.h"
+#include "ParametricMeshFilter.h"
 #include "ui_RemeshGmsh.h"
 
 
 using namespace MeshGui;
+
+namespace
+{
+
+bool sameMeshGeometry(const MeshCore::MeshKernel& left, const MeshCore::MeshKernel& right)
+{
+    if (left.GetPoints() != right.GetPoints()) {
+        return false;
+    }
+    const auto& leftFacets = left.GetFacets();
+    const auto& rightFacets = right.GetFacets();
+    if (leftFacets.size() != rightFacets.size()) {
+        return false;
+    }
+    return std::ranges::equal(
+        leftFacets,
+        rightFacets,
+        [](const MeshCore::MeshFacet& first, const MeshCore::MeshFacet& second) {
+            return first._aulPoints[0] == second._aulPoints[0]
+                && first._aulPoints[1] == second._aulPoints[1]
+                && first._aulPoints[2] == second._aulPoints[2];
+        }
+    );
+}
+
+bool sameMeshState(const Mesh::MeshObject& left, const Mesh::MeshObject& right)
+{
+    if (left.getTransform() != right.getTransform() || left.countSegments() != right.countSegments()
+        || !sameMeshGeometry(left.getKernel(), right.getKernel())) {
+        return false;
+    }
+    for (unsigned long index = 0; index < left.countSegments(); ++index) {
+        if (left.getSegment(index).getIndices() != right.getSegment(index).getIndices()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
 
 class GmshWidget::Private
 {
@@ -172,6 +219,12 @@ double GmshWidget::getMinSize() const
     return d->ui.minSize->value().getValue();
 }
 
+QString GmshWidget::executablePath() const
+{
+    const QString configured = d->ui.fileChooser->fileName();
+    return configured.isEmpty() ? QStringLiteral("gmsh") : configured;
+}
+
 void GmshWidget::accept()
 {
     if (d->gmsh.state() == QProcess::Running) {
@@ -179,28 +232,33 @@ void GmshWidget::accept()
         return;
     }
 
-    // clang-format off
-    QString inpFile;
-    QString outFile;
-    if (writeProject(inpFile, outFile)) {
-        // ./gmsh - -bin -2 /tmp/mesh.geo -o /tmp/best.stl
-        QString proc = d->ui.fileChooser->fileName();
-        if (proc.isEmpty()) {
-            proc = QLatin1String("gmsh");
-        }
-        QStringList args;
-        args << QLatin1String("-")
-             << QLatin1String("-bin")
-             << QLatin1String("-2")
-             << inpFile
-             << QLatin1String("-o")
-             << outFile;
-        d->gmsh.start(proc, args);
+    try {
+        // clang-format off
+        QString inpFile;
+        QString outFile;
+        if (writeProject(inpFile, outFile)) {
+            // ./gmsh - -bin -2 /tmp/mesh.geo -o /tmp/best.stl
+            const QString proc = executablePath();
+            QStringList args;
+            args << QLatin1String("-")
+                 << QLatin1String("-bin")
+                 << QLatin1String("-2")
+                 << inpFile
+                 << QLatin1String("-o")
+                 << outFile;
+            d->gmsh.start(proc, args);
 
-        d->time.start();
-        d->ui.labelTime->setText(tr("Time"));
+            d->time.start();
+            d->ui.labelTime->setText(tr("Time"));
+        }
+        // clang-format on
     }
-    // clang-format on
+    catch (const Base::Exception& error) {
+        Base::Console().error("Could not prepare Gmsh input: %s\n", error.what());
+    }
+    catch (...) {
+        Base::Console().error("Could not prepare Gmsh input because of an unknown error\n");
+    }
 }
 
 void GmshWidget::readyReadStandardError()
@@ -249,7 +307,7 @@ void GmshWidget::started()
     }
 }
 
-void GmshWidget::finished(int /*exitCode*/, QProcess::ExitStatus exitStatus)
+void GmshWidget::finished(int exitCode, QProcess::ExitStatus exitStatus)
 {
     d->ui.killButton->setDisabled(true);
     if (d->label) {
@@ -257,8 +315,26 @@ void GmshWidget::finished(int /*exitCode*/, QProcess::ExitStatus exitStatus)
     }
 
     d->ui.labelTime->setText(QStringLiteral("%1 %2 ms").arg(tr("Time:")).arg(d->time.elapsed()));
-    if (exitStatus == QProcess::NormalExit) {
-        loadOutput();
+    if (exitStatus == QProcess::NormalExit && exitCode == 0) {
+        try {
+            (void)loadOutput();
+        }
+        catch (const Base::Exception& error) {
+            Base::Console().error("Gmsh output was not accepted: %s\n", error.what());
+        }
+        catch (...) {
+            Base::Console().error(
+                "Gmsh output was not accepted because it could not be "
+                "read\n"
+            );
+        }
+    }
+    else if (exitStatus == QProcess::NormalExit) {
+        Base::Console().error(
+            "Gmsh exited with status %d; no document geometry was "
+            "changed\n",
+            exitCode
+        );
     }
 }
 
@@ -294,7 +370,7 @@ public:
 
 public:
     App::DocumentObjectWeakPtrT mesh;
-    MeshCore::MeshKernel copy;
+    Mesh::MeshObject current;
     std::string stlFile;
     std::string geoFile;
 };
@@ -303,21 +379,42 @@ RemeshGmsh::RemeshGmsh(Mesh::Feature* mesh, QWidget* parent, Qt::WindowFlags fl)
     : GmshWidget(parent, fl)
     , d(new Private(mesh))
 {
-    // Copy mesh that is used each time when applying Gmsh's remeshing function
-    d->copy = mesh->Mesh.getValue().getKernel();
+    // Retain the exact accepted source state for stale-result detection and
+    // for repeated Apply operations.
+    if (mesh) {
+        d->current = mesh->Mesh.getValue();
+    }
     d->stlFile = App::Application::getTempFileName() + "mesh.stl";
     d->geoFile = App::Application::getTempFileName() + "mesh.geo";
 }
 
-RemeshGmsh::~RemeshGmsh() = default;
+RemeshGmsh::~RemeshGmsh()
+{
+    Base::FileInfo(d->stlFile).deleteFile();
+    Base::FileInfo(d->geoFile).deleteFile();
+}
 
 bool RemeshGmsh::writeProject(QString& inpFile, QString& outFile)
 {
     // clang-format off
-    if (!d->mesh.expired()) {
+    auto* source = d->mesh.get<Mesh::Feature>();
+    if (source
+        && MeshGui::isNativeMeshInputActive(source)
+        && source->Mesh.getValue().countFacets() > 0
+        && sameMeshState(
+            source->Mesh.getValue(),
+            d->current
+        )) {
         Base::FileInfo stl(d->stlFile);
-        MeshCore::MeshOutput output(d->copy);
+        MeshCore::MeshOutput output(
+            d->current.getKernel()
+        );
         Base::ofstream stlOut(stl, std::ios::out | std::ios::binary);
+        if (!stlOut.is_open()) {
+            throw Base::RuntimeError(
+                "Could not create the Gmsh input mesh"
+            );
+        }
         output.SaveBinarySTL(stlOut);
         stlOut.close();
 
@@ -335,6 +432,11 @@ bool RemeshGmsh::writeProject(QString& inpFile, QString& outFile)
         // Gmsh geo file
         Base::FileInfo geo(d->geoFile);
         Base::ofstream geoOut(geo, std::ios::out);
+        if (!geoOut.is_open()) {
+            throw Base::RuntimeError(
+                "Could not create the Gmsh project file"
+            );
+        }
         // Examples on how to use Gmsh: https://sfepy.org/doc-devel/preprocessing.html
         // https://gmsh.info//doc/texinfo/gmsh.html
         // https://docs.salome-platform.org/latest/gui/GMSHPLUGIN/gmsh_2d_3d_hypo_page.html
@@ -379,26 +481,130 @@ bool RemeshGmsh::writeProject(QString& inpFile, QString& outFile)
 
 bool RemeshGmsh::loadOutput()
 {
-    if (d->mesh.expired()) {
-        return false;
-    }
-
     // Now read-in modified mesh
     Base::FileInfo stl(d->stlFile);
     Base::FileInfo geo(d->geoFile);
+    Mesh::Feature* fea = d->mesh.get<Mesh::Feature>();
+    if (!fea || !MeshGui::isNativeMeshInputActive(fea)
+        || !sameMeshState(fea->Mesh.getValue(), d->current)) {
+        stl.deleteFile();
+        geo.deleteFile();
+        Base::Console().warning(
+            "The source mesh changed while Gmsh was running; the stale "
+            "result was not applied\n"
+        );
+        return false;
+    }
 
     Mesh::MeshObject kernel;
-    MeshCore::MeshInput input(kernel.getKernel());
-    Base::ifstream stlIn(stl, std::ios::in | std::ios::binary);
-    input.LoadBinarySTL(stlIn);
-    stlIn.close();
-    kernel.harmonizeNormals();
+    try {
+        MeshCore::MeshInput input(kernel.getKernel());
+        Base::ifstream stlIn(stl, std::ios::in | std::ios::binary);
+        if (!stlIn.is_open()) {
+            throw Base::RuntimeError("Gmsh did not create a readable mesh file");
+        }
+        input.LoadBinarySTL(stlIn);
+        stlIn.close();
+        kernel.harmonizeNormals();
+        if (kernel.countFacets() == 0) {
+            throw Base::RuntimeError("Gmsh produced an empty mesh");
+        }
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error("Gmsh output was not accepted: %s\n", error.what());
+        stl.deleteFile();
+        geo.deleteFile();
+        return false;
+    }
+    catch (...) {
+        Base::Console().error("Gmsh output was not accepted because it could not be read\n");
+        stl.deleteFile();
+        geo.deleteFile();
+        return false;
+    }
 
-    Mesh::Feature* fea = d->mesh.get<Mesh::Feature>();
     App::Document* doc = fea->getDocument();
-    doc->openTransaction("Remesh");
-    fea->Mesh.setValue(kernel.getKernel());
-    doc->commitTransaction();
+    if (!MeshGui::hasCleanNativeMutationBoundary(doc)) {
+        Base::Console().warning(
+            "Remesh result was not applied because another document "
+            "operation is in progress\n"
+        );
+        stl.deleteFile();
+        geo.deleteFile();
+        return false;
+    }
+    kernel.setTransform(d->current.getTransform());
+    std::vector<Mesh::Feature*> results;
+    try {
+        const int algorithm = meshingAlgorithm();
+        const double minimumSize = getMinSize();
+        const double maximumSize = getMaxSize();
+        const double angle = getAngle();
+        const std::string executable =
+            executablePath().toStdString();
+        const Mesh::MeshObject acceptedSource = d->current;
+        results = MeshGui::createParametricMeshFilters(
+            *doc,
+            {
+                MeshGui::ParametricMeshFilterTarget {
+                    fea,
+                    [
+                        algorithm,
+                        minimumSize,
+                        maximumSize,
+                        angle,
+                        executable,
+                        acceptedSource,
+                        kernel
+                    ](App::DocumentObject& object) {
+                        auto& remesh =
+                            static_cast<Mesh::GmshRemesh&>(
+                                object
+                            );
+                        remesh.Algorithm.setValue(algorithm);
+                        remesh.MinimumElementSize.setValue(
+                            minimumSize
+                        );
+                        remesh.MaximumElementSize.setValue(
+                            maximumSize
+                        );
+                        remesh.SurfaceAngle.setValue(angle);
+                        remesh.Executable.setValue(executable);
+                        remesh.CachedSource.setValue(
+                            acceptedSource
+                        );
+                        remesh.CachedResult.setValue(kernel);
+                    },
+                    kernel,
+                },
+            },
+            MeshGui::ParametricMeshFilterSpec {
+                "Mesh::GmshRemesh",
+                "GmshRemesh",
+                "Gmsh Remesh",
+                "Remesh",
+                true,
+                true,
+                false,
+                "GmshRemeshResults",
+                "Gmsh Remesh Results",
+                "Gmsh remesh",
+            }
+        );
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error("Gmsh output could not be committed: %s\n", error.what());
+        stl.deleteFile();
+        geo.deleteFile();
+        return false;
+    }
+    if (results.size() != 1) {
+        stl.deleteFile();
+        geo.deleteFile();
+        return false;
+    }
+    d->mesh = results.front();
+    d->current = results.front()->Mesh.getValue();
     stl.deleteFile();
     geo.deleteFile();
 
@@ -411,6 +617,11 @@ bool RemeshGmsh::loadOutput()
 
 TaskRemeshGmsh::TaskRemeshGmsh(Mesh::Feature* mesh)
 {
+    if (mesh && mesh->getDocument()) {
+        setDocumentName(mesh->getDocument()->getName());
+        setAutoCloseOnDeletedDocument(true);
+        associateToObject3dView(mesh);
+    }
     widget = new RemeshGmsh(mesh);
     addTaskBox(widget, false);
 }

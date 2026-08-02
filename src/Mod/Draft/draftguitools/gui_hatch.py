@@ -30,6 +30,11 @@ import FreeCAD
 from draftguitools import gui_base
 from draftutils import params
 from draftutils.todo import todo
+from draftutils import timeline
+from draftutils.transaction import close_task_dialog
+from draftutils.transaction import ObjectReference
+from draftutils.transaction import reset_document_edit
+from draftutils.transaction import run_document_mutation
 from draftutils.translate import QT_TRANSLATE_NOOP, translate
 
 
@@ -50,11 +55,16 @@ class Draft_Hatch(gui_base.GuiCommandNeedsSelection):
 
         import FreeCADGui
 
-        if FreeCADGui.Selection.getSelection():
+        super().Activated()
+        selection = FreeCADGui.Selection.getSelection(self.doc.Name)
+        if selection:
+            baseobj = selection[0]
+            gui_document = FreeCADGui.getDocument(self.doc.Name)
             task = FreeCADGui.Control.showDialog(
-                Draft_Hatch_TaskPanel(FreeCADGui.Selection.getSelection()[0])
+                Draft_Hatch_TaskPanel(baseobj),
+                gui_document,
             )
-            task.setDocumentName(FreeCADGui.ActiveDocument.Document.Name)
+            task.setDocumentName(self.doc.Name)
             task.setAutoCloseOnDeletedDocument(True)
         else:
             FreeCAD.Console.PrintError(
@@ -71,6 +81,7 @@ class Draft_Hatch_TaskPanel:
         import Draft_rc
 
         self.baseobj = baseobj
+        self.base_reference = ObjectReference.capture(baseobj)
         self.form = FreeCADGui.PySideUic.loadUi(":/ui/dialogHatch.ui")
         self.form.setWindowIcon(QtGui.QIcon(":/icons/Draft_Hatch.svg"))
         self.form.File.fileNameChanged.connect(self.onFileChanged)
@@ -86,43 +97,70 @@ class Draft_Hatch_TaskPanel:
     def accept(self):
 
         import FreeCADGui
+        import Draft
 
         params.set_param("HatchPatternFile", self.form.File.property("fileName"))
         params.set_param("HatchPatternName", self.form.Pattern.currentText())
         params.set_param("HatchPatternScale", self.form.Scale.value())
         params.set_param("HatchPatternRotation", self.form.Rotation.value())
         params.set_param("HatchPatternTranslate", self.form.Translate.isChecked())
+        baseobj = self.base_reference.resolve()
+        if baseobj is None:
+            raise RuntimeError(
+                "The Hatch source is no longer usable at the current "
+                "History position"
+            )
+        document = baseobj.Document
+        filename = self.form.File.property("fileName")
+        pattern = self.form.Pattern.currentText()
+        scale = self.form.Scale.value()
+        rotation = self.form.Rotation.value()
+        translate_pattern = self.form.Translate.isChecked()
+
         if hasattr(self.baseobj, "File") and hasattr(self.baseobj, "Pattern"):
             # modify existing hatch object
-            o = 'FreeCAD.ActiveDocument.getObject("' + self.baseobj.Name + '")'
-            FreeCADGui.doCommand(o + ".File=" + repr(self.form.File.property("fileName")))
-            FreeCADGui.doCommand(o + ".Pattern=" + repr(self.form.Pattern.currentText()))
-            FreeCADGui.doCommand(o + ".Scale=" + str(self.form.Scale.value()))
-            FreeCADGui.doCommand(o + ".Rotation=" + str(self.form.Rotation.value()))
-            FreeCADGui.doCommand(o + ".Translate=" + str(self.form.Translate.isChecked()))
+            def edit_hatch():
+                baseobj.File = filename
+                baseobj.Pattern = pattern
+                baseobj.Scale = scale
+                baseobj.Rotation = rotation
+                baseobj.Translate = translate_pattern
+
+            run_document_mutation(
+                document,
+                translate("draft", "Edit Hatch"),
+                edit_hatch,
+                objects=(baseobj,),
+            )
         else:
             # create new hatch object
-            FreeCAD.ActiveDocument.openTransaction("Create Hatch")
-            FreeCADGui.addModule("Draft")
-            cmd = "Draft.make_hatch("
-            cmd += 'baseobject=FreeCAD.ActiveDocument.getObject("' + self.baseobj.Name
-            cmd += '"),filename=' + repr(self.form.File.property("fileName"))
-            cmd += ",pattern=" + repr(self.form.Pattern.currentText())
-            cmd += ",scale=" + str(self.form.Scale.value())
-            cmd += ",rotation=" + str(self.form.Rotation.value())
-            cmd += ",translate=" + str(self.form.Translate.isChecked()) + ")"
-            FreeCADGui.doCommand(cmd)
-            FreeCAD.ActiveDocument.commitTransaction()
-        FreeCADGui.doCommand("FreeCAD.ActiveDocument.recompute()")
+            def create_hatch():
+                hatch = Draft.make_hatch(
+                    baseobject=baseobj,
+                    filename=filename,
+                    pattern=pattern,
+                    scale=scale,
+                    rotation=rotation,
+                    translate=translate_pattern,
+                )
+                if hatch is None:
+                    raise RuntimeError("Draft could not create the hatch")
+                timeline.accept_derived_output(hatch, (baseobj,))
+
+            run_document_mutation(
+                document,
+                translate("draft", "Create Hatch"),
+                create_hatch,
+                objects=(baseobj,),
+            )
         self.reject()
 
     def reject(self):
 
         import FreeCADGui
 
-        FreeCADGui.Control.closeDialog()
-        FreeCADGui.ActiveDocument.resetEdit()
-        FreeCAD.ActiveDocument.recompute()
+        close_task_dialog(self.base_reference.document)
+        reset_document_edit(self.base_reference.document)
 
     def onFileChanged(self, filename):
 

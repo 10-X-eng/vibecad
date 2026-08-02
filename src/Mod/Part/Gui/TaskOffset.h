@@ -25,8 +25,16 @@
 
 #pragma once
 
+#include <memory>
+
 #include <Gui/TaskView/TaskView.h>
 #include <Gui/TaskView/TaskDialog.h>
+
+namespace App
+{
+class Document;
+class DocumentObject;
+}
 
 namespace Part
 {
@@ -34,6 +42,8 @@ class Offset;
 }
 namespace PartGui
 {
+
+class ModelingTaskAttempt;
 
 class OffsetWidget: public QWidget
 {
@@ -44,7 +54,7 @@ public:
     ~OffsetWidget() override;
 
     bool accept();
-    bool reject();
+    void prepareForClose();
     Part::Offset* getObject() const;
 
 private:
@@ -71,6 +81,11 @@ class TaskOffset: public Gui::TaskView::TaskDialog
 
 public:
     explicit TaskOffset(Part::Offset*);
+    TaskOffset(
+        App::Document&,
+        App::DocumentObject& source,
+        bool twoDimensional
+    );
     ~TaskOffset() override;
 
 public:
@@ -87,6 +102,7 @@ public:
 
 private:
     OffsetWidget* widget;
+    std::unique_ptr<ModelingTaskAttempt> attempt;
 };
 
 }  // namespace PartGui

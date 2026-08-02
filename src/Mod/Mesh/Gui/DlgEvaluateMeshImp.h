@@ -77,6 +77,7 @@ public:
     explicit DlgEvaluateMeshImp(QWidget* parent = nullptr, Qt::WindowFlags fl = Qt::WindowFlags());
     ~DlgEvaluateMeshImp() override;
 
+    void setEvaluationDocument(App::Document*);
     void setMesh(Mesh::Feature*);
 
 private:

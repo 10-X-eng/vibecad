@@ -25,6 +25,9 @@
 
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include <Gui/Selection/SelectionFilter.h>
 #include <Mod/PartDesign/Gui/EnumFlags.h>
 
@@ -36,8 +39,34 @@ namespace PartDesign
 {
 class Body;
 }
+namespace Part
+{
+class Part2DObject;
+}
 namespace PartDesignGui
 {
+
+/**
+ * One reusable sketch and either its complete profile or exact closed areas.
+ *
+ * An empty regions list with wholeSketch=true retains the established
+ * whole-sketch behavior. A nonempty list contains selectable InternalFace
+ * names produced by Sketcher. This shared parser keeps ribbon creation and
+ * task-panel editing on the same unambiguous contract.
+ */
+struct SketchProfileSelection
+{
+    Part::Part2DObject* sketch {};
+    std::vector<std::string> regions;
+    bool wholeSketch {false};
+    bool valid {true};
+};
+
+void mergeSketchProfileSelection(
+    SketchProfileSelection& selection,
+    Part::Part2DObject& sketch,
+    const std::vector<std::string>& subelements
+);
 
 class ReferenceSelection: public Gui::SelectionFilterGate
 {
@@ -103,6 +132,19 @@ public:
     bool allow(App::Document* pDoc, App::DocumentObject* pObj, const char* sSubName) override;
 };
 // Convenience methods
+/**
+ * Resolve a selected presentation object to the history state available
+ * immediately before the consuming Part Design feature.
+ *
+ * This keeps native task-panel references on feature definitions instead of
+ * linking a feature back through the visible component that publishes its
+ * own Body.
+ */
+App::DocumentObject* resolveModelingReference(
+    const App::DocumentObject* consumer,
+    App::DocumentObject* selected
+) noexcept;
+
 /// Extract reference from Selection
 bool getReferencedSelection(
     const App::DocumentObject* thisObj,

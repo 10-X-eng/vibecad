@@ -104,11 +104,9 @@ LANGUAGE_CODE_MAP = {
 # Locations that require QM file generation (predominantly Python workbenches)
 GENERATE_QM = {
     "AddonManager",
-    "Arch",
     "Cloud",
     "Draft",
     "Inspection",
-    "OpenSCAD",
     "Tux",
     "Help",
 }
@@ -117,9 +115,7 @@ GENERATE_QM = {
 
 locations = [
     ["App", "../App/Resources/translations", "../App/Resources/App.qrc"],
-    ["Arch", "../Mod/BIM/Resources/translations", "../Mod/BIM/Resources/Arch.qrc"],
     ["App", "../App/Resources/translations", "../App/Resources/App.qrc"],
-    ["Arch", "../Mod/BIM/Resources/translations", "../Mod/BIM/Resources/Arch.qrc"],
     [
         "Assembly",
         "../Mod/Assembly/Gui/Resources/translations",
@@ -162,11 +158,6 @@ locations = [
         "MeshPart",
         "../Mod/MeshPart/Gui/Resources/translations",
         "../Mod/MeshPart/Gui/Resources/MeshPart.qrc",
-    ],
-    [
-        "OpenSCAD",
-        "../Mod/OpenSCAD/Resources/translations",
-        "../Mod/OpenSCAD/Resources/OpenSCAD.qrc",
     ],
     [
         "Part",

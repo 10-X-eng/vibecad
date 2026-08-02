@@ -31,6 +31,7 @@
 #include <windows.h>
 #endif
 
+#include <App/DocumentTimeline.h>
 #include <App/DocumentObject.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
@@ -83,12 +84,15 @@ void ViewProviderTemplate::updateData(const App::Property* prop)
     //This doesn't belong here.  Should be in a ViewProviderSvgTemplate?
     if (getTemplate()->isDerivedFrom<TechDraw::DrawSVGTemplate>()) {
         auto t = static_cast<TechDraw::DrawSVGTemplate*>(getTemplate());
-        if (prop == &(t->Template)) {
+        if (prop == &(t->Template) || prop == &(t->PageResult)) {
             auto page = t->getParentPage();
-            Gui::ViewProvider* vp =
-                Gui::Application::Instance->getDocument(t->DocumentObject::getDocument())->getViewProvider(page);
-            TechDrawGui::ViewProviderPage* vpp = dynamic_cast<TechDrawGui::ViewProviderPage*>(vp);
-            if (vpp) {
+            auto* guiDocument = page && Gui::Application::Instance
+                ? Gui::Application::Instance->getDocument(t->DocumentObject::getDocument())
+                : nullptr;
+            auto* vpp = guiDocument
+                ? dynamic_cast<TechDrawGui::ViewProviderPage*>(guiDocument->getViewProvider(page))
+                : nullptr;
+            if (vpp && vpp->getQGSPage()) {
                 vpp->getQGSPage()->attachTemplate(t);
                 vpp->getQGSPage()->matchSceneRectToTemplate();
             }
@@ -208,6 +212,21 @@ bool ViewProviderTemplate::onDelete(const std::vector<std::string>&)
         return true;
     else
         return false;
+}
+
+bool ViewProviderTemplate::onDeleteOwnedTimelineResource(
+    App::DocumentObject* semanticOwner
+)
+{
+    auto* templateObject = getTemplate();
+    if (App::DocumentTimeline::isTimelineResourceOwnedBy(
+            templateObject,
+            semanticOwner
+        )
+        && templateObject->getParentPage() == semanticOwner) {
+        return true;
+    }
+    return onDelete({});
 }
 
 MDIViewPage* ViewProviderTemplate::getMDIViewPage() const

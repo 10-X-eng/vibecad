@@ -58,6 +58,10 @@ public:
     void onChanged(const App::Property *prop) override;
     bool setEdit(int ModNum) override;
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
 
     void updateGraphic();
     void getParameters();

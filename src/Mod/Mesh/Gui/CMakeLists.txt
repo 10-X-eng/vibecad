@@ -126,7 +126,11 @@ SET(MeshGui_SRCS
     ${resource_SRCS}
     ${ViewProvider_SRCS}
     AppMeshGui.cpp
+    CommandGuard.cpp
+    CommandGuard.h
     Command.cpp
+    ParametricMeshFilter.cpp
+    ParametricMeshFilter.h
     PreCompiled.h
     MeshEditor.cpp
     MeshEditor.h

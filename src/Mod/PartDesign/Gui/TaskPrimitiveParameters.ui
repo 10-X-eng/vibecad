@@ -2344,6 +2344,98 @@ If zero, it is equal to Radius2</string>
        </item>
       </layout>
      </widget>
+     <widget class="QWidget" name="pageTube">
+      <layout class="QGridLayout" name="tubePageLayout">
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <property name="spacing">
+        <number>6</number>
+       </property>
+       <item row="0" column="0">
+        <widget class="QLabel" name="tubeOuterRadiusLabel">
+         <property name="text">
+          <string>Outside radius</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="Gui::QuantitySpinBox" name="tubeOuterRadius">
+         <property name="keyboardTracking">
+          <bool>false</bool>
+         </property>
+         <property name="unit" stdset="0">
+          <string notr="true">mm</string>
+         </property>
+         <property name="value">
+          <double>5.000000000000000</double>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="0">
+        <widget class="QLabel" name="tubeInnerRadiusLabel">
+         <property name="text">
+          <string>Inside radius</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="Gui::QuantitySpinBox" name="tubeInnerRadius">
+         <property name="keyboardTracking">
+          <bool>false</bool>
+         </property>
+         <property name="unit" stdset="0">
+          <string notr="true">mm</string>
+         </property>
+         <property name="value">
+          <double>2.000000000000000</double>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="0">
+        <widget class="QLabel" name="tubeHeightLabel">
+         <property name="text">
+          <string>Height</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="Gui::QuantitySpinBox" name="tubeHeight">
+         <property name="keyboardTracking">
+          <bool>false</bool>
+         </property>
+         <property name="unit" stdset="0">
+          <string notr="true">mm</string>
+         </property>
+         <property name="value">
+          <double>10.000000000000000</double>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="0" colspan="2">
+        <spacer name="tubeVerticalSpacer">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>0</width>
+           <height>0</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
     </widget>
    </item>
   </layout>

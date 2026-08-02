@@ -38,6 +38,13 @@ class VPSolverCcxTools(view_base_femconstraint.VPBaseFemConstraint):
     A View Provider for the SolverCalculix object
     """
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
+    def __init__(self, vobj):
+        super().__init__(vobj)
+        vobj.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
+
     def getIcon(self):
         return ":/icons/FEM_SolverStandard.svg"
 

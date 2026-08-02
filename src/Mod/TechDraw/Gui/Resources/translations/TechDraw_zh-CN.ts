@@ -122,24 +122,7 @@
       <translation>在当前页面插入可编辑的文本块注释</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>工程图</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>BIM视图</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>插入建筑截面平面的视图</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>图纸创建页面</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>创建BIM视图</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>创建图像</translation>
@@ -3293,11 +3270,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>选择一个裁剪组和一个视图</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>页面包含一个BIM视图，该视图不会被导出。继续吗？</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>保存 DXF 文件</translation>
@@ -3331,16 +3303,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>选择至少一个对象</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>仅选择1个BIM剖面平面</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>选择中没有BIM剖面平面</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -10051,14 +10013,7 @@ there is an open task dialog.</source>
       <translation>线</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

@@ -31,6 +31,7 @@
 #include <App/DocumentObjectGroup.h>
 #include <App/Link.h>
 #include <Mod/Measure/App/MeasureDistance.h>
+#include <Mod/Part/Gui/ModelingSelection.h>
 #include <App/PropertyStandard.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Application.h>
@@ -52,8 +53,12 @@ using enum Gui::InputHint::UserInput;
 #include <QSignalBlocker>
 
 #include <Base/Quantity.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/UnitsApi.h>
 #include <array>
+
+#include "TimelineSelection.h"
 
 using namespace MeasureGui;
 
@@ -251,14 +256,18 @@ TaskMeasure::TaskMeasure()
     // engage the selectionObserver
 
     if (auto* doc = App::GetApplication().getActiveDocument()) {
+        mTargetDocumentName = doc->getName();
+        mTargetDocumentUid = doc->Uid.getValueStr();
+        mTargetDocumentAddress = doc;
         m_deletedConnection = doc->signalDeletedObject.connect([this](auto&& obj) {
             onObjectDeleted(obj);
         });
     }
 
-    if (auto* doc = Gui::Application::Instance->activeDocument()) {
-        mTargetDoc = doc;
-        mTargetDoc->openCommand("Add Measurement");
+    if (!beginPreviewTransaction()) {
+        throw Base::RuntimeError(
+            "Could not establish the measurement preview transaction"
+        );
     }
 
     setAutoCloseOnDeletedDocument(true);
@@ -268,9 +277,71 @@ TaskMeasure::TaskMeasure()
 
 TaskMeasure::~TaskMeasure()
 {
+    (void)finishPreviewTransaction(false);
     m_deletedConnection.disconnect();
     Gui::Selection().setSelectionStyle(SelectionStyle::NormalSelection);
     detachSelection();
+}
+
+App::Document* TaskMeasure::targetDocument() const
+{
+    if (mTargetDocumentName.empty()) {
+        return nullptr;
+    }
+    try {
+        auto* document = App::GetApplication().getDocument(
+            mTargetDocumentName.c_str()
+        );
+        return document && document == mTargetDocumentAddress
+                && !mTargetDocumentUid.empty()
+                && document->Uid.getValueStr() == mTargetDocumentUid
+            ? document
+            : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+bool TaskMeasure::beginPreviewTransaction()
+{
+    App::Document* document = targetDocument();
+    if (!document || mPreviewTransaction
+        || document->getBookedTransactionID() != App::NullTransaction
+        || document->hasPendingTransaction()) {
+        return false;
+    }
+
+    try {
+        mPreviewTransaction =
+            std::make_unique<Gui::ExactTransaction>(
+                *document,
+                "Add Measurement"
+            );
+    }
+    catch (...) {
+        mPreviewTransaction.reset();
+        return false;
+    }
+    mPreviewTransactionId = mPreviewTransaction->id();
+    return true;
+}
+
+bool TaskMeasure::finishPreviewTransaction(bool commit)
+{
+    if (!mPreviewTransaction) {
+        return true;
+    }
+    const bool closed = commit
+        ? mPreviewTransaction->commit()
+        : mPreviewTransaction->abort();
+    if (!closed) {
+        return false;
+    }
+
+    mPreviewTransaction.reset();
+    mPreviewTransactionId = App::NullTransaction;
+    return true;
 }
 
 void TaskMeasure::modifyStandardButtons(QDialogButtonBox* box)
@@ -307,7 +378,7 @@ void TaskMeasure::enableAnnotateButton(bool state)
 
 void TaskMeasure::createObject(const App::MeasureType* measureType)
 {
-    App::Document* doc = App::GetApplication().getActiveDocument();
+    App::Document* doc = targetDocument();
     if (!doc) {
         return;
     }
@@ -350,37 +421,61 @@ void TaskMeasure::update()
 
 void TaskMeasure::tryUpdate()
 {
-    App::Document* doc = App::GetApplication().getActiveDocument();
+    App::Document* doc = targetDocument();
+    if (!doc || !mPreviewTransaction
+        || !mPreviewTransaction->ownsCurrentTransaction()
+        || mPreviewTransactionId == App::NullTransaction
+        || doc->getBookedTransactionID() != mPreviewTransactionId) {
+        return;
+    }
 
-    // Reset selection if the selected object is not valid
-    for (auto sel : Gui::Selection().getSelection()) {
-        App::DocumentObject* ob = sel.pObject;
-        App::DocumentObject* sub = ob->getSubObject(sel.SubName);
-
-        // Resolve App::Link
-        if (auto link = freecad_cast<App::Link*>(sub)) {
-            sub = link->getLinkedObject(true);
-        }
-
-        std::string mod = Base::Type::getModuleName(sub->getTypeId().getName());
-        if (!App::MeasureManager::hasMeasureHandler(mod.c_str())) {
-            Base::Console().message("No measure handler available for geometry of module: %s\n", mod);
+    App::MeasureSelection selection;
+    auto modelingSelection = PartGui::getModelingSelection(doc->getName());
+    for (auto& selected : modelingSelection) {
+        App::DocumentObject* object = selected.getObject();
+        if (!isTimelineSelectionActive(object)) {
             clearSelection();
             return;
+        }
+
+        const auto& subNames = selected.getSubNames();
+        const auto pickedPoints = selected.getPickedPoints();
+        const std::size_t targetCount = std::max<std::size_t>(subNames.size(), 1);
+        for (std::size_t index = 0; index < targetCount; ++index) {
+            const char* subName = subNames.empty() ? "" : subNames[index].c_str();
+            App::DocumentObject* subObject = object->getSubObject(subName);
+            if (!isTimelineSelectionActive(subObject)) {
+                clearSelection();
+                return;
+            }
+
+            // Resolve App::Link only for handler discovery. The stored
+            // SubObjectT remains rooted at the picked occurrence.
+            if (auto* link = freecad_cast<App::Link*>(subObject)) {
+                subObject = link->getLinkedObject(true);
+            }
+
+            std::string module = Base::Type::getModuleName(subObject->getTypeId().getName());
+            if (!App::MeasureManager::hasMeasureHandler(module.c_str())) {
+                Base::Console().message(
+                    "No measure handler available for geometry of module: %s\n",
+                    module
+                );
+                clearSelection();
+                return;
+            }
+
+            Base::Vector3d pickedPoint;
+            if (index < pickedPoints.size()) {
+                pickedPoint = pickedPoints[index];
+            }
+            selection.push_back({App::SubObjectT(object, subName), pickedPoint});
         }
     }
 
     valueResult->setText(QString::asprintf("-"));
 
     std::string mode = explicitMode ? modeSwitch->currentText().toStdString() : "";
-
-    App::MeasureSelection selection;
-    for (auto s : Gui::Selection().getSelection(doc->getName(), Gui::ResolveMode::NoResolve)) {
-        App::SubObjectT sub(s.pObject, s.SubName);
-
-        App::MeasureSelectionItem item = {sub, Base::Vector3d(s.x, s.y, s.z)};
-        selection.push_back(item);
-    }
 
     // Get valid measure type
     App::MeasureType* measureType = nullptr;
@@ -429,7 +524,9 @@ void TaskMeasure::tryUpdate()
         // Initialite the measurement's viewprovider
         initViewObject(_mMeasureObject);
     }
-    _mMeasureObject->purgeTouched();
+    if (_mMeasureObject) {
+        _mMeasureObject->purgeTouched();
+    }
 }
 
 void TaskMeasure::updateUnitDropdown(const App::MeasureType* measureType)
@@ -485,7 +582,11 @@ void TaskMeasure::refreshResult()
 
 void TaskMeasure::initViewObject(Measure::MeasureBase* measure)
 {
-    Gui::Document* guiDoc = Gui::Application::Instance->activeDocument();
+    Gui::Document* guiDoc = Gui::Application::Instance
+        ? Gui::Application::Instance->getDocument(
+              measure ? measure->getDocument() : nullptr
+          )
+        : nullptr;
     if (!guiDoc) {
         return;
     }
@@ -496,7 +597,12 @@ void TaskMeasure::initViewObject(Measure::MeasureBase* measure)
     }
 
     // Init the position of the annotation
-    dynamic_cast<MeasureGui::ViewProviderMeasureBase*>(viewObject)->positionAnno(measure);
+    auto* measureView =
+        dynamic_cast<MeasureGui::ViewProviderMeasureBase*>(viewObject);
+    if (!measureView) {
+        return;
+    }
+    measureView->positionAnno(measure);
 
     // Set the ShowDelta Property if it exists on the measurements view object
     auto* prop = viewObject->getPropertyByName<App::PropertyBool>("ShowDelta");
@@ -510,7 +616,7 @@ void TaskMeasure::initViewObject(Measure::MeasureBase* measure)
 
 void TaskMeasure::closeDialog()
 {
-    Gui::Control().closeDialog();
+    Gui::Control().reject(targetDocument());
     Gui::getMainWindow()->hideHints();
 }
 
@@ -567,36 +673,87 @@ bool TaskMeasure::apply()
 
 bool TaskMeasure::apply(bool reset)
 {
-    ensureGroup(_mMeasureObject);
+    auto* document = targetDocument();
+    if (!_mMeasureObject || !document || !mPreviewTransaction
+        || !mPreviewTransaction->ownsCurrentTransaction()
+        || _mMeasureObject->getDocument() != document
+        || !_mMeasureObject->getNameInDocument()
+        || !document->containsObject(_mMeasureObject)
+        || document->getObject(_mMeasureObject->getNameInDocument())
+            != _mMeasureObject
+        || document->getObjectByID(_mMeasureObject->getID())
+            != _mMeasureObject) {
+        return false;
+    }
+    auto* acceptedMeasurement = _mMeasureObject;
+    try {
+        ensureGroup(_mMeasureObject);
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Could not save measurement: %s\n",
+            error.what()
+        );
+        return false;
+    }
+    catch (const std::exception& error) {
+        Base::Console().error(
+            "Could not save measurement: %s\n",
+            error.what()
+        );
+        return false;
+    }
     _mMeasureObject = nullptr;
-    if (reset) {
-        this->reset();
+    if (!finishPreviewTransaction(true)) {
+        _mMeasureObject = acceptedMeasurement;
+        return false;
     }
 
-    // Commit transaction
-    if (mTargetDoc) {
-        mTargetDoc->commitCommand();
-        mTargetDoc->openCommand("Add Measurement");
+    try {
+        // ensureGroup() established the measurement's durable document-root
+        // owner. Advance the panel checkpoint without offering that
+        // annotation to the active-Body result preparer.
+        markCommandInteractionStateDurable();
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Measurement was saved, but task finalization failed: %s\n",
+            error.what()
+        );
+        beginPreviewTransaction();
+        return false;
+    }
+
+    if (!beginPreviewTransaction()) {
+        Base::Console().error(
+            "Measurement was saved, but a new preview transaction "
+            "could not be opened.\n"
+        );
+        closeDialog();
+        return false;
+    }
+    if (reset) {
+        this->reset();
     }
     return false;
 }
 
 bool TaskMeasure::reject()
 {
-    removeObject();
-
-    // Commit after removing the preview measurement so only intended changes (sector flip)
-    // remain in the document transaction.
-    if (mTargetDoc) {
-        mTargetDoc->commitCommand();
+    // The measurement and all of its interactive display properties are
+    // previews until Save is pressed. Closing rolls back only the exact
+    // transaction owned by this panel.
+    _mMeasureObject = nullptr;
+    if (!finishPreviewTransaction(false)) {
+        return false;
     }
-    closeDialog();
-    return false;
+    Gui::getMainWindow()->hideHints();
+    return true;
 }
 
 void TaskMeasure::closed()
 {
-    reject();
+    Gui::getMainWindow()->hideHints();
 }
 
 void TaskMeasure::reset()
@@ -636,12 +793,20 @@ void TaskMeasure::removeObject()
 
 bool TaskMeasure::hasSelection()
 {
-    return !Gui::Selection().getSelection().empty();
+    return targetDocument()
+        && !Gui::Selection()
+                .getSelection(
+                    mTargetDocumentName.c_str(),
+                    Gui::ResolveMode::NoResolve
+                )
+                .empty();
 }
 
 void TaskMeasure::clearSelection()
 {
-    Gui::Selection().clearSelection();
+    if (targetDocument()) {
+        Gui::Selection().clearSelection(mTargetDocumentName.c_str());
+    }
 }
 
 void TaskMeasure::onSelectionChanged(const Gui::SelectionChanges& msg)
@@ -652,6 +817,10 @@ void TaskMeasure::onSelectionChanged(const Gui::SelectionChanges& msg)
         && msg.Type != Gui::SelectionChanges::SetSelection
         && msg.Type != Gui::SelectionChanges::ClrSelection) {
 
+        return;
+    }
+    if (msg.pDocName && *msg.pDocName
+        && mTargetDocumentName != msg.pDocName) {
         return;
     }
 
@@ -701,7 +870,7 @@ void TaskMeasure::quitMeasurement()
         this->reset();
     }
     else {
-        this->reject();
+        closeDialog();
     }
 }
 

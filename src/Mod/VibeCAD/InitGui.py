@@ -11,6 +11,30 @@ def _warn(message: str) -> None:
     App.Console.PrintWarning(f"{message}\n")
 
 
+def _check_bundled_fasteners(warn=_warn) -> bool:
+    try:
+        from VibeCADFasteners import require_available
+
+        require_available()
+        return True
+    except Exception as exc:
+        warn(
+            "VibeCAD bundled Fasteners catalog failed to load; standard-component "
+            f"commands are disabled: {exc}"
+        )
+        return False
+
+
+def _load_ribbon_extension_commands(warn=_warn) -> None:
+    """Register native commands used outside their legacy workbench page."""
+
+    for module_name in ("InspectionGui", "MeshPartGui", "PartGui"):
+        try:
+            __import__(module_name)
+        except Exception as exc:
+            warn(f"VibeCAD ribbon extension {module_name} failed to load: {exc}")
+
+
 def _restore_vibecad_disabled_workbenches() -> bool:
     """Undo only the exact disabled lists previously written by VibeCAD."""
 
@@ -53,18 +77,144 @@ def _restore_vibecad_disabled_workbenches() -> bool:
     return True
 
 
+def _remove_list_token(group, key: str, token: str) -> bool:
+    current = group.GetString(key, "")
+    values = [item.strip() for item in current.split(",") if item.strip()]
+    filtered = [item for item in values if item != token]
+    if filtered == values:
+        return False
+    group.SetString(key, ",".join(filtered))
+    return True
+
+
+def _replace_list_token(group, key: str, token: str, replacement: str) -> bool:
+    current = group.GetString(key, "")
+    values = [item.strip() for item in current.split(",") if item.strip()]
+    if token not in values:
+        return False
+    migrated = []
+    for item in values:
+        candidate = replacement if item == token else item
+        if candidate not in migrated:
+            migrated.append(candidate)
+    group.SetString(key, ",".join(migrated))
+    return True
+
+
+def _migrate_removed_architecture_workbench(
+    remove_list_token=_remove_list_token,
+) -> bool:
+    """Remove persisted references to the workbench before startup selection."""
+
+    migration = App.ParamGet("User parameter:BaseApp/Preferences/Migration")
+    migration_key = "VibeCADRemovedArchitectureWorkbench2026"
+    if migration.GetBool(migration_key, False):
+        return False
+
+    removed = "BIMWorkbench"
+    fallback = "PartDesignWorkbench"
+    changed = False
+    workbenches = App.ParamGet("User parameter:BaseApp/Preferences/Workbenches")
+    general = App.ParamGet("User parameter:BaseApp/Preferences/General")
+    for key in ("Ordered", "Disabled"):
+        changed = remove_list_token(workbenches, key, removed) or changed
+    changed = remove_list_token(general, "BackgroundAutoloadModules", removed) or changed
+    for key in ("AutoloadModule", "LastModule"):
+        if general.GetString(key, "") == removed:
+            general.SetString(key, fallback)
+            changed = True
+    migration.SetBool(migration_key, True)
+    return changed
+
+
+def _migrate_consolidated_part_workbench(
+    replace_list_token=_replace_list_token,
+) -> bool:
+    """Point saved standalone Part selections at the consolidated workbench."""
+
+    migration = App.ParamGet("User parameter:BaseApp/Preferences/Migration")
+    migration_key = "VibeCADConsolidatedPartWorkbench2026"
+    if migration.GetBool(migration_key, False):
+        return False
+
+    retired = "PartWorkbench"
+    consolidated = "PartDesignWorkbench"
+    changed = False
+    workbenches = App.ParamGet("User parameter:BaseApp/Preferences/Workbenches")
+    general = App.ParamGet("User parameter:BaseApp/Preferences/General")
+    for key in ("Ordered", "Disabled"):
+        changed = replace_list_token(workbenches, key, retired, consolidated) or changed
+    changed = (
+        replace_list_token(general, "BackgroundAutoloadModules", retired, consolidated)
+        or changed
+    )
+    for key in ("AutoloadModule", "LastModule"):
+        if general.GetString(key, "") == retired:
+            general.SetString(key, consolidated)
+            changed = True
+    migration.SetBool(migration_key, True)
+    return changed
+
+
+def _migrate_removed_openscad_workbench(
+    replace_list_token=_replace_list_token,
+    remove_list_token=_remove_list_token,
+) -> bool:
+    """Point saved OpenSCAD workbench selections at the native Mesh tools."""
+
+    migration = App.ParamGet("User parameter:BaseApp/Preferences/Migration")
+    migration_key = "VibeCADRemovedOpenSCADWorkbench2026"
+    if migration.GetBool(migration_key, False):
+        return False
+
+    retired = "OpenSCADWorkbench"
+    fallback = "MeshWorkbench"
+    changed = False
+    workbenches = App.ParamGet("User parameter:BaseApp/Preferences/Workbenches")
+    general = App.ParamGet("User parameter:BaseApp/Preferences/General")
+    changed = (
+        replace_list_token(workbenches, "Ordered", retired, fallback) or changed
+    )
+    changed = remove_list_token(workbenches, "Disabled", retired) or changed
+    changed = (
+        replace_list_token(general, "BackgroundAutoloadModules", retired, fallback)
+        or changed
+    )
+    for key in ("AutoloadModule", "LastModule"):
+        if general.GetString(key, "") == retired:
+            general.SetString(key, fallback)
+            changed = True
+    migration.SetBool(migration_key, True)
+    return changed
+
+
 try:
     _restore_vibecad_disabled_workbenches()
+    if _migrate_removed_architecture_workbench():
+        _warn("Removed saved references to the retired architecture workbench")
+    if _migrate_consolidated_part_workbench():
+        _warn("Migrated saved Part workbench references to Part Design")
+    if _migrate_removed_openscad_workbench():
+        _warn("Migrated saved OpenSCAD workbench references to Mesh")
 except Exception as exc:
     _warn(f"VibeCAD workbench preference migration failed: {exc}")
 
 
 try:
+    fasteners_available = _check_bundled_fasteners()
     from PySide import QtCore
 
     import VibeCADGui
 
     VibeCADGui.ensure_commands_registered()
+    _load_ribbon_extension_commands()
+    if fasteners_available:
+        try:
+            import VibeCADFastenersGui
+
+            VibeCADFastenersGui.ensure_commands_registered()
+        except Exception as exc:
+            _warn(f"VibeCAD standard-component commands failed to register: {exc}")
 
     def _setup_always_on_grid() -> None:
         try:

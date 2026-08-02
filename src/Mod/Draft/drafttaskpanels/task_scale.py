@@ -39,8 +39,13 @@ import PySide.QtWidgets as QtWidgets
 import FreeCAD as App
 import FreeCADGui as Gui
 from draftutils import params
+from draftutils import timeline
 from draftutils import utils
 from draftutils.translate import translate
+from draftutils.transaction import close_task_dialog
+from draftutils.transaction import object_is_usable_at_current_position
+from draftutils.transaction import reset_document_edit
+from draftutils.transaction import run_document_mutation
 
 
 class ScaleTaskPanel:
@@ -184,14 +189,14 @@ class ScaleTaskPanel:
         """Execute when clicking the OK button."""
         if self.sourceCmd:
             self.sourceCmd.scale()
-        Gui.ActiveDocument.resetEdit()
+            reset_document_edit(self.sourceCmd.doc)
         return True
 
     def reject(self):
         """Execute when clicking the Cancel button."""
         if self.sourceCmd:
             self.sourceCmd.finish()
-        Gui.ActiveDocument.resetEdit()
+            reset_document_edit(self.sourceCmd.doc)
         return True
 
 
@@ -201,8 +206,15 @@ class ScaleTaskPanelEdit(ScaleTaskPanel):
     def __init__(self, obj):
         super().__init__()
         self.ghost = None
-        self.selection = Gui.Selection.getSelectionEx("", 0)
         self.obj = obj
+        self.selection = [
+            selected
+            for selected in Gui.Selection.getSelectionEx(obj.Document.Name, 0)
+            if selected.Object is obj
+            and object_is_usable_at_current_position(obj, obj.Document)
+        ]
+        if not self.selection:
+            self.selection = timeline.selection_references([(obj, ())])
         self.obj_x, self.obj_y, self.obj_z = self.obj.Scale
         self.form.setWindowTitle(translate("Draft", "Edit Scale"))
         self.form.setWindowIcon(QtGui.QIcon(":/icons/Draft_Clone.svg"))
@@ -252,23 +264,33 @@ class ScaleTaskPanelEdit(ScaleTaskPanel):
 
     def accept(self):
         """Execute when clicking the OK button."""
-        self.obj.Scale = (self.xValue.value(), self.yValue.value(), self.zValue.value())
-        App.ActiveDocument.recompute()
+        obj = self.obj
+        scale = (
+            self.xValue.value(),
+            self.yValue.value(),
+            self.zValue.value(),
+        )
+        run_document_mutation(
+            obj.Document,
+            translate("Draft", "Edit Clone Scale"),
+            lambda: setattr(obj, "Scale", scale),
+            objects=(obj,),
+        )
         if self.ghost is not None:
             self.ghost.finalize()
-        Gui.ActiveDocument.resetEdit()
+        obj.ViewObject.Document.resetEdit()
         return True
 
     def reject(self):
         """Execute when clicking the Cancel button."""
         if self.ghost is not None:
             self.ghost.finalize()
-        Gui.ActiveDocument.resetEdit()
+        self.obj.ViewObject.Document.resetEdit()
         return True
 
     def finish(self):
         """Called by unsetEdit in view_clone.py."""
-        Gui.Control.closeDialog()
+        close_task_dialog(self.obj.Document)
         return None
 
 

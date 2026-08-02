@@ -24,7 +24,10 @@
 #include <QDialogButtonBox>
 #include <QEvent>
 
+#include <memory>
+#include <cstdint>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <Gui/Action.h>
@@ -40,6 +43,7 @@ namespace MassPropertiesGui
 {
 
 class TaskMassPropertiesWidget;
+class OwnedMassPropertiesTransaction;
 
 class TaskMassProperties: public Gui::TaskView::TaskDialog, public Gui::SelectionObserver
 {
@@ -75,6 +79,29 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    struct TrackedOccurrence
+    {
+        App::DocumentObject* root = nullptr;
+        std::string subName;
+    };
+
+    App::Document* targetDocument() const;
+    App::DocumentObject* currentDatumObject() const;
+    void setCurrentDatumObject(App::DocumentObject* object);
+    void clearCurrentDatumObject();
+    App::DocumentObject* currentDatumOccurrenceRoot() const;
+    void setCurrentDatumOccurrence(
+        App::DocumentObject* root,
+        const std::string& subName
+    );
+    void clearCurrentDatumOccurrence();
+    App::DocumentObject* previewObject() const;
+    void clearPreviewObjectIdentity();
+    bool startPreviewTransaction();
+    bool abortPreviewTransaction();
+    bool finishDurableResult(
+        std::unique_ptr<OwnedMassPropertiesTransaction> transaction
+    );
     void escape();
     void removeTemporaryObjects();
     void clearUiFields();
@@ -86,13 +113,33 @@ private:
     bool isUpdating = false;
     int unitsSchemaIndex = -1;
 
+    MassPropertiesData currentInfo;
+    MassPropertiesMode currentMode {MassPropertiesMode::CenterOfGravity};
+    std::string currentDatumDocumentName;
+    std::string currentDatumDocumentUid;
+    const App::Document* currentDatumDocumentAddress {nullptr};
+    std::string currentDatumName;
+    long currentDatumId {-1};
+    std::string currentDatumOccurrenceRootName;
+    long currentDatumOccurrenceRootId {-1};
+    std::string currentDatumOccurrenceSubName;
     Base::Placement currentDatumPlacement;
     bool hasCurrentDatumPlacement = false;
+    std::vector<std::tuple<std::string, std::string, std::string>>
+        savedSelection;
 
     Gui::Action* deleteAction = nullptr;
     bool deleteActivated = false;
 
     std::vector<MassPropertiesInput> objectsToMeasure;
+    std::vector<TrackedOccurrence> objectOccurrences;
+    std::unique_ptr<OwnedMassPropertiesTransaction> previewTransaction;
+    std::string targetDocumentName;
+    std::string targetDocumentUid;
+    const App::Document* targetDocumentAddress {nullptr};
+    std::string previewObjectName;
+    long previewObjectId {-1};
+    std::uint64_t previewGeneration {0};
 };
 
 }  // namespace MassPropertiesGui

@@ -27,9 +27,11 @@
 
 #include <QDialog>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <App/Material.h>
+#include <App/TransactionDefs.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
@@ -38,7 +40,13 @@
 
 namespace App
 {
+class Document;
 class Property;
+}
+
+namespace Gui
+{
+class ExactTransaction;
 }
 
 namespace MatGui
@@ -59,6 +67,13 @@ class DlgDisplayPropertiesImp: public QDialog, public Gui::SelectionSingleton::O
 public:
     explicit DlgDisplayPropertiesImp(QWidget* parent = nullptr,
                                      Qt::WindowFlags fl = Qt::WindowFlags());
+    explicit DlgDisplayPropertiesImp(App::Document* document,
+                                     QWidget* parent = nullptr,
+                                     Qt::WindowFlags fl = Qt::WindowFlags());
+    DlgDisplayPropertiesImp(App::Document* document,
+                            int transactionId,
+                            QWidget* parent = nullptr,
+                            Qt::WindowFlags fl = Qt::WindowFlags());
     ~DlgDisplayPropertiesImp() override;
     /// Observer message from the Selection
     void OnChange(Gui::SelectionSingleton::SubjectType& rCaller,
@@ -109,6 +124,7 @@ class TaskDisplayProperties: public Gui::TaskView::TaskDialog
 
 public:
     TaskDisplayProperties();
+    explicit TaskDisplayProperties(App::Document& document);
     ~TaskDisplayProperties() override;
 
 public:
@@ -129,7 +145,13 @@ public:
     QDialogButtonBox::StandardButtons getStandardButtons() const override;
 
 private:
+    bool ownsTransaction() const;
     DlgDisplayPropertiesImp* widget;
+    int tid {App::NullTransaction};
+    std::unique_ptr<Gui::ExactTransaction> transaction;
+    App::Document* targetDocumentAddress {nullptr};
+    std::string targetDocumentName;
+    std::string targetDocumentUid;
 };
 
 }  // namespace MatGui

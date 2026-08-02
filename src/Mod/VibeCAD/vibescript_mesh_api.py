@@ -10,14 +10,29 @@ import re
 from typing import Any
 
 from vibescript_domain_api import DomainValue
+from vibescript_meshpart_api import MeshPartDomainAPI
 
 
-_EXPORTS = ("mesh", "from_object", "transform", "repair", "diagnostics")
-_OUTPUT_TYPES = ("mesh",)
+_EXPORTS = (
+    "mesh",
+    "from_object",
+    "transform",
+    "union",
+    "difference",
+    "intersection",
+    "repair",
+    "diagnostics",
+    "mesh_from_shape",
+    "shape_from_mesh",
+)
+_MESH_GRAPH_OPERATIONS = frozenset(_EXPORTS[:8])
+_OUTPUT_TYPES = ("mesh", "solid", "shell", "face", "wire", "compound")
 _MAX_FACETS = 200_000
 _MAX_COORDINATE = 1_000_000_000.0
 _MAX_LABEL_CHARS = 256
 _EPSILON = 1.0e-12
+_DEFAULT_LINEAR_DEFLECTION = 0.1
+_DEFAULT_ANGULAR_DEFLECTION_DEGREES = math.degrees(0.5)
 _MISSING = object()
 _OBJECT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -235,8 +250,20 @@ def _mesh_value(operation: str, parameter: str, value: Any) -> DomainValue:
         not isinstance(value, DomainValue)
         or value.domain != "mesh"
         or value.output_type != "mesh"
-        or value.operation not in _EXPORTS
+        or value.operation not in _MESH_GRAPH_OPERATIONS
     ):
+        if (
+            isinstance(value, DomainValue)
+            and value.domain == "mesh"
+            and value.operation == "mesh_from_shape"
+        ):
+            raise _error(
+                operation,
+                parameter,
+                "cannot consume api.mesh_from_shape directly; publish that conversion "
+                "and reference its stable Mesh::Feature with api.from_object in a later "
+                "program",
+            )
         raise _error(
             operation,
             parameter,
@@ -246,8 +273,48 @@ def _mesh_value(operation: str, parameter: str, value: Any) -> DomainValue:
     return value
 
 
+def _boolean_operands(
+    operation: str,
+    first: Any,
+    second: Any,
+) -> tuple[DomainValue, DomainValue]:
+    clean_first = _mesh_value(operation, "first", first)
+    clean_second = _mesh_value(operation, "second", second)
+    return clean_first, clean_second
+
+
+def _boolean_properties(
+    operation: str,
+    *,
+    linear_deflection: Any,
+    angular_deflection_degrees: Any,
+    relative: Any,
+    label: Any,
+) -> dict[str, Any]:
+    return {
+        "linear_deflection": _number(
+            operation,
+            "linear_deflection",
+            linear_deflection,
+            minimum=0.0,
+            maximum=_MAX_COORDINATE,
+            strict_minimum=True,
+        ),
+        "angular_deflection_degrees": _number(
+            operation,
+            "angular_deflection_degrees",
+            angular_deflection_degrees,
+            minimum=0.0,
+            maximum=180.0,
+            strict_minimum=True,
+        ),
+        "relative": _boolean(operation, "relative", relative),
+        "label": _label(operation, label),
+    }
+
+
 class MeshDomainAPI:
-    """Immutable native-Mesh graph API injected into Mesh source."""
+    """Immutable native-Mesh and explicit BREP-conversion API."""
 
     __slots__ = ()
 
@@ -319,6 +386,99 @@ class MeshDomainAPI:
                 "scale": clean_scale,
                 "label": _label("transform", label),
             },
+        )
+
+    def union(
+        self,
+        first: DomainValue,
+        second: DomainValue,
+        *,
+        linear_deflection: float = _DEFAULT_LINEAR_DEFLECTION,
+        angular_deflection_degrees: float = _DEFAULT_ANGULAR_DEFLECTION_DEGREES,
+        relative: bool = False,
+        label: str = "",
+    ) -> DomainValue:
+        """Fuse two closed mesh solids; disconnected valid result solids are kept."""
+
+        clean_first, clean_second = _boolean_operands(
+            "union",
+            first,
+            second,
+        )
+        return DomainValue(
+            domain=self.domain,
+            operation="union",
+            output_type="mesh",
+            arguments=(clean_first, clean_second),
+            properties=_boolean_properties(
+                "union",
+                linear_deflection=linear_deflection,
+                angular_deflection_degrees=angular_deflection_degrees,
+                relative=relative,
+                label=label,
+            ),
+        )
+
+    def difference(
+        self,
+        first: DomainValue,
+        second: DomainValue,
+        *,
+        linear_deflection: float = _DEFAULT_LINEAR_DEFLECTION,
+        angular_deflection_degrees: float = _DEFAULT_ANGULAR_DEFLECTION_DEGREES,
+        relative: bool = False,
+        label: str = "",
+    ) -> DomainValue:
+        """Subtract the second closed mesh solid from the first."""
+
+        clean_first, clean_second = _boolean_operands(
+            "difference",
+            first,
+            second,
+        )
+        return DomainValue(
+            domain=self.domain,
+            operation="difference",
+            output_type="mesh",
+            arguments=(clean_first, clean_second),
+            properties=_boolean_properties(
+                "difference",
+                linear_deflection=linear_deflection,
+                angular_deflection_degrees=angular_deflection_degrees,
+                relative=relative,
+                label=label,
+            ),
+        )
+
+    def intersection(
+        self,
+        first: DomainValue,
+        second: DomainValue,
+        *,
+        linear_deflection: float = _DEFAULT_LINEAR_DEFLECTION,
+        angular_deflection_degrees: float = _DEFAULT_ANGULAR_DEFLECTION_DEGREES,
+        relative: bool = False,
+        label: str = "",
+    ) -> DomainValue:
+        """Keep only positive solid volume shared by two closed mesh solids."""
+
+        clean_first, clean_second = _boolean_operands(
+            "intersection",
+            first,
+            second,
+        )
+        return DomainValue(
+            domain=self.domain,
+            operation="intersection",
+            output_type="mesh",
+            arguments=(clean_first, clean_second),
+            properties=_boolean_properties(
+                "intersection",
+                linear_deflection=linear_deflection,
+                angular_deflection_degrees=angular_deflection_degrees,
+                relative=relative,
+                label=label,
+            ),
         )
 
     def repair(
@@ -472,3 +632,10 @@ class MeshDomainAPI:
                 "label": _label("diagnostics", label),
             },
         )
+
+    # The shipped Mesh workbench includes the native MeshPart conversion
+    # commands. Reuse their exact validated call signatures while emitting
+    # values owned by the Mesh domain. MeshPartDomainAPI resolves self.domain,
+    # so these methods remain canonical without copying their validation.
+    mesh_from_shape = MeshPartDomainAPI.mesh_from_shape
+    shape_from_mesh = MeshPartDomainAPI.shape_from_mesh

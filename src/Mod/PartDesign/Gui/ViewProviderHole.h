@@ -45,6 +45,7 @@ class Property;
 
 namespace PartDesign
 {
+class Body;
 class Hole;
 }
 
@@ -70,6 +71,11 @@ public:
     ViewProviderHole();
     /// destructor
     ~ViewProviderHole() override;
+    void attach(App::DocumentObject* object) override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     bool onDelete(const std::vector<std::string>& arg) override;
 
     /// grouping handling
@@ -85,20 +91,53 @@ protected:
 
 private:
     std::unique_ptr<Gui::ViewProviderTextureExtension> textureExtension;
+    SoSeparator* createThreadTextureSeparator(
+        const PartDesign::Hole* hole,
+        const TopoDS_Shape& visibleShape,
+        const std::vector<gp_Pnt>& holeLocations,
+        const gp_Dir& holeNormal,
+        const gp_Pnt& holeOrigin,
+        const App::Material& material,
+        SoClipPlane** threadClipper,
+        SoTexture2Transform** textureTransform
+    );
     std::optional<gp_Dir> getHoleNormal(const PartDesign::Hole* pcHole) const;
     std::optional<gp_Pnt> getHoleOrigin(const PartDesign::Hole* pcHole) const;
     std::vector<gp_Pnt> getHoleLocations(const PartDesign::Hole* pcHole) const;
     App::Material getGlobalMaterial();
+    App::Material getBodyMaterial(const PartDesign::Body* body) const;
     TopoDS_Shape getCurrentlyVisibleShape(const PartDesign::Hole* pcHole) const;
+    bool isDesignHoleThreadVisible(
+        const PartDesign::Hole* hole,
+        const PartDesign::Body* body
+    ) const;
+    void updateDesignHoleOverlays(PartDesign::Hole* hole);
     void updateThreadClipper(const PartDesign::Hole* pcHole);
     void updateThreadDirection(const PartDesign::Hole* pcHole);
     void applyThreadPhaseOffset(const PartDesign::Hole* pcHole);
 
     // meshing and UVs
     std::vector<TopoDS_Face> collectBoreFaces(const PartDesign::Hole* pcHole) const;
+    std::vector<TopoDS_Face> collectBoreFaces(
+        const PartDesign::Hole* hole,
+        const TopoDS_Shape& visibleShape,
+        const std::vector<gp_Pnt>& holeLocations,
+        const gp_Dir& holeNormal
+    ) const;
     bool generateBoreMeshData(
         const PartDesign::Hole* pcHole,
         const gp_Pnt& holeOriginPnt,
+        std::vector<SbVec3f>& vertices,
+        std::vector<SbVec3f>& normals,
+        std::vector<int>& indices,
+        std::vector<SbVec2f>& uvs
+    );
+    bool generateBoreMeshData(
+        const PartDesign::Hole* hole,
+        const gp_Pnt& holeOrigin,
+        const TopoDS_Shape& visibleShape,
+        const std::vector<gp_Pnt>& holeLocations,
+        const gp_Dir& holeNormal,
         std::vector<SbVec3f>& vertices,
         std::vector<SbVec3f>& normals,
         std::vector<int>& indices,

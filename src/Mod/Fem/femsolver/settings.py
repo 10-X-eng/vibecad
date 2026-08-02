@@ -33,7 +33,9 @@ string to identify the solver in question. At the moment the following solvers
 are supported:
 
     - Calculix
+    - ElmerGrid
     - ElmerSolver
+    - MPIElmer
     - Mystran
     - Z88
 
@@ -86,11 +88,10 @@ def get_binary(name, silent=False):
     """Find binary of solver *name* honoring user settings.
 
     Return the specific path set by the user in FreeCADs settings/parameter
-    system if set or the default binary name if no specific path is set. If no
-    path was found because the solver *name* is not supported ``None`` is
-    returned.
-    This method does not check whether the binary actually exists and is callable.
-    That check is done in DlgSettingsFem_Solver_Imp.cpp
+    system if set or the default binary name if no specific path is set. The
+    configured value is resolved through the operating-system executable
+    search path; ``None`` is returned when the solver name is unsupported or
+    the executable cannot be found.
 
     :param name: solver id as a ``str`` (see :mod:`femsolver.settings`)
     :param silent: whether to output error if binary not found
@@ -105,6 +106,49 @@ def get_binary(name, silent=False):
                 "solver settings modules _SOLVER_PARAM dirctionary.\n".format(name)
             )
         return None
+
+
+def get_configured_binary(name):
+    """Return the exact configured executable value for a supported solver."""
+
+    if name not in _SOLVER_PARAM:
+        return None
+    return _SOLVER_PARAM[name].get_configured_binary()
+
+
+class SolverExecutableNotFoundError(FileNotFoundError):
+    """Raised when a configured FEM solver executable cannot be resolved."""
+
+
+def require_binary(name):
+    """Resolve one solver executable or raise an actionable error.
+
+    ``get_binary`` retains its historical ``None`` result for existing callers.
+    Native execution paths use this stricter additive API so they never pass an
+    unresolved executable to a process launcher.
+    """
+
+    if name not in _SOLVER_PARAM:
+        raise ValueError(f"Unsupported FEM solver executable: {name!r}")
+
+    configured = get_configured_binary(name)
+    resolved = get_binary(name, silent=True)
+    if resolved is not None:
+        return resolved
+
+    display_name = {
+        "Calculix": "CalculiX",
+        "ElmerSolver": "Elmer Solver",
+        "ElmerGrid": "ElmerGrid",
+        "MPIElmer": "the MPI launcher for Elmer",
+        "Mystran": "Mystran",
+        "Z88": "Z88",
+    }.get(name, name)
+    raise SolverExecutableNotFoundError(
+        f"{display_name} executable was not found. "
+        "Configure it in Preferences > FEM > Solver. "
+        f"Current executable setting: {configured!r}."
+    )
 
 
 def get_cores(name):
@@ -221,6 +265,10 @@ class _SolverDlg:
 
         self.param_group = FreeCAD.ParamGet(self.param_path)
 
+    def get_configured_binary(self):
+        binary = self.param_group.GetString(self.custom_path)
+        return binary if binary else self.default
+
     def get_binary(self, silent=False):
 
         # set the binary path to the FreeCAD defaults
@@ -228,9 +276,7 @@ class _SolverDlg:
         # TODO the binaries provided with the FreeCAD distribution should be found
         # without any additional user input
         # see ccxttols, it works for Windows and Linux there
-        binary = self.param_group.GetString(self.custom_path)
-        if not binary:
-            binary = self.default
+        binary = self.get_configured_binary()
         FreeCAD.Console.PrintLog(f"Solver binary path default: {binary} \n")
 
         # get the whole binary path name for the given command or binary path and return it
@@ -239,10 +285,12 @@ class _SolverDlg:
         from shutil import which as find_bin
 
         the_found_binary = find_bin(binary)
-        if (the_found_binary is None) and (not silent):
-            FreeCAD.Console.PrintError(
-                f"The binary has not been found. Full binary search path: {binary}\n"
-            )
+        if the_found_binary is None:
+            if not silent:
+                FreeCAD.Console.PrintError(
+                    "The binary has not been found. "
+                    f"Full binary search path: {binary}\n"
+                )
         else:
             FreeCAD.Console.PrintLog(f"Found solver binary path: {the_found_binary}\n")
         return the_found_binary

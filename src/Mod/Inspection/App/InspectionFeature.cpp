@@ -23,8 +23,11 @@
  ***************************************************************************/
 
 #include <boost/core/ignore_unused.hpp>
-#include <numeric>
+#include <list>
 #include <limits>
+#include <memory>
+#include <numeric>
+#include <unordered_set>
 
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
@@ -44,9 +47,12 @@
 #include <Base/Sequencer.h>
 #include <Base/Stream.h>
 
+#include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <Mod/Mesh/App/Core/Algorithm.h>
 #include <Mod/Mesh/App/Core/Grid.h>
 #include <Mod/Mesh/App/Core/Iterator.h>
+#include <Mod/Mesh/App/Core/KDTree.h>
 #include <Mod/Mesh/App/Core/MeshKernel.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 #include <Mod/Part/App/PartFeature.h>
@@ -54,16 +60,79 @@
 #include <Mod/Points/App/PointsGrid.h>
 
 #include "InspectionFeature.h"
+#include "InspectionSource.h"
 
 
 using namespace Inspection;
 namespace sp = std::placeholders;
 
+namespace
+{
+class InspectActualOccurrencePoints final: public Inspection::InspectActualGeometry
+{
+public:
+    InspectActualOccurrencePoints(const Points::PointKernel& points, const Base::Matrix4D& transform)
+        : transformed(points)
+    {
+        transformed.setTransform(transform);
+    }
+
+    unsigned long countPoints() const override
+    {
+        return transformed.size();
+    }
+
+    Base::Vector3f getPoint(unsigned long index) const override
+    {
+        return Base::toVector<float>(transformed.getPoint(static_cast<int>(index)));
+    }
+
+private:
+    Points::PointKernel transformed;
+};
+
+class InspectNominalOccurrencePoints final: public Inspection::InspectNominalGeometry
+{
+public:
+    InspectNominalOccurrencePoints(const Points::PointKernel& points, const Base::Matrix4D& transform)
+    {
+        transformed.reserve(points.size());
+        for (const auto& point : points.getBasicPoints()) {
+            transformed.push_back(
+                Base::toVector<float>(transform * Base::Vector3d(point.x, point.y, point.z))
+            );
+        }
+        nearest = std::make_unique<MeshCore::MeshKDTree>(transformed);
+        nearest->Optimize();
+    }
+
+    float getDistance(const Base::Vector3f& point) const override
+    {
+        if (!nearest || nearest->IsEmpty()) {
+            return std::numeric_limits<float>::max();
+        }
+
+        Base::Vector3f nearestPoint;
+        float distance = std::numeric_limits<float>::max();
+        nearest->FindNearest(point, nearestPoint, distance);
+        return distance;
+    }
+
+private:
+    std::vector<Base::Vector3f> transformed;
+    std::unique_ptr<MeshCore::MeshKDTree> nearest;
+};
+}  // namespace
+
 InspectActualMesh::InspectActualMesh(const Mesh::MeshObject& rMesh)
+    : InspectActualMesh(rMesh, rMesh.getTransform())
+{}
+
+InspectActualMesh::InspectActualMesh(const Mesh::MeshObject& rMesh, const Base::Matrix4D& transform)
     : _mesh(rMesh.getKernel())
 {
     Base::Matrix4D tmp;
-    _clTrf = rMesh.getTransform();
+    _clTrf = transform;
     _bApply = _clTrf != tmp;
 }
 
@@ -284,19 +353,27 @@ private:
 }  // namespace Inspection
 
 InspectNominalMesh::InspectNominalMesh(const Mesh::MeshObject& rMesh, float offset)
+    : InspectNominalMesh(rMesh, rMesh.getTransform(), offset)
+{}
+
+InspectNominalMesh::InspectNominalMesh(
+    const Mesh::MeshObject& rMesh,
+    const Base::Matrix4D& transform,
+    float offset
+)
     : _mesh(rMesh.getKernel())
 {
     Base::Matrix4D tmp;
-    _clTrf = rMesh.getTransform();
+    _clTrf = transform;
     _bApply = _clTrf != tmp;
 
     // Max. limit of grid elements
     float fMaxGridElements = 8000000.0f;
-    Base::BoundBox3f box = _mesh.GetBoundBox().Transformed(rMesh.getTransform());
+    Base::BoundBox3f box = _mesh.GetBoundBox().Transformed(transform);
 
     // estimate the minimum allowed grid length
-    float fMinGridLen
-        = (float)pow((box.LengthX() * box.LengthY() * box.LengthZ() / fMaxGridElements), 0.3333f);
+    float fMinGridLen = (float
+    )pow((box.LengthX() * box.LengthY() * box.LengthZ() / fMaxGridElements), 0.3333f);
     float fGridLen = 5.0f * MeshCore::MeshAlgorithm(_mesh).GetAverageEdgeLength();
 
     // We want to avoid to get too small grid elements otherwise building up the grid structure
@@ -306,7 +383,7 @@ InspectNominalMesh::InspectNominalMesh(const Mesh::MeshObject& rMesh, float offs
     fGridLen = std::max<float>(fMinGridLen, fGridLen);
 
     // build up grid structure to speed up algorithms
-    _pGrid = new MeshInspectGrid(_mesh, fGridLen, rMesh.getTransform());
+    _pGrid = new MeshInspectGrid(_mesh, fGridLen, transform);
     _box = box;
     _box.Enlarge(offset);
 }
@@ -354,21 +431,29 @@ float InspectNominalMesh::getDistance(const Base::Vector3f& point) const
 // ----------------------------------------------------------------
 
 InspectNominalFastMesh::InspectNominalFastMesh(const Mesh::MeshObject& rMesh, float offset)
+    : InspectNominalFastMesh(rMesh, rMesh.getTransform(), offset)
+{}
+
+InspectNominalFastMesh::InspectNominalFastMesh(
+    const Mesh::MeshObject& rMesh,
+    const Base::Matrix4D& transform,
+    float offset
+)
     : _mesh(rMesh.getKernel())
 {
     const MeshCore::MeshKernel& kernel = rMesh.getKernel();
 
     Base::Matrix4D tmp;
-    _clTrf = rMesh.getTransform();
+    _clTrf = transform;
     _bApply = _clTrf != tmp;
 
     // Max. limit of grid elements
     float fMaxGridElements = 8000000.0f;
-    Base::BoundBox3f box = kernel.GetBoundBox().Transformed(rMesh.getTransform());
+    Base::BoundBox3f box = kernel.GetBoundBox().Transformed(transform);
 
     // estimate the minimum allowed grid length
-    float fMinGridLen
-        = (float)pow((box.LengthX() * box.LengthY() * box.LengthZ() / fMaxGridElements), 0.3333f);
+    float fMinGridLen = (float
+    )pow((box.LengthX() * box.LengthY() * box.LengthZ() / fMaxGridElements), 0.3333f);
     float fGridLen = 5.0f * MeshCore::MeshAlgorithm(kernel).GetAverageEdgeLength();
 
     // We want to avoid to get too small grid elements otherwise building up the grid structure
@@ -378,7 +463,7 @@ InspectNominalFastMesh::InspectNominalFastMesh(const Mesh::MeshObject& rMesh, fl
     fGridLen = std::max<float>(fMinGridLen, fGridLen);
 
     // build up grid structure to speed up algorithms
-    _pGrid = new MeshInspectGrid(kernel, fGridLen, rMesh.getTransform());
+    _pGrid = new MeshInspectGrid(kernel, fGridLen, transform);
     _box = box;
     _box.Enlarge(offset);
     max_level = (unsigned long)(offset / fGridLen);
@@ -769,13 +854,27 @@ Feature::Feature()
     ADD_PROPERTY(Thickness, (0.0));
     ADD_PROPERTY(Actual, (nullptr));
     ADD_PROPERTY(Nominals, (nullptr));
+    ADD_PROPERTY_TYPE(
+        SourceDependencies,
+        (nullptr),
+        "Sources",
+        App::PropertyType(App::Prop_Output | App::Prop_ReadOnly | App::Prop_Hidden),
+        "Objects whose placement or geometry affects this inspection"
+    );
     ADD_PROPERTY(Distances, (0.0));
+    Actual.setScope(App::LinkScope::Global);
+    Nominals.setScope(App::LinkScope::Global);
+    SourceDependencies.setScope(App::LinkScope::Global);
+    App::SuppressibleExtension::initExtension(this);
 }
 
 Feature::~Feature() = default;
 
 short Feature::mustExecute() const
 {
+    if (Suppressed.isTouched()) {
+        return 1;
+    }
     if (SearchRadius.isTouched()) {
         return 1;
     }
@@ -788,59 +887,145 @@ short Feature::mustExecute() const
     if (Nominals.isTouched()) {
         return 1;
     }
+    if (SourceDependencies.isTouched()) {
+        return 1;
+    }
+    if (auto* actual = Actual.getValue(); actual && actual->isTouched()) {
+        return 1;
+    }
+    for (auto* nominal : Nominals.getValues()) {
+        if (nominal && nominal->isTouched()) {
+            return 1;
+        }
+    }
+    for (auto* dependency : SourceDependencies.getValues()) {
+        if (dependency && dependency->isTouched()) {
+            return 1;
+        }
+    }
     return 0;
 }
 
 App::DocumentObjectExecReturn* Feature::execute()
 {
+    if (Suppressed.getValue()) {
+        Distances.setValues({});
+        return App::DocumentObject::StdReturn;
+    }
+
+    auto* document = getDocument();
     bool useMultithreading = true;
 
     App::DocumentObject* pcActual = Actual.getValue();
-    if (!pcActual) {
+    ResolvedSource actualSource;
+    if (!document || !resolveSource(pcActual, document, actualSource)) {
         throw Base::ValueError("No actual geometry to inspect specified");
     }
 
-    InspectActualGeometry* actual = nullptr;
-    if (pcActual->isDerivedFrom<Mesh::Feature>()) {
-        Mesh::Feature* mesh = static_cast<Mesh::Feature*>(pcActual);
-        actual = new InspectActualMesh(mesh->Mesh.getValue());
+    std::unique_ptr<InspectActualGeometry> actual;
+    Part::TopoShape actualPartShape;
+    if (actualSource.kind == SourceKind::Mesh) {
+        auto* mesh = static_cast<Mesh::Feature*>(actualSource.geometry);
+        actual = std::make_unique<InspectActualMesh>(mesh->Mesh.getValue(), actualSource.transform);
     }
-    else if (pcActual->isDerivedFrom<Points::Feature>()) {
-        Points::Feature* pts = static_cast<Points::Feature*>(pcActual);
-        actual = new InspectActualPoints(pts->Points.getValue());
+    else if (actualSource.kind == SourceKind::Points) {
+        auto* points = static_cast<Points::Feature*>(actualSource.geometry);
+        actual = std::make_unique<InspectActualOccurrencePoints>(
+            points->Points.getValue(),
+            actualSource.transform
+        );
     }
-    else if (pcActual->isDerivedFrom<Part::Feature>()) {
+    else if (actualSource.kind == SourceKind::Part) {
+        actualPartShape = Part::Feature::getTopoShape(actualSource.geometry, Part::ShapeOption::NoFlag);
+        if (!actualPartShape.isNull()) {
+            actualPartShape.transformShape(actualSource.transform, false, true);
+        }
+    }
+    if (!actual && !actualPartShape.isNull()) {
         useMultithreading = false;
-        Part::Feature* part = static_cast<Part::Feature*>(pcActual);
-        actual = new InspectActualShape(part->Shape.getShape());
+        actual = std::make_unique<InspectActualShape>(actualPartShape);
     }
-    else {
+    if (!actual) {
         throw Base::TypeError("Unknown geometric type");
     }
 
     // clang-format off
     // get a list of nominals
     std::vector<InspectNominalGeometry*> inspectNominal;
+    std::vector<std::unique_ptr<InspectNominalGeometry>> inspectNominalStorage;
+    std::list<Part::TopoShape> nominalPartShapes;
+    std::vector<App::DocumentObject*> dependencies =
+        actualSource.dependencies;
+    std::unordered_set<App::DocumentObject*> dependencySet(
+        dependencies.begin(),
+        dependencies.end()
+    );
     const std::vector<App::DocumentObject*>& nominals = Nominals.getValues();
     for (auto it : nominals) {
-        InspectNominalGeometry* nominal = nullptr;
-        if (it->isDerivedFrom<Mesh::Feature>()) {
-            Mesh::Feature* mesh = static_cast<Mesh::Feature*>(it);
-            nominal = new InspectNominalMesh(mesh->Mesh.getValue(), this->SearchRadius.getValue());
+        ResolvedSource nominalSource;
+        if (!resolveSource(it, document, nominalSource)) {
+            throw Base::ValueError(
+                "A nominal geometry is unavailable at the current History position"
+            );
         }
-        else if (it->isDerivedFrom<Points::Feature>()) {
-            Points::Feature* pts = static_cast<Points::Feature*>(it);
-            nominal = new InspectNominalPoints(pts->Points.getValue(), this->SearchRadius.getValue());
+        for (auto* dependency : nominalSource.dependencies) {
+            if (dependencySet.insert(dependency).second) {
+                dependencies.push_back(dependency);
+            }
         }
-        else if (it->isDerivedFrom<Part::Feature>()) {
-            useMultithreading = false;
-            Part::Feature* part = static_cast<Part::Feature*>(it);
-            nominal = new InspectNominalShape(part->Shape.getValue(), this->SearchRadius.getValue());
+        std::unique_ptr<InspectNominalGeometry> nominal;
+        if (nominalSource.kind == SourceKind::Mesh) {
+            auto* mesh = static_cast<Mesh::Feature*>(
+                nominalSource.geometry
+            );
+            nominal = std::make_unique<InspectNominalMesh>(
+                mesh->Mesh.getValue(),
+                nominalSource.transform,
+                this->SearchRadius.getValue()
+            );
+        }
+        else if (nominalSource.kind == SourceKind::Points) {
+            auto* points = static_cast<Points::Feature*>(
+                nominalSource.geometry
+            );
+            nominal =
+                std::make_unique<InspectNominalOccurrencePoints>(
+                    points->Points.getValue(),
+                    nominalSource.transform
+                );
+        }
+        else if (nominalSource.kind == SourceKind::Part) {
+            Part::TopoShape shape = Part::Feature::getTopoShape(
+                nominalSource.geometry,
+                Part::ShapeOption::NoFlag
+            );
+            if (!shape.isNull()) {
+                shape.transformShape(
+                    nominalSource.transform,
+                    false,
+                    true
+                );
+                useMultithreading = false;
+                nominalPartShapes.push_back(std::move(shape));
+                nominal = std::make_unique<InspectNominalShape>(
+                    nominalPartShapes.back().getShape(),
+                    this->SearchRadius.getValue()
+                );
+            }
         }
 
         if (nominal) {
-            inspectNominal.push_back(nominal);
+            inspectNominal.push_back(nominal.get());
+            inspectNominalStorage.push_back(std::move(nominal));
         }
+    }
+    if (inspectNominal.empty()) {
+        throw Base::ValueError(
+            "No nominal geometry to inspect specified"
+        );
+    }
+    if (SourceDependencies.getValues() != dependencies) {
+        SourceDependencies.setValues(dependencies);
     }
     // clang-format on
 
@@ -848,7 +1033,7 @@ App::DocumentObjectExecReturn* Feature::execute()
 # if 1  // test with some huge data sets
     std::vector<unsigned long> index(actual->countPoints());
     std::generate(index.begin(), index.end(), Base::iotaGen<unsigned long>(0));
-    DistanceInspection check(this->SearchRadius.getValue(), actual, inspectNominal);
+    DistanceInspection check(this->SearchRadius.getValue(), actual.get(), inspectNominal);
     QFuture<float> future = QtConcurrent::mapped
         (index, std::bind(&DistanceInspection::mapped, &check, sp::_1));
     //future.waitForFinished(); // blocks the GUI
@@ -866,7 +1051,7 @@ App::DocumentObjectExecReturn* Feature::execute()
     std::vector<float> vals;
     vals.insert(vals.end(), future.begin(), future.end());
 # else
-    DistanceInspection insp(this->SearchRadius.getValue(), actual, inspectNominal);
+    DistanceInspection insp(this->SearchRadius.getValue(), actual.get(), inspectNominal);
     unsigned long count = actual->countPoints();
     std::stringstream str;
     str << "Inspecting " << this->Label.getValue() << "…";
@@ -990,11 +1175,6 @@ App::DocumentObjectExecReturn* Feature::execute()
     Distances.setValues(vals);
 #endif
 
-    delete actual;
-    for (auto it : inspectNominal) {
-        delete it;
-    }
-
     return nullptr;
 }
 
@@ -1003,6 +1183,9 @@ App::DocumentObjectExecReturn* Feature::execute()
 PROPERTY_SOURCE(Inspection::Group, App::DocumentObjectGroup)
 
 
-Group::Group() = default;
+Group::Group()
+{
+    App::SuppressibleExtension::initExtension(this);
+}
 
 Group::~Group() = default;

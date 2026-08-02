@@ -23,8 +23,14 @@
 # ******************************************************************************/
 
 import FreeCAD, FreeCADGui
+import PartDesign
 import traceback
 from PySide import QtCore, QtGui
+from PartDesign.PartDesignTimeline import (
+    abort_task_command,
+    can_start_task,
+    open_task_command,
+)
 from .WizardShaftTable import WizardShaftTable
 from .Shaft import Shaft
 
@@ -189,16 +195,68 @@ class TaskWizardShaft:
             self.updateButton(row, col, flag)
 
     def getStandardButtons(self):
-        return QtGui.QDialogButtonBox.Ok
+        return (
+            QtGui.QDialogButtonBox.Ok
+            | QtGui.QDialogButtonBox.Cancel
+        )
 
     def accept(self):
-        if self.table:
-            del self.table
-        if self.shaft:
-            del self.shaft
-        if self.form:
-            del self.form
+        shaft_feature = getattr(
+            getattr(self.shaft, "feature", None),
+            "feature",
+            None,
+        )
+        if (
+            shaft_feature is None
+            or shaft_feature.Document is not self.doc
+        ):
+            raise RuntimeError("The shaft wizard has no live result")
+        if self.doc.recompute() is False:
+            raise RuntimeError("The shaft wizard document failed to recompute")
+        if not shaft_feature.isValid():
+            status = shaft_feature.getStatusString()
+            raise RuntimeError(status or "The shaft wizard result is invalid")
+        shaft_profile = getattr(getattr(self.shaft, "feature", None), "sketch", None)
+        if (
+            shaft_profile is None
+            or shaft_profile.Document is not self.doc
+        ):
+            raise RuntimeError("The shaft wizard has no live profile")
+        if shaft_profile.getParentGeoFeatureGroup() is not None:
+            raise RuntimeError("The shaft profile is not a reusable Design sketch")
+        shaft_body = getattr(
+            getattr(self.shaft, "feature", None),
+            "body",
+            None,
+        )
+        if (
+            shaft_body is None
+            or shaft_body.Document is not self.doc
+            or shaft_body.TypeId != "PartDesign::Body"
+            or shaft_body.Tip is None
+            or not shaft_body.isValid()
+            or shaft_body.Shape.isNull()
+            or not shaft_body.Shape.isValid()
+        ):
+            raise RuntimeError("The shaft wizard has no stable Body output")
+        PartDesign.validateDesign(shaft_feature)
+        self._release()
         return True
+
+    def reject(self):
+        self._release()
+        return True
+
+    def autoClosedOnDeletedDocument(self):
+        self._release()
+
+    def _release(self):
+        global WizardShaftDlg
+        self.table = None
+        self.shaft = None
+        self.form = None
+        if WizardShaftDlg is self:
+            WizardShaftDlg = None
 
     def isAllowedAlterDocument(self):
         return False
@@ -216,8 +274,25 @@ WizardShaftDlg = None
 class WizardShaftGui:
     def Activated(self):
         global WizardShaftDlg
-        WizardShaftDlg = TaskWizardShaft(FreeCAD.ActiveDocument)
-        FreeCADGui.Control.showDialog(WizardShaftDlg)
+        document = FreeCAD.ActiveDocument
+        gui_document, transaction_id = open_task_command(
+            document,
+            translate("Command", "Create shaft"),
+        )
+        try:
+            WizardShaftDlg = TaskWizardShaft(document)
+            FreeCADGui.Control.showDialog(
+                WizardShaftDlg,
+                gui_document,
+            )
+            if not FreeCADGui.Control.activeDialog(gui_document):
+                raise RuntimeError(
+                    "The shaft wizard task panel could not be shown"
+                )
+        except Exception:
+            WizardShaftDlg = None
+            abort_task_command(document, transaction_id)
+            raise
 
     def GetResources(self):
         IconPath = FreeCAD.ConfigGet("AppHomePath") + "Mod/PartDesign/WizardShaft/WizardShaft.svg"
@@ -228,7 +303,7 @@ class WizardShaftGui:
         return {"Pixmap": IconPath, "MenuText": MenuText, "ToolTip": ToolTip}
 
     def IsActive(self):
-        return FreeCAD.ActiveDocument is not None
+        return can_start_task(FreeCAD.ActiveDocument)
 
     def __del__(self):
         global WizardShaftDlg

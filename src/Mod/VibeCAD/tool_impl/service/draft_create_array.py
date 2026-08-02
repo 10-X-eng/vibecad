@@ -168,6 +168,7 @@ def run(
     def create() -> dict[str, Any]:
         import Draft
         import FreeCAD as App
+        from draftutils import timeline
 
         active = App.ActiveDocument
         if active is None:
@@ -194,6 +195,7 @@ def run(
             )
         if obj is None:
             raise RuntimeError("Draft array creation did not return an object.")
+        timeline.accept_derived_output(obj, [base])
         obj.Label = clean_label
         active.recompute()
         return {

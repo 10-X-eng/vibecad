@@ -7001,9 +7001,9 @@ birleştirmek için Doğru, bileşik yapmak için Yanlış ayarlayın</translati
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>Yayın bitiş açısı (tam bir çember için, 
+      <translation>Yayın bitiş açısı (tam bir çember için,
                 İlk Açı ile aynı değeri verin)</translation>
     </message>
     <message>
@@ -7183,26 +7183,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 Bu özellik salt okunurdur; çünkü nihai metin 'Etiket Türü'ne
 ve 'Hedef' olarak tanımlanan nesneye bağlıdır.
 'Özel Metin' yalnızca 'Etiket Türü' 'Özel' olarak ayarlandığında gösterilir.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>Bu etiket tarafından görüntülenen bilgi türü.
-
-'Özel' seçilirse, 'Özel Metin'in içeriği kullanılır.
-Diğer türlerde, dizge 'Hedef' olarak tanımlanan nesneden otomatik hesaplanır.
-'Etiket' ve 'Malzeme' yalnızca bu özelliklere sahip (BIM nesneleri gibi) nesnelerde çalışır.
-
-'Konum', 'Uzunluk' ve 'Alan' için bu özellikler 'Hedef'teki ana nesneden alınır;
-alt öğe sırasıyla 'VertexN', 'EdgeN' veya 'FaceN' olarak belirtilmişse,
-özellikler buna göre çıkarılır.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7487,11 +7467,6 @@ Bu özellik salt okunurdur; sayı, 'Point Object' içindeki noktalara bağlıdı
       <translation>Gizli çizgileri göster</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Aynı tip ve malzemedeki duvar ve yapı nesnelerini birleştir</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Elipsleri ve B-spline'ları doğru parçalarına çokgenleştir</translation>
@@ -7594,10 +7569,10 @@ Bu, temel nesnenin Clip özelliğini geçersiz kılar.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>Eliptik yayın bitiş açısı 
+      <translation>Eliptik yayın bitiş açısı
 
                 (tam bir daire için, İlk Açı ile aynı değeri verin)</translation>
     </message>
@@ -8316,11 +8291,6 @@ Ancak, bağlantısız izlere sahip tek bir eskiz birkaç ayrı Draft nesnesine d
       <source>Auto-Group</source>
       <translation>Otomatik Gruplama</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Yeni Draft ve BIM nesnelerini seçili katmana veya gruba ekler</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8680,11 +8650,6 @@ Başlangıç izdüşüm yönü, geçerli etkin görünüm yönünün tersidir.</
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>Merkez Yakalama</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Yüzeylerin ve dairesel kenarların merkez noktasına, ayrıca çalışma düzlemi aracı nesnelerinin ve yapı parçalarının yerleşim noktasına yakalar</translation>
     </message>
   </context>
   <context>

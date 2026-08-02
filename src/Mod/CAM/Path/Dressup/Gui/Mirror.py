@@ -22,8 +22,16 @@ import Constants
 import FreeCAD
 import FreeCADGui
 import Path
+import Path.Base.Util as PathUtil
+import Path.Main.Job as PathJob
 import PathScripts.PathUtils as PathUtils
 import Path.Dressup.Utils as PathDressup
+from Path.CommandBoundary import (
+    can_start_document_command,
+    document_is_open,
+    is_document_object,
+)
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 
 from PySide.QtCore import QT_TRANSLATE_NOOP
 
@@ -100,6 +108,9 @@ class ObjectDressup:
         obj.setEditorMode("Reference", referenceMode)
 
     def execute(self, obj):
+        if not PathUtil.activeForOp(obj):
+            obj.Path = Path.Path()
+            return
         if not obj.Base:
             obj.Path = Path.Path()
             Path.Log.warning(translate("MirrorDressup", "No base operation"))
@@ -217,6 +228,13 @@ class ViewProviderDressup:
     def attach(self, vobj):
         self.vobj = vobj
         self.obj = vobj.Object
+        self._job_name = ""
+        try:
+            job = PathUtils.findParentJob(self.obj)
+            if job is not None and job.Document is self.obj.Document:
+                self._job_name = str(job.Name)
+        except (ReferenceError, RuntimeError):
+            pass
 
     def dumps(self):
         return
@@ -238,13 +256,75 @@ class ViewProviderDressup:
                     i.Group = group
         return [self.obj.Base]
 
+    def _restore_base_before_delete(self, vobj):
+        try:
+            dressup = vobj.Object if vobj is not None else None
+            document = getattr(dressup, "Document", None)
+            base = getattr(dressup, "Base", None)
+        except (ReferenceError, RuntimeError):
+            return
+        try:
+            callback_matches_provider = (
+                document_is_open(document)
+                and dressup is self.obj
+                and getattr(dressup, "Document", None) is document
+            )
+        except (NameError, ReferenceError, RuntimeError):
+            callback_matches_provider = False
+        if not callback_matches_provider or not is_document_object(
+            base,
+            document,
+        ):
+            return
+
+        try:
+            job = (
+                document.getObject(self._job_name)
+                if self._job_name
+                else None
+            )
+        except (NameError, ReferenceError, RuntimeError):
+            job = None
+        if (
+            job is not None
+            and is_document_object(job, document)
+            and isinstance(getattr(job, "Proxy", None), PathJob.ObjectJob)
+            and is_document_object(
+                getattr(job, "Operations", None),
+                document,
+            )
+        ):
+            before = (
+                dressup
+                if dressup in job.Operations.Group
+                else None
+            )
+            job.Proxy.addOperation(base, before)
+
+        # Deletion can be triggered while another document tab is active.
+        # Restore the source through its own ViewProvider, never ActiveDocument.
+        try:
+            if PathUtil.shouldRestoreTimelineReplacedInput(
+                dressup,
+                base,
+            ):
+                base.ViewObject.Visibility = True
+        except (ReferenceError, RuntimeError):
+            pass
+        try:
+            dressup.Base = None
+        except (ReferenceError, RuntimeError):
+            pass
+
+    def beforeDelete(self, vobj):
+        """Restore the source for every model-deletion path."""
+
+        self._restore_base_before_delete(vobj)
+
     def onDelete(self, arg1=None, arg2=None):
-        if arg1.Object and arg1.Object.Base:
-            FreeCADGui.ActiveDocument.getObject(arg1.Object.Base.Name).Visibility = True
-            job = PathUtils.findParentJob(self.obj)
-            if job:
-                job.Proxy.addOperation(arg1.Object.Base, arg1.Object)
-            arg1.Object.Base = None
+        """Restore the source before an interactive GUI deletion."""
+
+        self._restore_base_before_delete(arg1)
         return True
 
     def setEdit(self, vobj, mode=0):
@@ -253,10 +333,71 @@ class ViewProviderDressup:
         return True
 
     def getIcon(self):
-        if getattr(PathDressup.baseOp(self.obj), "Active", True):
+        if PathUtil.activeForOp(self.obj):
             return ":/icons/CAM_Dressup.svg"
         else:
             return ":/icons/CAM_OpActive.svg"
+
+
+def _validated_base(base, document):
+    if (
+        base is None
+        or getattr(base, "Document", None) is not document
+        or not base.isDerivedFrom("Path::Feature")
+        or not PathDressup.isOp(base)
+        or not base.isValid()
+        or not getattr(base, "Path", None)
+        or not base.Path.Commands
+    ):
+        return None
+
+    job = PathUtils.findParentJob(base)
+    if (
+        job is None
+        or job.Document is not document
+        or not isinstance(getattr(job, "Proxy", None), PathJob.ObjectJob)
+        or getattr(job, "Operations", None) is None
+    ):
+        return None
+    return job
+
+
+def _validate_result(document, result, base, job):
+    has_active_source_path = (
+        PathUtil.activeForOp(base)
+        and getattr(base, "Path", None)
+        and bool(base.Path.Commands)
+    )
+    if (
+        result is None
+        or result.Document is not document
+        or not result.isDerivedFrom("Path::Feature")
+        or not isinstance(getattr(result, "Proxy", None), ObjectDressup)
+        or result.Base is not base
+        or not result.isValid()
+        or PathUtils.findParentJob(result) is not job
+        or result not in job.Operations.Group
+        or (
+            has_active_source_path
+            and (
+                not getattr(result, "Path", None)
+                or not result.Path.Commands
+            )
+        )
+    ):
+        raise RuntimeError("The mirrored CAM toolpath was not created correctly")
+
+
+def createDressupFeature(document):
+    """Create and initialize one exact mirror dress-up feature."""
+    if document is None:
+        raise RuntimeError("A document is required for a mirror dress-up")
+    result = document.addObject(
+        "Path::FeaturePython",
+        "MirrorDressup",
+    )
+    ObjectDressup(result)
+    return result
 
 
 class CommandPathDressup:
@@ -269,30 +410,83 @@ class CommandPathDressup:
         }
 
     def IsActive(self):
-        return bool(PathDressup.selection())
+        if not can_start_document_command():
+            return False
+        document = FreeCAD.ActiveDocument
+        return _validated_base(PathDressup.selection(), document) is not None
 
     def Activated(self):
-        # check that the selection contains exactly what we want
+        document = FreeCAD.ActiveDocument
+        if document is None or not can_start_document_command(document):
+            return
+
         op = PathDressup.selection(verbose=True)
         if not op:
             return
+        job = _validated_base(op, document)
+        if job is None:
+            return
 
-        # everything ok!
-        FreeCAD.ActiveDocument.openTransaction("Create Dress-up")
-        FreeCADGui.addModule("Path.Dressup.Gui.Mirror")
-        FreeCADGui.addModule("PathScripts.PathUtils")
-        FreeCADGui.doCommand(
-            'obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", "MirrorDressup")'
+        transaction = _OwnedDocumentTransaction(
+            document,
+            "Create CAM mirror dress-up",
         )
-        FreeCADGui.doCommand("Path.Dressup.Gui.Mirror.ObjectDressup(obj)")
-        FreeCADGui.doCommand("baseOp = FreeCAD.ActiveDocument." + op.Name)
-        FreeCADGui.doCommand("job = PathScripts.PathUtils.findParentJob(baseOp)")
-        FreeCADGui.doCommand("obj.Base = baseOp")
-        FreeCADGui.doCommand("job.Proxy.addOperation(obj, baseOp)")
-        FreeCADGui.doCommand("Path.Dressup.Gui.Mirror.ViewProviderDressup(obj.ViewObject)")
-        FreeCADGui.doCommand("baseOp.Visibility = False")
-        FreeCAD.ActiveDocument.commitTransaction()  # Final `commitTransaction()`
-        FreeCAD.ActiveDocument.recompute()
+        try:
+            FreeCADGui.addModule("Path.Dressup.Gui.Mirror")
+            FreeCADGui.addModule("Path.Base.Util")
+            FreeCADGui.addModule("PathScripts.PathUtils")
+            FreeCADGui.doCommand(
+                f"document = FreeCAD.getDocument({document.Name!r})"
+            )
+            result = FreeCADGui.runDocumentObjectCommand(
+                document,
+                "Path.Dressup.Gui.Mirror.createDressupFeature(document)",
+                "Path::FeaturePython",
+            )
+            result_name = result.Name
+            result_id = int(result.ID)
+            result_expression = "document.getObject(%r)" % result_name
+            FreeCADGui.doCommand(
+                f"baseOp = document.getObject({op.Name!r})"
+            )
+            FreeCADGui.doCommand(
+                "_cam_base_was_visible = bool(baseOp.ViewObject.Visibility)"
+            )
+            FreeCADGui.doCommand("job = PathScripts.PathUtils.findParentJob(baseOp)")
+            FreeCADGui.doCommand(f"{result_expression}.Base = baseOp")
+            FreeCADGui.doCommand(
+                f"job.Proxy.addOperation({result_expression}, baseOp)"
+            )
+            FreeCADGui.doCommand(
+                "Path.Dressup.Gui.Mirror.ViewProviderDressup("
+                f"{result_expression}.ViewObject)"
+            )
+            FreeCADGui.doCommand(
+                "Path.Base.Util.markTimelineReplacedInputs("
+                f"{result_expression}, "
+                "[baseOp] if _cam_base_was_visible else [])"
+            )
+            FreeCADGui.doCommand("baseOp.Visibility = False")
+
+            document.recompute()
+            resolved = document.getObject(result_name)
+            if (
+                resolved is not result
+                or int(resolved.ID) != result_id
+                or document.getObject(result_id) is not result
+                or not document
+                .isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                    result
+                )
+            ):
+                raise RuntimeError(
+                    "The mirror dress-up command did not return its exact output"
+                )
+            _validate_result(document, result, op, job)
+        except Exception:
+            transaction.abort()
+            raise
+        transaction.commit()
 
 
 if FreeCAD.GuiUp:

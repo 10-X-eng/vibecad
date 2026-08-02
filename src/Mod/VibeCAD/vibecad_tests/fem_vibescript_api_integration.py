@@ -294,7 +294,7 @@ def _exercise_source_api(document_uid: str) -> None:
     assert "one material unassigned as the remainder" in description[
         "material_contract"
     ]["multiple_materials"]
-    assert "cannot switch workbench or engine" in description[
+    assert "active workbench determines" in description[
         "workbench_handoffs"
     ]["rule"]
     assert "fixed to a static" in description["solver_contract"]["analysis_type"]
@@ -460,6 +460,7 @@ def _prepare_execute_validate(
         "vibescript_domain_api.py",
         "vibescript_fem_api.py",
         "vibescript_fem_worker.py",
+        "vibescript_worker_progress.py",
     }, sorted(staged_names)
     execution = execute_candidate(prepared, cancellation_check=None)
     validated = validate_candidate(prepared, execution) if execution.get("ok") else None
@@ -488,6 +489,67 @@ def _reference_state(value) -> list[list[object]]:
         [str(target.Name), [str(item) for item in subelements]]
         for target, subelements in list(value or [])
     ]
+
+
+def _assert_fem_timeline_graph(
+    document,
+    outputs: dict[str, object],
+    source,
+) -> dict[str, object]:
+    assert document.getObject(source.Name) is source
+    timeline = document.getObject("VibeCADTimeline")
+    assert timeline is not None
+    operations = list(timeline.Operations)
+    roles = {}
+    for name, obj in outputs.items():
+        assert obj in operations
+        assert obj.VibeCADTimelineRole == "operation"
+        assert obj.getTypeIdOfProperty(
+            "VibeCADTimelineRole"
+        ) == "App::PropertyString"
+        assert getattr(obj, "VibeCADTimelineOwner", None) is None
+        roles[name] = [str(obj.Name), str(obj.VibeCADTimelineRole)]
+
+    assert _reference_state(outputs["Material"].References) == [
+        [str(source.Name), ["Solid1"]]
+    ]
+    assert _reference_state(outputs["MaterialRemainder"].References) == []
+    assert _reference_state(outputs["Fixed"].References) == [
+        [str(source.Name), ["Face1"]]
+    ]
+    assert _reference_state(outputs["Force"].References) == [
+        [str(source.Name), ["Face2"]]
+    ]
+    assert outputs["Mesh"].Shape is source
+    assert list(outputs["LoadCase"].VibeCADConstraints) == [
+        outputs["Fixed"],
+        outputs["Force"],
+    ]
+    assert set(outputs["Analysis"].Group) == {
+        outputs[name]
+        for name in (
+            "Solver",
+            "Material",
+            "MaterialRemainder",
+            "Fixed",
+            "Force",
+            "LoadCase",
+            "Mesh",
+            "Result",
+        )
+    }
+    assert outputs["Result"].Mesh is outputs["Mesh"]
+    assert (
+        str(outputs["Result"].VibeCADAnalysisObjectName)
+        == str(outputs["Analysis"].Name)
+    )
+    return {
+        "roles": roles,
+        "material_source": str(source.Name),
+        "fixed_source": str(source.Name),
+        "force_source": str(source.Name),
+        "mesh_source": str(source.Name),
+    }
 
 
 def _snapshot(obj) -> dict[str, object]:
@@ -648,6 +710,7 @@ def _run_integration() -> int:
     with tempfile.TemporaryDirectory(prefix="vibecad-fem-integration-") as directory:
         root = Path(directory)
         document = App.newDocument("VibeCADFEMIntegration")
+        document.UndoMode = 1
         source = document.addObject("Part::Feature", "SourceSolid")
         source.Label = "Human two-solid source"
         source.Shape = Part.makeCompound(
@@ -656,7 +719,9 @@ def _run_integration() -> int:
                 Part.makeBox(10, 8, 6, App.Vector(20, 0, 0)),
             ]
         )
+        source_name = str(source.Name)
         service = _Service(root)
+        document.commitTransaction()
         _exercise_source_api(str(document.Uid))
         _exercise_missing_external_capabilities(
             root,
@@ -737,10 +802,26 @@ def _run_integration() -> int:
         assert _managed_names(document, prepared["program_id"]) == set(
             stable_names.values()
         )
+        created_state = _assert_fem_timeline_graph(document, outputs, source)
+        document.undo()
+        assert not _managed_names(document, prepared["program_id"])
+        assert document.getObject(source.Name) is source
+        document.redo()
+        outputs = {
+            name: document.getObject(object_name)
+            for name, object_name in stable_names.items()
+        }
+        assert all(outputs.values())
+        assert _assert_fem_timeline_graph(
+            document,
+            outputs,
+            document.getObject(source.Name),
+        ) == created_state
         _add_human_state(outputs)
         consumer = document.addObject("App::FeaturePython", "HumanFEMConsumer")
         consumer.addProperty("App::PropertyLinkList", "Sources")
         consumer.Sources = list(outputs.values())
+        document.commitTransaction()
 
         failed_capture = _captured(
             root,
@@ -749,7 +830,7 @@ def _run_integration() -> int:
             arguments={
                 "program_id": prepared["program_id"],
                 "expected_revision": accepted["working_revision"],
-                "replacements": [{"old": "'Face2'", "new": "'Face99'"}],
+                "source": _program_source().replace("'Face2'", "'Face99'"),
             },
         )
         failed_prepared, failed_execution, failed_validated = _prepare_execute_validate(
@@ -778,7 +859,7 @@ def _run_integration() -> int:
             arguments={
                 "program_id": prepared["program_id"],
                 "expected_revision": failed_prepared["revision"],
-                "replacements": [{"old": "'Face99'", "new": "'Face2'"}],
+                "source": _program_source(),
             },
         )
         _recovered, _, _, recovery_publication, accepted = _run_candidate(
@@ -811,6 +892,38 @@ def _run_integration() -> int:
         )
         for name, obj in outputs.items():
             assert obj.HumanFEMNote == f"preserve {name}"
+        document.undo()
+        outputs = {
+            name: document.getObject(object_name)
+            for name, object_name in stable_names.items()
+        }
+        assert all(outputs.values())
+        assert (
+            abs(float(outputs["Force"].Force.getValueAs("N").Value) - 1000.0)
+            <= 1.0e-9
+        )
+        _assert_fem_timeline_graph(
+            document,
+            outputs,
+            document.getObject(source.Name),
+        )
+        assert consumer.Sources == list(outputs.values())
+        document.redo()
+        outputs = {
+            name: document.getObject(object_name)
+            for name, object_name in stable_names.items()
+        }
+        assert all(outputs.values())
+        assert (
+            abs(float(outputs["Force"].Force.getValueAs("N").Value) - 1500.0)
+            <= 1.0e-9
+        )
+        _assert_fem_timeline_graph(
+            document,
+            outputs,
+            document.getObject(source.Name),
+        )
+        assert consumer.Sources == list(outputs.values())
 
         reconfigure_capture = _captured(
             root,
@@ -900,6 +1013,7 @@ def _run_integration() -> int:
         reopened = App.openDocument(str(save_path))
         assert reopened is not None
         App.setActiveDocument(reopened.Name)
+        reopened.UndoMode = 1
         outputs = {
             name: reopened.getObject(object_name)
             for name, object_name in stable_names.items()
@@ -953,14 +1067,14 @@ def _run_integration() -> int:
             },
         )
         prepared_delete = prepare_delete(delete_capture)
-        original_remove = publication_module._remove_owned_objects
+        original_remove = publication_module._remove_timeline_deletion
 
-        def fail_after_committed_removal(active_document, managed_objects):
-            original_remove(active_document, managed_objects)
+        def fail_after_committed_removal(active_document, deletion):
+            original_remove(active_document, deletion)
             active_document.commitTransaction()
             raise RuntimeError("injected FEM deletion failure")
 
-        publication_module._remove_owned_objects = fail_after_committed_removal
+        publication_module._remove_timeline_deletion = fail_after_committed_removal
         try:
             try:
                 delete_live_program(service, prepared_delete)
@@ -971,7 +1085,7 @@ def _run_integration() -> int:
                 raise AssertionError("Expected injected FEM deletion failure.")
             restore_prepared_delete(prepared_delete)
         finally:
-            publication_module._remove_owned_objects = original_remove
+            publication_module._remove_timeline_deletion = original_remove
         outputs = {
             name: reopened.getObject(object_name)
             for name, object_name in stable_names.items()
@@ -997,6 +1111,21 @@ def _run_integration() -> int:
         )
         assert finished["ok"] is True
         assert not _managed_names(reopened, reconfigured["program_id"])
+        assert reopened.getObject(source_name) is not None
+        reopened.undo()
+        outputs = {
+            name: reopened.getObject(object_name)
+            for name, object_name in stable_names.items()
+        }
+        assert all(outputs.values())
+        _assert_fem_timeline_graph(
+            reopened,
+            outputs,
+            reopened.getObject(source_name),
+        )
+        reopened.redo()
+        assert not _managed_names(reopened, reconfigured["program_id"])
+        assert reopened.getObject(source_name) is not None
         App.closeDocument(reopened.Name)
     print(
         json.dumps(

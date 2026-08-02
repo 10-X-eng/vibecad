@@ -24,7 +24,7 @@
 
 # include <QMessageBox>
 
-
+#include <Base/Interpreter.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
@@ -34,7 +34,9 @@
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Mod/Part/App/PartFeature.h>
+#include <Mod/TechDraw/App/FeatureProjection.h>
 
+#include "CommandHelpers.h"
 #include "TaskProjection.h"
 #include "ui_TaskProjection.h"
 
@@ -43,11 +45,27 @@ using namespace TechDrawGui;
 
 /* TRANSLATOR TechDrawGui::TaskProjection */
 
-TaskProjection::TaskProjection() :
-    ui(new Ui_TaskProjection)
-{
+TaskProjection::TaskProjection()
+    : TaskProjection(
+          App::GetApplication().getActiveDocument(),
+          Gui::Selection().getObjectsOfType<Part::Feature>()
+      )
+{}
 
+TaskProjection::TaskProjection(
+    App::Document* document,
+    const std::vector<Part::Feature*>& shapes
+)
+    : ui(new Ui_TaskProjection)
+    , m_documentIdentity(document)
+{
     ui->setupUi(this);
+    m_shapeIdentities.reserve(shapes.size());
+    for (auto* shape : shapes) {
+        if (shape && shape->getDocument() == document) {
+            m_shapeIdentities.emplace_back(shape);
+        }
+    }
 }
 
 TaskProjection::~TaskProjection()
@@ -57,59 +75,170 @@ TaskProjection::~TaskProjection()
 
 bool TaskProjection::accept()
 {
-    Gui::Document* document = Gui::Application::Instance->activeDocument();
-    if (!document) {
-        QMessageBox::warning(Gui::getMainWindow(), tr("No Active Document"),
-            tr("There is currently no active document to complete the operation"));
-        return true;
+    auto* appDocument = m_documentIdentity.resolve();
+    Gui::Document* guiDocument =
+        m_documentIdentity.guiDocument();
+    if (!appDocument || !guiDocument) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Document Closed"),
+            tr("The document selected for projection is no longer open.")
+        );
+        return false;
     }
-    std::list<Gui::MDIView*> mdis = document->getMDIViewsOfType(Gui::View3DInventor::getClassTypeId());
+    std::list<Gui::MDIView*> mdis =
+        guiDocument->getMDIViewsOfType(
+            Gui::View3DInventor::getClassTypeId()
+        );
     if (mdis.empty()) {
-        QMessageBox::warning(Gui::getMainWindow(), tr("No Active View"),
-            tr("There is currently no active view to complete the operation"));
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("No 3D View"),
+            tr("Open a 3D view for this document before projecting shapes.")
+        );
         return false;
     }
 
-    Gui::View3DInventorViewer* viewer = static_cast<Gui::View3DInventor*>(mdis.front())->getViewer();
+    auto* view3D =
+        dynamic_cast<Gui::View3DInventor*>(mdis.front());
+    auto* viewer = view3D ? view3D->getViewer() : nullptr;
+    if (!viewer) {
+        return false;
+    }
     SbVec3f pnt, dir;
     viewer->getNearPlane(pnt, dir);
     float x=0, y=1, z=1;
     dir.getValue(x, y,z);
 
-    std::vector<Part::Feature*> shapes = Gui::Selection().getObjectsOfType<Part::Feature>();
-    int tid = Gui::Command::openActiveDocumentCommand("Project shape");
-    Gui::Command::addModule(Gui::Command::Doc, "TechDraw");
-    for (std::vector<Part::Feature*>::iterator it = shapes.begin(); it != shapes.end(); ++it) {
-        const char* object = (*it)->getNameInDocument();
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.addObject('TechDraw::FeatureProjection', '%s_proj')", object);
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.Direction=FreeCAD.Vector(%f, %f, %f)", x, y,z);
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.Source=FreeCAD.ActiveDocument.%s", object);
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.VCompound=%s", (ui->cbVisSharp->isChecked() ? "True" : "False"));
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.Rg1LineVCompound=%s", (ui->cbVisSmooth->isChecked() ? "True" : "False"));
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.RgNLineVCompound=%s", (ui->cbVisSewn->isChecked() ? "True" : "False"));
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.OutLineVCompound=%s", (ui->cbVisOutline->isChecked() ? "True" : "False"));
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.IsoLineVCompound=%s", (ui->cbVisIso->isChecked() ? "True" : "False"));
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.HCompound=%s", (ui->cbHidSharp->isChecked() ? "True" : "False"));
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.Rg1LineHCompound=%s", (ui->cbHidSmooth->isChecked() ? "True" : "False"));
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.RgNLineHCompound=%s", (ui->cbHidSewn->isChecked() ? "True" : "False"));
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.OutLineHCompound=%s", (ui->cbHidOutline->isChecked() ? "True" : "False"));
-        Gui::Command::doCommand(Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.ActiveObject.IsoLineHCompound=%s", (ui->cbHidIso->isChecked() ? "True" : "False"));
+    std::vector<Part::Feature*> shapes;
+    shapes.reserve(m_shapeIdentities.size());
+    for (const auto& identity : m_shapeIdentities) {
+        auto* shape = identity.resolve();
+        if (!shape) {
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                tr("Selection Changed"),
+                tr(
+                    "A shape selected for projection is no longer "
+                    "available."
+                )
+            );
+            return false;
+        }
+        shapes.push_back(shape);
     }
-    Gui::Command::updateActive();
-    Gui::Command::commitCommand(tid);
+    if (shapes.empty()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("No Shapes"),
+            tr("Select at least one solid or surface to project.")
+        );
+        return false;
+    }
+
+    try {
+        TaskInternal::OwnedDocumentTransaction transaction(
+            appDocument,
+            "Project shape"
+        );
+        Gui::Command::addModule(Gui::Command::Doc, "TechDraw");
+        std::vector<App::DocumentObject*> createdProjections;
+        createdProjections.reserve(shapes.size());
+        for (auto* shape : shapes) {
+            const std::string projectionName =
+                appDocument->getUniqueObjectName(
+                    (std::string(shape->getNameInDocument())
+                     + "_proj")
+                        .c_str()
+                );
+            const std::string documentName =
+                Base::InterpreterSingleton::strToPython(
+                    appDocument->getName()
+                );
+            const QString projectionFactory =
+                QStringLiteral(
+                    "App.getDocument('%1').addObject"
+                    "('TechDraw::FeatureProjection', '%2')"
+                )
+                    .arg(
+                        QString::fromStdString(documentName),
+                        QString::fromStdString(projectionName)
+                    );
+            auto* projection =
+                dynamic_cast<TechDraw::FeatureProjection*>(
+                    Gui::Command::runDocumentObjectCommand(
+                        Gui::Command::Doc,
+                        *appDocument,
+                        projectionFactory.toUtf8(),
+                        TechDraw::FeatureProjection::getClassTypeId()
+                    )
+                );
+            if (!projection
+                || projection->getDocument() != appDocument
+                || !appDocument->containsObject(projection)) {
+                throw Base::RuntimeError(
+                    "The projected-shape factory returned an invalid object"
+                );
+            }
+            createdProjections.push_back(projection);
+            projection->Direction.setValue(
+                Base::Vector3d(x, y, z)
+            );
+            projection->Source.setValue(shape);
+            projection->VCompound.setValue(
+                ui->cbVisSharp->isChecked()
+            );
+            projection->Rg1LineVCompound.setValue(
+                ui->cbVisSmooth->isChecked()
+            );
+            projection->RgNLineVCompound.setValue(
+                ui->cbVisSewn->isChecked()
+            );
+            projection->OutLineVCompound.setValue(
+                ui->cbVisOutline->isChecked()
+            );
+            projection->IsoLineVCompound.setValue(
+                ui->cbVisIso->isChecked()
+            );
+            projection->HCompound.setValue(
+                ui->cbHidSharp->isChecked()
+            );
+            projection->Rg1LineHCompound.setValue(
+                ui->cbHidSmooth->isChecked()
+            );
+            projection->RgNLineHCompound.setValue(
+                ui->cbHidSewn->isChecked()
+            );
+            projection->OutLineHCompound.setValue(
+                ui->cbHidOutline->isChecked()
+            );
+            projection->IsoLineHCompound.setValue(
+                ui->cbHidIso->isChecked()
+            );
+            projection->recomputeFeature();
+            if (projection->isError()) {
+                throw Base::RuntimeError(
+                    "A projected shape could not produce valid geometry"
+                );
+            }
+        }
+        TechDraw::CommandHelpers::groupTimelineOutputs(
+            appDocument,
+            createdProjections,
+            "ProjectedShapes",
+            QT_TRANSLATE_NOOP("Command", "Projected Shapes")
+        );
+        TaskInternal::updateExactDocument(appDocument);
+        transaction.commit();
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::critical(
+            Gui::getMainWindow(),
+            tr("Projection Failed"),
+            QString::fromUtf8(error.what())
+        );
+        return false;
+    }
     return true;
 }
 
@@ -129,6 +258,29 @@ TaskDlgProjection::TaskDlgProjection() :
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
     setAutoCloseOnTransactionChange(true);
+}
+
+TaskDlgProjection::TaskDlgProjection(
+    App::Document* document,
+    const std::vector<Part::Feature*>& shapes
+)
+    : TaskDialog()
+{
+    widget = new TaskProjection(document, shapes);
+    taskbox = new Gui::TaskView::TaskBox(
+        Gui::BitmapFactory().pixmap(
+            "actions/TechDraw_ProjectShape"
+        ),
+        widget->windowTitle(),
+        true,
+        nullptr
+    );
+    taskbox->groupLayout()->addWidget(widget);
+    Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
+    if (document) {
+        setDocumentName(document->getName());
+    }
 }
 
 TaskDlgProjection::~TaskDlgProjection()
@@ -151,14 +303,12 @@ void TaskDlgProjection::clicked(int i)
 
 bool TaskDlgProjection::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgProjection::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include "moc_TaskProjection.cpp"

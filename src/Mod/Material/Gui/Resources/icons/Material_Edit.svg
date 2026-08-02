@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!-- Created with Inkscape (http://www.inkscape.org/) -->
-<svg xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:svg="http://www.w3.org/2000/svg" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="64px" height="64px" id="svg2816" version="1.1" inkscape:version="0.48.5 r10040" sodipodi:docname="Arch_Material.svg">
+<svg xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:svg="http://www.w3.org/2000/svg" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="64px" height="64px" id="svg2816" version="1.1" inkscape:version="0.48.5 r10040" sodipodi:docname="Material_Edit.svg">
   <defs id="defs2818">
     <linearGradient inkscape:collect="always" id="linearGradient3960">
       <stop style="stop-color:#c4a000;stop-opacity:1" offset="0" id="stop3962"/>
@@ -96,7 +96,7 @@
             <dc:title>[Yorik van Havre]</dc:title>
           </cc:Agent>
         </dc:creator>
-        <dc:title>Arch_Material</dc:title>
+        <dc:title>Material_Edit</dc:title>
         <dc:date>2015-04-15</dc:date>
         <dc:relation>https://www.freecad.org/wiki/index.php?title=Artwork</dc:relation>
         <dc:publisher>
@@ -104,7 +104,7 @@
             <dc:title>FreeCAD</dc:title>
           </cc:Agent>
         </dc:publisher>
-        <dc:identifier>FreeCAD/src/Mod/Arch/Resources/icons/Arch_Material.svg</dc:identifier>
+        <dc:identifier>FreeCAD/src/Mod/Material/Gui/Resources/icons/Material_Edit.svg</dc:identifier>
         <dc:rights>
           <cc:Agent>
             <dc:title>FreeCAD LGPL2+</dc:title>

@@ -278,7 +278,7 @@ Base::Vector3d DrawLeaderLine::getTailPoint() const
 Base::Vector3d DrawLeaderLine::lastSegmentDirection() const
 {
     std::vector<Base::Vector3d> wp = getTransformedWayPoints();
-    if (wp.empty()) {
+    if (wp.size() < 2) {
         return Base::Vector3d(1,0,0);
     }
     // this direction is in conventional coords? Y+ up?
@@ -295,6 +295,11 @@ Base::Vector3d DrawLeaderLine::lastSegmentDirection() const
 //! pagePoints are in mm from bottom left of page.
 DrawLeaderLine* DrawLeaderLine::makeLeader(DrawViewPart* parent, std::vector<Base::Vector3d> pagePoints, int iStartSymbol, int iEndSymbol)
 {
+    if (!parent || !parent->getDocument()) {
+        throw Base::ValueError(
+            "A leader requires a live parent drawing view"
+        );
+    }
     Base::Console().message("DLL::makeLeader(%s, %d, %d, %d)\n", parent->getNameInDocument(), pagePoints.size(), iStartSymbol, iEndSymbol);
     if (pagePoints.size() < 2) {
         Base::Console().message("DLL::makeLeader - not enough pagePoints\n");
@@ -303,29 +308,32 @@ DrawLeaderLine* DrawLeaderLine::makeLeader(DrawViewPart* parent, std::vector<Bas
 
     // this is +/- the same code as in TaskLeaderLine::createLeaderFeature()
     const std::string objectName{"LeaderLine"};
-    const std::string leaderType = "TechDraw::DrawLeaderLine";
-    std::string leaderName = parent->getDocument()->getUniqueObjectName(objectName.c_str());
-    std::string pageName = parent->findParentPage()->getNameInDocument();
-    std::string parentName = parent->getNameInDocument();
-
-    Base::Interpreter().runStringArg("App.activeDocument().addObject('%s', '%s')",
-                                     leaderType.c_str(), leaderName.c_str());
-    Base::Interpreter().runStringArg("App.activeDocument().%s.translateLabel('DrawLeaderLine', 'LeaderLine', '%s')",
-                                     leaderName.c_str(), leaderName.c_str());
-    Base::Interpreter().runStringArg("App.activeDocument().%s.addView(App.activeDocument().%s)",
-                                     pageName.c_str(), leaderName.c_str());
-    Base::Interpreter().runStringArg("App.activeDocument().%s.LeaderParent = App.activeDocument().%s",
-                                     leaderName.c_str(), parentName.c_str());
+    App::Document* document = parent->getDocument();
+    DrawPage* page = parent->findParentPage();
+    if (!page || page->getDocument() != document) {
+        throw Base::ValueError(
+            "The leader parent is not attached to a drawing page"
+        );
+    }
+    std::string leaderName =
+        document->getUniqueObjectName(objectName.c_str());
+    auto* leaderFeature =
+        document->addObject<DrawLeaderLine>(leaderName.c_str());
+    if (!leaderFeature) {
+        throw Base::RuntimeError(
+            "DrawLeaderLine::makeLeader - new object not found"
+        );
+    }
+    leaderFeature->translateLabel(
+        "DrawLeaderLine",
+        "LeaderLine",
+        leaderName
+    );
+    page->addView(leaderFeature);
+    leaderFeature->LeaderParent.setValue(parent);
     // we assume here that the caller will handle AutoHorizontal, Scalable and Rotatable as required
 
-
-    App::DocumentObject* obj = parent->getDocument()->getObject(leaderName.c_str());
-    if (!obj || !obj->isDerivedFrom<TechDraw::DrawLeaderLine>()) {
-        throw Base::RuntimeError("DrawLeaderLine::makeLeader - new object not found");
-    }
-
     // set leader x,y position
-    auto leaderFeature = static_cast<TechDraw::DrawLeaderLine*>(obj);
     Base::Vector3d parentPagePos{ parent->X.getValue(), parent->Y.getValue(), 0.0};
     Base::Vector3d leaderPagePos = pagePoints.front() - parentPagePos;
     bool force = true;   // update position even though leaders default to locked.
@@ -352,6 +360,12 @@ DrawLeaderLine* DrawLeaderLine::makeLeader(DrawViewPart* parent, std::vector<Bas
     leaderFeature->EndSymbol.setValue(iEndSymbol);
 
     parent->touch();
+    leaderFeature->recomputeFeature();
+    if (leaderFeature->isError()) {
+        throw Base::RuntimeError(
+            "DrawLeaderLine::makeLeader - leader geometry failed"
+        );
+    }
 
     return leaderFeature;
 }

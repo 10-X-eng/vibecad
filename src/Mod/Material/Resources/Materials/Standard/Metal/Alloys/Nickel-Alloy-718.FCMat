@@ -1,0 +1,41 @@
+---
+General:
+  UUID: "db767dc3-7a48-4fbe-a284-78181f5f05df"
+  Name: "Nickel Alloy 718 (UNS N07718)"
+  Author: "VibeCAD contributors"
+  License: "LGPL-2.1-or-later"
+  SourceURL: "https://www.specialmetals.com/documents/technical-bulletins/inconel/inconel-alloy-718.pdf"
+  ReferenceSource: "Special Metals SMC-045, INCONEL alloy 718, September 2007"
+  Tags:
+    - "Nickel Alloy 718"
+    - "INCONEL 718"
+    - "UNS N07718"
+    - "W.Nr. 2.4668"
+    - "Nickel chromium superalloy"
+    - "Gas turbine"
+    - "Hot section"
+  Description: >
+    Nickel-chromium Alloy 718, UNS N07718. Typical room-temperature
+    physical properties for annealed and aged material from the cited
+    manufacturer bulletin; these values are not specification allowables.
+Models:
+  Father:
+    UUID: '9cdda8b6-b606-4778-8f13-3934d8668e67'
+    Father: "Metal"
+  MaterialStandard:
+    UUID: '1e2c0088-904a-4537-925f-64064c07d700'
+    KindOfMaterial: "Nickel chromium superalloy"
+    StandardCode: "UNS N07718"
+  Density:
+    UUID: '454661e5-265b-4320-8e6f-fcf6223ac3af'
+    Density: "8220 kg/m^3"
+  IsotropicLinearElastic:
+    UUID: 'f6f9e48c-b116-4e82-ad7f-3659a9219c50'
+    PoissonRatio: "0.294"
+    YoungsModulus: "200 GPa"
+  Thermal:
+    UUID: '9959d007-a970-4ea7-bae4-3eb1b8b883c7'
+    SpecificHeat: "435 J/kg/K"
+    ThermalConductivity: "11.4 W/m/K"
+    ThermalExpansionCoefficient: "13.2 µm/m/K"
+    ThermalExpansionReferenceTemperature: "294 K"

@@ -23,10 +23,12 @@
  ***************************************************************************/
 
 #include <QDesktopServices>
+#include <QStyle>
 #include <QDirIterator>
 #include <QInputDialog>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPalette>
 #include <QComboBox>
 #include <QSignalBlocker>
 #include <QTextStream>
@@ -91,6 +93,31 @@ public:
 
 
 /* TRANSLATOR Gui::Dialog::DlgMacroExecuteImp */
+
+namespace
+{
+void applyVibeStatus(QWidget* widget, const QString& status, bool accentBackground = false)
+{
+    widget->setProperty("vibeStatus", status);
+
+    QPalette palette = widget->palette();
+    for (const auto group : {QPalette::Active, QPalette::Inactive, QPalette::Disabled}) {
+        const QColor accent = palette.color(group, QPalette::Highlight);
+        if (accentBackground) {
+            palette.setColor(group, QPalette::Button, accent);
+            palette.setColor(group, QPalette::ButtonText, palette.color(group, QPalette::HighlightedText));
+        }
+        else {
+            palette.setColor(group, QPalette::WindowText, accent);
+            palette.setColor(group, QPalette::ButtonText, accent);
+        }
+    }
+    widget->setPalette(palette);
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+    widget->update();
+}
+}
 
 /**
  *  Constructs a DlgMacroExecuteImp which is a child of 'parent', with the
@@ -611,7 +638,7 @@ void DlgMacroExecuteImp::onToolbarButtonClicked()
         msgBox.setText(tr("Guided Walkthrough"));
         msgBox.setObjectName(QStringLiteral("macroGuideWalkthrough"));
         msgBox.setInformativeText(tr("This will guide you in setting up this macro in a custom \
-global toolbar.  Instructions will be in red text inside the dialog.\n\
+global toolbar. Instructions will use the theme's informational accent inside the dialog.\n\
 \n\
 Note: your changes will be applied when you next switch workbenches\n"));
         msgBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
@@ -694,7 +721,7 @@ Note: your changes will be applied when you next switch workbenches\n"));
                 tr("Walkthrough instructions: Fill in missing fields (optional) "
                    "then click Add, then Close")
             );
-            groupBox7->setStyleSheet(QStringLiteral("QGroupBox::title {color:red}"));
+            applyVibeStatus(groupBox7, QStringLiteral("info"));
         }
 
         auto buttonAddAction = setupCustomMacrosPage->findChild<QPushButton*>(
@@ -704,7 +731,7 @@ Note: your changes will be applied when you next switch workbenches\n"));
             Base::Console().warning("Toolbar walkthrough: Unable to find buttonAddAction\n");
         }
         else {
-            buttonAddAction->setStyleSheet(QStringLiteral("color:red"));
+            applyVibeStatus(buttonAddAction, QStringLiteral("info"));
         }
 
         auto macroListBox = setupCustomMacrosPage->findChild<QComboBox*>(
@@ -762,7 +789,7 @@ Note: your changes will be applied when you next switch workbenches\n"));
         Base::Console().warning("Toolbar walkthrough: Unable to find moveActionRightButton\n");
     }
     else {
-        moveActionRightButton->setStyleSheet(QStringLiteral("background-color: red"));
+        applyVibeStatus(moveActionRightButton, QStringLiteral("info"), true);
     }
     /** tailor instructions depending on whether user already has custom toolbar created
      * if not, they need to click New button to create one first
@@ -792,7 +819,7 @@ Note: your changes will be applied when you next switch workbenches\n"));
                 Base::Console().warning("Toolbar walkthrough: Unable to find newButton\n");
             }
             else {
-                newButton->setStyleSheet(QStringLiteral("color:red"));
+                applyVibeStatus(newButton, QStringLiteral("info"));
                 instructions2 = tr(
                     "Walkthrough instructions: Click New, select macro, then right arrow (->) "
                     "button, then Close."
@@ -809,7 +836,7 @@ Note: your changes will be applied when you next switch workbenches\n"));
     }
     else {
         label->setText(instructions2);
-        label->setStyleSheet(QStringLiteral("color:red"));
+        applyVibeStatus(label, QStringLiteral("info"));
     }
 
     /** find Macros category and select it for the user **/

@@ -11,6 +11,243 @@ from typing import Any
 GEOMETRY_TOLERANCE_MM = 1.0e-7
 
 
+def _live_document_object(obj: Any, document: Any) -> bool:
+    """Return whether *obj* is the exact live identity in *document*."""
+    if obj is None or document is None:
+        return False
+    try:
+        name = str(obj.Name)
+        return obj.Document is document and document.getObject(name) is obj
+    except (AttributeError, RuntimeError):
+        return False
+
+
+def _ensure_timeline_property(
+    obj: Any,
+    type_id: str,
+    property_name: str,
+    description: str,
+) -> None:
+    if property_name in obj.PropertiesList:
+        actual_type = obj.getTypeIdOfProperty(property_name)
+        if actual_type != type_id:
+            raise TypeError(
+                f"{obj.Name}.{property_name} must be "
+                f"{type_id}, not {actual_type}."
+            )
+    else:
+        obj.addProperty(
+            type_id,
+            property_name,
+            "Timeline",
+            description,
+            attr=16,
+            hidden=True,
+            locked=True,
+        )
+    obj.setPropertyStatus(
+        property_name,
+        ("Hidden", "LockDynamic", "NoRecompute"),
+    )
+    obj.setEditorMode(property_name, 2)
+
+
+def _mark_timeline_operation(operation: Any) -> None:
+    document = getattr(operation, "Document", None)
+    if not _live_document_object(operation, document):
+        raise ValueError(
+            "A timeline operation must be one exact live document object."
+        )
+    _ensure_timeline_property(
+        operation,
+        "App::PropertyString",
+        "VibeCADTimelineRole",
+        "Document timeline classification",
+    )
+    if "VibeCADTimelineOwner" in operation.PropertiesList:
+        if (
+            operation.getTypeIdOfProperty("VibeCADTimelineOwner")
+            != "App::PropertyLinkHidden"
+            or operation.VibeCADTimelineOwner is not None
+        ):
+            raise TypeError(
+                f"{operation.Name} cannot be a root operation while it "
+                "retains timeline-owner metadata."
+            )
+        operation.setEditorMode("VibeCADTimelineOwner", 2)
+    operation.VibeCADTimelineRole = "operation"
+
+
+def _mark_timeline_resource(resource: Any, owner: Any) -> None:
+    document = getattr(owner, "Document", None)
+    if (
+        resource is owner
+        or not _live_document_object(owner, document)
+        or not _live_document_object(resource, document)
+    ):
+        raise ValueError(
+            "A timeline resource and its distinct owner must be exact live "
+            "objects in one document."
+        )
+    _ensure_timeline_property(
+        resource,
+        "App::PropertyString",
+        "VibeCADTimelineRole",
+        "Document timeline classification",
+    )
+    _ensure_timeline_property(
+        resource,
+        "App::PropertyLinkHidden",
+        "VibeCADTimelineOwner",
+        "Timeline operation which owns this implementation object",
+    )
+    resource.VibeCADTimelineOwner = owner
+    resource.VibeCADTimelineRole = "resource"
+
+
+def finalize_new_timeline_operation(
+    operation: Any,
+    ordered_resources: list[Any] | tuple[Any, ...] = (),
+) -> None:
+    """Publish one exact newly-created operation and its implementation graph.
+
+    The caller supplies every resource identity in canonical operation-block
+    order.
+    No document delta, type search, label match, or transaction-time guess is
+    used. The native timeline proves that every supplied identity was enrolled
+    by the still-active caller transaction before accepting the block.
+    """
+    document = getattr(operation, "Document", None)
+    if not _live_document_object(operation, document):
+        raise ValueError(
+            "A new timeline operation must be one exact live document object."
+        )
+
+    resources = list(ordered_resources)
+    seen = {operation}
+    for resource in resources:
+        if (
+            resource in seen
+            or not _live_document_object(resource, document)
+        ):
+            raise ValueError(
+                "Every timeline resource must be one distinct exact live "
+                "identity in the operation document."
+            )
+        seen.add(resource)
+
+    publisher = getattr(
+        document,
+        "publishProvisionalTimelineOperationBlock",
+        None,
+    )
+    if not callable(publisher):
+        raise RuntimeError(
+            "The native atomic timeline-publication API is unavailable."
+        )
+    publisher(
+        operation,
+        resources,
+    )
+
+
+class NewTimelineOperation:
+    """Publish one exact new operation even when later setup fails.
+
+    Callers register identities as their native factories return them. On
+    scope exit, the still-live registered graph is published atomically by
+    the document timeline. The original exception is never swallowed, so a
+    failed native command remains both inspectable and one coherent history
+    step.
+    """
+
+    def __init__(self) -> None:
+        self._operation: Any | None = None
+        self._resources: list[Any] = []
+        self._publication_attempted = False
+
+    def __enter__(self) -> NewTimelineOperation:
+        return self
+
+    def __exit__(self, _exc_type: Any, _exc: Any, _traceback: Any) -> bool:
+        self.publish()
+        return False
+
+    def set_operation(self, operation: Any) -> Any:
+        document = getattr(operation, "Document", None)
+        if not _live_document_object(operation, document):
+            raise ValueError(
+                "A new timeline operation must be one exact live document "
+                "object."
+            )
+        if self._operation is not None and self._operation is not operation:
+            raise ValueError(
+                "One creation scope cannot publish two timeline operations."
+            )
+        self._operation = operation
+        return operation
+
+    def add_resource(self, resource: Any) -> Any:
+        operation = self._operation
+        document = getattr(operation, "Document", None)
+        if (
+            operation is None
+            or resource is operation
+            or not _live_document_object(resource, document)
+        ):
+            raise ValueError(
+                "A new timeline resource must be one distinct exact live "
+                "object in the operation document."
+            )
+        if resource in self._resources:
+            raise ValueError(
+                "A new timeline resource cannot be registered twice."
+            )
+        self._resources.append(resource)
+        return resource
+
+    def publish(self) -> None:
+        if self._publication_attempted:
+            return
+        self._publication_attempted = True
+        operation = self._operation
+        document = getattr(operation, "Document", None)
+        if not _live_document_object(operation, document):
+            return
+        live_resources = [
+            resource
+            for resource in self._resources
+            if _live_document_object(resource, document)
+        ]
+        finalize_new_timeline_operation(operation, live_resources)
+
+
+def mark_modeling_replaced_inputs(obj: Any, inputs: list[Any]) -> bool:
+    """Record visible inputs whose presentation is replaced by one root operation."""
+    exact_inputs = [input_obj for input_obj in inputs if input_obj is not None]
+    if not exact_inputs:
+        return False
+    try:
+        import PartGui
+    except ImportError:
+        return False
+    return bool(PartGui.setModelingReplacedInputs(obj, exact_inputs))
+
+
+def adopt_part_result(obj: Any, replaced_inputs: list[Any] | None = None) -> Any:
+    """Place a Part graph in the active Body and track root-result replacements."""
+    adopted = None
+    try:
+        import PartDesignGui
+    except ImportError:
+        pass
+    else:
+        adopted = PartDesignGui.adoptPartResult(obj)
+    if replaced_inputs:
+        mark_modeling_replaced_inputs(obj, replaced_inputs)
+    return adopted
+
+
 def vector_values(vector: Any) -> list[float]:
     """Return one FreeCAD vector as a JSON-safe XYZ triplet."""
     return [float(vector.x), float(vector.y), float(vector.z)]
@@ -1205,11 +1442,6 @@ def cam_summary(service: Any, job_name: str | None = None) -> dict[str, Any]:
         "jobs": [service._cam_job_summary(item) for item in jobs],
         "selected_job": service._cam_job_summary(job) if job else None,
     }
-
-
-def bim_summary(service: Any) -> dict[str, Any]:
-    objects = [service._bim_object_summary(obj) for obj in service._bim_objects()]
-    return {"object_count": len(objects), "objects": objects}
 
 
 def assembly_summary(service: Any) -> dict[str, Any]:

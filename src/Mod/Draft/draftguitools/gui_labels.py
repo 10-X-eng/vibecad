@@ -160,7 +160,11 @@ class Label(gui_base_original.Creator):
                 "Draft.autogroup(_label_)",
                 "FreeCAD.ActiveDocument.recompute()",
             ]
-            self.commit(translate("draft", "Create Label"), _cmd_list)
+            self.commit(
+                translate("draft", "Create Label"),
+                _cmd_list,
+                inputs=(self.sel.Object,) if self.sel else (),
+            )
         self.finish()
 
     def action(self, arg):

@@ -63,11 +63,29 @@ __url__ = "https://www.freecad.org"
 class Tracker:
     """A generic Draft Tracker, to be used by other specific trackers."""
 
-    def __init__(self, dotted=False, scolor=None, swidth=None, children=[], ontop=False, name=None):
+    def __init__(
+        self,
+        dotted=False,
+        scolor=None,
+        swidth=None,
+        children=[],
+        ontop=False,
+        name=None,
+        scene_view=None,
+    ):
         global Part
         import Part
 
         self.ontop = ontop
+        # Trackers belong to the 3D view in which they were created. Insertion
+        # and removal are deferred through ToDo, so resolving the globally
+        # active view inside those callbacks can otherwise attach a tracker to
+        # a different document's scene graph after a fast MDI switch.
+        self._scene_view = (
+            scene_view
+            if scene_view is not None
+            else gui_utils.get_3d_view()
+        )
         self.color = coin.SoBaseColor()
         drawstyle = coin.SoDrawStyle()
         if swidth:
@@ -96,11 +114,18 @@ class Tracker:
         self.switch = None
 
     def get_scene_graph(self):
-        """Returns the current scenegraph or None if this is not a 3D view"""
-        v = gui_utils.get_3d_view()
-        if v:
-            return v.getSceneGraph()
-        else:
+        """Return the originating view's scene graph, if it is still alive."""
+        view = self._scene_view
+        if view is None:
+            # Preserve compatibility for callers that construct a tracker
+            # before a 3D view exists.
+            view = gui_utils.get_3d_view()
+            self._scene_view = view
+        if view is None:
+            return None
+        try:
+            return view.getSceneGraph()
+        except (AttributeError, ReferenceError, RuntimeError):
             return None
 
     def _insertSwitch(self, switch):
@@ -112,10 +137,11 @@ class Tracker:
         sg = self.get_scene_graph()
         if not sg:
             return
-        if self.ontop:
-            sg.insertChild(switch, 0)
-        else:
-            sg.addChild(switch)
+        if sg.findChild(switch) < 0:
+            if self.ontop:
+                sg.insertChild(switch, 0)
+            else:
+                sg.addChild(switch)
 
     def _removeSwitch(self, switch):
         """Remove self.switch from the scene graph.
@@ -974,7 +1000,15 @@ class editTracker(Tracker):
     """A node edit tracker."""
 
     def __init__(
-        self, pos=Vector(0, 0, 0), name=None, idx=0, objcol=None, marker=None, inactive=False
+        self,
+        pos=Vector(0, 0, 0),
+        name=None,
+        idx=0,
+        objcol=None,
+        marker=None,
+        inactive=False,
+        document_name=None,
+        scene_view=None,
     ):
         self.marker = coin.SoMarkerSet()  # this is the marker symbol
         if marker is None:
@@ -992,7 +1026,9 @@ class editTracker(Tracker):
             self.selnode = coin.SoType.fromName("SoFCSelection").createInstance()
             if name:
                 self.selnode.useNewSelection = False
-                self.selnode.documentName.setValue(FreeCAD.ActiveDocument.Name)
+                if document_name is None:
+                    document_name = FreeCAD.ActiveDocument.Name
+                self.selnode.documentName.setValue(document_name)
                 self.selnode.objectName.setValue(name)
                 self.selnode.subElementName.setValue("EditNode" + str(idx))
         node = coin.SoAnnotation()
@@ -1000,7 +1036,12 @@ class editTracker(Tracker):
         self.selnode.addChild(self.marker)
         node.addChild(self.selnode)
         ontop = not inactive
-        super().__init__(children=[node], ontop=ontop, name="editTracker")
+        super().__init__(
+            children=[node],
+            ontop=ontop,
+            name="editTracker",
+            scene_view=scene_view,
+        )
         if objcol is None:
             self.setColor()
         else:
@@ -1356,7 +1397,7 @@ class gridTracker(Tracker):
     def get_human_figure(self, loc=None):
         """Return a list of points defining a human figure,
         optionally translated to a given location.
-        Based on "HumanFigure.brep" from the BIM Workbench.
+        The figure is drawn directly from a compact set of outline points.
         """
         pts = [
             Vector(131.2, 0.0, 175.8),

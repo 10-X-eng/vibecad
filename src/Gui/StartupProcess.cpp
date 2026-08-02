@@ -45,7 +45,6 @@
 #include <string>
 
 #include "StartupProcess.h"
-#include "PreferencePackManager.h"
 #include "Application.h"
 #include "AutoSaver.h"
 #include "Dialogs/DlgCheckableMessageBox.h"
@@ -55,6 +54,8 @@
 #include "Language/Translator.h"
 #include "Dialogs/DlgVersionMigrator.h"
 #include "FreeCADStyle.h"
+#include "ThemeManager.h"
+#include "VibeCADRibbon.h"
 
 #include <App/Application.h>
 #include <App/ApplicationDirectories.h>
@@ -239,6 +240,7 @@ void StartupPostProcess::execute()
     setBranding();
     showMainWindow();
     activateWorkbench();
+    VibeCADRibbon::install(mainWindow);
     checkParameters();
     checkVersionMigration();
 }
@@ -325,22 +327,9 @@ void StartupPostProcess::setCursorFlashing()
 
 void StartupPostProcess::applyStartupTheme()
 {
-    ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
-        "User parameter:BaseApp/Preferences/MainWindow"
-    );
-
-    std::string theme = hGrp->GetASCII("Theme");
-    std::string style = hGrp->GetASCII("StyleSheet");
-
-    if (theme.empty() && style.empty()) {
-        auto prefPackManager = Application::Instance->prefPackManager();
-        prefPackManager->apply("VibeDark");
-        return;
-    }
-
-    // In 1.1 we migrated to a common parametrized stylesheet.
-    // If we detect an old style, reapply the modern built-in theme before Qt style is read.
-    migrateOldTheme(style);
+    // Normalize old theme names and apply appearance values only. This must
+    // never restore a preference snapshot, toolbar state, or workbench state.
+    Application::Instance->themeManager()->applyCurrent(false);
 }
 
 
@@ -361,18 +350,6 @@ void StartupPostProcess::setQtStyle()
     });
 
     setStyleFromParameters();
-}
-
-void StartupPostProcess::migrateOldTheme(const std::string& style)
-{
-    auto prefPackManager = Application::Instance->prefPackManager();
-
-    if (style == "FreeCAD Light.qss" || style == "OpenLight.qss") {
-        prefPackManager->apply("VibeLight");
-    }
-    else if (style == "FreeCAD Dark.qss" || style == "OpenDark.qss") {
-        prefPackManager->apply("VibeDark");
-    }
 }
 
 void StartupPostProcess::checkOpenGL()
@@ -573,21 +550,7 @@ void StartupPostProcess::setStyleSheet()
     ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/MainWindow"
     );
-    std::string style = hGrp->GetASCII("StyleSheet");
-    if (style.empty()) {
-        // check the branding settings
-        const auto& config = App::Application::Config();
-        auto it = config.find("StyleSheet");
-        if (it != config.end()) {
-            style = it->second;
-        }
-    }
-
-    // In 1.1 we migrated to a common parametrized stylesheet.
-    // if we detect an old style, we need to reapply the theme pack.
-    migrateOldTheme(style);
-    style = hGrp->GetASCII("StyleSheet", style.c_str());
-
+    const std::string style = hGrp->GetASCII("StyleSheet", "VibeDark.qss");
     guiApp.setStyleSheet(QString::fromStdString(style), hGrp->GetBool("TiledBackground", false));
 }
 

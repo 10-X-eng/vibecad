@@ -10,6 +10,12 @@ set(Robot_Scripts
     KukaExporter.py
     RobotExample.py
     RobotExampleTrajectoryOutOfShapes.py
+    TestRobotGui.py
+)
+
+set(Robot_TestScripts
+    RobotTests/__init__.py
+    RobotTests/TestVibeCADRibbonTools.py
 )
 
 if(BUILD_GUI)
@@ -20,13 +26,14 @@ if(BUILD_GUI)
 endif(BUILD_GUI)
 
 add_custom_target(RobotScripts ALL
-    SOURCES ${Robot_Scripts} ${Robot_Resources}
+    SOURCES ${Robot_Scripts} ${Robot_TestScripts} ${Robot_Resources}
 )
 
 fc_target_copy_resource(RobotScripts
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}/Mod/Robot
-    ${Robot_Scripts})
+    ${Robot_Scripts}
+    ${Robot_TestScripts})
 
 if (DEFINED Robot_Resources)
 fc_target_copy_resource(RobotScripts
@@ -40,6 +47,13 @@ INSTALL(
         ${Robot_Scripts}
     DESTINATION
         Mod/Robot
+)
+
+INSTALL(
+    FILES
+        ${Robot_TestScripts}
+    DESTINATION
+        Mod/Robot/RobotTests
 )
 
 if (DEFINED Robot_Resources)

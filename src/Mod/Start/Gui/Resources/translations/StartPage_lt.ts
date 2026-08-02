@@ -113,16 +113,6 @@
       <translation>Sukurkite brėžinio juodraštį naudodami Juodraščio darbastalį</translation>
     </message>
     <message>
-      <location filename="../../StartView.cpp" line="309"/>
-      <source>BIM/Architecture</source>
-      <translation>BIM/Architektūra</translation>
-    </message>
-    <message>
-      <location filename="../../StartView.cpp" line="310"/>
-      <source>Create an architectural project</source>
-      <translation>Sukurkite architektūrinį projektą</translation>
-    </message>
-    <message>
       <location filename="../../StartView.cpp" line="525"/>
       <source>New File</source>
       <translation>Naujas failas</translation>

@@ -58,6 +58,7 @@ public:
     long PreSelectionMinDelay;
     bool RecomputeOnDrop;
     bool KeepRootOrder;
+    bool OrganizeModelByType;
     bool TreeActiveAutoExpand;
     unsigned long TreeActiveColor;
     unsigned long TreeEditColor;
@@ -120,6 +121,8 @@ public:
         funcs["RecomputeOnDrop"] = &TreeParamsP::updateRecomputeOnDrop;
         KeepRootOrder = handle->GetBool("KeepRootOrder", true);
         funcs["KeepRootOrder"] = &TreeParamsP::updateKeepRootOrder;
+        OrganizeModelByType = handle->GetBool("OrganizeModelByType", true);
+        funcs["OrganizeModelByType"] = &TreeParamsP::updateOrganizeModelByType;
         TreeActiveAutoExpand = handle->GetBool("TreeActiveAutoExpand", true);
         funcs["TreeActiveAutoExpand"] = &TreeParamsP::updateTreeActiveAutoExpand;
         TreeActiveColor = handle->GetUnsigned("TreeActiveColor", 1538528255);
@@ -271,6 +274,15 @@ public:
     static void updateKeepRootOrder(TreeParamsP* self)
     {
         self->KeepRootOrder = self->handle->GetBool("KeepRootOrder", true);
+    }
+    // Auto generated code (Tools/params_utils.py:296)
+    static void updateOrganizeModelByType(TreeParamsP* self)
+    {
+        auto v = self->handle->GetBool("OrganizeModelByType", true);
+        if (self->OrganizeModelByType != v) {
+            self->OrganizeModelByType = v;
+            TreeParams::onOrganizeModelByTypeChanged();
+        }
     }
     // Auto generated code (Tools/params_utils.py:288)
     static void updateTreeActiveAutoExpand(TreeParamsP* self)
@@ -928,6 +940,42 @@ void TreeParams::setKeepRootOrder(const bool& v)
 void TreeParams::removeKeepRootOrder()
 {
     instance()->handle->RemoveBool("KeepRootOrder");
+}
+
+// Auto generated code (Tools/params_utils.py:350)
+const char* TreeParams::docOrganizeModelByType()
+{
+    return QT_TRANSLATE_NOOP(
+        "TreeParams",
+        "Presents model objects in virtual type folders such as Bodies, Sketches, "
+        "References, and Geometry without changing document ownership."
+    );
+}
+
+// Auto generated code (Tools/params_utils.py:358)
+const bool& TreeParams::getOrganizeModelByType()
+{
+    return instance()->OrganizeModelByType;
+}
+
+// Auto generated code (Tools/params_utils.py:366)
+const bool& TreeParams::defaultOrganizeModelByType()
+{
+    const static bool def = true;
+    return def;
+}
+
+// Auto generated code (Tools/params_utils.py:375)
+void TreeParams::setOrganizeModelByType(const bool& v)
+{
+    instance()->handle->SetBool("OrganizeModelByType", v);
+    instance()->OrganizeModelByType = v;
+}
+
+// Auto generated code (Tools/params_utils.py:384)
+void TreeParams::removeOrganizeModelByType()
+{
+    instance()->handle->RemoveBool("OrganizeModelByType");
 }
 
 // Auto generated code (Tools/params_utils.py:350)
@@ -1751,6 +1799,11 @@ void TreeParams::onCheckBoxesSelectionChanged()
 void TreeParams::onDocumentModeChanged()
 {
     App::GetApplication().setActiveDocument(App::GetApplication().getActiveDocument());
+}
+
+void TreeParams::onOrganizeModelByTypeChanged()
+{
+    TreeWidget::refreshModelBrowsers();
 }
 
 void TreeParams::onResizableColumnChanged()

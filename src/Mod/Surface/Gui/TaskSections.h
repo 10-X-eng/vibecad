@@ -60,6 +60,10 @@ public:
     void setupContextMenu(QMenu*, QObject*, const char*) override;
     bool setEdit(int ModNum) override;
     void unsetEdit(int ModNum) override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     QIcon getIcon() const override;
     void highlightReferences(ShapeType type, const References& refs, bool on);
 };

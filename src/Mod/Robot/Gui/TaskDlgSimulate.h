@@ -24,6 +24,8 @@
 
 #pragma once
 
+#include <fastsignals/connection.h>
+
 #include <Gui/TaskView/TaskDialog.h>
 #include <Mod/Robot/App/RobotObject.h>
 #include <Mod/Robot/App/TrajectoryObject.h>
@@ -35,6 +37,11 @@
 #include "TaskTrajectory.h"
 
 
+namespace App
+{
+class Document;
+}
+
 namespace RobotGui
 {
 
@@ -45,6 +52,11 @@ class RobotGuiExport TaskDlgSimulate: public Gui::TaskView::TaskDialog
 
 public:
     TaskDlgSimulate(Robot::RobotObject* pcRobotObject, Robot::TrajectoryObject* pcTrajectoryObject);
+    TaskDlgSimulate(
+        Robot::RobotObject* pcRobotObject,
+        Robot::TrajectoryObject* pcTrajectoryObject,
+        App::Document* taskDocument
+    );
 
 public:
     /// is called the TaskView when the dialog is opened
@@ -69,6 +81,7 @@ protected:
     TaskRobotControl* ctr;
     TaskTrajectory* trac;
     TaskRobotMessages* msg;
+    fastsignals::scoped_connection sourceDocumentCloseConnection;
 };
 
 

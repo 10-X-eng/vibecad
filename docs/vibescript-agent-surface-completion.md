@@ -1,0 +1,100 @@
+# VibeScript agent-surface completion
+
+This ledger covers general platform issues found during real agent use. It
+excludes geometry choices specific to the jet-engine request. Existing public
+calls remain supported; new capability uses the same source/revision graph
+model.
+
+## Done means
+
+- [x] `vibescript.read_source` supports exact line ranges and bounded diagnostics
+  without hiding the complete-source read used before an edit.
+- [x] `vibescript.read_api` supports named and grouped reads, with discoverable
+  group names and exact callable contracts.
+- [x] A saved program can be built again without changing its source, and a
+  validated unpublished candidate has an explicit recovery action.
+- [x] Failed and cancelled candidates report a concise cause, current phase or
+  operation, the last completed graph operation when one exists, available
+  phase/feature timings, retained-output state, cancellation source, and limits.
+- [x] Material cards are searchable from every surface that can assign them.
+- [x] Part Design documents exact constraint kinds/forms, selector types and
+  return shape, fastener options, semantic-interface schemas/examples, display
+  modes, `doc`, first-feature behavior, and `DomainValue` categories.
+- [x] Part Design sketches support the existing principal planes, a correctly
+  named parallel offset, explicit arbitrary placement, and stable attachment;
+  `z_offset_mm` remains a compatibility alias.
+- [x] Axis/origin inputs use one documented origin-plus-direction convention;
+  legacy axis shorthands remain supported and are explained.
+- [x] Geometry checks cover real shape bounds, distance/clearance, interference,
+  wall thickness, and mass properties rather than helper geometry arithmetic.
+- [x] Assembly linked instances, hierarchy, joints, motion, and Part Design
+  interface handoff are obvious from the Model and Assembly API descriptions;
+  no duplicate B-rep instancing API is added to Part Design.
+- [x] Assembly discovers stable public outputs rather than implementation Bodies,
+  states each reference's rigid-motion boundary, exposes exact connector frames,
+  and enumerates every accepted native joint kind and its required parameters.
+- [x] Part Design regeneration treats the native operation's output map as the
+  ownership authority, repairs stale Body ownership tags deterministically, and
+  reports every conflicting legacy Body by name instead of guessing.
+- [x] Semantic-interface names are local to each published output, so reusable
+  names such as `RotationAxis` work across parts while legacy unique-name reads
+  remain compatible.
+- [x] Failed publication aborts its transaction before restoring presentation;
+  presentation targets are reacquired by native object identity so Link view
+  properties cannot be restored through stale GUI wrappers.
+- [x] Every workbench exposes the same workbench-neutral VibeScript source
+  lifecycle. Assembly turns inject a compact copy-ready component inventory;
+  catalog search filters the retained turn snapshot only when needed and offers
+  explicit provider-byte-safe compact pagination for complete inventories.
+- [x] Assembly component records expose their exact authoring `source_id`, domain,
+  revision, output, and document. Universal source/API tools bind directly to
+  that owning open document without changing the visible document or ribbon;
+  closed, conflicting, stale, and unknown ownership fail explicitly.
+- [x] Part Design publications carry output-local connector contracts with an
+  exact frame, kind, allowed joint kinds, and optional exact mating token.
+  Assembly validates this authored contract and then delegates to the native
+  joint solver; geometry type is never used to guess compatibility.
+- [x] Human-authored Bodies and Components can publish an existing native
+  coordinate system through one Model/Assembly ribbon command or the matching
+  agent tool. The catalog exposes copy-ready coordinate-system references and
+  preserves the connector contract through save/reopen.
+- [x] Retained VibeScript simulations use FreeCAD's native Assembly player.
+  Agent playback opens and starts that player, while source-owned motions and
+  timing remain read-only and unchanged when the task closes.
+- [x] Assembly components, joints, and motions accept stable keyed member maps.
+  Native members remain editable timeline objects without consuming the 64
+  public program-output slots; the established sequence form remains supported.
+- [x] Simulation playback can compose one saved exploded presentation, temporary
+  component visibility, and a standard camera in one call, then restore exact
+  placements, prior presentation state, visibility, camera, and transaction state.
+- [x] The Model tree exposes Assembly Components, Joints, Motions, Simulations,
+  Exploded Views, Verification, and Bills of Materials as native structure while
+  History retains the same operations chronologically.
+- [x] Focused tests, worker integration tests, and the release build pass.
+
+## Implementation order
+
+1. Focused source/API reads, build recovery, material search, and diagnostics.
+2. Exact API contracts and typed graph inspection.
+3. Sketch placement/attachment and consistent axes.
+4. Geometry-derived verification and Assembly handoff validation.
+5. Full verification and documentation closeout.
+
+## Deliberate compatibility
+
+- Existing tool names, call signatures, result keys, and accepted source remain.
+- Workbench-qualified lifecycle tools remain callable compatibility aliases;
+  the operating model sees only the canonical workbench-neutral names.
+- New read filters are optional; a full read remains available.
+- `z_offset_mm` and existing axis strings remain accepted while clearer forms are
+  added.
+- `api.measure` remains valid while new geometry-derived quantities are added.
+
+## Verification
+
+Verification is refreshed whenever this ledger changes. The current gate covers
+focused Python contracts, full native Part Design and Assembly lifecycles,
+explicit native coordinate-system publication and save/reopen, source routing,
+connector-contract parity between worker and host, native simulation playback,
+scoped Assembly graphs above 64 native members, typed Assembly tree structure,
+and the release build.

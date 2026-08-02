@@ -34,6 +34,7 @@ SET(MaterialLib_Files
     Resources/Materials/Standard/Glass/Glass-Generic.FCMat
     Resources/Materials/Standard/Glass/Glass-S2-GlassFibre.FCMat
     Resources/Materials/Standard/Metal/Alloys/Invar-Generic.FCMat
+    Resources/Materials/Standard/Metal/Alloys/Nickel-Alloy-718.FCMat
     Resources/Materials/Standard/Metal/Aluminum/AlMg3F24.FCMat
     Resources/Materials/Standard/Metal/Aluminum/AlMgSi1F31.FCMat
     Resources/Materials/Standard/Metal/Aluminum/Aluminum-6061-T6.FCMat
@@ -258,8 +259,6 @@ SET(MaterialTestLib_Files
 )
 
 SET(MaterialModel_Files
-    Resources/Models/Architectural/Architectural.yml
-    Resources/Models/Architectural/ArchitecturalRendering.yml
     Resources/Models/Costs/Costs.yml
     Resources/Models/Electromagnetic/Electromagnetic.yml
     Resources/Models/Fluid/Fluid.yml
@@ -322,6 +321,8 @@ set(MaterialTest_Files
     materialtests/TestMaterialCreation.py
     materialtests/TestMaterialDocument.py
     materialtests/TestMaterialFilter.py
+    materialtests/TestMaterialGuiTimeline.py
+    materialtests/TestMaterialTrackingSource.py
 )
 
 ADD_CUSTOM_TARGET(MaterialTest ALL
@@ -358,6 +359,17 @@ fc_target_copy_resource(MaterialScripts
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}/Mod/Material
     ${MaterialScripts_Files})
+
+if(TARGET MatGui)
+    # A targeted Material GUI build must stage both its runtime entry points
+    # and the modules/data imported by TestMaterialsGui.
+    add_dependencies(
+        MatGui
+        MaterialScripts
+        MaterialTest
+        MaterialPythonTestData
+    )
+endif()
 
 INSTALL(FILES ${MaterialScripts_Files} DESTINATION Mod/Material)
 

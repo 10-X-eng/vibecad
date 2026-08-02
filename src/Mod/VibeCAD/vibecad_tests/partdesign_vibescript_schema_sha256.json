@@ -1,9 +1,15 @@
 {
-  "vibescript.partdesign.create_program": "7ff1abfa5bb6f84ed7dbba2514ff859dcaed3afa862aaf799d78a7b5bb570500",
-  "vibescript.partdesign.delete_program": "277296defdafadcc904ebd029d2908a4774011dc5ab2dc672a6066c0d1d8d5d0",
-  "vibescript.partdesign.describe_api": "20e119b9c26888687577e2b3ad9b372456741eade9f5fbcb5122833cc405452a",
-  "vibescript.partdesign.edit_source": "f19cbcc0fba2acce9dfc68847fde13ec91b0104b7ecb9a41a4bc93e64b1bc474",
-  "vibescript.partdesign.inspect_program": "876a762e85a7af936b8566d0147deac06385c8a3c216654b1af0e5c043423e19",
-  "vibescript.partdesign.reconfigure_program": "532c41fc2b32656323f9f4b08b08743467fd9bc20a6f6c474d5ea2621bc91efc",
-  "vibescript.partdesign.set_inputs": "c18abcd36ac4e65052cb6fedc325b14cbed6ca3d628eb8634fa814d19db6b724"
+  "vibescript.partdesign.create_program": "ec43de7f8e2da018e3e713bc6c714a7c3c1612cfe9bcc6fb07d4fc03949299ac",
+  "vibescript.partdesign.delete_program": "4bc947149390f7d05cd59a922ee9ab11ad6cc1f9d610f9babf9a6fb2d8b0c94e",
+  "vibescript.partdesign.reconfigure_program": "df6b4a7e011b7a8f4b67d9a7fd6ce84e796e1db1e7ca957951086de5d90cf8e5",
+  "vibescript.partdesign.set_inputs": "5c1079bfdffa5a1a01e9f9ad06b1d31c67f2f5f555a09f3f4da2e25ba8e4f6e8",
+  "vibescript.build_program": "e181e34a6e8af1418be401f638e5b579d6a956f8f8a286bd87777fa4f489035b",
+  "vibescript.create_program": "134a49af8762a60fde8a393c8b6251bf0e2213ba901f42a4847547ede72d2b3c",
+  "vibescript.delete_output": "345ce075096d3553f04cf76a66e46020b0282c7d7a0d2acbbe07a14c0b2c4998",
+  "vibescript.delete_program": "36018b862201ae1cb21351a1bfa869311f760d4066758532f40191829b7396c9",
+  "vibescript.edit_source": "e20ed28546a07e36a8762bbb8325a2710b6984d0730025a592144756d8f6be33",
+  "vibescript.read_api": "87b298da066082838127c297a947c5d40f4103e9acc249a047b920e479675142",
+  "vibescript.read_source": "d0e673a55872d5a48f9428075320c2d5b2b0cefebaaf8661b4df8cff5b03113d",
+  "vibescript.reconfigure_program": "cde5dd2bf7566b76fbb16c3f99c35bcfcedec3846acd7daa8dc0f1ec23d03820",
+  "vibescript.set_inputs": "dc16b13b9796fa75fd7fd2f5ca38639c71a8ec446ea3d3fd481f25deb21e51b0"
 }

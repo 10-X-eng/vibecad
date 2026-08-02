@@ -23,12 +23,21 @@
  ***************************************************************************/
 
 #include <QApplication>
+#include <QMessageBox>
 
+#include <algorithm>
+#include <iterator>
+#include <ranges>
 
+#include <App/Document.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
+#include <Gui/MainWindow.h>
 #include <Gui/TaskView/TaskSelectLinkProperty.h>
 
+#include "OperationSupport.h"
 #include "TaskDlgTrajectoryCompound.h"
 
 
@@ -49,6 +58,10 @@ TaskDlgTrajectoryCompound::TaskDlgTrajectoryCompound(Robot::TrajectoryCompound* 
     );
 
     Content.push_back(select);
+    if (obj && obj->getDocument()) {
+        setDocumentName(obj->getDocument()->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
 }
 
 //==== calls from the TaskView ===============================================================
@@ -56,37 +69,62 @@ TaskDlgTrajectoryCompound::TaskDlgTrajectoryCompound(Robot::TrajectoryCompound* 
 
 void TaskDlgTrajectoryCompound::open()
 {
+    RobotGui::OperationSupport::ensureEditTransaction(
+        *TrajectoryCompound,
+        QT_TRANSLATE_NOOP("Command", "Edit trajectory sequence")
+    );
     select->activate();
 }
 
 
 bool TaskDlgTrajectoryCompound::accept()
 {
-    if (select->isSelectionValid()) {
-        select->accept();
-        TrajectoryCompound->execute();
-        Gui::Document* doc = Gui::Application::Instance->activeDocument();
-        if (doc) {
-            doc->resetEdit();
+    try {
+        if (select->isSelectionValid()) {
+            select->accept();
+            const auto sources = TrajectoryCompound->Source.getValues();
+            if (sources.empty()
+                || std::ranges::any_of(sources, [this](const App::DocumentObject* source) {
+                       return source == TrajectoryCompound
+                           || !RobotGui::OperationSupport::isUsableObject(source);
+                   })) {
+                throw Base::RuntimeError("Choose one or more usable source trajectories");
+            }
+            std::vector<App::DocumentObject*> localSources;
+            std::ranges::copy_if(
+                sources,
+                std::back_inserter(localSources),
+                [this](const App::DocumentObject* source) {
+                    return source->getDocument() == TrajectoryCompound->getDocument();
+                }
+            );
+            RobotGui::OperationSupport::setReplacedInputs(*TrajectoryCompound, localSources);
+            if (!TrajectoryCompound->recomputeFeature() || TrajectoryCompound->isError()
+                || TrajectoryCompound->Trajectory.getValue().getSize() == 0) {
+                throw Base::RuntimeError(TrajectoryCompound->getStatusString());
+            }
+            if (!RobotGui::OperationSupport::resetEdit(*TrajectoryCompound)) {
+                throw Base::RuntimeError("The trajectory sequence task could not be finalized");
+            }
+            return true;
         }
-        return true;
-    }
-    else {
         QApplication::beep();
     }
-
+    catch (const Base::Exception& error) {
+        Base::Console().warning("TaskDlgTrajectoryCompound::accept(): %s\n", error.what());
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Trajectory Sequence"),
+            QString::fromUtf8(error.what())
+        );
+    }
     return false;
 }
 
 bool TaskDlgTrajectoryCompound::reject()
 {
     select->reject();
-    TrajectoryCompound->execute();
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    if (doc) {
-        doc->resetEdit();
-    }
-    return true;
+    return RobotGui::OperationSupport::resetEdit(*TrajectoryCompound);
 }
 
 void TaskDlgTrajectoryCompound::helpRequested()

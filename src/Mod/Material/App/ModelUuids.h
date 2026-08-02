@@ -74,9 +74,6 @@ public:
 
     static const QString ModelUUID_Electromagnetic_Default;
 
-    static const QString ModelUUID_Architectural_Default;
-    static const QString ModelUUID_Rendering_Architectural;
-
     static const QString ModelUUID_Costs_Default;
 
     static const QString ModelUUID_Rendering_Basic;

@@ -61,7 +61,6 @@ packages=(
   python3-dev
   python3-defusedxml
   python3-git
-  python3-lark
   python3-markdown
   python3-matplotlib
   python3-packaging

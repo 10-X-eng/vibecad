@@ -25,12 +25,18 @@
 #include <QSignalBlocker>
 #include <algorithm>
 #include <fastsignals/signal.h>
+#include <ranges>
+#include <utility>
 
 #include <Base/Console.h>
+#include <Base/Exception.h>
+#include <App/Application.h>
+#include <App/Document.h>
 #include <Gui/Application.h>
 #include <Gui/Dialogs/DlgMaterialPropertiesImp.h>
 #include <Gui/DockWindowManager.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/ViewProviderGeometryObject.h>
 #include <Gui/WaitCursor.h>
@@ -38,6 +44,7 @@
 #include <Mod/Material/App/ModelUuids.h>
 
 #include "DlgDisplayPropertiesImp.h"
+#include "SelectionTargetIdentity.h"
 #include "ui_DlgDisplayProperties.h"
 
 
@@ -45,6 +52,22 @@ using namespace MatGui;
 using namespace std;
 namespace sp = std::placeholders;
 
+namespace
+{
+App::Document& activeAppDocument()
+{
+    auto* guiDocument = Gui::Application::Instance
+        ? Gui::Application::Instance->activeDocument()
+        : nullptr;
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    if (!document) {
+        throw Base::RuntimeError(
+            "The appearance editor requires an active document"
+        );
+    }
+    return *document;
+}
+}
 
 /* TRANSLATOR Gui::Dialog::DlgDisplayPropertiesImp */
 
@@ -54,11 +77,49 @@ class DlgDisplayPropertiesImp::Private
 
 public:
     Ui::DlgDisplayProperties ui;
+    std::vector<SelectionTargetIdentity> targets;
     DlgDisplayPropertiesImp_Connection connectChangedObject;
+    App::Document* targetDocumentAddress {nullptr};
+    std::string targetDocumentName;
+    std::string targetDocumentUid;
+    int transactionId {App::NullTransaction};
 
-    static void setElementColor(const std::vector<Gui::ViewProvider*>& views,
-                                const char* property,
-                                Gui::ColorButton* buttonColor)
+    void addTarget(const App::DocumentObject* object)
+    {
+        auto target = SelectionTargetIdentity::capture(object);
+        if (target && std::ranges::find(targets, *target) == targets.end()) {
+            targets.push_back(std::move(*target));
+        }
+    }
+
+    bool mutationAllowed() const noexcept
+    {
+        if (transactionId == App::NullTransaction) {
+            return true;
+        }
+        try {
+            auto* document = targetDocumentName.empty()
+                ? nullptr
+                : App::GetApplication().getDocument(
+                      targetDocumentName.c_str()
+                  );
+            return document && document == targetDocumentAddress
+                && document->Uid.getValueStr() == targetDocumentUid
+                && document->getBookedTransactionID() == transactionId
+                && App::GetApplication().transactionIsActive(
+                    transactionId
+                );
+        }
+        catch (...) {
+            return false;
+        }
+    }
+
+    static void setElementColor(
+        const std::vector<Gui::ViewProvider*>& views,
+        const char* property,
+        Gui::ColorButton* buttonColor
+    )
     {
         bool hasElementColor = false;
         for (const auto& view : views) {
@@ -74,9 +135,11 @@ public:
         buttonColor->setEnabled(hasElementColor);
     }
 
-    static void setElementAppearance(const std::vector<Gui::ViewProvider*>& views,
-                                     const char* property,
-                                     Gui::ColorButton* buttonColor)
+    static void setElementAppearance(
+        const std::vector<Gui::ViewProvider*>& views,
+        const char* property,
+        Gui::ColorButton* buttonColor
+    )
     {
         bool hasElementColor = false;
         for (const auto& view : views) {
@@ -134,7 +197,39 @@ public:
     }
 };
 
-DlgDisplayPropertiesImp::DlgDisplayPropertiesImp(QWidget* parent, Qt::WindowFlags fl)
+DlgDisplayPropertiesImp::DlgDisplayPropertiesImp(
+    QWidget* parent,
+    Qt::WindowFlags fl
+)
+    : DlgDisplayPropertiesImp(
+          Gui::Application::Instance
+              && Gui::Application::Instance->activeDocument()
+          ? Gui::Application::Instance->activeDocument()->getDocument()
+          : nullptr,
+          parent,
+          fl
+      )
+{}
+
+DlgDisplayPropertiesImp::DlgDisplayPropertiesImp(
+    App::Document* document,
+    QWidget* parent,
+    Qt::WindowFlags fl
+)
+    : DlgDisplayPropertiesImp(
+          document,
+          App::NullTransaction,
+          parent,
+          fl
+      )
+{}
+
+DlgDisplayPropertiesImp::DlgDisplayPropertiesImp(
+    App::Document* document,
+    int transactionId,
+    QWidget* parent,
+    Qt::WindowFlags fl
+)
     : QDialog(parent, fl)
     , d(new Private)
 {
@@ -150,6 +245,19 @@ DlgDisplayPropertiesImp::DlgDisplayPropertiesImp(QWidget* parent, Qt::WindowFlag
     // that contain the basic render model.
     setupFilters();
 
+    d->targetDocumentAddress = document;
+    d->targetDocumentName = document ? document->getName() : "";
+    d->targetDocumentUid =
+        document ? document->Uid.getValueStr() : "";
+    d->transactionId = transactionId;
+
+    for (const auto& selected : Gui::Selection().getCompleteSelection()) {
+        if (selected.pDoc != document) {
+            continue;
+        }
+        d->addTarget(selected.pObject);
+    }
+
     {
         QSignalBlocker block(d->ui.widgetMaterial);
         setPropertiesFromSelection();
@@ -159,7 +267,8 @@ DlgDisplayPropertiesImp::DlgDisplayPropertiesImp(QWidget* parent, Qt::WindowFlag
 
     // NOLINTBEGIN
     d->connectChangedObject = Gui::Application::Instance->signalChangedObject.connect(
-        std::bind(&DlgDisplayPropertiesImp::slotChangedObject, this, sp::_1, sp::_2));
+        std::bind(&DlgDisplayPropertiesImp::slotChangedObject, this, sp::_1, sp::_2)
+    );
     // NOLINTEND
 }
 
@@ -271,12 +380,7 @@ void DlgDisplayPropertiesImp::OnChange(Gui::SelectionSingleton::SubjectType& rCa
                                        Gui::SelectionSingleton::MessageType Reason)
 {
     Q_UNUSED(rCaller);
-    if (Reason.Type == Gui::SelectionChanges::AddSelection
-        || Reason.Type == Gui::SelectionChanges::RmvSelection
-        || Reason.Type == Gui::SelectionChanges::SetSelection
-        || Reason.Type == Gui::SelectionChanges::ClrSelection) {
-        setPropertiesFromSelection();
-    }
+    Q_UNUSED(Reason);
 }
 /// @endcond
 
@@ -358,7 +462,8 @@ void DlgDisplayPropertiesImp::reject()
 }
 
 /**
- * Opens a dialog that allows one to modify the 'ShapeMaterial' property of all selected view providers.
+ * Opens a dialog that allows one to modify the 'ShapeMaterial' property of all selected view
+ * providers.
  */
 void DlgDisplayPropertiesImp::onButtonCustomAppearanceClicked()
 {
@@ -371,8 +476,11 @@ void DlgDisplayPropertiesImp::onButtonCustomAppearanceClicked()
             dlg.setDefaultMaterial(mat);
         }
     }
-    dlg.exec();
+    if (dlg.exec() != QDialog::Accepted) {
+        return;
+    }
     App::Material mat = dlg.getCustomMaterial();
+    Provider = getSelection();
     for (auto vp : Provider) {
         if (auto vpg = dynamic_cast<Gui::ViewProviderGeometryObject*>(vp)) {
             vpg->ShapeAppearance.setValue(mat);
@@ -381,7 +489,8 @@ void DlgDisplayPropertiesImp::onButtonCustomAppearanceClicked()
 }
 
 /**
- * Opens a dialog that allows one to modify the 'ShapeMaterial' property of all selected view providers.
+ * Opens a dialog that allows one to modify the 'ShapeMaterial' property of all selected view
+ * providers.
  */
 void DlgDisplayPropertiesImp::onButtonColorPlotClicked()
 {
@@ -605,34 +714,35 @@ void DlgDisplayPropertiesImp::setTransparency(const std::vector<Gui::ViewProvide
 
 void DlgDisplayPropertiesImp::setLineTransparency(const std::vector<Gui::ViewProvider*>& views)
 {
-    Private::setTransparency(views,
-                             "LineTransparency",
-                             d->ui.spinLineTransparency,
-                             d->ui.sliderLineTransparency);
+    Private::setTransparency(
+        views,
+        "LineTransparency",
+        d->ui.spinLineTransparency,
+        d->ui.sliderLineTransparency
+    );
 }
 
 std::vector<Gui::ViewProvider*> DlgDisplayPropertiesImp::getSelection() const
 {
     std::vector<Gui::ViewProvider*> views;
-
-    // get the complete selection
-    std::vector<Gui::SelectionSingleton::SelObj> sel = Gui::Selection().getCompleteSelection();
-    for (const auto& it : sel) {
-        Gui::ViewProvider* view =
-            Gui::Application::Instance->getDocument(it.pDoc)->getViewProvider(it.pObject);
-        views.push_back(view);
+    if (!d->mutationAllowed()) {
+        return views;
     }
-
+    views.reserve(d->targets.size());
+    for (const auto& target : d->targets) {
+        if (auto* view = target.resolveViewProvider()) {
+            views.push_back(view);
+        }
+    }
     return views;
 }
 
-void DlgDisplayPropertiesImp::onMaterialSelected(
-    const std::shared_ptr<Materials::Material>& material)
+void DlgDisplayPropertiesImp::onMaterialSelected(const std::shared_ptr<Materials::Material>& material)
 {
     std::vector<Gui::ViewProvider*> Provider = getSelection();
     for (auto it : Provider) {
-        if (auto* prop = dynamic_cast<App::PropertyMaterialList*>(
-                it->getPropertyByName("ShapeAppearance"))) {
+        if (auto* prop
+            = dynamic_cast<App::PropertyMaterialList*>(it->getPropertyByName("ShapeAppearance"))) {
             prop->setValue(material->getMaterialAppearance());
         }
     }
@@ -643,13 +753,48 @@ void DlgDisplayPropertiesImp::onMaterialSelected(
 /* TRANSLATOR Gui::Dialog::TaskDisplayProperties */
 
 TaskDisplayProperties::TaskDisplayProperties()
+    : TaskDisplayProperties(activeAppDocument())
+{}
+
+TaskDisplayProperties::TaskDisplayProperties(App::Document& document)
 {
+    targetDocumentAddress = &document;
+    targetDocumentName = document.getName();
+    targetDocumentUid = document.Uid.getValueStr();
+    transaction = std::make_unique<Gui::ExactTransaction>(
+        document,
+        QT_TRANSLATE_NOOP("Command", "Set Appearance")
+    );
+    tid = transaction->id();
+    if (tid == App::NullTransaction
+        || !transaction->ownsCurrentTransaction()) {
+        throw Base::RuntimeError(
+            "Could not establish the appearance transaction"
+        );
+    }
+
     this->setButtonPosition(TaskDisplayProperties::North);
-    widget = new DlgDisplayPropertiesImp();
-    addTaskBox(widget);
+    setAutoCloseOnDeletedDocument(true);
+    try {
+        widget = new DlgDisplayPropertiesImp(&document, tid);
+        addTaskBox(widget);
+    }
+    catch (...) {
+        if (transaction) {
+            (void)transaction->abort();
+            transaction.reset();
+        }
+        tid = App::NullTransaction;
+        throw;
+    }
 }
 
-TaskDisplayProperties::~TaskDisplayProperties() = default;
+TaskDisplayProperties::~TaskDisplayProperties()
+{
+    if (transaction) {
+        (void)transaction->abort();
+    }
+}
 
 QDialogButtonBox::StandardButtons TaskDisplayProperties::getStandardButtons() const
 {
@@ -658,8 +803,37 @@ QDialogButtonBox::StandardButtons TaskDisplayProperties::getStandardButtons() co
 
 bool TaskDisplayProperties::reject()
 {
+    if (!ownsTransaction()) {
+        return false;
+    }
+    if (!transaction->commit()) {
+        return false;
+    }
+    transaction.reset();
+    tid = App::NullTransaction;
     widget->reject();
     return (widget->result() == QDialog::Rejected);
+}
+
+bool TaskDisplayProperties::ownsTransaction() const
+{
+    if (!transaction || tid == App::NullTransaction
+        || !targetDocumentAddress
+        || targetDocumentName.empty() || targetDocumentUid.empty()) {
+        return false;
+    }
+    try {
+        auto* document = App::GetApplication().getDocument(
+            targetDocumentName.c_str()
+        );
+        return document && document == targetDocumentAddress
+            && document->Uid.getValueStr() == targetDocumentUid
+            && document->getBookedTransactionID() == tid
+            && transaction->ownsCurrentTransaction();
+    }
+    catch (...) {
+        return false;
+    }
 }
 
 #include "moc_DlgDisplayPropertiesImp.cpp"

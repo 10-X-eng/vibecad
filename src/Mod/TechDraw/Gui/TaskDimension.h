@@ -27,6 +27,12 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
+
+namespace TechDraw
+{
+class DrawViewDimension;
+}
 
 namespace TechDrawGui
 {
@@ -72,9 +78,15 @@ private Q_SLOTS:
     void onReferenceChanged();
 
 private:
+    TechDraw::DrawViewDimension* resolveDimension() const;
+    ViewProviderDimension* resolveViewProvider() const;
+
     std::unique_ptr<Ui_TaskDimension> ui;
     QGIViewDimension *m_parent;
     Gui::WeakPtrT<ViewProviderDimension> m_dimensionVP;
+    TaskInternal::DocumentIdentity m_documentIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewDimension>
+        m_dimensionIdentity;
     std::pair<double, bool> getAngleFromSelection();
     std::string m_originalFormatChar;
     std::string m_formatPrefix;

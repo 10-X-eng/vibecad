@@ -79,12 +79,8 @@ void TaskEdge2TracParameter::hideShow()
     setHideShowObject();
 
     if (HideShowObj) {
-        Gui::Document* doc = Gui::Application::Instance->activeDocument();
-        if (doc->getViewProvider(HideShowObj)->isVisible()) {
-            doc->getViewProvider(HideShowObj)->setVisible(false);
-        }
-        else {
-            doc->getViewProvider(HideShowObj)->setVisible(true);
+        if (auto* view = Gui::Application::Instance->getViewProvider(HideShowObj)) {
+            view->setVisible(!view->isVisible());
         }
     }
 }

@@ -51,3 +51,5 @@ class RobotWorkbench(Workbench):
 
 
 Gui.addWorkbench(RobotWorkbench())
+
+FreeCAD.__unit_test__ += ["TestRobotGui"]

@@ -20,7 +20,7 @@ TOOL_SPEC = {
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
-    "workbench": "PartWorkbench",
+    "workbench": "PartDesignWorkbench",
     "edit_modes": ["none"],
     "parameters": {
         "type": "object",
@@ -85,6 +85,7 @@ def run(
         mirror.Source = base
         mirror.Base = domain_runtime.parse_vector(plane_point)
         mirror.Normal = normal
+        domain_runtime.adopt_part_result(mirror)
         active.recompute()
         return {
             "document": active.Name,

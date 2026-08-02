@@ -1885,14 +1885,16 @@ void SelectionSingleton::setVisible(VisibleState vis, const char* pDocName)
         if (!obj || !obj->isAttachedToDocument() || (parent && !parent->isAttachedToDocument())) {
             continue;
         }
-        // try call parent object's setElementVisible
+        // Preserve occurrence-specific visibility when the parent explicitly
+        // implements it. This must run before semantic model routing: two
+        // links to one Body are two independently visible occurrences.
         if (parent) {
-            // prevent setting the same object visibility more than once
-            if (!filter.insert(std::make_pair(obj, parent)).second) {
-                continue;
-            }
             int visElement = parent->isElementVisible(elementName.c_str());
             if (visElement >= 0) {
+                // prevent setting the same occurrence visibility more than once
+                if (!filter.insert(std::make_pair(obj, parent)).second) {
+                    continue;
+                }
                 if (visElement > 0) {
                     visElement = 1;
                 }
@@ -1923,13 +1925,54 @@ void SelectionSingleton::setVisible(VisibleState vis, const char* pDocName)
 
             // Fall back to direct object visibility setting
         }
-        if (!filter.insert(std::make_pair(obj, static_cast<App::DocumentObject*>(nullptr))).second) {
+
+        // If resolution entered an App::Link whose parent did not implement
+        // element visibility, mutate the link view provider itself instead of
+        // the shared object below it.
+        App::DocumentObject* commandObject = obj;
+        if (parent
+            && parent->hasExtension(
+                App::LinkBaseExtension::getExtensionClassTypeId(),
+                true
+            )) {
+            commandObject = parent;
+        }
+
+        // Canonicalize before deduplication. Several selected history
+        // operations (or a history operation plus its publication) represent
+        // one Body visibility target and must produce exactly one mutation.
+        auto* visibilityTarget =
+            TreeWidget::resolveModelBrowserVisibilityTarget(commandObject);
+        if (!visibilityTarget || !visibilityTarget->isAttachedToDocument()) {
+            continue;
+        }
+        if (!filter.insert(
+                std::make_pair(
+                    visibilityTarget,
+                    static_cast<App::DocumentObject*>(nullptr)
+                )
+            )
+                 .second) {
             continue;
         }
 
-        auto vp = Application::Instance->getViewProvider(obj);
+        auto vp = Application::Instance->getViewProvider(visibilityTarget);
 
         if (vp) {
+            bool modelBrowserVisible = false;
+            if (TreeWidget::applyModelBrowserVisibility(
+                    commandObject,
+                    visible,
+                    modelBrowserVisible
+                )) {
+                updateSelection(
+                    modelBrowserVisible,
+                    sel.DocName.c_str(),
+                    sel.FeatName.c_str(),
+                    sel.SubName.c_str()
+                );
+                continue;
+            }
             if (visible < 0) {
                 // Toggle link instead of the original object
                 ViewProvider* toggleVp = vp;
@@ -2071,7 +2114,7 @@ void SelectionSingleton::clearCompleteSelection(const char* pDocName, bool clear
         notify(SelectionChanges(SelectionChanges::PickedListChanged, context.docName.c_str()));
     }
 
-    if (clearPreSelect) {
+    if (clearPreSelect && DocName == context.docName) {
         rmvPreselect();
     }
 
@@ -2080,9 +2123,22 @@ void SelectionSingleton::clearCompleteSelection(const char* pDocName, bool clear
     }
 
     if (!logDisabled) {
+        std::ostringstream ss;
+        if (pDocName && pDocName[0] && strcmp(pDocName, "*") != 0) {
+            ss << "Gui.Selection.clearSelection('" << context.docName << "'";
+            if (!clearPreSelect) {
+                ss << ", False";
+            }
+            ss << ')';
+        }
+        else {
+            ss << (clearPreSelect
+                       ? "Gui.Selection.clearSelection()"
+                       : "Gui.Selection.clearSelection(False)");
+        }
         Application::Instance->macroManager()->addLine(
             MacroManager::Cmt,
-            clearPreSelect ? "Gui.Selection.clearSelection()" : "Gui.Selection.clearSelection(False)"
+            ss.str().c_str()
         );
     }
 
@@ -2305,58 +2361,239 @@ void SelectionSingleton::slotDeletedObject(const App::DocumentObject& Obj)
         return;
     }
 
-    // For safety reason, don't bother checking
-    rmvPreselect();
-
-    SelectionInfo& info = docSelectionContext[Obj.getDocument()];
-
-    // Remove also from the selection, if selected
-    // We don't walk down the hierarchy for each selection, so there may be stray selection
     std::vector<SelectionChanges> changes;
-    for (auto it = info.selList.begin(), itNext = it; it != info.selList.end(); it = itNext) {
-        ++itNext;
-        if (it->pResolvedObject == &Obj || it->pObject == &Obj) {
-            changes.emplace_back(
-                SelectionChanges::RmvSelection,
-                it->DocName,
-                it->FeatName,
-                it->SubName,
-                it->TypeName
-            );
-            info.selList.erase(it);
-        }
-    }
-    if (!changes.empty()) {
-        for (auto& Chng : changes) {
-            FC_LOG(
-                "Rmv Selection " << Chng.pDocName << '#' << Chng.pObjectName << '.' << Chng.pSubName
-            );
-            notify(std::move(Chng));
-        }
-        getMainWindow()->updateActions();
-    }
-
-    if (!info.pickedList.empty()) {
-        bool changed = false;
-        for (auto it = info.pickedList.begin(), itNext = it; it != info.pickedList.end();
-             it = itNext) {
-            ++itNext;
-            auto& sel = *it;
-            if (sel.DocName == Obj.getDocument()->getName()
-                && sel.FeatName == Obj.getNameInDocument()) {
-                changed = true;
-                info.pickedList.erase(it);
+    std::set<std::string> pickedContexts;
+    bool stackChanged = false;
+    for (auto& [contextDocument, info] : docSelectionContext) {
+        for (auto it = info.selList.begin(); it != info.selList.end();) {
+            if (it->pResolvedObject == &Obj || it->pObject == &Obj) {
+                changes.emplace_back(
+                    SelectionChanges::RmvSelection,
+                    it->DocName,
+                    it->FeatName,
+                    it->SubName,
+                    it->TypeName
+                );
+                it = info.selList.erase(it);
+            }
+            else {
+                ++it;
             }
         }
-        if (changed) {
-            notify(SelectionChanges(SelectionChanges::PickedListChanged, Obj.getDocument()->getName()));
+
+        for (auto it = info.pickedList.begin();
+             it != info.pickedList.end();) {
+            if (it->pResolvedObject == &Obj || it->pObject == &Obj) {
+                it = info.pickedList.erase(it);
+                if (contextDocument) {
+                    pickedContexts.insert(contextDocument->getName());
+                }
+            }
+            else {
+                ++it;
+            }
         }
+
+        const auto referencesDeletedObject =
+            [&Obj](const App::SubObjectT& reference) {
+                if (reference.getObject() == &Obj) {
+                    return true;
+                }
+                const auto objects = reference.getSubObjectList();
+                return std::ranges::find(objects, &Obj) != objects.end();
+            };
+        const auto pruneStack =
+            [&referencesDeletedObject, &stackChanged](auto& stack) {
+                for (auto stackIt = stack.begin();
+                     stackIt != stack.end();) {
+                    const auto erased =
+                        std::erase_if(
+                            *stackIt,
+                            referencesDeletedObject
+                        );
+                    stackChanged = stackChanged || erased != 0;
+                    if (stackIt->empty()) {
+                        stackIt = stack.erase(stackIt);
+                    }
+                    else {
+                        ++stackIt;
+                    }
+                }
+            };
+        pruneStack(info.selStackBack);
+        pruneStack(info.selStackForward);
+    }
+
+    if (DocName == Obj.getDocument()->getName()) {
+        rmvPreselect();
+    }
+    for (auto& change : changes) {
+        FC_LOG(
+            "Rmv Selection " << change.pDocName << '#'
+                             << change.pObjectName << '.'
+                             << change.pSubName
+        );
+        notify(std::move(change));
+    }
+    for (const auto& documentName : pickedContexts) {
+        notify(
+            SelectionChanges(
+                SelectionChanges::PickedListChanged,
+                documentName.c_str()
+            )
+        );
+    }
+    if (!changes.empty() || !pickedContexts.empty() || stackChanged) {
+        getMainWindow()->updateActions();
     }
 }
+
 void SelectionSingleton::slotClosedDocument(const App::Document& doc)
 {
-    // const_cast is ok because we just use doc as a key
+    std::vector<SelectionChanges> changes;
+    std::set<std::string> pickedContexts;
+    bool stackChanged = false;
+    for (auto& [contextDocument, info] : docSelectionContext) {
+        if (contextDocument == &doc) {
+            continue;
+        }
+
+        const auto objectReferencesDocument =
+            [&doc](
+                const App::DocumentObject* object,
+                const std::string& subName
+            ) {
+                if (!object) {
+                    return false;
+                }
+                try {
+                    auto* linked = object->getLinkedObject(true);
+                    if (linked && linked != object
+                        && linked->getDocument() == &doc) {
+                        return true;
+                    }
+                    if (!subName.empty()) {
+                        const auto subObjects =
+                            object->getSubObjectList(subName.c_str());
+                        return std::ranges::any_of(
+                            subObjects,
+                            [&doc](const App::DocumentObject* subObject) {
+                                return subObject
+                                    && subObject->getDocument() == &doc;
+                            }
+                        );
+                    }
+                }
+                catch (...) {
+                    // A closing link chain may already be incomplete. The
+                    // direct identities below remain sufficient to decide
+                    // whether the selection itself belongs to the document.
+                }
+                return false;
+            };
+        const auto referencesDocument =
+            [&doc, &objectReferencesDocument](
+                const SelectionDescription& selection
+            ) {
+                return selection.pDoc == &doc
+                    || (selection.pObject
+                        && selection.pObject->getDocument() == &doc)
+                    || (selection.pResolvedObject
+                        && selection.pResolvedObject->getDocument()
+                            == &doc)
+                    || objectReferencesDocument(
+                        selection.pObject,
+                        selection.SubName
+                    )
+                    || objectReferencesDocument(
+                        selection.pResolvedObject,
+                        selection.SubName
+                    );
+            };
+        for (auto it = info.selList.begin(); it != info.selList.end();) {
+            if (referencesDocument(*it)) {
+                changes.emplace_back(
+                    SelectionChanges::RmvSelection,
+                    it->DocName,
+                    it->FeatName,
+                    it->SubName,
+                    it->TypeName
+                );
+                it = info.selList.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+
+        for (auto it = info.pickedList.begin();
+             it != info.pickedList.end();) {
+            if (referencesDocument(*it)) {
+                it = info.pickedList.erase(it);
+                if (contextDocument) {
+                    pickedContexts.insert(contextDocument->getName());
+                }
+            }
+            else {
+                ++it;
+            }
+        }
+
+        const auto subObjectReferencesDocument =
+            [&doc](const App::SubObjectT& reference) {
+                if (reference.getDocumentName() == doc.getName()) {
+                    return true;
+                }
+                const auto objects = reference.getSubObjectList();
+                return std::ranges::any_of(
+                    objects,
+                    [&doc](const App::DocumentObject* object) {
+                        return object && object->getDocument() == &doc;
+                    }
+                );
+            };
+        const auto pruneStack =
+            [&subObjectReferencesDocument, &stackChanged](auto& stack) {
+                for (auto stackIt = stack.begin();
+                     stackIt != stack.end();) {
+                    const auto erased =
+                        std::erase_if(
+                            *stackIt,
+                            subObjectReferencesDocument
+                        );
+                    stackChanged = stackChanged || erased != 0;
+                    if (stackIt->empty()) {
+                        stackIt = stack.erase(stackIt);
+                    }
+                    else {
+                        ++stackIt;
+                    }
+                }
+            };
+        pruneStack(info.selStackBack);
+        pruneStack(info.selStackForward);
+    }
+
+    if (DocName == doc.getName()) {
+        rmvPreselect();
+    }
+    rmvSelectionGate(const_cast<App::Document*>(&doc));
     docSelectionContext.erase(const_cast<App::Document*>(&doc));
+
+    for (auto& change : changes) {
+        notify(std::move(change));
+    }
+    for (const auto& documentName : pickedContexts) {
+        notify(
+            SelectionChanges(
+                SelectionChanges::PickedListChanged,
+                documentName.c_str()
+            )
+        );
+    }
+    if (!changes.empty() || !pickedContexts.empty() || stackChanged) {
+        getMainWindow()->updateActions();
+    }
 }
 
 void SelectionSingleton::setSelectionStyle(SelectionStyle selStyle, const char* pDocName)

@@ -358,6 +358,8 @@ SET(Mesh_SRCS
     FeatureMeshCurvature.h
     FeatureMeshDefects.cpp
     FeatureMeshDefects.h
+    FeatureMeshOperations.cpp
+    FeatureMeshOperations.h
     FeatureMeshExport.cpp
     FeatureMeshExport.h
     FeatureMeshImport.cpp

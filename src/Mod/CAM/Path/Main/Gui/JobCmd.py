@@ -26,6 +26,13 @@ from PySide.QtCore import QT_TRANSLATE_NOOP
 import FreeCAD
 import FreeCADGui
 import Path
+from Path.CommandBoundary import (
+    ExactDocumentObjectIdentity,
+    active_jobs,
+    begin_task_launch,
+    can_start_document_command,
+    can_start_ui_command,
+)
 import Path.Main.Gui.JobDlg as PathJobDlg
 import Path.Main.Job as PathJob
 import Path.Main.Stock as PathStock
@@ -60,9 +67,12 @@ class CommandJobCreate:
         }
 
     def IsActive(self):
-        return FreeCAD.ActiveDocument is not None
+        return can_start_document_command()
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         dialog = PathJobDlg.JobCreate()
         dialog.setupTemplate()
         dialog.setupModel()
@@ -70,18 +80,49 @@ class CommandJobCreate:
             models = dialog.getModels()
             if models:
                 self.Execute(models, dialog.getTemplate())
-                FreeCAD.ActiveDocument.recompute()
+                models[0].Document.recompute()
 
     @classmethod
     def Execute(cls, base, template):
+        if not base:
+            return
+        document = base[0].Document
+        if any(obj.Document is not document for obj in base):
+            raise RuntimeError(
+                "A CAM Job cannot span multiple documents"
+            )
+        base_identities = [
+            ExactDocumentObjectIdentity(obj, document)
+            for obj in base
+        ]
+        for identity in base_identities:
+            identity.resolve(require_timeline=True)
+        launch = begin_task_launch("Create CAM Job", document)
         FreeCADGui.addModule("Path.Main.Gui.Job")
         if template:
             template = "'%s'" % template
         else:
             template = "None"
-        FreeCADGui.doCommand(
-            "Path.Main.Gui.Job.Create(%s, %s)" % ([o.Name for o in base], template)
-        )
+        try:
+            base = [
+                identity.resolve(require_timeline=True)
+                for identity in base_identities
+            ]
+            base_expression = ", ".join(
+                "FreeCAD.getDocument(%r).getObject(%r)"
+                % (document.Name, obj.Name)
+                for obj in base
+            )
+            FreeCADGui.doCommand(
+                "Path.Main.Gui.Job.Create([%s], %s)"
+                % (base_expression, template)
+            )
+            for identity in base_identities:
+                identity.resolve(require_timeline=True)
+            launch.require_claimed()
+        except Exception:
+            launch.abort()
+            raise
 
 
 class CommandJobTemplateExport:
@@ -107,7 +148,7 @@ class CommandJobTemplateExport:
 
     def GetJob(self):
         # if there's only one Job in the document ...
-        jobs = PathJob.Instances()
+        jobs = active_jobs()
         if not jobs:
             return None
         if len(jobs) == 1:
@@ -116,14 +157,20 @@ class CommandJobTemplateExport:
         sel = FreeCADGui.Selection.getSelection()
         if len(sel) == 1:
             job = sel[0]
-            if hasattr(job, "Proxy") and isinstance(job.Proxy, PathJob.ObjectJob):
+            if (
+                job in jobs
+                and hasattr(job, "Proxy")
+                and isinstance(job.Proxy, PathJob.ObjectJob)
+            ):
                 return job
         return None
 
     def IsActive(self):
-        return self.GetJob() is not None
+        return can_start_ui_command() and self.GetJob() is not None
 
     def Activated(self):
+        if not self.IsActive():
+            return
         job = self.GetJob()
         dialog = PathJobDlg.JobTemplateExport(job)
         if dialog.exec_() == 1:
@@ -131,6 +178,10 @@ class CommandJobTemplateExport:
 
     @classmethod
     def SaveDialog(cls, job, dialog):
+        identity = ExactDocumentObjectIdentity(
+            job,
+            job.Document,
+        )
         foo = QtGui.QFileDialog.getSaveFileName(
             QtGui.QApplication.activeWindow(),
             "Path - Job Template",
@@ -142,6 +193,7 @@ class CommandJobTemplateExport:
                 foo = os.path.join(os.path.dirname(foo), "job_" + os.path.basename(foo))
             if not foo.endswith(".json"):
                 foo = foo + ".json"
+            job = identity.resolve(require_timeline=True)
             cls.Execute(job, foo, dialog)
 
     @classmethod

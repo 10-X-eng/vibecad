@@ -195,6 +195,21 @@ PyObject* ViewProviderPy::isVisible(PyObject* args)
     PY_CATCH;
 }
 
+PyObject* ViewProviderPy::setTemporaryVisibility(PyObject* args)
+{
+    PyObject* visible = nullptr;
+    if (!PyArg_ParseTuple(args, "O!", &PyBool_Type, &visible)) {
+        return nullptr;
+    }
+
+    PY_TRY
+    {
+        getViewProviderPtr()->setTemporaryVisibility(visible == Py_True);
+        Py_Return;
+    }
+    PY_CATCH;
+}
+
 PyObject* ViewProviderPy::canDragObject(PyObject* args)
 {
     PyObject* obj = Py_None;

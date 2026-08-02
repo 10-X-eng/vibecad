@@ -24,8 +24,10 @@
 
 
 #include <Gui/Control.h>
+#include <Gui/Document.h>
 #include <Mod/Robot/Gui/TaskDlgEdge2Trac.h>
 
+#include "OperationSupport.h"
 #include "ViewProviderEdge2TracObject.h"
 
 
@@ -36,16 +38,18 @@ PROPERTY_SOURCE(RobotGui::ViewProviderEdge2TracObject, RobotGui::ViewProviderTra
 
 bool ViewProviderEdge2TracObject::doubleClicked()
 {
-    Gui::TaskView::TaskDialog* dlg = new TaskDlgEdge2Trac(getObject<Robot::Edge2TracObject>());
-    Gui::Control().showDialog(dlg);
-    return true;
+    auto* document = getDocument();
+    return document && document->setEdit(this, Gui::ViewProvider::Default);
 }
 
 
 bool ViewProviderEdge2TracObject::setEdit(int)
 {
-    Gui::TaskView::TaskDialog* dlg = new TaskDlgEdge2Trac(getObject<Robot::Edge2TracObject>());
-    Gui::Control().showDialog(dlg);
+    auto* object = getObject<Robot::Edge2TracObject>();
+    if (!object || !RobotGui::OperationSupport::isUsableObject(object)) {
+        return false;
+    }
+    Gui::Control().showDialog(new TaskDlgEdge2Trac(object), object->getDocument());
     return true;
 }
 

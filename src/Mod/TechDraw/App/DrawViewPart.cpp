@@ -61,11 +61,14 @@
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
-#include <sstream>
+#include <algorithm>
+#include <functional>
 #include <limits>
+#include <sstream>
 
 
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <Base/BoundBox.h>
 #include <Base/Console.h>
 #include <Base/Converter.h>
@@ -183,6 +186,11 @@ DrawViewPart::DrawViewPart()
                       cacheGroup,
                       cacheFlags,
                       "Source centroid used to generate the persisted projection.");
+    ADD_PROPERTY_TYPE(PrecomputedProjectionSourceState,
+                      (""),
+                      cacheGroup,
+                      cacheFlags,
+                      "Timeline and source state used to generate the persisted projection.");
 
     //initialize bbox to non-garbage
     bbox = Base::BoundBox3d(Base::Vector3d(0.0, 0.0, 0.0), 0.0);
@@ -276,9 +284,13 @@ void DrawViewPart::setPrecomputedProjection(
     PrecomputedEdgeVisibility.setValues(visibilityBits);
     PrecomputedSourceIndices.setValues(sourceIndices);
     PrecomputedProjectionCentroid.setValue(centroid);
+    const std::string sourceState = geometrySourceStateSignature();
+    PrecomputedProjectionSourceState.setValue(sourceState.c_str());
 
     geometryObject = std::move(candidate);
     m_tempGeometryObject.reset();
+    m_geometrySourceState = sourceState;
+    m_pendingSourceState.clear();
     m_saveCentroid = centroid;
     bbox = geometryObject->calcBoundingBox();
     waitingForHlr(false);
@@ -290,7 +302,10 @@ void DrawViewPart::setPrecomputedProjection(
 bool DrawViewPart::restorePrecomputedProjection()
 {
     const TopoDS_Shape& edges = PrecomputedProjectionEdges.getValue();
-    if (edges.IsNull()) {
+    const std::string storedSourceState =
+        PrecomputedProjectionSourceState.getValue();
+    if (edges.IsNull() || storedSourceState.empty()
+        || storedSourceState != geometrySourceStateSignature()) {
         return false;
     }
     const auto& visibilityBits = PrecomputedEdgeVisibility.getValues();
@@ -327,7 +342,7 @@ void DrawViewPart::onDocumentRestored()
 TopoDS_Shape DrawViewPart::getSourceShape(bool fuse, bool allow2d) const
 {
 //    Base::Console().message("DVP::getSourceShape()\n");
-    const std::vector<App::DocumentObject*>& links = getAllSources();
+    const std::vector<App::DocumentObject*>& links = getActiveSources();
     if (links.empty()) {
         return {};
     }
@@ -359,13 +374,151 @@ std::vector<App::DocumentObject*> DrawViewPart::getAllSources() const
     return result;
 }
 
+std::vector<App::DocumentObject*> DrawViewPart::getActiveSources() const
+{
+    auto sources = getAllSources();
+    TimelineDependencyStack stack;
+    stack.insert(this);
+    std::erase_if(sources, [&stack](const App::DocumentObject* source) {
+        return !timelineDependencyIsActive(source, stack);
+    });
+    return sources;
+}
+
+bool DrawViewPart::timelineDependenciesActive(
+    TimelineDependencyStack& stack) const
+{
+    if (!DrawView::timelineDependenciesActive(stack)) {
+        return false;
+    }
+    const auto allSources = getAllSources();
+    if (allSources.empty()) {
+        return true;
+    }
+    for (const auto* source : allSources) {
+        if (timelineDependencyIsActive(source, stack)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string DrawViewPart::sourceStateSignature(
+    const std::vector<App::DocumentObject*>& sources) const
+{
+    std::ostringstream state;
+    state << "v2;";
+    std::vector<const App::Document*> documents;
+    auto addDocument = [&documents](const App::Document* document) {
+        if (document
+            && std::find(documents.begin(), documents.end(), document)
+                == documents.end()) {
+            documents.push_back(document);
+        }
+    };
+    auto appendText = [&state](const std::string& text) {
+        state << text.size() << ':' << text;
+    };
+    auto appendObject = [&state, &appendText](
+                            const App::DocumentObject* object) {
+        if (!object) {
+            state << "null;";
+            return;
+        }
+        const auto* document = object->getDocument();
+        appendText(document ? document->Uid.getValueStr() : std::string());
+        state << ':';
+        appendText(
+            object->getNameInDocument()
+                ? std::string(object->getNameInDocument())
+                : std::string()
+        );
+        state << ';';
+    };
+
+    addDocument(getDocument());
+    state << "sources=" << sources.size() << ';';
+    for (const auto* source : sources) {
+        appendObject(source);
+        addDocument(source ? source->getDocument() : nullptr);
+
+        const auto* linked = source ? source->getLinkedObject(true) : nullptr;
+        state << "linked=";
+        appendObject(linked);
+        addDocument(linked ? linked->getDocument() : nullptr);
+    }
+
+    std::sort(
+        documents.begin(),
+        documents.end(),
+        [](const auto* left, const auto* right) {
+            const std::string leftUid(left->Uid.getValueStr());
+            const std::string rightUid(right->Uid.getValueStr());
+            if (leftUid != rightUid) {
+                return leftUid < rightUid;
+            }
+            return std::string(left->getName()) < std::string(right->getName());
+        }
+    );
+    state << "documents=" << documents.size() << ';';
+    for (const auto* document : documents) {
+        appendText(document->Uid.getValueStr());
+        const auto* timeline = App::DocumentTimeline::get(document);
+        if (!timeline) {
+            state << ":no-timeline;";
+            continue;
+        }
+
+        state << ":timeline=";
+        appendText(timeline->getNameInDocument());
+        state << ":schema=" << timeline->SchemaVersion.getValue()
+              << ":position=" << timeline->Position.getValue()
+              << ":operations=" << timeline->Operations.getSize() << ':';
+        for (const auto* operation : timeline->Operations.getValues()) {
+            appendText(
+                operation && operation->getNameInDocument()
+                    ? std::string(operation->getNameInDocument())
+                    : std::string()
+            );
+            state << ',';
+        }
+        const auto& suppression = timeline->SuppressionAtEnd.getValues();
+        state << ":suppression=" << suppression.size() << ':';
+        for (std::size_t index = 0; index < suppression.size(); ++index) {
+            state << (suppression.test(index) ? '1' : '0');
+        }
+        state << ';';
+    }
+    return state.str();
+}
+
+std::string DrawViewPart::geometrySourceStateSignature() const
+{
+    return sourceStateSignature(getActiveSources());
+}
+
+bool DrawViewPart::geometryMatchesActiveSources() const
+{
+    return isActiveInDocumentTimeline()
+        && m_geometrySourceState == geometrySourceStateSignature();
+}
+
+void DrawViewPart::recomputeForCurrentTimelineState()
+{
+    touch();
+    auto* document = getDocument();
+    if (document && !document->isPerformingTransaction()) {
+        recomputeFeature();
+    }
+}
+
 //! pick vertex objects out of the Source properties and
 //! add them directly to the geometry without going through HLR
 void DrawViewPart::addPoints()
 {
 //    Base::Console().message("DVP::addPoints()\n");
     // get all the 2d shapes in the sources, then pick through them for vertices.
-    std::vector<TopoDS_Shape> shapesAll = ShapeExtractor::getShapes2d(getAllSources());
+    std::vector<TopoDS_Shape> shapesAll = ShapeExtractor::getShapes2d(getActiveSources());
     for (auto& shape : shapesAll) {
         if (shape.ShapeType() == TopAbs_VERTEX) {
             gp_Pnt gp = BRep_Tool::Pnt(TopoDS::Vertex(shape));
@@ -384,11 +537,22 @@ void DrawViewPart::addPoints()
 App::DocumentObjectExecReturn* DrawViewPart::execute()
 {
     // Base::Console().message("DVP::execute() - %s\n", getNameInDocument());
+    const auto allSources = getAllSources();
+    const bool allSourcesAreFuture =
+        !allSources.empty() && getActiveSources().empty();
+    if (allSourcesAreFuture) {
+        // Preserve accepted and in-flight caches. Geometry accessors mask a
+        // cache whose source snapshot does not match the current marker, so a
+        // future source cannot render while an asynchronous worker finishes.
+        requestPaint();
+        return DrawView::execute();
+    }
+
     if (!keepUpdated()) {
         return DrawView::execute();
     }
 
-    if (waitingForHlr()) {
+    if (waitingForHlr() || waitingForFaces()) {
         return DrawView::execute();
     }
 
@@ -502,6 +666,7 @@ TopoDS_Shape DrawViewPart::centerScaleRotate(const DrawViewPart *dvp, TopoDS_Sha
 TechDraw::GeometryObjectPtr DrawViewPart::buildGeometryObject(const TopoDS_Shape& shape,
                                                               const gp_Ax2& viewAxis)
 {
+    m_pendingSourceState = geometrySourceStateSignature();
     TechDraw::GeometryObjectPtr go(
         std::make_shared<TechDraw::GeometryObject>(getNameInDocument(), this));
     go->setIsoCount(IsoCount.getValue());
@@ -545,11 +710,31 @@ TechDraw::GeometryObjectPtr DrawViewPart::buildGeometryObject(const TopoDS_Shape
 //! continue processing after hlr thread completes
 void DrawViewPart::onHlrFinished()
 {
+    const bool sourceSetStillCurrent =
+        m_pendingSourceState == geometrySourceStateSignature();
+    if (!isActiveInDocumentTimeline() || !sourceSetStillCurrent) {
+        m_tempGeometryObject.reset();
+        m_pendingSourceState.clear();
+        waitingForHlr(false);
+        QObject::disconnect(connectHlrWatcher);
+        if (isActiveInDocumentTimeline()) {
+            recomputeForCurrentTimelineState();
+        }
+        requestPaint();
+        return;
+    }
+
     //now that the new GeometryObject is fully populated, we can replace the old one
     if (m_tempGeometryObject) {
         geometryObject = m_tempGeometryObject;//replace with new
         m_tempGeometryObject = nullptr;       //superfluous?
+        m_geometrySourceState = m_pendingSourceState;
+        // A native HLR result supersedes any older persisted worker cache.
+        // Leaving its state token valid could restore stale geometry after a
+        // later source edit which does not alter the timeline boundary.
+        PrecomputedProjectionSourceState.setValue("");
     }
+    m_pendingSourceState.clear();
     if (!geometryObject) {
         throw Base::RuntimeError("DrawViewPart has lost its geometry object");
     }
@@ -611,13 +796,13 @@ void DrawViewPart::postHlrTasks()
 
     //balloons need to be recomputed here because their
     //references will be invalid until the geometry exists
-    std::vector<TechDraw::DrawViewBalloon*> balloonsAll = getBalloons();
+    std::vector<TechDraw::DrawViewBalloon*> balloonsAll = getActiveBalloons();
     for (auto& balloon : balloonsAll) {
         balloon->recomputeFeature();
     }
     // Dimensions need to be recomputed now if face finding is not going to take place.
     if (!handleFaces() || CoarseView.getValue()) {
-        std::vector<TechDraw::DrawViewDimension*> dimsAll = getDimensions();
+        std::vector<TechDraw::DrawViewDimension*> dimsAll = getActiveDimensions();
         for (auto& dim : dimsAll) {
             dim->recomputeFeature();
         }
@@ -643,7 +828,7 @@ void DrawViewPart::postFaceExtractionTasks()
 
     // Dimensions need to be recomputed because their references will be invalid
     //  until all the geometry (including centerlines dependent on faces) exists.
-    std::vector<TechDraw::DrawViewDimension*> dimsAll = getDimensions();
+    std::vector<TechDraw::DrawViewDimension*> dimsAll = getActiveDimensions();
     for (auto& dim : dimsAll) {
         dim->recomputeFeature();
     }
@@ -870,6 +1055,13 @@ void DrawViewPart::onFacesFinished()
     //    Base::Console().message("DVP::onFacesFinished() - %s\n", getNameInDocument());
     waitingForFaces(false);
     QObject::disconnect(connectFaceWatcher);
+    if (!isActiveInDocumentTimeline() || !geometryMatchesActiveSources()) {
+        if (isActiveInDocumentTimeline()) {
+            recomputeForCurrentTimelineState();
+        }
+        requestPaint();
+        return;
+    }
     showProgressMessage(getNameInDocument(), "has finished extracting faces");
 
     // Now we can recompute Dimensions and do other tasks possibly depending on Face extraction
@@ -939,6 +1131,30 @@ std::vector<TechDraw::DrawGeomHatch*> DrawViewPart::getGeomHatches() const
     return result;
 }
 
+std::vector<TechDraw::DrawHatch*> DrawViewPart::getActiveHatches() const
+{
+    if (!isActiveInDocumentTimeline()) {
+        return {};
+    }
+    auto result = getHatches();
+    std::erase_if(result, [](const auto* hatch) {
+        return !DrawUtil::isActiveInDocumentTimeline(hatch);
+    });
+    return result;
+}
+
+std::vector<TechDraw::DrawGeomHatch*> DrawViewPart::getActiveGeomHatches() const
+{
+    if (!isActiveInDocumentTimeline()) {
+        return {};
+    }
+    auto result = getGeomHatches();
+    std::erase_if(result, [](const auto* hatch) {
+        return !DrawUtil::isActiveInDocumentTimeline(hatch);
+    });
+    return result;
+}
+
 //return *unique* list of Dimensions which reference this DVP
 //if the dimension has two references to this dvp, it will appear twice in
 //the inlist
@@ -974,9 +1190,27 @@ std::vector<TechDraw::DrawViewBalloon*> DrawViewPart::getBalloons() const
     return result;
 }
 
+std::vector<TechDraw::DrawViewDimension*> DrawViewPart::getActiveDimensions() const
+{
+    auto result = getDimensions();
+    std::erase_if(result, [](const auto* dimension) {
+        return !dimension->isActiveInDocumentTimeline();
+    });
+    return result;
+}
+
+std::vector<TechDraw::DrawViewBalloon*> DrawViewPart::getActiveBalloons() const
+{
+    auto result = getBalloons();
+    std::erase_if(result, [](const auto* balloon) {
+        return !balloon->isActiveInDocumentTimeline();
+    });
+    return result;
+}
+
 const std::vector<TechDraw::VertexPtr> DrawViewPart::getVertexGeometry() const
 {
-    if (geometryObject) {
+    if (geometryObject && geometryMatchesActiveSources()) {
         return geometryObject->getVertexGeometry();
     }
     return std::vector<TechDraw::VertexPtr>();
@@ -1029,7 +1263,7 @@ TechDraw::FacePtr DrawViewPart::getFace(std::string faceName) const
 const std::vector<TechDraw::FacePtr> DrawViewPart::getFaceGeometry() const
 {
     std::vector<TechDraw::FacePtr> result;
-    if (waitingForFaces() || !geometryObject) {
+    if (waitingForFaces() || !geometryObject || !geometryMatchesActiveSources()) {
         return std::vector<TechDraw::FacePtr>();
     }
     return geometryObject->getFaceGeometry();
@@ -1037,7 +1271,7 @@ const std::vector<TechDraw::FacePtr> DrawViewPart::getFaceGeometry() const
 
 const BaseGeomPtrVector DrawViewPart::getEdgeGeometry() const
 {
-    if (geometryObject) {
+    if (geometryObject && geometryMatchesActiveSources()) {
         return geometryObject->getEdgeGeometry();
     }
     return BaseGeomPtrVector();
@@ -1125,7 +1359,13 @@ std::vector<TopoDS_Wire> DrawViewPart::getWireForFace(int idx) const
     return result;
 }
 
-Base::BoundBox3d DrawViewPart::getBoundingBox() const { return bbox; }
+Base::BoundBox3d DrawViewPart::getBoundingBox() const
+{
+    if (!geometryMatchesActiveSources()) {
+        return Base::BoundBox3d(Base::Vector3d(0.0, 0.0, 0.0), 0.0);
+    }
+    return bbox;
+}
 
 double DrawViewPart::getBoxX() const
 {
@@ -1153,7 +1393,7 @@ TopoDS_Shape DrawViewPart::getEdgeCompound() const
     BRep_Builder builder;
     TopoDS_Compound result;
     builder.MakeCompound(result);
-    if (geometryObject) {
+    if (geometryObject && geometryMatchesActiveSources()) {
         if (!geometryObject->getVisHard().IsNull()) {
             builder.Add(result, geometryObject->getVisHard());
         }
@@ -1371,9 +1611,27 @@ std::vector<DrawViewDetail*> DrawViewPart::getDetailRefs() const
     return result;
 }
 
+std::vector<DrawViewSection*> DrawViewPart::getActiveSectionRefs() const
+{
+    auto result = getSectionRefs();
+    std::erase_if(result, [](const auto* section) {
+        return !section->isActiveInDocumentTimeline();
+    });
+    return result;
+}
+
+std::vector<DrawViewDetail*> DrawViewPart::getActiveDetailRefs() const
+{
+    auto result = getDetailRefs();
+    std::erase_if(result, [](const auto* detail) {
+        return !detail->isActiveInDocumentTimeline();
+    });
+    return result;
+}
+
 const BaseGeomPtrVector DrawViewPart::getVisibleFaceEdges() const
 {
-    if (!geometryObject) {
+    if (!geometryObject || !geometryMatchesActiveSources()) {
         return {};
     }
     return geometryObject->getVisibleFaceEdges(SmoothVisible.getValue(), SeamVisible.getValue());

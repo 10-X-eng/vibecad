@@ -880,16 +880,19 @@ void ViewProviderFemPostObject::onChanged(const App::Property* prop)
 
 bool ViewProviderFemPostObject::doubleClicked()
 {
-    // set edit
-    Gui::Application::Instance->activeDocument()->setEdit(this, (int)ViewProvider::Default);
-    return true;
+    Gui::Document* document = getDocument();
+    return document && document->setEdit(this, static_cast<int>(ViewProvider::Default));
 }
 
 bool ViewProviderFemPostObject::setEdit(int ModNum)
 {
     if (ModNum == ViewProvider::Default || ModNum == 1) {
+        App::Document* document = getObject() ? getObject()->getDocument() : nullptr;
+        if (!document) {
+            return false;
+        }
 
-        Gui::TaskView::TaskDialog* dlg = Gui::Control().activeDialog();
+        Gui::TaskView::TaskDialog* dlg = Gui::Control().activeDialog(document);
         TaskDlgPost* postDlg = qobject_cast<TaskDlgPost*>(dlg);
         if (postDlg && postDlg->getView() != this) {
             postDlg = nullptr;  // another pad left open its task panel
@@ -902,7 +905,10 @@ bool ViewProviderFemPostObject::setEdit(int ModNum)
             msgBox.setDefaultButton(QMessageBox::Yes);
             int ret = msgBox.exec();
             if (ret == QMessageBox::Yes) {
-                Gui::Control().reject();
+                Gui::Control().reject(document);
+                if (Gui::Control().activeDialog(document)) {
+                    return false;
+                }
             }
             else {
                 return false;
@@ -911,14 +917,14 @@ bool ViewProviderFemPostObject::setEdit(int ModNum)
 
         // start the edit dialog
         if (postDlg) {
-            Gui::Control().showDialog(postDlg);
+            Gui::Control().showDialog(postDlg, document);
         }
         else {
             postDlg = new TaskDlgPost(this);
             setupTaskDialog(postDlg);
             postDlg->connectSlots();
             postDlg->processCollapsedWidgets();
-            Gui::Control().showDialog(postDlg);
+            Gui::Control().showDialog(postDlg, document);
         }
 
         return true;
@@ -947,7 +953,9 @@ void ViewProviderFemPostObject::unsetEdit(int ModNum)
         // getSketchObject()->getDocument()->recompute();
 
         // when pressing ESC make sure to close the dialog
-        Gui::Control().closeDialog();
+        if (auto* object = getObject()) {
+            Gui::Control().closeDialog(object->getDocument());
+        }
     }
     else {
         ViewProviderDocumentObject::unsetEdit(ModNum);
@@ -965,7 +973,7 @@ void ViewProviderFemPostObject::hide()
     // object FemPostDataAtPointFilter) and refresh its color bar.
 
     // get all objects in the document
-    auto docGui = Gui::Application::Instance->activeDocument();
+    auto* docGui = getDocument();
     if (!docGui) {
         return;
     }

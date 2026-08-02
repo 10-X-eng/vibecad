@@ -89,8 +89,8 @@ class Z88Tools(ObjectTools):
         w.write_solver_input()
 
     def compute(self):
+        z88_bin = settings.require_binary("Z88")
         self._clear_results()
-        z88_bin = settings.get_binary("Z88")
         env = QProcessEnvironment.systemEnvironment()
         self.process.setProcessEnvironment(env)
         self.process.setWorkingDirectory(self.obj.WorkingDirectory)
@@ -115,8 +115,42 @@ class Z88Tools(ObjectTools):
         return self.process
 
     def update_properties(self):
-        self._load_vtk_results()
-        self._load_dat_results()
+        keep_results = self.fem_param.GetGroup("General").GetBool(
+            "KeepResultsOnReRun",
+            False,
+        )
+        retained_pipeline = None
+        if not keep_results:
+            for result in self.obj.Results:
+                if result.isDerivedFrom("Fem::FemPostPipeline"):
+                    retained_pipeline = result
+        reconciliation = None
+        if retained_pipeline is not None:
+            from femcommands.manager import (
+                _stage_timeline_result_graph,
+            )
+
+            reconciliation = _stage_timeline_result_graph(
+                retained_pipeline
+            )
+        pipeline, pipeline_created = self._load_vtk_results()
+        dat, dat_created = self._load_dat_results()
+        if pipeline is not None:
+            resources = tuple(
+                resource
+                for resource in (dat,)
+                if resource is not None and dat_created
+            )
+            if pipeline_created or resources or reconciliation is not None:
+                return (
+                    pipeline,
+                    resources,
+                    pipeline_created,
+                    reconciliation,
+                )
+        if dat is not None and dat_created:
+            return dat, (), True
+        return None
 
     def _clear_results(self):
         # results are z88oN.txt files
@@ -130,6 +164,7 @@ class Z88Tools(ObjectTools):
         # search dat output
         keep_result = self.fem_param.GetGroup("General").GetBool("KeepResultsOnReRun", False)
         dat = None
+        create = False
         for res in self.obj.Results:
             if res.isDerivedFrom("App::TextDocument"):
                 dat = res
@@ -141,6 +176,7 @@ class Z88Tools(ObjectTools):
             tmp = self.obj.Results
             tmp.append(dat)
             self.obj.Results = tmp
+            create = True
 
         # load stress results. If test mode, load log file
         target_file = self.log_file if self.obj.AnalysisType == "test" else self.stress_file
@@ -148,6 +184,7 @@ class Z88Tools(ObjectTools):
         dat.Text = ""
         self.append_section(dat, self.print_file)
         self.append_section(dat, target_file)
+        return dat, create
 
     def _load_vtk_results(self):
         # search current pipeline
@@ -169,7 +206,7 @@ class Z88Tools(ObjectTools):
 
         if self.obj.AnalysisType == "test":
             pipeline.Data = vtkUnstructuredGrid()
-            return
+            return pipeline, create
 
         grid = self.load_mesh()
         self.load_result(grid)
@@ -186,6 +223,7 @@ class Z88Tools(ObjectTools):
             default_field = self._get_default_field()
             if default_field in enum_field:
                 view_obj.Field = default_field
+        return pipeline, create
 
     def _get_default_field(self):
         return "Displacement"

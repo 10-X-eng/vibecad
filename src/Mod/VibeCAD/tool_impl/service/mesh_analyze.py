@@ -55,7 +55,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Exact internal name of the mesh object (Mesh::Feature) "
-                    "to analyze, as returned by core.inspect scope='domain'."
+                    "to analyze, as returned by mesh.list_meshes."
                 ),
             },
         },
@@ -156,7 +156,7 @@ def run(service: Any, object_name: str) -> dict[str, Any]:
     if mesh is None:
         return _invalid(
             f"Object is not a mesh (no Mesh property): {clean_name}. Use "
-            "core.inspect scope='domain' for exact mesh names; conversion from shaped "
+            "mesh.list_meshes for exact mesh names; conversion from shaped "
             "objects belongs to its own workbench."
         )
     try:

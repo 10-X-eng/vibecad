@@ -105,6 +105,9 @@ public:
 
 
 private:
+    std::vector<App::DocumentObject*> getActiveBreaks() const;
+    std::string geometrySourceStateSignature() const override;
+
     TopoDS_Shape    breakShape(const TopoDS_Shape& shapeToBreak) const;
     TopoDS_Shape    compressShape(const TopoDS_Shape& shapeToCompress) const;
     TopoDS_Shape    apply1Break(const App::DocumentObject& breakObj, const TopoDS_Shape& inShape) const;

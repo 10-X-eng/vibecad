@@ -116,8 +116,6 @@ private:
                            const std::shared_ptr<Material>& finalModel);
     static void addElectromagnetic(const QMap<QString, QString>& fcmat,
                                    const std::shared_ptr<Material>& finalModel);
-    static void addArchitectural(const QMap<QString, QString>& fcmat,
-                                 const std::shared_ptr<Material>& finalModel);
     static void addCosts(const QMap<QString, QString>& fcmat,
                          const std::shared_ptr<Material>& finalModel);
     static void addRendering(const QMap<QString, QString>& fcmat,

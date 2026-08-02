@@ -31,6 +31,7 @@
 #include <Base/Interpreter.h>
 
 #include "DrawViewCollection.h"
+#include "DrawUtil.h"
 
 
 using namespace TechDraw;
@@ -144,6 +145,30 @@ std::vector<App::DocumentObject*> DrawViewCollection::getViews() const
     return allViews;
 }
 
+std::vector<App::DocumentObject*> DrawViewCollection::getActiveViews() const
+{
+    std::vector<App::DocumentObject*> result;
+    if (!isActiveInDocumentTimeline()) {
+        return result;
+    }
+
+    for (auto* storedView : Views.getValues()) {
+        if (!DrawUtil::isActiveInDocumentTimeline(storedView)) {
+            continue;
+        }
+
+        auto* view = storedView;
+        if (view->isDerivedFrom<App::Link>()) {
+            view = static_cast<App::Link*>(view)->getLinkedObject();
+        }
+        auto* drawingView = freecad_cast<DrawView*>(view);
+        if (drawingView && drawingView->isActiveInDocumentTimeline()) {
+            result.push_back(drawingView);
+        }
+    }
+    return result;
+}
+
 //make sure everything in View list represents a real DrawView docObj and occurs only once
 void DrawViewCollection::rebuildViewList()
 {
@@ -194,7 +219,7 @@ void DrawViewCollection::onDocumentRestored()
 
 void DrawViewCollection::lockChildren()
 {
-    for (auto& v : getViews()) {
+    for (auto& v : getActiveViews()) {
         auto *view = dynamic_cast<DrawView *>(v);
         if (!view) {
             throw Base::ValueError("DrawViewCollection::lockChildren bad View\n");
@@ -225,7 +250,7 @@ void DrawViewCollection::unsetupObject()
 QRectF DrawViewCollection::getRect() const
 {
     QRectF result;
-    for (auto& v : getViews()) {
+    for (auto& v : getActiveViews()) {
         auto *view = freecad_cast<DrawView*>(v);
         if (!view) {
             throw Base::ValueError("DrawViewCollection::getRect bad View\n");

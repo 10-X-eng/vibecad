@@ -168,7 +168,7 @@ QPainterPath QGIArrow::makeOpenArrow(Base::Vector3d dir, double length, double w
 }
 
 
-QPainterPath QGIArrow::makeHashMark(double length, double width, bool flipped)   //Arch tick
+QPainterPath QGIArrow::makeHashMark(double length, double width, bool flipped)
 {
     double adjWidth = 1.0;
 //(0, 0) is tip of arrow
@@ -183,7 +183,7 @@ QPainterPath QGIArrow::makeHashMark(double length, double width, bool flipped)  
     return path;
 }
 
-QPainterPath QGIArrow::makeHashMark(Base::Vector3d dir, double length, double width)   //Arch tick
+QPainterPath QGIArrow::makeHashMark(Base::Vector3d dir, double length, double width)
 {
     double adjWidth = 1.0;
     Base::Vector3d negDir = -dir;

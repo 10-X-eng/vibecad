@@ -51,6 +51,10 @@ public:
     Base::Rotation getRotation() const;
     std::string get_transform_type() const;
     static std::string getSurfaceReferences(const std::string showConstr);
+    static std::string getSurfaceReferences(
+        const std::string& documentName,
+        const std::string& showConstr
+    );
 
 private Q_SLOTS:
     void onReferenceDeleted();

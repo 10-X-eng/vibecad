@@ -24,7 +24,6 @@ body:
       label: Workbench affected?
       options:
         - Assembly
-        - BIM
         - CAM
         - Core (App, Gui,...)
         - Draft

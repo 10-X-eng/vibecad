@@ -26,17 +26,25 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <algorithm>
+#include <iterator>
+#include <ranges>
+#include <unordered_set>
 
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentObject.h>
+#include <App/DocumentTimeline.h>
+#include <App/PropertyLinks.h>
 #include <Base/Exception.h>
+#include <Base/FileInfo.h>
 #include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <Base/UnitsApi.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/FileDialog.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
@@ -44,6 +52,8 @@
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/ViewProviderDocumentObject.h>
 #include <Gui/WaitCursor.h>
+#include <Mod/Mesh/Gui/CommandGuard.h>
+#include <Mod/Mesh/Gui/ParametricMeshFilter.h>
 
 #include "../App/PointsFeature.h"
 #include "../App/Properties.h"
@@ -52,6 +62,106 @@
 
 #include "DlgPointsReadImp.h"
 #include "ViewProvider.h"
+
+
+namespace
+{
+
+App::Document* cleanActivePointsDocument()
+{
+    auto* document = App::GetApplication().getActiveDocument();
+    return MeshGui::canStartNativeMeshCommand(document) ? document : nullptr;
+}
+
+template<typename Object>
+bool allObjectsBelongTo(const std::vector<Object*>& objects, const App::Document* document)
+{
+    return document && !objects.empty()
+        && std::ranges::all_of(objects, [document](const Object* object) {
+               return object && object->getDocument() == document
+                   && MeshGui::isNativeMeshInputActive(object);
+           });
+}
+
+std::unordered_set<long> objectIds(const App::Document& document)
+{
+    std::unordered_set<long> result;
+    for (const auto* object : document.getObjects()) {
+        if (object) {
+            result.insert(object->getID());
+        }
+    }
+    return result;
+}
+
+std::vector<App::DocumentObject*> createdObjects(
+    App::Document& document,
+    const std::unordered_set<long>& previousIds
+)
+{
+    std::vector<App::DocumentObject*> result;
+    for (auto* object : document.getObjects()) {
+        if (object && !previousIds.contains(object->getID())
+            && !object->isDerivedFrom<App::DocumentTimeline>()) {
+            result.push_back(object);
+        }
+    }
+    return result;
+}
+
+void addPointSourceDependency(App::DocumentObject& output, App::DocumentObject& source)
+{
+    auto* property = output.getPropertyByName("Source");
+    if (!property) {
+        property = output.addDynamicProperty(
+            "App::PropertyLink",
+            "Source",
+            "Operation",
+            "Point-cloud or geometry source used to create this result",
+            App::Prop_ReadOnly,
+            true,
+            true
+        );
+    }
+    auto* link = dynamic_cast<App::PropertyLink*>(property);
+    if (!link) {
+        throw Base::TypeError("The point operation Source property has an incompatible type");
+    }
+    link->setValue(&source);
+}
+
+void addPointSourceDependencies(
+    App::DocumentObject& output,
+    const std::vector<App::DocumentObject*>& sources
+)
+{
+    auto* property = output.getPropertyByName("Sources");
+    if (!property) {
+        property = output.addDynamicProperty(
+            "App::PropertyLinkList",
+            "Sources",
+            "Operation",
+            "Point clouds combined by this operation",
+            App::Prop_ReadOnly,
+            true,
+            true
+        );
+    }
+    auto* links = dynamic_cast<App::PropertyLinkList*>(property);
+    if (!links) {
+        throw Base::TypeError("The point operation Sources property has an incompatible type");
+    }
+    links->setValues(sources);
+}
+
+void commitExactMutation(Gui::ExactTransaction& transaction)
+{
+    if (!transaction.commit()) {
+        throw Base::RuntimeError("The point operation could not be committed");
+    }
+}
+
+}  // namespace
 
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -77,6 +187,12 @@ void CmdPointsImport::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
 
+    App::Document* launchDocument = cleanActivePointsDocument();
+    if (!launchDocument) {
+        return;
+    }
+    App::DocumentWeakPtrT targetDocument(launchDocument);
+
     const Gui::FileDialog::FilterList formatList {
         {QObject::tr("Point formats"), {"*.asc", "*.pcd", "*.ply", "*.e57"}},
         Gui::FileDialog::Filter::AllFiles(),
@@ -87,58 +203,90 @@ void CmdPointsImport::activated(int iMsg)
         return;
     }
 
-    if (!fn.isEmpty()) {
-        const std::string fnEscapedUtf8 = Base::Tools::escapeEncodeFilename(fn.toUtf8().constData());
-        App::Document* doc = getActiveDocument();
-        openCommand(QT_TRANSLATE_NOOP("Command", "Import points"));
-        addModule(Command::App, "Points");
-        doCommand(Command::Doc, "Points.insert(\"%s\", \"%s\")", fnEscapedUtf8.c_str(), doc->getName());
-        commitCommand();
+    App::Document* document = *targetDocument;
+    if (!MeshGui::canStartNativeMeshCommand(document)) {
+        return;
+    }
 
-        updateActive();
+    try {
+        const std::string fnEscapedUtf8 = Base::Tools::escapeEncodeFilename(fn.toUtf8().constData());
+        Gui::ExactTransaction mutation(*document, QT_TRANSLATE_NOOP("Command", "Import points"));
+        const auto previousIds = objectIds(*document);
+        addModule(Command::App, "Points");
+        doCommand(
+            Command::Doc,
+            "Points.insert(\"%s\", \"%s\")",
+            fnEscapedUtf8.c_str(),
+            document->getName()
+        );
+
+        auto created = createdObjects(*document, previousIds);
+        std::vector<App::DocumentObject*> outputs;
+        std::ranges::copy_if(created, std::back_inserter(outputs), [](const App::DocumentObject* object) {
+            return object && object->isDerivedFrom<Points::Feature>();
+        });
+        if (outputs.size() != 1) {
+            throw Base::RuntimeError("The selected file did not produce exactly one point cloud");
+        }
+        auto* pointCloud = static_cast<Points::Feature*>(outputs.front());
+        if (pointCloud->Points.getValue().size() == 0) {
+            throw Base::RuntimeError("The selected file produced an empty point cloud");
+        }
 
         /** check if boundbox contains the origin, offer to move it to the origin if not
          *  addresses issue #5808 where an imported points cloud that was far from the
          *  origin had inaccuracies in the relative positioning of the points due to
          *  imprecise floating point variables used in COIN
          **/
-        if (auto pcFtr = dynamic_cast<Points::Feature*>(doc->getActiveObject())) {
-            auto points = pcFtr->Points.getValue();
-            auto bbox = points.getBoundBox();
-            auto center = bbox.GetCenter();
+        auto points = pointCloud->Points.getValue();
+        auto bbox = points.getBoundBox();
+        auto center = bbox.GetCenter();
 
-            if (!bbox.IsInBox(Base::Vector3d(0, 0, 0))) {
-                QMessageBox msgBox(Gui::getMainWindow());
-                msgBox.setIcon(QMessageBox::Question);
-                msgBox.setWindowTitle(QObject::tr("Points not at Origin"));
-                msgBox.setText(
-                    QObject::tr(
-                        "The bounding box of the imported points does not contain the origin. "
-                        "Translate it to the origin?"
-                    )
-                );
-                msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-                msgBox.setDefaultButton(QMessageBox::Yes);
-                auto ret = msgBox.exec();
+        if (!bbox.IsInBox(Base::Vector3d(0, 0, 0))) {
+            QMessageBox msgBox(Gui::getMainWindow());
+            msgBox.setIcon(QMessageBox::Question);
+            msgBox.setWindowTitle(QObject::tr("Points not at Origin"));
+            msgBox.setText(
+                QObject::tr(
+                    "The bounding box of the imported points does not contain the origin. "
+                    "Translate it to the origin?"
+                )
+            );
+            msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+            msgBox.setDefaultButton(QMessageBox::Yes);
+            auto ret = msgBox.exec();
 
-                if (ret == QMessageBox::Yes) {
-                    Points::PointKernel* kernel = pcFtr->Points.startEditing();
-                    kernel->moveGeometry(-center);
-                    pcFtr->Points.finishEditing();
-                }
+            if (ret == QMessageBox::Yes) {
+                Points::PointKernel* kernel = pointCloud->Points.startEditing();
+                kernel->moveGeometry(-center);
+                pointCloud->Points.finishEditing();
             }
         }
+
+        MeshGui::createStandaloneOutputGroup(
+            *document,
+            outputs,
+            {Base::FileInfo(fn.toUtf8().constData()).fileName()},
+            "ImportedPoints",
+            "Imported Points",
+            "Import points"
+        );
+        document->recompute();
+        commitExactMutation(mutation);
+        updateActive();
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Import Points"),
+            QString::fromUtf8(error.what())
+        );
     }
 }
 
 bool CmdPointsImport::isActive()
 {
-    if (getActiveGuiDocument()) {
-        return true;
-    }
-    else {
-        return false;
-    }
+    return cleanActivePointsDocument() != nullptr;
 }
 
 DEF_STD_CMD_A(CmdPointsExport)
@@ -153,17 +301,26 @@ CmdPointsExport::CmdPointsExport()
     sWhatsThis = "Points_Export";
     sStatusTip = QT_TR_NOOP("Exports a point cloud");
     sPixmap = "Points_Export_Point_cloud";
+    eType = 0;
 }
 
 void CmdPointsExport::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
 
+    auto* document = App::GetApplication().getActiveDocument();
+    auto points = getSelection().getObjectsOfType<Points::Feature>();
+    if (!allObjectsBelongTo(points, document)) {
+        return;
+    }
+    std::vector<App::DocumentObjectWeakPtrT> targets;
+    targets.reserve(points.size());
+    for (auto* point : points) {
+        targets.emplace_back(point);
+    }
+
     addModule(Command::App, "Points");
-    std::vector<App::DocumentObject*> points = getSelection().getObjectsOfType(
-        Points::Feature::getClassTypeId()
-    );
-    for (auto point : points) {
+    for (const auto& target : targets) {
         const Gui::FileDialog::FilterList formatList {
             {QObject::tr("Point formats"), {"*.asc", "*.pcd", "*.ply"}},
             Gui::FileDialog::Filter::AllFiles(),
@@ -174,23 +331,31 @@ void CmdPointsExport::activated(int iMsg)
             break;
         }
 
-        if (!fn.isEmpty()) {
-            const std::string fnEscapedUtf8 = Base::Tools::escapeEncodeFilename(
-                fn.toUtf8().constData()
-            );
-            doCommand(
-                Command::Doc,
-                "Points.export([App.ActiveDocument.%s], \"%s\")",
-                point->getNameInDocument(),
-                fnEscapedUtf8.c_str()
-            );
+        auto* point = target.get<Points::Feature>();
+        if (!point || point->getDocument() != document || !MeshGui::isNativeMeshInputActive(point)
+            || point->Points.getValue().size() == 0) {
+            return;
         }
+        const std::string fnEscapedUtf8 = Base::Tools::escapeEncodeFilename(fn.toUtf8().constData());
+        const App::DocumentObjectT pointIdentity(point);
+        const std::string objectPython = pointIdentity.getObjectPython();
+        doCommand(
+            Command::Doc,
+            "Points.export([%s], \"%s\")",
+            objectPython.c_str(),
+            fnEscapedUtf8.c_str()
+        );
     }
 }
 
 bool CmdPointsExport::isActive()
 {
-    return getSelection().countObjectsOfType<Points::Feature>() > 0;
+    auto* document = App::GetApplication().getActiveDocument();
+    const auto points = getSelection().getObjectsOfType<Points::Feature>();
+    return allObjectsBelongTo(points, document)
+        && std::ranges::all_of(points, [](const Points::Feature* point) {
+               return point->Points.getValue().size() > 0;
+           });
 }
 
 DEF_STD_CMD_A(CmdPointsConvert)
@@ -210,12 +375,23 @@ CmdPointsConvert::CmdPointsConvert()
 void CmdPointsConvert::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    double STD_OCC_TOLERANCE = 1e-6;
+    constexpr double standardTolerance = 1e-6;
+    auto* launchDocument = cleanActivePointsDocument();
+    auto selected = getSelection().getObjectsOfType<App::GeoFeature>();
+    if (!allObjectsBelongTo(selected, launchDocument)) {
+        return;
+    }
+    App::DocumentWeakPtrT targetDocument(launchDocument);
+    std::vector<App::DocumentObjectWeakPtrT> targetObjects;
+    targetObjects.reserve(selected.size());
+    for (auto* object : selected) {
+        targetObjects.emplace_back(object);
+    }
 
     int decimals = Base::UnitsApi::getDecimals();
     double tolerance_from_decimals = pow(10., -decimals);
 
-    double minimal_tolerance = tolerance_from_decimals < STD_OCC_TOLERANCE ? STD_OCC_TOLERANCE
+    double minimal_tolerance = tolerance_from_decimals < standardTolerance ? standardTolerance
                                                                            : tolerance_from_decimals;
 
     bool ok;
@@ -234,9 +410,21 @@ void CmdPointsConvert::activated(int iMsg)
         return;
     }
 
-    Gui::WaitCursor wc;
-    openCommand(QT_TRANSLATE_NOOP("Command", "Convert to points"));
-    std::vector<App::GeoFeature*> geoObject = getSelection().getObjectsOfType<App::GeoFeature>();
+    auto* document = *targetDocument;
+    if (!MeshGui::canStartNativeMeshCommand(document)) {
+        return;
+    }
+    std::vector<App::GeoFeature*> sources;
+    sources.reserve(targetObjects.size());
+    for (const auto& target : targetObjects) {
+        auto* source = target.get<App::GeoFeature>();
+        const auto* geometry = source ? source->getPropertyOfGeometry() : nullptr;
+        if (!source || source->getDocument() != document || !MeshGui::isNativeMeshInputActive(source)
+            || !geometry || !geometry->getComplexData()) {
+            return;
+        }
+        sources.push_back(source);
+    }
 
     auto run_python = [](const std::vector<App::GeoFeature*>& geoObject, double tol) -> bool {
         Py::List list;
@@ -261,25 +449,72 @@ void CmdPointsConvert::activated(int iMsg)
         return false;
     };
 
-    Base::PyGILStateLocker lock;
     try {
-        if (run_python(geoObject, tol)) {
-            commitCommand();
+        Gui::WaitCursor wc;
+        Gui::ExactTransaction mutation(*document, QT_TRANSLATE_NOOP("Command", "Convert to points"));
+        std::vector<App::DocumentObject*> outputs;
+        outputs.reserve(sources.size());
+        Base::PyGILStateLocker lock;
+        for (auto* source : sources) {
+            const auto previousIds = objectIds(*document);
+            if (!run_python({source}, tol)) {
+                throw Base::RuntimeError("The selected geometry did not provide point data");
+            }
+            auto created = createdObjects(*document, previousIds);
+            std::vector<App::DocumentObject*> sourceOutputs;
+            std::ranges::copy_if(
+                created,
+                std::back_inserter(sourceOutputs),
+                [](const App::DocumentObject* object) {
+                    return object && object->isDerivedFrom<Points::Feature>();
+                }
+            );
+            if (sourceOutputs.size() != 1) {
+                throw Base::RuntimeError("Geometry conversion did not produce exactly one point cloud");
+            }
+            auto* output = static_cast<Points::Feature*>(sourceOutputs.front());
+            if (output->Points.getValue().size() == 0) {
+                throw Base::RuntimeError("Geometry conversion produced an empty point cloud");
+            }
+            addPointSourceDependency(*output, *source);
+            outputs.push_back(output);
         }
-        else {
-            abortCommand();
-        }
+
+        std::vector<App::DocumentObject*> sourceObjects(sources.begin(), sources.end());
+        MeshGui::createSourcePreservingOutputGroup(
+            *document,
+            sourceObjects,
+            outputs,
+            "PointsFromGeometry",
+            "Points From Geometry",
+            "Convert geometry to points"
+        );
+        document->recompute();
+        commitExactMutation(mutation);
+        updateActive();
     }
     catch (const Py::Exception&) {
-        abortCommand();
         Base::PyException e;
         e.reportException();
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Convert to Points"),
+            QString::fromUtf8(error.what())
+        );
     }
 }
 
 bool CmdPointsConvert::isActive()
 {
-    return getSelection().countObjectsOfType<App::GeoFeature>() > 0;
+    auto* document = cleanActivePointsDocument();
+    const auto objects = getSelection().getObjectsOfType<App::GeoFeature>();
+    return allObjectsBelongTo(objects, document)
+        && std::ranges::all_of(objects, [](const App::GeoFeature* object) {
+               const auto* geometry = object ? object->getPropertyOfGeometry() : nullptr;
+               return geometry && geometry->getComplexData();
+           });
 }
 
 DEF_STD_CMD_A(CmdPointsPolyCut)
@@ -300,36 +535,57 @@ void CmdPointsPolyCut::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
 
-    std::vector<App::DocumentObject*> docObj = Gui::Selection().getObjectsOfType(
-        Points::Feature::getClassTypeId()
-    );
-    for (std::vector<App::DocumentObject*>::iterator it = docObj.begin(); it != docObj.end(); ++it) {
-        if (it == docObj.begin()) {
-            Gui::Document* doc = getActiveGuiDocument();
-            Gui::MDIView* view = doc->getActiveView();
-            if (view->isDerivedFrom<Gui::View3DInventor>()) {
-                Gui::View3DInventorViewer* viewer = ((Gui::View3DInventor*)view)->getViewer();
-                viewer->setEditing(true);
-                viewer->startSelection(Gui::View3DInventorViewer::Lasso);
-                viewer->addEventCallback(
-                    SoMouseButtonEvent::getClassTypeId(),
-                    PointsGui::ViewProviderPoints::clipPointsCallback
-                );
-            }
-            else {
-                return;
-            }
-        }
+    auto* document = cleanActivePointsDocument();
+    auto points = Gui::Selection().getObjectsOfType<Points::Feature>();
+    if (!allObjectsBelongTo(points, document)
+        || std::ranges::any_of(points, [](const Points::Feature* point) {
+               return point->Points.getValue().size() == 0 || !point->Visibility.getValue();
+           })) {
+        return;
+    }
+    auto* guiDocument = Gui::Application::Instance->getDocument(document);
+    auto* view = guiDocument ? dynamic_cast<Gui::View3DInventor*>(guiDocument->getActiveView())
+                             : nullptr;
+    if (!view || view->getViewer()->isEditing()) {
+        return;
+    }
 
-        Gui::ViewProvider* pVP = getActiveGuiDocument()->getViewProvider(*it);
-        pVP->startEditing(Gui::ViewProvider::Cutting);
+    std::vector<Gui::ViewProvider*> viewProviders;
+    viewProviders.reserve(points.size());
+    for (auto* point : points) {
+        Gui::ViewProvider* viewProvider = guiDocument->getViewProvider(point);
+        if (!viewProvider || !viewProvider->isVisible()) {
+            return;
+        }
+        viewProviders.push_back(viewProvider);
+    }
+
+    Gui::View3DInventorViewer* viewer = view->getViewer();
+    viewer->setEditing(true);
+    viewer->startSelection(Gui::View3DInventorViewer::Lasso);
+    viewer->addEventCallback(
+        SoMouseButtonEvent::getClassTypeId(),
+        PointsGui::ViewProviderPoints::clipPointsCallback
+    );
+    for (auto* viewProvider : viewProviders) {
+        viewProvider->startEditing(Gui::ViewProvider::Cutting);
     }
 }
 
 bool CmdPointsPolyCut::isActive()
 {
-    // Check for the selected mesh feature (all Mesh types)
-    return getSelection().countObjectsOfType<Points::Feature>() > 0;
+    auto* document = cleanActivePointsDocument();
+    const auto points = getSelection().getObjectsOfType<Points::Feature>();
+    if (!allObjectsBelongTo(points, document)
+        || std::ranges::any_of(points, [](const Points::Feature* point) {
+               return point->Points.getValue().size() == 0 || !point->Visibility.getValue();
+           })) {
+        return false;
+    }
+    auto* guiDocument = Gui::Application::Instance->getDocument(document);
+    auto* view = guiDocument ? dynamic_cast<Gui::View3DInventor*>(guiDocument->getActiveView())
+                             : nullptr;
+    return view && !view->getViewer()->isEditing();
 }
 
 DEF_STD_CMD_A(CmdPointsMerge)
@@ -350,50 +606,82 @@ void CmdPointsMerge::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
 
-    App::Document* doc = App::GetApplication().getActiveDocument();
-    doc->openTransaction("Merge point clouds");
-    Points::Feature* pts = doc->addObject<Points::Feature>("Merged Points");
-    Points::PointKernel* kernel = pts->Points.startEditing();
+    auto* document = cleanActivePointsDocument();
+    auto points = Gui::Selection().getObjectsOfType<Points::Feature>();
+    if (points.size() < 2 || !allObjectsBelongTo(points, document)
+        || std::ranges::any_of(points, [](const Points::Feature* point) {
+               return point->Points.getValue().size() == 0;
+           })) {
+        return;
+    }
 
-    std::vector<App::DocumentObject*> docObj = Gui::Selection().getObjectsOfType(
-        Points::Feature::getClassTypeId()
-    );
-    for (auto it : docObj) {
-        const Points::PointKernel& k = static_cast<Points::Feature*>(it)->Points.getValue();
-        std::size_t numPts = kernel->size();
-        kernel->resize(numPts + k.size());
-        for (std::size_t i = 0; i < k.size(); ++i) {
-            kernel->setPoint(i + numPts, k.getPoint(i));
+    try {
+        Gui::ExactTransaction mutation(*document, QT_TRANSLATE_NOOP("Command", "Merge point clouds"));
+        auto* result = document->addObject<Points::Feature>("MergedPoints");
+        result->Label.setValue("Merged Points");
+        Points::PointKernel* kernel = result->Points.startEditing();
+
+        std::vector<App::DocumentObject*> sourceObjects;
+        sourceObjects.reserve(points.size());
+        for (auto* point : points) {
+            sourceObjects.push_back(point);
+            const Points::PointKernel& sourcePoints = point->Points.getValue();
+            const std::size_t offset = kernel->size();
+            kernel->resize(offset + sourcePoints.size());
+            for (std::size_t index = 0; index < sourcePoints.size(); ++index) {
+                kernel->setPoint(index + offset, sourcePoints.getPoint(index));
+            }
         }
-    }
 
-    pts->Points.finishEditing();
+        result->Points.finishEditing();
+        addPointSourceDependencies(*result, sourceObjects);
 
-    // Add properties
-    std::string displayMode = "Points";
-    if (Points::copyProperty<App::PropertyColorList>(pts, docObj, "Color")) {
-        displayMode = "Color";
-    }
-    if (Points::copyProperty<Points::PropertyNormalList>(pts, docObj, "Normal")) {
-        displayMode = "Shaded";
-    }
-    if (Points::copyProperty<Points::PropertyGreyValueList>(pts, docObj, "Intensity")) {
-        displayMode = "Intensity";
-    }
+        std::string displayMode = "Points";
+        if (Points::copyProperty<App::PropertyColorList>(result, sourceObjects, "Color")) {
+            displayMode = "Color";
+        }
+        if (Points::copyProperty<Points::PropertyNormalList>(result, sourceObjects, "Normal")) {
+            displayMode = "Shaded";
+        }
+        if (Points::copyProperty<Points::PropertyGreyValueList>(result, sourceObjects, "Intensity")) {
+            displayMode = "Intensity";
+        }
 
-    if (auto vp = dynamic_cast<Gui::ViewProviderDocumentObject*>(
-            Gui::Application::Instance->getViewProvider(pts)
-        )) {
-        vp->DisplayMode.setValue(displayMode.c_str());
-    }
+        if (auto* viewProvider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+                Gui::Application::Instance->getViewProvider(result)
+            )) {
+            viewProvider->DisplayMode.setValue(displayMode.c_str());
+        }
 
-    doc->commitTransaction();
-    updateActive();
+        MeshGui::createSourcePreservingOutputGroup(
+            *document,
+            sourceObjects,
+            {result},
+            "MergedPoints",
+            "Merged Points",
+            "Merge point clouds"
+        );
+        document->recompute();
+        commitExactMutation(mutation);
+        updateActive();
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Merge Point Clouds"),
+            QString::fromUtf8(error.what())
+        );
+    }
 }
 
 bool CmdPointsMerge::isActive()
 {
-    return getSelection().countObjectsOfType<Points::Feature>() > 1;
+    auto* document = cleanActivePointsDocument();
+    const auto points = getSelection().getObjectsOfType<Points::Feature>();
+    return points.size() > 1 && allObjectsBelongTo(points, document)
+        && std::ranges::all_of(points, [](const Points::Feature* point) {
+               return point->Points.getValue().size() > 0;
+           });
 }
 
 DEF_STD_CMD_A(CmdPointsStructure)
@@ -414,39 +702,41 @@ void CmdPointsStructure::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
 
-    App::Document* doc = App::GetApplication().getActiveDocument();
-    doc->openTransaction("Structure point cloud");
+    auto* document = cleanActivePointsDocument();
+    auto points = Gui::Selection().getObjectsOfType<Points::Feature>();
+    if (points.size() != 1 || !allObjectsBelongTo(points, document)
+        || points.front()->Points.getValue().size() == 0) {
+        return;
+    }
+    auto* input = points.front();
 
-    std::vector<App::DocumentObject*> docObj = Gui::Selection().getObjectsOfType(
-        Points::Feature::getClassTypeId()
-    );
-    for (auto it : docObj) {
-        std::string name = it->Label.getValue();
+    try {
+        Gui::ExactTransaction mutation(*document, QT_TRANSLATE_NOOP("Command", "Structure point cloud"));
+        std::string name = input->Label.getValue();
         name += " (Structured)";
-        Points::Structured* output = doc->addObject<Points::Structured>(name.c_str());
+        Points::Structured* output = document->addObject<Points::Structured>("StructuredPoints");
         output->Label.setValue(name);
+        addPointSourceDependency(*output, *input);
 
         // Already sorted, so just make a copy
-        if (it->isDerivedFrom<Points::Structured>()) {
-            Points::Structured* input = static_cast<Points::Structured*>(it);
+        if (input->isDerivedFrom<Points::Structured>()) {
+            auto* structuredInput = static_cast<Points::Structured*>(input);
 
             Points::PointKernel* kernel = output->Points.startEditing();
-            const Points::PointKernel& k = input->Points.getValue();
+            const Points::PointKernel& sourcePoints = structuredInput->Points.getValue();
 
-            kernel->resize(k.size());
-            for (std::size_t i = 0; i < k.size(); ++i) {
-                kernel->setPoint(i, k.getPoint(i));
+            kernel->resize(sourcePoints.size());
+            for (std::size_t index = 0; index < sourcePoints.size(); ++index) {
+                kernel->setPoint(index, sourcePoints.getPoint(index));
             }
             output->Points.finishEditing();
-            output->Width.setValue(input->Width.getValue());
-            output->Height.setValue(input->Height.getValue());
+            output->Width.setValue(structuredInput->Width.getValue());
+            output->Height.setValue(structuredInput->Height.getValue());
         }
         // Sort the points
         else {
-            Points::Feature* input = static_cast<Points::Feature*>(it);
-
             Points::PointKernel* kernel = output->Points.startEditing();
-            const Points::PointKernel& k = input->Points.getValue();
+            const Points::PointKernel& sourcePoints = input->Points.getValue();
 
             Base::BoundBox3d bbox = input->Points.getBoundingBox();
             double width = bbox.LengthX();
@@ -454,25 +744,33 @@ void CmdPointsStructure::activated(int iMsg)
 
             // Count the number of different x or y values to get the size
             std::set<double> countX, countY;
-            for (std::size_t i = 0; i < k.size(); ++i) {
-                Base::Vector3d pnt = k.getPoint(i);
+            for (std::size_t index = 0; index < sourcePoints.size(); ++index) {
+                Base::Vector3d pnt = sourcePoints.getPoint(index);
                 countX.insert(pnt.x);
                 countY.insert(pnt.y);
             }
 
-            long width_l = long(countX.size());
-            long height_l = long(countY.size());
+            const long pointColumns = static_cast<long>(countX.size());
+            const long pointRows = static_cast<long>(countY.size());
+            if (pointColumns < 2 || pointRows < 2 || width <= 0.0 || height <= 0.0) {
+                throw Base::ValueError(
+                    "A structured point cloud requires at least two distinct X and Y coordinates"
+                );
+            }
 
-            double dx = width / (width_l - 1);
-            double dy = height / (height_l - 1);
+            const double dx = width / static_cast<double>(pointColumns - 1);
+            const double dy = height / static_cast<double>(pointRows - 1);
 
             // Pre-fill the vector with <nan, nan, nan> points and afterwards replace them
             // with valid point coordinates
             double nan = std::numeric_limits<double>::quiet_NaN();
-            std::vector<Base::Vector3d> sortedPoints(width_l * height_l, Base::Vector3d(nan, nan, nan));
+            std::vector<Base::Vector3d> sortedPoints(
+                static_cast<std::size_t>(pointColumns * pointRows),
+                Base::Vector3d(nan, nan, nan)
+            );
 
-            for (std::size_t i = 0; i < k.size(); ++i) {
-                Base::Vector3d pnt = k.getPoint(i);
+            for (std::size_t index = 0; index < sourcePoints.size(); ++index) {
+                Base::Vector3d pnt = sourcePoints.getPoint(index);
                 double xi = (pnt.x - bbox.MinX) / dx;
                 double yi = (pnt.y - bbox.MinY) / dy;
 
@@ -481,8 +779,11 @@ void CmdPointsStructure::activated(int iMsg)
                 if (xx < 0.01 && yy < 0.01) {
                     xi = std::round(xi);
                     yi = std::round(yi);
-                    long index = long(yi * width_l + xi);
-                    sortedPoints[index] = pnt;
+                    const long targetIndex = static_cast<long>(yi * pointColumns + xi);
+                    if (targetIndex < 0 || targetIndex >= static_cast<long>(sortedPoints.size())) {
+                        throw Base::ValueError("A point lies outside the inferred structured grid");
+                    }
+                    sortedPoints[static_cast<std::size_t>(targetIndex)] = pnt;
                 }
             }
 
@@ -492,18 +793,42 @@ void CmdPointsStructure::activated(int iMsg)
             }
 
             output->Points.finishEditing();
-            output->Width.setValue(width_l);
-            output->Height.setValue(height_l);
+            output->Width.setValue(pointColumns);
+            output->Height.setValue(pointRows);
         }
-    }
 
-    doc->commitTransaction();
-    updateActive();
+        MeshGui::createSourcePreservingOutputGroup(
+            *document,
+            {input},
+            {output},
+            "StructuredPoints",
+            "Structured Points",
+            "Structure point cloud"
+        );
+        document->recompute();
+        if (output->isError()
+            || output->Points.getValue().size()
+                != static_cast<std::size_t>(output->Width.getValue() * output->Height.getValue())) {
+            throw Base::RuntimeError("The structured point cloud did not produce a valid grid");
+        }
+        commitExactMutation(mutation);
+        updateActive();
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Structured Point Cloud"),
+            QString::fromUtf8(error.what())
+        );
+    }
 }
 
 bool CmdPointsStructure::isActive()
 {
-    return getSelection().countObjectsOfType<Points::Feature>() == 1;
+    auto* document = cleanActivePointsDocument();
+    const auto points = getSelection().getObjectsOfType<Points::Feature>();
+    return points.size() == 1 && allObjectsBelongTo(points, document)
+        && points.front()->Points.getValue().size() > 0;
 }
 
 void CreatePointsCommands()

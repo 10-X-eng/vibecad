@@ -40,6 +40,7 @@
 #include "DocumentPy.h"
 #include "DocumentObserverPython.h"
 #include "DocumentObjectPy.h"
+#include "DocumentTimeline.h"
 #include "RecoverySnapshot.h"
 
 
@@ -248,6 +249,13 @@ PyMethodDef ApplicationPy::Methods[] = {
      "options: can have the following bit flags,\n"
      "         1: to sort the list in topological order.\n"
      "         2: to exclude dependency of Link type object."},
+    {"timelineOperationDeletionPlan",
+     (PyCFunction)ApplicationPy::sTimelineOperationDeletionPlan,
+     METH_VARARGS,
+     "timelineOperationDeletionPlan(obj) -> dict\n\n"
+     "Return the validated native cleanup plan for deleting a document-history "
+     "operation. This function is read-only; the caller owns transaction and "
+     "mutation boundaries."},
     {"setActiveTransaction",
      (PyCFunction)ApplicationPy::sSetActiveTransaction,
      METH_VARARGS,
@@ -1248,6 +1256,40 @@ PyObject* ApplicationPy::sGetDependentObjects(PyObject* /*self*/, PyObject* args
             tuple.setItem(static_cast<int>(i), Py::Object(ret[i]->getPyObject(), true));
         }
         return Py::new_reference_to(tuple);
+    }
+    PY_CATCH;
+}
+
+PyObject* ApplicationPy::sTimelineOperationDeletionPlan(
+    PyObject* /*self*/,
+    PyObject* args
+)
+{
+    PyObject* object = nullptr;
+    if (!PyArg_ParseTuple(args, "O!", &DocumentObjectPy::Type, &object)) {
+        return nullptr;
+    }
+
+    PY_TRY
+    {
+        auto* operation =
+            static_cast<DocumentObjectPy*>(object)->getDocumentObjectPtr();
+        const auto plan = DocumentTimeline::timelineDeletionPlan(operation);
+        const auto objectList = [](const std::vector<DocumentObject*>& objects) {
+            Py::List result;
+            for (auto* candidate : objects) {
+                result.append(Py::asObject(candidate->getPyObject()));
+            }
+            return result;
+        };
+
+        Py::Dict result;
+        result.setItem("applicable", Py::Boolean(plan.applicable));
+        result.setItem("valid", Py::Boolean(plan.valid));
+        result.setItem("replaced_inputs", objectList(plan.replacedInputs));
+        result.setItem("objects_to_reveal", objectList(plan.objectsToReveal));
+        result.setItem("owned_resources", objectList(plan.ownedResources));
+        return Py::new_reference_to(result);
     }
     PY_CATCH;
 }

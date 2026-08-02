@@ -21,6 +21,9 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <exception>
+#include <memory>
+
 #include <QAbstractSpinBox>
 #include <QActionEvent>
 #include <QApplication>
@@ -35,10 +38,13 @@
 #include <FCConfig.h>
 
 #include <App/Document.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Gui/ActionFunction.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
+#include <Gui/Macro.h>
 #include <Gui/ViewProviderDocumentObject.h>
 #include <Gui/OverlayManager.h>
 
@@ -54,6 +60,12 @@
 
 using namespace Gui::TaskView;
 namespace sp = std::placeholders;
+
+namespace
+{
+constexpr auto DiscardClosingDocumentPresentation =
+    "taskview_discard_closing_document_presentation";
+}
 
 
 //**************************************************************************
@@ -287,6 +299,9 @@ TaskView::TaskView(QWidget* parent)
     connectApplicationActiveDocument = App::GetApplication().signalActiveDocument.connect(
         std::bind(&Gui::TaskView::TaskView::slotActiveDocument, this, sp::_1)
     );
+    connectApplicationBeforeCloseDocument = App::GetApplication().signalBeforeCloseDocument.connect(
+        std::bind(&Gui::TaskView::TaskView::slotBeforeCloseDocument, this, sp::_1)
+    );
     connectApplicationDeleteDocument = App::GetApplication().signalDeleteDocument.connect(
         std::bind(&Gui::TaskView::TaskView::slotDeletedDocument, this, sp::_1)
     );
@@ -305,6 +320,9 @@ TaskView::TaskView(QWidget* parent)
     connectApplicationResetEdit = Gui::Application::Instance->signalResetEdit.connect(
         std::bind(&Gui::TaskView::TaskView::slotResetEdit, this, sp::_1)
     );
+    connectApplicationFinishEdit = Gui::Application::Instance->signalFinishEdit.connect(
+        std::bind(&Gui::TaskView::TaskView::slotFinishEdit, this, sp::_1, sp::_2, sp::_3)
+    );
     // NOLINTEND
 
     setShowTaskWatcher(hGrp->GetBool("ShowTaskWatcher", true));
@@ -322,12 +340,14 @@ TaskView::TaskView(QWidget* parent)
 TaskView::~TaskView()
 {
     connectApplicationActiveDocument.disconnect();
+    connectApplicationBeforeCloseDocument.disconnect();
     connectApplicationDeleteDocument.disconnect();
     connectApplicationClosedView.disconnect();
     connectApplicationUndoDocument.disconnect();
     connectApplicationRedoDocument.disconnect();
     connectApplicationInEdit.disconnect();
     connectApplicationResetEdit.disconnect();
+    connectApplicationFinishEdit.disconnect();
     connectShowTaskWatcherSetting.disconnect();
     Gui::Selection().Detach(this);
 
@@ -513,17 +533,102 @@ void TaskView::slotResetEdit(const Gui::ViewProviderDocumentObject& vp)
     bool hasDialog = foundTaskInfo != taskInfos.end();
 
     if (hasDialog && foundTaskInfo->ActiveDialog->isAutoCloseOnResetEdit()) {
-        foundTaskInfo->ActiveDialog->autoClosedOnResetEdit();
-
-        auto refreshedTaskInfo = std::ranges::find(taskInfos, doc, &TaskInfo::Document);
-        if (refreshedTaskInfo != taskInfos.end()) {
-            removeDialog(refreshedTaskInfo);
-        }
-        hasDialog = false;
+        // The ViewProvider is finished, but its exact transaction is still
+        // locked at this signal. Keep the dialog and launch checkpoint alive
+        // until slotFinishEdit receives the durable commit/rollback outcome.
+        return;
     }
 
     if (!hasDialog) {
         updateWatcher();
+    }
+}
+
+void TaskView::slotFinishEdit(const Gui::Document& guiDocument, bool cancelled, bool transactionFinished)
+{
+    App::Document* doc = guiDocument.getDocument();
+    auto foundTaskInfo = std::ranges::find(taskInfos, doc, &TaskInfo::Document);
+    if (foundTaskInfo == taskInfos.end() || !foundTaskInfo->ActiveDialog->isAutoCloseOnResetEdit()) {
+        return;
+    }
+    auto* dialog = foundTaskInfo->ActiveDialog;
+    if (dialog->property("taskview_accept_or_reject").toBool()
+        || dialog->property("taskview_common_finalization").toBool()) {
+        // The outer Accept/Reject frame owns publication, dialog removal, and
+        // interaction restoration after the task-specific callback unwinds.
+        // Re-entering any of those here invalidates its registry iterator and
+        // can restore selection/visibility while legacy reject code is still
+        // executing.
+        dialog->setProperty("taskview_edit_finish_completed", transactionFinished);
+        dialog->setProperty("taskview_edit_finish_cancelled", cancelled);
+        return;
+    }
+    if (!transactionFinished) {
+        Base::Console().error(
+            "Native task remains open because its exact edit transaction "
+            "did not finish.\n"
+        );
+        return;
+    }
+
+    std::optional<TaskDialog::InteractionState> interactionState;
+    if (cancelled) {
+        interactionState = TaskDialog::takeCommandInteractionState(dialog);
+    }
+    else {
+        try {
+            dialog->markCommandInteractionStateDurable();
+        }
+        catch (Base::Exception& error) {
+            error.reportException();
+        }
+        catch (const std::exception& error) {
+            Base::Console().error(
+                "Could not finalize native task state after edit commit: %s\n",
+                error.what()
+            );
+        }
+        catch (...) {
+            Base::Console().error("Could not finalize native task state after edit commit.\n");
+        }
+    }
+
+    dialog->autoClosedOnResetEdit();
+    auto refreshedTaskInfo = std::ranges::find(taskInfos, doc, &TaskInfo::Document);
+    if (refreshedTaskInfo != taskInfos.end()) {
+        removeDialog(refreshedTaskInfo);
+    }
+    if (cancelled) {
+        // The exact rollback is complete and task widgets/selection gates no
+        // longer exist. It is now safe to restore the launch presentation.
+        TaskDialog::restoreCommandInteractionState(interactionState);
+    }
+    updateWatcher();
+}
+
+void TaskView::slotBeforeCloseDocument(const App::Document& doc)
+{
+    auto foundTaskInfo = std::ranges::find(taskInfos, &doc, &TaskInfo::Document);
+    if (foundTaskInfo == taskInfos.end()
+        || !foundTaskInfo->ActiveDialog->isAutoCloseOnDeletedDocument()) {
+        return;
+    }
+
+    // A task-owned transaction is deliberately locked until Accept or
+    // Cancel. The application asks synchronous close observers to release
+    // such ownership before it decides whether the document can be deleted.
+    // Treat closing the task's document as Cancel while every referenced
+    // object and ViewProvider is still alive. Roll back that document's exact
+    // model transaction, but do not replay its launch presentation over the
+    // live selection in another active document.
+    foundTaskInfo->ActiveDialog->setProperty(DiscardClosingDocumentPresentation, true);
+    reject(const_cast<App::Document*>(&doc));
+    foundTaskInfo = std::ranges::find(taskInfos, &doc, &TaskInfo::Document);
+    if (foundTaskInfo != taskInfos.end()) {
+        foundTaskInfo->ActiveDialog->setProperty(
+            DiscardClosingDocumentPresentation,
+            QVariant()
+        );
     }
 }
 
@@ -532,7 +637,14 @@ void TaskView::slotDeletedDocument(const App::Document& doc)
     auto foundTaskInfo = std::ranges::find(taskInfos, &doc, &TaskInfo::Document);
     bool hasDialog = foundTaskInfo != taskInfos.end();
     if (hasDialog && foundTaskInfo->ActiveDialog->isAutoCloseOnDeletedDocument()) {
-        foundTaskInfo->ActiveDialog->autoClosedOnDeletedDocument();
+        auto* deletedDocumentDialog = foundTaskInfo->ActiveDialog;
+        // The model which this checkpoint could restore no longer exists.
+        // Detach and discard it before any auto-close hook can remove the
+        // dialog; otherwise the TaskDialog destructor would globally restore
+        // A's launch selection over the user's live selection in document B.
+        TaskDialog::discardCommandMacroCapture(deletedDocumentDialog);
+        (void)TaskDialog::takeCommandInteractionState(deletedDocumentDialog);
+        deletedDocumentDialog->autoClosedOnDeletedDocument();
 
         auto refreshedTaskInfo = std::ranges::find(taskInfos, &doc, &TaskInfo::Document);
         if (refreshedTaskInfo != taskInfos.end()) {
@@ -638,6 +750,8 @@ bool TaskView::showDialog(TaskDialog* dlg, App::Document* doc)
     }
     assert(foundTaskInfo == taskInfos.end());
 
+    dlg->adoptCommandInteractionState(doc);
+
     TaskInfo outInfo {.Document = doc};
     // first create the control element, set it up and wire it:
     outInfo.ActiveCtrl = new TaskEditControl(this);
@@ -720,8 +834,15 @@ void TaskView::removeDialog(std::vector<TaskInfo>::iterator infoIt)
 
     std::optional<TaskInfo> remove = std::nullopt;
     if (infoIt->ActiveDialog) {
-        // See 'accept' and 'reject'
-        if (infoIt->ActiveDialog->property("taskview_accept_or_reject").isNull()) {
+        // See accept() and reject().  A task-specific callback can finish its
+        // edit transaction while the common acceptance frame is still
+        // publishing the durable result.  Either guard means that frame still
+        // owns the dialog and its registry entry; deleting it here would leave
+        // the outer frame with a dangling TaskInfo iterator and TaskDialog
+        // pointer.
+        const bool finalizing = infoIt->ActiveDialog->property("taskview_accept_or_reject").toBool()
+            || infoIt->ActiveDialog->property("taskview_common_finalization").toBool();
+        if (!finalizing) {
             const std::vector<QWidget*>& cont = infoIt->ActiveDialog->getDialogContent();
             for (const auto& it : cont) {
                 infoIt->taskPanel->actionPanel->removeWidget(it);
@@ -945,11 +1066,19 @@ void TaskView::setShownTaskInfo(int index)
 
     if (initIndex > 0) {
         Gui::Selection().rmvSelectionGate();
+        // Macro capture belongs to the task the user can currently interact
+        // with. Stop it before deactivation so switching documents cannot
+        // route another document's commands or view-state trace into this
+        // task's eventual Accept/Cancel decision.
+        TaskDialog::pauseCommandMacroCapture(taskInfos[initIndex - 1].ActiveDialog);
         taskInfos[initIndex - 1].ActiveDialog->deactivate();
     }
 
     if (stackedIndex > 0) {
         taskInfos[stackedIndex - 1].ActiveDialog->activate();
+        // Activation can restore task-local presentation state, which is not a
+        // modeling operation. Resume only after activation is complete.
+        TaskDialog::resumeCommandMacroCapture(taskInfos[stackedIndex - 1].ActiveDialog);
     }
     setCurrentIndex(stackedIndex);
 }
@@ -996,9 +1125,90 @@ void TaskView::accept(App::Document* doc)
     // Make sure that if 'accept' calls 'closeDialog' the deletion is postponed until
     // the dialog leaves the 'accept' method
     foundTaskInfo->ActiveDialog->setProperty("taskview_accept_or_reject", true);
-    bool success = foundTaskInfo->ActiveDialog->accept();
+    TaskDialog::pauseCommandMacroCapture(foundTaskInfo->ActiveDialog);
+    std::vector<std::pair<int, std::string>> acceptedMacroLines;
+    bool success = false;
+    try {
+        Gui::MacroManager::MacroRedirector redirector(
+            [&acceptedMacroLines](Gui::MacroManager::LineType type, const char* line) {
+                if (line) {
+                    acceptedMacroLines.emplace_back(static_cast<int>(type), line);
+                }
+            }
+        );
+        success = foundTaskInfo->ActiveDialog->accept();
+    }
+    catch (...) {
+        TaskDialog::clearPendingDurableResults(foundTaskInfo->ActiveDialog);
+        TaskDialog::resumeCommandMacroCapture(foundTaskInfo->ActiveDialog);
+        foundTaskInfo->ActiveDialog->setProperty("taskview_accept_or_reject", QVariant());
+        foundTaskInfo->ActiveDialog->setProperty("taskview_edit_finish_completed", QVariant());
+        foundTaskInfo->ActiveDialog->setProperty("taskview_edit_finish_cancelled", QVariant());
+        throw;
+    }
+    // The task-specific callback has unwound. Run common durability for real;
+    // keep a separate guard so resetEdit()/signalFinishEdit cannot re-enter
+    // this same finalization frame.
+    foundTaskInfo->ActiveDialog->setProperty("taskview_common_finalization", true);
     foundTaskInfo->ActiveDialog->setProperty("taskview_accept_or_reject", QVariant());
-    if (success || foundTaskInfo->ActiveDialog->property("taskview_remove_dialog").isValid()) {
+    if (success) {
+        try {
+            foundTaskInfo->ActiveDialog->markCommandInteractionStateDurable();
+        }
+        catch (Base::Exception& error) {
+            success = false;
+            error.reportException();
+        }
+        catch (const std::exception& error) {
+            success = false;
+            Base::Console().error("Native task acceptance failed: %s\n", error.what());
+        }
+        catch (...) {
+            success = false;
+            Base::Console().error("Native task acceptance failed with an unknown exception\n");
+        }
+    }
+    // Keep closeDialog()/auto-close deletion deferred until this frame has
+    // consumed the exact finish outcome and published or discarded its trace.
+    foundTaskInfo->ActiveDialog->setProperty("taskview_accept_or_reject", true);
+    foundTaskInfo->ActiveDialog->setProperty("taskview_common_finalization", QVariant());
+    const QVariant editFinishCompleted = foundTaskInfo->ActiveDialog->property(
+        "taskview_edit_finish_completed"
+    );
+    const QVariant editFinishCancelled = foundTaskInfo->ActiveDialog->property(
+        "taskview_edit_finish_cancelled"
+    );
+    if (editFinishCompleted.isValid() && editFinishCompleted.toBool()
+        && editFinishCancelled.toBool()) {
+        success = false;
+        Base::Console().error(
+            "Native task reported success after its edit transaction "
+            "was rolled back.\n"
+        );
+    }
+    if (editFinishCompleted.isValid() && editFinishCompleted.toBool()) {
+        foundTaskInfo->ActiveDialog->autoClosedOnResetEdit();
+    }
+    foundTaskInfo->ActiveDialog->setProperty("taskview_edit_finish_completed", QVariant());
+    foundTaskInfo->ActiveDialog->setProperty("taskview_edit_finish_cancelled", QVariant());
+    foundTaskInfo->ActiveDialog->setProperty("taskview_accept_or_reject", QVariant());
+    if (success) {
+        // Publish task-finalization lines only after the owning document
+        // transaction is durably closed. A failed commit leaves no replay
+        // trace and the still-open panel can be corrected or cancelled.
+        TaskDialog::appendAcceptedMacroLines(foundTaskInfo->ActiveDialog, acceptedMacroLines);
+    }
+    else {
+        // A task-specific accept() can succeed before common durable-result
+        // validation fails (for example, illegal Body ownership). Keep the
+        // panel usable for correction: discard that attempt's provisional
+        // result IDs and resume capture for the next Accept or Cancel.
+        TaskDialog::clearPendingDurableResults(foundTaskInfo->ActiveDialog);
+        TaskDialog::resumeCommandMacroCapture(foundTaskInfo->ActiveDialog);
+    }
+    const bool removeRequested
+        = foundTaskInfo->ActiveDialog->property("taskview_remove_dialog").isValid();
+    if ((success && foundTaskInfo->ActiveDialog->acceptClosesDialog()) || removeRequested) {
         removeDialog(doc);
     }
 }
@@ -1014,11 +1224,87 @@ void TaskView::reject(App::Document* doc)
     // Make sure that if 'reject' calls 'closeDialog' the deletion is postponed until
     // the dialog leaves the 'reject' method
     foundTaskInfo->ActiveDialog->setProperty("taskview_accept_or_reject", true);
-    bool success = foundTaskInfo->ActiveDialog->reject();
-    foundTaskInfo->ActiveDialog->setProperty("taskview_accept_or_reject", QVariant());
-    if (success || foundTaskInfo->ActiveDialog->property("taskview_remove_dialog").isValid()) {
-        removeDialog(doc);
+    TaskDialog::pauseCommandMacroCapture(foundTaskInfo->ActiveDialog);
+    // The TaskView reject signal is the authoritative user Cancel boundary.
+    // Mark only the exact transaction adopted by this document's edit
+    // session. Legacy task implementations may still call App abort followed
+    // by resetEdit(); the lock makes the broad App abort a no-op, and
+    // resetEdit() consumes this mark only after ViewProvider teardown.
+    const std::string cancelDocumentName = doc->getName();
+    auto* guiDocument = Gui::Application::Instance->getDocument(cancelDocumentName.c_str());
+    const int cancelEditTransaction = guiDocument ? guiDocument->prepareCancelEdit()
+                                                  : App::NullTransaction;
+    const auto clearUnconsumedEditCancel = [cancelDocumentName, cancelEditTransaction] {
+        if (auto* currentGuiDocument
+            = Gui::Application::Instance->getDocument(cancelDocumentName.c_str())) {
+            currentGuiDocument->clearCancelEdit(cancelEditTransaction);
+        }
+    };
+    bool success = false;
+    auto rejectTrace = std::make_unique<Gui::MacroManager::MacroRedirector>(
+        [](Gui::MacroManager::LineType, const char*) {}
+    );
+    try {
+        // Reject is never a reproducible modeling operation.  Any legacy task
+        // command lines emitted while tearing down are intentionally dropped.
+        success = foundTaskInfo->ActiveDialog->reject();
     }
+    catch (...) {
+        clearUnconsumedEditCancel();
+        TaskDialog::resumeCommandMacroCapture(foundTaskInfo->ActiveDialog);
+        foundTaskInfo->ActiveDialog->setProperty("taskview_accept_or_reject", QVariant());
+        foundTaskInfo->ActiveDialog->setProperty("taskview_edit_finish_completed", QVariant());
+        foundTaskInfo->ActiveDialog->setProperty("taskview_edit_finish_cancelled", QVariant());
+        throw;
+    }
+    QVariant editFinishCompleted = foundTaskInfo->ActiveDialog->property(
+        "taskview_edit_finish_completed"
+    );
+    if (success && (!editFinishCompleted.isValid() || !editFinishCompleted.toBool())
+        && cancelEditTransaction != App::NullTransaction) {
+        // A cross-document lock may block the first exact rollback. Retry the
+        // retained exact ID once before completing this user Cancel.
+        if (auto* currentGuiDocument
+            = Gui::Application::Instance->getDocument(cancelDocumentName.c_str())) {
+            currentGuiDocument->finishEditTransaction(cancelEditTransaction, false);
+        }
+        editFinishCompleted = foundTaskInfo->ActiveDialog->property("taskview_edit_finish_completed");
+    }
+    if (editFinishCompleted.isValid() && editFinishCompleted.toBool()) {
+        foundTaskInfo->ActiveDialog->autoClosedOnResetEdit();
+    }
+    foundTaskInfo->ActiveDialog->setProperty("taskview_edit_finish_completed", QVariant());
+    foundTaskInfo->ActiveDialog->setProperty("taskview_edit_finish_cancelled", QVariant());
+    foundTaskInfo->ActiveDialog->setProperty("taskview_accept_or_reject", QVariant());
+    if (!success) {
+        // The dialog declined Cancel and remains usable. Remove only this
+        // reject attempt's still-live mark so a later OK cannot roll back.
+        clearUnconsumedEditCancel();
+    }
+    const bool removeRequested
+        = foundTaskInfo->ActiveDialog->property("taskview_remove_dialog").isValid();
+    std::optional<TaskDialog::InteractionState> interactionState;
+    const bool discardClosingDocumentPresentation =
+        foundTaskInfo->ActiveDialog
+            ->property(DiscardClosingDocumentPresentation)
+            .toBool();
+    if (success || removeRequested) {
+        interactionState = TaskDialog::takeCommandInteractionState(foundTaskInfo->ActiveDialog);
+        removeDialog(doc);
+        // Dialog widgets remove any selection gates in their destructors.
+        // Restore only after that teardown and after the task-specific reject
+        // has completed its transaction rollback/reset.
+        TaskDialog::restoreCommandInteractionState(
+            interactionState,
+            !discardClosingDocumentPresentation
+        );
+    }
+    else {
+        // A task is allowed to decline closure. Preserve the still-open
+        // command's launch trace and resume capture for its next interaction.
+        TaskDialog::resumeCommandMacroCapture(foundTaskInfo->ActiveDialog);
+    }
+    rejectTrace.reset();
 }
 
 void TaskView::helpRequested(App::Document* doc)

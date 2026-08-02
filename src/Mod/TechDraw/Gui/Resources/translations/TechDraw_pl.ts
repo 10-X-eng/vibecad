@@ -122,24 +122,7 @@
       <translation>Wstawia edytowalną adnotację bloku tekstowego do bieżącej strony</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>Rysunek Techniczny</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>Widok BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Wstawia widok płaszczyzny przekroju BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -662,7 +645,7 @@ Kliknięcie lewym przyciskiem myszy w pustym miejscu zatwierdzi bieżący wymiar
     <message>
       <location filename="../../CommandExtensionDims.cpp" line="1495"/>
       <source>Inserts a sequence of aligned horizontal dimensions to at least three selected vertices, where the first two define the direction</source>
-      <translation>Wstawia ciąg wyrównanych wymiarów poziomych do co najmniej trzech zaznaczonych wierzchołków, 
+      <translation>Wstawia ciąg wyrównanych wymiarów poziomych do co najmniej trzech zaznaczonych wierzchołków,
 gdzie pierwsze dwa wierzchołki określają kierunek</translation>
     </message>
   </context>
@@ -705,7 +688,7 @@ gdzie pierwsze dwa wierzchołki określają kierunek</translation>
     <message>
       <location filename="../../CommandExtensionDims.cpp" line="1568"/>
       <source>Inserts a sequence of aligned horizontal dimensions to at least three selected vertices, where the first two define the direction</source>
-      <translation>Wstawia ciąg wyrównanych wymiarów poziomych do co najmniej trzech zaznaczonych wierzchołków, 
+      <translation>Wstawia ciąg wyrównanych wymiarów poziomych do co najmniej trzech zaznaczonych wierzchołków,
 gdzie pierwsze dwa wierzchołki określają kierunek</translation>
     </message>
   </context>
@@ -784,7 +767,7 @@ gdzie pierwsze dwa wierzchołki określają kierunek</translation>
       <location filename="../../CommandExtensionDims.cpp" line="1463"/>
       <location filename="../../CommandExtensionDims.cpp" line="1578"/>
       <source>Inserts a sequence of aligned oblique dimensions to at least three selected vertices, where the first two define the direction</source>
-      <translation>Wstawia ciąg wyrównanych wymiarów ukośnych do co najmniej trzech zaznaczonych wierzchołków, 
+      <translation>Wstawia ciąg wyrównanych wymiarów ukośnych do co najmniej trzech zaznaczonych wierzchołków,
 gdzie pierwsze dwa wierzchołki określają kierunek</translation>
     </message>
   </context>
@@ -829,7 +812,7 @@ gdzie pierwsze dwa wierzchołki określają kierunek</translation>
     <message>
       <location filename="../../CommandExtensionDims.cpp" line="1573"/>
       <source>Inserts a sequence of aligned vertical dimensions to at least three selected vertices, where the first two define the direction</source>
-      <translation>Wstawia ciąg wyrównanych wymiarów pionowych do co najmniej trzech zaznaczonych wierzchołków, 
+      <translation>Wstawia ciąg wyrównanych wymiarów pionowych do co najmniej trzech zaznaczonych wierzchołków,
 gdzie pierwsze dwa wierzchołki określają kierunek</translation>
     </message>
   </context>
@@ -870,7 +853,7 @@ gdzie pierwsze dwa wierzchołki określają kierunek</translation>
       <location filename="../../CommandExtensionDims.cpp" line="1709"/>
       <location filename="../../CommandExtensionDims.cpp" line="1942"/>
       <source>Adds evenly spaced vertical dimensions between 3 or more vertices aligned to a shared baseline</source>
-      <translation>Dodaje równomiernie rozmieszczone wymiary pionowe pomiędzy co najmniej trzema wierzchołkami, 
+      <translation>Dodaje równomiernie rozmieszczone wymiary pionowe pomiędzy co najmniej trzema wierzchołkami,
 wyrównane do wspólnej linii bazowej</translation>
     </message>
   </context>
@@ -970,7 +953,7 @@ wyrównane do wspólnej linii bazowej</translation>
     <message>
       <location filename="../../CommandExtensionPack.cpp" line="1118"/>
       <source>Adds a cosmetic circle based on two selected vertices, where the first is the center point and the second is the radius</source>
-      <translation>Dodaje okrąg kosmetyczny na podstawie dwóch wybranych wierzchołków, 
+      <translation>Dodaje okrąg kosmetyczny na podstawie dwóch wybranych wierzchołków,
 gdzie pierwszy jest punktem środkowym, a drugi to promień</translation>
     </message>
     <message>
@@ -1414,7 +1397,7 @@ gdzie pierwszy jest punktem środkowym, a drugi to promień</translation>
       <location filename="../../CommandExtensionPack.cpp" line="457"/>
       <location filename="../../CommandExtensionPack.cpp" line="688"/>
       <source>Adds a cosmetic thread to the side view of a bolt/screw/rod between two selected parallel lines</source>
-      <translation>Dodaje geometrię pomocniczą gwintu w widoku bocznym śruby, wkrętu lub pręta, 
+      <translation>Dodaje geometrię pomocniczą gwintu w widoku bocznym śruby, wkrętu lub pręta,
 pomiędzy dwiema wybranymi równoległymi liniami.</translation>
     </message>
   </context>
@@ -1463,7 +1446,7 @@ pomiędzy dwiema wybranymi równoległymi liniami.</translation>
     <message>
       <location filename="../../CommandExtensionPack.cpp" line="673"/>
       <source>Adds a cosmetic thread to the side view of a selected hole between two selected parallel lines</source>
-      <translation>Dodaje geometrię pomocniczą gwintu w widoku bocznym wybranego otworu, 
+      <translation>Dodaje geometrię pomocniczą gwintu w widoku bocznym wybranego otworu,
 pomiędzy dwiema wybranymi równoległymi liniami.</translation>
     </message>
   </context>
@@ -1482,7 +1465,7 @@ pomiędzy dwiema wybranymi równoległymi liniami.</translation>
     <message>
       <location filename="../../CommandExtensionPack.cpp" line="592"/>
       <source>Adds a cosmetic thread to the side view of a selected hole between two selected parallel lines</source>
-      <translation>Dodaje geometrię pomocniczą gwintu w widoku bocznym wybranego otworu, 
+      <translation>Dodaje geometrię pomocniczą gwintu w widoku bocznym wybranego otworu,
 pomiędzy dwiema wybranymi równoległymi liniami.</translation>
     </message>
   </context>
@@ -2170,12 +2153,6 @@ Jeśli nie wybrano żadnego obiektu, otworzy się okno przeglądarki plików w c
       <location filename="../../Command.cpp" line="193"/>
       <source>Drawing create page</source>
       <translation>Tworzenie strony rysunku</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>Utwórz widok BIM</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="488"/>
@@ -3140,7 +3117,7 @@ Jeśli nie wybrano żadnego obiektu, otworzy się okno przeglądarki plików w c
     <message>
       <location filename="../../Command.cpp" line="430"/>
       <source>To insert a view from existing objects, select them before invoking this tool. Without a selection, a file browser will open to insert an SVG or image file.</source>
-      <translation>Aby wstawić widok z istniejących obiektów, wybierz je przed wywołaniem tego narzędzia. 
+      <translation>Aby wstawić widok z istniejących obiektów, wybierz je przed wywołaniem tego narzędzia.
 Praca bez zaznaczenia spowoduje otworzenie przeglądarki plików, aby wstawić plik SVG lub obraz.</translation>
     </message>
     <message>
@@ -3331,12 +3308,6 @@ Praca bez zaznaczenia spowoduje otworzenie przeglądarki plików, aby wstawić p
       <translation>Wybierz jedną grupę wycinków i jeden widok</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Strona zawiera widok BIM, który nie zostanie wyeksportowany. 
-Kontynuować?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>Zapisz plik DXF</translation>
@@ -3370,16 +3341,6 @@ Kontynuować?</translation>
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Wybierz co najmniej jeden obiekt</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Wybierz tylko jedną płaszczyznę przekroju BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Brak płaszczyzny przekroju BIM w zaznaczeniu</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -3518,15 +3479,15 @@ Kontynuować?</translation>
     <message>
       <location filename="../../CommandCreateDims.cpp" line="2249"/>
       <source>Selected edge is an Ellipse. Value will be approximate. Continue?</source>
-      <translation>Wybrana krawędź jest Elipsą. 
-Wartość będzie przybliżona. 
+      <translation>Wybrana krawędź jest Elipsą.
+Wartość będzie przybliżona.
 Kontynuować?</translation>
     </message>
     <message>
       <location filename="../../CommandCreateDims.cpp" line="2260"/>
       <source>Selected edge is a B-spline. Value will be approximate. Continue?</source>
-      <translation>Wybrana krawędź jest Krzywą złożoną. 
-Wartość będzie przybliżona. 
+      <translation>Wybrana krawędź jest Krzywą złożoną.
+Wartość będzie przybliżona.
 Kontynuować?</translation>
     </message>
     <message>
@@ -3655,7 +3616,7 @@ Kontynuować?</translation>
     <message>
       <location filename="../../CommandAnnotate.cpp" line="116"/>
       <source>Cannot attach leader. No base view selected.</source>
-      <translation>Nie można dołączyć odnośnika. 
+      <translation>Nie można dołączyć odnośnika.
 Nie wybrano widoku bazowego. ✅</translation>
     </message>
     <message>
@@ -3787,7 +3748,7 @@ Nie wybrano widoku bazowego. ✅</translation>
     <message>
       <location filename="../../CommandDecorate.cpp" line="210"/>
       <source>Some faces in the selection are already hatched. Replace?</source>
-      <translation>Niektóre wybrane ściany posiadają już kreskowanie. 
+      <translation>Niektóre wybrane ściany posiadają już kreskowanie.
 Zastąpić?</translation>
     </message>
     <message>
@@ -4247,7 +4208,7 @@ Zastąpić?</translation>
     <message>
       <location filename="../../TaskDimRepair.cpp" line="123"/>
       <source>This will change the dimension&apos;s owner view. Continue?</source>
-      <translation>Operacja zmieni widok, do którego przypisany jest wymiar. 
+      <translation>Operacja zmieni widok, do którego przypisany jest wymiar.
 Kontynuować?</translation>
     </message>
     <message>
@@ -4743,10 +4704,10 @@ Jeśli nie jest zaznaczone, FreeCAD będzie używał starego algorytmu znajdowan
 line segments returned by the hidden line removal algorithm.
 Faces must be detected in order to use hatching, but there
 can be a performance penalty in complex models.</source>
-      <translation>Jeżeli opcja jest zaznaczona, środowisko Rysunek Roboczy będzie próbować 
-budować ściany używając segmentów linii zwróconych przez algorytm 
+      <translation>Jeżeli opcja jest zaznaczona, środowisko Rysunek Roboczy będzie próbować
+budować ściany używając segmentów linii zwróconych przez algorytm
 usuwania ukrytych linii.
-Ściany muszą być wykryte, aby można było użyć kreskowania, ale 
+Ściany muszą być wykryte, aby można było użyć kreskowania, ale
 może to mieć negatywny wpływ na wydajność w złożonych modelach.</translation>
     </message>
     <message>
@@ -4777,11 +4738,11 @@ może to mieć negatywny wpływ na wydajność w złożonych modelach.</translat
     <message>
       <location filename="../../DlgPrefsTechDrawAdvanced.ui" line="233"/>
       <source>The number of times FreeCAD should try to remove overlapping edges returned by the hidden line removal algorithm. A value of 0 indicates no scrubbing, 1 indicates a single pass and 2 indicates a second pass should be performed. Values above 2 are generally not productive. Each pass adds to the time required to produce the drawing.</source>
-      <translation>Liczba powtórzeń, które FreeCAD powinien próbować wykonać, aby usunąć nakładające się krawędzie zwrócone przez algorytm usuwania ukrytych linii. 
-Wartość 0 oznacza brak oczyszczania, 
-1 oznacza pojedyncze przejście, 
-a 2 oznacza, że należy wykonać drugie przejście. 
-Wartości powyżej 2 są generalnie nieproduktywne. 
+      <translation>Liczba powtórzeń, które FreeCAD powinien próbować wykonać, aby usunąć nakładające się krawędzie zwrócone przez algorytm usuwania ukrytych linii.
+Wartość 0 oznacza brak oczyszczania,
+1 oznacza pojedyncze przejście,
+a 2 oznacza, że należy wykonać drugie przejście.
+Wartości powyżej 2 są generalnie nieproduktywne.
 Każde przejście zwiększa czas wymagany do utworzenia rysunku.</translation>
     </message>
     <message>
@@ -4836,8 +4797,8 @@ Każda jednostka ma szerokość ok. 0,1 mm</translation>
       <source>Limits the number of 64×64 pixel SVG tiles used to hatch a single face.
 For large scales, errors may occur due to excessive tiling.
 Increase the limit if necessary.</source>
-      <translation>Ogranicza liczbę kafelków SVG 64×64 piksele używanych do kreskowania pojedynczej powierzchni. 
-Przy dużych skalach mogą wystąpić błędy spowodowane nadmiernym kafelkowaniem. 
+      <translation>Ogranicza liczbę kafelków SVG 64×64 piksele używanych do kreskowania pojedynczej powierzchni.
+Przy dużych skalach mogą wystąpić błędy spowodowane nadmiernym kafelkowaniem.
 W razie potrzeby zwiększ limit.</translation>
     </message>
     <message>
@@ -4895,7 +4856,7 @@ W razie potrzeby zwiększ limit.</translation>
     <message>
       <location filename="../../DlgPrefsTechDrawAdvanced.ui" line="522"/>
       <source>Check this box to use the default modifier keys. Uncheck this box to set a different key combination.</source>
-      <translation>Zaznacz to pole, aby użyć domyślnych klawiszy modyfikujących. 
+      <translation>Zaznacz to pole, aby użyć domyślnych klawiszy modyfikujących.
 Odznacz to pole, aby ustawić inną kombinację klawiszy.</translation>
     </message>
     <message>
@@ -4984,7 +4945,7 @@ podczas kreskowania powierzchni wzorem PAT</translation>
     <message>
       <location filename="../../DlgPrefsTechDrawAnnotation.ui" line="91"/>
       <source>Draws the section annotation on the source view. Otherwise, no section line, arrows or symbol will be shown in the source view.</source>
-      <translation>Rysuje adnotację przekroju na widoku źródłowym. 
+      <translation>Rysuje adnotację przekroju na widoku źródłowym.
 W przeciwnym razie na widoku źródłowym nie będą wyświetlane linia przekroju, strzałki ani symbol.</translation>
     </message>
     <message>
@@ -4995,7 +4956,7 @@ W przeciwnym razie na widoku źródłowym nie będą wyświetlane linia przekroj
     <message>
       <location filename="../../DlgPrefsTechDrawAnnotation.ui" line="134"/>
       <source>Draws a cut line on the source view. Otherwise, only the change marks, arrows and symbols will be displayed.</source>
-      <translation>Rysuje linię cięcia na widoku źródłowym. 
+      <translation>Rysuje linię cięcia na widoku źródłowym.
 W przeciwnym razie wyświetlane będą tylko oznaczenia zmian, strzałki i symbole.</translation>
     </message>
     <message>
@@ -5119,8 +5080,8 @@ W przeciwnym razie wyświetlane będą tylko oznaczenia zmian, strzałki i symbo
 always be the right choice.  Flat or square caps are useful
 for using drawings as a 1:1 cutting guide.
 </source>
-      <translation>Kształt zakończeń linii. 
-Domyślny kształt (okrągły) jest niemal zawsze właściwym wyborem. 
+      <translation>Kształt zakończeń linii.
+Domyślny kształt (okrągły) jest niemal zawsze właściwym wyborem.
 Kształty płaskie lub kwadratowe przydają się przy używaniu rysunków jako szablonu do cięcia w skali 1:1.
 </translation>
     </message>
@@ -5421,7 +5382,7 @@ Kształty płaskie lub kwadratowe przydają się przy używaniu rysunków jako s
     <message>
       <location filename="../../DlgPrefsTechDrawColors.ui" line="425"/>
       <source>Uses light text and lines on dark backgrounds and sets page color to a dark color. Transparent or light color faces are recommended with this option.</source>
-      <translation>Używa jasnego tekstu i linii na ciemnym tle oraz ustawia kolor strony na ciemny. 
+      <translation>Używa jasnego tekstu i linii na ciemnym tle oraz ustawia kolor strony na ciemny.
 Przy tej opcji zalecane jest stosowane przezroczystych lub jasnych kolorów ścian.</translation>
     </message>
     <message>
@@ -5924,7 +5885,7 @@ can override the global &apos;Update with 3D&apos; parameter</source>
     <message>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="369"/>
       <source>Standard to be used to draw section lines. This affects the position of arrows and symbol.</source>
-      <translation>Standard używany do rysowania linii przekroju. 
+      <translation>Standard używany do rysowania linii przekroju.
 Ma wpływ na położenie strzałek i symboli.</translation>
     </message>
     <message>
@@ -5940,8 +5901,8 @@ Ma wpływ na położenie strzałek i symboli.</translation>
     <message>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="457"/>
       <source>Preferred SVG or bitmap file for hatching. This value will also control the initial directory for choosing hatch patterns. You can use this to get hatch files from a local directory.</source>
-      <translation>Preferowany plik SVG lub bitmapy do kreskowania. 
-Ta wartość będzie również kontrolować domyślny katalog do wyboru wzorców kreskowania. 
+      <translation>Preferowany plik SVG lub bitmapy do kreskowania.
+Ta wartość będzie również kontrolować domyślny katalog do wyboru wzorców kreskowania.
 Można jej użyć do pobrania plików kreskowania z lokalnego katalogu.</translation>
     </message>
     <message>
@@ -6007,7 +5968,7 @@ Można jej użyć do pobrania plików kreskowania z lokalnego katalogu.</transla
     <message>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="835"/>
       <source>Uses the 3D camera direction (or normal of a selected face) as the view direction. Otherwise, views will be created as front views.</source>
-      <translation>Używa kierunku ujęcia widoku 3D (lub normalnej wybranej powierzchni) jako kierunku widoku. 
+      <translation>Używa kierunku ujęcia widoku 3D (lub normalnej wybranej powierzchni) jako kierunku widoku.
 W przeciwnym razie widoki będą tworzone jako widoki od przodu.</translation>
     </message>
     <message>
@@ -6088,8 +6049,8 @@ W przeciwnym razie widoki będą tworzone jako widoki od przodu.</translation>
     <message>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="853"/>
       <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Control when the view boundary frames and labels are displayed.&lt;/p&gt;&lt;p&gt;Auto: Show on hover, On: Always show, Off: Never show.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
-      <translation>&lt;html>&lt;head/>&lt;body>&lt;p>Określa, kiedy wyświetlane są ramki granic widoków oraz ich etykiety.&lt;/p>&lt;p>Auto: Pokaż po najechaniu kursorem, 
-Wł.: Zawsze pokazuj, 
+      <translation>&lt;html>&lt;head/>&lt;body>&lt;p>Określa, kiedy wyświetlane są ramki granic widoków oraz ich etykiety.&lt;/p>&lt;p>Auto: Pokaż po najechaniu kursorem,
+Wł.: Zawsze pokazuj,
 Wył.: Nigdy nie pokazuj.&lt;/p>&lt;/body>&lt;/html></translation>
     </message>
     <message>
@@ -6125,7 +6086,7 @@ Wył.: Nigdy nie pokazuj.&lt;/p>&lt;/body>&lt;/html></translation>
     <message>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="981"/>
       <source>Controls the snap radius for highlights. Vertex must be within this factor times the highlight size to be a snap target.</source>
-      <translation>Steruje promieniem przyciągania dla wyróżnień. 
+      <translation>Steruje promieniem przyciągania dla wyróżnień.
 Wierzchołek musi znajdować się w odległości mniejszej niż ten współczynnik pomnożony przez rozmiar wyróżnienia, aby stał się celem przyciągania.</translation>
     </message>
     <message>
@@ -6299,7 +6260,7 @@ Szybkie, ale wynikiem jest kolekcja krótkich linii prostych.</translation>
     <message>
       <location filename="../../DlgPrefsTechDrawScale.ui" line="184"/>
       <source>Default scale for views if &apos;View scale type&apos; is &apos;Custom&apos;</source>
-      <translation>Domyślna skala dla widoku, 
+      <translation>Domyślna skala dla widoku,
 jeśli "Typ skali widoku" ma wartość "Użytkownika".</translation>
     </message>
     <message>
@@ -6310,7 +6271,7 @@ jeśli "Typ skali widoku" ma wartość "Użytkownika".</translation>
     <message>
       <location filename="../../DlgPrefsTechDrawScale.ui" line="226"/>
       <source>Uses the original (incorrect) scaling method for SVG symbols, Spreadsheet views and Draft views as used in v1.0 and earlier. Otherwise, a more accurate method will be used.</source>
-      <translation>Używa oryginalnej (niepoprawnej) metody skalowania symboli SVG, widoków Arkusza Kalkulacyjnego oraz widoków Rysunku Roboczego stosowanej w wersji 1.0 i wcześniejszych. 
+      <translation>Używa oryginalnej (niepoprawnej) metody skalowania symboli SVG, widoków Arkusza Kalkulacyjnego oraz widoków Rysunku Roboczego stosowanej w wersji 1.0 i wcześniejszych.
 W przeciwnym razie zostanie użyta metoda dokładniejsza.</translation>
     </message>
     <message>
@@ -6851,7 +6812,7 @@ Czy chcesz kontynuować?</translation>
     <message>
       <location filename="../../TaskComplexSection.ui" line="405"/>
       <source>Rebuild display now. May be slow for complex models</source>
-      <translation>Odbuduj widok teraz. 
+      <translation>Odbuduj widok teraz.
 Proces może być długotrwały dla modeli złożonych</translation>
     </message>
     <message>
@@ -8260,7 +8221,7 @@ Możesz wybrać kolejne punkty, aby uzyskać odcinki linii.</translation>
       <location filename="../../TaskProjGroup.ui" line="583"/>
       <source>Distributes projections automatically
 using the given X/Y spacings</source>
-      <translation>Automatycznie rozmieszcza rzuty, 
+      <translation>Automatycznie rozmieszcza rzuty,
 używając podanych odstępów w kierunku X/Y</translation>
     </message>
     <message>
@@ -9481,7 +9442,7 @@ jest otwarte okno dialogowe zadania.</translation>
     <message>
       <location filename="../../TaskCosmeticCircle.ui" line="61"/>
       <source>Treats the center point as a 2D point within the parent view. The Z coordinate is ignored.</source>
-      <translation>Traktuje punkt środkowy jako punkt 2D w widoku nadrzędnym. 
+      <translation>Traktuje punkt środkowy jako punkt 2D w widoku nadrzędnym.
 Współrzędna Z jest ignorowana.</translation>
     </message>
     <message>
@@ -9955,7 +9916,7 @@ Współrzędna Z jest ignorowana.</translation>
     <message>
       <location filename="../../../TechDrawTools/CommandPositionSectionView.py" line="55"/>
       <source>Aligns the selected section view with its source view orthogonally or the selected edge in the section view to the selected vertex in the base view</source>
-      <translation>Wyrównuje zaznaczony widok przekroju z widokiem źródłowym ortogonalnie lub 
+      <translation>Wyrównuje zaznaczony widok przekroju z widokiem źródłowym ortogonalnie lub
 zaznaczoną krawędź w widoku przekroju z wybranym wierzchołkiem w widoku bazowym</translation>
     </message>
   </context>
@@ -9993,7 +9954,7 @@ zaznaczoną krawędź w widoku przekroju z wybranym wierzchołkiem w widoku bazo
       <location filename="../../ViewProviderDimension.cpp" line="326"/>
       <source>You cannot delete this dimension now because
 there is an open task dialog.</source>
-      <translation>Nie można teraz usunąć tego wymiaru, 
+      <translation>Nie można teraz usunąć tego wymiaru,
 ponieważ jest otwarte okno dialogowe zadania.</translation>
     </message>
     <message>
@@ -10017,7 +9978,7 @@ ponieważ jest otwarte okno dialogowe zadania.</translation>
     <message>
       <location filename="../../Command.cpp" line="558"/>
       <source>Inserts a new broken view for the selected objects or base view and break definition objects</source>
-      <translation>Wstawia nowy widok przerwany dla zaznaczonych obiektów 
+      <translation>Wstawia nowy widok przerwany dla zaznaczonych obiektów
 lub widoku bazowego oraz obiektów definiujących przerwanie</translation>
     </message>
   </context>
@@ -10149,14 +10110,7 @@ lub widoku bazowego oraz obiektów definiujących przerwanie</translation>
       <translation>Linia</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>
@@ -10256,7 +10210,7 @@ lub widoku bazowego oraz obiektów definiujących przerwanie</translation>
     <message>
       <location filename="../../CommandAnnotate.cpp" line="280"/>
       <source>Inserts cosmetic vertices at the midpoint of the selected edges</source>
-      <translation>Wstawia wierzchołki kosmetyczne 
+      <translation>Wstawia wierzchołki kosmetyczne
 w punkcie środkowym wybranych krawędzi</translation>
     </message>
   </context>

@@ -102,14 +102,26 @@ class Split(gui_base_original.Modifier):
         index = info["Component"][4:]
         point = DraftVecUtils.toString(self.point)
 
-        Gui.addModule("Draft")
+        Gui.addModule("draftutils.timeline")
         cmd_list = [
             "obj = FreeCAD.ActiveDocument." + wire,
-            "new = Draft.split(obj, " + point + ", " + index + ")",
+            "new = draftutils.timeline.split_replacement(obj, "
+            + point
+            + ", "
+            + index
+            + ")",
             "if new is not None: FreeCAD.ActiveDocument.recompute()",
         ]
 
-        self.commit(translate("draft", "Split Line"), cmd_list)
+        source = self.doc.getObject(wire)
+        if source is None:
+            self.finish()
+            return
+        self.commit(
+            translate("draft", "Split Line"),
+            cmd_list,
+            inputs=(source,),
+        )
         self.finish()
 
     def finish(self, cont=False):

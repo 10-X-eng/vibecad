@@ -20,7 +20,7 @@ TOOL_SPEC = {
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
-    "workbench": "PartWorkbench",
+    "workbench": "PartDesignWorkbench",
     "edit_modes": ["none"],
     "parameters": {
         "type": "object",

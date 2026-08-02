@@ -49,6 +49,7 @@ public:
     ~ViewProviderMassPropertiesResult() override;
 
     void attach(App::DocumentObject*) override;
+    void updateData(const App::Property*) override;
     void setCenters(const Base::Vector3d& cog, const Base::Vector3d& cov);
     void setPrincipalAxes(
         const Base::Vector3d& origin,
@@ -64,6 +65,7 @@ public:
     }
 
 private:
+    void updateFromObject();
     void updateCenterMarkers();
     void updatePrincipalAxesMarker();
 

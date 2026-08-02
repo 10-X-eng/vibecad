@@ -36,6 +36,7 @@ from PySide import QtGui
 
 import FreeCADGui as Gui
 from drafttaskpanels import task_scale
+from draftutils.transaction import start_object_edit
 from draftutils.translate import translate
 
 
@@ -57,7 +58,7 @@ class ViewProviderClone:
             return None
 
         self.task = task_scale.ScaleTaskPanelEdit(self.Object)
-        Gui.Control.showDialog(self.task)
+        Gui.Control.showDialog(self.task, vobj.Document)
         return True
 
     def unsetEdit(self, vobj, mode):
@@ -73,7 +74,7 @@ class ViewProviderClone:
         menu.addAction(action_edit)
 
     def edit(self):
-        Gui.ActiveDocument.setEdit(self.Object, 0)
+        start_object_edit(self.Object, 0)
 
     def dumps(self):
         return None

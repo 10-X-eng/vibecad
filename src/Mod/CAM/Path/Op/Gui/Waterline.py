@@ -193,8 +193,14 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             self.form.optimizeEnabled.hide()
 
     def registerSignalHandlers(self, obj):
-        self.form.algorithmSelect.currentIndexChanged.connect(self.updateVisibility)
-        self.form.cutPattern.currentIndexChanged.connect(self.updateVisibility)
+        self.connectSignal(
+            self.form.algorithmSelect.currentIndexChanged,
+            self.updateVisibility,
+        )
+        self.connectSignal(
+            self.form.cutPattern.currentIndexChanged,
+            self.updateVisibility,
+        )
 
 
 Command = PathOpGui.SetupOperation(

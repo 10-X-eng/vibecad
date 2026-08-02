@@ -205,6 +205,7 @@ Gui::MenuItem* Workbench::setupMenuBar() const
     *mesh << "Mesh_Import"
           << "Mesh_Export"
           << "Mesh_FromPartShape"
+          << "MeshPart_ShapeFromMesh"
           << "Mesh_RemeshGmsh"
           << "Separator" << analyze << "Mesh_VertexCurvature"
           << "Mesh_HarmonizeNormals"
@@ -244,8 +245,13 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
     mesh->setCommand("Mesh Tools");
     *mesh << "Mesh_Import"
           << "Mesh_Export"
-          << "Mesh_FromPartShape"
           << "Mesh_BuildRegularSolid";
+
+    Gui::ToolBarItem* convert = new Gui::ToolBarItem(root);
+    convert->setCommand("Mesh Convert");
+    *convert << "Mesh_FromPartShape"
+             << "MeshPart_ShapeFromMesh"
+             << "MeshPart_CurveOnMesh";
 
     Gui::ToolBarItem* modifying = new Gui::ToolBarItem(root);
     modifying->setCommand("Mesh Modify");

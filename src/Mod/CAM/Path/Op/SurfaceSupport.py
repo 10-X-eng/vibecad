@@ -79,6 +79,7 @@ class PathGeometryGenerator:
         self.halfDiag = None
         self.halfPasses = None
         self.obj = obj
+        self.document = obj.Document
         self.toolDiam = float(obj.ToolController.Tool.Diameter)
         self.cutOut = self.toolDiam * (float(obj.StepOver) / 100.0)
         self.wpc = Part.makeCircle(2.0)  # make circle for workplane
@@ -185,7 +186,7 @@ class PathGeometryGenerator:
             geomShape.Placement.Base = FreeCAD.Vector(bbC.x, bbC.y, 0.0 - geomShape.BoundBox.ZMin)
 
         if self.debugObjectsGroup:
-            F = FreeCAD.ActiveDocument.addObject("Part::Feature", "tmpGeometrySet")
+            F = self.document.addObject("Part::Feature", "tmpGeometrySet")
             F.Shape = geomShape
             F.purgeTouched()
             self.debugObjectsGroup.addObject(F)
@@ -197,7 +198,7 @@ class PathGeometryGenerator:
         cmnShape = self.shape.common(geomShape)
 
         if self.debugObjectsGroup:
-            F = FreeCAD.ActiveDocument.addObject("Part::Feature", "tmpPathGeometry")
+            F = self.document.addObject("Part::Feature", "tmpPathGeometry")
             F.Shape = cmnShape
             F.purgeTouched()
             self.debugObjectsGroup.addObject(F)
@@ -491,6 +492,7 @@ class ProcessSelectedFaces:
         self.msgNoFaces += " " + translate("PathSurfaceSupport", "Ignoring selected faces.") + "\n"
         self.JOB = JOB
         self.obj = obj
+        self.document = obj.Document
         self.profileEdges = "None"
 
         if hasattr(obj, "ProfileEdges"):
@@ -718,7 +720,10 @@ class ProcessSelectedFaces:
 
                 if cont:
                     if self.showDebugObjects:
-                        T = FreeCAD.ActiveDocument.addObject("Part::Feature", "tmpCollectiveShape")
+                        T = self.document.addObject(
+                            "Part::Feature",
+                            "tmpCollectiveShape",
+                        )
                         T.Shape = cfsL
                         T.purgeTouched()
                         self.tempGroup.addObject(T)
@@ -741,7 +746,7 @@ class ProcessSelectedFaces:
                             else:
                                 casL = Part.makeCompound(ifL)
                             if self.showDebugObjects:
-                                C = FreeCAD.ActiveDocument.addObject(
+                                C = self.document.addObject(
                                     "Part::Feature", "tmpCompoundIntFeat"
                                 )
                                 C.Shape = casL
@@ -835,14 +840,20 @@ class ProcessSelectedFaces:
                     avoid = Part.makeCompound(outFCS)
 
                 if self.showDebugObjects:
-                    P = FreeCAD.ActiveDocument.addObject("Part::Feature", "tmpVoidEnvelope")
+                    P = self.document.addObject(
+                        "Part::Feature",
+                        "tmpVoidEnvelope",
+                    )
                     P.Shape = avoid
                     P.purgeTouched()
                     self.tempGroup.addObject(P)
 
             if cont:
                 if self.showDebugObjects:
-                    P = FreeCAD.ActiveDocument.addObject("Part::Feature", "tmpVoidCompound")
+                    P = self.document.addObject(
+                        "Part::Feature",
+                        "tmpVoidCompound",
+                    )
                     P.Shape = avoid
                     P.purgeTouched()
                     self.tempGroup.addObject(P)
@@ -1069,15 +1080,27 @@ def getShapeSlice(shape):
 
 
 def getProjectedFace(tempGroup, wire):
-    import Draft
+    from draftobjects.shape2dview import Shape2DView
+
+    if FreeCAD.GuiUp:
+        from draftviewproviders.view_base import ViewProviderDraftAlt
 
     Path.Log.debug("getProjectedFace()")
-    F = FreeCAD.ActiveDocument.addObject("Part::Feature", "tmpProjectionWire")
+    document = tempGroup.Document
+    F = document.addObject("Part::Feature", "tmpProjectionWire")
     F.Shape = wire
     F.purgeTouched()
     tempGroup.addObject(F)
     try:
-        prj = Draft.makeShape2DView(F, FreeCAD.Vector(0, 0, 1))
+        prj = document.addObject(
+            "Part::Part2DObjectPython",
+            "Shape2DView",
+        )
+        Shape2DView(prj)
+        if FreeCAD.GuiUp:
+            ViewProviderDraftAlt(prj.ViewObject)
+        prj.Base = F
+        prj.Projection = FreeCAD.Vector(0, 0, 1)
         prj.recompute()
         prj.purgeTouched()
         tempGroup.addObject(prj)
@@ -1240,7 +1263,7 @@ def _makeSafeSTL(self, JOB, obj, mdlIdx, faceShapes, voidShapes, ocl):
     fused = Part.makeCompound(fuseShapes)
 
     if self.showDebugObjects:
-        T = FreeCAD.ActiveDocument.addObject("Part::Feature", "safeSTLShape")
+        T = obj.Document.addObject("Part::Feature", "safeSTLShape")
         T.Shape = fused
         T.purgeTouched()
         self.tempGroup.addObject(T)
@@ -1889,7 +1912,10 @@ class FindUnifiedRegions:
     # Internal processing methods
     def _showShape(self, shape, name):
         if self.tempGroup:
-            S = FreeCAD.ActiveDocument.addObject("Part::Feature", "tmp" + name)
+            S = self.tempGroup.Document.addObject(
+                "Part::Feature",
+                "tmp" + name,
+            )
             S.Shape = shape
             S.purgeTouched()
             self.tempGroup.addObject(S)

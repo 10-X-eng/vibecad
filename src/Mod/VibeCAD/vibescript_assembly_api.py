@@ -16,6 +16,10 @@ import math
 import re
 from typing import Any, Iterable
 
+from VibeCADDocumentReferences import (
+    DocumentReferenceError,
+    normalize_document_reference,
+)
 from vibescript_domain_api import DomainValue
 
 
@@ -25,13 +29,14 @@ _PUBLISHABLE_TYPES = frozenset(
         "component_link",
         "joint",
         "solver_diagnostics",
+        "mechanism_verification",
         "motion",
         "simulation",
         "exploded_view",
         "bom",
     }
 )
-_JOINT_TYPES = (
+JOINT_TYPES = (
     "fixed",
     "revolute",
     "cylindrical",
@@ -46,8 +51,92 @@ _JOINT_TYPES = (
     "gears",
     "belt",
 )
+# Keep the established private name for existing internal callers while making
+# the provider-facing vocabulary available to API description code.
+_JOINT_TYPES = JOINT_TYPES
+JOINT_REQUIRED_PARAMETERS = {
+    "fixed": (),
+    "revolute": (),
+    "cylindrical": (),
+    "slider": (),
+    "ball": (),
+    "distance": ("distance_mm",),
+    "parallel": (),
+    "perpendicular": (),
+    "angle": ("angle_degrees",),
+    "rack_pinion": ("pitch_radius_mm",),
+    "screw": ("thread_pitch_mm",),
+    "gears": ("radius1_mm", "radius2_mm"),
+    "belt": ("radius1_mm", "radius2_mm"),
+}
+JOINT_LIMIT_PARAMETERS = {
+    "length_limits_mm": ("slider", "cylindrical"),
+    "angle_limits_degrees": ("revolute", "cylindrical"),
+}
+
+
+def explicit_connector_compatibility(
+    kind: str,
+    contracts: Sequence[Mapping[str, Any] | None],
+) -> dict[str, Any]:
+    """Validate authored connector contracts without classifying geometry."""
+
+    retained = [dict(value) if isinstance(value, Mapping) else value for value in contracts]
+    explicit = [value for value in retained if isinstance(value, Mapping)]
+    for index, contract in enumerate(retained, start=1):
+        if contract is None:
+            continue
+        if not isinstance(contract, Mapping):
+            return {
+                "ok": False,
+                "joint_type": kind,
+                "reason": f"connector {index} has a malformed explicit contract",
+                "contracts": retained,
+            }
+        allowed = contract.get("allowed_joints")
+        if allowed is not None and (
+            not isinstance(allowed, (list, tuple)) or kind not in allowed
+        ):
+            return {
+                "ok": False,
+                "joint_type": kind,
+                "reason": f"connector {index} explicitly disallows joint type {kind!r}",
+                "contracts": retained,
+            }
+    compatibility = [
+        str(contract.get("compatibility") or "")
+        if isinstance(contract, Mapping)
+        else ""
+        for contract in retained
+    ]
+    if any(compatibility) and (
+        not all(compatibility) or len(set(compatibility)) != 1
+    ):
+        return {
+            "ok": False,
+            "joint_type": kind,
+            "reason": "explicit connector compatibility tokens do not match",
+            "compatibility": compatibility,
+            "contracts": retained,
+        }
+    return {
+        "ok": True,
+        "joint_type": kind,
+        "validation": (
+            "explicit_connector_contract"
+            if explicit
+            else "native_joint_connector_validation"
+        ),
+        "contracts": retained,
+    }
+
+
 _SUBELEMENT = re.compile(r"^(Face|Edge|Vertex)[1-9][0-9]*$")
 _INTERFACE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+_STATIC_REQUIREMENT_TYPES = frozenset({"collision_free", "minimum_clearance"})
+_CONTACT_POLICIES = frozenset(
+    {"prohibited", "clearance", "allowed", "required", "ignored"}
+)
 _MOTION_FUNCTIONS = frozenset({"abs", "asin", "arcsin", "arctan", "cos", "sin"})
 _MOTION_NAMES = frozenset({"time", "initialValue", "pi"})
 _OCCURRENCE_PATH = re.compile(
@@ -118,6 +207,61 @@ def _label(operation: str, value: Any) -> str:
     result = str(value or "").strip()
     if len(result) > 120:
         raise _error(operation, "label", "must contain at most 120 characters", value)
+    return result
+
+
+def _required_text(
+    operation: str,
+    parameter: str,
+    value: Any,
+    *,
+    maximum: int = 128,
+) -> str:
+    result = str(value or "").strip()
+    if not result:
+        raise _error(operation, parameter, "must be non-empty", value)
+    if len(result) > maximum:
+        raise _error(
+            operation,
+            parameter,
+            f"must contain at most {maximum} characters",
+            value,
+        )
+    return result
+
+
+def _fastener_options(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise _error("fastener", "options", "must be an object", value)
+    if len(value) > 16:
+        raise _error("fastener", "options", "may contain at most 16 entries")
+    result: dict[str, Any] = {}
+    for raw_name, raw_value in value.items():
+        name = str(raw_name or "").strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name):
+            raise _error(
+                "fastener",
+                "options",
+                "keys must use lower_snake_case",
+                raw_name,
+            )
+        if isinstance(raw_value, float) and not math.isfinite(raw_value):
+            raise _error(
+                "fastener",
+                f"options.{name}",
+                "must be finite",
+                raw_value,
+            )
+        if not isinstance(raw_value, (str, bool, int, float)):
+            raise _error(
+                "fastener",
+                f"options.{name}",
+                "must be a string, boolean, integer, or finite number",
+                raw_value,
+            )
+        result[name] = raw_value
     return result
 
 
@@ -437,20 +581,15 @@ def _placement(operation: str, parameter: str, value: Any) -> dict[str, list[flo
 
 
 def _reference(operation: str, value: Any) -> dict[str, str]:
-    if not isinstance(value, Mapping) or set(value) != {"document_uid", "object_name"}:
+    try:
+        return normalize_document_reference(value)
+    except DocumentReferenceError as exc:
         raise _error(
             operation,
             "source",
-            "expected a stable input reference with document_uid and object_name",
+            str(exc),
             value,
-        )
-    result = {
-        "document_uid": str(value.get("document_uid") or "").strip(),
-        "object_name": str(value.get("object_name") or "").strip(),
-    }
-    if not result["document_uid"] or not result["object_name"]:
-        raise _error(operation, "source", "document_uid and object_name must be non-empty")
-    return result
+        ) from exc
 
 
 def _domain_value(
@@ -505,6 +644,296 @@ def _values(
     if len({id(item) for item in result}) != len(result):
         raise _error(operation, parameter, "contains the same graph value more than once")
     return result
+
+
+def _named_values(
+    operation: str,
+    parameter: str,
+    value: Any,
+    *,
+    output_type: str,
+    minimum: int,
+) -> tuple[list[DomainValue], list[str] | None]:
+    """Accept the established sequence form or a stable keyed member graph."""
+
+    if not isinstance(value, Mapping):
+        return (
+            _values(
+                operation,
+                parameter,
+                value,
+                output_type=output_type,
+                minimum=minimum,
+            ),
+            None,
+        )
+    if len(value) < minimum:
+        raise _error(
+            operation,
+            parameter,
+            f"requires at least {minimum} value(s)",
+            value,
+        )
+    if len(value) > 4096:
+        raise _error(
+            operation,
+            parameter,
+            "may contain at most 4096 named members",
+        )
+    names: list[str] = []
+    values: list[DomainValue] = []
+    for raw_name, item in value.items():
+        name = str(raw_name or "")
+        if not _INTERFACE_NAME.fullmatch(name):
+            raise _error(
+                operation,
+                parameter,
+                "member keys must be identifiers containing at most 64 characters",
+                raw_name,
+            )
+        names.append(name)
+        values.append(
+            _domain_value(
+                operation,
+                f"{parameter}[{name!r}]",
+                item,
+                output_type=output_type,
+            )
+        )
+    if len({id(item) for item in values}) != len(values):
+        raise _error(
+            operation,
+            parameter,
+            "contains the same graph value under more than one member key",
+        )
+    return values, names
+
+
+def _mechanism_pair(
+    operation: str,
+    parameter: str,
+    raw: Mapping[str, Any],
+    *,
+    graph_components: Mapping[int, DomainValue],
+) -> tuple[DomainValue, DomainValue, tuple[int, int]]:
+    first = _domain_value(
+        operation,
+        f"{parameter}.first",
+        raw.get("first"),
+        output_type="component_link",
+    )
+    second = _domain_value(
+        operation,
+        f"{parameter}.second",
+        raw.get("second"),
+        output_type="component_link",
+    )
+    if first is second:
+        raise _error(
+            operation,
+            f"{parameter}.first/second",
+            "must identify two different component values",
+        )
+    for field, component in (("first", first), ("second", second)):
+        if id(component) not in graph_components:
+            raise _error(
+                operation,
+                f"{parameter}.{field}",
+                "is not listed in this assembly",
+            )
+    return first, second, tuple(sorted((id(first), id(second))))
+
+
+def _mechanism_declarations(
+    model: DomainValue,
+    requirements: Sequence[Mapping[str, Any]],
+    contacts: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    operation = "mechanism_check"
+    graph_components = {
+        id(component): component
+        for component in model.properties.get("components", ())
+    }
+    if isinstance(requirements, (str, bytes)) or not isinstance(
+        requirements,
+        Sequence,
+    ):
+        raise _error(
+            operation,
+            "requirements",
+            "expected an array of 0-64 explicit pair requirements",
+            requirements,
+        )
+    if isinstance(contacts, (str, bytes)) or not isinstance(contacts, Sequence):
+        raise _error(
+            operation,
+            "contacts",
+            "expected an array of 0-64 explicit contact policies",
+            contacts,
+        )
+    if len(requirements) > 64:
+        raise _error(operation, "requirements", "may contain at most 64 entries")
+    if len(contacts) > 64:
+        raise _error(operation, "contacts", "may contain at most 64 entries")
+    if not requirements and not contacts:
+        raise _error(
+            operation,
+            "requirements/contacts",
+            "requires at least one explicit pair declaration",
+        )
+
+    seen_pairs: dict[tuple[int, int], str] = {}
+    normalized_requirements: list[dict[str, Any]] = []
+    for index, value in enumerate(requirements):
+        parameter = f"requirements[{index}]"
+        if not isinstance(value, Mapping):
+            raise _error(operation, parameter, "expected an object", value)
+        requirement_type = str(value.get("type") or "").strip().lower()
+        if requirement_type not in _STATIC_REQUIREMENT_TYPES:
+            raise _error(
+                operation,
+                f"{parameter}.type",
+                f"must be one of {sorted(_STATIC_REQUIREMENT_TYPES)}",
+                value.get("type"),
+            )
+        expected = {"type", "first", "second", "tolerance_mm"}
+        if requirement_type == "minimum_clearance":
+            expected.add("minimum_mm")
+        if set(value) != expected:
+            raise _error(
+                operation,
+                parameter,
+                f"must contain exactly {sorted(expected)}",
+                value,
+            )
+        first, second, pair = _mechanism_pair(
+            operation,
+            parameter,
+            value,
+            graph_components=graph_components,
+        )
+        if pair in seen_pairs:
+            raise _error(
+                operation,
+                parameter,
+                f"duplicates the unordered pair already declared by {seen_pairs[pair]}",
+            )
+        seen_pairs[pair] = parameter
+        normalized = {
+            "type": requirement_type,
+            "first": first,
+            "second": second,
+            "tolerance_mm": _number(
+                operation,
+                f"{parameter}.tolerance_mm",
+                value.get("tolerance_mm"),
+                minimum=0.0,
+                maximum=1.0e3,
+                strict_minimum=True,
+            ),
+        }
+        if requirement_type == "minimum_clearance":
+            normalized["minimum_mm"] = _number(
+                operation,
+                f"{parameter}.minimum_mm",
+                value.get("minimum_mm"),
+                minimum=0.0,
+                maximum=1.0e6,
+            )
+        normalized_requirements.append(normalized)
+
+    normalized_contacts: list[dict[str, Any]] = []
+    for index, value in enumerate(contacts):
+        parameter = f"contacts[{index}]"
+        if not isinstance(value, Mapping):
+            raise _error(operation, parameter, "expected an object", value)
+        policy = str(value.get("policy") or "").strip().lower()
+        if policy not in _CONTACT_POLICIES:
+            raise _error(
+                operation,
+                f"{parameter}.policy",
+                f"must be one of {sorted(_CONTACT_POLICIES)}",
+                value.get("policy"),
+            )
+        expected = {"first", "second", "policy"}
+        if policy == "ignored":
+            expected.add("reason")
+        else:
+            expected.add("tolerance_mm")
+        if policy == "clearance":
+            expected.add("minimum_clearance_mm")
+        elif policy in {"allowed", "required"}:
+            expected.update({"first_interface", "second_interface"})
+        if set(value) != expected:
+            raise _error(
+                operation,
+                parameter,
+                f"must contain exactly {sorted(expected)}",
+                value,
+            )
+        first, second, pair = _mechanism_pair(
+            operation,
+            parameter,
+            value,
+            graph_components=graph_components,
+        )
+        if pair in seen_pairs:
+            raise _error(
+                operation,
+                parameter,
+                f"duplicates the unordered pair already declared by {seen_pairs[pair]}",
+            )
+        seen_pairs[pair] = parameter
+        normalized = {
+            "first": first,
+            "second": second,
+            "policy": policy,
+        }
+        if policy == "ignored":
+            normalized["reason"] = _required_text(
+                operation,
+                f"{parameter}.reason",
+                value.get("reason"),
+                maximum=256,
+            )
+        else:
+            normalized["tolerance_mm"] = _number(
+                operation,
+                f"{parameter}.tolerance_mm",
+                value.get("tolerance_mm"),
+                minimum=0.0,
+                maximum=1.0e3,
+                strict_minimum=True,
+            )
+        if policy == "clearance":
+            normalized["minimum_clearance_mm"] = _number(
+                operation,
+                f"{parameter}.minimum_clearance_mm",
+                value.get("minimum_clearance_mm"),
+                minimum=0.0,
+                maximum=1.0e6,
+            )
+        elif policy in {"allowed", "required"}:
+            for field in ("first_interface", "second_interface"):
+                interface_name = str(value.get(field) or "").strip()
+                if not _INTERFACE_NAME.fullmatch(interface_name):
+                    raise _error(
+                        operation,
+                        f"{parameter}.{field}",
+                        "must name one published semantic interface",
+                        value.get(field),
+                    )
+                normalized[field] = interface_name
+        normalized_contacts.append(normalized)
+    if not normalized_requirements and all(
+        item["policy"] == "ignored" for item in normalized_contacts
+    ):
+        raise _error(
+            operation,
+            "requirements/contacts",
+            "must contain at least one evaluated requirement or non-ignored contact policy",
+        )
+    return normalized_requirements, normalized_contacts
 
 
 def _selection(operation: str, value: Any) -> dict[str, str]:
@@ -713,9 +1142,12 @@ class AssemblyDomainAPI:
     exported_names = (
         "assembly",
         "component",
+        "instances",
+        "fastener",
         "connector",
         "joint",
         "solve",
+        "mechanism_check",
         "motion",
         "simulation",
         "exploded_view",
@@ -796,6 +1228,175 @@ class AssemblyDomainAPI:
             label=label,
         )
 
+    def instances(
+        self,
+        source: Mapping[str, str],
+        placements: Sequence[
+            Sequence[float] | Mapping[str, Sequence[float]] | None
+        ],
+        *,
+        grounded_index: int | None = None,
+        flexible: bool = False,
+        labels: Sequence[str] | None = None,
+    ) -> tuple[DomainValue, ...]:
+        """Create repeated native links to one authored component definition.
+
+        ``placements`` contains one exact placement per occurrence.  The return
+        value is a tuple of ordinary ``component_link`` graph values: assign or
+        index each item, use those exact items in connectors and api.assembly,
+        and return every item once under its own stable output name.  Set
+        ``grounded_index`` to the one fixed occurrence, or omit it.  ``labels``
+        must contain exactly one label per placement when supplied.
+        """
+
+        operation = "instances"
+        clean_source = _reference(operation, source)
+        if isinstance(placements, (str, bytes)) or not isinstance(
+            placements,
+            Sequence,
+        ):
+            raise _error(
+                operation,
+                "placements",
+                "expected an array of 1-64 placements",
+                placements,
+            )
+        raw_placements = list(placements)
+        if not 1 <= len(raw_placements) <= 64:
+            raise _error(
+                operation,
+                "placements",
+                "requires 1-64 placements",
+                len(raw_placements),
+            )
+        if grounded_index is not None and (
+            isinstance(grounded_index, bool)
+            or not isinstance(grounded_index, int)
+            or not 0 <= grounded_index < len(raw_placements)
+        ):
+            raise _error(
+                operation,
+                "grounded_index",
+                f"expected null or an index from 0 to {len(raw_placements) - 1}",
+                grounded_index,
+            )
+        if not isinstance(flexible, bool):
+            raise _error(operation, "flexible", "expected a boolean", flexible)
+        if flexible and grounded_index is not None:
+            raise _error(
+                operation,
+                "grounded_index",
+                "a flexible subassembly occurrence cannot be grounded",
+                grounded_index,
+            )
+        if labels is None:
+            clean_labels = [""] * len(raw_placements)
+        else:
+            if isinstance(labels, (str, bytes)) or not isinstance(labels, Sequence):
+                raise _error(
+                    operation,
+                    "labels",
+                    "expected one string per placement",
+                    labels,
+                )
+            if len(labels) != len(raw_placements):
+                raise _error(
+                    operation,
+                    "labels",
+                    "must contain exactly one string per placement",
+                    labels,
+                )
+            clean_labels = [
+                _label(operation, str(value or "")) for value in labels
+            ]
+        clean_placements = [
+            _placement(
+                operation,
+                f"placements[{index}]",
+                value,
+            )
+            for index, value in enumerate(raw_placements)
+        ]
+        return tuple(
+            self._value(
+                "component",
+                "component_link",
+                clean_source,
+                placement=placement,
+                grounded=index == grounded_index,
+                flexible=flexible,
+                label=clean_labels[index],
+            )
+            for index, placement in enumerate(clean_placements)
+        )
+
+    def fastener(
+        self,
+        standard: str,
+        nominal_thread: str,
+        *,
+        length_mm: float | None = None,
+        model_thread: bool = False,
+        left_handed: bool = False,
+        options: Mapping[str, Any] | None = None,
+        placement: Sequence[float] | Mapping[str, Sequence[float]] | None = None,
+        grounded: bool = False,
+        label: str = "",
+    ) -> DomainValue:
+        """Insert one exact catalog fastener as a native linked occurrence.
+
+        Pass values returned by fastener_catalog.search. No nearest standard,
+        thread, length, or option is substituted. Use the returned occurrence
+        directly in api.connector and api.assembly. Set model_thread=True for
+        real helical thread geometry; False uses the lightweight envelope.
+        """
+
+        operation = "fastener"
+        if not isinstance(model_thread, bool):
+            raise _error(
+                operation,
+                "model_thread",
+                "must be a boolean",
+                model_thread,
+            )
+        if not isinstance(left_handed, bool):
+            raise _error(
+                operation,
+                "left_handed",
+                "must be a boolean",
+                left_handed,
+            )
+        if not isinstance(grounded, bool):
+            raise _error(
+                operation,
+                "grounded",
+                "must be a boolean",
+                grounded,
+            )
+        return self._value(
+            operation,
+            "component_link",
+            _required_text(operation, "standard", standard),
+            _required_text(operation, "nominal_thread", nominal_thread),
+            length_mm=(
+                None
+                if length_mm is None
+                else _number(
+                    operation,
+                    "length_mm",
+                    length_mm,
+                    minimum=0.0,
+                    strict_minimum=True,
+                )
+            ),
+            model_thread=model_thread,
+            left_handed=left_handed,
+            options=_fastener_options(options),
+            placement=_placement(operation, "placement", placement),
+            grounded=grounded,
+            label=label,
+        )
+
     def connector(
         self,
         component: DomainValue,
@@ -858,7 +1459,11 @@ class AssemblyDomainAPI:
         suppressed: bool = False,
         label: str = "",
     ) -> DomainValue:
-        """Connect two JCS values with one of FreeCAD's 13 native joint types.
+        """Connect two JCS values with one native joint.
+
+        ``kind`` is exactly one of: ``fixed``, ``revolute``, ``cylindrical``,
+        ``slider``, ``ball``, ``distance``, ``parallel``, ``perpendicular``,
+        ``angle``, ``rack_pinion``, ``screw``, ``gears``, or ``belt``.
 
         Type-specific values are required only for ``distance``, ``angle``,
         ``rack_pinion``, ``screw``, ``gears``, and ``belt``. Translation limits
@@ -906,15 +1511,7 @@ class AssemblyDomainAPI:
             "radius1_mm": radius1_mm,
             "radius2_mm": radius2_mm,
         }
-        required_by_kind = {
-            "distance": ("distance_mm",),
-            "angle": ("angle_degrees",),
-            "rack_pinion": ("pitch_radius_mm",),
-            "screw": ("thread_pitch_mm",),
-            "gears": ("radius1_mm", "radius2_mm"),
-            "belt": ("radius1_mm", "radius2_mm"),
-        }
-        required = set(required_by_kind.get(clean_kind, ()))
+        required = set(JOINT_REQUIRED_PARAMETERS[clean_kind])
         missing = [name for name in required if supplied[name] is None]
         if missing:
             raise _error(
@@ -989,33 +1586,56 @@ class AssemblyDomainAPI:
 
     def assembly(
         self,
-        components: Sequence[DomainValue],
-        joints: Sequence[DomainValue] = (),
+        components: Sequence[DomainValue] | Mapping[str, DomainValue],
+        joints: Sequence[DomainValue] | Mapping[str, DomainValue] = (),
         *,
         label: str = "",
     ) -> DomainValue:
-        """Build one assembly graph from returned component and joint variables.
+        """Build one assembly graph from component and joint variables.
 
-        Every listed component and joint must also be returned exactly once as
-        its own declared output.  At least one component must be grounded before
-        the graph is solved.
+        Prefer mappings whose keys are stable native member identities, for
+        example ``api.assembly({'Housing': housing}, {'ShaftJoint': joint})``.
+        Mapped members are owned by the Assembly and do not consume public
+        ``result`` outputs. The established sequence form remains supported and
+        requires each member to be returned exactly once. At least one component
+        must be grounded before the graph is solved.
         """
 
         operation = "assembly"
-        component_values = _values(
+        component_values, component_names = _named_values(
             operation,
             "components",
             components,
             output_type="component_link",
             minimum=1,
         )
-        joint_values = _values(
+        joint_values, joint_names = _named_values(
             operation,
             "joints",
             joints,
             output_type="joint",
             minimum=0,
         )
+        if component_names is not None and joint_names is None and joint_values:
+            raise _error(
+                operation,
+                "joints",
+                "use a stable-key mapping when components use a mapping",
+            )
+        if component_names is None and joint_names is not None:
+            raise _error(
+                operation,
+                "components",
+                "use a stable-key mapping when joints use a mapping",
+            )
+        if component_names is not None and joint_names is not None:
+            duplicates = set(component_names).intersection(joint_names)
+            if duplicates:
+                raise _error(
+                    operation,
+                    "components/joints",
+                    f"member keys must be unique across the graph: {sorted(duplicates)}",
+                )
         component_ids = {id(item) for item in component_values}
         for index, joint_value in enumerate(joint_values):
             for connector_index, connector in enumerate(joint_value.arguments):
@@ -1026,11 +1646,16 @@ class AssemblyDomainAPI:
                         f"joints[{index}].connector[{connector_index}]",
                         "references a component that is not listed in components",
                     )
+        member_identities: dict[str, Any] = {}
+        if component_names is not None:
+            member_identities["component_names"] = component_names
+            member_identities["joint_names"] = joint_names or []
         return self._value(
             operation,
             "assembly",
             components=component_values,
             joints=joint_values,
+            **member_identities,
             label=label,
         )
 
@@ -1063,6 +1688,46 @@ class AssemblyDomainAPI:
             "solver_diagnostics",
             value,
             require_solved=require_solved,
+            label=label,
+        )
+
+    def mechanism_check(
+        self,
+        assembly: DomainValue,
+        *,
+        requirements: Sequence[Mapping[str, Any]] = (),
+        contacts: Sequence[Mapping[str, Any]] = (),
+        label: str = "",
+    ) -> DomainValue:
+        """Evaluate explicit static component-pair requirements after native solve.
+
+        Every evaluated pair and every acceptance tolerance is declared here;
+        no fit, collision exemption, or tolerance is inferred. Use
+        ``collision_free`` or ``minimum_clearance`` requirements for direct
+        assertions. Contact policies are ``prohibited``, ``clearance``,
+        ``allowed``, ``required``, and ``ignored``. ``allowed`` and ``required``
+        must name one published semantic interface on each component. Ignored
+        pairs require a reason and perform no geometry evaluation.
+        """
+
+        operation = "mechanism_check"
+        model = _domain_value(
+            operation,
+            "assembly",
+            assembly,
+            output_type="assembly",
+        )
+        clean_requirements, clean_contacts = _mechanism_declarations(
+            model,
+            requirements,
+            contacts,
+        )
+        return self._value(
+            operation,
+            "mechanism_verification",
+            model,
+            requirements=clean_requirements,
+            contacts=clean_contacts,
             label=label,
         )
 
@@ -1130,7 +1795,7 @@ class AssemblyDomainAPI:
     def simulation(
         self,
         assembly: DomainValue,
-        motions: Sequence[DomainValue],
+        motions: Sequence[DomainValue] | Mapping[str, DomainValue],
         *,
         start_time_s: float = 0.0,
         end_time_s: float = 1.0,
@@ -1141,8 +1806,10 @@ class AssemblyDomainAPI:
     ) -> DomainValue:
         """Run native Assembly kinematics in the worker and retain its trace.
 
-        Every motion must also be returned as a stable ``motion`` output. The
-        worker records an initial frame plus native time-series frames and
+        Prefer a stable-key mapping; mapped motions are owned by the simulation
+        and do not consume public ``result`` outputs. The established sequence
+        form remains supported and requires each motion as a top-level output.
+        The worker records an initial frame plus native time-series frames and
         rejects simulations exceeding 100000 component-pose samples.
         ``time_step_s`` controls trace density; ``frames_per_second`` is retained
         only as the live playback rate and does not add solver samples.
@@ -1150,7 +1817,7 @@ class AssemblyDomainAPI:
 
         operation = "simulation"
         model = _domain_value(operation, "assembly", assembly, output_type="assembly")
-        motion_values = _values(
+        motion_values, motion_names = _named_values(
             operation,
             "motions",
             motions,
@@ -1224,11 +1891,15 @@ class AssemblyDomainAPI:
                 "would exceed 10000 native frames or 100000 component-pose samples; "
                 "increase time_step_s or shorten the time range",
             )
+        motion_identities: dict[str, Any] = {}
+        if motion_names is not None:
+            motion_identities["motion_names"] = motion_names
         return self._value(
             operation,
             "simulation",
             model,
             motions=motion_values,
+            **motion_identities,
             start_time_s=start,
             end_time_s=end,
             time_step_s=step,
@@ -1259,11 +1930,11 @@ class AssemblyDomainAPI:
 
         operation = "exploded_view"
         model = _domain_value(operation, "assembly", assembly, output_type="assembly")
-        if not isinstance(moves, (list, tuple)) or not 1 <= len(moves) <= 64:
+        if not isinstance(moves, (list, tuple)) or not 1 <= len(moves) <= 4096:
             raise _error(
                 operation,
                 "moves",
-                "expected an array containing 1 through 64 ordered move objects",
+                "expected an array containing 1 through 4096 ordered move objects",
                 moves,
             )
         graph_components = {
@@ -1303,11 +1974,11 @@ class AssemblyDomainAPI:
                         "is not listed in this assembly",
                     )
             reference_count += len(components)
-            if reference_count > 256:
+            if reference_count > 16384:
                 raise _error(
                     operation,
                     "moves",
-                    "may contain at most 256 component references across all moves",
+                    "may contain at most 16384 component references across all moves",
                 )
             if has_transform:
                 transform = _placement(operation, f"{path}.transform", raw["transform"])

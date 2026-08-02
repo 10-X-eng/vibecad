@@ -24,8 +24,10 @@
 
 
 #include <Gui/Control.h>
+#include <Gui/Document.h>
 #include <Mod/Robot/Gui/TaskDlgTrajectoryDressUp.h>
 
+#include "OperationSupport.h"
 #include "ViewProviderTrajectoryDressUp.h"
 
 
@@ -34,34 +36,31 @@ using namespace RobotGui;
 
 PROPERTY_SOURCE(RobotGui::ViewProviderTrajectoryDressUp, RobotGui::ViewProviderTrajectory)
 
-// bool ViewProviderTrajectoryDressUp::doubleClicked(void)
-//{
-//     Gui::TaskView::TaskDialog* dlg = new
-//     TaskDlgTrajectoryDressUp(getObject<Robot::TrajectoryDressUpObject >());
-//     Gui::Control().showDialog(dlg);
-//     return true;
-// }
-//
+bool ViewProviderTrajectoryDressUp::doubleClicked()
+{
+    auto* document = getDocument();
+    return document && document->setEdit(this, Gui::ViewProvider::Default);
+}
 
 bool ViewProviderTrajectoryDressUp::setEdit(int)
 {
-    Gui::TaskView::TaskDialog* dlg = new TaskDlgTrajectoryDressUp(
-        getObject<Robot::TrajectoryDressUpObject>()
-    );
-    Gui::Control().showDialog(dlg);
+    auto* object = getObject<Robot::TrajectoryDressUpObject>();
+    if (!object || !RobotGui::OperationSupport::isUsableObject(object)) {
+        return false;
+    }
+    Gui::Control().showDialog(new TaskDlgTrajectoryDressUp(object), object->getDocument());
     return true;
 }
 
 void ViewProviderTrajectoryDressUp::unsetEdit(int)
-{
-    // when pressing ESC make sure to close the dialog
-    Gui::Control().closeDialog();
-}
+{}
 
 std::vector<App::DocumentObject*> ViewProviderTrajectoryDressUp::claimChildren() const
 {
     std::vector<App::DocumentObject*> temp;
-    temp.push_back(getObject<Robot::TrajectoryDressUpObject>()->Source.getValue());
+    if (auto* source = getObject<Robot::TrajectoryDressUpObject>()->Source.getValue()) {
+        temp.push_back(source);
+    }
 
     return temp;
 }

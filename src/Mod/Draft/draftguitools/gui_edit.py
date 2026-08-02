@@ -47,9 +47,12 @@ import DraftVecUtils
 from draftutils import gui_utils
 from draftutils import params
 from draftutils import utils
+from draftutils.transaction import object_is_usable_at_current_position
+from draftutils.transaction import ObjectReference
+from draftutils.transaction import OwnedDocumentTransaction
+from draftutils.transaction import reset_document_edit
 from draftutils.translate import translate
 from draftguitools import gui_base_original
-from draftguitools import gui_edit_arch_objects as edit_arch
 from draftguitools import gui_edit_draft_objects as edit_draft
 from draftguitools import gui_edit_part_objects as edit_part
 from draftguitools import gui_edit_sketcher_objects as edit_sketcher
@@ -206,6 +209,9 @@ class Edit(gui_base_original.Modifier):
         self.edited_objects = []
         self.obj = None
         self.editing = None
+        self.edit_transaction = None
+        self.edit_target = None
+        self.edited_references = {}
 
         # event callbacks
         self.selection_callback = None
@@ -214,7 +220,6 @@ class Edit(gui_base_original.Modifier):
         self._mousePressedCB = None
 
         # this stores the DisplayMode of the object to restore it after editing
-        # only used by Arch Structure
         self.objs_formats = {}
 
         # settings (get updated in Activated)
@@ -241,13 +246,6 @@ class Edit(gui_base_original.Modifier):
         )  # Backward compatibility
         self.gui_tools_repository.add("LinearDimension", edit_draft.DraftDimensionGuiTools())
         self.gui_tools_repository.add("Label", edit_draft.DraftLabelGuiTools())
-
-        self.gui_tools_repository.add("Wall", edit_arch.ArchWallGuiTools())
-        self.gui_tools_repository.add("Window", edit_arch.ArchWindowGuiTools())
-        self.gui_tools_repository.add("Structure", edit_arch.ArchStructureGuiTools())
-        self.gui_tools_repository.add("Space", edit_arch.ArchSpaceGuiTools())
-        self.gui_tools_repository.add("PanelCut", edit_arch.ArchPanelCutGuiTools())
-        self.gui_tools_repository.add("PanelSheet", edit_arch.ArchPanelSheetGuiTools())
 
         self.gui_tools_repository.add("Part::Line", edit_part.PartLineGuiTools())
         self.gui_tools_repository.add("Part::Box", edit_part.PartBoxGuiTools())
@@ -304,6 +302,10 @@ class Edit(gui_base_original.Modifier):
         self.edited_objects = self.getObjsFromSelection()
         if not self.edited_objects:
             return self.finish()
+        self.edited_references = {
+            obj.Name: ObjectReference.capture(obj)
+            for obj in self.edited_objects
+        }
 
         self.format_objects_for_editing(self.edited_objects)
 
@@ -327,7 +329,6 @@ class Edit(gui_base_original.Modifier):
         or by the mouse click and activate the update function.
         """
         self.endEditing(self.obj, self.editing, App.Vector(numx, numy, numz))
-        App.ActiveDocument.recompute()
 
     def slotDeletedObject(self, obj):
         """Document observer callback: exit edit mode if the edited object is deleted."""
@@ -337,6 +338,7 @@ class Edit(gui_base_original.Modifier):
 
     def finish(self, cont=False):
         """Terminate Edit Tool."""
+        self.abort_edit_transaction()
         App.removeDocumentObserver(self)
         self.unregister_selection_callback()
         self.unregister_editing_callbacks()
@@ -352,14 +354,20 @@ class Edit(gui_base_original.Modifier):
 
         super(Edit, self).finish()
         self.running = False
+        document = self.doc
+        self.edited_references = {}
         # delay resetting edit mode otherwise it doesn't happen
         from PySide import QtCore
 
-        QtCore.QTimer.singleShot(0, self.reset_edit)
+        QtCore.QTimer.singleShot(
+            0,
+            lambda document=document: reset_document_edit(document),
+        )
 
     def reset_edit(self):
-        if Gui.ActiveDocument is not None:
-            Gui.ActiveDocument.resetEdit()
+        """Reset only this command's exact document edit mode."""
+
+        reset_document_edit(self.doc)
 
     # -------------------------------------------------------------------------
     # INPUT HINTS
@@ -498,8 +506,10 @@ class Edit(gui_base_original.Modifier):
                     node_idx = self.getEditNodeIndex(node)
                     if node_idx is None:
                         return
-                    doc = App.getDocument(str(node.documentName.getValue()))
-                    obj = doc.getObject(str(node.objectName.getValue()))
+                    obj = self._resolve_edited_object(
+                        str(node.objectName.getValue()),
+                        str(node.documentName.getValue()),
+                    )
 
                     self.startEditing(obj, node_idx)
                 else:
@@ -532,9 +542,19 @@ class Edit(gui_base_original.Modifier):
 
     def startEditing(self, obj, node_idx):
         """Start editing selected EditNode."""
-        self.obj = obj  # this is still needed to handle preview
         if obj is None:
             return
+        try:
+            self.begin_edit_transaction(obj)
+        except Exception as error:
+            App.Console.PrintError(
+                translate("draft", "Cannot start Draft edit")
+                + ": "
+                + str(error)
+                + "\n"
+            )
+            return
+        self.obj = obj  # this is still needed to handle preview
 
         App.Console.PrintMessage(obj.Name + ": editing node number " + str(node_idx) + "\n")
 
@@ -557,7 +577,12 @@ class Edit(gui_base_original.Modifier):
         orthoConstrain = False
         if event.wasShiftDown() == 1:
             orthoConstrain = True
-        snappedPos = Gui.Snapper.snap((pos[0], pos[1]), self.node[-1], constrain=orthoConstrain)
+        snappedPos = Gui.Snapper.snap(
+            (pos[0], pos[1]),
+            self.node[-1],
+            constrain=orthoConstrain,
+            view=self.view,
+        )
         self.trackers[self.obj.Name][self.editing].set(snappedPos)
         self.ui.displayPoint(snappedPos, self.node[-1], mask=Gui.Snapper.affinity)
         if self.ghost:
@@ -575,14 +600,22 @@ class Edit(gui_base_original.Modifier):
             # endEditing is called by numericInput, so tracker
             # position should be updated manually
             self.trackers[obj.Name][nodeIndex].set(v)
-        self.update(obj, nodeIndex, v)
-        self.alt_edit_mode = 0
-        self.ui.editUi()
-        self.node = []
-        self.editing = None
-        self.showTrackers()
-        gui_tool_utils.redraw_3d_view()
-        self.update_hints()
+        try:
+            try:
+                self.update(obj, nodeIndex, v)
+            except Exception:
+                self.abort_edit_transaction()
+                raise
+            else:
+                self.commit_edit_transaction()
+        finally:
+            self.alt_edit_mode = 0
+            self.ui.editUi()
+            self.node = []
+            self.editing = None
+            self.showTrackers()
+            gui_tool_utils.redraw_3d_view()
+            self.update_hints()
 
     # -------------------------------------------------------------------------
     # EDIT TRACKERS functions
@@ -604,7 +637,13 @@ class Edit(gui_base_original.Modifier):
             self.removeTrackers(obj)
         for ep in range(len(points)):
             self.trackers[obj.Name].append(
-                trackers.editTracker(pos=points[ep], name=obj.Name, idx=ep)
+                trackers.editTracker(
+                    pos=points[ep],
+                    name=obj.Name,
+                    idx=ep,
+                    document_name=obj.Document.Name,
+                    scene_view=self.view,
+                )
             )
 
     def resetTrackers(self, obj):
@@ -636,7 +675,15 @@ class Edit(gui_base_original.Modifier):
             p = obj.Placement.inverse().multVec(p)
             p = obj.getGlobalPlacement().multVec(p)
             self.trackers[obj.Name].append(
-                trackers.editTracker(p, obj.Name, index, obj.ViewObject.LineColor, marker=marker)
+                trackers.editTracker(
+                    p,
+                    obj.Name,
+                    index,
+                    obj.ViewObject.LineColor,
+                    marker=marker,
+                    document_name=obj.Document.Name,
+                    scene_view=self.view,
+                )
             )
 
     def removeTrackers(self, obj=None):
@@ -729,8 +776,12 @@ class Edit(gui_base_original.Modifier):
 
         if self.overNode:
             # if user is over a node
-            doc = self.overNode.get_doc_name()
-            obj = App.getDocument(doc).getObject(self.overNode.get_obj_name())
+            obj = self._resolve_edited_object(
+                self.overNode.get_obj_name(),
+                self.overNode.get_doc_name(),
+            )
+            if obj is None:
+                return
             ep = self.overNode.get_subelement_index()
 
             obj_gui_tools = self.get_obj_gui_tools(obj)
@@ -751,9 +802,17 @@ class Edit(gui_base_original.Modifier):
 
         for label, callback in actions:
 
-            def wrapper(callback=callback):
-                callback()
-                self.resetTrackers(obj)
+            def wrapper(callback=callback, obj=obj):
+                try:
+                    self.begin_edit_transaction(obj)
+                    callback()
+                    if self.editing is None:
+                        obj.Document.recompute()
+                        self.commit_edit_transaction()
+                        self.resetTrackers(obj)
+                except Exception:
+                    self.abort_edit_transaction()
+                    raise
 
             action = self.tracker_menu.addAction(label)
             action.setData(wrapper)
@@ -790,21 +849,57 @@ class Edit(gui_base_original.Modifier):
 
     def update(self, obj, nodeIndex, v):
         """Apply the App.Vector to the modified point and update obj."""
+        if self.edit_target is None or self.edit_target.resolve() is not obj:
+            raise RuntimeError(
+                "The Draft edit target was deleted or replaced"
+            )
         v = self.localize_vector(obj, v)
-        App.ActiveDocument.openTransaction("Edit")
         self.update_object(obj, nodeIndex, v)
-        App.ActiveDocument.commitTransaction()
         self.resetTrackers(obj)
         try:
             gui_tool_utils.redraw_3d_view()
-        except AttributeError as err:
+        except AttributeError:
             pass
+
+    def begin_edit_transaction(self, obj):
+        """Own one exact transaction for a complete edit gesture."""
+        if self.edit_transaction is not None:
+            if self.edit_target is None or self.edit_target.resolve() is not obj:
+                raise RuntimeError(
+                    "Another Draft edit gesture is already active"
+                )
+            return
+        target = ObjectReference.capture(obj)
+        document = target.document.resolve()
+        if document is None or target.resolve() is not obj:
+            raise RuntimeError("The Draft edit target is no longer live")
+        self.edit_transaction = OwnedDocumentTransaction(
+            document,
+            translate("draft", "Edit"),
+        )
+        self.edit_target = target
+
+    def commit_edit_transaction(self):
+        """Commit only the transaction owned by the active gesture."""
+        transaction = self.edit_transaction
+        self.edit_transaction = None
+        self.edit_target = None
+        if transaction is not None:
+            transaction.commit()
+
+    def abort_edit_transaction(self):
+        """Roll back only the transaction owned by the active gesture."""
+        transaction = self.edit_transaction
+        self.edit_transaction = None
+        self.edit_target = None
+        if transaction is not None and not transaction.is_closed:
+            transaction.abort()
 
     def update_object(self, obj, nodeIndex, v):
         """Update the object according to the given modified editpoint."""
         obj_gui_tools = self.get_obj_gui_tools(obj)
         if obj_gui_tools:
-            eps = obj_gui_tools.update_object_from_edit_points(
+            obj_gui_tools.update_object_from_edit_points(
                 obj, nodeIndex, v, self.alt_edit_mode
             )
 
@@ -849,7 +944,7 @@ class Edit(gui_base_original.Modifier):
                 obj = selobj.Object
                 obj_matrix = selobj.Object.getSubObject(sub, retType=4)
         """
-        selection = Gui.Selection.getSelection()
+        selection = tuple(Gui.Selection.getSelection())
         self.edited_objects = []
         if len(selection) > self.max_objects:
             _err = translate("draft", "Too many objects selected, maximum number set to:")
@@ -857,12 +952,28 @@ class Edit(gui_base_original.Modifier):
             return None
 
         for obj in selection:
-            if self.has_obj_gui_tools(obj):
+            if (
+                object_is_usable_at_current_position(obj, self.doc)
+                and self.has_obj_gui_tools(obj)
+            ):
                 self.edited_objects.append(obj)
             else:
                 _wrn = translate("draft", ": this object is not editable")
                 App.Console.PrintWarning(obj.Name + _wrn + "\n")
         return self.edited_objects
+
+    def _resolve_edited_object(self, name, document_name=None):
+        """Resolve only an object captured when this edit session started."""
+
+        reference = self.edited_references.get(str(name))
+        if reference is None:
+            return None
+        if (
+            document_name is not None
+            and reference.document.name != str(document_name)
+        ):
+            return None
+        return reference.resolve()
 
     def format_objects_for_editing(self, objs):
         """Change objects style during editing mode."""
@@ -905,9 +1016,9 @@ class Edit(gui_base_original.Modifier):
         for info in selobjs:
             if not info:
                 return
-            for obj in self.edited_objects:
-                if obj.Name == info["Object"]:
-                    return obj
+            obj = self._resolve_edited_object(info["Object"])
+            if obj is not None:
+                return obj
 
     def globalize_vectors(self, obj, pointList):
         """Return the given point list in the global coordinate system."""

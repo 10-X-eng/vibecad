@@ -98,8 +98,9 @@ class Shape2DView(gui_base_original.Modifier):
                 if "Face" in e:
                     faces.append(int(e[4:]) - 1)
         # print(objs, faces)
-        commitlist = []
+        commitlist = ["_vibecad_shape2d_outputs = []"]
         Gui.addModule("Draft")
+        Gui.addModule("draftutils.timeline")
         if len(objs) == 1 and faces:
             _cmd = "Draft.make_shape2dview"
             _cmd += "("
@@ -108,6 +109,7 @@ class Shape2DView(gui_base_original.Modifier):
             _cmd += "facenumbers=" + str(faces)
             _cmd += ")"
             commitlist.append("sv = " + _cmd)
+            commitlist.append("_vibecad_shape2d_outputs.append(sv)")
         else:
             n = 0
             for o in objs:
@@ -117,10 +119,20 @@ class Shape2DView(gui_base_original.Modifier):
                 _cmd += DraftVecUtils.toString(vec)
                 _cmd += ")"
                 commitlist.append("sv" + str(n) + " = " + _cmd)
+                commitlist.append(
+                    "_vibecad_shape2d_outputs.append(sv" + str(n) + ")"
+                )
                 n += 1
-        if commitlist:
+        if len(commitlist) > 1:
+            commitlist.append(
+                "draftutils.timeline.accept_outputs(_vibecad_shape2d_outputs)"
+            )
             commitlist.append("FreeCAD.ActiveDocument.recompute()")
-            self.commit(translate("draft", "Create 2D View"), commitlist)
+            self.commit(
+                translate("draft", "Create 2D View"),
+                commitlist,
+                inputs=objs,
+            )
         self.finish()
 
 

@@ -334,10 +334,15 @@ bool DynamicProperty::removeProperty(const Property* prop)
 
 bool DynamicProperty::removeDynamicProperty(const char* name)
 {
+    return removeDynamicProperty(name, false);
+}
+
+bool DynamicProperty::removeDynamicProperty(const char* name, const bool bypassLock)
+{
     auto& index = impl->props.get<0>();
     auto it = index.find(name);
     if (it != index.end()) {
-        if (it->property->testStatus(Property::LockDynamic)) {
+        if (!bypassLock && it->property->testStatus(Property::LockDynamic)) {
             throw Base::RuntimeError("property is locked");
         }
         else if (!it->property->testStatus(Property::PropDynamic)) {

@@ -73,6 +73,7 @@ MultiFuse::MultiFuse()
 {
     ADD_PROPERTY(Shapes, (nullptr));
     Shapes.setSize(0);
+    allowCrossContainerLink(Shapes);
     ADD_PROPERTY_TYPE(
         History,
         (ShapeHistory()),

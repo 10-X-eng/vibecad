@@ -56,25 +56,37 @@ class TaskPanelOpPage(PathCircularHoleBaseGui.TaskPanelOpPage):
     def registerSignalHandlers(self, obj):
         # Strategy selector handler
         if hasattr(self.form, "Strategy"):
-            self.form.Strategy.currentIndexChanged.connect(self.onStrategyChanged)
+            self.connectSignal(
+                self.form.Strategy.currentIndexChanged,
+                self.onStrategyChanged,
+            )
 
         self.form.peckEnabled.toggled.connect(self.form.peckDepth.setEnabled)
         self.form.peckEnabled.toggled.connect(self.form.dwellEnabled.setDisabled)
         self.form.peckEnabled.toggled.connect(self.form.feedRetractEnabled.setDisabled)
-        self.form.peckEnabled.toggled.connect(self.setChipBreakControl)
+        self.connectSignal(
+            self.form.peckEnabled.toggled,
+            self.setChipBreakControl,
+        )
 
         self.form.feedRetractEnabled.toggled.connect(self.form.peckDepth.setDisabled)
         self.form.feedRetractEnabled.toggled.connect(self.form.peckEnabled.setDisabled)
         self.form.feedRetractEnabled.toggled.connect(self.form.dwellEnabled.setDisabled)
         self.form.feedRetractEnabled.toggled.connect(self.form.chipBreakEnabled.setDisabled)
         self.form.feedRetractEnabled.toggled.connect(self.form.peckEnabled.setDisabled)
-        self.form.feedRetractEnabled.toggled.connect(self.setChipBreakControl)
+        self.connectSignal(
+            self.form.feedRetractEnabled.toggled,
+            self.setChipBreakControl,
+        )
 
         self.form.dwellEnabled.toggled.connect(self.form.dwellTime.setEnabled)
         self.form.dwellEnabled.toggled.connect(self.form.dwellTimelabel.setEnabled)
         self.form.dwellEnabled.toggled.connect(self.form.peckEnabled.setDisabled)
         self.form.dwellEnabled.toggled.connect(self.form.feedRetractEnabled.setDisabled)
-        self.form.dwellEnabled.toggled.connect(self.setChipBreakControl)
+        self.connectSignal(
+            self.form.dwellEnabled.toggled,
+            self.setChipBreakControl,
+        )
 
         if self.form.peckEnabled.isChecked():
             self.form.dwellEnabled.setEnabled(False)

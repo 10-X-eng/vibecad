@@ -47,6 +47,10 @@ public:
 
     /// Is called by the tree if the user double click on the object
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
 
     TechDraw::DrawProjGroup* getObject() const;
     TechDraw::DrawProjGroup* getViewObject() const override;

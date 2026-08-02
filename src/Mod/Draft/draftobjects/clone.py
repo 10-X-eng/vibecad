@@ -153,18 +153,6 @@ class Clone(DraftObject):
     def onChanged(self, obj, prop):
         self.props_changed_store(prop)
 
-    def getSubVolume(self, obj, placement=None):
-        # this allows clones of arch windows to return a subvolume too
-        if obj.Objects:
-            if hasattr(obj.Objects[0], "Proxy"):
-                if hasattr(obj.Objects[0].Proxy, "getSubVolume"):
-                    if not placement:
-                        # clones must displace the original subvolume too
-                        placement = obj.Placement
-                    return obj.Objects[0].Proxy.getSubVolume(obj.Objects[0], placement)
-        return None
-
-
 # Alias for compatibility with v0.18 and earlier
 _Clone = Clone
 

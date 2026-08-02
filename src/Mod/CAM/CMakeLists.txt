@@ -29,6 +29,7 @@ INSTALL(
 
 SET(PathPython_SRCS
     Path/__init__.py
+    Path/CommandBoundary.py
     Path/Log.py
     Path/Geom.py
     Path/GuiInit.py
@@ -629,6 +630,7 @@ SET(Tests_SRCS
     CAMTests/TestPostToolProcessing.py
     CAMTests/TestSVGPost.py
     CAMTests/TestTSPSolver.py
+    CAMTests/TestVibeCADRibbonTools.py
     CAMTests/TestGcodeProcessingUtils.py
     CAMTests/Tools/Bit/test-path-tool-bit-bit-00.fctb
     CAMTests/Tools/Library/test-path-tool-bit-library-00.fctl
@@ -713,7 +715,7 @@ SET(all_files
 )
 
 ADD_CUSTOM_TARGET(PathScripts ALL
-    SOURCES ${all_files}
+    SOURCES ${all_files} ${Path_Scripts}
 )
 
 SET(test_files
@@ -726,8 +728,20 @@ ADD_CUSTOM_TARGET(Tests ALL
     SOURCES ${test_files}
 )
 
-fc_copy_sources(PathScripts "${CMAKE_BINARY_DIR}/Mod/CAM" ${all_files})
+fc_copy_sources(
+    PathScripts
+    "${CMAKE_BINARY_DIR}/Mod/CAM"
+    ${all_files}
+    ${Path_Scripts}
+)
 fc_copy_sources(Tests "${CMAKE_BINARY_DIR}/Mod/CAM" ${test_files})
+
+if(TARGET PathGui)
+    # PathGui imports these modules directly.  Make a targeted GUI build
+    # stage the current runtime sources instead of depending on the unrelated
+    # ALL build or the test-copy target to have run first.
+    add_dependencies(PathGui PathScripts)
+endif()
 
 # Copy machine templates to build directory
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/Machine/machines/

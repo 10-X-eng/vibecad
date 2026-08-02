@@ -41,6 +41,7 @@
 #include "PreferencesGui.h"
 #include "ZVALUE.h"
 #include "QGIView.h"
+#include "TaskDocumentGuard.h"
 #include "TaskLeaderLine.h"
 #include "ViewProviderLeader.h"
 
@@ -82,19 +83,24 @@ bool ViewProviderLeader::setEdit(int ModNum)
         return ViewProviderDrawingView::setEdit(ModNum);
     }
 
-    if (Gui::Control().activeDialog()) {
+    auto* leader = getFeature();
+    if (!leader
+        || Gui::Control().activeDialog(leader->getDocument())) {
          // a TaskPanel is already open!
         return false;
     }
     Gui::Selection().clearSelection();
-    Gui::Control().showDialog(new TaskDlgLeaderLine(this));
+    TaskInternal::showDocumentDialog(
+        new TaskDlgLeaderLine(this),
+        leader->getDocument()
+    );
     return true;
 }
 
 bool ViewProviderLeader::doubleClicked()
 {
 //    Base::Console().message("VPL::doubleClicked()\n");
-    setEdit(ViewProvider::Default);
+    startDefaultEditMode();
     return true;
 }
 

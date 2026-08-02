@@ -44,11 +44,13 @@ import DraftVecUtils
 from draftgeoutils import geometry as geo_geometry
 from draftguitools import gui_base_original
 from draftguitools import gui_tool_utils
-from draftutils import gui_utils
+from draftguitools import gui_trackers as trackers
 from draftutils import params
 from draftutils import utils
 from draftutils import todo
 from draftutils.messages import _err, _toolmsg, _wrn
+from draftutils.transaction import document_is_available_for_mutation
+from draftutils.transaction import object_is_usable_at_current_position
 from draftutils.translate import translate
 
 
@@ -87,9 +89,11 @@ class Line(gui_base_original.Creator):
         else:
             self.ui.lineUi(title=title, icon=icon)
 
-        self.obj = self.doc.addObject("Part::Feature", self.featureName)
-        gui_utils.format_object(self.obj)
-        self.obj.ViewObject.ShowInTree = False
+        # Interactive geometry is a scene-only preview. Creating a document
+        # object here would make Cancel publish and then delete a fake History
+        # operation before the user's Line/Wire is accepted.
+        self.preview_shape = None
+        self.preview_tracker = None
 
         self.call = self.view.addEventCallback("SoEvent", self.action)
         _toolmsg(translate("draft", "Pick first point"))
@@ -116,11 +120,8 @@ class Line(gui_base_original.Creator):
         if arg["Type"] != "SoMouseButtonEvent":
             return
         if arg["State"] == "UP":
-            self.obj.ViewObject.Selectable = True
             return
         if arg["State"] == "DOWN" and arg["Button"] == "BUTTON1":
-            # Stop self.obj from being selected to avoid its display in the tree:
-            self.obj.ViewObject.Selectable = False
             if arg["Position"] == self.pos:
                 self.finish(cont=None)
                 return
@@ -181,7 +182,11 @@ class Line(gui_base_original.Creator):
                     "Draft.select(line)",
                     "FreeCAD.ActiveDocument.recompute()",
                 ]
-                self.commit(translate("draft", "Create Line"), _cmd_list)
+                self.commit(
+                    translate("draft", "Create Line"),
+                    _cmd_list,
+                    inputs=(),
+                )
             else:
                 # Insert a Draft line
                 rot, sup, pts, fil = self.getStrings()
@@ -204,22 +209,35 @@ class Line(gui_base_original.Creator):
                     "Draft.autogroup(line)",
                     "FreeCAD.ActiveDocument.recompute()",
                 ]
-                self.commit(translate("draft", "Create Wire"), _cmd_list)
+                self.commit(
+                    translate("draft", "Create Wire"),
+                    _cmd_list,
+                    inputs=self.getSupportInputs(),
+                )
         super().finish()
         if cont or (cont is None and self.ui and self.ui.continueMode):
             self.Activated()
 
     def removeTemporaryObject(self):
-        """Remove temporary object created."""
-        if self.obj:
-            try:
-                old = self.obj.Name
-            except ReferenceError:
-                # object already deleted, for some reason
-                pass
-            else:
-                todo.ToDo.delay(self.doc.removeObject, old)
-        self.obj = None
+        """Remove the scene-only preview without mutating the document."""
+
+        tracker = getattr(self, "preview_tracker", None)
+        if tracker is not None:
+            tracker.finalize()
+        self.preview_tracker = None
+        self.preview_shape = None
+
+    def _set_preview_shape(self, shape):
+        """Display one immutable shape without creating a History object."""
+
+        tracker = getattr(self, "preview_tracker", None)
+        if tracker is not None:
+            tracker.finalize()
+        self.preview_tracker = None
+        self.preview_shape = shape
+        if shape is not None and not shape.isNull():
+            self.preview_tracker = trackers.ghostTracker(shape)
+            self.preview_tracker.on()
 
     def undolast(self):
         """Undoes last line segment."""
@@ -227,17 +245,13 @@ class Line(gui_base_original.Creator):
 
         if len(self.node) > 1:
             self.node.pop()
-            # last = self.node[-1]
-            if self.obj.Shape.Edges:
-                edges = self.obj.Shape.Edges
-                if len(edges) > 1:
-                    newshape = Part.makePolygon(self.node)
-                    self.obj.Shape = newshape
-                else:
-                    self.obj.ViewObject.hide()
-                # DNC: report on removal
-                # _toolmsg(translate("draft", "Removing last point"))
-                _toolmsg(translate("draft", "Pick next point"))
+            if len(self.node) > 1:
+                self._set_preview_shape(Part.makePolygon(self.node))
+            else:
+                self._set_preview_shape(None)
+            # DNC: report on removal
+            # _toolmsg(translate("draft", "Removing last point"))
+            _toolmsg(translate("draft", "Pick next point"))
             self.update_hints()
 
     def _append_point(self, point):
@@ -257,38 +271,29 @@ class Line(gui_base_original.Creator):
             self.planetrack.set(self.node[-1])
         if len(self.node) == 1:
             _toolmsg(translate("draft", "Pick next point"))
-        elif len(self.node) == 2:
-            last = self.node[len(self.node) - 2]
-            newseg = Part.LineSegment(last, point).toShape()
-            self.obj.Shape = newseg
-            self.obj.ViewObject.Visibility = True
-            if self.mode != "line":
-                _toolmsg(translate("draft", "Pick next point"))
         else:
-            currentshape = self.obj.Shape.copy()
-            last = self.node[len(self.node) - 2]
-            if not DraftVecUtils.equals(last, point):
-                newseg = Part.LineSegment(last, point).toShape()
-                newshape = currentshape.fuse(newseg)
-                self.obj.Shape = newshape
+            self._set_preview_shape(Part.makePolygon(self.node))
             _toolmsg(translate("draft", "Pick next point"))
         self.update_hints()
 
     def wipe(self):
         """Remove all previous segments and starts from last point."""
         if len(self.node) > 1:
-            # self.obj.Shape.nullify()  # For some reason this fails
-            self.obj.ViewObject.Visibility = False
+            self._set_preview_shape(None)
             self.node = [self.node[-1]]
+            self._reset_curve_preview()
             if self.planetrack:
                 self.planetrack.set(self.node[0])
             _toolmsg(translate("draft", "Pick next point"))
             self.update_hints()
 
+    def _reset_curve_preview(self):
+        """Reset an optional curve tracker after the point list is wiped."""
+
     def orientWP(self):
         """Orient the working plane."""
-        if len(self.node) > 1 and self.obj:
-            n = geo_geometry.get_normal(self.obj.Shape)
+        if len(self.node) > 1 and self.preview_shape is not None:
+            n = geo_geometry.get_normal(self.preview_shape)
             if not n:
                 n = self.wp.axis
             p = self.node[-1]
@@ -368,13 +373,30 @@ class Wire(Line):
         """Execute when the command is called."""
         import Part
 
+        document = App.ActiveDocument
+        if not document_is_available_for_mutation(document):
+            return
+        selection = tuple(Gui.Selection.getSelection())
+        if selection and not all(
+            object_is_usable_at_current_position(obj, document)
+            for obj in selection
+        ):
+            _err(
+                translate(
+                    "draft",
+                    "Polyline cannot use a selection from another document "
+                    "or outside the current History position",
+                )
+            )
+            return
+
         # If there is a selection, and this selection contains various
         # two-point lines, their shapes are extracted, and we attempt
         # to join them into a single Wire (polyline),
         # then the old lines are removed.
-        if len(Gui.Selection.getSelection()) > 1:
+        if len(selection) > 1:
             edges = []
-            for o in Gui.Selection.getSelection():
+            for o in selection:
                 if utils.get_type(o) != "Wire":
                     edges = []
                     break
@@ -390,24 +412,40 @@ class Wire(Line):
                     pts = ", ".join([str(v.Point) for v in w.Vertexes])
                     pts = pts.replace("Vector ", "FreeCAD.Vector")
 
-                    # List of commands to remove the old objects
-                    rems = list()
-                    for o in Gui.Selection.getSelection():
-                        rems.append("FreeCAD.ActiveDocument." 'removeObject("' + o.Name + '")')
-
                     Gui.addModule("Draft")
+                    Gui.addModule("draftutils.timeline")
                     # The command to run is built as a series of text strings
                     # to be committed through the `draftutils.todo.ToDo` class
                     _cmd = "wire = Draft.make_wire("
                     _cmd += "[" + pts + "], closed=" + str(w.isClosed())
                     _cmd += ")"
-                    _cmd_list = [_cmd]
-                    _cmd_list.extend(rems)
+                    selected_objects = ", ".join(
+                        "FreeCAD.ActiveDocument." + obj.Name
+                        for obj in selection
+                    )
+                    _cmd_list = [
+                        "_vibecad_inputs = draftutils.timeline.visible_inputs(["
+                        + selected_objects
+                        + "])",
+                        _cmd,
+                    ]
                     _cmd_list.append("Draft.autogroup(wire)")
+                    _cmd_list.append(
+                        "draftutils.timeline.accept_outputs([wire], _vibecad_inputs)"
+                    )
                     _cmd_list.append("FreeCAD.ActiveDocument.recompute()")
 
                     _op_name = translate("draft", "Convert to Wire")
-                    todo.ToDo.delayCommit([(_op_name, _cmd_list)])
+                    todo.ToDo.delayCommit(
+                        [
+                            (
+                                _op_name,
+                                _cmd_list,
+                                selection,
+                            )
+                        ],
+                        document,
+                    )
                     return
 
         # If there was no selection or the selection was just one object

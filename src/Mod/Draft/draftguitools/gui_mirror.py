@@ -114,14 +114,19 @@ class Mirror(gui_base_original.Modifier):
             sel += "FreeCAD.ActiveDocument." + o.Name
         sel += "]"
         Gui.addModule("Draft")
-        _cmd = "Draft.mirror"
+        Gui.addModule("draftutils.timeline")
+        _cmd = "draftutils.timeline.mirror"
         _cmd += "("
         _cmd += sel + ", "
         _cmd += DraftVecUtils.toString(p1) + ", "
         _cmd += DraftVecUtils.toString(p2)
         _cmd += ")"
         _cmd_list = ["m = " + _cmd, "FreeCAD.ActiveDocument.recompute()"]
-        self.commit(translate("draft", "Mirror"), _cmd_list)
+        self.commit(
+            translate("draft", "Mirror"),
+            _cmd_list,
+            inputs=self.sel,
+        )
 
     def action(self, arg):
         """Handle the 3D scene events.

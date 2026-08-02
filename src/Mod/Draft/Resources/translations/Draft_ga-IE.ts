@@ -1359,7 +1359,7 @@ A positive value defines the maximum length of the extension lines. Only used
 for linear dimensions.</source>
       <translation>Fad na línte síneadh. Úsáid 0 le haghaidh línte síneadh iomlána. Sainmhíníonn
 luach diúltach an bhearna idir foircinn na línte síneadh agus na pointí tomhaiste.
-Sainmhíníonn luach dearfach uasfhad na línte síneadh. Úsáidtear é le haghaidh 
+Sainmhíníonn luach dearfach uasfhad na línte síneadh. Úsáidtear é le haghaidh
 toisí líneacha amháin.</translation>
     </message>
     <message>
@@ -1493,7 +1493,7 @@ réamhroghnaithe, nó nuair a roghnaítear pointí ar aghaidheanna plánacha le 
       <location filename="../ui/preferences-draft.ui" line="112"/>
       <source>If checked, a widget indicating the current working
 plane orientation appears when picking points</source>
-      <translation>Má tá sé seiceáilte, feictear giuirléid a léiríonn treoshuíomh 
+      <translation>Má tá sé seiceáilte, feictear giuirléid a léiríonn treoshuíomh
 an eitleáin oibre reatha agus pointí á bpiocadh</translation>
     </message>
     <message>
@@ -1543,7 +1543,7 @@ I gcás na roghanna splitFaces agus makeShell amháin.</translation>
       <location filename="../ui/preferences-draft.ui" line="239"/>
       <source>If checked, Draft Downgrade and Draft Upgrade will keep face names.
 Only for the splitFaces and makeShell options.</source>
-      <translation>Má tá sé seo seiceáilte, coinneoidh Íosghrádú Dréachta agus Uasghrádú Dréachta ainmneacha aghaidheanna. 
+      <translation>Má tá sé seo seiceáilte, coinneoidh Íosghrádú Dréachta agus Uasghrádú Dréachta ainmneacha aghaidheanna.
 I gcás na roghanna splitFaces agus makeShell amháin.</translation>
     </message>
     <message>
@@ -1560,8 +1560,8 @@ update the field anymore during one second, to avoid moving the mouse
 accidentally and modifying the entered value.</source>
       <translation>Is moill í seo ina mbíonn an luch neamhghníomhach, tar éis uimhreacha a iontráil de láimh
 in aon cheann de na réimsí comhordanáidí. Má shocraítear seo go 0, díchumasaítear an mhoill.
-Má shocraítear moill 1, tar éis luach uimhriúil a iontráil, ní dhéanfaidh an luch an réimse a nuashonrú 
-a thuilleadh le linn soicind amháin, chun cosc ​​a chur ar an luch a bhogadh trí thimpiste agus an luach 
+Má shocraítear moill 1, tar éis luach uimhriúil a iontráil, ní dhéanfaidh an luch an réimse a nuashonrú
+a thuilleadh le linn soicind amháin, chun cosc ​​a chur ar an luch a bhogadh trí thimpiste agus an luach
 iontráilte a mhodhnú.</translation>
     </message>
     <message>
@@ -2320,7 +2320,7 @@ script-based post-processing and Part workbench integration.</source>
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
       <translation>Cruthaíonn sé cruth neamhpharaiméadrach do gach eintiteas DXF. Déantar sainmhínithe bloc a
-allmhairiú mar réada in-athúsáidte (Comhdhúile Cuid) agus bíonn samplaí ina réada `App::Link`, 
+allmhairiú mar réada in-athúsáidte (Comhdhúile Cuid) agus bíonn samplaí ina réada `App::Link`,
 ag coinneáil struchtúr na mbloc. Go maith le haghaidh tagartha agus tomhais.</translation>
     </message>
     <message>
@@ -2333,8 +2333,8 @@ ag coinneáil struchtúr na mbloc. Go maith le haghaidh tagartha agus tomhais.</
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for importing and viewing very large files with maximum performance.</source>
-      <translation>Cuireann sé seo gach geoiméadracht in aghaidh an tsraithe le chéile i gcruth aonair nach féidir a chur in eagar. 
-Ní choimeádtar struchtúir bhloc; bíonn a ngeiméadracht mar chuid de chruth an tsraithe. Is fearr é seo chun 
+      <translation>Cuireann sé seo gach geoiméadracht in aghaidh an tsraithe le chéile i gcruth aonair nach féidir a chur in eagar.
+Ní choimeádtar struchtúir bhloc; bíonn a ngeiméadracht mar chuid de chruth an tsraithe. Is fearr é seo chun
 comhaid an-mhóra a allmhairiú agus a fheiceáil leis an bhfeidhmíocht is mó.</translation>
     </message>
     <message>
@@ -2360,7 +2360,7 @@ millimeters: 1, in centimeters: 10, in meters: 1000, in inches: 25.4,
 in feet: 304.8</source>
       <translation>Fachtóir scála le cur i bhfeidhm ar chomhaid DXF agus iad á n-allmhairiú. Is é an
 fachtóir an tiontú idir aonad an chomhaid DXF agus milliméadair. Sampla:
-do chomhaid i milliméadair: 1, i gceintiméadair: 10, i méadair: 1000, in 
+do chomhaid i milliméadair: 1, i gceintiméadair: 10, i méadair: 1000, in
 orlaigh: 25.4, i dtroithe: 304.8</translation>
     </message>
     <message>
@@ -2382,7 +2382,7 @@ orlaigh: 25.4, i dtroithe: 304.8</translation>
       <location filename="../ui/preferences-dxf.ui" line="323"/>
       <source>If checked, entities from the paper space will also be imported. By default,
 only model space is imported</source>
-      <translation>Má tá sé seo seiceáilte, déanfar eintitis ón spás páipéir a allmhairiú freisin. 
+      <translation>Má tá sé seo seiceáilte, déanfar eintitis ón spás páipéir a allmhairiú freisin.
 De réir réamhshocraithe, ní allmhairítear ach spás samhail</translation>
     </message>
     <message>
@@ -2430,7 +2430,7 @@ Seachas sin, cuirfear dathanna réamhshocraithe FreeCAD i bhfeidhm</translation>
       <location filename="../ui/preferences-dxf.ui" line="411"/>
       <source>If checked, imported texts will get the standard Draft text size, instead of
 the size defined in the DXF document. (Legacy importer only)</source>
-      <translation>Má tá sé seo seiceáilte, gheobhaidh téacsanna allmhairithe an méid caighdeánach Dréachta, 
+      <translation>Má tá sé seo seiceáilte, gheobhaidh téacsanna allmhairithe an méid caighdeánach Dréachta,
 seachas an méid atá sainithe sa doiciméad DXF. (Allmhaireoir oidhreachta amháin)</translation>
     </message>
     <message>
@@ -7024,7 +7024,7 @@ comhleá nó Bréagach le haghaidh cumaisc</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
       <translation>Uillinn deiridh an stua (i gcás ciorcail iomláin,
                 tabhair an luach céanna dó agus atá ag an gCéad Uillinn)</translation>
@@ -7204,24 +7204,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 Is maoin léite amháin í seo, toisc go mbraitheann an téacs deiridh ar 'Cineál Lipéid',
 agus an réad atá sainmhínithe i 'Sprioc'.
 Ní thaispeántar an 'Téacs Saincheaptha' ach amháin má tá 'Cineál Lipéid' socraithe go 'Saincheaptha'.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>An cineál faisnéise a thaispeántar leis an lipéad seo.
-
-Má roghnaítear 'Saincheaptha', úsáidfear ábhar 'Téacs Saincheaptha'.
-I gcás cineálacha eile, ríomhfar an teaghrán go huathoibríoch ón réad atá sainmhínithe i 'Sprioc'.
-Ní oibríonn 'Clib' agus 'Ábhar' ach amháin le haghaidh réada a bhfuil na hairíonna seo acu, cosúil le réada BIM.
-
-I gcás 'Suíomh', 'Fad', agus 'Achar', bainfear na hairíonna seo ón bpríomhréad i 'Sprioc', nó ón bhfo-eilimint 'VertexN', 'EdgeN', nó 'FaceN', faoi seach, má shonraítear é.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7505,11 +7487,6 @@ Is maoin léite amháin í seo, toisc go mbraitheann an líon ar na pointí i 'P
       <translation>Taispeáin línte i bhfolach</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Cuir balla agus réada struchtúir den chineál agus den ábhar céanna le chéile</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Tessellate Eilipsí agus B-splíní i mírlínte</translation>
@@ -7611,7 +7588,7 @@ Is maoin léite amháin í seo, toisc go mbraitheann an líon ar na pointí i 'P
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
       <translation>Uillinn deiridh an stua éilipseach
@@ -7739,7 +7716,7 @@ If the 'Linked Geometry' is an arc or circle, this 'Distance'
 is the radius or diameter, depending on the 'Diameter' property.</source>
       <translation>Luach an tomhais.
 
-Is féidir an mhaoin seo a léamh amháin mar go ríomhtar 
+Is féidir an mhaoin seo a léamh amháin mar go ríomhtar
 an luach ó na hairíonna 'Tosaigh' agus 'Deireadh'.
 
 Más stua nó ciorcal atá sa 'Geoiméadracht Nasctha', is é an 'Fad'
@@ -8341,11 +8318,6 @@ Mar sin féin, déantar sceitse aonair le rianta scoite a thiontú ina roinnt r�
       <source>Auto-Group</source>
       <translation>Uathghrúpáil</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Cuireann sé réada Dréachta agus BIM nua leis an tsraith nó leis an ngrúpa roghnaithe</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8705,11 +8677,6 @@ Tá treo teilgean tosaigh os coinne threo an radhairc ghníomhaigh reatha.</tran
       <source>Snap Center</source>
       <translation>Ionad Snap</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Snapálann sé go dtí an pointe lárnach d’aghaidheanna agus d’imeall ciorclacha, agus go dtí an pointe socrúcháin d’ionadaithe eitleáin oibre agus do chodanna foirgnimh</translation>
-    </message>
   </context>
   <context>
     <name>Draft_Snap_Extension</name>
@@ -8930,7 +8897,7 @@ iarphróiseála bunaithe ar scripteanna.</translation>
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
       <translation>Cruthaíonn sé cruth neamhpharaiméadrach do gach eintiteas DXF. Déantar sainmhínithe bloc a
-allmhairiú mar réada in-athúsáidte (Comhdhúile Cuid) agus bíonn samplaí ina réada `App::Link`, 
+allmhairiú mar réada in-athúsáidte (Comhdhúile Cuid) agus bíonn samplaí ina réada `App::Link`,
 ag coinneáil struchtúr na mbloc. Go maith le haghaidh tagartha agus tomhais.</translation>
     </message>
     <message>

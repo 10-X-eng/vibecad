@@ -48,10 +48,13 @@ ViewProviderFemConstraintPlaneRotation::~ViewProviderFemConstraintPlaneRotation(
 bool ViewProviderFemConstraintPlaneRotation::setEdit(int ModNum)
 {
     if (ModNum == ViewProvider::Default) {
-        Gui::Control().closeDialog();
+        Gui::Control().closeDialog(getObject()->getDocument());
         // clear the selection (convenience)
         Gui::Selection().clearSelection();
-        Gui::Control().showDialog(new TaskDlgFemConstraintPlaneRotation(this));
+        Gui::Control().showDialog(
+            new TaskDlgFemConstraintPlaneRotation(this),
+            getObject()->getDocument()
+        );
 
         return true;
     }

@@ -29,11 +29,26 @@ __url__ = "https://www.freecad.org"
 #  \ingroup FEM
 #  \brief FreeCAD FEM command definitions
 
+from functools import lru_cache
+import math
+import subprocess
+
 import FreeCAD
 import FreeCADGui
+import FemGui
 from FreeCAD import Qt
 
-from .manager import CommandManager
+from .manager import (
+    CommandManager,
+    _active_document,
+    _close_exact_transaction,
+    _document_expression,
+    _is_live_in_document,
+    _object_expression,
+    _open_exact_transaction,
+    _require_provisional_timeline_identity,
+    can_start_command,
+)
 from femtools.femutils import expandParentObject
 from femtools.femutils import is_of_type
 from femsolver.settings import get_default_solver
@@ -49,6 +64,226 @@ from femsolver.settings import get_default_solver
 # https://forum.freecad.org/viewtopic.php?f=18&t=62449&p=543845#p543593
 
 
+@lru_cache(maxsize=8)
+def _python_has_netgen(executable):
+    """Return whether an exact Python interpreter provides Netgen."""
+
+    try:
+        completed = subprocess.run(
+            [
+                executable,
+                "-E",
+                "-c",
+                "import netgen, pyngcore",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def _netgen_backend_status():
+    """Return availability and an actionable reason for the selected backend."""
+
+    preferences = FreeCAD.ParamGet(
+        "User parameter:BaseApp/Preferences/Mod/Fem/Netgen"
+    )
+    if preferences.GetBool("UseLegacyNetgen", True):
+        if "BUILD_FEM_NETGEN" in FreeCAD.__cmake__:
+            return True, ""
+        return (
+            False,
+            "the built-in Netgen backend is not included in this build",
+        )
+
+    from freecad import utils
+
+    executable = preferences.GetString("NetgenPythonPath", "")
+    if not executable:
+        executable = utils.get_python_exe()
+    if _python_has_netgen(executable):
+        return True, ""
+    return (
+        False,
+        "the configured Python interpreter has no Netgen bindings",
+    )
+
+
+def createMeshFeature(document, name, mesh):
+    """Create one exact Mesh feature from an already converted mesh."""
+    if document is None:
+        raise RuntimeError("A document is required for the FEM mesh conversion")
+    created = document.addObject("Mesh::Feature", name)
+    created.Mesh = mesh
+    return created
+
+
+def _capture_exact_object_identity(document, obj, description):
+    """Capture one live object by its immutable document name and ID pair."""
+
+    if (
+        not _is_live_in_document(obj, document)
+        or int(getattr(obj, "ID", -1)) <= 0
+        or document.getObject(int(obj.ID)) is not obj
+    ):
+        raise RuntimeError(f"{description} is not one exact live object")
+    return str(obj.Name), int(obj.ID)
+
+
+def _resolve_exact_object_identity(document, identity, description):
+    """Resolve a captured name+ID pair without ambient active-object state."""
+
+    name, object_id = identity
+    by_name = document.getObject(name)
+    by_id = document.getObject(object_id)
+    if (
+        by_name is None
+        or by_name is not by_id
+        or not _is_live_in_document(by_name, document)
+        or str(by_name.Name) != name
+        or int(by_name.ID) != object_id
+    ):
+        raise RuntimeError(f"{description} changed exact identity")
+    return by_name
+
+
+def createDefaultSolverFeature(document, solver_name):
+    """Create and configure the exact solver requested by New Analysis."""
+
+    if (
+        document is None
+        or FreeCAD.getDocument(document.Name) is not document
+    ):
+        raise RuntimeError(
+            "A live document is required to create the default FEM solver"
+        )
+
+    import ObjectsFem
+
+    solver_name = str(solver_name or "")
+    if solver_name == "CalculiX":
+        ccx_prefs = FreeCAD.ParamGet(
+            "User parameter:BaseApp/Preferences/Mod/Fem/Ccx"
+        )
+        make_solver = (
+            "makeSolverCalculiX"
+            if ccx_prefs.GetBool("ResultAsPipeline", True)
+            else "makeSolverCalculiXCcxTools"
+        )
+        solver = getattr(ObjectsFem, make_solver)(document)
+        settings = {
+            "AnalysisType": ccx_prefs.GetInt("AnalysisType", 0),
+            "EigenmodesCount": ccx_prefs.GetInt(
+                "EigenmodesCount",
+                10,
+            ),
+            "EigenmodeLowLimit": ccx_prefs.GetFloat(
+                "EigenmodeLowLimit",
+                0.0,
+            ),
+            "EigenmodeHighLimit": ccx_prefs.GetFloat(
+                "EigenmodeHighLimit",
+                1000000.0,
+            ),
+            "IncrementsMaximum": ccx_prefs.GetInt(
+                "StepMaxIncrements",
+                2000,
+            ),
+            "TimeInitialIncrement": ccx_prefs.GetFloat(
+                "TimeInitialIncrement",
+                1.0,
+            ),
+            "TimePeriod": ccx_prefs.GetFloat(
+                "TimePeriod",
+                1.0,
+            ),
+            "TimeMinimumIncrement": ccx_prefs.GetFloat(
+                "TimeMinimumIncrement",
+                0.00001,
+            ),
+            "TimeMaximumIncrement": ccx_prefs.GetFloat(
+                "TimeMaximumIncrement",
+                1.0,
+            ),
+            "ThermoMechSteadyState": ccx_prefs.GetBool(
+                "StaticAnalysis",
+                True,
+            ),
+            "IterationsControlParameterTimeUse": (
+                ccx_prefs.GetBool(
+                    "UseNonCcxIterationParam",
+                    False,
+                )
+            ),
+            "SplitInputWriter": ccx_prefs.GetBool(
+                "SplitInputWriter",
+                False,
+            ),
+            "MatrixSolverType": ccx_prefs.GetInt("Solver", 0),
+            "Output3d": ccx_prefs.GetBool(
+                "BeamShellOutput",
+                True,
+            ),
+            "GeometricalNonlinearity": ccx_prefs.GetBool(
+                "NonlinearGeometry",
+                False,
+            ),
+            "MaterialNonlinearity": True,
+        }
+        for property_name, value in settings.items():
+            setattr(solver, property_name, value)
+    elif solver_name == "Elmer":
+        solver = ObjectsFem.makeSolverElmer(document)
+        elmer_prefs = FreeCAD.ParamGet(
+            "User parameter:BaseApp/Preferences/Mod/Fem/Elmer"
+        )
+        solver.BinaryOutput = elmer_prefs.GetBool(
+            "BinaryOutput",
+            False,
+        )
+        solver.SaveGeometryIndex = elmer_prefs.GetBool(
+            "SaveGeometryIndex",
+            False,
+        )
+    elif solver_name == "Mystran":
+        solver = ObjectsFem.makeSolverMystran(document)
+    elif solver_name == "Z88":
+        solver = ObjectsFem.makeSolverZ88(document)
+        z88_prefs = FreeCAD.ParamGet(
+            "User parameter:BaseApp/Preferences/Mod/Fem/Z88"
+        )
+        solver.SolverType = z88_prefs.GetString(
+            "Solver",
+            "sorcg",
+        )
+        solver.MatrixMaximum = z88_prefs.GetInt(
+            "MaxGS",
+            100000000,
+        )
+        solver.VectorMaximum = z88_prefs.GetInt(
+            "MaxKOI",
+            2800000,
+        )
+    else:
+        raise ValueError(
+            f"Unsupported default FEM solver: {solver_name!r}"
+        )
+
+    if (
+        not _is_live_in_document(solver, document)
+        or not solver.isDerivedFrom("Fem::FemSolverObjectPython")
+    ):
+        raise RuntimeError(
+            "The default FEM solver factory returned an invalid object"
+        )
+    return solver
+
+
 class _Analysis(CommandManager):
     "The FEM_Analysis command definition"
 
@@ -62,35 +297,202 @@ class _Analysis(CommandManager):
         self.is_active = "with_document"
 
     def Activated(self):
-        FreeCAD.ActiveDocument.openTransaction("Create Analysis")
-        FreeCADGui.addModule("FemGui")
-        FreeCADGui.addModule("ObjectsFem")
-        FreeCADGui.doCommand("ObjectsFem.makeAnalysis(FreeCAD.ActiveDocument, 'Analysis')")
-        FreeCADGui.doCommand("FemGui.setActiveAnalysis(FreeCAD.ActiveDocument.ActiveObject)")
-        FreeCAD.ActiveDocument.commitTransaction()
-        def_solver = get_default_solver()
-        if def_solver:
-            FreeCAD.ActiveDocument.openTransaction("Create default solver")
-            cmd = ""
-            match def_solver:
-                case "CalculiX":
-                    cmd = "FEM_SolverCalculiX"
-                case "Elmer":
-                    cmd = "FEM_SolverElmer"
-                case "Mystran":
-                    cmd = "FEM_SolverMystran"
-                case "Z88":
-                    cmd = "FEM_SolverZ88"
+        if not self.IsActive():
+            return
 
-            if cmd:
-                FreeCADGui.doCommand(f'FreeCADGui.runCommand("{cmd}")')
-
-            FreeCADGui.doCommand(
-                "FreeCADGui.ActiveDocument.toggleTreeItem(FemGui.getActiveAnalysis(), 2)"
+        document = _active_document()
+        default_solver = get_default_solver()
+        analysis = None
+        solver = None
+        analysis_identity = None
+        solver_identity = None
+        transaction_id = _open_exact_transaction(
+            document,
+            "Create Analysis",
+        )
+        try:
+            FreeCADGui.addModule("FemGui")
+            FreeCADGui.addModule("ObjectsFem")
+            analysis = FreeCADGui.runDocumentObjectCommand(
+                document,
+                "ObjectsFem.makeAnalysis("
+                f"{_document_expression(document)}, 'Analysis')",
+                "Fem::FemAnalysis",
             )
-            FreeCAD.ActiveDocument.commitTransaction()
+            # FemAnalysis is a native group, so the document deliberately
+            # excludes it from automatic History enrollment until the
+            # command assigns its explicit operation role below.  Capture
+            # the exact factory return here; publication later proves that
+            # this identity was created by this transaction.
+            analysis_identity = _capture_exact_object_identity(
+                document,
+                analysis,
+                "The new FEM analysis",
+            )
 
-        FreeCAD.ActiveDocument.recompute()
+            if default_solver:
+                FreeCADGui.addModule("femcommands.commands")
+                solver = FreeCADGui.runDocumentObjectCommand(
+                    document,
+                    "femcommands.commands.createDefaultSolverFeature("
+                    f"{_document_expression(document)}, "
+                    f"{default_solver!r})",
+                    "Fem::FemSolverObjectPython",
+                )
+                _require_provisional_timeline_identity(
+                    solver,
+                    document,
+                    "The default solver factory",
+                )
+                solver_identity = _capture_exact_object_identity(
+                    document,
+                    solver,
+                    "The new default FEM solver",
+                )
+                analysis = _resolve_exact_object_identity(
+                    document,
+                    analysis_identity,
+                    "The new FEM analysis",
+                )
+                FreeCADGui.doCommand(
+                    f"{_object_expression(analysis)}"
+                    f".addObject({_object_expression(solver)})"
+                )
+                analysis = _resolve_exact_object_identity(
+                    document,
+                    analysis_identity,
+                    "The new FEM analysis",
+                )
+                solver = _resolve_exact_object_identity(
+                    document,
+                    solver_identity,
+                    "The new default FEM solver",
+                )
+                if solver not in analysis.Group:
+                    raise RuntimeError(
+                        "The default solver was not added to its new analysis"
+                    )
+
+            FreeCADGui.addModule("femcommands.manager")
+            FreeCADGui.doCommand(
+                "femcommands.manager._mark_timeline_operation("
+                f"{_object_expression(analysis)})"
+            )
+            analysis = _resolve_exact_object_identity(
+                document,
+                analysis_identity,
+                "The new FEM analysis",
+            )
+            if solver is not None:
+                solver = _resolve_exact_object_identity(
+                    document,
+                    solver_identity,
+                    "The new default FEM solver",
+                )
+                FreeCADGui.doCommand(
+                    "femcommands.manager._mark_timeline_resource("
+                    f"{_object_expression(solver)}, "
+                    f"{_object_expression(analysis)})"
+                )
+                analysis = _resolve_exact_object_identity(
+                    document,
+                    analysis_identity,
+                    "The new FEM analysis",
+                )
+                solver = _resolve_exact_object_identity(
+                    document,
+                    solver_identity,
+                    "The new default FEM solver",
+                )
+                resources_expression = f"[{_object_expression(solver)}]"
+                owners_expression = f"[{_object_expression(analysis)}]"
+            else:
+                resources_expression = "[]"
+                owners_expression = "[]"
+            FreeCADGui.doCommand(
+                f"{_document_expression(document)}"
+                ".publishProvisionalTimelineOperationBlock("
+                f"{_object_expression(analysis)}, "
+                f"{resources_expression}, {owners_expression})"
+            )
+            analysis = _resolve_exact_object_identity(
+                document,
+                analysis_identity,
+                "The new FEM analysis",
+            )
+            if solver is not None:
+                solver = _resolve_exact_object_identity(
+                    document,
+                    solver_identity,
+                    "The new default FEM solver",
+                )
+                if (
+                    str(solver.VibeCADTimelineRole) != "resource"
+                    or solver.VibeCADTimelineOwner is not analysis
+                ):
+                    raise RuntimeError(
+                        "The default solver was not published as an exact "
+                        "resource of its analysis"
+                    )
+            if str(analysis.VibeCADTimelineRole) != "operation":
+                raise RuntimeError(
+                    "The new FEM analysis was not published as one operation"
+                )
+
+            timeline = document.getObject("VibeCADTimeline")
+            operations = list(
+                getattr(timeline, "Operations", ()) or ()
+            )
+            if analysis not in operations:
+                raise RuntimeError(
+                    "The new FEM analysis is absent from document History"
+                )
+            analysis_index = operations.index(analysis)
+            if solver is not None and (
+                analysis_index == 0
+                or operations[analysis_index - 1] is not solver
+            ):
+                raise RuntimeError(
+                    "The default FEM solver and analysis are not one "
+                    "canonical resource-first History block"
+                )
+
+            document.recompute()
+            analysis = _resolve_exact_object_identity(
+                document,
+                analysis_identity,
+                "The new FEM analysis",
+            )
+            if solver is not None:
+                solver = _resolve_exact_object_identity(
+                    document,
+                    solver_identity,
+                    "The new default FEM solver",
+                )
+            FemGui.setActiveAnalysis(analysis)
+            _close_exact_transaction(
+                document,
+                transaction_id,
+                False,
+            )
+        except Exception:
+            if (
+                analysis is not None
+                and FemGui.getActiveAnalysis() is analysis
+            ):
+                FemGui.setActiveAnalysis()
+            _close_exact_transaction(
+                document,
+                transaction_id,
+                True,
+            )
+            raise
+
+        if _is_live_in_document(analysis, document):
+            gui_document = FreeCADGui.getDocument(document.Name)
+            if gui_document is not None:
+                gui_document.toggleTreeItem(analysis, 2)
+            document.recompute()
 
 
 class _ClippingPlaneAdd(CommandManager):
@@ -110,26 +512,41 @@ class _ClippingPlaneAdd(CommandManager):
         return resources
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        gui_document = FreeCADGui.getDocument(document.Name)
+        if gui_document is None:
+            return
+
         from pivy import coin
         from femtools.femutils import getBoundBoxOfAllDocumentShapes
         from femtools.femutils import getSelectedFace
 
-        overallboundbox = getBoundBoxOfAllDocumentShapes(FreeCAD.ActiveDocument)
-        # print(overallboundbox)
-        if overallboundbox:
-            min_bb_length = min(
-                {
-                    overallboundbox.XLength,
-                    overallboundbox.YLength,
-                    overallboundbox.ZLength,
-                }
+        overallboundbox = getBoundBoxOfAllDocumentShapes(document)
+        if not overallboundbox:
+            return
+
+        positive_lengths = [
+            length
+            for length in (
+                abs(overallboundbox.XLength),
+                abs(overallboundbox.YLength),
+                abs(overallboundbox.ZLength),
             )
-        else:
-            min_bb_length = 10.0  # default
+            if math.isfinite(length) and length > 0.0
+        ]
+        if not positive_lengths:
+            return
 
-        dbox = min_bb_length * 0.2
+        # Flat geometry has one zero-sized axis.  Size the manipulator from
+        # the smallest real extent instead of collapsing its box to zero.
+        dbox = min(positive_lengths) * 0.2
 
-        aFace = getSelectedFace(FreeCADGui.Selection.getSelectionEx())
+        aFace = getSelectedFace(
+            FreeCADGui.Selection.getSelectionEx(document.Name)
+        )
         if aFace:
             f_CoM = aFace.CenterOfMass
             f_uvCoM = aFace.Surface.parameter(f_CoM)  # u,v at CoM for normalAt calculation
@@ -149,7 +566,7 @@ class _ClippingPlaneAdd(CommandManager):
         )
         clip_plane = coin.SoClipPlaneManip()
         clip_plane.setValue(coin_bound_box, coin_normal_vector, 1)
-        FreeCADGui.ActiveDocument.ActiveView.getSceneGraph().insertChild(clip_plane, 1)
+        gui_document.ActiveView.getSceneGraph().insertChild(clip_plane, 1)
 
 
 class _ClippingPlaneRemoveAll(CommandManager):
@@ -171,13 +588,19 @@ class _ClippingPlaneRemoveAll(CommandManager):
         return resources
 
     def Activated(self):
-        line1 = "for node in list(sg.getChildren()):\n"
-        line2 = "    if isinstance(node, coin.SoClipPlane):\n"
-        line3 = "        sg.removeChild(node)"
-        FreeCADGui.doCommand("from pivy import coin")
-        FreeCADGui.doCommand("sg = Gui.ActiveDocument.ActiveView.getSceneGraph()")
-        FreeCADGui.doCommand("nodes = sg.getChildren()")
-        FreeCADGui.doCommand(line1 + line2 + line3)
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        gui_document = FreeCADGui.getDocument(document.Name)
+        if gui_document is None:
+            return
+        from pivy import coin
+
+        scene_graph = gui_document.ActiveView.getSceneGraph()
+        for node in list(scene_graph.getChildren()):
+            if isinstance(node, coin.SoClipPlane):
+                scene_graph.removeChild(node)
 
 
 class _ConstantVacuumPermittivity(CommandManager):
@@ -559,6 +982,8 @@ class _Examples(CommandManager):
         self.is_active = "always"
 
     def Activated(self):
+        if not self.IsActive():
+            return
         FreeCADGui.addModule("femexamples.examplesgui")
         FreeCADGui.doCommand("femexamples.examplesgui.show_examplegui()")
 
@@ -568,7 +993,7 @@ class _MaterialEditor(CommandManager):
 
     def __init__(self):
         super().__init__()
-        self.pixmap = "Arch_Material_Group"
+        self.pixmap = "FEM_Material_Group"
         self.menutext = Qt.QT_TRANSLATE_NOOP("FEM_MaterialEditor", "Material Editor")
         self.tooltip = Qt.QT_TRANSLATE_NOOP(
             "FEM_MaterialEditor", "Opens the FreeCAD material editor"
@@ -576,6 +1001,8 @@ class _MaterialEditor(CommandManager):
         self.is_active = "always"
 
     def Activated(self):
+        if not self.IsActive():
+            return
         FreeCADGui.addModule("MaterialEditor")
         FreeCADGui.doCommand("MaterialEditor.openEditor()")
 
@@ -602,24 +1029,49 @@ class _MaterialMechanicalNonlinear(CommandManager):
         self.tooltip = Qt.QT_TRANSLATE_NOOP(
             "FEM_MaterialMechanicalNonlinear", "Add non-linear mechanical properties to material"
         )
+        self.is_active = "with_material_solid"
 
     def IsActive(self):
-        return self.material_solid_selected() and (self.selobj.Nonlinear is None)
+        return super().IsActive() and self.selobj.Nonlinear is None
 
     def Activated(self):
-        # add a nonlinear material
-        FreeCAD.ActiveDocument.openTransaction("Create FemMaterialMechanicalNonlinear")
-        FreeCADGui.addModule("ObjectsFem")
-        lin_mat_obj = f"FreeCAD.ActiveDocument.getObject('{self.selobj.Name}')"
-        command_to_run = (
-            f"ObjectsFem.makeMaterialMechanicalNonlinear(FreeCAD.ActiveDocument, {lin_mat_obj})"
-        )
-        FreeCADGui.doCommand(command_to_run)
+        if not self.IsActive():
+            return
 
-        expandParentObject()
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCADGui.Selection.clearSelection()
-        FreeCAD.ActiveDocument.recompute()
+        document = _active_document()
+        material = self.selobj
+        transaction_id = _open_exact_transaction(
+            document,
+            "Create FemMaterialMechanicalNonlinear",
+        )
+        try:
+            FreeCADGui.addModule("ObjectsFem")
+            nonlinear = FreeCADGui.runDocumentObjectCommand(
+                document,
+                "ObjectsFem.makeMaterialMechanicalNonlinear("
+                f"{_document_expression(document)},"
+                f" {_object_expression(material)})",
+                "Fem::FeaturePython",
+            )
+            _require_provisional_timeline_identity(
+                nonlinear,
+                document,
+                "The nonlinear-material factory",
+            )
+            if (
+                material.Nonlinear is not nonlinear
+            ):
+                raise RuntimeError(
+                    "The nonlinear material was not attached "
+                    "to the selected material"
+                )
+            document.recompute()
+            _close_exact_transaction(document, transaction_id, False)
+            expandParentObject()
+            FreeCADGui.Selection.clearSelection()
+        except Exception:
+            _close_exact_transaction(document, transaction_id, True)
+            raise
 
 
 class _MaterialReinforced(CommandManager):
@@ -662,34 +1114,58 @@ class _FEMMesh2Mesh(CommandManager):
         self.is_active = "with_femmesh_andor_res"
 
     def Activated(self):
-        FreeCAD.ActiveDocument.openTransaction("Create Mesh from FEMMesh")
-        if self.selobj and not self.selobj2:  # no result object selected
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        femmesh = self.selobj
+        result = self.selobj2
+        transaction_id = _open_exact_transaction(
+            document,
+            "Create Mesh from FEMMesh",
+        )
+        source_was_visible = bool(femmesh.ViewObject.Visibility)
+        try:
             FreeCADGui.addModule("femmesh.femmesh2mesh")
+            arguments = f"{_object_expression(femmesh)}.FemMesh"
+            if result is not None:
+                arguments += f", {_object_expression(result)}"
             FreeCADGui.doCommand(
                 "out_mesh = femmesh.femmesh2mesh.femmesh_2_mesh("
-                "FreeCAD.ActiveDocument.{}.FemMesh)".format(self.selobj.Name)
+                f"{arguments})"
             )
             FreeCADGui.addModule("Mesh")
-            FreeCADGui.doCommand("Mesh.show(Mesh.Mesh(out_mesh))")
-            FreeCADGui.doCommand(
-                "FreeCAD.ActiveDocument." + self.selobj.Name + ".ViewObject.hide()"
+            FreeCADGui.addModule("femcommands.commands")
+            mesh_name = document.getUniqueObjectName("Mesh")
+            converted = FreeCADGui.runDocumentObjectCommand(
+                document,
+                "femcommands.commands.createMeshFeature("
+                f"{_document_expression(document)}, {mesh_name!r}, "
+                "Mesh.Mesh(out_mesh))",
+                "Mesh::Feature",
             )
-        if self.selobj and self.selobj2:
-            femmesh = self.selobj
-            res = self.selobj2
-            FreeCADGui.addModule("femmesh.femmesh2mesh")
-            FreeCADGui.doCommand(
-                "out_mesh = femmesh.femmesh2mesh.femmesh_2_mesh("
-                "FreeCAD.ActiveDocument.{}.FemMesh, FreeCAD.ActiveDocument.{})".format(
-                    femmesh.Name, res.Name
+            _require_provisional_timeline_identity(
+                converted,
+                document,
+                "The FEM mesh conversion",
+            )
+            if source_was_visible:
+                FreeCADGui.addModule("femcommands.manager")
+                FreeCADGui.doCommand(
+                    "femcommands.manager."
+                    "_mark_timeline_replaced_inputs("
+                    f"{_object_expression(converted)}, "
+                    f"[{_object_expression(femmesh)}])"
                 )
+            FreeCADGui.doCommand(
+                f"{_object_expression(femmesh)}.ViewObject.hide()"
             )
-            FreeCADGui.addModule("Mesh")
-            FreeCADGui.doCommand("Mesh.show(Mesh.Mesh(out_mesh))")
-            FreeCADGui.doCommand("FreeCAD.ActiveDocument." + femmesh.Name + ".ViewObject.hide()")
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCADGui.Selection.clearSelection()
-        FreeCAD.ActiveDocument.recompute()
+            document.recompute()
+            _close_exact_transaction(document, transaction_id, False)
+            FreeCADGui.Selection.clearSelection()
+        except Exception:
+            _close_exact_transaction(document, transaction_id, True)
+            raise
 
 
 class _MeshBoundaryLayer(CommandManager):
@@ -716,14 +1192,26 @@ class _MeshClear(CommandManager):
         self.is_active = "with_femmesh"
 
     def Activated(self):
-        FreeCAD.ActiveDocument.openTransaction("Clear FEM mesh")
-        FreeCADGui.addModule("Fem")
-        FreeCADGui.doCommand(
-            "FreeCAD.ActiveDocument." + self.selobj.Name + ".FemMesh = Fem.FemMesh()"
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        mesh = self.selobj
+        transaction_id = _open_exact_transaction(
+            document,
+            "Clear FEM mesh",
         )
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCADGui.Selection.clearSelection()
-        FreeCAD.ActiveDocument.recompute()
+        try:
+            FreeCADGui.addModule("Fem")
+            FreeCADGui.doCommand(
+                f"{_object_expression(mesh)}.FemMesh = Fem.FemMesh()"
+            )
+            document.recompute()
+            _close_exact_transaction(document, transaction_id, False)
+            FreeCADGui.Selection.clearSelection()
+        except Exception:
+            _close_exact_transaction(document, transaction_id, True)
+            raise
 
 
 class _MeshClearGroups(CommandManager):
@@ -736,17 +1224,31 @@ class _MeshClearGroups(CommandManager):
         self.is_active = "with_femmesh"
 
     def Activated(self):
-        FreeCAD.ActiveDocument.openTransaction("ClearGroups FEM mesh")
-        FreeCADGui.addModule("Fem")
-        grps = "FreeCAD.ActiveDocument." + self.selobj.Name + ".FemMesh.Groups"
-        remove_func = "FreeCAD.ActiveDocument." + self.selobj.Name + ".FemMesh.removeGroup"
-        FreeCADGui.doCommand(f"tuple(map({remove_func}, {grps}))")
-        FreeCAD.Console.PrintMessage(
-            f"Groups cleared: Now {self.selobj.Name} has {self.selobj.FemMesh.GroupCount} groups\n"
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        mesh = self.selobj
+        transaction_id = _open_exact_transaction(
+            document,
+            "ClearGroups FEM mesh",
         )
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCADGui.Selection.clearSelection()
-        FreeCAD.ActiveDocument.recompute()
+        try:
+            mesh_expression = _object_expression(mesh)
+            FreeCADGui.doCommand(
+                f"tuple(map({mesh_expression}.FemMesh.removeGroup,"
+                f" {mesh_expression}.FemMesh.Groups))"
+            )
+            document.recompute()
+            _close_exact_transaction(document, transaction_id, False)
+            FreeCAD.Console.PrintMessage(
+                f"Groups cleared: Now {mesh.Name} has "
+                f"{mesh.FemMesh.GroupCount} groups\n"
+            )
+            FreeCADGui.Selection.clearSelection()
+        except Exception:
+            _close_exact_transaction(document, transaction_id, True)
+            raise
 
 
 class _MeshDisplayInfo(CommandManager):
@@ -759,18 +1261,19 @@ class _MeshDisplayInfo(CommandManager):
         self.is_active = "with_femmesh"
 
     def Activated(self):
-        FreeCAD.ActiveDocument.openTransaction("Display FEM mesh info")
-        FreeCADGui.doCommand("print(FreeCAD.ActiveDocument." + self.selobj.Name + ".FemMesh)")
-        FreeCADGui.addModule("PySide")
-        FreeCADGui.doCommand(
-            "mesh_info = str(FreeCAD.ActiveDocument." + self.selobj.Name + ".FemMesh)"
+        if not self.IsActive():
+            return
+
+        from PySide import QtWidgets
+
+        mesh = self.selobj
+        mesh_info = str(mesh.FemMesh)
+        FreeCAD.Console.PrintMessage(f"{mesh_info}\n")
+        QtWidgets.QMessageBox.information(
+            None,
+            "FEM Mesh Info",
+            mesh_info,
         )
-        FreeCADGui.doCommand(
-            "PySide.QtGui.QMessageBox.information(None, 'FEM Mesh Info', mesh_info)"
-        )
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCADGui.Selection.clearSelection()
-        FreeCAD.ActiveDocument.recompute()
 
 
 class _MeshGmshFromShape(CommandManager):
@@ -785,42 +1288,56 @@ class _MeshGmshFromShape(CommandManager):
         self.is_active = "with_part_feature"
 
     def Activated(self):
-        # a mesh could be made with and without an analysis,
-        # we're going to check not for an analysis in command manager module
-        FreeCAD.ActiveDocument.openTransaction("Create FEM mesh by Gmsh")
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        shape = self.selobj
+        analysis = FemGui.getActiveAnalysis()
+        if not _is_live_in_document(analysis, document):
+            analysis = None
+        transaction_id = _open_exact_transaction(
+            document,
+            "Create FEM mesh by Gmsh",
+        )
         mesh_obj_name = "FEMMeshGmsh"
-        # if requested by some people add Preference for this
-        # mesh_obj_name = self.selobj.Name + "_Mesh"
-        FreeCADGui.addModule("ObjectsFem")
-        FreeCADGui.doCommand(
-            "ObjectsFem.makeMeshGmsh(FreeCAD.ActiveDocument, '" + mesh_obj_name + "')"
-        )
-        FreeCADGui.doCommand(
-            "FreeCAD.ActiveDocument.ActiveObject.Shape = FreeCAD.ActiveDocument.{}".format(
-                self.selobj.Name
+        try:
+            FreeCADGui.addModule("ObjectsFem")
+            mesh = FreeCADGui.runDocumentObjectCommand(
+                document,
+                "ObjectsFem.makeMeshGmsh("
+                f"{_document_expression(document)}, {mesh_obj_name!r})",
+                "Fem::FemMeshShapeBaseObjectPython",
             )
-        )
-        FreeCADGui.doCommand("FreeCAD.ActiveDocument.ActiveObject.ElementOrder = '2nd'")
-        # SecondOrderLinear gives much better meshes in the regard of
-        # nonpositive jacobians but on curved faces the constraint nodes
-        # will no longer found thus standard will be False
-        # https://forum.freecad.org/viewtopic.php?t=41738
-        # https://forum.freecad.org/viewtopic.php?f=18&t=45260&start=20#p389494
-        FreeCADGui.doCommand("FreeCAD.ActiveDocument.ActiveObject.SecondOrderLinear = False")
-
-        # Gmsh mesh object could be added without an active analysis
-        # but if there is an active analysis move it in there
-        import FemGui
-
-        if FemGui.getActiveAnalysis():
-            FreeCADGui.addModule("FemGui")
-            FreeCADGui.doCommand(
-                "FemGui.getActiveAnalysis().addObject(FreeCAD.ActiveDocument.ActiveObject)"
+            _require_provisional_timeline_identity(
+                mesh,
+                document,
+                "The Gmsh mesh factory",
             )
-        FreeCADGui.doCommand(
-            "FreeCADGui.ActiveDocument.setEdit(FreeCAD.ActiveDocument.ActiveObject.Name)"
-        )
-        FreeCADGui.Selection.clearSelection()
+            mesh.Shape = shape
+            mesh.ElementOrder = "2nd"
+            # Curved second-order meshes retain better Jacobians when the
+            # mid-side nodes are allowed to follow the source geometry.
+            mesh.SecondOrderLinear = False
+            if mesh.Shape is not shape:
+                raise RuntimeError(
+                    "Gmsh mesh did not retain its source shape"
+                )
+            if analysis is not None:
+                analysis.addObject(mesh)
+                if mesh not in analysis.Group:
+                    raise RuntimeError(
+                        "Gmsh mesh was not added to its analysis"
+                    )
+            FreeCADGui.Selection.clearSelection()
+            self._start_edit(document, mesh)
+        except Exception:
+            _close_exact_transaction(
+                document,
+                transaction_id,
+                True,
+            )
+            raise
 
 
 class _MeshGroup(CommandManager):
@@ -840,52 +1357,94 @@ class _MeshNetgenFromShape(CommandManager):
     def __init__(self):
         super().__init__()
         self.menutext = Qt.QT_TRANSLATE_NOOP("FEM_MeshNetgenFromShape", "Mesh From Shape by Netgen")
-        self.tooltip = Qt.QT_TRANSLATE_NOOP(
+        self._available_tooltip = Qt.QT_TRANSLATE_NOOP(
             "FEM_MeshNetgenFromShape",
             "Creates a FEM mesh from a solid or face shape by Netgen internal mesher",
         )
+        self.tooltip = self._available_tooltip
         self.is_active = "with_part_feature"
 
+    def GetResources(self):
+        available, reason = _netgen_backend_status()
+        self.tooltip = (
+            self._available_tooltip
+            if available
+            else f"Netgen mesh is unavailable: {reason}."
+        )
+        self.resources = None
+        return super().GetResources()
+
+    def IsActive(self):
+        available, _reason = _netgen_backend_status()
+        return available and super().IsActive()
+
     def Activated(self):
-        # a mesh could be made with and without an analysis,
-        # we're going to check not for an analysis in command manager module
+        available, reason = _netgen_backend_status()
+        if not available:
+            FreeCAD.Console.PrintWarning(
+                f"Netgen mesh is unavailable: {reason}.\n"
+            )
+            return
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        shape = self.selobj
+        analysis = FemGui.getActiveAnalysis()
+        if not _is_live_in_document(analysis, document):
+            analysis = None
         netgen_prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Netgen")
-        FreeCAD.ActiveDocument.openTransaction("Create FEM mesh Netgen")
+        transaction_id = _open_exact_transaction(
+            document,
+            "Create FEM mesh Netgen",
+        )
         mesh_obj_name = "FEMMeshNetgen"
-        # if requested by some people add Preference for this
-        # mesh_obj_name = sel[0].Name + "_Mesh"
-        FreeCADGui.addModule("ObjectsFem")
-        if netgen_prefs.GetBool("UseLegacyNetgen", 1):
-            FreeCADGui.doCommand(
-                "ObjectsFem.makeMeshNetgenLegacy(FreeCAD.ActiveDocument, '" + mesh_obj_name + "')"
+        try:
+            FreeCADGui.addModule("ObjectsFem")
+            factory = (
+                "makeMeshNetgenLegacy"
+                if netgen_prefs.GetBool("UseLegacyNetgen", True)
+                else "makeMeshNetgen"
             )
-        else:
-            FreeCADGui.doCommand(
-                "ObjectsFem.makeMeshNetgen(FreeCAD.ActiveDocument, '" + mesh_obj_name + "')"
+            expected_type = (
+                "Fem::FemMeshShapeNetgenObject"
+                if factory == "makeMeshNetgenLegacy"
+                else "Fem::FemMeshShapeBaseObjectPython"
             )
-            FreeCADGui.doCommand("FreeCAD.ActiveDocument.ActiveObject.EndStep = 'OptimizeVolume'")
-
-        FreeCADGui.doCommand(
-            "FreeCAD.ActiveDocument.ActiveObject.Shape = FreeCAD.ActiveDocument.{}".format(
-                self.selobj.Name
+            mesh = FreeCADGui.runDocumentObjectCommand(
+                document,
+                f"ObjectsFem.{factory}("
+                f"{_document_expression(document)}, {mesh_obj_name!r})",
+                expected_type,
             )
-        )
-        FreeCADGui.doCommand("FreeCAD.ActiveDocument.ActiveObject.Fineness = 'Moderate'")
-
-        # Netgen mesh object could be added without an active analysis
-        # but if there is an active analysis move it in there
-        import FemGui
-
-        if FemGui.getActiveAnalysis():
-            FreeCADGui.addModule("FemGui")
-            FreeCADGui.doCommand(
-                "FemGui.getActiveAnalysis().addObject(FreeCAD.ActiveDocument.ActiveObject)"
+            _require_provisional_timeline_identity(
+                mesh,
+                document,
+                "The Netgen mesh factory",
             )
-        FreeCADGui.doCommand(
-            "FreeCADGui.ActiveDocument.setEdit(FreeCAD.ActiveDocument.ActiveObject.Name)"
-        )
-        FreeCADGui.Selection.clearSelection()
-        # a recompute immediately starts meshing when task panel is opened, this is not intended
+            if factory == "makeMeshNetgen":
+                mesh.EndStep = "OptimizeVolume"
+            mesh.Shape = shape
+            mesh.Fineness = "Moderate"
+            if mesh.Shape is not shape:
+                raise RuntimeError(
+                    "Netgen mesh did not retain its source shape"
+                )
+            if analysis is not None:
+                analysis.addObject(mesh)
+                if mesh not in analysis.Group:
+                    raise RuntimeError(
+                        "Netgen mesh was not added to its analysis"
+                    )
+            FreeCADGui.Selection.clearSelection()
+            self._start_edit(document, mesh)
+        except Exception:
+            _close_exact_transaction(
+                document,
+                transaction_id,
+                True,
+            )
+            raise
 
 
 class _MeshRegion(CommandManager):
@@ -1024,11 +1583,16 @@ class _GMSHRefine:
         }
 
     def IsActive(self):
-        if not FreeCADGui.ActiveDocument:
+        if not can_start_command() or not FreeCADGui.ActiveDocument:
             return False
 
         sel = FreeCADGui.Selection.getSelection()
-        if len(sel) == 1 and sel[0].isDerivedFrom("Fem::FemMeshObject"):
+        document = _active_document()
+        if (
+            len(sel) == 1
+            and _is_live_in_document(sel[0], document)
+            and sel[0].isDerivedFrom("Fem::FemMeshObject")
+        ):
             # must be GMSH mesh
             return is_of_type(sel[0], "Fem::FemMeshGmsh")
 
@@ -1048,7 +1612,19 @@ class _ResultShow(CommandManager):
         self.is_active = "with_selresult"
 
     def Activated(self):
-        self.selobj.ViewObject.Document.setEdit(self.selobj.ViewObject, 0)
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        gui_document = FreeCADGui.getDocument(document.Name)
+        result = self.selobj
+        if gui_document is None or not _is_live_in_document(
+            result,
+            document,
+        ):
+            return
+
+        gui_document.setEdit(result, 0)
 
 
 class _ResultsPurge(CommandManager):
@@ -1064,11 +1640,49 @@ class _ResultsPurge(CommandManager):
         self.is_active = "with_analysis"
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         import femresult.resulttools as resulttools
 
-        FreeCAD.ActiveDocument.openTransaction("Purge FEM results")
-        resulttools.purge_results(self.active_analysis)
-        FreeCAD.ActiveDocument.commitTransaction()
+        document = _active_document()
+        analysis = self.active_analysis
+        targets = resulttools.purge_result_targets(analysis)
+        if not targets:
+            return
+
+        target_identities = [
+            (str(target.Name), int(target.ID))
+            for target in targets
+        ]
+        FreeCADGui.Selection.clearSelection()
+        for target in targets:
+            FreeCADGui.Selection.addSelection(target)
+        if not FreeCADGui.isCommandActive("Std_Delete"):
+            FreeCADGui.Selection.clearSelection()
+            raise RuntimeError(
+                "The native delete command cannot purge the selected FEM "
+                "result graph"
+            )
+
+        # Std_Delete owns the one exact transaction and consumes persisted
+        # timeline replacement/resource contracts before it removes the
+        # selected result graph. Do not wrap it in a second transaction.
+        FreeCADGui.runCommand("Std_Delete", 0)
+        survivors = [
+            name
+            for name, object_id in target_identities
+            if (
+                (candidate := document.getObject(name)) is not None
+                and int(candidate.ID) == object_id
+            )
+        ]
+        if survivors:
+            raise RuntimeError(
+                "The native delete command did not purge FEM results: "
+                + ", ".join(sorted(survivors))
+            )
+        document.recompute()
 
 
 class _SolverCalculixContextManager:
@@ -1076,90 +1690,157 @@ class _SolverCalculixContextManager:
     def __init__(self, make_name, cli_obj_ref_name):
         self.make_name = make_name
         self.cli_name = cli_obj_ref_name
+        self.document = None
+        self.analysis = None
+        self.transaction_id = 0
+        self.solver = None
 
     def __enter__(self):
+        self.document = _active_document()
+        self.analysis = FemGui.getActiveAnalysis()
+        if (
+            not can_start_command()
+            or not _is_live_in_document(
+                self.analysis,
+                self.document,
+            )
+        ):
+            raise RuntimeError(
+                "The active FEM analysis is no longer available"
+            )
+
         ccx_prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Ccx")
-        FreeCAD.ActiveDocument.openTransaction("Create SolverCalculiX")
-        FreeCADGui.addModule("ObjectsFem")
-        FreeCADGui.addModule("FemGui")
-        FreeCADGui.doCommand(
-            f"{self.cli_name} = ObjectsFem.{self.make_name}(FreeCAD.ActiveDocument)"
+        self.transaction_id = _open_exact_transaction(
+            self.document,
+            "Create SolverCalculiX",
         )
-        FreeCADGui.doCommand(
-            "{}.AnalysisType = {}".format(self.cli_name, ccx_prefs.GetInt("AnalysisType", 0))
-        )
-        FreeCADGui.doCommand(
-            "{}.EigenmodesCount = {}".format(self.cli_name, ccx_prefs.GetInt("EigenmodesCount", 10))
-        )
-        FreeCADGui.doCommand(
-            "{}.EigenmodeLowLimit = {}".format(
-                self.cli_name, ccx_prefs.GetFloat("EigenmodeLowLimit", 0.0)
+        try:
+            FreeCADGui.addModule("ObjectsFem")
+            FreeCADGui.addModule("FemGui")
+            self.solver = FreeCADGui.runDocumentObjectCommand(
+                self.document,
+                f"ObjectsFem.{self.make_name}("
+                f"{_document_expression(self.document)})",
+                "Fem::FemSolverObjectPython",
             )
-        )
-        FreeCADGui.doCommand(
-            "{}.EigenmodeHighLimit = {}".format(
-                self.cli_name, ccx_prefs.GetFloat("EigenmodeHighLimit", 1000000.0)
+            _require_provisional_timeline_identity(
+                self.solver,
+                self.document,
+                "The CalculiX solver factory",
             )
-        )
-        FreeCADGui.doCommand(
-            "{}.IncrementsMaximum = {}".format(
-                self.cli_name, ccx_prefs.GetInt("StepMaxIncrements", 2000)
+            settings = {
+                "AnalysisType": ccx_prefs.GetInt("AnalysisType", 0),
+                "EigenmodesCount": ccx_prefs.GetInt(
+                    "EigenmodesCount",
+                    10,
+                ),
+                "EigenmodeLowLimit": ccx_prefs.GetFloat(
+                    "EigenmodeLowLimit",
+                    0.0,
+                ),
+                "EigenmodeHighLimit": ccx_prefs.GetFloat(
+                    "EigenmodeHighLimit",
+                    1000000.0,
+                ),
+                "IncrementsMaximum": ccx_prefs.GetInt(
+                    "StepMaxIncrements",
+                    2000,
+                ),
+                "TimeInitialIncrement": ccx_prefs.GetFloat(
+                    "TimeInitialIncrement",
+                    1.0,
+                ),
+                "TimePeriod": ccx_prefs.GetFloat(
+                    "TimePeriod",
+                    1.0,
+                ),
+                "TimeMinimumIncrement": ccx_prefs.GetFloat(
+                    "TimeMinimumIncrement",
+                    0.00001,
+                ),
+                "TimeMaximumIncrement": ccx_prefs.GetFloat(
+                    "TimeMaximumIncrement",
+                    1.0,
+                ),
+                "ThermoMechSteadyState": ccx_prefs.GetBool(
+                    "StaticAnalysis",
+                    True,
+                ),
+                "IterationsControlParameterTimeUse": (
+                    ccx_prefs.GetBool(
+                        "UseNonCcxIterationParam",
+                        False,
+                    )
+                ),
+                "SplitInputWriter": ccx_prefs.GetBool(
+                    "SplitInputWriter",
+                    False,
+                ),
+                "MatrixSolverType": ccx_prefs.GetInt("Solver", 0),
+                "Output3d": ccx_prefs.GetBool(
+                    "BeamShellOutput",
+                    True,
+                ),
+                "GeometricalNonlinearity": ccx_prefs.GetBool(
+                    "NonlinearGeometry",
+                    False,
+                ),
+            }
+            for property_name, value in settings.items():
+                setattr(self.solver, property_name, value)
+        except Exception:
+            _close_exact_transaction(
+                self.document,
+                self.transaction_id,
+                True,
             )
-        )
-        FreeCADGui.doCommand(
-            "{}.TimeInitialIncrement = {}".format(
-                self.cli_name, ccx_prefs.GetFloat("TimeInitialIncrement", 1.0)
-            )
-        )
-        FreeCADGui.doCommand(
-            "{}.TimePeriod = {}".format(self.cli_name, ccx_prefs.GetFloat("TimePeriod", 1.0))
-        )
-        FreeCADGui.doCommand(
-            "{}.TimeMinimumIncrement = {}".format(
-                self.cli_name, ccx_prefs.GetFloat("TimeMinimumIncrement", 0.00001)
-            )
-        )
-        FreeCADGui.doCommand(
-            "{}.TimeMaximumIncrement = {}".format(
-                self.cli_name, ccx_prefs.GetFloat("TimeMaximumIncrement", 1.0)
-            )
-        )
-        FreeCADGui.doCommand(
-            "{}.ThermoMechSteadyState = {}".format(
-                self.cli_name, ccx_prefs.GetBool("StaticAnalysis", True)
-            )
-        )
-        FreeCADGui.doCommand(
-            "{}.IterationsControlParameterTimeUse = {}".format(
-                self.cli_name, ccx_prefs.GetBool("UseNonCcxIterationParam", False)
-            )
-        )
-        FreeCADGui.doCommand(
-            "{}.SplitInputWriter = {}".format(
-                self.cli_name, ccx_prefs.GetBool("SplitInputWriter", False)
-            )
-        )
-        FreeCADGui.doCommand(
-            "{}.MatrixSolverType = {}".format(self.cli_name, ccx_prefs.GetInt("Solver", 0))
-        )
-        FreeCADGui.doCommand(
-            "{}.Output3d = {}".format(self.cli_name, ccx_prefs.GetBool("BeamShellOutput", True))
-        )
-        FreeCADGui.doCommand(
-            "{}.GeometricalNonlinearity = {}".format(
-                self.cli_name,
-                ccx_prefs.GetBool("NonlinearGeometry", False),
-            )
-        )
+            raise
 
         return self
 
     def __exit__(self, exc_type, exc_value, trace):
-        FreeCADGui.doCommand(f"FemGui.getActiveAnalysis().addObject({self.cli_name})")
-        FreeCAD.ActiveDocument.commitTransaction()
-        # expand analysis object in tree view
-        expandParentObject()
-        FreeCAD.ActiveDocument.recompute()
+        if exc_type is not None:
+            _close_exact_transaction(
+                self.document,
+                self.transaction_id,
+                True,
+            )
+            return False
+
+        try:
+            if (
+                not _is_live_in_document(
+                    self.analysis,
+                    self.document,
+                )
+                or not _is_live_in_document(
+                    self.solver,
+                    self.document,
+                )
+            ):
+                raise RuntimeError(
+                    "The CalculiX command target is no longer available"
+                )
+            self.analysis.addObject(self.solver)
+            if self.solver not in self.analysis.Group:
+                raise RuntimeError(
+                    "CalculiX was not added to its analysis"
+                )
+            self.document.recompute()
+            _close_exact_transaction(
+                self.document,
+                self.transaction_id,
+                False,
+            )
+            expandParentObject()
+        except Exception:
+            _close_exact_transaction(
+                self.document,
+                self.transaction_id,
+                True,
+            )
+            raise
+        return False
 
 
 class _SolverCcxTools(CommandManager):
@@ -1179,8 +1860,10 @@ class _SolverCcxTools(CommandManager):
         self.is_active = "with_analysis"
 
     def Activated(self):
+        if not self.IsActive():
+            return
         with _SolverCalculixContextManager("makeSolverCalculiXCcxTools", "solver") as cm:
-            FreeCADGui.doCommand(f"{cm.cli_name}.MaterialNonlinearity = True")
+            cm.solver.MaterialNonlinearity = True
 
 
 class _SolverCalculiX(CommandManager):
@@ -1198,6 +1881,9 @@ class _SolverCalculiX(CommandManager):
         self.is_active = "with_analysis"
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         ccx_prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Ccx")
         if ccx_prefs.GetBool("ResultAsPipeline", True):
             make_solver = "makeSolverCalculiX"
@@ -1205,7 +1891,7 @@ class _SolverCalculiX(CommandManager):
             make_solver = "makeSolverCalculiXCcxTools"
 
         with _SolverCalculixContextManager(make_solver, "solver") as cm:
-            FreeCADGui.doCommand(f"{cm.cli_name}.MaterialNonlinearity = True")
+            cm.solver.MaterialNonlinearity = True
 
 
 class _SolverControl(CommandManager):
@@ -1222,7 +1908,73 @@ class _SolverControl(CommandManager):
         self.is_active = "with_solver"
 
     def Activated(self):
-        FreeCADGui.ActiveDocument.setEdit(self.selobj, 0)
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        gui_document = FreeCADGui.getDocument(document.Name)
+        solver = self.selobj
+        if gui_document is None or not _is_live_in_document(
+            solver,
+            document,
+        ):
+            return
+
+        transaction_id = _open_exact_transaction(
+            document,
+            "Edit FEM solver",
+        )
+        try:
+            if not gui_document.setEdit(solver, 0):
+                raise RuntimeError(
+                    "The selected FEM solver editor could not be opened"
+                )
+            if not FreeCADGui.Control.ownsCommandTransaction(
+                gui_document,
+                transaction_id,
+            ):
+                raise RuntimeError(
+                    "The selected FEM solver editor could not adopt its "
+                    "command transaction"
+                )
+            editing = gui_document.getInEdit()
+            task = FreeCADGui.Control.activeTaskDialog(
+                gui_document,
+            )
+            if (
+                editing is None
+                or getattr(editing, "Object", None) is not solver
+                or task is None
+                or not task.ownsCommandTransaction(
+                    transaction_id,
+                )
+            ):
+                raise RuntimeError(
+                    "The selected FEM solver editor did not adopt its "
+                    "command transaction"
+                )
+        except Exception:
+            task = FreeCADGui.Control.activeTaskDialog(
+                gui_document,
+            )
+            editing = gui_document.getInEdit()
+            if (
+                task is not None
+                and editing is not None
+                and getattr(editing, "Object", None) is solver
+            ):
+                task.reject()
+            elif (
+                editing is not None
+                and getattr(editing, "Object", None) is solver
+            ):
+                gui_document.resetEdit()
+            _close_exact_transaction(
+                document,
+                transaction_id,
+                True,
+            )
+            raise
 
 
 class _SolverElmer(CommandManager):
@@ -1236,31 +1988,50 @@ class _SolverElmer(CommandManager):
         self.is_active = "with_analysis"
 
     def Activated(self):
-        FreeCAD.ActiveDocument.openTransaction(f"Create Fem SolverElmer")
-        FreeCADGui.addModule("ObjectsFem")
-        FreeCADGui.addModule("FemGui")
-        # expand parent obj in tree view if selected
-        expandParentObject()
-        # add the object
-        FreeCADGui.doCommand("ObjectsFem.makeSolverElmer(FreeCAD.ActiveDocument)")
-        # select only added object
-        FreeCADGui.doCommand(
-            "FemGui.getActiveAnalysis().addObject(FreeCAD.ActiveDocument.ActiveObject)"
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        analysis = self.active_analysis
+        transaction_id = _open_exact_transaction(
+            document,
+            "Create Fem SolverElmer",
         )
         elmer_prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Elmer")
-        bin_out = elmer_prefs.GetBool("BinaryOutput", False)
-        save_id = elmer_prefs.GetBool("SaveGeometryIndex", False)
-        FreeCADGui.doCommand(
-            "FreeCAD.ActiveDocument.ActiveObject.BinaryOutput = {}".format(bin_out)
-        )
-        FreeCADGui.doCommand(
-            "FreeCAD.ActiveDocument.ActiveObject.SaveGeometryIndex = {}".format(save_id)
-        )
-
-        FreeCADGui.Selection.clearSelection()
-        FreeCADGui.doCommand(
-            "FreeCADGui.Selection.addSelection(FreeCAD.ActiveDocument.ActiveObject)"
-        )
+        try:
+            FreeCADGui.addModule("ObjectsFem")
+            solver = FreeCADGui.runDocumentObjectCommand(
+                document,
+                "ObjectsFem.makeSolverElmer("
+                f"{_document_expression(document)})",
+                "Fem::FemSolverObjectPython",
+            )
+            _require_provisional_timeline_identity(
+                solver,
+                document,
+                "The Elmer solver factory",
+            )
+            solver.BinaryOutput = elmer_prefs.GetBool(
+                "BinaryOutput",
+                False,
+            )
+            solver.SaveGeometryIndex = elmer_prefs.GetBool(
+                "SaveGeometryIndex",
+                False,
+            )
+            analysis.addObject(solver)
+            if solver not in analysis.Group:
+                raise RuntimeError(
+                    "Elmer was not added to its analysis"
+                )
+            document.recompute()
+            _close_exact_transaction(document, transaction_id, False)
+            expandParentObject()
+            FreeCADGui.Selection.clearSelection()
+            FreeCADGui.Selection.addSelection(solver)
+        except Exception:
+            _close_exact_transaction(document, transaction_id, True)
+            raise
 
 
 class _SolverMystran(CommandManager):
@@ -1290,11 +2061,17 @@ class _SolverRun(CommandManager):
         self.tool = None
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         from femsolver.run import run_fem_solver
 
-        run_fem_solver(self.selobj)
+        document = _active_document()
+        solver = self.selobj
+        run_fem_solver(solver)
         FreeCADGui.Selection.clearSelection()
-        FreeCAD.ActiveDocument.recompute()
+        if _is_live_in_document(solver, document):
+            document.recompute()
 
 
 class _SolverZ88(CommandManager):
@@ -1309,30 +2086,54 @@ class _SolverZ88(CommandManager):
         self.do_activated = "add_obj_on_gui_expand_noset_edit"
 
     def Activated(self):
-        FreeCAD.ActiveDocument.openTransaction(f"Create Fem SolverZ88")
-        FreeCADGui.addModule("ObjectsFem")
-        FreeCADGui.addModule("FemGui")
-        # expand parent obj in tree view if selected
-        expandParentObject()
-        # add the object
-        FreeCADGui.doCommand("ObjectsFem.makeSolverZ88(FreeCAD.ActiveDocument)")
-        # select only added object
-        FreeCADGui.doCommand(
-            "FemGui.getActiveAnalysis().addObject(FreeCAD.ActiveDocument.ActiveObject)"
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        analysis = self.active_analysis
+        transaction_id = _open_exact_transaction(
+            document,
+            "Create Fem SolverZ88",
         )
         z88_prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Z88")
-        solver_type = z88_prefs.GetString("Solver", "sorcg")
-        maxgs = z88_prefs.GetInt("MaxGS", 100000000)
-        maxkoi = z88_prefs.GetInt("MaxKOI", 2800000)
-
-        FreeCADGui.doCommand(f"FreeCAD.ActiveDocument.ActiveObject.SolverType = '{solver_type}'")
-        FreeCADGui.doCommand(f"FreeCAD.ActiveDocument.ActiveObject.MatrixMaximum = {maxgs}")
-        FreeCADGui.doCommand(f"FreeCAD.ActiveDocument.ActiveObject.VectorMaximum = {maxkoi}")
-
-        FreeCADGui.Selection.clearSelection()
-        FreeCADGui.doCommand(
-            "FreeCADGui.Selection.addSelection(FreeCAD.ActiveDocument.ActiveObject)"
-        )
+        try:
+            FreeCADGui.addModule("ObjectsFem")
+            solver = FreeCADGui.runDocumentObjectCommand(
+                document,
+                "ObjectsFem.makeSolverZ88("
+                f"{_document_expression(document)})",
+                "Fem::FemSolverObjectPython",
+            )
+            _require_provisional_timeline_identity(
+                solver,
+                document,
+                "The Z88 solver factory",
+            )
+            solver.SolverType = z88_prefs.GetString(
+                "Solver",
+                "sorcg",
+            )
+            solver.MatrixMaximum = z88_prefs.GetInt(
+                "MaxGS",
+                100000000,
+            )
+            solver.VectorMaximum = z88_prefs.GetInt(
+                "MaxKOI",
+                2800000,
+            )
+            analysis.addObject(solver)
+            if solver not in analysis.Group:
+                raise RuntimeError(
+                    "Z88 was not added to its analysis"
+                )
+            document.recompute()
+            _close_exact_transaction(document, transaction_id, False)
+            expandParentObject()
+            FreeCADGui.Selection.clearSelection()
+            FreeCADGui.Selection.addSelection(solver)
+        except Exception:
+            _close_exact_transaction(document, transaction_id, True)
+            raise
 
 
 class _PostFilterGlyph(CommandManager):
@@ -1365,6 +2166,8 @@ class _CompSolvers(CommandManager):
         ]
 
     def Activated(self, i):
+        if not self.IsActive() or not 0 <= i < len(self.commands):
+            return
         FreeCADGui.runCommand(self.commands[i])
 
     def GetCommands(self):
@@ -1374,7 +2177,11 @@ class _CompSolvers(CommandManager):
         gen_prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/General")
         # DefaultSolver == 0 is "None"
         index = gen_prefs.GetInt("DefaultSolver", 0)
-        return (index - 1) if index > 0 else 0
+        return (
+            index - 1
+            if 1 <= index <= len(self.commands)
+            else 0
+        )
 
 
 # the string in add command will be the page name on FreeCAD wiki

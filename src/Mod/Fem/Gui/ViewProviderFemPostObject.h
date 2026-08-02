@@ -96,6 +96,10 @@ public:
 
     // edit handling
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     bool setEdit(int ModNum) override;
     void unsetEdit(int ModNum) override;
 

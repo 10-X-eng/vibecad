@@ -222,8 +222,12 @@ bool TaskTransformedParameters::originalSelected(const Gui::SelectionChanges& ms
         }
 
         PartDesign::Transformed* pcTransformed = getObject();
-        App::DocumentObject* selectedObject = pcTransformed->getDocument()->getObject(msg.pObjectName);
-        if (selectedObject->isDerivedFrom<PartDesign::FeatureAddSub>()) {
+        App::DocumentObject* selectedObject = resolveModelingReference(
+            pcTransformed,
+            pcTransformed->getDocument()->getObject(msg.pObjectName)
+        );
+        if (selectedObject
+            && selectedObject->isDerivedFrom<PartDesign::FeatureAddSub>()) {
 
             // Do the same like in TaskDlgTransformedParameters::accept() but without doCommand
             std::vector<App::DocumentObject*> originals = pcTransformed->getSortedOriginals();
@@ -316,7 +320,9 @@ void TaskTransformedParameters::onButtonAddFeature(bool checked)
         hideObject();
         showBase();
         selectionMode = SelectionMode::AddFeature;
-        Gui::Selection().clearSelection();
+        Gui::Selection().clearSelection(
+            getObject()->getDocument()->getName()
+        );
     }
     else {
         exitSelectionMode();
@@ -352,7 +358,9 @@ void TaskTransformedParameters::onButtonRemoveFeature(bool checked)
     if (checked) {
         checkVisibility();
         selectionMode = SelectionMode::RemoveFeature;
-        Gui::Selection().clearSelection();
+        Gui::Selection().clearSelection(
+            getObject()->getDocument()->getName()
+        );
     }
     else {
         exitSelectionMode();
@@ -505,7 +513,7 @@ App::DocumentObject* TaskTransformedParameters::getBaseObject() const
     if (!base) {
         auto body = feature->getFeatureBody();
         if (body) {
-            base = body->getPrevSolidFeature(feature);
+            base = body->getPrevResultFeature(feature);
         }
     }
     return base;

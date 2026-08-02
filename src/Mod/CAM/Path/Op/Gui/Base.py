@@ -32,8 +32,19 @@ import Path.Main.Job as PathJob
 import Path.Op.Base as PathOp
 import Path.Op.Gui.Selection as PathSelection
 import Path.Tool.Controller as PathToolController
+from Path.CommandBoundary import (
+    ExactDocumentObjectIdentity,
+    TaskDocumentTransaction,
+    active_jobs,
+    begin_task_launch,
+    can_start_document_command,
+    is_document_object,
+    is_timeline_input_usable,
+    open_timeline_mode_zero_editor,
+)
 from Path.Tool.library.ui.dock import ToolBitLibraryDock
 import PathScripts.PathUtils as PathUtils
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 import importlib
 from PySide.QtCore import QT_TRANSLATE_NOOP
 
@@ -73,6 +84,8 @@ class ViewProvider(object):
         self.vobj = vobj
         self.Object = None
         self.panel = None
+        self._taskTransaction = None
+        self._timelineObjectsBeforeTask = None
         self._updating_workplane = False  # Guard against recursion
         self._selected = False  # Track selection state
 
@@ -81,6 +94,8 @@ class ViewProvider(object):
         self.vobj = vobj
         self.Object = vobj.Object
         self.panel = None
+        self._taskTransaction = None
+        self._timelineObjectsBeforeTask = None
 
         # Create workplane visualization (coordinate system)
         from pivy import coin
@@ -204,37 +219,63 @@ class ViewProvider(object):
         self.deleteOnReject = state
         return self.deleteOnReject
 
+    def supportsDocumentTimelineEdit(self):
+        """The default CAM operation owns a real task-panel editor."""
+        return True
+
+    def doubleClicked(self, vobj=None):
+        return open_timeline_mode_zero_editor(self.Object)
+
     def setEdit(self, vobj=None, mode=0):
         """setEdit(vobj, mode=0) ... initiate editing of receivers model."""
         Path.Log.track()
         if 0 == mode:
             if vobj is None:
                 vobj = self.vobj
-            # Mark as selected and update workplane visualization
-            self._selected = True
-            self.updateWorkplaneVisualization()
+            transaction = self._taskTransaction
+            self._taskTransaction = None
+            if transaction is None:
+                transaction = TaskDocumentTransaction(
+                    vobj.Object,
+                    translate("PathOp", "AreaOp Operation"),
+                )
+            try:
+                # Mark as selected and update workplane visualization
+                self._selected = True
+                self.updateWorkplaneVisualization()
 
-            page = self.getTaskPanelOpPage(vobj.Object)
-            page.setTitle(self.OpName)
-            page.setIcon(self.OpIcon)
-            selection = self.getSelectionFactory()
-            self.setupTaskPanel(
-                TaskPanel(vobj.Object, self.deleteObjectsOnReject(), page, selection)
-            )
-            self.deleteOnReject = False
-            return True
+                page = self.getTaskPanelOpPage(vobj.Object)
+                page.setTitle(self.OpName)
+                page.setIcon(self.OpIcon)
+                selection = self.getSelectionFactory()
+                self.setupTaskPanel(
+                    TaskPanel(
+                        vobj.Object,
+                        self.deleteObjectsOnReject(),
+                        page,
+                        selection,
+                        transaction=transaction,
+                    )
+                )
+                self.deleteOnReject = False
+                return True
+            except Exception:
+                transaction.close_dialog()
+                if transaction.owns_transaction():
+                    transaction.abort()
+                raise
         # no other editing possible
         return False
 
     def setupTaskPanel(self, panel):
         """setupTaskPanel(panel) ... internal function to start the editor."""
         self.panel = panel
-        FreeCADGui.Control.closeDialog()
-        FreeCADGui.Control.showDialog(panel)
+        panel.transaction.close_dialog()
+        panel.transaction.show_dialog(panel)
         panel.setupUi()
         job = self.Object.Proxy.getJob(self.Object)
         if job:
-            job.ViewObject.Proxy.setupEditVisibility(job)
+            job.ViewObject.Proxy.setupOperationEditVisibility(job)
         else:
             Path.Log.info("did not find no job")
 
@@ -243,7 +284,7 @@ class ViewProvider(object):
         self.panel = None
         job = self.Object.Proxy.getJob(self.Object)
         if job:
-            job.ViewObject.Proxy.resetEditVisibility(job)
+            job.ViewObject.Proxy.resetOperationEditVisibility(job)
 
     def unsetEdit(self, arg1, arg2):
         # Mark as not selected and hide workplane visualization
@@ -274,7 +315,7 @@ class ViewProvider(object):
 
     def getIcon(self):
         """getIcon() ... the icon used in the object tree"""
-        if self.Object.Active:
+        if PathUtil.activeForOp(self.Object):
             return self.OpIcon
         else:
             return ":/icons/CAM_OpActive.svg"
@@ -333,19 +374,20 @@ class ViewProvider(object):
         class FaceSelectionObserver:
             def __init__(self, operation, viewprovider):
                 self.operation = operation
+                self.document = operation.Document
                 self.viewprovider = viewprovider
                 self.active = True
 
             def addSelection(self, doc, obj, sub, pnt):
                 """Called when user selects something."""
-                if not self.active:
+                if not self.active or doc != self.document.Name:
                     return
 
                 # Check if it's a face
                 if sub and sub.startswith("Face"):
                     try:
                         # Get the face object
-                        selected_obj = FreeCAD.ActiveDocument.getObject(obj)
+                        selected_obj = self.document.getObject(obj)
                         if selected_obj and hasattr(selected_obj, "Shape"):
                             # Get the face
                             face = selected_obj.Shape.getElement(sub)
@@ -360,7 +402,7 @@ class ViewProvider(object):
 
                             # Store the face normal as the workplane orientation
                             self.operation.Workplane = normal
-                            FreeCAD.ActiveDocument.recompute()
+                            self.document.recompute()
 
                             FreeCAD.Console.PrintMessage(
                                 f"Set {self.operation.Label} workplane to {normal} from {selected_obj.Label}.{sub}\n"
@@ -380,7 +422,7 @@ class ViewProvider(object):
         FreeCADGui.Selection.addObserver(observer)
 
         # Clear current selection and provide user feedback
-        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.clearSelection(self.Object.Document.Name)
         FreeCAD.Console.PrintMessage(f"Click on a face to set workplane for {self.Object.Label}\n")
 
 
@@ -392,7 +434,11 @@ class TaskPanelPage(object):
         """__init__(obj, features) ... framework initialisation.
         Do not overwrite, implement initPage(obj) instead."""
         self.obj = obj
+        self.document = obj.Document
         self.job = PathUtils.findParentJob(obj)
+        self._signalConnections = []
+        self._pageDeactivated = False
+        self._pageCleanedUp = False
         self.form = self.getForm()
         self.signalDirtyChanged = None
         self.setClean()
@@ -404,10 +450,19 @@ class TaskPanelPage(object):
         self.panelTitle = "Operation"
         self.tcEditor = None
         self.combo = None
+        self._tcSignalsConnected = False
+        self._tcVisibilitySignalConnected = False
 
         if self._installTCUpdate():
-            PathJob.Notification.updateTC.connect(self.resetToolController)
-            self.form.toolController.currentIndexChanged.connect(self.tcComboChanged)
+            self.connectSignal(
+                PathJob.Notification.updateTC,
+                self.resetToolController,
+            )
+            self.connectSignal(
+                self.form.toolController.currentIndexChanged,
+                self.tcComboChanged,
+            )
+            self._tcSignalsConnected = True
 
     def show_error_message(self, title, message):
         msg_box = QtGui.QMessageBox()
@@ -428,6 +483,14 @@ class TaskPanelPage(object):
     def onDirtyChanged(self, callback):
         """onDirtyChanged(callback) ... set callback when dirty state changes."""
         self.signalDirtyChanged = callback
+
+    def connectSignal(self, signal, callback):
+        """Connect and own a task-page callback until deterministic teardown."""
+
+        if self._pageDeactivated:
+            raise RuntimeError("Cannot connect a callback on a closed CAM task page")
+        signal.connect(callback)
+        self._signalConnections.append((signal, callback))
 
     def setDirty(self):
         """setDirty() ... mark receiver as dirty, causing the model to be recalculated if OK or Apply is pressed."""
@@ -455,9 +518,57 @@ class TaskPanelPage(object):
     def pageCleanup(self):
         """pageCleanup() ... internal callback.
         Do not overwrite, implement cleanupPage(obj) instead."""
-        if self._installTCUpdate():
-            PathJob.Notification.updateTC.disconnect(self.resetToolController)
+        if self._pageCleanedUp:
+            return
+        self._pageCleanedUp = True
+        self.pageDeactivate()
         self.cleanupPage(self.obj)
+
+    def pageDeactivate(self):
+        """Disconnect callbacks before the task transaction can delete its object."""
+
+        if self._pageDeactivated:
+            return
+        self._pageDeactivated = True
+        self.signalDirtyChanged = None
+        self._tcSignalsConnected = False
+        self._tcVisibilitySignalConnected = False
+        connections = self._signalConnections
+        self._signalConnections = []
+        for signal, callback in reversed(connections):
+            try:
+                signal.disconnect(callback)
+            except (AttributeError, RuntimeError, TypeError):
+                # Qt can already have disconnected a receiver while tearing
+                # down its owning widget.
+                pass
+        editor = self.tcEditor
+        if editor is not None and hasattr(editor, "cleanupUi"):
+            editor.cleanupUi()
+
+    def pageReleaseReferences(self):
+        """Release the Python UI graph after all page cleanup has completed."""
+
+        self.pageDeactivate()
+        form = self.form
+        if form is not None:
+            # UiLoader exposes every named child as a strong reference in the
+            # root wrapper's instance dictionary. PySide also retains the
+            # parent wrapper from those children, so leaving that dictionary
+            # intact keeps the complete deleted form graph in a Python cycle.
+            # No page callback may use the form after pageDeactivate().
+            try:
+                vars(form).clear()
+            except (ReferenceError, RuntimeError, TypeError):
+                pass
+        self.signalDirtyChanged = None
+        self.parent = None
+        self.tcEditor = None
+        self.combo = None
+        self.form = None
+        self.obj = None
+        self.job = None
+        self.document = None
 
     def pageRegisterSignalHandlers(self):
         """pageRegisterSignalHandlers() .. internal callback.
@@ -465,7 +576,7 @@ class TaskPanelPage(object):
         Do not overwrite, implement getSignalsForUpdate(obj) and/or registerSignalHandlers(obj) instead.
         """
         for signal in self.getSignalsForUpdate(self.obj):
-            signal.connect(self.pageGetFields)
+            self.connectSignal(signal, self.pageGetFields)
         self.registerSignalHandlers(self.obj)
 
     def pageUpdateData(self, obj, prop):
@@ -609,7 +720,16 @@ class TaskPanelPage(object):
             self.tcEditor.controller.hide()
 
     def resetToolController(self, job, tc):
-        if self.obj is None:
+        try:
+            if (
+                not is_document_object(self.obj, self.document)
+                or job is not self.job
+                or not is_document_object(job, self.document)
+                or PathUtils.findParentJob(self.obj) is not job
+                or not is_document_object(tc, self.document)
+            ):
+                return
+        except (ReferenceError, RuntimeError):
             return
         self.obj.ToolController = tc
         self.setupToolController()
@@ -704,10 +824,17 @@ class TaskPanelPage(object):
                 if hasattr(checkbox, "checkStateChanged")
                 else checkbox.stateChanged
             )
-            checkboxSignal.connect(self.updateToolControllerEditorVisibility)
+            if not self._tcVisibilitySignalConnected:
+                self.connectSignal(
+                    checkboxSignal,
+                    self.updateToolControllerEditorVisibility,
+                )
+                self._tcVisibilitySignalConnected = True
 
             if oldEditor:
                 oldEditor.updateToolController()
+                if hasattr(oldEditor, "cleanupUi"):
+                    oldEditor.cleanupUi()
                 oldEditor.controller.hide()
                 layout.removeWidget(oldEditor.controller)
 
@@ -827,7 +954,7 @@ class TaskPanelBaseGeometryPage(TaskPanelPage):
         self.resizeBaseList()
 
     def itemActivated(self):
-        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.clearSelection(self.document.Name)
         for item in self.form.baseList.selectedItems():
             obj = item.data(self.DataObject)
             sub = item.data(self.DataObjectSub)
@@ -859,6 +986,13 @@ class TaskPanelBaseGeometryPage(TaskPanelPage):
         return "nothing"
 
     def selectionSupportedAsBaseGeometry(self, sel, ignoreErrors):
+        if getattr(
+            sel.Object, "Document", None
+        ) is not self.document or not is_timeline_input_usable(
+            sel.Object,
+            self.document,
+        ):
+            return False
         if sel.HasSubObjects:
             if not self.supportsVertexes() and sel.SubObjects[0].ShapeType == "Vertex":
                 return False
@@ -888,7 +1022,7 @@ class TaskPanelBaseGeometryPage(TaskPanelPage):
 
     def addBase(self):
         Path.Log.track()
-        if self.addBaseGeometry(FreeCADGui.Selection.getSelectionEx()):
+        if self.addBaseGeometry(FreeCADGui.Selection.getSelectionEx(self.document.Name)):
             # self.obj.Proxy.execute(self.obj)
             self.setFields(self.obj)
             self.setDirty()
@@ -926,22 +1060,30 @@ class TaskPanelBaseGeometryPage(TaskPanelPage):
 
     def importBaseGeometry(self):
         opLabel = str(self.form.geometryImportList.currentText())
-        ops = FreeCAD.ActiveDocument.getObjectsByLabel(opLabel)
+        ops = self.document.getObjectsByLabel(opLabel)
         if len(ops) > 1:
             msg = translate("PathOp", "Multiple operations are labeled as")
             msg += " {}\n".format(opLabel)
             FreeCAD.Console.PrintWarning(msg)
+        if not ops:
+            return
         for base, subList in ops[0].Base:
-            FreeCADGui.Selection.clearSelection()
+            FreeCADGui.Selection.clearSelection(self.document.Name)
             FreeCADGui.Selection.addSelection(base, subList)
             self.addBase()
 
     def registerSignalHandlers(self, obj):
-        self.form.baseList.itemSelectionChanged.connect(self.itemActivated)
-        self.form.addBase.clicked.connect(self.addBase)
-        self.form.deleteBase.clicked.connect(self.deleteBase)
-        self.form.clearBase.clicked.connect(self.clearBase)
-        self.form.geometryImportButton.clicked.connect(self.importBaseGeometry)
+        self.connectSignal(
+            self.form.baseList.itemSelectionChanged,
+            self.itemActivated,
+        )
+        self.connectSignal(self.form.addBase.clicked, self.addBase)
+        self.connectSignal(self.form.deleteBase.clicked, self.deleteBase)
+        self.connectSignal(self.form.clearBase.clicked, self.clearBase)
+        self.connectSignal(
+            self.form.geometryImportButton.clicked,
+            self.importBaseGeometry,
+        )
 
     def pageUpdateData(self, obj, prop):
         if prop in ["Base"]:
@@ -994,7 +1136,10 @@ class TaskPanelBaseLocationPage(TaskPanelPage):
             self.formLoc.baseList.horizontalHeader().setResizeMode(QtGui.QHeaderView.Stretch)
         else:
             self.formLoc.baseList.horizontalHeader().setSectionResizeMode(QtGui.QHeaderView.Stretch)
-        self.getPoint = PathGetPoint.TaskPanel(self.formLoc.addRemoveEdit)
+        self.getPoint = PathGetPoint.TaskPanel(
+            self.formLoc.addRemoveEdit,
+            document=self.document,
+        )
         return self.formLoc
 
     def modifyStandardButtons(self, buttonBox):
@@ -1033,7 +1178,7 @@ class TaskPanelBaseLocationPage(TaskPanelPage):
                 deletedRows.append(row)
                 self.formLoc.baseList.removeRow(row)
         self.updateLocations()
-        FreeCAD.ActiveDocument.recompute()
+        self.document.recompute()
 
     def updateLocations(self):
         Path.Log.track()
@@ -1053,7 +1198,7 @@ class TaskPanelBaseLocationPage(TaskPanelPage):
             locations = self.obj.Locations
             locations.append(point)
             self.obj.Locations = locations
-            FreeCAD.ActiveDocument.recompute()
+            self.document.recompute()
 
     def editLocation(self):
         selected = self.formLoc.baseList.selectedItems()
@@ -1070,7 +1215,7 @@ class TaskPanelBaseLocationPage(TaskPanelPage):
             self.formLoc.baseList.item(self.editRow, 0).setData(self.DataLocation, point.x)
             self.formLoc.baseList.item(self.editRow, 1).setData(self.DataLocation, point.y)
             self.updateLocations()
-            FreeCAD.ActiveDocument.recompute()
+            self.document.recompute()
 
     def itemActivated(self):
         if self.formLoc.baseList.selectedItems():
@@ -1081,10 +1226,22 @@ class TaskPanelBaseLocationPage(TaskPanelPage):
             self.form.editLocation.setEnabled(False)
 
     def registerSignalHandlers(self, obj):
-        self.form.baseList.itemSelectionChanged.connect(self.itemActivated)
-        self.formLoc.addLocation.clicked.connect(self.addLocation)
-        self.formLoc.removeLocation.clicked.connect(self.removeLocation)
-        self.formLoc.editLocation.clicked.connect(self.editLocation)
+        self.connectSignal(
+            self.form.baseList.itemSelectionChanged,
+            self.itemActivated,
+        )
+        self.connectSignal(
+            self.formLoc.addLocation.clicked,
+            self.addLocation,
+        )
+        self.connectSignal(
+            self.formLoc.removeLocation.clicked,
+            self.removeLocation,
+        )
+        self.connectSignal(
+            self.formLoc.editLocation.clicked,
+            self.editLocation,
+        )
 
     def pageUpdateData(self, obj, prop):
         if prop in ["Locations"]:
@@ -1263,7 +1420,10 @@ class TaskPanelDepthsPage(TaskPanelPage):
             self.stepDown.updateWidget()
         if self.haveFinishDepth():
             self.finishDepth.updateWidget()
-        self.updateSelection(obj, FreeCADGui.Selection.getSelectionEx())
+        self.updateSelection(
+            obj,
+            FreeCADGui.Selection.getSelectionEx(self.document.Name),
+        )
 
     def getSignalsForUpdate(self, obj):
         signals = []
@@ -1279,12 +1439,22 @@ class TaskPanelDepthsPage(TaskPanelPage):
 
     def registerSignalHandlers(self, obj):
         if self.haveStartDepth():
-            self.form.startDepthSet.clicked.connect(
-                lambda: self.depthSet(obj, self.startDepth, "StartDepth")
+            self.connectSignal(
+                self.form.startDepthSet.clicked,
+                lambda: self.depthSet(
+                    obj,
+                    self.startDepth,
+                    "StartDepth",
+                ),
             )
         if self.haveFinalDepth():
-            self.form.finalDepthSet.clicked.connect(
-                lambda: self.depthSet(obj, self.finalDepth, "FinalDepth")
+            self.connectSignal(
+                self.form.finalDepthSet.clicked,
+                lambda: self.depthSet(
+                    obj,
+                    self.finalDepth,
+                    "FinalDepth",
+                ),
             )
 
     def pageUpdateData(self, obj, prop):
@@ -1292,7 +1462,7 @@ class TaskPanelDepthsPage(TaskPanelPage):
             self.setFields(obj)
 
     def depthSet(self, obj, spinbox, prop):
-        z = self.selectionZLevel(FreeCADGui.Selection.getSelectionEx())
+        z = self.selectionZLevel(FreeCADGui.Selection.getSelectionEx(self.document.Name))
         if z is not None:
             Path.Log.debug("depthSet(%s, %s, %.2f)" % (obj.Label, prop, z))
             if spinbox.expression():
@@ -1375,13 +1545,47 @@ class TaskPanel(object):
     expected to process all events concerning the data it manages.
     """
 
-    def __init__(self, obj, deleteOnReject, opPage, selectionFactory):
+    def __init__(
+        self,
+        obj,
+        deleteOnReject,
+        opPage,
+        selectionFactory,
+        transaction=None,
+    ):
         Path.Log.track(obj.Label, deleteOnReject, opPage, selectionFactory)
-        FreeCAD.ActiveDocument.openTransaction(translate("PathOp", "AreaOp Operation"))
+        if transaction is None:
+            transaction = TaskDocumentTransaction(
+                obj,
+                translate("PathOp", "AreaOp Operation"),
+            )
+        elif transaction.document is not obj.Document:
+            raise RuntimeError("The CAM operation task transaction belongs to another document")
+        self.transaction = transaction
+        self.document = self.transaction.document
         self.obj = obj
         self.deleteOnReject = deleteOnReject
+        job = obj.Proxy.getJob(obj)
+        self.priorOperationVisibility = tuple(
+            (
+                operation,
+                bool(operation.ViewObject.Visibility),
+            )
+            for operation in getattr(
+                getattr(job, "Operations", None),
+                "Group",
+                (),
+            )
+            if (
+                operation is not obj
+                and getattr(operation, "Document", None) is self.document
+                and self.document.getObject(operation.Name) is operation
+                and getattr(operation, "ViewObject", None) is not None
+            )
+        )
         self.featurePages = []
         self.parent = None
+        self._pagesCleanedUp = False
 
         # members initialized later
         self.clearanceHeight = None
@@ -1492,42 +1696,86 @@ class TaskPanel(object):
 
     def accept(self, resetEdit=True):
         """accept() ... callback invoked when user presses the task panel OK button."""
-        self.preCleanup()
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
         if self.isDirty():
             self.panelGetFields()
-        FreeCAD.ActiveDocument.commitTransaction()
-        self.cleanup(resetEdit)
-
-    def reject(self, resetEdit=True):
-        """reject() ... callback invoked when user presses the task panel Cancel button."""
+        self.transaction.recompute((self.obj,))
         self.preCleanup()
-        FreeCAD.ActiveDocument.abortTransaction()
-        if self.deleteOnReject:
-            FreeCAD.ActiveDocument.openTransaction(translate("PathOp", "Uncreate AreaOp Operation"))
-            try:
-                PathUtil.clearExpressionEngine(self.obj)
-                FreeCAD.ActiveDocument.removeObject(self.obj.Name)
-            except Exception as ee:
-                Path.Log.debug("{}\n".format(ee))
-            FreeCAD.ActiveDocument.commitTransaction()
+        if self.document.isProvisionallyEnrolledInTimelineByCurrentTransaction(self.obj):
+            self.document.publishProvisionalTimelineOperationBlock(
+                self.obj,
+                [],
+            )
+        self.transaction.commit((self.obj,), recompute=False)
         self.cleanup(resetEdit)
         return True
 
-    def preCleanup(self):
+    def reject(self, resetEdit=True):
+        """reject() ... callback invoked when user presses the task panel Cancel button."""
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
+        self.preCleanup()
+        # Creation and editing share one transaction.  Aborting it removes a
+        # newly created operation as well as all provisional edits; a second
+        # "uncreate" transaction would instead make Cancel into a new model
+        # mutation and can resurrect the operation when the task owner rolls
+        # back its exact transaction.
+        self.transaction.abort()
+        self.cleanup(resetEdit)
+        return True
+
+    def closeDeletedDocumentTask(self):
+        """Close task UI after its launch document has already disappeared."""
+
         for page in self.featurePages:
-            page.onDirtyChanged(None)
+            page.pageDeactivate()
+        PathSelection.clear()
+        FreeCADGui.Selection.removeObserver(self)
+        self.transaction.close_dialog()
+        self.panelReleasePages()
+
+    def preCleanup(self):
+        # Disconnect every UI/model callback while the operation and its
+        # ViewProvider are still alive. Cancel can delete a provisional
+        # operation as soon as the exact transaction rolls back.
+        self.panelCleanup()
         PathSelection.clear()
         FreeCADGui.Selection.removeObserver(self)
         self.obj.ViewObject.Proxy.clearTaskPanel()
         self.obj.ViewObject.Visibility = self.visibility
+        self.restorePriorOperationVisibility()
+
+    def restorePriorOperationVisibility(self):
+        """Restore sibling presentation changed by an operation preview.
+
+        Several CAM algorithms temporarily alter sibling visibility during
+        recompute.  ViewProvider show/hide avoids recording those preview
+        changes in the operation transaction while restoring the exact state
+        captured before the task panel opened.
+        """
+
+        remembered = self.priorOperationVisibility
+        self.priorOperationVisibility = ()
+        for operation, visible in remembered:
+            try:
+                if (
+                    getattr(operation, "Document", None) is self.document
+                    and self.document.getObject(operation.Name) is operation
+                    and getattr(operation, "ViewObject", None) is not None
+                ):
+                    operation.ViewObject.setTemporaryVisibility(bool(visible))
+            except (AttributeError, ReferenceError, RuntimeError):
+                continue
 
     def cleanup(self, resetEdit):
         """cleanup() ... implements common cleanup tasks."""
-        self.panelCleanup()
-        FreeCADGui.Control.closeDialog()
+        self.transaction.close_dialog()
         if resetEdit:
-            FreeCADGui.ActiveDocument.resetEdit()
-        FreeCAD.ActiveDocument.recompute()
+            self.transaction.reset_edit()
+        self.transaction.recompute_after_close()
 
     def pageDirtyChanged(self, page):
         """pageDirtyChanged(page) ... internal callback"""
@@ -1538,7 +1786,7 @@ class TaskPanel(object):
         if button == QtGui.QDialogButtonBox.Apply:
             self.panelGetFields()
             self.setClean()
-            FreeCAD.ActiveDocument.recompute()
+            self.transaction.recompute((self.obj,))
 
     def modifyStandardButtons(self, buttonBox):
         """modifyStandarButtons(buttonBox) ... callback in case the task panel buttons need to be modified."""
@@ -1562,9 +1810,23 @@ class TaskPanel(object):
 
     def panelCleanup(self):
         """panelCleanup() ... invoked before the receiver is destroyed."""
+        if self._pagesCleanedUp:
+            return
+        self._pagesCleanedUp = True
         Path.Log.track()
-        for page in self.featurePages:
-            page.pageCleanup()
+        try:
+            for page in self.featurePages:
+                page.pageCleanup()
+        finally:
+            self.panelReleasePages()
+
+    def panelReleasePages(self):
+        """Break every page/form ownership edge exactly once."""
+
+        pages = self.featurePages
+        self.featurePages = []
+        for page in pages:
+            page.pageReleaseReferences()
 
     def open(self):
         """open() ... callback invoked when the task panel is opened."""
@@ -1582,7 +1844,7 @@ class TaskPanel(object):
         Path.Log.track(self.deleteOnReject)
 
         if self.deleteOnReject and PathOp.FeatureBaseGeometry & self.obj.Proxy.opFeatures(self.obj):
-            sel = FreeCADGui.Selection.getSelectionEx()
+            sel = FreeCADGui.Selection.getSelectionEx(self.document.Name)
             for page in self.featurePages:
                 if getattr(page, "InitBase", True) and hasattr(page, "addBase"):
                     page.clearBase()
@@ -1616,22 +1878,28 @@ class TaskPanel(object):
         return True
 
     def updateSelection(self):
-        sel = FreeCADGui.Selection.getSelectionEx()
+        if not self.transaction.is_open():
+            return
+        sel = FreeCADGui.Selection.getSelectionEx(self.document.Name)
         for page in self.featurePages:
             page.updateSelection(self.obj, sel)
 
     # SelectionObserver interface
     def addSelection(self, doc, obj, sub, pnt):
-        self.updateSelection()
+        if doc == self.document.Name:
+            self.updateSelection()
 
     def removeSelection(self, doc, obj, sub):
-        self.updateSelection()
+        if doc == self.document.Name:
+            self.updateSelection()
 
     def setSelection(self, doc):
-        self.updateSelection()
+        if doc == self.document.Name:
+            self.updateSelection()
 
     def clearSelection(self, doc):
-        self.updateSelection()
+        if doc == self.document.Name:
+            self.updateSelection()
 
 
 class CommandSetStartPoint:
@@ -1645,49 +1913,117 @@ class CommandSetStartPoint:
         }
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument is None:
+        if not can_start_document_command():
             return False
         sel = FreeCADGui.Selection.getSelection()
-        if not sel:
+        if len(sel) != 1:
             return False
         obj = sel[0]
-        return obj and hasattr(obj, "StartPoint")
+        return bool(
+            is_document_object(obj, FreeCAD.ActiveDocument)
+            and is_timeline_input_usable(
+                obj,
+                FreeCAD.ActiveDocument,
+            )
+            and hasattr(obj, "StartPoint")
+            and hasattr(obj, "UseStartPoint")
+            and hasattr(obj, "ClearanceHeight")
+        )
 
-    def setpoint(self, point, o):
+    @staticmethod
+    def _setpoint(document, obj, point):
+        if (
+            not is_document_object(obj, document)
+            or not is_timeline_input_usable(obj, document)
+            or document.getBookedTransactionID() != 0
+            or document.HasPendingTransaction
+        ):
+            return False
+
         FreeCADGui.Snapper.grid.off()
-        obj = self.obj
-        obj.StartPoint.x = point.x
-        obj.StartPoint.y = point.y
-        obj.StartPoint.z = obj.ClearanceHeight.Value
-        obj.UseStartPoint = True
-        obj.recompute()
-        textPoint = f"{obj.StartPoint.x:.2f}, {obj.StartPoint.y:.2f}, {obj.StartPoint.z:.2f}"
+        identity = ExactDocumentObjectIdentity(obj, document)
+        start_point = FreeCAD.Vector(
+            float(point.x),
+            float(point.y),
+            float(obj.ClearanceHeight.Value),
+        )
+        transaction = _OwnedDocumentTransaction(
+            document,
+            "Set CAM start point",
+        )
+        try:
+            obj = identity.resolve(require_timeline=True)
+            obj.StartPoint = start_point
+            obj.UseStartPoint = True
+            document.recompute()
+            obj = identity.resolve(require_timeline=True)
+            if (
+                not is_document_object(obj, document)
+                or not obj.UseStartPoint
+                or not obj.StartPoint.isEqual(start_point, 1.0e-9)
+            ):
+                raise RuntimeError("The CAM operation start point was not updated correctly")
+        except Exception:
+            transaction.abort()
+            raise
+        transaction.commit()
+
+        textPoint = (
+            f"{obj.StartPoint.x:.2f}, " f"{obj.StartPoint.y:.2f}, " f"{obj.StartPoint.z:.2f}"
+        )
         print(f"Set start point for operation {obj.Label} >>> {textPoint}")
+        return True
+
+    def setpoint(self, point, _info):
+        """Apply a snapped point for callers of the legacy callback method."""
+
+        return self._setpoint(
+            getattr(self, "document", None),
+            getattr(self, "obj", None),
+            point,
+        )
 
     def Activated(self):
-        self.obj = FreeCADGui.Selection.getSelection()[0]
+        if not self.IsActive():
+            return
+        obj = FreeCADGui.Selection.getSelection()[0]
+        document = obj.Document
+        self.obj = obj
+        self.document = document
         if not hasattr(FreeCADGui, "Snapper"):
             import DraftTools
-        FreeCADGui.Snapper.getPoint(callback=self.setpoint)
+        FreeCADGui.Snapper.getPoint(
+            callback=lambda point, _info: self._setpoint(
+                document,
+                obj,
+                point,
+            )
+        )
 
 
-def Create(res):
+def Create(res, task_launch=None):
     """Create(res) ... generic implementation of a create function.
     res is an instance of CommandResources. It is not expected that the user invokes
     this function directly, but calls the Activated() function of the Command object
     that is created in each operations Gui implementation."""
-    FreeCAD.ActiveDocument.openTransaction("Create %s" % res.name)
     if res.job is None:
-        FreeCAD.ActiveDocument.abortTransaction()
         raise ValueError("No job selected. Operation creation aborted.")
+    transaction = TaskDocumentTransaction(
+        res.job,
+        "Create %s" % res.name,
+        launch=task_launch,
+        allow_caller_transaction=True,
+    )
     try:
-        obj = res.objFactory(res.name, obj=None, parentJob=res.job)
+        obj = res.job.Document.addObject("Path::FeaturePython", res.name)
+        obj = res.objFactory(res.name, obj=obj, parentJob=res.job)
         if obj.Proxy:
-            obj.ViewObject.Proxy = ViewProvider(obj.ViewObject, res)
+            provider = ViewProvider(obj.ViewObject, res)
+            obj.ViewObject.Proxy = provider
+            provider._taskTransaction = transaction
             obj.ViewObject.Visibility = True
-            FreeCAD.ActiveDocument.commitTransaction()
-
-            obj.ViewObject.Document.setEdit(obj.ViewObject, 0)
+            if not obj.ViewObject.Document.setEdit(obj.ViewObject, 0):
+                raise RuntimeError("The CAM operation task editor could not be opened")
             return obj
     except PathUtils.PathNoTCExistsException:
         msg = translate("PathOp", "No suitable tool controller found.\nAborting op creation")
@@ -1696,9 +2032,13 @@ def Create(res):
         diag.exec_()
     except PathOp.PathNoTCException:
         Path.Log.warning(translate("PathOp", "No tool controller, aborting op creation"))
+    except Exception:
+        transaction.abort()
+        transaction.recompute_after_close()
+        raise
 
-    FreeCAD.ActiveDocument.abortTransaction()
-    FreeCAD.ActiveDocument.recompute()
+    transaction.abort()
+    transaction.recompute_after_close()
     return None
 
 
@@ -1721,25 +2061,39 @@ class CommandPathOp:
         return ress
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument is not None:
-            for o in FreeCAD.ActiveDocument.Objects:
-                if o.Name[:3] == "Job":
-                    return True
-        return False
+        return bool(self._eligibleJobs())
 
     def Activated(self):
-        jobs = PathUtils.GetJobs()
+        jobs = self._eligibleJobs()
         if not jobs:
             return
         job = PathUtils.UserInput.chooseJob(jobs)
         if job is None:
             return  # Abort if no job selected or canceled
         self.res.job = job
-        return Create(self.res)
+        launch = begin_task_launch(
+            "Create %s" % self.res.name,
+            job.Document,
+        )
+        try:
+            result = Create(self.res, task_launch=launch)
+            if result is None:
+                return None
+            launch.require_claimed()
+            return result
+        except Exception:
+            launch.abort()
+            raise
 
     def setJob(self, job):
         self.res.job = job
         return Create(self.res)
+
+    @staticmethod
+    def _eligibleJobs():
+        if not can_start_document_command():
+            return []
+        return active_jobs(require_tool=True)
 
 
 class CommandResources:

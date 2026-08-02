@@ -482,6 +482,7 @@ class ObjectSlot(PathOp.ObjectOp):
         """opExecute(obj) ... process surface operation"""
         Path.Log.track()
 
+        self.document = obj.Document
         # Init operation state
         self.base = None
         self.shape1 = None
@@ -508,7 +509,7 @@ class ObjectSlot(PathOp.ObjectOp):
 
         if self.showDebugObjects:
             self._clearDebugGroups()
-            self.tmpGrp = FreeCAD.ActiveDocument.addObject(
+            self.tmpGrp = self.document.addObject(
                 "App::DocumentObjectGroup", "tmpDebugGrp"
             )
 
@@ -565,13 +566,15 @@ class ObjectSlot(PathOp.ObjectOp):
 
         # Hide debug visuals
         if self.showDebugObjects and FreeCAD.GuiUp:
-            FreeCADGui.ActiveDocument.getObject(self.tmpGrp.Name).Visibility = False
+            FreeCADGui.getDocument(self.document.Name).getObject(
+                self.tmpGrp.Name
+            ).Visibility = False
             self.tmpGrp.purgeTouched()
 
         return True
 
     def _clearDebugGroups(self):
-        doc = FreeCAD.ActiveDocument
+        doc = self.document
         for name in ["tmpDebugGrp", "tmpDebugGrp001"]:
             grp = getattr(doc, name, None)
             if grp:
@@ -1685,7 +1688,7 @@ class ObjectSlot(PathOp.ObjectOp):
 
     def _addDebugObject(self, objShape, objName):
         if self.showDebugObjects:
-            do = FreeCAD.ActiveDocument.addObject("Part::Feature", "tmp_" + objName)
+            do = self.document.addObject("Part::Feature", "tmp_" + objName)
             do.Shape = objShape
             do.purgeTouched()
             self.tmpGrp.addObject(do)
@@ -1701,7 +1704,6 @@ def SetupProperties():
 
 def Create(name, obj=None, parentJob=None):
     """Create(name) ... Creates and returns a Slot operation."""
-    if obj is None:
-        obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = PathOp.createOperationObject(name, obj, parentJob)
     obj.Proxy = ObjectSlot(obj, name, parentJob)
     return obj

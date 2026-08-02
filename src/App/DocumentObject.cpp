@@ -45,6 +45,7 @@
 #include "DocumentObjectExtension.h"
 #include "DocumentObjectGroup.h"
 #include "GeoFeatureGroupExtension.h"
+#include "GroupExtension.h"
 #include "Link.h"
 #include "ObjectIdentifier.h"
 #include "PropertyExpressionEngine.h"
@@ -140,10 +141,12 @@ void DocumentObject::printInvalidLinks() const
             scopenames.pop_back();
         }
 
-        Base::Console().warning("%s: %s links are out of scope. Out of scope links to: %s\n",
-                                getTypeId().getName(),
-                                getNameInDocument(),
-                                objnames.c_str());
+        Base::Console().warning(
+            "%s: %s links are out of scope. Out of scope links to: %s\n",
+            getTypeId().getName(),
+            getNameInDocument(),
+            objnames.c_str()
+        );
     }
     catch (const Base::Exception& e) {
         e.reportException();
@@ -232,10 +235,11 @@ void DocumentObject::freeze()
     this->readOnlyProperties.clear();
     std::vector<std::pair<const char*, Property*>> list;
     static_cast<App::PropertyContainer*>(this)->getPropertyNamedList(list);
-    for (auto pair: list){
-        if (pair.second->isReadOnly()){
+    for (auto pair : list) {
+        if (pair.second->isReadOnly()) {
             this->readOnlyProperties.push_back(pair.first);
-        } else {
+        }
+        else {
             pair.second->setReadOnly(true);
         }
     }
@@ -254,8 +258,8 @@ void DocumentObject::unfreeze(bool noRecompute)
     std::vector<std::pair<const char*, Property*>> list;
     static_cast<App::PropertyContainer*>(this)->getPropertyNamedList(list);
 
-    for (auto pair: list){
-        if (! std::count(readOnlyProperties.begin(), readOnlyProperties.end(), pair.first)){
+    for (auto pair : list) {
+        if (!std::count(readOnlyProperties.begin(), readOnlyProperties.end(), pair.first)) {
             pair.second->setReadOnly(false);
         }
     }
@@ -315,7 +319,7 @@ const char* DocumentObject::getStatusString() const
         const char* text = getDocument()->getErrorDescription(this);
         return text ? text : "Error";
     }
-    else if (isFreezed()){
+    else if (isFreezed()) {
         return "Freezed";
     }
     else if (isTouched()) {
@@ -419,8 +423,7 @@ const std::vector<DepEdge>& DocumentObject::getOutListProp()
 }
 
 // Fully mimics getOutList(int options)
-std::vector<DepEdge>
-DocumentObject::getOutListProp(int options)
+std::vector<DepEdge> DocumentObject::getOutListProp(int options)
 {
     std::vector<DepEdge> res;
     getOutListProp(options, res);
@@ -523,6 +526,12 @@ void DocumentObject::getOutList(int options, std::vector<DocumentObject*>& res) 
     }
 }
 
+bool DocumentObject::isTimelineStructuralChild(const DocumentObject* object) const
+{
+    const auto* group = getExtensionByType<GroupExtension>(true);
+    return group && group->hasObject(object);
+}
+
 std::vector<App::DocumentObject*> DocumentObject::getOutListOfProperty(App::Property* prop) const
 {
     std::vector<DocumentObject*> ret;
@@ -568,9 +577,11 @@ std::vector<App::DocumentObject*> DocumentObject::getInListRecursive() const
 // More efficient algorithm to find the recursive inList of an object,
 // including possible external parents.  One shortcoming of this algorithm is
 // it does not detect cyclic reference, althgouth it won't crash either.
-void DocumentObject::getInListEx(std::set<App::DocumentObject*>& inSet,
-                                 bool recursive,
-                                 std::vector<App::DocumentObject*>* inList) const
+void DocumentObject::getInListEx(
+    std::set<App::DocumentObject*>& inSet,
+    bool recursive,
+    std::vector<App::DocumentObject*>* inList
+) const
 {
     if (!recursive) {
         inSet.insert(_inList.begin(), _inList.end());
@@ -599,9 +610,7 @@ void DocumentObject::getInListEx(std::set<App::DocumentObject*>& inSet,
 // Fully mimics getInListExProp(std::set<App::DocumentObject*>& inSet, bool
 // recursive, std::vector<App::DocumentObject*>*) except for the extra vector
 // parameter that is not needed here.
-void DocumentObject::getInListExProp(
-    std::set<DepEdge>& inSet,
-    bool recursive) const
+void DocumentObject::getInListExProp(std::set<DepEdge>& inSet, bool recursive) const
 {
     if (!recursive) {
         inSet.insert(_inListProp.begin(), _inListProp.end());
@@ -614,8 +623,7 @@ void DocumentObject::getInListExProp(
         auto obj = pendings.top();
         pendings.pop();
         for (const auto& edge : obj->getInListProp()) {
-            if (edge.fromObj && edge.fromObj->isAttachedToDocument()
-                && inSet.insert(edge).second) {
+            if (edge.fromObj && edge.fromObj->isAttachedToDocument() && inSet.insert(edge).second) {
                 pendings.push(edge.fromObj);
             }
         }
@@ -630,8 +638,7 @@ std::set<App::DocumentObject*> DocumentObject::getInListEx(bool recursive) const
 }
 
 // Fully mimics getInListEx(bool recursive)
-std::set<DepEdge>
-DocumentObject::getInListExProp(bool recursive) const
+std::set<DepEdge> DocumentObject::getInListExProp(bool recursive) const
 {
     std::set<DepEdge> ret;
     getInListExProp(ret, recursive);
@@ -639,16 +646,19 @@ DocumentObject::getInListExProp(bool recursive) const
 }
 
 
-void _getOutListRecursive(std::set<DocumentObject*>& objSet,
-                          const DocumentObject* obj,
-                          const DocumentObject* checkObj,
-                          int depth)
+void _getOutListRecursive(
+    std::set<DocumentObject*>& objSet,
+    const DocumentObject* obj,
+    const DocumentObject* checkObj,
+    int depth
+)
 {
     for (const auto objIt : obj->getOutList()) {
         // if the check object is in the recursive inList we have a cycle!
         if (objIt == checkObj || depth <= 0) {
             throw Base::BadGraphError(
-                "DocumentObject::getOutListRecursive(): cyclic dependency detected!");
+                "DocumentObject::getOutListRecursive(): cyclic dependency detected!"
+            );
         }
 
         // if the element was already in the set then there is no need to process it again
@@ -683,7 +693,8 @@ bool _isInInListRecursive(const DocumentObject* act, const DocumentObject* check
         // if we reach the depth limit we have a cycle!
         if (depth <= 0) {
             throw Base::BadGraphError(
-                "DocumentObject::isInInListRecursive(): cyclic dependency detected!");
+                "DocumentObject::isInInListRecursive(): cyclic dependency detected!"
+            );
         }
 
         if (_isInInListRecursive(obj, checkObj, depth - 1)) {
@@ -719,7 +730,8 @@ bool _isInOutListRecursive(const DocumentObject* act, const DocumentObject* chec
         // if we reach the depth limit we have a cycle!
         if (depth <= 0) {
             throw Base::BadGraphError(
-                "DocumentObject::isInOutListRecursive(): cyclic dependency detected!");
+                "DocumentObject::isInOutListRecursive(): cyclic dependency detected!"
+            );
         }
 
         if (_isInOutListRecursive(obj, checkObj, depth - 1)) {
@@ -736,8 +748,9 @@ bool DocumentObject::isInOutListRecursive(DocumentObject* linkTo) const
     return _isInOutListRecursive(this, linkTo, maxDepth);
 }
 
-std::vector<std::list<App::DocumentObject*>>
-DocumentObject::getPathsByOutList(const App::DocumentObject* to) const
+std::vector<std::list<App::DocumentObject*>> DocumentObject::getPathsByOutList(
+    const App::DocumentObject* to
+) const
 {
     return _pDoc->getPathsByOutList(this, to);
 }
@@ -828,8 +841,9 @@ bool DocumentObject::removeDynamicProperty(const char* name)
         return false;
     }
 
+    const bool bypassLock = _pDoc->isPerformingTransaction();
     Property* prop = getDynamicPropertyByName(name);
-    if (!prop || prop->testStatus(App::Property::LockDynamic)) {
+    if (!prop || (!bypassLock && prop->testStatus(App::Property::LockDynamic))) {
         return false;
     }
 
@@ -852,6 +866,9 @@ bool DocumentObject::removeDynamicProperty(const char* name)
         ExpressionEngine.setValue(it, std::shared_ptr<Expression>());
     }
 
+    if (bypassLock) {
+        return TransactionalObject::removeDynamicPropertyForTransaction(name);
+    }
     return TransactionalObject::removeDynamicProperty(name);
 }
 
@@ -907,24 +924,36 @@ App::Property* DocumentObject::addDynamicProperty(
 
 void DocumentObject::onBeforeChange(const Property* prop)
 {
-    if (isFreezed() && prop != &Visibility) {
+    // Frozen objects reject ordinary edits, but transaction replay and
+    // document-owned dependency teardown still have to capture the value
+    // being replaced. Without the dependency-teardown case, removing a link
+    // target clears a frozen owner's PropertyLink before the owner is removed,
+    // and undo can only restore the resulting null link. Keep the object
+    // frozen so execute and ordinary change callbacks remain disabled while
+    // allowing the transaction layer to record the exact inverse state.
+    if (isFreezed() && prop != &Visibility
+        && !(_pDoc
+             && (_pDoc->isPerformingTransaction()
+                 || _pDoc->isBreakingDependency()))) {
         return;
     }
 
-    // Store current name in oldLabel, to be able to easily retrieve old name of document object later
-    // when renaming expressions.
-    if (prop == &Label)
+    // Store current name in oldLabel, to be able to easily retrieve old name of document object
+    // later when renaming expressions.
+    if (prop == &Label) {
         oldLabel = Label.getStrValue();
+    }
 
-    if (_pDoc){
+    if (_pDoc) {
         onBeforeChangeProperty(_pDoc, prop);
     }
 
     signalBeforeChange(*this, *prop);
 }
 
-std::vector<std::pair<Property*, std::unique_ptr<Property>>>
-DocumentObject::onProposedLabelChange(std::string& newLabel)
+std::vector<std::pair<Property*, std::unique_ptr<Property>>> DocumentObject::onProposedLabelChange(
+    std::string& newLabel
+)
 {
     // Note that this work can't be done in onBeforeChangeLabel because FeaturePython overrides this
     // method and does not initially base-call it.
@@ -938,13 +967,14 @@ DocumentObject::onProposedLabelChange(std::string& newLabel)
     }
     App::Document* doc = getDocument();
     if (doc->isPerformingTransaction()
-        || (doc->testStatus(App::Document::Restoring)
-            && !doc->testStatus(App::Document::Importing))) {
+        || (doc->testStatus(App::Document::Restoring) && !doc->testStatus(App::Document::Importing))) {
         return {};
     }
     static ParameterGrp::handle _hPGrp;
     if (!_hPGrp) {
-        _hPGrp = App::GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document");
+        _hPGrp = App::GetApplication().GetParameterGroupByPath(
+            "User parameter:BaseApp/Preferences/Document"
+        );
     }
     if (doc && !newLabel.empty() && !_hPGrp->GetBool("DuplicateLabels") && !allowDuplicateLabel()
         && doc->containsLabel(newLabel)) {
@@ -952,7 +982,8 @@ DocumentObject::onProposedLabelChange(std::string& newLabel)
         std::string_view objName = getNameInDocument();
         if (!doc->containsLabel(objName) && doc->haveSameBaseName(objName, newLabel)) {
             // The object name is not already a Label and the base name of the proposed label
-            // equals the base name of the object Name, so we use the object Name as the replacement Label.
+            // equals the base name of the object Name, so we use the object Name as the replacement
+            // Label.
             newLabel = objName;
         }
         else {
@@ -961,8 +992,8 @@ DocumentObject::onProposedLabelChange(std::string& newLabel)
             // entry.
             // We deregister the old label so it does not interfere with making the new label,
             // and re-register it after. This is probably a bit less efficient that having a special
-            // make-unique-label-as-if-this-one-did-not-exist method, but such a method would be a real
-            // ugly wart.
+            // make-unique-label-as-if-this-one-did-not-exist method, but such a method would be a
+            // real ugly wart.
             doc->unregisterLabel(oldLabel);
             newLabel = doc->makeUniqueLabel(newLabel);
             doc->registerLabel(oldLabel);
@@ -985,7 +1016,7 @@ DocumentObject::onProposedLabelChange(std::string& newLabel)
 
     // Remove the old label to free it up for future use.
     doc->unregisterLabel(oldLabel);
-    
+
     return PropertyLinkBase::updateLabelReferences(this, newLabel.c_str());
 }
 
@@ -1004,8 +1035,10 @@ void DocumentObject::onEarlyChange(const Property* prop)
         static App::Document* warnedDoc;
         if (warnedDoc != getDocument()) {
             warnedDoc = getDocument();
-            FC_WARN("Changes to partial loaded document will not be saved: " << getFullName() << '.'
-                                                                             << prop->getName());
+            FC_WARN(
+                "Changes to partial loaded document will not be saved: " << getFullName() << '.'
+                                                                         << prop->getName()
+            );
         }
     }
 
@@ -1015,9 +1048,20 @@ void DocumentObject::onEarlyChange(const Property* prop)
 /// get called by the container when a Property was changed
 void DocumentObject::onChanged(const Property* prop)
 {
-    if (prop == &Label && _pDoc && _pDoc->containsObject(this) && oldLabel != Label.getStrValue()) {
+    const bool labelChanged = prop == &Label && _pDoc && oldLabel != Label.getStrValue();
+    if (labelChanged && _pDoc->containsObject(this)) {
         _pDoc->unregisterLabel(oldLabel);
         _pDoc->registerLabel(Label.getStrValue());
+    }
+
+    // Property-backed Python objects can re-apply their persisted Label from
+    // onDocumentRestored() without a matching onBeforeChange() callback when
+    // the value is unchanged. Keep the restore baseline synchronized after
+    // the first notification so that a repeated notification cannot register
+    // the same object's label twice. A separate object with the same label
+    // still has its own baseline and remains correctly counted.
+    if (labelChanged && _pDoc->testStatus(Document::Restoring)) {
+        oldLabel = Label.getStrValue();
     }
 
     if (isFreezed() && prop != &Visibility) {
@@ -1033,8 +1077,10 @@ void DocumentObject::onChanged(const Property* prop)
         static App::Document* warnedDoc;
         if (warnedDoc != getDocument()) {
             warnedDoc = getDocument();
-            FC_WARN("Changes to partial loaded document will not be saved: " << getFullName() << '.'
-                                                                             << prop->getName());
+            FC_WARN(
+                "Changes to partial loaded document will not be saved: " << getFullName() << '.'
+                                                                         << prop->getName()
+            );
         }
     }
 
@@ -1043,7 +1089,7 @@ void DocumentObject::onChanged(const Property* prop)
     // if (_pDoc)
     //     _pDoc->onChangedProperty(this,prop);
 
-    if (prop == &Label && _pDoc && oldLabel != Label.getStrValue()) {
+    if (labelChanged) {
         _pDoc->signalRelabelObject(*this);
     }
 
@@ -1058,10 +1104,8 @@ void DocumentObject::onChanged(const Property* prop)
     if (fineGrained) {
         // set object touched if it is not an output property unless it has dependencies
         if (!testStatus(ObjectStatus::NoTouch)
-            && ((isOutputProperty(prop) && outputHasDeps(prop)) ||
-                !isOutputProperty(prop))) {
-            FC_TRACE("touch '" << getFullName() << "' on change of '" << prop->getName()
-                     << "'");
+            && ((isOutputProperty(prop) && outputHasDeps(prop)) || !isOutputProperty(prop))) {
+            FC_TRACE("touch '" << getFullName() << "' on change of '" << prop->getName() << "'");
             setTouched(prop->getName());
             // must execute on document recompute
             if (!(prop->getType() & Prop_NoRecompute)) {
@@ -1114,11 +1158,13 @@ PyObject* DocumentObject::getPyObject()
     return Py::new_reference_to(PythonObject);
 }
 
-DocumentObject* DocumentObject::getSubObject(const char* subname,
-                                             PyObject** pyObj,
-                                             Base::Matrix4D* mat,
-                                             bool transform,
-                                             int depth) const
+DocumentObject* DocumentObject::getSubObject(
+    const char* subname,
+    PyObject** pyObj,
+    Base::Matrix4D* mat,
+    bool transform,
+    int depth
+) const
 {
     DocumentObject* ret = nullptr;
     auto exts = getExtensionsDerivedFromType<App::DocumentObjectExtension>();
@@ -1175,12 +1221,13 @@ DocumentObject* DocumentObject::getSubObject(const char* subname,
 
 namespace
 {
-std::vector<DocumentObject*>
-getSubObjectListFlatten(const std::vector<App::DocumentObject*>& resNotFlatten,
-                        std::vector<int>* const subsizes,
-                        const App::DocumentObject* sobj,
-                        App::DocumentObject** container,
-                        bool& lastChild)
+std::vector<DocumentObject*> getSubObjectListFlatten(
+    const std::vector<App::DocumentObject*>& resNotFlatten,
+    std::vector<int>* const subsizes,
+    const App::DocumentObject* sobj,
+    App::DocumentObject** container,
+    bool& lastChild
+)
 {
     auto res {resNotFlatten};
     auto linked = sobj->getLinkedObject();
@@ -1217,9 +1264,11 @@ getSubObjectListFlatten(const std::vector<App::DocumentObject*>& resNotFlatten,
 }
 }  // namespace
 
-std::vector<DocumentObject*> DocumentObject::getSubObjectList(const char* subname,
-                                                              std::vector<int>* const subsizes,
-                                                              bool flatten) const
+std::vector<DocumentObject*> DocumentObject::getSubObjectList(
+    const char* subname,
+    std::vector<int>* const subsizes,
+    bool flatten
+) const
 {
     std::vector<DocumentObject*> res;
     res.push_back(const_cast<DocumentObject*>(this));
@@ -1276,8 +1325,7 @@ std::vector<std::string> DocumentObject::getSubObjects(int reason) const
     return ret;
 }
 
-std::vector<std::pair<App::DocumentObject*, std::string>>
-DocumentObject::getParents(int depth) const
+std::vector<std::pair<App::DocumentObject*, std::string>> DocumentObject::getParents(int depth) const
 {
     std::vector<std::pair<App::DocumentObject*, std::string>> ret;
     if (!isAttachedToDocument() || !GetApplication().checkLinkDepth(depth, MessageOption::Throw)) {
@@ -1329,10 +1377,12 @@ App::DocumentObject* DocumentObject::getFirstParent() const
     return nullptr;
 }
 
-DocumentObject* DocumentObject::getLinkedObject(bool recursive,
-                                                Base::Matrix4D* mat,
-                                                bool transform,
-                                                int depth) const
+DocumentObject* DocumentObject::getLinkedObject(
+    bool recursive,
+    Base::Matrix4D* mat,
+    bool transform,
+    int depth
+) const
 {
     DocumentObject* ret = nullptr;
     auto exts = getExtensionsDerivedFromType<App::DocumentObjectExtension>();
@@ -1368,8 +1418,9 @@ void DocumentObject::clearExpression(const ObjectIdentifier& path)
     setExpression(path, std::shared_ptr<Expression>());
 }
 
-const PropertyExpressionEngine::ExpressionInfo
-DocumentObject::getExpression(const ObjectIdentifier& path) const
+const PropertyExpressionEngine::ExpressionInfo DocumentObject::getExpression(
+    const ObjectIdentifier& path
+) const
 {
     boost::any value = ExpressionEngine.getPathValue(path);
 
@@ -1381,8 +1432,7 @@ DocumentObject::getExpression(const ObjectIdentifier& path) const
     }
 }
 
-void DocumentObject::renameObjectIdentifiers(
-    const std::map<ObjectIdentifier, ObjectIdentifier>& paths)
+void DocumentObject::renameObjectIdentifiers(const std::map<ObjectIdentifier, ObjectIdentifier>& paths)
 {
     ExpressionEngine.renameObjectIdentifiers(paths);
 }
@@ -1512,14 +1562,16 @@ bool DocumentObject::hasChildElement() const
     return false;
 }
 
-DocumentObject* DocumentObject::resolve(const char* subname,
-                                        App::DocumentObject** parent,
-                                        std::string* childName,
-                                        const char** subElement,
-                                        PyObject** pyObj,
-                                        Base::Matrix4D* pmat,
-                                        bool transform,
-                                        int depth) const
+DocumentObject* DocumentObject::resolve(
+    const char* subname,
+    App::DocumentObject** parent,
+    std::string* childName,
+    const char** subElement,
+    PyObject** pyObj,
+    Base::Matrix4D* pmat,
+    bool transform,
+    int depth
+) const
 {
     auto self = const_cast<DocumentObject*>(this);
     if (parent) {
@@ -1616,9 +1668,11 @@ DocumentObject* DocumentObject::resolve(const char* subname,
     return obj;
 }
 
-DocumentObject* DocumentObject::resolveRelativeLink(std::string& subname,
-                                                    DocumentObject*& link,
-                                                    std::string& linkSub) const
+DocumentObject* DocumentObject::resolveRelativeLink(
+    std::string& subname,
+    DocumentObject*& link,
+    std::string& linkSub
+) const
 {
     if (!link || !link->isAttachedToDocument() || !isAttachedToDocument()) {
         return nullptr;
@@ -1679,8 +1733,10 @@ DocumentObject* DocumentObject::resolveRelativeLink(std::string& subname,
     return ret;
 }
 
-bool DocumentObject::adjustRelativeLinks(const std::set<App::DocumentObject*>& inList,
-                                         std::set<App::DocumentObject*>* visited)
+bool DocumentObject::adjustRelativeLinks(
+    const std::set<App::DocumentObject*>& inList,
+    std::set<App::DocumentObject*>* visited
+)
 {
     if (visited) {
         visited->insert(this);
@@ -1823,9 +1879,11 @@ bool DocumentObject::canPropBeReferenced(const App::Property* prop)
     return obj && obj->isAttachedToDocument();
 }
 
-static void getPropertyUsesObj(std::set<ObjectIdentifier>& uses,
-                               App::DocumentObject* obj,
-                               const App::Property* prop)
+static void getPropertyUsesObj(
+    std::set<ObjectIdentifier>& uses,
+    App::DocumentObject* obj,
+    const App::Property* prop
+)
 {
     if (!obj || !obj->isAttachedToDocument()) {
         return;
@@ -1843,8 +1901,8 @@ static void getPropertyUsesObj(std::set<ObjectIdentifier>& uses,
         return std::ranges::any_of(expr->getIdentifiers(), idIsProp);
     };
 
-    std::map<App::ObjectIdentifier, const App::Expression*> exprs =
-        obj->ExpressionEngine.getExpressions();
+    std::map<App::ObjectIdentifier, const App::Expression*> exprs
+        = obj->ExpressionEngine.getExpressions();
 
     for (const auto& [id, expr] : exprs) {
         if (referencesProperty(expr)) {
@@ -1853,7 +1911,7 @@ static void getPropertyUsesObj(std::set<ObjectIdentifier>& uses,
     }
 }
 
-std::set<ObjectIdentifier> DocumentObject::getPropertyUses(const App::Property *prop)
+std::set<ObjectIdentifier> DocumentObject::getPropertyUses(const App::Property* prop)
 {
     std::set<ObjectIdentifier> uses;
     if (!canPropBeReferenced(prop)) {

@@ -20,6 +20,8 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
+
 #include <QPainterPath>
 #include <QKeyEvent>
 #include <QGraphicsTransform>
@@ -324,8 +326,8 @@ void QGIViewPart::drawAllFaces(void)
         faceColor.setAlpha((100 - vpp->FaceTransparency.getValue())*255/100);
     }
 
-    std::vector<TechDraw::DrawHatch*> regularHatches = dvp->getHatches();
-    std::vector<TechDraw::DrawGeomHatch*> geomHatches = dvp->getGeomHatches();
+    std::vector<TechDraw::DrawHatch*> regularHatches = dvp->getActiveHatches();
+    std::vector<TechDraw::DrawGeomHatch*> geomHatches = dvp->getActiveGeomHatches();
     const std::vector<TechDraw::FacePtr>& faceGeoms = dvp->getFaceGeometry();
     int iFace(0);
     for (auto& face : faceGeoms) {
@@ -700,7 +702,7 @@ void QGIViewPart::drawAllSectionLines()
     }
 
     if (vp->ShowSectionLine.getValue()) {
-        auto refs = viewPart->getSectionRefs();
+        auto refs = viewPart->getActiveSectionRefs();
         for (auto& r : refs) {
             if (r->isDerivedFrom<DrawComplexSection>()) {
                 drawComplexSectionLine(r, true);
@@ -961,7 +963,7 @@ void QGIViewPart::drawAllHighlights()
     // dvp and vp already validated
     auto dvp(static_cast<TechDraw::DrawViewPart*>(getViewObject()));
 
-    auto drefs = dvp->getDetailRefs();
+    auto drefs = dvp->getActiveDetailRefs();
     for (auto& r : drefs) {
         drawHighlight(r, true);
     }
@@ -1505,5 +1507,3 @@ void QGIViewPart::setMovableFlagProjGroupItem()
     // not locked, not autoDistribute
     setFlag(QGraphicsItem::ItemIsMovable, true);
 }
-
-

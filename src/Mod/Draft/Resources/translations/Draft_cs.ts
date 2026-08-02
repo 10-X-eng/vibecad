@@ -931,7 +931,7 @@ of the buttons above</translation>
 orientation. If no point is selected, the plane
 will be moved to the center of the view.</source>
       <translation>Přesune pracovní rovinu beze změny její
-orientace. Pokud není vybrán žádný bod, 
+orientace. Pokud není vybrán žádný bod,
 bude rovina přesunuta do středu pohledu.</translation>
     </message>
     <message>
@@ -7032,7 +7032,7 @@ nastavte True pro fúzi nebo False pro sloučeninu</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
       <translation>Koncový úhel oblouku (pro celý kruh,
                 dát stejnou hodnotu jako první úhel)</translation>
@@ -7216,25 +7216,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 Tato vlastnost je pouze pro čtení, protože konečný text závisí na 'Label Type',
 a objekt definovaný v 'Cíl'.
 „Vlastní text“ se zobrazí pouze v případě, že je „Typ štítku“ nastaven na „Vlastní“.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation type="unfinished">The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7519,11 +7500,6 @@ Tato vlastnost je pouze pro čtení, protože počet závisí na bodech v 'Point
       <translation>Zobrazit skryté čáry</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Pojistkové stěnové a konstrukční objekty stejného typu a materiálu</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Tessellate elipsy a B-splines do čárových segmentů</translation>
@@ -7625,7 +7601,7 @@ Tato vlastnost je pouze pro čtení, protože počet závisí na bodech v 'Point
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
       <translation>Koncový úhel eliptického oblouku
@@ -8357,11 +8333,6 @@ However, a single sketch with disconnected traces is converted into several indi
       <source>Auto-Group</source>
       <translation type="unfinished">Auto-Group</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation type="unfinished">Adds new Draft and BIM objects to the selected layer or group</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8721,11 +8692,6 @@ The initial projection direction is the opposite of the current active view dire
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation type="unfinished">Snap Center</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation type="unfinished">Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</translation>
     </message>
   </context>
   <context>

@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 import hashlib
 import math
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 
 class PartOperationError(ValueError):
@@ -36,6 +37,9 @@ class PartOperationError(ValueError):
 
 MAX_SUBELEMENT_FACTS = 256
 _REFERENCE_SHAPES: Mapping[tuple[str, str], Any] = MappingProxyType({})
+_NESTED_SHAPE_RESOLVER: ContextVar[
+    Callable[[dict[str, Any]], Any] | None
+] = ContextVar("vibescript_part_nested_shape_resolver", default=None)
 
 
 def configure_part_references(root: Path, entries: list[dict[str, Any]]) -> None:
@@ -297,7 +301,11 @@ def _serialized(operation: str, parameter: str, value: Any) -> dict[str, Any]:
 
 
 def _shape(operation: str, parameter: str, value: Any):
-    return build_part_shape(_serialized(operation, parameter, value))
+    serialized = _serialized(operation, parameter, value)
+    resolver = _NESTED_SHAPE_RESOLVER.get()
+    if resolver is not None:
+        return resolver(serialized)
+    return build_part_shape(serialized)
 
 
 def _shape_list(
@@ -1090,6 +1098,7 @@ def build_part_shape(
     payload: dict[str, Any],
     *,
     diagnostics: dict[str, Any] | None = None,
+    nested_shape_resolver: Callable[[dict[str, Any]], Any] | None = None,
 ):
     """Execute one validated Part definition and wrap OCC errors usefully."""
 
@@ -1100,6 +1109,11 @@ def build_part_shape(
             stage="part_contract",
             correction="Return only values created by one declared Part runtime export.",
         )
+    token = (
+        _NESTED_SHAPE_RESOLVER.set(nested_shape_resolver)
+        if nested_shape_resolver is not None
+        else None
+    )
     try:
         shape = _build(operation, payload, diagnostics)
     except PartOperationError:
@@ -1120,6 +1134,9 @@ def build_part_shape(
                 "unchanged call."
             ),
         ) from exc
+    finally:
+        if token is not None:
+            _NESTED_SHAPE_RESOLVER.reset(token)
     if shape is None or shape.isNull():
         raise PartOperationError(
             f"api.{operation}: OpenCascade produced a null shape",

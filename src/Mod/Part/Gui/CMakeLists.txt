@@ -86,6 +86,9 @@ SET(PartGui_SRCS
     Mirroring.cpp
     Mirroring.h
     Mirroring.ui
+    ModelingSelection.cpp
+    ModelingSelection.h
+    TaskResultValidation.h
     DlgBooleanOperation.cpp
     DlgBooleanOperation.h
     DlgBooleanOperation.ui
@@ -220,8 +223,6 @@ SET(PartGui_SRCS
     ViewProviderRuledSurface.h
     ViewProviderPrimitive.cpp
     ViewProviderPrimitive.h
-    Workbench.cpp
-    Workbench.h
     WorkbenchManipulator.cpp
     WorkbenchManipulator.h
     ReferenceHighlighter.cpp
@@ -254,11 +255,7 @@ SET(PartGui_SRCS
     TaskAttacher.cpp
 )
 
-SET(PartGuiIcon_SVG
-    Resources/icons/PartWorkbench.svg
-)
-
-add_library(PartGui SHARED ${PartGui_SRCS} ${PartGuiIcon_SVG})
+add_library(PartGui SHARED ${PartGui_SRCS})
 
 if(FREECAD_USE_PCH)
     target_precompile_headers(PartGui PRIVATE

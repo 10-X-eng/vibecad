@@ -20,7 +20,7 @@ REQUIRED_CHECKS = {
     "create_edit_sketch": "Create and edit a sketch, including constraints and task-panel close/cancel behavior.",
     "create_partdesign_feature": "Create a PartDesign feature and inspect its task panel and resulting model.",
     "open_techdraw_page": "Open a TechDraw page/view and inspect navigation, page rendering, and task/UI controls.",
-    "use_draft_bim_panel": "Use a Draft/BIM panel and confirm controls, selection, and task state are usable.",
+    "use_draft_panel": "Use a Draft panel and confirm controls, selection, and task state are usable.",
     "run_cam_fem_panel_smoke": "Run one CAM and one FEM panel smoke check, including setup/tool or solver/material UI.",
 }
 

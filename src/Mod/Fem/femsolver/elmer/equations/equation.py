@@ -30,6 +30,7 @@ __url__ = "https://www.freecad.org"
 
 import FreeCAD as App
 from ... import equationbase
+from femtaskpanels import base_femtaskpanel
 from femtools import membertools
 
 if App.GuiUp:
@@ -56,26 +57,42 @@ class Proxy(equationbase.BaseProxy):
 
 class ViewProxy(equationbase.BaseViewProxy):
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def setEdit(self, vobj, mode=0):
+        identity = base_femtaskpanel._TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document()
         task = _TaskPanel(vobj.Object)
-        Gui.Control.showDialog(task)
+        Gui.Control.showDialog(task, gui_document)
+        self._fem_edit_identity = identity
 
     def unsetEdit(self, vobj, mode=0):
-        Gui.Control.closeDialog()
+        identity = getattr(self, "_fem_edit_identity", None)
+        if identity is None:
+            identity = base_femtaskpanel._TaskTargetIdentity(
+                vobj.Object
+            )
+        gui_document = identity.resolve_gui_document(
+            require_object=False
+        )
+        Gui.Control.closeDialog(gui_document)
+        self._fem_edit_identity = None
 
     def doubleClicked(self, vobj):
-        if Gui.Control.activeDialog():
-            Gui.Control.closeDialog()
-        vobj.Document.setEdit(vobj.Object.Name)
+        identity = base_femtaskpanel._TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document()
+        gui_document.setEdit(vobj.Object.Name)
         return True
 
     def getTaskWidget(self, vobj):
         return None
 
 
-class _TaskPanel:
+class _TaskPanel(base_femtaskpanel._BaseTaskPanel):
 
     def __init__(self, obj):
+        super().__init__(obj)
         self._obj = obj
         self._selectionWidget = selection_widgets.GeometryElementsSelection(
             obj.References, ["Solid", "Face"], False, True
@@ -102,15 +119,15 @@ class _TaskPanel:
 
     def reject(self):
         self._selectionWidget.finish_selection()
-        self._recomputeAndRestore()
-        return True
+        self._restoreVisibility()
+        return super().reject()
 
     def accept(self):
         if self._obj.References != self._selectionWidget.references:
             self._obj.References = self._selectionWidget.references
         self._selectionWidget.finish_selection()
-        self._recomputeAndRestore()
-        return True
+        self._restoreVisibility()
+        return super().accept()
 
     def activate(self):
         self._selectionWidget.attachSelection()
@@ -130,12 +147,10 @@ class _TaskPanel:
                 self._part.ViewObject.hide()
 
     def _recomputeAndRestore(self):
-        doc = Gui.getDocument(self._obj.Document)
-        doc.Document.recompute()
         self._restoreVisibility()
-        # TODO: test if there is an active selection observer
-        # if yes Gui.Selection.removeObserver is your friend
-        doc.resetEdit()
+        document, gui_document, obj = self._resolve_editor()
+        document.recompute()
+        self._finish_exact_edit(gui_document, obj)
 
 
 ##  @}

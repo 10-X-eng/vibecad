@@ -40,6 +40,10 @@ from draftguitools import gui_trackers as trackers
 from draftutils import gui_utils
 from draftutils import params
 from draftutils import todo
+from draftutils.transaction import close_task_dialog
+from draftutils.transaction import document_is_available_for_mutation
+from draftutils.transaction import ObjectReference
+from draftutils.transaction import selection_is_usable_for_document
 from draftutils.messages import _toolmsg, _log
 
 
@@ -84,7 +88,7 @@ class GuiCommandSimplest:
 
     def IsActive(self):
         """Return True when this command should be available."""
-        return bool(App.activeDocument())
+        return document_is_available_for_mutation(App.activeDocument())
 
     def Activated(self):
         """Execute when the command is called.
@@ -109,7 +113,11 @@ class GuiCommandNeedsSelection(GuiCommandSimplest):
 
     def IsActive(self):
         """Return True when this command should be available."""
-        return bool(Gui.Selection.getSelection())
+        document = App.activeDocument()
+        return bool(
+            document_is_available_for_mutation(document)
+            and selection_is_usable_for_document(document)
+        )
 
 
 class GuiCommandBase:
@@ -159,13 +167,17 @@ class GuiCommandBase:
 
     def IsActive(self):
         """Return True when this command should be available."""
-        return bool(gui_utils.get_3d_view())
+        return bool(
+            gui_utils.get_3d_view()
+            and document_is_available_for_mutation(App.activeDocument())
+        )
 
     def Activated(self):
         self.doc = App.ActiveDocument
-        if not self.doc:
-            self.finish()
-            return
+        if not document_is_available_for_mutation(self.doc):
+            raise RuntimeError(
+                "Draft cannot start while another document action is active"
+            )
 
         App.activeDraftCommand = self
         self.view = gui_utils.get_3d_view()
@@ -192,8 +204,8 @@ class GuiCommandBase:
         if self.planetrack:
             self.planetrack.finalize()
         self.planetrack = None
-        if hasattr(Gui, "Snapper"):
-            Gui.Snapper.off()
+        if hasattr(Gui, "Snapper") and self.view is not None:
+            Gui.Snapper.off(view=self.view)
         if self.call:
             try:
                 self.view.removeEventCallback("SoEvent", self.call)
@@ -202,12 +214,17 @@ class GuiCommandBase:
                 pass
         self.call = None
         if self.commit_list:
-            todo.ToDo.delayCommit(self.commit_list)
+            todo.ToDo.delayCommit(self.commit_list, self.doc)
         self.commit_list = []
 
         QtCore.QTimer.singleShot(0, Gui.HintManager.hide)
 
-    def commit(self, name, func):
+    def close_task_dialog(self):
+        """Close only this command's exact document task dialog."""
+
+        close_task_dialog(self.doc)
+
+    def commit(self, name, func, inputs=()):
         """Store actions to be committed to the document.
 
         Parameters
@@ -219,7 +236,13 @@ class GuiCommandBase:
             Each element of the list should be a Python command
             that will be executed.
         """
-        self.commit_list.append((name, func))
+        self.commit_list.append(
+            (
+                name,
+                func,
+                tuple(ObjectReference.capture(obj) for obj in inputs),
+            )
+        )
 
 
 ## @}

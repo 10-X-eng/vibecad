@@ -82,73 +82,32 @@ class Draft2Sketch(gui_base_original.Modifier):
         if self.call is not None:
             self.end_callbacks(self.call)
         sel = Gui.Selection.getSelection()
-        allSketches = True
-        allDraft = True
-        Gui.addModule("Draft")
-        for obj in sel:
-            if obj.isDerivedFrom("Sketcher::SketchObject"):
-                allDraft = False
-            elif obj.isDerivedFrom("Part::Part2DObjectPython") or obj.isDerivedFrom(
-                "Part::Feature"
-            ):
-                allSketches = False
-            else:
-                allDraft = False
-                allSketches = False
+        supported = all(
+            obj.isDerivedFrom("Sketcher::SketchObject")
+            or obj.isDerivedFrom("Part::Part2DObjectPython")
+            or obj.isDerivedFrom("Part::Feature")
+            for obj in sel
+        )
 
-        if not sel:
+        if not sel or not supported:
             return
-        elif allDraft:
-            _cmd = "Draft.make_sketch"
-            _cmd += "("
-            _cmd += "FreeCADGui.Selection.getSelection(), "
-            _cmd += "autoconstraints=True"
-            _cmd += ")"
-            _cmd_list = ["sk = " + _cmd, "FreeCAD.ActiveDocument.recompute()"]
-            self.commit(translate("draft", "Convert to Sketch"), _cmd_list)
-        elif allSketches:
-            n = 0
-            _cmd_list = list()
-            for o in sel:
-                _cmd = "Draft.draftify"
-                _cmd += "("
-                _cmd += "FreeCAD.ActiveDocument." + o.Name + ", "
-                _cmd += "delete=False"
-                _cmd += ")"
-                _cmd_list.append("df" + str(n) + " = " + _cmd)
-                n += 1
 
-            _cmd_list.append("FreeCAD.ActiveDocument.recompute()")
-            self.commit(translate("draft", "Convert to Draft"), _cmd_list)
-        else:
-            _cmd_list = list()
-            n = 0
-            for obj in sel:
-                _cmd_df = "Draft.draftify"
-                _cmd_df += "("
-                _cmd_df += "FreeCAD.ActiveDocument." + obj.Name + ", "
-                _cmd_df += "delete=False"
-                _cmd_df += ")"
-
-                _cmd_sk = "Draft.make_sketch"
-                _cmd_sk += "("
-                _cmd_sk += "FreeCAD.ActiveDocument." + obj.Name + ", "
-                _cmd_sk += "autoconstraints=True"
-                _cmd_sk += ")"
-
-                if obj.isDerivedFrom("Sketcher::SketchObject"):
-                    _cmd_list.append("obj" + str(n) + " = " + _cmd_df)
-                elif obj.isDerivedFrom("Part::Part2DObjectPython") or obj.isDerivedFrom(
-                    "Part::Feature"
-                ):
-                    _cmd_list.append("obj" + str(n) + " = " + _cmd_sk)
-                # elif obj.isDerivedFrom("Part::Feature"):
-                #    # if (len(obj.Shape.Wires) == 1
-                #    #     or len(obj.Shape.Edges) == 1):
-                #    _cmd_list.append("obj" + str(n) + " = " + _cmd_sk)
-                n += 1
-            _cmd_list.append("FreeCAD.ActiveDocument.recompute()")
-            self.commit(translate("draft", "Convert Draft/Sketch"), _cmd_list)
+        Gui.addModule("draftutils.timeline")
+        selected_objects = ", ".join(
+            "FreeCAD.ActiveDocument.getObject(" + repr(obj.Name) + ")"
+            for obj in sel
+        )
+        _cmd = "draftutils.timeline.convert_draft_sketch_replacement"
+        _cmd += "([" + selected_objects + "])"
+        _cmd_list = [
+            "converted = " + _cmd,
+            "FreeCAD.ActiveDocument.recompute()",
+        ]
+        self.commit(
+            translate("draft", "Convert Draft/Sketch"),
+            _cmd_list,
+            inputs=sel,
+        )
         self.finish()
 
 

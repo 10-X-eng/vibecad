@@ -83,11 +83,6 @@
       <translation>2B Taslak belgesi oluşturur</translation>
     </message>
     <message>
-      <location filename="../../StartView.cpp" line="235"/>
-      <source>BIM/Architecture</source>
-      <translation>BIM/Mimari</translation>
-    </message>
-    <message>
       <location filename="../../StartView.cpp" line="212"/>
       <source>Empty File</source>
       <translation>Boş Dosya</translation>
@@ -116,11 +111,6 @@
       <location filename="../../StartView.cpp" line="228"/>
       <source>Creates an assembly project</source>
       <translation>Yeni bir montaj projesi oluşturur</translation>
-    </message>
-    <message>
-      <location filename="../../StartView.cpp" line="236"/>
-      <source>Creates an architectural project</source>
-      <translation>Mimari proje oluşturur</translation>
     </message>
     <message>
       <location filename="../../StartView.cpp" line="520"/>

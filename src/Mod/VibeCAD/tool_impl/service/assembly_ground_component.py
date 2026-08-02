@@ -29,7 +29,7 @@ TOOL_SPEC = {
             "assembly_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the assembly from core.inspect scope='domain'."
+                    "Exact internal name of the assembly from assembly.list_structure."
                 ),
             },
             "component_name": {
@@ -54,7 +54,7 @@ def run(service: Any, assembly_name: str, component_name: str) -> dict[str, Any]
     if assembly is None:
         return _invalid(
             f"Assembly not found by exact internal name: {assembly_name}. "
-            "Call core.inspect with scope='domain' for exact names."
+            "Call assembly.list_structure for exact names."
         )
     clean_component = str(component_name or "").strip()
     component = doc.getObject(clean_component) if clean_component else None

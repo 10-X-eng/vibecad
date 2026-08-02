@@ -55,16 +55,18 @@ import FreeCAD
 import FreeCADGui
 
 import femresult.resulttools as resulttools
+from femtaskpanels import base_femtaskpanel
 
 translate = FreeCAD.Qt.translate
 
 
-class _TaskPanel:
+class _TaskPanel(base_femtaskpanel._BaseTaskPanel):
     """
     The task panel for the post-processing
     """
 
     def __init__(self, obj):
+        super().__init__(obj)
         self.result_obj = obj
         self.mesh_obj = self.result_obj.Mesh
         # task panel should be started by use of setEdit of view provider
@@ -805,10 +807,6 @@ class _TaskPanel:
     def reject(self):
         self.reset_result_mesh()
         plt.close()
-        # if the tasks panel is called from Command obj is not in edit mode
-        # thus reset edit does not close the dialog, maybe don't call but set in edit instead
-        FreeCADGui.Control.closeDialog()
-        FreeCADGui.ActiveDocument.resetEdit()
         if len(self.animateText) > 0:
             for a in self.animateText:
                 a.hide()
@@ -822,6 +820,7 @@ class _TaskPanel:
             FreeCAD.FEM_dialog["animate"][4] = self.result_widget.sb_displacement_factor.value()
         except:
             FreeCAD.FEM_dialog["animate"][4] = 1
+        return super().reject()
 
     # animation start
 

@@ -150,7 +150,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
     def registerSignalHandlers(self, obj):
         """Register signal handlers to update conditiona UI states"""
 
-        self.form.finishingPassEnabled.stateChanged.connect(self.updateFormCallback)
+        self.connectSignal(
+            self.form.finishingPassEnabled.stateChanged,
+            self.updateFormCallback,
+        )
 
     def getFields(self, obj):
         """getFields(obj) ... transfers values from UI to obj's properties"""

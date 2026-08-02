@@ -41,6 +41,11 @@ public:
     /// destructor
     ~ViewProviderHelix() override;
 
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
+
     void setupContextMenu(QMenu*, QObject*, const char*) override;
 
     /// grouping handling

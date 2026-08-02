@@ -26,10 +26,6 @@ __author__ = "Werner Mayer"
 __url__ = "https://www.freecad.org"
 __doc__ = "Helper class to create the features for Boolean operations."
 
-import FreeCAD
-import Part
-
-
 class BOPFeatures:
     def __init__(self, doc):
         self.doc = doc
@@ -39,9 +35,7 @@ class BOPFeatures:
         obj.Base = self.doc.getObject(inputNames[0])
         obj.Tool = self.doc.getObject(inputNames[1])
         self.copy_visual_attributes(obj, obj.Base)
-        target = self.move_input_objects([obj.Base, obj.Tool])
-        if target:
-            target.addObject(obj)
+        self.finalize_result(obj, [obj.Base, obj.Tool])
         return obj
 
     def make_cut(self, inputNames):
@@ -49,9 +43,7 @@ class BOPFeatures:
         obj.Base = self.doc.getObject(inputNames[0])
         obj.Tool = self.doc.getObject(inputNames[1])
         self.copy_visual_attributes(obj, obj.Base)
-        target = self.move_input_objects([obj.Base, obj.Tool])
-        if target:
-            target.addObject(obj)
+        self.finalize_result(obj, [obj.Base, obj.Tool])
         return obj
 
     def make_common(self, inputNames):
@@ -59,18 +51,14 @@ class BOPFeatures:
         obj.Base = self.doc.getObject(inputNames[0])
         obj.Tool = self.doc.getObject(inputNames[1])
         self.copy_visual_attributes(obj, obj.Base)
-        target = self.move_input_objects([obj.Base, obj.Tool])
-        if target:
-            target.addObject(obj)
+        self.finalize_result(obj, [obj.Base, obj.Tool])
         return obj
 
     def make_multi_common(self, inputNames):
         obj = self.doc.addObject("Part::MultiCommon", "Common")
         obj.Shapes = [self.doc.getObject(name) for name in inputNames]
         self.copy_visual_attributes(obj, obj.Shapes[0])
-        target = self.move_input_objects(obj.Shapes)
-        if target:
-            target.addObject(obj)
+        self.finalize_result(obj, obj.Shapes)
         return obj
 
     def make_fuse(self, inputNames):
@@ -78,44 +66,98 @@ class BOPFeatures:
         obj.Base = self.doc.getObject(inputNames[0])
         obj.Tool = self.doc.getObject(inputNames[1])
         self.copy_visual_attributes(obj, obj.Base)
-        target = self.move_input_objects([obj.Base, obj.Tool])
-        if target:
-            target.addObject(obj)
+        self.finalize_result(obj, [obj.Base, obj.Tool])
         return obj
 
     def make_multi_fuse(self, inputNames):
         obj = self.doc.addObject("Part::MultiFuse", "Fusion")
         obj.Shapes = [self.doc.getObject(name) for name in inputNames]
         self.copy_visual_attributes(obj, obj.Shapes[0])
-        target = self.move_input_objects(obj.Shapes)
-        if target:
-            target.addObject(obj)
+        self.finalize_result(obj, obj.Shapes)
         return obj
 
-    def move_input_objects(self, objects):
-        targetGroup = None
+    @staticmethod
+    def add_result_to_target(target, obj):
+        if target and (not hasattr(target, "Group") or obj not in target.Group):
+            target.addObject(obj)
+
+    def finalize_result(self, obj, inputs):
+        """Place one result, then replace only its exact visible presentations."""
+
+        target = self.common_input_owner(inputs)
+        self.add_result_to_target(target, obj)
+
+        import PartGui
+
+        presentations = []
+        for input_obj in inputs:
+            presentation = PartGui.resolveModelingPresentationObject(
+                input_obj
+            )
+            if (
+                presentation is not None
+                and presentation not in presentations
+                and bool(presentation.Visibility)
+            ):
+                presentations.append(presentation)
+        if (
+            presentations
+            and PartGui.setModelingReplacedInputs(obj, presentations)
+        ):
+            for presentation in presentations:
+                presentation.Visibility = False
+
+    def common_input_owner(self, objects):
+        parents = []
         for obj in objects:
-            obj.Visibility = False
-            parent = obj.getParent()
-            if parent:
-                parent.removeObject(obj)
-                targetGroup = parent
-        return targetGroup
+            try:
+                parent = obj.getParentGeoFeatureGroup()
+            except (AttributeError, RuntimeError):
+                parent = None
+            if parent is None:
+                try:
+                    parent = obj.getParentGroup()
+                except (AttributeError, RuntimeError):
+                    parent = None
+            parents.append(parent)
+
+        # Dependencies remain where their creators put them.  Reparenting an
+        # operand merely to recreate Part's historical nested tree is unsafe:
+        # operands may belong to different Bodies or App::Parts, and a feature
+        # can belong to only one GeoFeatureGroup.  Place the result beside the
+        # inputs only when every input already has the exact same owner.
+        if parents and parents[0] is not None and all(
+            parent == parents[0] for parent in parents[1:]
+        ):
+            return parents[0]
+        return None
 
     def copy_visual_attributes(self, target, source):
-        if target.ViewObject:
-            displayMode = source.ViewObject.DisplayMode
+        target_view = getattr(target, "ViewObject", None)
+        source_view = getattr(source, "ViewObject", None)
+        if target_view and source_view:
+            displayMode = source_view.DisplayMode
             src = source
             while displayMode == "Link":
                 if getattr(src, "LinkedObject", None):
-                    src = src.LinkedObject
+                    candidate = src.LinkedObject
                 elif getattr(src, "Base", None):
                     # Draft Link array
-                    src = src.Base
+                    candidate = src.Base
                 else:
                     break
-                if not hasattr(src, "ViewObject"):
+                candidate_view = getattr(candidate, "ViewObject", None)
+                if not candidate_view:
                     break
-                displayMode = src.ViewObject.DisplayMode
-            if displayMode in target.ViewObject.getEnumerationsOfProperty("DisplayMode"):
-                target.ViewObject.DisplayMode = displayMode
+                src = candidate
+                source_view = candidate_view
+                displayMode = source_view.DisplayMode
+            if displayMode in target_view.getEnumerationsOfProperty("DisplayMode"):
+                target_view.DisplayMode = displayMode
+            # Seed the result with the source's overall appearance before its shape is
+            # recomputed. The Part view provider then expands that appearance across the
+            # result faces instead of expanding the default gray material.
+            target_view.ShapeColor = source_view.ShapeColor
+            target_view.LineColor = source_view.LineColor
+            target_view.PointColor = source_view.PointColor
+            target_view.Transparency = source_view.Transparency

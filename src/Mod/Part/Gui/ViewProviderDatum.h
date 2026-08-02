@@ -48,6 +48,10 @@ public:
     ~ViewProviderLine() override = default;
 
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
 };
 
 class PartGuiExport ViewProviderPlane: public Gui::ViewProviderPlane,
@@ -60,6 +64,10 @@ public:
     ~ViewProviderPlane() override = default;
 
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
 };
 
 class PartGuiExport ViewProviderPoint: public Gui::ViewProviderPoint,
@@ -72,6 +80,10 @@ public:
     ~ViewProviderPoint() override = default;
 
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
 };
 
 class PartGuiExport ViewProviderLCS: public Gui::ViewProviderCoordinateSystem,
@@ -84,6 +96,10 @@ public:
     ~ViewProviderLCS() override = default;
 
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
 };
 
 }  // namespace PartGui

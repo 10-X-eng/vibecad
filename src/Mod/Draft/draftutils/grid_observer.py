@@ -22,7 +22,7 @@
 # *   USA                                                                   *
 # *                                                                         *
 # ***************************************************************************
-"""Provide the grid observer for the Draft and BIM workbenches."""
+"""Provide the grid observer for the Draft workbench."""
 
 import FreeCAD
 
@@ -67,8 +67,7 @@ if FreeCAD.GuiUp:
     def _view_observer_callback():
         """Callback function to update the Toggle Grid button.
 
-        The update will only happen if either the Draft or BIM
-        workbenches are active.
+        The update will only happen if the Draft workbench is active.
         """
 
         ToDo.delay(_update_grid_gui, None)
@@ -78,13 +77,13 @@ if FreeCAD.GuiUp:
     def _view_observer_setup():
         """Start or stop the grid observer.
 
-        Start: it is intended to happen when either the Draft or BIM workbench
-        are activated. The _view_observer_callback is connected to Qt's
+        Start: it is intended to happen when the Draft workbench is activated.
+        The _view_observer_callback is connected to Qt's
         subWindowActivated signal. The MDI area emits the subWindowActivated()
         signal when the active window changes.
 
-        Stop: This happens when either the Draft or BIM workbenches are
-        deactivated and is the reverse of the start operation.
+        Stop: This happens when the Draft workbench is deactivated and is the
+        reverse of the start operation.
         """
 
         mw = FreeCADGui.getMainWindow()

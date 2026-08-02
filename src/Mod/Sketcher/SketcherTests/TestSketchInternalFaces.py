@@ -190,8 +190,11 @@ class TestSketchInternalFaces(unittest.TestCase):
         sk = self._make_sketch()
         sk.addGeometry(Part.LineSegment(App.Vector(0, 0, 0), App.Vector(10, 0, 0)))
         self.Doc.recompute()
-        faces = get_internal_faces(sk)
-        self.assertEqual(len(faces), 0)
+        shape = sk.InternalShape
+        self.assertFalse(shape.isNull())
+        self.assertEqual(len(shape.Faces), 0)
+        self.assertEqual(len(shape.Wires), 1)
+        self.assertEqual(len(shape.Edges), 1)
 
     def testOpenPolyline(self):
         """An open polyline (3 connected segments, not closed) should produce no faces."""
@@ -203,8 +206,11 @@ class TestSketchInternalFaces(unittest.TestCase):
         sk.addConstraint(Sketcher.Constraint("Coincident", i, 2, i + 1, 1))
         sk.addConstraint(Sketcher.Constraint("Coincident", i + 1, 2, i + 2, 1))
         self.Doc.recompute()
-        faces = get_internal_faces(sk)
-        self.assertEqual(len(faces), 0)
+        shape = sk.InternalShape
+        self.assertFalse(shape.isNull())
+        self.assertEqual(len(shape.Faces), 0)
+        self.assertEqual(len(shape.Wires), 1)
+        self.assertEqual(len(shape.Edges), 3)
 
     # ==================================================================
     # 4. Non-overlapping shapes — independent faces

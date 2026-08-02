@@ -24,6 +24,7 @@
 
 #include <QTimer>
 
+#include <algorithm>
 
 #include <Gui/Application.h>
 #include <Gui/Document.h>
@@ -43,6 +44,7 @@ TrajectorySimulate::TrajectorySimulate(
 )
     : QDialog(parent)
     , sim(pcTrajectoryObject->Trajectory.getValue(), pcRobotObject->getRobot())
+    , robotObject(pcRobotObject)
     , Run(false)
     , block(false)
     , timePos(0.0)
@@ -110,26 +112,51 @@ TrajectorySimulate::TrajectorySimulate(
     // clang-format on
 
     // get the view provider
-    ViewProv = static_cast<ViewProviderRobotObject*>(
-        Gui::Application::Instance->activeDocument()->getViewProvider(pcRobotObject)
-    );
+    auto* guiDocument = Gui::Application::Instance
+        ? Gui::Application::Instance->getDocument(pcRobotObject->getDocument())
+        : nullptr;
+    ViewProv = guiDocument
+        ? freecad_cast<ViewProviderRobotObject*>(guiDocument->getViewProvider(pcRobotObject))
+        : nullptr;
 
     setTo();
 }
 
-TrajectorySimulate::~TrajectorySimulate() = default;
+TrajectorySimulate::~TrajectorySimulate()
+{
+    stop();
+    restorePreview();
+}
 
 void TrajectorySimulate::setTo()
 {
     sim.setToTime(timePos);
+    if (ViewProv) {
+        ViewProv->setAxisTo(
+            sim.Axis[0],
+            sim.Axis[1],
+            sim.Axis[2],
+            sim.Axis[3],
+            sim.Axis[4],
+            sim.Axis[5],
+            sim.Rob.getTcp()
+        );
+    }
+}
+
+void TrajectorySimulate::restorePreview()
+{
+    if (!robotObject || !ViewProv) {
+        return;
+    }
     ViewProv->setAxisTo(
-        sim.Axis[0],
-        sim.Axis[1],
-        sim.Axis[2],
-        sim.Axis[3],
-        sim.Axis[4],
-        sim.Axis[5],
-        sim.Rob.getTcp()
+        robotObject->Axis1.getValue(),
+        robotObject->Axis2.getValue(),
+        robotObject->Axis3.getValue(),
+        robotObject->Axis4.getValue(),
+        robotObject->Axis5.getValue(),
+        robotObject->Axis6.getValue(),
+        robotObject->Tcp.getValue()
     );
 }
 
@@ -137,7 +164,7 @@ void TrajectorySimulate::start()
 {
     timePos = 0.0f;
     ui->timeSpinBox->setValue(timePos);
-    ui->timeSlider->setValue(int((timePos / duration) * 1000));
+    ui->timeSlider->setValue(0);
     setTo();
 }
 void TrajectorySimulate::stop()
@@ -147,8 +174,10 @@ void TrajectorySimulate::stop()
 }
 void TrajectorySimulate::run()
 {
-    timer->start();
-    Run = true;
+    if (duration > 0.0f) {
+        timer->start();
+        Run = true;
+    }
 }
 void TrajectorySimulate::back()
 {}
@@ -158,16 +187,16 @@ void TrajectorySimulate::end()
 {
     timePos = duration;
     ui->timeSpinBox->setValue(timePos);
-    ui->timeSlider->setValue(int((timePos / duration) * 1000));
+    ui->timeSlider->setValue(duration > 0.0f ? 1000 : 0);
     setTo();
 }
 
 void TrajectorySimulate::timerDone()
 {
     if (timePos < duration) {
-        timePos += .1f;
+        timePos = std::min(duration, timePos + .1f);
         ui->timeSpinBox->setValue(timePos);
-        ui->timeSlider->setValue(int((timePos / duration) * 1000));
+        ui->timeSlider->setValue(duration > 0.0f ? int((timePos / duration) * 1000.0f) : 0);
         setTo();
         timer->start();
     }
@@ -179,7 +208,7 @@ void TrajectorySimulate::timerDone()
 
 void TrajectorySimulate::valueChanged(int value)
 {
-    if (!block) {
+    if (!block && duration > 0.0f) {
         timePos = duration * (value / 1000.0);
         block = true;
         ui->timeSpinBox->setValue(timePos);
@@ -191,9 +220,9 @@ void TrajectorySimulate::valueChanged(int value)
 void TrajectorySimulate::valueChanged(double value)
 {
     if (!block) {
-        timePos = value;
+        timePos = std::clamp(static_cast<float>(value), 0.0f, duration);
         block = true;
-        ui->timeSlider->setValue(int((timePos / duration) * 1000));
+        ui->timeSlider->setValue(duration > 0.0f ? int((timePos / duration) * 1000.0f) : 0);
         block = false;
         setTo();
     }

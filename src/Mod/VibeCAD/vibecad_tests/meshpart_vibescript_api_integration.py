@@ -947,14 +947,12 @@ def main() -> int:
             arguments={
                 "program_id": prepared["program_id"],
                 "expected_revision": accepted["working_revision"],
-                "replacements": [
-                    {"old": "label='Converted Mesh'", "new": "label='Edited Mesh'"},
-                    {
-                        "old": "label='Recovered Solid'",
-                        "new": "label='Edited Solid'",
-                    },
-                    {"old": "label='Face Boundary'", "new": "label='Edited Boundary'"},
-                ],
+                "source": (
+                    _source()
+                    .replace("label='Converted Mesh'", "label='Edited Mesh'")
+                    .replace("label='Recovered Solid'", "label='Edited Solid'")
+                    .replace("label='Face Boundary'", "label='Edited Boundary'")
+                ),
             },
         )
         _, _, edit_validated, edit_publication, accepted = _run_candidate(
@@ -980,8 +978,15 @@ def main() -> int:
             App.Vector(35, 15, 7),
             App.Rotation(App.Vector(0, 0, 1), 45),
         )
-        stale = set(mark_programs_stale_from_source(mesh_source, "Placement"))
-        assert stale == set(stable_names.values())
+        observer_marked = {
+            str(obj.Name)
+            for obj in outputs.values()
+            if str(obj.VibeCADDerivedState) == "stale"
+        }
+        explicitly_marked = set(
+            mark_programs_stale_from_source(mesh_source, "Placement")
+        )
+        assert observer_marked | explicitly_marked == set(stable_names.values())
         assert all(obj.VibeCADDerivedState == "stale" for obj in outputs.values())
         dependency_capture = _captured(
             root,
@@ -1198,15 +1203,14 @@ def main() -> int:
             },
         )
         prepared_delete = prepare_delete(delete_capture)
-        original_remove = publication_module._remove_owned_objects
+        original_remove = publication_module._remove_timeline_deletion
 
-        def fail_after_committed_removal(active_document, managed_objects):
-            for managed in list(managed_objects):
-                active_document.removeObject(managed.Name)
+        def fail_after_committed_removal(active_document, deletion):
+            original_remove(active_document, deletion)
             active_document.commitTransaction()
             raise RuntimeError("injected MeshPart deletion failure")
 
-        publication_module._remove_owned_objects = fail_after_committed_removal
+        publication_module._remove_timeline_deletion = fail_after_committed_removal
         try:
             _expect_error(
                 "injected MeshPart deletion failure",
@@ -1214,7 +1218,7 @@ def main() -> int:
             )
             restore_prepared_delete(prepared_delete)
         finally:
-            publication_module._remove_owned_objects = original_remove
+            publication_module._remove_timeline_deletion = original_remove
         outputs = {
             name: reopened.getObject(object_name)
             for name, object_name in stable_names.items()

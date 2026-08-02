@@ -450,7 +450,7 @@ def get_svg(
     # all the SVG strings from the contents of the group.
     if (
         obj.isDerivedFrom("App::DocumentObjectGroup")
-        or utils.get_type(obj) in ["Layer", "BuildingPart", "IfcGroup"]
+        or utils.get_type(obj) == "Layer"
         or obj.isDerivedFrom("App::LinkGroup")
         or (
             obj.isDerivedFrom("App::Link")
@@ -632,9 +632,7 @@ def get_svg(
     elif isinstance(obj, Part.Shape):
         svg = _svg_shape(svg, obj, plane, fillstyle, pathdata, stroke, linewidth, lstyle)
 
-    elif utils.get_type(obj) in ["Dimension", "LinearDimension"] or (
-        utils.get_type(obj) == "IfcAnnotation" and obj.ObjectType == "DIMENSION"
-    ):
+    elif utils.get_type(obj) in ["Dimension", "LinearDimension"]:
         svg = _svg_dimension(
             obj, plane, scale, linewidth, fontsize, stroke, tstroke, pointratio, techdraw, rotation
         )
@@ -846,9 +844,7 @@ def get_svg(
                 justification,
             )
 
-    elif utils.get_type(obj) in ["Annotation", "DraftText", "Text"] or (
-        utils.get_type(obj) == "IfcAnnotation" and obj.ObjectType == "TEXT"
-    ):
+    elif utils.get_type(obj) in ["Annotation", "DraftText", "Text"]:
         # returns an svg representation of a document annotation
         if not App.GuiUp:
             _wrn("Export of texts to SVG is only available in GUI mode")
@@ -868,7 +864,7 @@ def get_svg(
             svg += svgtext.get_text(plane, techdraw, tstroke, fontsize, n, r, p, t, linespacing, j)
 
     elif utils.get_type(obj) == "Axis" or linked_axis_obj is not None:
-        # returns the SVG representation of an Arch Axis system
+        # returns the SVG representation of an Axis system
         if not App.GuiUp:
             _wrn("Export of axes to SVG is only available in GUI mode")
 
@@ -891,22 +887,8 @@ def get_svg(
                     edges=[e],
                 )
 
-            if is_linked_axis:
-                try:
-                    import ArchAxis
-
-                    bubble_shapes, bubble_texts = ArchAxis.get_axis_bubble_data(obj, axis_vobj)
-                except ImportError as err:
-                    _wrn("Unable to import ArchAxis for '{}': {}".format(obj.Label, err))
-                    bubble_shapes = []
-                    bubble_texts = []
-                except (AttributeError, RuntimeError, TypeError, ValueError) as err:
-                    _wrn("Unable to compute Axis bubble data for '{}': {}".format(obj.Label, err))
-                    bubble_shapes = []
-                    bubble_texts = []
-            else:
-                bubble_shapes = []
-                bubble_texts = []
+            bubble_shapes = []
+            bubble_texts = []
 
             if not bubble_shapes and axis_vobj and hasattr(axis_vobj, "Proxy") and axis_vobj.Proxy:
                 bubble_texts = axis_vobj.Proxy.getTextData()

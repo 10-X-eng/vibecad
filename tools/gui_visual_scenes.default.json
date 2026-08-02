@@ -3,7 +3,7 @@
     {
       "name": "part-crank",
       "coverage": ["part"],
-      "workbench": "PartWorkbench",
+      "workbench": "PartDesignWorkbench",
       "file": "data/tests/Crank.fcstd",
       "fit_view": true
     },
@@ -29,13 +29,6 @@
       "fit_view": true
     },
     {
-      "name": "bim-example",
-      "coverage": ["bim"],
-      "workbench": "BIMWorkbench",
-      "file": "data/examples/BIMExample.FCStd",
-      "fit_view": true
-    },
-    {
       "name": "fem-example",
       "coverage": ["fem"],
       "workbench": "FemWorkbench",
@@ -57,10 +50,9 @@
       "fit_view": true
     },
     {
-      "name": "techdraw-arch-detail",
+      "name": "techdraw-empty",
       "coverage": ["techdraw"],
       "workbench": "TechDrawWorkbench",
-      "file": "data/examples/ArchDetail.FCStd",
       "fit_view": true
     }
   ]

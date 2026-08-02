@@ -25,7 +25,9 @@
 #pragma once
 
 #include <functional>
+#include <string>
 #include <tuple>
+#include <vector>
 #include <QAbstractItemModel>
 #include <QElapsedTimer>
 #include <QProgressDialog>
@@ -118,6 +120,16 @@ private Q_SLOTS:
 private:
     void setupInterface();
     QStringList reportViewStrings;
+    struct StoredSelection
+    {
+        std::string documentName;
+        std::string objectName;
+        std::string subElementName;
+        float x;
+        float y;
+        float z;
+    };
+    std::vector<StoredSelection> initialSelection;
     void generateReport();
     void recursiveCheck(
         const BRepCheck_Analyzer& shapeCheck,

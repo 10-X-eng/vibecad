@@ -48,6 +48,8 @@ protected:
     void changeEvent(QEvent* e) override;
 
 private:
+    class LaunchState;
+    std::unique_ptr<LaunchState> launchState;
     std::unique_ptr<Ui_DlgRegularSolid> ui;
 
     Q_DISABLE_COPY_MOVE(DlgRegularSolidImp)

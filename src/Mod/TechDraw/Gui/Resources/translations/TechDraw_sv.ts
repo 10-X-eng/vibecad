@@ -122,24 +122,7 @@
       <translation>Infogar en redigerbar textblocksannotation på den aktuella sidan</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>TechDraw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>BIM-vy</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Infogar en vy av en BIM-sektionsplan</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ Om inget objekt har valts öppnas en filbläddrare där du kan välja en SVG- el
       <translation>Ritning skapa sida</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>Skapa BIM-vy</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Skapa bild</translation>
@@ -3293,11 +3270,6 @@ Om inget objekt har valts öppnas en filbläddrare där du kan välja en SVG- el
       <translation>Välj en klippgrupp och en vy</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Sidan innehåller en BIM-vy som inte kommer att exporteras. Fortsätta?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation type="unfinished">Save DXF file</translation>
@@ -3331,16 +3303,6 @@ Om inget objekt har valts öppnas en filbläddrare där du kan välja en SVG- el
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Välj minst ett objekt</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Välj endast 1 BIM-sektionsplan</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Ingen BIM-sektionsplan i markeringen</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -10068,14 +10030,7 @@ det finns en öppen uppgiftsdialog.</translation>
       <translation>Rad</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

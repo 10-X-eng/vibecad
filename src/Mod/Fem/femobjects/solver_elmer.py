@@ -43,6 +43,7 @@ class SolverElmer(base_fempythonobject.BaseFemPythonObject):
     def __init__(self, obj):
         super().__init__(obj)
         obj.addExtension("App::GroupExtensionPython")
+        obj.addExtension("App::SuppressibleExtensionPython")
 
         for prop in self._get_properties():
             prop.add_to_object(obj)
@@ -155,6 +156,11 @@ class SolverElmer(base_fempythonobject.BaseFemPythonObject):
         return prop
 
     def onDocumentRestored(self, obj):
+        if not obj.hasExtension("App::GroupExtensionPython"):
+            obj.addExtension("App::GroupExtensionPython")
+        if not obj.hasExtension("App::SuppressibleExtensionPython"):
+            obj.addExtension("App::SuppressibleExtensionPython")
+
         # update old project with new properties
         for prop in self._get_properties():
             try:

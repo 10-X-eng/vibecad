@@ -697,6 +697,10 @@ public:
     bool selectAll() override;
     /// is called by the tree if the user double clicks on the object
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     /// is called when the Provider is in edit and the mouse is moved
     bool mouseMove(const SbVec2s& pos, Gui::View3DInventorViewer* viewer) override;
     /// is called when the Provider is in edit and a key event ocours. Only ESC ends edit.

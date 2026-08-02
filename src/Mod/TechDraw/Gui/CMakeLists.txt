@@ -92,6 +92,7 @@ SET(TechDrawGui_SRCS
     CommandStack.cpp
     CommandHelpers.cpp
     CommandHelpers.h
+    TaskDocumentGuard.h
     DimensionValidators.cpp
     DimensionValidators.h
     Resources/TechDraw.qrc

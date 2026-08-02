@@ -26,6 +26,7 @@
 import FreeCAD
 import FreeCADGui
 import Path
+import Path.Base.Util as PathUtil
 import PathScripts.PathUtils as PathUtils
 from PySide.QtCore import QT_TRANSLATE_NOOP
 
@@ -87,7 +88,7 @@ class Fixture:
         fixture = fixlist.index(obj.Fixture)
         obj.Path = Path.Path(str(obj.Fixture))
         obj.Label = "Fixture" + str(fixture)
-        if obj.Active:
+        if PathUtil.activeForOp(obj):
             job = PathUtils.findParentJob(obj)
             c1 = Path.Command(str(obj.Fixture))
             c2 = Path.Command("G0" + str(job.Stock.Shape.BoundBox.ZMax))

@@ -48,6 +48,11 @@ public:
     /// destructor
     ~ViewProviderPipe() override;
 
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
+
     /// grouping handling
     std::vector<App::DocumentObject*> claimChildren() const override;
     void setupContextMenu(QMenu*, QObject*, const char*) override;

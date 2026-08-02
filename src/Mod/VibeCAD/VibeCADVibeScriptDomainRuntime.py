@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from array import array
 import ast
+import base64
+import binascii
 from dataclasses import dataclass
 import hashlib
 import inspect
@@ -27,6 +29,24 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 import uuid
 
+from VibeCADDocumentReferences import (
+    DocumentReferenceError,
+    is_document_reference,
+    normalize_document_reference,
+    resolve_reference_target,
+)
+from VibeCADMechanismEngine import (
+    MECHANISM_SCENARIO_SCHEMA,
+    MECHANISM_SOLVE_REPORT_SCHEMA,
+    MECHANISM_STATIC_CHECK_SCHEMA,
+    evaluate_static_mechanism_check,
+    mechanism_scenario_sha256,
+    normalize_mechanism_scenario,
+    normalize_mechanism_solve_report,
+    normalize_mechanism_static_check,
+    normalize_mechanism_verification_report,
+)
+from VibeCADMechanismGeometry import measure_static_mechanism_pairs
 from VibeCADTools import tool_failure
 import VibeCADVibeScriptDomains as contracts
 from vibescript_domain_api import create_domain_api
@@ -38,7 +58,33 @@ _ASYNC_PUBLICATION_KEY = "_vibecad_domain_publication"
 _STRUCTURED_DEFINITION_LIMIT = 1_000_000
 _MAX_REFERENCE_SHAPES = 128
 _MAX_REFERENCE_BREP_BYTES = 256 * 1024 * 1024
+_PARTDESIGN_NATIVE_HISTORY_SCHEMA = "vibecad-partdesign-native-history-v1"
+_MAX_PARTDESIGN_NATIVE_HISTORY_BYTES = 256 * 1024 * 1024
+_MAX_PARTDESIGN_NATIVE_HISTORY_OBJECTS = 16_384
+_PARTDESIGN_NATIVE_HISTORY_TYPES = frozenset(
+    {
+        "Sketcher::SketchObject",
+        "PartDesign::AdditiveLoft",
+        "PartDesign::Chamfer",
+        "PartDesign::Draft",
+        "PartDesign::Feature",
+        "PartDesign::FeaturePython",
+        "PartDesign::Fillet",
+        "PartDesign::Groove",
+        "PartDesign::Hole",
+        "PartDesign::Mirrored",
+        "PartDesign::Pad",
+        "PartDesign::Pocket",
+        "PartDesign::PolarPattern",
+        "PartDesign::Revolution",
+        "PartDesign::SubtractiveLoft",
+        "PartDesign::Thickness",
+    }
+)
+_PARTDESIGN_SAVED_SOURCE_COMPATIBILITY_METHODS = frozenset({"pad", "pocket", "groove"})
+_PARTDESIGN_LOFT_SUBTRACTIVE_COMPATIBILITY = "loft_subtractive"
 _MAX_REFERENCE_MESH_SEGMENTS = 4096
+_MAX_MESH_TRACE_OPERATIONS = 4096
 _MAX_REFERENCE_POINTS = 2_000_000
 _MAX_REFERENCE_FACT_SUBELEMENTS = 32
 _REVERSE_FIT_METRIC_ABSOLUTE_TOLERANCE = 1.0e-7
@@ -69,6 +115,10 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_sketcher_api.py",
         "vibescript_sketcher_worker.py",
         "vibescript_part_worker.py",
+        "vibescript_material_api.py",
+        "vibescript_material_worker.py",
+        "VibeCADFasteners.py",
+        "fasteners-provenance.json",
     ),
     "part": (
         "vibescript_part_api.py",
@@ -79,6 +129,11 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_assembly_worker.py",
         "vibescript_part_worker.py",
         "VibeCADAssemblyBOM.py",
+        "VibeCADDocumentReferences.py",
+        "VibeCADFasteners.py",
+        "VibeCADMechanismEngine.py",
+        "VibeCADMechanismGeometry.py",
+        "fasteners-provenance.json",
     ),
     "sketcher": (
         "vibescript_sketcher_api.py",
@@ -103,14 +158,12 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_material_api.py",
         "vibescript_material_worker.py",
     ),
-    "bim": (
-        "vibescript_bim_api.py",
-        "vibescript_bim_worker.py",
-        "vibescript_part_worker.py",
-    ),
     "mesh": (
         "vibescript_mesh_api.py",
         "vibescript_mesh_worker.py",
+        "vibescript_meshpart_api.py",
+        "vibescript_meshpart_worker.py",
+        "vibescript_part_worker.py",
     ),
     "meshpart": (
         "vibescript_meshpart_api.py",
@@ -277,6 +330,7 @@ def _stage_worker_bundle(
         )
     filenames = (
         "vibescript_domain_api.py",
+        "vibescript_worker_progress.py",
         *domain_files,
     )
     if len(filenames) != len(set(filenames)):
@@ -345,9 +399,7 @@ def _program_directories(project_root: str | Path, domain: str) -> list[Path]:
         result.extend(
             path
             for path in root.iterdir()
-            if path.is_dir()
-            and _PROGRAM_ID.fullmatch(path.name)
-            and path not in result
+            if path.is_dir() and _PROGRAM_ID.fullmatch(path.name) and path not in result
         )
     return result
 
@@ -380,8 +432,82 @@ def _load_manifest(
     return manifest
 
 
+def _load_captured_manifest(
+    captured: Mapping[str, Any],
+    pack: contracts.VibeScriptWorkbenchPack,
+    program_id: str,
+    *,
+    hydrate_document_contract: bool = False,
+) -> dict[str, Any]:
+    """Prefer a compatible working artifact, falling back to the FCStd contract."""
+
+    document_program = captured.get("document_program")
+    portable_manifest: dict[str, Any] | None = None
+    portable_error: Exception | None = None
+    if isinstance(document_program, Mapping):
+        raw = str(document_program.get("contract") or "")
+        if raw:
+            live = next(
+                (
+                    item
+                    for item in list(captured.get("live_programs") or [])
+                    if str(item.get("program_id") or "") == program_id
+                ),
+                None,
+            )
+            revisions = (
+                list(live.get("revisions") or []) if isinstance(live, Mapping) else []
+            )
+            expected_revision = str(revisions[0]) if len(revisions) == 1 else ""
+            try:
+                portable_manifest = contracts.decode_document_program_contract(
+                    raw,
+                    pack,
+                    expected_program_id=program_id,
+                    expected_revision=expected_revision,
+                )
+            except Exception as exc:
+                portable_error = exc
+
+    artifact_manifest: dict[str, Any] | None = None
+    artifact_error: Exception | None = None
+    try:
+        artifact_manifest = _load_manifest(
+            captured["project_root"],
+            pack,
+            program_id,
+        )
+    except Exception as exc:
+        artifact_error = exc
+
+    use_portable = bool(
+        portable_manifest is not None
+        and (
+            artifact_manifest is None
+            or str(artifact_manifest.get("accepted_revision") or "")
+            != str(portable_manifest.get("accepted_revision") or "")
+        )
+    )
+    if use_portable:
+        manifest = dict(portable_manifest or {})
+        if hydrate_document_contract:
+            _atomic_json(
+                _manifest_path(captured["project_root"], pack.domain, program_id),
+                manifest,
+            )
+        return manifest
+    if artifact_manifest is not None:
+        return artifact_manifest
+    if portable_manifest is not None:
+        return portable_manifest
+    if portable_error is not None:
+        raise portable_error
+    assert artifact_error is not None
+    raise artifact_error
+
+
 def _assembly_live_output_state(obj: Any) -> dict[str, Any]:
-    """Capture bounded accepted evidence used by model-facing inspect_program."""
+    """Capture bounded accepted evidence used by source inspection."""
 
     output_type = str(getattr(obj, "VibeCADVibeScriptOutputType", "") or "")
     property_names = {
@@ -425,6 +551,34 @@ def _assembly_live_output_state(obj: Any) -> dict[str, Any]:
 
 def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
     programs: dict[str, dict[str, Any]] = {}
+    design_history: dict[str, dict[str, list[dict[str, str]]]] = {}
+    if domain == "partdesign":
+        for obj in list(getattr(doc, "Objects", []) or []):
+            if str(getattr(obj, "VibeCADScriptedRole", "") or "") != "implementation":
+                continue
+            program_id = str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+            if not program_id:
+                continue
+            type_id = str(getattr(obj, "TypeId", "") or "")
+            if type_id == "PartDesign::DesignScriptOperation":
+                kind = "operations"
+            elif type_id == "PartDesign::Body":
+                kind = "bodies"
+            else:
+                continue
+            design_history.setdefault(
+                program_id,
+                {"operations": [], "bodies": []},
+            )[kind].append(
+                {
+                    "object_name": str(getattr(obj, "Name", "") or ""),
+                    "label": str(getattr(obj, "Label", "") or ""),
+                    "type_id": type_id,
+                    "output_name": str(
+                        getattr(obj, "VibeCADScriptedOutputKey", "") or ""
+                    ),
+                }
+            )
     for obj in list(getattr(doc, "Objects", []) or []):
         properties = set(getattr(obj, "PropertiesList", []) or [])
         if not {contracts.PROP_PROGRAM_ID, contracts.PROP_PROGRAM_DOMAIN} <= properties:
@@ -436,8 +590,15 @@ def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
             continue
         item = programs.setdefault(
             program_id,
-            {"program_id": program_id, "revisions": set(), "outputs": []},
+            {
+                "program_id": program_id,
+                "label": str(getattr(obj, contracts.PROP_PROGRAM_LABEL, "") or ""),
+                "revisions": set(),
+                "outputs": [],
+            },
         )
+        if not item["label"]:
+            item["label"] = str(getattr(obj, contracts.PROP_PROGRAM_LABEL, "") or "")
         revision = str(getattr(obj, contracts.PROP_PROGRAM_REVISION, "") or "")
         if revision:
             item["revisions"].add(revision)
@@ -458,6 +619,30 @@ def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
         item = programs[program_id]
         item["revisions"] = sorted(item["revisions"])
         item["outputs"] = sorted(item["outputs"], key=lambda output: output["name"])
+        if domain == "partdesign":
+            history = design_history.get(
+                program_id,
+                {"operations": [], "bodies": []},
+            )
+            operations = sorted(
+                history["operations"],
+                key=lambda operation: operation["object_name"],
+            )
+            bodies = sorted(
+                history["bodies"],
+                key=lambda body: (
+                    body["output_name"],
+                    body["object_name"],
+                ),
+            )
+            item["native_history"] = {
+                "available": len(operations) == 1,
+                "strategy": "design_program_operation",
+                "operation_count": len(operations),
+                "operation": operations[0] if len(operations) == 1 else None,
+                "body_count": len(bodies),
+                "bodies": bodies,
+            }
         result.append(item)
     return result
 
@@ -565,7 +750,7 @@ def capture_operation_state(
             tool_name,
             "DOMAIN_SURFACE_CHANGED",
             "surface",
-            "The active workbench and modeling engine no longer authorize this domain.",
+            "The active workbench no longer authorizes this API.",
             observed=resolution.summary(),
         )
     scope = service.project_scope_snapshot()
@@ -594,6 +779,16 @@ def capture_operation_state(
             f"FreeCAD is unavailable: {exc}",
         )
     live = _live_programs(doc, pack.domain) if doc is not None else []
+    target_program_id = str(arguments.get("program_id") or "").strip().lower()
+    document_program = (
+        contracts.capture_document_program_payload(
+            doc,
+            pack.domain,
+            target_program_id,
+        )
+        if doc is not None and target_program_id
+        else {}
+    )
     for item in live:
         if len(item["revisions"]) > 1:
             _raise(
@@ -622,6 +817,7 @@ def capture_operation_state(
             else []
         ),
         "live_programs": live,
+        "document_program": document_program,
         "surface": resolution.summary(),
         "freecad_home": freecad_home,
         "timeout_seconds": timeout,
@@ -638,35 +834,27 @@ def _validate_stable_references(
         return
     if not isinstance(value, dict):
         return
-    if set(value) != {"document_uid", "object_name"}:
+    if not is_document_reference(value):
         for key, item in value.items():
             _validate_stable_references(item, captured, f"{path}.{key}")
         return
-    document_uid = str(value.get("document_uid") or "")
-    object_name = str(value.get("object_name") or "")
+    try:
+        clean = normalize_document_reference(value)
+    except DocumentReferenceError as exc:
+        raise ValueError(f"{path} has an invalid stable reference: {exc}") from exc
+    document_uid = clean["document_uid"]
+    object_name = clean["object_name"]
+    if str(
+        getattr(captured.get("pack"), "domain", "") or ""
+    ) == "assembly" and document_uid != str(captured.get("document_uid") or ""):
+        # External identities are authenticated on the document thread during
+        # capture.  A portable path may load the saved source document there.
+        return
     if document_uid != str(captured.get("document_uid") or ""):
         raise ValueError(f"{path} refers to a different document uid.")
     names = {str(item.get("name") or "") for item in captured["document_objects"]}
     if object_name not in names:
         raise ValueError(f"{path} refers to missing object {object_name!r}.")
-
-
-def _apply_replacements(source: str, replacements: Any) -> str:
-    if not isinstance(replacements, list) or not replacements:
-        raise ValueError("replacements must be a non-empty array.")
-    result = source
-    for index, replacement in enumerate(replacements):
-        if not isinstance(replacement, dict) or set(replacement) != {"old", "new"}:
-            raise ValueError(f"replacements[{index}] must contain exactly old and new.")
-        old = str(replacement["old"])
-        new = str(replacement["new"])
-        count = result.count(old)
-        if count != 1:
-            raise ValueError(
-                f"replacements[{index}].old must occur exactly once; found {count}."
-            )
-        result = result.replace(old, new, 1)
-    return result
 
 
 def _merge_patch(base: Mapping[str, Any], patch: Any) -> dict[str, Any]:
@@ -679,6 +867,35 @@ def _merge_patch(base: Mapping[str, Any], patch: Any) -> dict[str, Any]:
         else:
             result[str(key)] = value
     return result
+
+
+def _partdesign_saved_source_compatibility_methods(source: str) -> frozenset[str]:
+    """Find retired calls eligible only when replaying an unchanged saved source."""
+
+    tree = ast.parse(
+        str(source or ""),
+        filename="<vibecad-partdesign-vibescript>",
+        mode="exec",
+    )
+    compatibility: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "api"
+            and node.attr in _PARTDESIGN_SAVED_SOURCE_COMPATIBILITY_METHODS
+        ):
+            compatibility.add(node.attr)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "api"
+            and node.func.attr == "loft"
+            and any(keyword.arg == "subtractive" for keyword in node.keywords)
+        ):
+            compatibility.add(_PARTDESIGN_LOFT_SUBTRACTIVE_COMPATIBILITY)
+    return frozenset(compatibility)
 
 
 def _freecadcmd(freecad_home: str) -> Path:
@@ -728,7 +945,7 @@ def _input_references(value: Any) -> list[dict[str, str]]:
     """Return unique stable references in deterministic input traversal order."""
 
     result: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    indexes: dict[tuple[str, str], int] = {}
 
     def walk(item: Any) -> None:
         if isinstance(item, list):
@@ -737,15 +954,24 @@ def _input_references(value: Any) -> list[dict[str, str]]:
             return
         if not isinstance(item, dict):
             return
-        if set(item) == {"document_uid", "object_name"}:
-            reference = {
-                "document_uid": str(item.get("document_uid") or ""),
-                "object_name": str(item.get("object_name") or ""),
-            }
+        if is_document_reference(item):
+            reference = normalize_document_reference(item)
             key = (reference["document_uid"], reference["object_name"])
-            if key not in seen:
-                seen.add(key)
+            existing_index = indexes.get(key)
+            if existing_index is None:
+                indexes[key] = len(result)
                 result.append(reference)
+                return
+            existing = result[existing_index]
+            existing_path = existing.get("document_path")
+            incoming_path = reference.get("document_path")
+            if existing_path and incoming_path and existing_path != incoming_path:
+                raise ValueError(
+                    f"Document object {key[1]!r} in {key[0]!r} is referenced with "
+                    "conflicting document_path locators."
+                )
+            if not existing_path and incoming_path:
+                existing["document_path"] = incoming_path
             return
         for child in item.values():
             walk(child)
@@ -915,12 +1141,11 @@ def _assembly_reference_contract(service: Any, obj: Any) -> dict[str, Any]:
         output_key = str(
             getattr(published, scripted_publication.PROP_OUTPUT_KEY, "") or ""
         )
-        names = [
-            str(name)
-            for name, definition in raw_interfaces.items()
-            if isinstance(definition, dict)
-            and str(definition.get("output") or "") == output_key
-        ]
+        definitions = reference_contracts.interface_definitions_for_output(
+            raw_interfaces,
+            output_key,
+        )
+        names = list(definitions)
         if len(names) > 64:
             raise RuntimeError(
                 f"Scripted component {getattr(obj, 'Name', '')!r} exposes more than "
@@ -941,8 +1166,32 @@ def _assembly_reference_contract(service: Any, obj: Any) -> dict[str, Any]:
                 "selection": dict(resolved.get("selection") or {}),
                 "subelements": list(resolved.get("subelements") or []),
                 "geometry": list(resolved.get("geometry") or []),
+                "connector_frame": dict(resolved.get("connector_frame") or {}),
+                **(
+                    {"connector": dict(resolved["connector"])}
+                    if isinstance(resolved.get("connector"), Mapping)
+                    else {}
+                ),
             }
-    elif program_id:
+    else:
+        native_definitions = reference_contracts.native_interface_definitions(obj)
+        semantic_only = bool(native_definitions)
+        for name, definition in sorted(native_definitions.items()):
+            resolved = dict(definition.get("resolved") or {})
+            interfaces[str(name)] = {
+                "model_id": "",
+                "publication_name": str(getattr(obj, "Name", "") or ""),
+                "output_key": str(getattr(obj, "Name", "") or ""),
+                "selection": dict(definition.get("selection") or {}),
+                "subelements": list(resolved.get("subelements") or []),
+                "geometry": list(resolved.get("geometry") or []),
+                "connector_frame": dict(resolved.get("connector_frame") or {}),
+                "connector": dict(definition.get("connector") or {}),
+                "native_lcs": str(
+                    dict(definition.get("selection") or {}).get("native_lcs") or ""
+                ),
+            }
+    if published is None and program_id:
         source_revision = str(getattr(obj, contracts.PROP_PROGRAM_REVISION, "") or "")
     return {
         "source_kind": source_kind,
@@ -997,9 +1246,7 @@ def capture_reference_inputs(
         str(expected.get("engine") or ""),
         str(expected.get("surface_id") or ""),
     ):
-        raise RuntimeError(
-            "The workbench or modeling engine changed before reference capture."
-        )
+        raise RuntimeError("The active workbench changed before reference capture.")
     doc = service._active_document()
     if doc is None or str(getattr(doc, "Name", "") or "") != prepared["document_name"]:
         raise RuntimeError("The active document changed before reference capture.")
@@ -1014,13 +1261,37 @@ def capture_reference_inputs(
     snapshots: list[dict[str, Any]] = []
     for index, reference in enumerate(requirements):
         object_name = str(reference["object_name"])
-        obj = doc.getObject(object_name)
+        if domain == "assembly":
+            try:
+                obj = resolve_reference_target(
+                    doc,
+                    reference,
+                    f"Assembly input reference {object_name!r}",
+                )
+            except DocumentReferenceError as exc:
+                raise RuntimeError(str(exc)) from exc
+        else:
+            obj = doc.getObject(object_name)
         if obj is None:
             raise RuntimeError(
                 f"{prepared['pack'].title} input reference {object_name!r} "
                 "disappeared before capture."
             )
+        if domain == "assembly" and getattr(obj, "Document", None) is not doc:
+            if not str(getattr(doc, "FileName", "") or "").strip():
+                raise RuntimeError(
+                    "External Assembly components require the Assembly document "
+                    "to be saved before building."
+                )
+            if not str(
+                getattr(getattr(obj, "Document", None), "FileName", "") or ""
+            ).strip():
+                raise RuntimeError(
+                    f"External Assembly component {object_name!r} belongs to an "
+                    "unsaved source document."
+                )
         if domain in {
+            "partdesign",
             "assembly",
             "draft",
             "surface",
@@ -1128,8 +1399,7 @@ def capture_reference_inputs(
             reference_contract = _assembly_reference_contract(service, obj)
             snapshots.append(
                 {
-                    "document_uid": str(reference["document_uid"]),
-                    "object_name": object_name,
+                    **dict(reference),
                     "label": str(getattr(obj, "Label", "") or ""),
                     "type_id": type_id,
                     "reference_artifact_kind": "points_asc",
@@ -1188,8 +1458,7 @@ def capture_reference_inputs(
             mesh_contract = _assembly_reference_contract(service, obj)
             snapshots.append(
                 {
-                    "document_uid": str(reference["document_uid"]),
-                    "object_name": object_name,
+                    **dict(reference),
                     "label": str(getattr(obj, "Label", "") or ""),
                     "type_id": type_id,
                     "reference_artifact_kind": "mesh_bms",
@@ -1200,12 +1469,6 @@ def capture_reference_inputs(
                 }
             )
             continue
-        if domain == "mesh":
-            raise RuntimeError(
-                f"Mesh input reference {object_name!r} ({type_id}) must be a native "
-                "Mesh::Feature with at least one facet; choose an eligible reference "
-                "from document_meshes and keep document_uid/object_name unchanged."
-            )
         if domain == "reverse_engineering":
             raise RuntimeError(
                 f"Reverse Engineering input reference {object_name!r} ({type_id}) "
@@ -1236,6 +1499,7 @@ def capture_reference_inputs(
                 "assembly",
                 "sketcher",
                 "surface",
+                "mesh",
                 "meshpart",
                 "points",
                 "reverse_engineering",
@@ -1266,8 +1530,7 @@ def capture_reference_inputs(
             )
         snapshots.append(
             {
-                "document_uid": str(reference["document_uid"]),
-                "object_name": object_name,
+                **dict(reference),
                 "label": str(getattr(obj, "Label", "") or ""),
                 "type_id": str(getattr(obj, "TypeId", "") or ""),
                 "shape_type": str(getattr(shape, "ShapeType", "") or ""),
@@ -1714,6 +1977,9 @@ def finalize_candidate(
                         f"Reference capture returned unsupported artifact kind "
                         f"{artifact_kind!r}."
                     )
+                if snapshot.get("document_path"):
+                    metadata["document_path"] = str(snapshot["document_path"])
+                    worker_reference["document_path"] = str(snapshot["document_path"])
                 if reference_contract_sha256:
                     metadata["reference_contract_sha256"] = reference_contract_sha256
                 resolved_references.append(metadata)
@@ -1727,7 +1993,12 @@ def finalize_candidate(
             if resolved_references
             else contract_revision
         )
-        if prepared["base_revision"] and revision == prepared["base_revision"]:
+        if (
+            prepared["base_revision"]
+            and revision == prepared["base_revision"]
+            and not prepared.get("native_history_repair_required")
+            and not prepared.get("allow_unchanged_revision")
+        ):
             _raise(
                 str(prepared["tool_name"]),
                 "PROGRAM_REVISION_UNCHANGED",
@@ -1736,6 +2007,16 @@ def finalize_candidate(
                 "existing working revision.",
                 observed={"current_revision": revision},
             )
+        document_program_contract = contracts.encode_document_program_contract(
+            prepared["pack"],
+            program_id=str(prepared["program_id"]),
+            label=str(prepared["program_name"]),
+            revision=revision,
+            source=str(prepared["source"]),
+            input_schema=prepared["input_schema"],
+            inputs=prepared["inputs"],
+            expected_outputs=prepared["expected_outputs"],
+        )
         request = dict(prepared["worker_request"])
         request["revision"] = revision
         request["document_references"] = worker_references
@@ -1770,6 +2051,7 @@ def finalize_candidate(
                 "resolved_references": resolved_references,
                 "manifest": manifest,
                 "worker_request": request,
+                "document_program_contract": document_program_contract,
                 "finalized": True,
             }
         )
@@ -1812,6 +2094,15 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                         raise ValueError(
                             f"A {pack.title} VibeScript program named {label!r} already exists."
                         )
+            if any(
+                str(item.get("label") or "") == label
+                for item in list(captured.get("live_programs") or [])
+                if isinstance(item, Mapping)
+            ):
+                raise ValueError(
+                    f"A {pack.title} VibeScript program named {label!r} "
+                    "already exists in this document."
+                )
             program_id = uuid.uuid4().hex
             manifest = _new_manifest(pack, program_id, label)
             source = str(arguments.get("source") or "")
@@ -1819,13 +2110,19 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             inputs = arguments.get("inputs")
             expected_outputs = arguments.get("expected_outputs")
             base_revision = ""
+            previous_source = ""
         else:
             program_id = str(arguments.get("program_id") or "").strip().lower()
             if not _PROGRAM_ID.fullmatch(program_id):
                 raise ValueError(
                     "program_id must be a 32-character lowercase hexadecimal id."
                 )
-            manifest = _load_manifest(project_root, pack, program_id)
+            manifest = _load_captured_manifest(
+                captured,
+                pack,
+                program_id,
+                hydrate_document_contract=True,
+            )
             base_revision = str(manifest.get("working_revision") or "")
             expected_revision = str(arguments.get("expected_revision") or "")
             if expected_revision != base_revision:
@@ -1836,9 +2133,17 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                     f"The {pack.title} VibeScript program changed after inspection.",
                     requested={"expected_revision": expected_revision},
                     observed={"current_revision": base_revision},
-                    required_changes=[{"inspect_program": program_id}],
+                    required_changes=[
+                        {
+                            "tool": "vibescript.read_source",
+                            "arguments": {"source_id": program_id},
+                        }
+                    ],
                 )
-            if manifest.get("migration_required") and operation != "reconfigure_program":
+            if (
+                manifest.get("migration_required")
+                and operation != "reconfigure_program"
+            ):
                 action = f"vibescript.{pack.domain}.reconfigure_program"
                 _raise(
                     tool_name,
@@ -1874,12 +2179,13 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                         }
                     ],
                 )
-            source = str(manifest.get("source") or "")
+            previous_source = str(manifest.get("source") or "")
+            source = previous_source
             input_schema = manifest.get("input_schema")
             inputs = manifest.get("inputs")
             expected_outputs = manifest.get("expected_outputs")
             if operation == "edit_source":
-                source = _apply_replacements(source, arguments.get("replacements"))
+                source = str(arguments.get("source") or "")
             elif operation == "set_inputs":
                 inputs = _merge_patch(dict(inputs or {}), arguments.get("patch"))
             elif operation == "reconfigure_program":
@@ -1897,6 +2203,38 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError(
                     f"Operation {operation!r} does not prepare a candidate."
                 )
+        native_history_repair_required = False
+        if pack.domain == "partdesign" and operation != "create_program":
+            expected_history_bodies = sum(
+                1
+                for item in dict(manifest.get("live_outputs") or {}).values()
+                if str(
+                    dict(item.get("partdesign_data") or {}).get(
+                        "representation",
+                        "",
+                    )
+                    or ""
+                )
+                == "body"
+            )
+            live_program = next(
+                (
+                    item
+                    for item in list(captured.get("live_programs") or [])
+                    if str(item.get("program_id") or "") == program_id
+                ),
+                None,
+            )
+            live_history = (
+                dict(live_program.get("native_history") or {})
+                if isinstance(live_program, Mapping)
+                else {}
+            )
+            native_history_repair_required = live_program is not None and (
+                int(live_history.get("operation_count") or 0) != 1
+                or int(live_history.get("body_count") or 0) < expected_history_bodies
+            )
+
         clean = contracts.validate_program_contract(
             pack,
             source=source,
@@ -1904,6 +2242,47 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             inputs=inputs,
             expected_outputs=expected_outputs,
         )
+        compatibility_methods: tuple[str, ...] = ()
+        if pack.domain == "partdesign":
+            retired_calls = _partdesign_saved_source_compatibility_methods(
+                clean["source"]
+            )
+            if retired_calls and (
+                operation == "create_program" or clean["source"] != previous_source
+            ):
+                _raise(
+                    tool_name,
+                    "LEGACY_PARTDESIGN_API_NOT_AVAILABLE",
+                    "schema",
+                    "New or edited Part Design source must use the canonical operation "
+                    "vocabulary. Use operation='add_material' or 'remove_material' "
+                    "with api.extrude, api.revolve, api.loft, or api.sweep.",
+                    requested={
+                        "canonical_operations": [
+                            "extrude",
+                            "revolve",
+                            "loft",
+                            "sweep",
+                        ],
+                    },
+                    observed={
+                        "retired_api_members": sorted(retired_calls),
+                        "unchanged_saved_source": False,
+                    },
+                    required_changes=[
+                        {
+                            "replace_retired_calls": sorted(retired_calls),
+                            "with": [
+                                "api.extrude",
+                                "api.revolve",
+                                "api.loft",
+                                "api.sweep",
+                            ],
+                        }
+                    ],
+                )
+            if retired_calls:
+                compatibility_methods = tuple(sorted(retired_calls))
         _validate_stable_references(clean["inputs"], captured, "inputs")
         # Resolve the worker before changing persisted program state. A missing
         # FreeCADCmd is a precondition failure, not a durable working revision.
@@ -1962,6 +2341,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "expected_outputs": clean["expected_outputs"],
             "api_exports": list(pack.api_exports),
             "output_types": list(pack.output_types),
+            "compatibility_methods": list(compatibility_methods),
             "max_operations": 200_000,
             "max_seconds": float(captured["timeout_seconds"]),
             "memory_limit_bytes": int(captured["memory_limit_bytes"]),
@@ -2002,6 +2382,8 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "point_artifact_ids": point_artifact_ids,
             "resolved_point_artifacts": resolved_point_artifacts,
             "worker_request": request,
+            "native_history_repair_required": native_history_repair_required,
+            "allow_unchanged_revision": bool(captured.get("allow_unchanged_revision")),
             "finalized": False,
         }
         return prepared if reference_requirements else finalize_candidate(prepared, [])
@@ -2058,6 +2440,17 @@ def _worker_environment(prepared: Mapping[str, Any]) -> dict[str, str]:
     return environment
 
 
+def _worker_progress(prepared: Mapping[str, Any]) -> dict[str, Any] | None:
+    path = Path(str(prepared["staging"])) / "progress.json"
+    if not path.is_file():
+        return None
+    try:
+        value = _read_json(path, "domain worker progress")
+    except ValueError as exc:
+        return {"unavailable": True, "error": str(exc)}
+    return value
+
+
 def execute_candidate(
     prepared: Mapping[str, Any],
     *,
@@ -2078,6 +2471,9 @@ def execute_candidate(
         timeout_seconds=float(prepared["timeout_seconds"]),
         memory_limit_bytes=int(prepared["memory_limit_bytes"]),
     )
+    progress = _worker_progress(prepared)
+    if progress is not None:
+        process["worker_progress"] = progress
     if not process.get("started"):
         return _failure(
             str(prepared["tool_name"]),
@@ -2092,7 +2488,13 @@ def execute_candidate(
             "RUN_CANCELLED",
             "external_process",
             "VibeScript domain execution was cancelled.",
-            observed=process,
+            observed={
+                **process,
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
+            },
             cancelled=True,
         )
     if process.get("timed_out"):
@@ -2101,7 +2503,13 @@ def execute_candidate(
             "DOMAIN_EXECUTION_TIMEOUT",
             "external_process",
             f"VibeScript domain execution exceeded {prepared['timeout_seconds']:g} seconds.",
-            observed=process,
+            observed={
+                **process,
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
+            },
         )
     if process.get("memory_exceeded"):
         return _failure(
@@ -2109,7 +2517,13 @@ def execute_candidate(
             "DOMAIN_MEMORY_LIMIT_EXCEEDED",
             "external_process",
             "VibeScript domain execution exceeded its memory limit.",
-            observed=process,
+            observed={
+                **process,
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
+            },
         )
     result_path = Path(str(prepared["staging"])) / "result.json"
     if not result_path.is_file():
@@ -2118,7 +2532,13 @@ def execute_candidate(
             "DOMAIN_WORKER_NO_RESULT",
             "external_process",
             "The isolated domain worker exited without a result.",
-            observed=process,
+            observed={
+                **process,
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
+            },
         )
     try:
         report = _read_json(result_path, "domain worker result")
@@ -2150,6 +2570,13 @@ def execute_candidate(
                 "stdout": report.get("stdout") or process.get("stdout"),
                 "stderr": process.get("stderr"),
                 "elapsed_seconds": process.get("elapsed_seconds"),
+                "worker_progress": progress,
+                "termination_reason": process.get("termination_reason"),
+                "limit_reached": process.get("limit_reached"),
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
             },
             **(
                 {"domain_failure_stage": domain_failure_stage}
@@ -3032,659 +3459,13 @@ def _validate_material_execution(
     return dict(global_validation)
 
 
-_BIM_NATIVE_CONTRACTS: dict[str, tuple[str, str, str, str]] = {
-    "site": ("Part::FeaturePython", "_Site", "Site", "Site"),
-    "building": ("App::GeometryPython", "BuildingPart", "BuildingPart", "Building"),
-    "level": (
-        "App::GeometryPython",
-        "BuildingPart",
-        "BuildingPart",
-        "Building Storey",
-    ),
-    "wall": ("Part::FeaturePython", "_Wall", "Wall", "Wall"),
-    "slab": ("Part::FeaturePython", "_Structure", "Structure", "Slab"),
-    "opening": ("Part::FeaturePython", "_Window", "Window", "Opening Element"),
-}
-_BIM_ROLE_IFC = {"column": "Column", "beam": "Beam", "member": "Member"}
-
-
-def _bim_float(value: Any, *, path: str) -> float:
+def _finite_float(value: Any, *, path: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{path} must be a finite number.")
     result = float(value)
     if not math.isfinite(result):
         raise ValueError(f"{path} must be finite.")
     return result
-
-
-def _bim_close(
-    observed: Any,
-    expected: Any,
-    *,
-    path: str,
-    tolerance: float = 1.0e-7,
-) -> None:
-    first = _bim_float(observed, path=path)
-    second = _bim_float(expected, path=path)
-    limit = max(tolerance, abs(second) * tolerance)
-    if abs(first - second) > limit:
-        raise ValueError(f"{path} differs: worker={first!r}, expected={second!r}.")
-
-
-def _bim_vector(
-    observed: Any,
-    expected: Any,
-    *,
-    path: str,
-    length: int,
-    tolerance: float = 1.0e-7,
-) -> None:
-    if not isinstance(observed, list) or not isinstance(expected, (list, tuple)):
-        raise ValueError(f"{path} must be an array.")
-    if len(observed) != length or len(expected) != length:
-        raise ValueError(f"{path} must contain exactly {length} values.")
-    for index, (first, second) in enumerate(zip(observed, expected)):
-        _bim_close(first, second, path=f"{path}[{index}]", tolerance=tolerance)
-
-
-def _bim_placement(
-    observed: Any,
-    expected_position: Sequence[float],
-    expected_rotation: Sequence[float],
-    *,
-    path: str,
-) -> None:
-    if not isinstance(observed, dict) or set(observed) != {"position", "rotation"}:
-        raise ValueError(f"{path} must contain exactly position and rotation.")
-    _bim_vector(
-        observed["position"],
-        expected_position,
-        path=f"{path}.position",
-        length=3,
-    )
-    rotation = list(observed["rotation"])
-    expected = list(expected_rotation)
-    if len(rotation) != 4:
-        raise ValueError(f"{path}.rotation must contain four quaternion values.")
-    # Unit quaternions q and -q encode the same placement.  Native FreeCAD
-    # currently returns the positive form, but validation remains geometric.
-    direct = max(abs(float(a) - float(b)) for a, b in zip(rotation, expected))
-    inverse = max(abs(float(a) + float(b)) for a, b in zip(rotation, expected))
-    if min(direct, inverse) > 1.0e-7:
-        raise ValueError(f"{path}.rotation differs from the requested placement.")
-
-
-def _bim_polygon_area(points: Sequence[Sequence[float]]) -> float:
-    return abs(
-        0.5
-        * sum(
-            float(points[index][0]) * float(points[(index + 1) % len(points)][1])
-            - float(points[(index + 1) % len(points)][0]) * float(points[index][1])
-            for index in range(len(points))
-        )
-    )
-
-
-def _bim_opening_base_placement(
-    wall_definition: Mapping[str, Any],
-    opening_properties: Mapping[str, Any],
-) -> tuple[list[float], list[float]]:
-    points = list(wall_definition["arguments"])[1]
-    segment = int(opening_properties["segment"])
-    first = points[segment]
-    second = points[(segment + 1) % len(points)]
-    dx = float(second[0]) - float(first[0])
-    dy = float(second[1]) - float(first[1])
-    length = math.hypot(dx, dy)
-    tangent_x = dx / length
-    tangent_y = dy / length
-    offset = float(opening_properties["offset"])
-    theta = math.atan2(tangent_y, tangent_x)
-    sine = math.sin(theta / 2.0)
-    cosine = math.cos(theta / 2.0)
-    root_half = math.sqrt(0.5)
-    return (
-        [
-            float(first[0]) + tangent_x * offset,
-            float(first[1]) + tangent_y * offset,
-            float(opening_properties["sill"]),
-        ],
-        [
-            cosine * root_half,
-            sine * root_half,
-            sine * root_half,
-            cosine * root_half,
-        ],
-    )
-
-
-def _bim_import_base_artifact(
-    prepared: Mapping[str, Any],
-    item: dict[str, Any],
-    data: Mapping[str, Any],
-) -> None:
-    import Part
-
-    staging = Path(str(prepared["staging"])).resolve()
-    relative = str(data.get("base_artifact_path") or "")
-    path = (staging / relative).resolve()
-    if staging not in path.parents or not path.is_file():
-        raise ValueError(f"BIM output {item.get('name')!r} base BREP is missing.")
-    shape = Part.Shape()
-    shape.importBrep(str(path))
-    if shape.isNull() or not shape.isValid():
-        raise ValueError(f"BIM output {item.get('name')!r} base BREP is invalid.")
-    reported = data.get("base_facts")
-    if not isinstance(reported, dict):
-        raise ValueError(f"BIM output {item.get('name')!r} base facts are missing.")
-    detail_limit = int(reported.get("subelement_detail_limit", -1))
-    if not 0 <= detail_limit <= 256:
-        raise ValueError(
-            f"BIM output {item.get('name')!r} base detail limit is invalid."
-        )
-    facts = _detached_shape_facts(shape, max_subelements=detail_limit)
-    for key in (
-        "shape_type",
-        "solids",
-        "shells",
-        "faces",
-        "wires",
-        "edges",
-        "vertices",
-    ):
-        if reported.get(key) != facts.get(key):
-            raise ValueError(
-                f"BIM output {item.get('name')!r} base topology changed during "
-                f"artifact transfer ({key})."
-            )
-    item["detached_bim_base_shape"] = shape
-
-
-def _validate_bim_execution(
-    prepared: Mapping[str, Any],
-    execution: Mapping[str, Any],
-    outputs: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Rebuild the graph and verify native Arch state independently of the worker."""
-
-    from vibescript_bim_worker import VALIDATION_SCHEMA, validate_bim_graph
-
-    validation = execution.get("bim_validation")
-    validation_fields = {
-        "schema",
-        "native_object_count",
-        "native_base_count",
-        "site_count",
-        "building_count",
-        "level_count",
-        "wall_count",
-        "slab_count",
-        "structure_count",
-        "opening_count",
-        "outputs",
-    }
-    if not isinstance(validation, dict) or set(validation) != validation_fields:
-        raise ValueError("The BIM worker validation summary has malformed fields.")
-    if validation.get("schema") != VALIDATION_SCHEMA:
-        raise ValueError("The BIM worker validation schema is unsupported.")
-    definitions = {str(item["name"]): item.get("definition") for item in outputs}
-    graph = validate_bim_graph(
-        definitions,
-        list(prepared["expected_outputs"]),
-        require_domain_values=False,
-    )
-    graph_names: dict[str, str] = graph["graph_names"]
-    parent_by_name: dict[str, str] = graph["parent_by_name"]
-    definitions = graph["definitions"]
-    graph_id_by_name = {
-        name: str(dict(payload["properties"])["graph_id"])
-        for name, payload in definitions.items()
-    }
-
-    level_by_element: dict[str, str] = {}
-    for name, payload in definitions.items():
-        if payload["operation"] in {"wall", "slab", "structure"}:
-            level_by_element[name] = parent_by_name[name]
-    for name, payload in definitions.items():
-        if payload["operation"] == "opening":
-            level_by_element[name] = level_by_element[parent_by_name[name]]
-
-    expected_groups: dict[str, list[str]] = {name: [] for name in definitions}
-    for child, parent in parent_by_name.items():
-        operation = str(definitions[child]["operation"])
-        if operation == "opening":
-            parent = level_by_element[child]
-        expected_groups[parent].append(graph_id_by_name[child])
-    expected_groups = {
-        name: sorted(values, key=lambda value: int(value.removeprefix("bim")))
-        for name, values in expected_groups.items()
-    }
-
-    shape_present: dict[str, bool] = {}
-    for name in reversed(graph["ordered_names"]):
-        operation = str(definitions[name]["operation"])
-        if operation in {"wall", "slab", "structure"}:
-            present = True
-        elif operation in {"building", "level"}:
-            child_names = [graph_names[graph_id] for graph_id in expected_groups[name]]
-            present = any(shape_present.get(child, False) for child in child_names)
-        else:
-            present = False
-        shape_present[name] = present
-
-    common_fields = {
-        "graph_id",
-        "native_type",
-        "proxy_class",
-        "arch_type",
-        "ifc_type",
-        "label",
-        "placement",
-        "parent_graph_id",
-        "group_graph_ids",
-        "shape_present",
-    }
-    specific_fields = {
-        "site": {
-            "address",
-            "postal_code",
-            "city",
-            "region",
-            "country",
-            "latitude",
-            "longitude",
-            "elevation",
-        },
-        "building": {"building_type"},
-        "level": {"elevation", "height", "level_offset"},
-        "wall": {
-            "base_native_type",
-            "base_proxy_class",
-            "base_arch_type",
-            "base_placement",
-            "points",
-            "closed",
-            "width",
-            "height",
-            "alignment",
-            "offset",
-            "opening_graph_ids",
-            "pre_opening_volume",
-            "final_volume",
-            "expected_opening_volume_delta",
-            "observed_opening_volume_delta",
-            "base_artifact_path",
-            "base_facts",
-        },
-        "slab": {
-            "base_native_type",
-            "base_proxy_class",
-            "base_arch_type",
-            "base_placement",
-            "boundary",
-            "thickness",
-            "normal",
-            "shape_volume",
-            "base_artifact_path",
-            "base_facts",
-        },
-        "structure": {"length", "width", "height", "role", "shape_volume"},
-        "opening": {
-            "level_graph_id",
-            "host_graph_id",
-            "host_count",
-            "base_native_type",
-            "base_proxy_class",
-            "base_placement",
-            "width",
-            "height",
-            "segment",
-            "offset",
-            "sill",
-            "hole_depth",
-            "requested_hole_depth",
-            "host_wall_width",
-            "expected_host_volume_delta",
-            "opening_shape_null",
-            "base_artifact_path",
-            "base_facts",
-        },
-    }
-    expected_summaries: list[dict[str, Any]] = []
-    native_base_count = 0
-    counts = {
-        operation: 0
-        for operation in (
-            "site",
-            "building",
-            "level",
-            "wall",
-            "slab",
-            "structure",
-            "opening",
-        )
-    }
-    for declaration, item in zip(prepared["expected_outputs"], outputs):
-        name = str(declaration["name"])
-        operation = str(declaration["type"])
-        payload = definitions[name]
-        properties = dict(payload["properties"])
-        arguments = list(payload["arguments"])
-        data = item.get("bim_data")
-        if (
-            not isinstance(data, dict)
-            or set(data) != common_fields | specific_fields[operation]
-        ):
-            raise ValueError(f"BIM output {name!r} native data has malformed fields.")
-        expected_native = (
-            (
-                "Part::FeaturePython",
-                "_Structure",
-                "Structure",
-                _BIM_ROLE_IFC[str(properties["role"])],
-            )
-            if operation == "structure"
-            else _BIM_NATIVE_CONTRACTS[operation]
-        )
-        observed_native = (
-            str(data["native_type"]),
-            str(data["proxy_class"]),
-            str(data["arch_type"]),
-            str(data["ifc_type"]),
-        )
-        if observed_native != expected_native:
-            raise ValueError(f"BIM output {name!r} changed its native Arch contract.")
-        if data["graph_id"] != graph_id_by_name[name]:
-            raise ValueError(f"BIM output {name!r} changed graph identity.")
-        expected_parent = (
-            graph_id_by_name[parent_by_name[name]] if name in parent_by_name else ""
-        )
-        if data["parent_graph_id"] != expected_parent:
-            raise ValueError(f"BIM output {name!r} changed its hierarchy parent.")
-        if data["group_graph_ids"] != expected_groups[name]:
-            raise ValueError(f"BIM output {name!r} changed native Group relationships.")
-        if data["shape_present"] is not shape_present[name]:
-            raise ValueError(f"BIM output {name!r} changed expected Shape presence.")
-        expected_label = str(properties.get("label") or name)
-        if data["label"] != expected_label:
-            raise ValueError(f"BIM output {name!r} changed its label.")
-        if operation == "level":
-            expected_position = [0.0, 0.0, float(properties["elevation"])]
-        elif operation == "structure":
-            expected_position = list(properties["placement"]["position"])
-        else:
-            expected_position = [0.0, 0.0, 0.0]
-        expected_rotation = (
-            list(properties["placement"]["rotation"])
-            if operation == "structure"
-            else [0.0, 0.0, 0.0, 1.0]
-        )
-        _bim_placement(
-            data["placement"],
-            expected_position,
-            expected_rotation,
-            path=f"outputs.{name}.bim_data.placement",
-        )
-
-        has_main_artifact = item.get("artifact_kind") == "brep"
-        if has_main_artifact is not shape_present[name] or (
-            shape_present[name] and item.get("detached_shape") is None
-        ):
-            raise ValueError(
-                f"BIM output {name!r} Shape artifact presence is inconsistent."
-            )
-        if operation in {"wall", "slab", "structure"}:
-            facts = dict(item.get("facts") or {})
-            if (
-                int(facts.get("solids") or 0) < 1
-                or float(facts.get("volume_mm3") or 0.0) <= 0.0
-            ):
-                raise ValueError(
-                    f"BIM output {name!r} is not a positive validated solid."
-                )
-
-        if operation == "site":
-            for key in ("address", "postal_code", "city", "region", "country"):
-                if data[key] != str(properties[key]):
-                    raise ValueError(f"BIM Site {name!r} changed {key}.")
-            for key in ("latitude", "longitude", "elevation"):
-                _bim_close(
-                    data[key], properties[key], path=f"outputs.{name}.bim_data.{key}"
-                )
-        elif operation == "building":
-            if data["building_type"] != "Undefined":
-                raise ValueError(
-                    f"BIM Building {name!r} changed its native default type."
-                )
-        elif operation == "level":
-            _bim_close(
-                data["elevation"], properties["elevation"], path=f"{name}.elevation"
-            )
-            _bim_close(data["height"], properties["height"], path=f"{name}.height")
-            _bim_close(data["level_offset"], 0.0, path=f"{name}.level_offset")
-        elif operation == "wall":
-            if (
-                data["base_native_type"],
-                data["base_proxy_class"],
-                data["base_arch_type"],
-            ) != ("Part::FeaturePython", "Wire", "Wire"):
-                raise ValueError(
-                    f"BIM Wall {name!r} changed its native Draft baseline."
-                )
-            _bim_placement(
-                data["base_placement"],
-                [0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-                path=f"outputs.{name}.bim_data.base_placement",
-            )
-            requested_points = arguments[1]
-            if not isinstance(data["points"], list) or len(data["points"]) != len(
-                requested_points
-            ):
-                raise ValueError(f"BIM Wall {name!r} changed baseline point count.")
-            for index, (observed, requested) in enumerate(
-                zip(data["points"], requested_points)
-            ):
-                _bim_vector(
-                    observed,
-                    [requested[0], requested[1], 0.0],
-                    path=f"outputs.{name}.bim_data.points[{index}]",
-                    length=3,
-                )
-            for key in ("width", "height", "offset"):
-                _bim_close(data[key], properties[key], path=f"{name}.{key}")
-            if (
-                data["closed"] is not bool(properties["closed"])
-                or data["alignment"] != properties["alignment"]
-            ):
-                raise ValueError(
-                    f"BIM Wall {name!r} changed parametric baseline state."
-                )
-            expected_openings = [
-                graph_id_by_name[child]
-                for child, parent in parent_by_name.items()
-                if parent == name and definitions[child]["operation"] == "opening"
-            ]
-            if data["opening_graph_ids"] != expected_openings:
-                raise ValueError(f"BIM Wall {name!r} changed hosted openings.")
-            expected_delta = sum(
-                float(dict(definitions[graph_names[graph_id]]["properties"])["width"])
-                * float(
-                    dict(definitions[graph_names[graph_id]]["properties"])["height"]
-                )
-                * float(properties["width"])
-                for graph_id in expected_openings
-            )
-            _bim_close(
-                data["expected_opening_volume_delta"],
-                expected_delta,
-                path=f"{name}.expected_opening_volume_delta",
-            )
-            _bim_close(
-                data["observed_opening_volume_delta"],
-                expected_delta,
-                path=f"{name}.observed_opening_volume_delta",
-            )
-            _bim_close(
-                data["pre_opening_volume"] - data["final_volume"],
-                expected_delta,
-                path=f"{name}.opening_volume_difference",
-            )
-            _bim_close(
-                data["final_volume"],
-                dict(item["facts"])["volume_mm3"],
-                path=f"{name}.final_volume",
-            )
-        elif operation == "slab":
-            if (
-                data["base_native_type"],
-                data["base_proxy_class"],
-                data["base_arch_type"],
-            ) != ("Part::FeaturePython", "Wire", "Wire"):
-                raise ValueError(f"BIM Slab {name!r} changed its native Draft profile.")
-            _bim_placement(
-                data["base_placement"],
-                [0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-                path=f"outputs.{name}.bim_data.base_placement",
-            )
-            requested_boundary = arguments[1]
-            if not isinstance(data["boundary"], list) or len(data["boundary"]) != len(
-                requested_boundary
-            ):
-                raise ValueError(f"BIM Slab {name!r} changed boundary point count.")
-            for index, (observed, requested) in enumerate(
-                zip(data["boundary"], requested_boundary)
-            ):
-                _bim_vector(
-                    observed,
-                    [requested[0], requested[1], properties["top_offset"]],
-                    path=f"outputs.{name}.bim_data.boundary[{index}]",
-                    length=3,
-                )
-            _bim_close(
-                data["thickness"], properties["thickness"], path=f"{name}.thickness"
-            )
-            _bim_vector(
-                data["normal"], [0.0, 0.0, -1.0], path=f"{name}.normal", length=3
-            )
-            expected_volume = _bim_polygon_area(requested_boundary) * float(
-                properties["thickness"]
-            )
-            _bim_close(
-                data["shape_volume"], expected_volume, path=f"{name}.shape_volume"
-            )
-            _bim_close(
-                dict(item["facts"])["volume_mm3"],
-                expected_volume,
-                path=f"{name}.facts.volume_mm3",
-            )
-        elif operation == "structure":
-            for key, requested in zip(("length", "width", "height"), arguments[1:]):
-                _bim_close(data[key], requested, path=f"{name}.{key}")
-            if data["role"] != properties["role"]:
-                raise ValueError(f"BIM Structure {name!r} changed its role.")
-            expected_volume = (
-                float(arguments[1]) * float(arguments[2]) * float(arguments[3])
-            )
-            _bim_close(
-                data["shape_volume"], expected_volume, path=f"{name}.shape_volume"
-            )
-            _bim_close(
-                dict(item["facts"])["volume_mm3"],
-                expected_volume,
-                path=f"{name}.facts.volume_mm3",
-            )
-        else:
-            host_name = parent_by_name[name]
-            host_properties = dict(definitions[host_name]["properties"])
-            if (
-                data["level_graph_id"] != graph_id_by_name[level_by_element[name]]
-                or data["host_graph_id"] != graph_id_by_name[host_name]
-            ):
-                raise ValueError(f"BIM Opening {name!r} changed host hierarchy.")
-            if data["host_count"] != 1 or data["opening_shape_null"] is not True:
-                raise ValueError(
-                    f"BIM Opening {name!r} changed native opening semantics."
-                )
-            if (data["base_native_type"], data["base_proxy_class"]) != (
-                "Part::Feature",
-                "NoneType",
-            ):
-                raise ValueError(
-                    f"BIM Opening {name!r} changed its stable profile type."
-                )
-            position, rotation = _bim_opening_base_placement(
-                definitions[host_name], properties
-            )
-            _bim_placement(
-                data["base_placement"],
-                position,
-                rotation,
-                path=f"outputs.{name}.bim_data.base_placement",
-            )
-            for key in ("width", "height", "offset", "sill", "requested_hole_depth"):
-                requested_key = "hole_depth" if key == "requested_hole_depth" else key
-                _bim_close(data[key], properties[requested_key], path=f"{name}.{key}")
-            if data["segment"] != int(properties["segment"]):
-                raise ValueError(f"BIM Opening {name!r} changed host segment.")
-            resolved_depth = (
-                float(properties["hole_depth"])
-                or float(host_properties["width"]) + 100.0
-            )
-            _bim_close(data["hole_depth"], resolved_depth, path=f"{name}.hole_depth")
-            _bim_close(
-                data["host_wall_width"],
-                host_properties["width"],
-                path=f"{name}.host_wall_width",
-            )
-            _bim_close(
-                data["expected_host_volume_delta"],
-                float(properties["width"])
-                * float(properties["height"])
-                * float(host_properties["width"]),
-                path=f"{name}.expected_host_volume_delta",
-            )
-
-        if operation in {"wall", "slab", "opening"}:
-            _bim_import_base_artifact(prepared, item, data)
-            native_base_count += 1
-        counts[operation] += 1
-        expected_summaries.append(
-            {
-                "name": name,
-                "type": operation,
-                "graph_id": graph_id_by_name[name],
-                "native_type": expected_native[0],
-                "proxy_class": expected_native[1],
-                "arch_type": expected_native[2],
-                "ifc_type": expected_native[3],
-                "parent_graph_id": expected_parent,
-                "group_graph_ids": expected_groups[name],
-                "shape_present": shape_present[name],
-            }
-        )
-
-    expected_counts = {
-        "native_object_count": len(outputs),
-        "native_base_count": native_base_count,
-        **{f"{operation}_count": count for operation, count in counts.items()},
-    }
-    for key, expected in expected_counts.items():
-        if type(validation.get(key)) is not int or validation[key] != expected:
-            raise ValueError(f"The BIM worker reported inconsistent {key}.")
-    if validation.get("outputs") != expected_summaries:
-        raise ValueError("The BIM worker global output summary is inconsistent.")
-    encoded = json.dumps(
-        validation,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    if len(encoded) > _STRUCTURED_DEFINITION_LIMIT:
-        raise ValueError("The BIM worker validation summary is too large.")
-    return dict(validation)
 
 
 def _mesh_values_match(reported: Any, observed: Any, *, path: str) -> None:
@@ -3697,7 +3478,7 @@ def _mesh_values_match(reported: Any, observed: Any, *, path: str) -> None:
             raise ValueError(f"{path} differs from the imported native Mesh.")
         return
     if isinstance(observed, float):
-        value = _bim_float(reported, path=path)
+        value = _finite_float(reported, path=path)
         absolute_tolerance = (
             _REVERSE_FIT_METRIC_ABSOLUTE_TOLERANCE
             if "fit_metrics" in path.split(".")
@@ -3737,6 +3518,16 @@ def _mesh_definition_chain(definition: Mapping[str, Any]) -> list[Mapping[str, A
     if operation in {"mesh", "from_object"}:
         return [definition]
     arguments = list(definition.get("arguments") or [])
+    if operation in {"union", "difference", "intersection"}:
+        if len(arguments) != 2 or any(
+            not isinstance(argument, dict) for argument in arguments
+        ):
+            raise ValueError(f"Mesh api.{operation} lost its operand definitions.")
+        return [
+            *_mesh_definition_chain(arguments[0]),
+            *_mesh_definition_chain(arguments[1]),
+            definition,
+        ]
     if len(arguments) != 1 or not isinstance(arguments[0], dict):
         raise ValueError(f"Mesh api.{operation} lost its source definition.")
     return [*_mesh_definition_chain(arguments[0]), definition]
@@ -3756,7 +3547,7 @@ def _validate_mesh_trace(
     observed: Mapping[str, Any],
     source_references: Mapping[tuple[str, str], Mapping[str, Any]],
 ) -> None:
-    if not isinstance(trace, list) or not 1 <= len(trace) <= 33:
+    if not isinstance(trace, list) or not 1 <= len(trace) <= _MAX_MESH_TRACE_OPERATIONS:
         raise ValueError(f"Mesh output {output_name!r} operation trace is malformed.")
     definitions = _mesh_definition_chain(definition)
     operations = _mesh_definition_operations(definition)
@@ -3782,6 +3573,36 @@ def _validate_mesh_trace(
         },
         "repair": {"operation", "applied", "before", "after"},
         "diagnostics": {"operation", "requirements", "result"},
+        "union": {
+            "operation",
+            "first_definition_sha256",
+            "second_definition_sha256",
+            "first",
+            "second",
+            "tessellation",
+            "backend",
+            "result",
+        },
+        "difference": {
+            "operation",
+            "first_definition_sha256",
+            "second_definition_sha256",
+            "first",
+            "second",
+            "tessellation",
+            "backend",
+            "result",
+        },
+        "intersection": {
+            "operation",
+            "first_definition_sha256",
+            "second_definition_sha256",
+            "first",
+            "second",
+            "tessellation",
+            "backend",
+            "result",
+        },
     }
     quick_fields = {
         "points",
@@ -3805,7 +3626,11 @@ def _validate_mesh_trace(
                 f"Mesh output {output_name!r} trace item {index} has malformed fields."
             )
         for key in ("result", "before", "after"):
-            if key not in item or operation == "diagnostics":
+            if (
+                key not in item
+                or operation == "diagnostics"
+                or operation in {"union", "difference", "intersection"}
+            ):
                 continue
             counts = item[key]
             if (
@@ -3909,6 +3734,190 @@ def _validate_mesh_trace(
                 raise ValueError(
                     f"Mesh output {output_name!r} transform changed topology counts."
                 )
+        elif operation in {"union", "difference", "intersection"}:
+            arguments = list(operation_definition.get("arguments") or [])
+            if len(arguments) != 2 or any(
+                not isinstance(argument, Mapping) for argument in arguments
+            ):
+                raise ValueError(
+                    f"Mesh output {output_name!r} trace {index} lost its operands."
+                )
+
+            def definition_sha256(value: Mapping[str, Any]) -> str:
+                encoded = json.dumps(
+                    value,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+                return hashlib.sha256(encoded).hexdigest()
+
+            if item["first_definition_sha256"] != definition_sha256(
+                arguments[0]
+            ) or item["second_definition_sha256"] != definition_sha256(arguments[1]):
+                raise ValueError(
+                    f"Mesh output {output_name!r} trace {index} changed an operand."
+                )
+            expected_tessellation = {
+                "linear_deflection": float(properties["linear_deflection"]),
+                "angular_deflection_degrees": float(
+                    properties["angular_deflection_degrees"]
+                ),
+                "relative": bool(properties["relative"]),
+            }
+            _mesh_values_match(
+                item["tessellation"],
+                expected_tessellation,
+                path=f"outputs.{output_name}.operation_trace[{index}].tessellation",
+            )
+            if item["backend"] != "MeshPart::Boolean/OpenCASCADE":
+                raise ValueError(
+                    f"Mesh output {output_name!r} trace {index} changed its OCC backend."
+                )
+            boolean_fact_fields = {
+                "points",
+                "facets",
+                "open_edges",
+                "components",
+                "is_solid",
+                "volume_mm3",
+                "bounds",
+            }
+            for operand_name in ("first", "second", "result"):
+                facts = item[operand_name]
+                if not isinstance(facts, dict) or set(facts) != boolean_fact_fields:
+                    raise ValueError(
+                        f"Mesh output {output_name!r} trace "
+                        f"{index}.{operand_name} is malformed."
+                    )
+                for field in ("points", "facets", "open_edges", "components"):
+                    if type(facts[field]) is not int or facts[field] < 0:
+                        raise ValueError(
+                            f"Mesh output {output_name!r} trace "
+                            f"{index}.{operand_name}.{field} is malformed."
+                        )
+                if type(facts["is_solid"]) is not bool:
+                    raise ValueError(
+                        f"Mesh output {output_name!r} trace "
+                        f"{index}.{operand_name}.is_solid is malformed."
+                    )
+                _finite_float(
+                    facts["volume_mm3"],
+                    path=(
+                        f"outputs.{output_name}.operation_trace"
+                        f"[{index}].{operand_name}.volume_mm3"
+                    ),
+                )
+                bounds = facts["bounds"]
+                if not isinstance(bounds, dict) or set(bounds) != {
+                    "minimum",
+                    "maximum",
+                }:
+                    raise ValueError(
+                        f"Mesh output {output_name!r} trace "
+                        f"{index}.{operand_name}.bounds is malformed."
+                    )
+                for bound_name in ("minimum", "maximum"):
+                    vector = bounds[bound_name]
+                    if not isinstance(vector, list) or len(vector) != 3:
+                        raise ValueError(
+                            f"Mesh output {output_name!r} trace "
+                            f"{index}.{operand_name}.bounds.{bound_name} is malformed."
+                        )
+                    for coordinate, value in enumerate(vector):
+                        _finite_float(
+                            value,
+                            path=(
+                                f"outputs.{output_name}.operation_trace"
+                                f"[{index}].{operand_name}.bounds.{bound_name}"
+                                f"[{coordinate}]"
+                            ),
+                        )
+                if (
+                    facts["points"] <= 0
+                    or facts["facets"] <= 0
+                    or facts["components"] <= 0
+                    or facts["open_edges"] != 0
+                    or facts["is_solid"] is not True
+                    or abs(float(facts["volume_mm3"])) <= 1.0e-12
+                    or any(
+                        minimum > maximum
+                        for minimum, maximum in zip(
+                            bounds["minimum"],
+                            bounds["maximum"],
+                        )
+                    )
+                ):
+                    raise ValueError(
+                        f"Mesh output {output_name!r} trace "
+                        f"{index}.{operand_name} is not a valid solid mesh."
+                    )
+
+            first_definitions = _mesh_definition_chain(arguments[0])
+            second_definitions = _mesh_definition_chain(arguments[1])
+            first_terminal_index = index - len(second_definitions) - 1
+            second_terminal_index = index - 1
+            if (
+                first_terminal_index < 0
+                or second_terminal_index < 0
+                or first_terminal_index >= len(trace)
+                or second_terminal_index >= len(trace)
+            ):
+                raise ValueError(
+                    f"Mesh output {output_name!r} trace {index} has invalid branches."
+                )
+
+            def terminal_quick_counts(
+                trace_item: Mapping[str, Any],
+                terminal_definition: Mapping[str, Any],
+            ) -> dict[str, int]:
+                terminal_operation = str(terminal_definition.get("operation") or "")
+                key = (
+                    "result"
+                    if terminal_operation
+                    in {
+                        "mesh",
+                        "from_object",
+                        "diagnostics",
+                        "union",
+                        "difference",
+                        "intersection",
+                    }
+                    else "after"
+                )
+                raw_counts = trace_item.get(key)
+                if not isinstance(raw_counts, Mapping):
+                    raise ValueError(
+                        f"Mesh output {output_name!r} boolean branch lost its "
+                        "terminal topology."
+                    )
+                return {
+                    field: int(raw_counts[field])
+                    for field in (
+                        "points",
+                        "facets",
+                        "open_edges",
+                        "components",
+                    )
+                }
+
+            for operand_name, terminal_index, branch_definitions in (
+                ("first", first_terminal_index, first_definitions),
+                ("second", second_terminal_index, second_definitions),
+            ):
+                expected_counts = terminal_quick_counts(
+                    trace[terminal_index],
+                    branch_definitions[-1],
+                )
+                reported_counts = {
+                    field: item[operand_name][field] for field in expected_counts
+                }
+                if reported_counts != expected_counts:
+                    raise ValueError(
+                        f"Mesh output {output_name!r} trace {index} changed its "
+                        f"{operand_name} operand topology."
+                    )
         elif operation == "repair":
             expected_applied = [
                 name
@@ -3935,7 +3944,7 @@ def _validate_mesh_trace(
                 raise ValueError(
                     f"Mesh output {output_name!r} trace {index} changed repair passes."
                 )
-        else:
+        elif operation == "diagnostics":
             expected_requirements = {
                 key: properties[key]
                 for key in (
@@ -3970,6 +3979,21 @@ def _validate_mesh_trace(
         _mesh_values_match(
             terminal["result"],
             observed,
+            path=f"outputs.{output_name}.operation_trace[-1].result",
+        )
+    elif terminal_operation in {"union", "difference", "intersection"}:
+        expected_result = {
+            "points": int(observed["points"]),
+            "facets": int(observed["facets"]),
+            "open_edges": int(observed["open_edges"]),
+            "components": int(observed["components"]),
+            "is_solid": bool(observed["is_solid"]),
+            "volume_mm3": float(observed["volume_mm3"]),
+            "bounds": dict(observed["bounds"]),
+        }
+        _mesh_values_match(
+            terminal["result"],
+            expected_result,
             path=f"outputs.{output_name}.operation_trace[-1].result",
         )
     else:
@@ -4045,6 +4069,21 @@ def _validate_mesh_execution(
         if detached is None:
             raise ValueError(f"Mesh output {name!r} has no detached native Mesh.")
         observed = mesh_diagnostics(detached)
+        if any(
+            operation in {"union", "difference", "intersection"}
+            for operation in _mesh_definition_operations(definition)
+        ) and (
+            not observed["is_solid"]
+            or int(observed["open_edges"]) != 0
+            or observed["has_non_manifolds"]
+            or observed["has_invalid_neighbourhood"]
+            or observed["has_non_uniform_orientation"]
+            or observed["has_self_intersections"]
+            or abs(float(observed["volume_mm3"])) <= 1.0e-12
+        ):
+            raise ValueError(
+                f"Mesh output {name!r} is not a valid closed manifold boolean solid."
+            )
         _validate_mesh_trace(
             data["operation_trace"],
             definition,
@@ -4105,6 +4144,8 @@ def _validate_meshpart_execution(
     prepared: Mapping[str, Any],
     execution: Mapping[str, Any],
     outputs: list[dict[str, Any]],
+    *,
+    definition_domain: str = "meshpart",
 ) -> dict[str, Any]:
     """Reauthorize MeshPart artifacts, source snapshots, and conversion reports."""
 
@@ -4198,6 +4239,7 @@ def _validate_meshpart_execution(
             expected_output_type=output_type,
             require_domain_value=False,
             context=f"outputs.{name}.definition",
+            definition_domain=definition_domain,
         )
         operation = str(definition["operation"])
         properties = dict(definition["properties"])
@@ -4607,6 +4649,62 @@ def _validate_meshpart_execution(
             "The MeshPart worker global validation summary is inconsistent."
         )
     return dict(validation)
+
+
+def _validate_mesh_workbench_execution(
+    prepared: Mapping[str, Any],
+    execution: Mapping[str, Any],
+    outputs: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Validate both operation families exposed by the shipped Mesh surface."""
+
+    expected = list(prepared["expected_outputs"])
+    if len(expected) != len(outputs):
+        raise ValueError("The Mesh worker changed the declared output count.")
+
+    native_expected: list[dict[str, Any]] = []
+    native_outputs: list[dict[str, Any]] = []
+    conversion_expected: list[dict[str, Any]] = []
+    conversion_outputs: list[dict[str, Any]] = []
+    for declaration, item in zip(expected, outputs, strict=True):
+        has_mesh_data = isinstance(item.get("mesh_data"), dict)
+        has_conversion_data = isinstance(item.get("meshpart_data"), dict)
+        if has_mesh_data is has_conversion_data:
+            raise ValueError(
+                f"Mesh output {declaration['name']!r} must contain exactly one "
+                "native-operation or conversion validation record."
+            )
+        if has_mesh_data:
+            native_expected.append(declaration)
+            native_outputs.append(item)
+        else:
+            conversion_expected.append(declaration)
+            conversion_outputs.append(item)
+
+    mesh_validation = None
+    if native_outputs:
+        mesh_validation = _validate_mesh_execution(
+            {**dict(prepared), "expected_outputs": native_expected},
+            execution,
+            native_outputs,
+        )
+    elif execution.get("mesh_validation") is not None:
+        raise ValueError("The Mesh worker reported native outputs that do not exist.")
+
+    meshpart_validation = None
+    if conversion_outputs:
+        meshpart_validation = _validate_meshpart_execution(
+            {**dict(prepared), "expected_outputs": conversion_expected},
+            execution,
+            conversion_outputs,
+            definition_domain="mesh",
+        )
+    elif execution.get("meshpart_validation") is not None:
+        raise ValueError(
+            "The Mesh worker reported conversion outputs that do not exist."
+        )
+
+    return mesh_validation, meshpart_validation
 
 
 def _point_facts_match(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
@@ -6287,34 +6385,11 @@ def _assembly_validate_placement_fact(
 
 
 def _assembly_compatibility(
-    kind: str, connectors: Sequence[Mapping[str, Any]]
+    kind: str, connector_contracts: Sequence[Mapping[str, Any] | None]
 ) -> dict[str, Any]:
-    geometry = [str(item.get("geometry_type") or "") for item in connectors]
-    axis_capable = {"line", "circle", "plane", "cylinder", "cone", "component_origin"}
-    rotary = {"circle", "cylinder", "cone"}
-    linear = {"line", "plane"}
-    criteria = "any valid connector geometry"
-    compatible = all(geometry)
-    if kind in {"revolute", "cylindrical", "screw", "gears", "belt"}:
-        criteria = "both connectors must define axes"
-        compatible = all(item in axis_capable for item in geometry)
-    elif kind == "slider":
-        criteria = "both connectors must define linear axes or plane normals"
-        compatible = all(item in linear | {"component_origin"} for item in geometry)
-    elif kind == "rack_pinion":
-        criteria = "one linear connector and one circular/cylindrical connector"
-        compatible = any(item in linear for item in geometry) and any(
-            item in rotary for item in geometry
-        )
-    elif kind in {"parallel", "perpendicular", "angle"}:
-        criteria = "both connectors must define orientations"
-        compatible = all(item in axis_capable for item in geometry)
-    return {
-        "ok": compatible,
-        "joint_type": kind,
-        "criteria": criteria,
-        "resolved_geometry_types": geometry,
-    }
+    from vibescript_assembly_api import explicit_connector_compatibility
+
+    return explicit_connector_compatibility(kind, connector_contracts)
 
 
 def _assembly_frame_z_axis(frame: Mapping[str, Any]) -> tuple[float, float, float]:
@@ -6643,8 +6718,18 @@ def _validate_assembly_exploded_views(
             str(source.get("object_name") or ""),
         )
         resolved = component_sources.get(component_name)
-        descriptor = worker_references.get(key)
-        if resolved is None or descriptor is None:
+        definition = component_item.get("definition")
+        operation = (
+            str(definition.get("operation") or "")
+            if isinstance(definition, Mapping)
+            else ""
+        )
+        descriptor = (
+            component_data.get("source_brep")
+            if operation == "fastener"
+            else worker_references.get(key)
+        )
+        if resolved is None or not isinstance(descriptor, Mapping):
             raise ValueError(
                 f"Component output {component_name!r} has no authenticated staged BREP."
             )
@@ -6654,9 +6739,18 @@ def _validate_assembly_exploded_views(
             context=f"Component output {component_name!r} exploded-view source",
         )
         digest = _sha256_file(path)
-        if digest != str(descriptor.get("brep_sha256") or "") or digest != str(
-            resolved.get("brep_sha256") or ""
-        ):
+        descriptor_digest = str(
+            descriptor.get(
+                "artifact_sha256" if operation == "fastener" else "brep_sha256"
+            )
+            or ""
+        )
+        resolved_digest = (
+            descriptor_digest
+            if operation == "fastener"
+            else str(resolved.get("brep_sha256") or "")
+        )
+        if digest != descriptor_digest or digest != resolved_digest:
             raise ValueError(
                 f"Component output {component_name!r} source BREP changed after "
                 "revision binding."
@@ -6738,10 +6832,10 @@ def _validate_assembly_exploded_views(
         definition_moves = properties["moves"]
         if (
             not isinstance(definition_moves, list)
-            or not 1 <= len(definition_moves) <= 64
+            or not 1 <= len(definition_moves) <= 4096
         ):
             raise ValueError(
-                f"Exploded-view output {view_name!r} must contain 1-64 moves."
+                f"Exploded-view output {view_name!r} must contain 1-4096 moves."
             )
         data = view_item.get("assembly_data")
         required_data_fields = {
@@ -6862,9 +6956,9 @@ def _validate_assembly_exploded_views(
             ):
                 raise ValueError(f"{context} changed its index or kind.")
             reference_count += len(component_outputs)
-            if reference_count > 256:
+            if reference_count > 16384:
                 raise ValueError(
-                    f"Exploded-view output {view_name!r} exceeds 256 component references."
+                    f"Exploded-view output {view_name!r} exceeds 16384 component references."
                 )
             movement = None
             radial_distance = None
@@ -7385,6 +7479,548 @@ def _assembly_expected_native_reference(
     return target_name, subelements, mode
 
 
+def _assembly_catalog_fastener_contract(
+    prepared: Mapping[str, Any],
+    definition: Mapping[str, Any],
+    data: Mapping[str, Any],
+    *,
+    context: str,
+) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]]:
+    """Independently validate one worker-generated catalog occurrence."""
+
+    arguments = definition.get("arguments")
+    properties = definition.get("properties")
+    required_properties = {
+        "length_mm",
+        "model_thread",
+        "left_handed",
+        "options",
+        "placement",
+        "grounded",
+    }
+    if (
+        not isinstance(arguments, list)
+        or len(arguments) != 2
+        or not isinstance(properties, dict)
+        or not required_properties <= set(properties)
+        or set(properties) - required_properties not in (set(), {"label"})
+    ):
+        raise ValueError(f"{context} has a malformed api.fastener definition.")
+    try:
+        from VibeCADFasteners import (
+            assembly_component_contract,
+            catalog_component_reference,
+            resolve_fastener,
+        )
+
+        identity = resolve_fastener(
+            standard=arguments[0],
+            nominal_thread=arguments[1],
+            length_mm=properties.get("length_mm"),
+            model_thread=properties["model_thread"],
+            left_handed=properties.get("left_handed"),
+            options=properties.get("options"),
+        )
+        source = catalog_component_reference(identity)
+    except Exception as exc:
+        raise ValueError(
+            f"{context} does not resolve to one exact bundled catalog item: {exc}"
+        ) from exc
+    if data.get("catalog_fastener") != identity:
+        raise ValueError(f"{context} catalog identity changed in the worker.")
+    if data.get("source") != source:
+        raise ValueError(f"{context} catalog source identity changed in the worker.")
+    brep = data.get("source_brep")
+    if not isinstance(brep, dict) or set(brep) != {
+        "artifact_kind",
+        "artifact_path",
+        "artifact_sha256",
+        "artifact_bytes",
+    }:
+        raise ValueError(f"{context} has malformed generated-BREP evidence.")
+    if brep.get("artifact_kind") != "brep":
+        raise ValueError(f"{context} has the wrong generated artifact kind.")
+    path = _staged_artifact_path(
+        prepared,
+        brep.get("artifact_path"),
+        context=f"{context} generated BREP",
+    )
+    size = path.stat().st_size
+    digest = _sha256_file(path)
+    if size != brep.get("artifact_bytes") or digest != brep.get("artifact_sha256"):
+        raise ValueError(f"{context} generated BREP changed during transfer.")
+    import Part
+
+    shape = Part.Shape()
+    shape.importBrep(str(path))
+    if shape.isNull() or not shape.isValid() or len(shape.Solids) != 1:
+        raise ValueError(f"{context} generated BREP is not one valid solid.")
+    try:
+        contract = assembly_component_contract(shape, identity)
+    except Exception as exc:
+        raise ValueError(
+            f"{context} generated BREP does not satisfy its catalog contract: {exc}"
+        ) from exc
+    if data.get("source_contract") != contract:
+        raise ValueError(
+            f"{context} standard interfaces or BOM identity changed in the worker."
+        )
+    return identity, source, {**source, **contract}
+
+
+def _assembly_shared_mechanism_scenario(
+    *,
+    assembly_item: Mapping[str, Any],
+    diagnostics_item: Mapping[str, Any],
+    component_names: Sequence[str],
+    joint_names: Sequence[str],
+    motion_names: Sequence[str],
+    simulation_item: Mapping[str, Any] | None,
+    by_name: Mapping[str, Mapping[str, Any]],
+    joint_records: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Independently adapt serialized Assembly outputs to the shared contract."""
+
+    assembly_definition = dict(assembly_item["definition"])
+    assembly_properties = dict(assembly_definition["properties"])
+    components = []
+    for name in component_names:
+        definition = dict(by_name[name]["definition"])
+        operation = str(definition["operation"])
+        arguments = list(definition["arguments"])
+        properties = dict(definition["properties"])
+        if operation == "component":
+            source = {"kind": "document_object", **dict(arguments[0])}
+            flexible = bool(properties.get("flexible", False))
+        elif operation == "fastener":
+            source = {
+                "kind": "standard_fastener",
+                "standard": str(arguments[0]),
+                "nominal_thread": str(arguments[1]),
+                "length_mm": properties.get("length_mm"),
+                "model_thread": bool(properties.get("model_thread")),
+                "left_handed": bool(properties.get("left_handed")),
+                "options": dict(properties.get("options") or {}),
+            }
+            flexible = False
+        else:
+            raise ValueError(
+                f"Component output {name!r} cannot enter the shared mechanism scenario."
+            )
+        components.append(
+            {
+                "id": name,
+                "label": str(properties.get("label") or ""),
+                "source": source,
+                "initial_placement": dict(properties.get("placement") or {}),
+                "grounded": bool(properties.get("grounded")),
+                "flexible": flexible,
+            }
+        )
+
+    joints = []
+    for name in joint_names:
+        definition = dict(by_name[name]["definition"])
+        properties = dict(definition["properties"])
+        connectors = []
+        for connector in list(joint_records[name]["connectors"]):
+            connector_index = int(connector["index"]) - 1
+            connector_definition = dict(list(definition["arguments"])[connector_index])
+            connector_properties = dict(connector_definition["properties"])
+            connectors.append(
+                {
+                    "component_id": str(connector["component_output"]),
+                    "selection": dict(connector_properties.get("selection") or {}),
+                    "occurrence_path": connector_properties.get("occurrence_path"),
+                    "anchor": connector_properties.get("anchor"),
+                    "offset": dict(connector_properties.get("offset") or {}),
+                }
+            )
+        joints.append(
+            {
+                "id": name,
+                "label": str(properties.get("label") or ""),
+                "kind": str(properties.get("kind") or ""),
+                "connectors": connectors,
+                "parameters": dict(properties.get("parameters") or {}),
+                "length_limits_mm": properties.get("length_limits_mm"),
+                "angle_limits_degrees": properties.get("angle_limits_degrees"),
+                "suppressed": bool(properties.get("suppressed")),
+            }
+        )
+
+    motions = []
+    for name in motion_names:
+        definition = dict(by_name[name]["definition"])
+        properties = dict(definition["properties"])
+        data = dict(by_name[name]["assembly_data"])
+        motions.append(
+            {
+                "id": name,
+                "label": str(properties.get("label") or ""),
+                "joint_id": str(data["joint_output"]),
+                "motion_type": str(properties["motion_type"]),
+                "formula": str(properties["formula"]),
+            }
+        )
+    simulation = None
+    if simulation_item is not None:
+        definition = dict(simulation_item["definition"])
+        properties = dict(definition["properties"])
+        simulation = {
+            "id": str(simulation_item["name"]),
+            "label": str(properties.get("label") or ""),
+            "motion_ids": list(motion_names),
+            "start_time_s": properties.get("start_time_s"),
+            "end_time_s": properties.get("end_time_s"),
+            "time_step_s": properties.get("time_step_s"),
+            "error_tolerance": properties.get("error_tolerance"),
+            "frames_per_second": properties.get("frames_per_second"),
+        }
+    diagnostics_definition = dict(diagnostics_item["definition"])
+    diagnostics_properties = dict(diagnostics_definition["properties"])
+    return normalize_mechanism_scenario(
+        {
+            "schema": MECHANISM_SCENARIO_SCHEMA,
+            "assembly": {
+                "id": str(assembly_item["name"]),
+                "label": str(assembly_properties.get("label") or ""),
+            },
+            "components": components,
+            "joints": joints,
+            "solve": {
+                "id": str(diagnostics_item["name"]),
+                "label": str(diagnostics_properties.get("label") or ""),
+                "require_solved": bool(
+                    diagnostics_properties.get("require_solved", True)
+                ),
+            },
+            "motions": motions,
+            "simulation": simulation,
+        }
+    )
+
+
+def _validate_assembly_mechanism_verifications(
+    prepared: Mapping[str, Any],
+    verifications: Sequence[dict[str, Any]],
+    *,
+    scenario: Mapping[str, Any],
+    solve_report: Mapping[str, Any],
+    assembly_item: Mapping[str, Any],
+    assembly_definition: Mapping[str, Any],
+    by_name: Mapping[str, dict[str, Any]],
+    component_names: Sequence[str],
+    component_placements: Mapping[str, Mapping[str, Any]],
+    component_sources: Mapping[str, Mapping[str, Any]],
+    component_metadata: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Recompute exact static reports from authenticated host-side BREPs."""
+
+    if not verifications:
+        return []
+
+    import Part
+
+    worker_references = {
+        (
+            str(item.get("document_uid") or ""),
+            str(item.get("object_name") or ""),
+        ): item
+        for item in list(
+            dict(prepared.get("worker_request") or {}).get("document_references") or []
+        )
+        if isinstance(item, Mapping)
+    }
+    source_shapes: dict[tuple[str, str], Any] = {}
+    geometry_components: dict[str, dict[str, Any]] = {}
+    geometry_interfaces: dict[str, dict[str, list[str]]] = {}
+    for component_name in component_names:
+        component_item = by_name[component_name]
+        data = component_metadata[component_name]
+        source = data.get("source")
+        definition = component_item.get("definition")
+        if not isinstance(source, Mapping) or not isinstance(definition, Mapping):
+            raise ValueError(
+                f"Component output {component_name!r} has no static-verification source."
+            )
+        key = (
+            str(source.get("document_uid") or ""),
+            str(source.get("object_name") or ""),
+        )
+        operation = str(definition.get("operation") or "")
+        descriptor = (
+            data.get("source_brep")
+            if operation == "fastener"
+            else worker_references.get(key)
+        )
+        resolved = component_sources.get(component_name)
+        if not isinstance(descriptor, Mapping) or not isinstance(
+            resolved,
+            Mapping,
+        ):
+            raise ValueError(
+                f"Component output {component_name!r} has no authenticated static BREP."
+            )
+        path = _staged_artifact_path(
+            prepared,
+            descriptor.get("artifact_path"),
+            context=f"Component output {component_name!r} static-verification source",
+        )
+        digest = _sha256_file(path)
+        descriptor_digest = str(
+            descriptor.get(
+                "artifact_sha256" if operation == "fastener" else "brep_sha256"
+            )
+            or ""
+        )
+        resolved_digest = (
+            descriptor_digest
+            if operation == "fastener"
+            else str(resolved.get("brep_sha256") or "")
+        )
+        if digest != descriptor_digest or digest != resolved_digest:
+            raise ValueError(
+                f"Component output {component_name!r} static BREP changed after "
+                "revision binding."
+            )
+        shape = source_shapes.get(key)
+        if shape is None:
+            shape = Part.Shape()
+            shape.importBrep(str(path))
+            if shape.isNull() or not shape.isValid() or len(list(shape.Solids)) < 1:
+                raise ValueError(
+                    f"Component output {component_name!r} static BREP is invalid."
+                )
+            source_shapes[key] = shape
+        placement = _assembly_native_placement_from_matrix(
+            component_placements[component_name]["matrix"],
+            f"Component output {component_name!r} solved placement",
+        )
+        geometry_components[component_name] = {
+            "shape": shape,
+            "placement": {
+                "position": [
+                    float(placement.Base.x),
+                    float(placement.Base.y),
+                    float(placement.Base.z),
+                ],
+                "rotation": [float(value) for value in placement.Rotation.Q],
+            },
+        }
+        published = dict(resolved.get("published_interfaces") or {})
+        geometry_interfaces[component_name] = {
+            str(name): [
+                str(subelement) for subelement in list(raw.get("subelements") or [])
+            ]
+            for name, raw in published.items()
+            if isinstance(raw, Mapping) and list(raw.get("subelements") or [])
+        }
+
+    summaries: list[dict[str, Any]] = []
+    for verification_item in verifications:
+        output_name = str(verification_item["name"])
+        definition = verification_item.get("definition")
+        data = verification_item.get("assembly_data")
+        if (
+            not isinstance(definition, dict)
+            or definition.get("domain") != "assembly"
+            or definition.get("operation") != "mechanism_check"
+            or definition.get("output_type") != "mechanism_verification"
+            or definition.get("arguments") != [assembly_definition]
+        ):
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} has an invalid "
+                "declarative definition."
+            )
+        if not isinstance(data, dict) or set(data) != {
+            "assembly_output",
+            "static_check",
+            "report",
+        }:
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} has malformed "
+                "native evidence."
+            )
+        if str(data.get("assembly_output") or "") != str(assembly_item["name"]):
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} belongs to the "
+                "wrong assembly."
+            )
+        properties = definition.get("properties")
+        if (
+            not isinstance(properties, dict)
+            or not {"requirements", "contacts"} <= set(properties)
+            or set(properties) - {"requirements", "contacts", "label"}
+        ):
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} has malformed "
+                "properties."
+            )
+        static_check = normalize_mechanism_static_check(
+            scenario,
+            data.get("static_check"),
+        )
+        if (
+            static_check["schema"] != MECHANISM_STATIC_CHECK_SCHEMA
+            or static_check["id"] != output_name
+            or static_check["label"] != str(properties.get("label") or "")
+            or static_check["scenario_sha256"] != mechanism_scenario_sha256(scenario)
+        ):
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} changed its "
+                "static-check identity."
+            )
+        definition_requirements = properties.get("requirements")
+        definition_contacts = properties.get("contacts")
+        if (
+            not isinstance(definition_requirements, list)
+            or not isinstance(definition_contacts, list)
+            or len(definition_requirements) != len(static_check["requirements"])
+            or len(definition_contacts) != len(static_check["contacts"])
+        ):
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} changed its "
+                "declaration counts."
+            )
+        for kind, definitions, declarations in (
+            (
+                "requirement",
+                definition_requirements,
+                static_check["requirements"],
+            ),
+            ("contact", definition_contacts, static_check["contacts"]),
+        ):
+            for index, (raw_definition, declaration) in enumerate(
+                zip(definitions, declarations, strict=True)
+            ):
+                context = (
+                    f"Mechanism verification output {output_name!r} {kind} {index}"
+                )
+                if not isinstance(raw_definition, dict):
+                    raise ValueError(f"{context} is malformed.")
+                first_name = str(declaration["first_component"])
+                second_name = str(declaration["second_component"])
+                if (
+                    first_name not in by_name
+                    or second_name not in by_name
+                    or raw_definition.get("first")
+                    != by_name[first_name].get("definition")
+                    or raw_definition.get("second")
+                    != by_name[second_name].get("definition")
+                ):
+                    raise ValueError(
+                        f"{context} changed its exact component graph values."
+                    )
+                expected_scalar = {
+                    key: value
+                    for key, value in declaration.items()
+                    if key
+                    not in {
+                        "id",
+                        "first_component",
+                        "second_component",
+                    }
+                }
+                observed_scalar = {
+                    key: value
+                    for key, value in raw_definition.items()
+                    if key not in {"first", "second"}
+                }
+                if observed_scalar != expected_scalar:
+                    raise ValueError(
+                        f"{context} changed its declared policy or tolerance."
+                    )
+                if bool(component_metadata[first_name].get("flexible")) or bool(
+                    component_metadata[second_name].get("flexible")
+                ):
+                    raise ValueError(
+                        f"{context} cannot certify a flexible component as one "
+                        "rigid static shape."
+                    )
+
+        geometry_declarations = []
+        for declaration in [
+            *static_check["requirements"],
+            *[item for item in static_check["contacts"] if item["policy"] != "ignored"],
+        ]:
+            policy = str(declaration.get("policy") or "")
+            first_interface = (
+                str(declaration["first_interface"])
+                if policy in {"allowed", "required"}
+                else None
+            )
+            second_interface = (
+                str(declaration["second_interface"])
+                if policy in {"allowed", "required"}
+                else None
+            )
+            if first_interface is not None:
+                for component_name, interface_name in (
+                    (
+                        str(declaration["first_component"]),
+                        first_interface,
+                    ),
+                    (
+                        str(declaration["second_component"]),
+                        second_interface,
+                    ),
+                ):
+                    if interface_name not in geometry_interfaces.get(
+                        component_name,
+                        {},
+                    ):
+                        raise ValueError(
+                            f"Mechanism verification output {output_name!r} names "
+                            f"interface {interface_name!r} without authenticated "
+                            "contact subelements."
+                        )
+            geometry_declarations.append(
+                {
+                    "declaration_id": str(declaration["id"]),
+                    "first_component": str(declaration["first_component"]),
+                    "second_component": str(declaration["second_component"]),
+                    "tolerance_mm": float(declaration["tolerance_mm"]),
+                    "first_interface": first_interface,
+                    "second_interface": second_interface,
+                }
+            )
+        geometry_evidence = measure_static_mechanism_pairs(
+            geometry_components,
+            geometry_declarations,
+            interfaces=geometry_interfaces,
+        )
+        expected_report = evaluate_static_mechanism_check(
+            scenario,
+            solve_report,
+            static_check,
+            geometry_evidence,
+        )
+        reported = normalize_mechanism_verification_report(
+            scenario,
+            solve_report,
+            static_check,
+            data.get("report"),
+        )
+        if reported != expected_report:
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} does not match "
+                "the independently recomputed exact BREP evidence."
+            )
+        summary = {
+            "verification_output": output_name,
+            "verdict": str(reported["verdict"]),
+            "declaration_count": int(reported["summary"]["declaration_count"]),
+            "pass_count": int(reported["summary"]["pass_count"]),
+            "fail_count": int(reported["summary"]["fail_count"]),
+            "indeterminate_count": int(reported["summary"]["indeterminate_count"]),
+            "ignored_count": int(reported["summary"]["ignored_count"]),
+            "static_check_sha256": str(reported["static_check_sha256"]),
+        }
+        summaries.append(summary)
+    return summaries
+
+
 def _validate_assembly_execution(
     prepared: Mapping[str, Any],
     execution: Mapping[str, Any],
@@ -7412,6 +8048,7 @@ def _validate_assembly_execution(
     joints = by_type.get("joint", [])
     motions = by_type.get("motion", [])
     simulations = by_type.get("simulation", [])
+    verifications = by_type.get("mechanism_verification", [])
     exploded_views = by_type.get("exploded_view", [])
     boms = by_type.get("bom", [])
     if not components:
@@ -7422,6 +8059,11 @@ def _validate_assembly_execution(
         raise ValueError(
             "Assembly motion outputs require exactly one simulation output, and a "
             "simulation requires at least one motion output."
+        )
+    if len(verifications) > 8:
+        raise ValueError(
+            "An Assembly candidate may contain at most eight "
+            "mechanism_verification outputs."
         )
     assembly_item = by_type["assembly"][0]
     diagnostics_item = by_type["solver_diagnostics"][0]
@@ -7462,6 +8104,7 @@ def _validate_assembly_execution(
         diagnostics_item["name"]
     ):
         raise ValueError("The assembly graph points to the wrong diagnostics output.")
+    graph_motion_names: list[str] = []
     if simulations:
         graph_motion_names = [
             str(item) for item in list(assembly_data.get("motion_outputs") or [])
@@ -7510,6 +8153,24 @@ def _validate_assembly_execution(
             )
     elif "bom_outputs" in assembly_data:
         raise ValueError("The assembly graph reports an undeclared BOM.")
+    returned_verification_names = [str(item["name"]) for item in verifications]
+    if verifications:
+        graph_verification_names = [
+            str(item)
+            for item in list(assembly_data.get("mechanism_verification_outputs") or [])
+        ]
+        if (
+            len(graph_verification_names) != len(set(graph_verification_names))
+            or graph_verification_names != returned_verification_names
+        ):
+            raise ValueError(
+                "The assembly graph mechanism verifications do not exactly match "
+                "returned outputs in declaration order."
+            )
+    elif "mechanism_verification_outputs" in assembly_data:
+        raise ValueError(
+            "The assembly graph reports an undeclared mechanism verification."
+        )
     graph_component_definitions = assembly_properties.get("components")
     graph_joint_definitions = assembly_properties.get("joints")
     if not isinstance(graph_component_definitions, list) or len(
@@ -7576,36 +8237,59 @@ def _validate_assembly_execution(
         if (
             not isinstance(definition, dict)
             or definition.get("domain") != "assembly"
-            or definition.get("operation") != "component"
+            or definition.get("operation") not in {"component", "fastener"}
             or definition.get("output_type") != "component_link"
         ):
             raise ValueError(f"Component output {name!r} has an invalid definition.")
+        operation = str(definition["operation"])
         arguments = definition.get("arguments")
         properties = definition.get("properties")
-        if (
-            not isinstance(arguments, list)
-            or len(arguments) != 1
-            or not isinstance(properties, dict)
-        ):
+        if not isinstance(arguments, list) or not isinstance(properties, dict):
             raise ValueError(f"Component output {name!r} has a malformed definition.")
         source = data.get("source")
-        if not isinstance(source, dict) or set(source) != {
-            "document_uid",
-            "object_name",
-        }:
+        if (
+            not isinstance(source, dict)
+            or (
+                operation == "fastener"
+                and set(source) != {"document_uid", "object_name"}
+            )
+            or (operation == "component" and not is_document_reference(source))
+        ):
             raise ValueError(
                 f"Component output {name!r} has an invalid source identity."
             )
-        if source != arguments[0]:
-            raise ValueError(
-                f"Component output {name!r} source changed after source evaluation."
+        if operation == "fastener":
+            _identity, expected_source, resolved = _assembly_catalog_fastener_contract(
+                prepared,
+                definition,
+                data,
+                context=f"Component output {name!r}",
             )
-        key = (str(source["document_uid"]), str(source["object_name"]))
-        resolved = references.get(key)
-        if resolved is None:
-            raise ValueError(
-                f"Component output {name!r} uses an unauthenticated source {key[1]!r}."
-            )
+            if source != expected_source:
+                raise ValueError(
+                    f"Component output {name!r} changed its catalog source identity."
+                )
+        else:
+            source = normalize_document_reference(source)
+            if len(arguments) != 1 or source != arguments[0]:
+                raise ValueError(
+                    f"Component output {name!r} source changed after source evaluation."
+                )
+            key = (str(source["document_uid"]), str(source["object_name"]))
+            resolved = references.get(key)
+            if resolved is None:
+                raise ValueError(
+                    f"Component output {name!r} uses an unauthenticated source "
+                    f"{key[1]!r}."
+                )
+            if (
+                source.get("document_path")
+                and str(resolved.get("document_path") or "") != source["document_path"]
+            ):
+                raise ValueError(
+                    f"Component output {name!r} changed its authenticated "
+                    "document_path."
+                )
         facts = data.get("source_facts")
         if not isinstance(facts, dict) or int(facts.get("solids") or 0) < 1:
             raise ValueError(
@@ -7966,6 +8650,7 @@ def _validate_assembly_execution(
             raise ValueError(
                 f"Joint output {name!r} definition must contain two connectors."
             )
+        connector_contracts: list[dict[str, Any] | None] = []
         for index, connector in enumerate(connectors, start=1):
             if not isinstance(connector, dict):
                 raise ValueError(
@@ -8038,6 +8723,9 @@ def _validate_assembly_execution(
                 raise ValueError(
                     f"Joint output {name!r} connector {index} occurrence path was altered."
                 )
+            expected_standard_frame: Mapping[str, Any] | None = None
+            expected_semantic_frame: Mapping[str, Any] | None = None
+            expected_connector_contract: dict[str, Any] | None = None
             if mode == "component_origin":
                 if selection != {"type": "component_origin"}:
                     raise ValueError(
@@ -8102,10 +8790,41 @@ def _validate_assembly_execution(
                         "authenticated published interface."
                     )
                 expected_element = str(subelements[0]) if subelements else ""
+                interface_selection = dict(interface.get("selection") or {})
                 expected_geometry_type = str(
                     (geometry[0] if geometry else {}).get("geometry_type")
-                    or ("component_origin" if not expected_element else "")
+                    or (
+                        "component_frame"
+                        if interface_selection.get("type") == "frame"
+                        else "component_origin"
+                        if not expected_element
+                        else ""
+                    )
                 )
+                raw_standard_frame = interface.get("standard_frame")
+                if raw_standard_frame is not None:
+                    if not isinstance(raw_standard_frame, Mapping):
+                        raise ValueError(
+                            f"Joint output {name!r} connector {index} has a malformed "
+                            "standard-component frame."
+                        )
+                    expected_standard_frame = raw_standard_frame
+                raw_semantic_frame = interface.get("connector_frame")
+                if interface_selection.get("type") == "frame":
+                    if not isinstance(raw_semantic_frame, Mapping):
+                        raise ValueError(
+                            f"Joint output {name!r} connector {index} has no "
+                            "authenticated semantic frame."
+                        )
+                    expected_semantic_frame = raw_semantic_frame
+                raw_connector_contract = interface.get("connector")
+                if raw_connector_contract is not None:
+                    if not isinstance(raw_connector_contract, Mapping):
+                        raise ValueError(
+                            f"Joint output {name!r} connector {index} has a malformed "
+                            "explicit connector contract."
+                        )
+                    expected_connector_contract = dict(raw_connector_contract)
                 expected_semantic = {
                     "type": "published_interface",
                     "interface_name": interface_name,
@@ -8188,27 +8907,57 @@ def _validate_assembly_execution(
                 raise ValueError(
                     f"Joint output {name!r} connector {index} native reference disagrees."
                 )
-            for frame_name in ("offset", "local_frame", "global_frame"):
-                frame = _assembly_placement_fact(
+            declared_offset = _assembly_native_declared_placement(
+                connector_properties.get("offset"),
+                f"Joint output {name!r} connector {index} declared offset",
+            )
+            if expected_standard_frame is None and expected_semantic_frame is None:
+                if connector.get("interface_frame") is not None:
+                    raise ValueError(
+                        f"Joint output {name!r} connector {index} invented a "
+                        "standard-component frame."
+                    )
+                expected_offset = declared_offset
+            elif expected_standard_frame is not None:
+                interface_frame = _assembly_native_declared_placement(
+                    dict(expected_standard_frame),
+                    f"Joint output {name!r} connector {index} standard frame",
+                )
+                _assembly_validate_placement_fact(
+                    connector.get("interface_frame"),
+                    interface_frame,
+                    f"Joint output {name!r} connector {index} interface_frame",
+                )
+                expected_offset = interface_frame.multiply(declared_offset)
+            else:
+                interface_frame = _assembly_native_placement_from_matrix(
+                    expected_semantic_frame.get("matrix"),
+                    f"Joint output {name!r} connector {index} semantic frame",
+                )
+                _assembly_validate_placement_fact(
+                    connector.get("interface_frame"),
+                    interface_frame,
+                    f"Joint output {name!r} connector {index} interface_frame",
+                )
+                expected_offset = interface_frame.multiply(declared_offset)
+            _assembly_validate_placement_fact(
+                connector.get("offset"),
+                expected_offset,
+                f"Joint output {name!r} connector {index} offset",
+            )
+            for frame_name in ("local_frame", "global_frame"):
+                _assembly_placement_fact(
                     connector.get(frame_name),
                     f"Joint output {name!r} connector {index} {frame_name}",
                 )
-                if frame_name == "offset":
-                    declared_offset = connector_properties.get("offset")
-                    if not isinstance(declared_offset, dict) or frame[
-                        "position_mm"
-                    ] != list(declared_offset.get("position") or []):
-                        raise ValueError(
-                            f"Joint output {name!r} connector {index} offset "
-                            "disagrees with its definition."
-                        )
             if str(connector.get("geometry_type") or "") != expected_geometry_type:
                 raise ValueError(
                     f"Joint output {name!r} connector {index} reports the wrong "
                     "geometry type."
                 )
+            connector_contracts.append(expected_connector_contract)
 
-        expected_compatibility = _assembly_compatibility(kind, connectors)
+        expected_compatibility = _assembly_compatibility(kind, connector_contracts)
         if compatibility != expected_compatibility:
             raise ValueError(
                 f"Joint output {name!r} compatibility metadata was altered."
@@ -8234,6 +8983,7 @@ def _validate_assembly_execution(
     )
 
     simulation_summary = None
+    motion_records: list[dict[str, Any]] = []
     if simulations:
         simulation_item = simulations[0]
         simulation_name = str(simulation_item["name"])
@@ -8258,11 +9008,12 @@ def _validate_assembly_execution(
             "frames_per_second",
             "estimated_frame_limit",
         }
+        optional_simulation_properties = {"label", "motion_names"}
         if (
             not isinstance(simulation_properties, dict)
             or not required_simulation_properties <= set(simulation_properties)
             or set(simulation_properties) - required_simulation_properties
-            not in (set(), {"label"})
+            - optional_simulation_properties
         ):
             raise ValueError(
                 f"Simulation output {simulation_name!r} has malformed properties."
@@ -8270,6 +9021,14 @@ def _validate_assembly_execution(
         graph_motion_names = [
             str(item) for item in list(assembly_data.get("motion_outputs") or [])
         ]
+        declared_motion_names = simulation_properties.get("motion_names")
+        if declared_motion_names is not None and list(declared_motion_names) != (
+            graph_motion_names
+        ):
+            raise ValueError(
+                f"Simulation output {simulation_name!r} changed its stable motion "
+                "member identities."
+            )
         motion_definitions = simulation_properties.get("motions")
         if not isinstance(motion_definitions, list) or motion_definitions != [
             by_name[name].get("definition") for name in graph_motion_names
@@ -8314,7 +9073,6 @@ def _validate_assembly_execution(
                 "schedule."
             )
 
-        motion_records: list[dict[str, Any]] = []
         seen_drives: set[tuple[str, str]] = set()
         for motion_name in graph_motion_names:
             item = by_name[motion_name]
@@ -8661,6 +9419,63 @@ def _validate_assembly_execution(
             "The Assembly worker claimed a required solution without a clean native "
             "solver result."
         )
+    mechanism_scenario = _assembly_shared_mechanism_scenario(
+        assembly_item=assembly_item,
+        diagnostics_item=diagnostics_item,
+        component_names=component_names,
+        joint_names=joint_names,
+        motion_names=graph_motion_names,
+        simulation_item=(simulations[0] if simulations else None),
+        by_name=by_name,
+        joint_records=joint_records,
+    )
+    mechanism_solve_report = normalize_mechanism_solve_report(
+        mechanism_scenario,
+        {
+            "schema": MECHANISM_SOLVE_REPORT_SCHEMA,
+            "scenario_sha256": mechanism_scenario_sha256(mechanism_scenario),
+            "status": expected_status,
+            "solver_code": solver_code,
+            "solver_verdict": expected_verdict,
+            "require_solved": require_solved,
+            "component_count": len(components),
+            "joint_count": len(joints),
+            "grounded_components": grounded,
+            "native_diagnostics": native,
+            "component_placements": component_placements,
+            "component_occurrences": {
+                name: list(component_metadata[name].get("solved_occurrences") or [])
+                for name in component_names
+            },
+            "joint_dependency_issues": expected_dependency_issues,
+        },
+    )
+    verification_summaries = _validate_assembly_mechanism_verifications(
+        prepared,
+        verifications,
+        scenario=mechanism_scenario,
+        solve_report=mechanism_solve_report,
+        assembly_item=assembly_item,
+        assembly_definition=assembly_definition,
+        by_name=by_name,
+        component_names=component_names,
+        component_placements=component_placements,
+        component_sources=component_sources,
+        component_metadata=component_metadata,
+    )
+    if verification_summaries:
+        if (
+            diagnostics.get("verifications") != verification_summaries
+            or validation.get("verifications") != verification_summaries
+        ):
+            raise ValueError(
+                "The Assembly mechanism-verification summaries are inconsistent "
+                "across worker outputs."
+            )
+    elif "verifications" in diagnostics or "verifications" in validation:
+        raise ValueError(
+            "The Assembly diagnostics report undeclared mechanism verifications."
+        )
     expected_validation = {
         "status": expected_status,
         "solver_code": solver_code,
@@ -8672,6 +9487,9 @@ def _validate_assembly_execution(
         "component_placements": component_placements,
         "component_occurrence_counts": expected_occurrence_counts,
         "joint_dependency_issues": expected_dependency_issues,
+        "internal_member_outputs": [
+            str(item["name"]) for item in outputs if item.get("internal") is True
+        ],
     }
     if simulation_summary is not None:
         expected_validation["simulation"] = simulation_summary
@@ -8679,6 +9497,8 @@ def _validate_assembly_execution(
         expected_validation["exploded_views"] = exploded_view_summaries
     if bom_summaries:
         expected_validation["boms"] = bom_summaries
+    if verification_summaries:
+        expected_validation["verifications"] = verification_summaries
     for field, expected_value in expected_validation.items():
         if validation.get(field) != expected_value:
             raise ValueError(
@@ -11203,9 +12023,13 @@ def _validate_definition_value(
     depth: int = 0,
 ) -> None:
     extra_depth = {
+        # Complex mechanical definitions remain bounded by the 256 KiB source
+        # and input limits, graph validation, and worker resource limits. A
+        # twelve-level Part Design ceiling rejected ordinary nested feature
+        # graphs long before those real safety boundaries were approached.
+        "partdesign": 56,
         "assembly": 12,
         "surface": 64,
-        "bim": 24,
         "mesh": 32,
         "inspection": 16,
         "fem": 16,
@@ -11231,15 +12055,54 @@ def _validate_definition_value(
             _validate_definition_value(item, prepared, f"{path}[{index}]", depth + 1)
         return
     if isinstance(value, dict):
-        if set(value) == {"document_uid", "object_name"}:
-            if str(value["document_uid"]) != str(prepared["document_uid"]):
+        if is_document_reference(value):
+            clean_reference = normalize_document_reference(value)
+            if (
+                prepared["pack"].domain == "assembly"
+                and clean_reference["document_uid"] == "freecad-fasteners"
+                and re.fullmatch(
+                    r"freecad-fasteners:[0-9a-f]{64}",
+                    clean_reference["object_name"],
+                )
+            ):
+                # This non-document identity is independently bound to an exact
+                # bundled catalog definition and generated BREP by
+                # _validate_assembly_execution before structured-data traversal.
+                return
+            if prepared["pack"].domain == "assembly":
+                authenticated = next(
+                    (
+                        item
+                        for item in list(prepared.get("resolved_references") or [])
+                        if str(item.get("document_uid") or "")
+                        == clean_reference["document_uid"]
+                        and str(item.get("object_name") or "")
+                        == clean_reference["object_name"]
+                    ),
+                    None,
+                )
+                if authenticated is None:
+                    raise ValueError(
+                        f"{path} refers to an unauthenticated Assembly component."
+                    )
+                if (
+                    clean_reference.get("document_path")
+                    and str(authenticated.get("document_path") or "")
+                    != clean_reference["document_path"]
+                ):
+                    raise ValueError(
+                        f"{path} changed the authenticated component document_path."
+                    )
+                return
+            if clean_reference["document_uid"] != str(prepared["document_uid"]):
                 raise ValueError(f"{path} refers to a different document.")
             names = {
                 str(item.get("name") or "") for item in prepared["document_objects"]
             }
-            if str(value["object_name"]) not in names:
+            if clean_reference["object_name"] not in names:
                 raise ValueError(
-                    f"{path} refers to missing object {value['object_name']!r}."
+                    f"{path} refers to missing object "
+                    f"{clean_reference['object_name']!r}."
                 )
             return
         for key, item in value.items():
@@ -11696,10 +12559,7 @@ def _validate_fem_execution(
             if len(material_names) == 1
             else (unassigned[0] if len(unassigned) == 1 else "")
         )
-        if (
-            len(unassigned) > 1
-            or value["default_material_output"] != expected_default
-        ):
+        if len(unassigned) > 1 or value["default_material_output"] != expected_default:
             raise ValueError(f"{context} has an ambiguous default material.")
         element_total = 0
         for index, (row, material_name, mode) in enumerate(
@@ -11815,9 +12675,7 @@ def _validate_fem_execution(
                     f"FEM material output {name!r} disagrees with its definition."
                 )
             expected_assignments = []
-            for index, assignment in enumerate(
-                properties.get("assignments") or []
-            ):
+            for index, assignment in enumerate(properties.get("assignments") or []):
                 target, descriptor = expected_reference_identity(
                     assignment["target"],
                     context=f"outputs.{name}.assignments[{index}].target",
@@ -11829,9 +12687,7 @@ def _validate_fem_execution(
                         "resolved_subelements": expected_selection(
                             descriptor,
                             assignment["selection"],
-                            context=(
-                                f"outputs.{name}.assignments[{index}].selection"
-                            ),
+                            context=(f"outputs.{name}.assignments[{index}].selection"),
                         ),
                     }
                 )
@@ -11904,9 +12760,7 @@ def _validate_fem_execution(
                 or len(subelements) != len(set(subelements))
                 or any(
                     not isinstance(value, str)
-                    or re.fullmatch(
-                        r"(?:Solid|Face|Edge|Vertex)[1-9][0-9]*", value
-                    )
+                    or re.fullmatch(r"(?:Solid|Face|Edge|Vertex)[1-9][0-9]*", value)
                     is None
                     for value in subelements
                 )
@@ -12955,10 +13809,8 @@ def _validate_cam_execution(
             or type(simulation.get("executed_sweeps")) is not int
             or type(simulation.get("cutting_sweeps")) is not int
             or int(simulation["cutting_sweeps"]) <= 0
-            or int(simulation["executed_sweeps"])
-            < int(simulation["cutting_sweeps"])
-            or int(simulation["executed_sweeps"])
-            > 4 * int(simulation["command_count"])
+            or int(simulation["executed_sweeps"]) < int(simulation["cutting_sweeps"])
+            or int(simulation["executed_sweeps"]) > 4 * int(simulation["command_count"])
             or simulation.get("unsupported_commands") != []
             or not isinstance(collision, dict)
             or type(collision.get("protected_model_collision")) is not bool
@@ -12990,8 +13842,7 @@ def _validate_cam_execution(
             not isinstance(stock_simulation.get("object"), str)
             or not stock_simulation["object"]
             or stock_simulation.get("method") != "PathSimulator height field"
-            or stock_simulation.get("volume_method")
-            != "height_field_cell_quadrature"
+            or stock_simulation.get("volume_method") != "height_field_cell_quadrature"
             or not isinstance(grid, list)
             or len(grid) != 2
             or any(type(item) is not int or item < 1 for item in grid)
@@ -13020,14 +13871,11 @@ def _validate_cam_execution(
             context=f"outputs.{name}.simulation.stock.resolution_mm",
             minimum=0.0,
         )
-        if (
-            endpoint_tolerance <= 0.0
-            or not math.isclose(
-                resolution,
-                requested_simulation_resolution,
-                rel_tol=1.0e-6,
-                abs_tol=1.0e-7,
-            )
+        if endpoint_tolerance <= 0.0 or not math.isclose(
+            resolution,
+            requested_simulation_resolution,
+            rel_tol=1.0e-6,
+            abs_tol=1.0e-7,
         ):
             raise ValueError(
                 f"CAM operation {name!r} changed its simulation resolution."
@@ -13319,8 +14167,7 @@ def _validate_cam_execution(
         or postprocess.get("machine_configured") is not False
         or postprocess.get("machine_name") != ""
         or postprocess.get("machine_limits_checked") is not False
-        or postprocess.get("configuration_scope")
-        != "generic_postprocessor_defaults"
+        or postprocess.get("configuration_scope") != "generic_postprocessor_defaults"
     ):
         raise ValueError("The CAM postprocessed artifact is unauthenticated.")
     sections = postprocess.get("sections")
@@ -13446,7 +14293,9 @@ def _techdraw_descriptor_number(
         or not math.isfinite(float(value))
         or not minimum <= float(value) <= maximum
     ):
-        raise ValueError(f"{path} must be a finite number from {minimum:g} to {maximum:g}.")
+        raise ValueError(
+            f"{path} must be a finite number from {minimum:g} to {maximum:g}."
+        )
     return float(value)
 
 
@@ -13490,9 +14339,7 @@ def _techdraw_descriptor_mapping(value: Any, *, path: str) -> dict[str, Any]:
             or re.fullmatch(r"(?:Edge|Vertex)[1-9][0-9]*", subelement) is None
         ):
             raise ValueError(f"{candidate_path} is not an exact source subelement.")
-        candidates.append(
-            {"object_name": object_name, "subelement": subelement}
-        )
+        candidates.append({"object_name": object_name, "subelement": subelement})
     if (
         (status == "exact" and len(candidates) != 1)
         or (status == "ambiguous" and len(candidates) < 2)
@@ -13527,7 +14374,11 @@ def _techdraw_validate_edge_descriptor(
         "source_mapping",
     }
     optional = {"center_2d", "radius_view_mm"}
-    if not isinstance(value, dict) or not required <= set(value) or set(value) - required - optional:
+    if (
+        not isinstance(value, dict)
+        or not required <= set(value)
+        or set(value) - required - optional
+    ):
         raise ValueError(f"{path} has malformed projected-edge fields.")
     geometry_type = value.get("geometry_type")
     if geometry_type not in {
@@ -13595,9 +14446,7 @@ def _techdraw_validate_edge_descriptor(
         raise ValueError(f"{path}.bounds_2d extents are inconsistent.")
     clean["bounds_2d"] = clean_bounds
     for field in ("start_2d", "end_2d", "midpoint_2d"):
-        clean[field] = _techdraw_descriptor_point(
-            value[field], path=f"{path}.{field}"
-        )
+        clean[field] = _techdraw_descriptor_point(value[field], path=f"{path}.{field}")
     clean["source_mapping"] = _techdraw_descriptor_mapping(
         value["source_mapping"], path=f"{path}.source_mapping"
     )
@@ -14320,6 +15169,403 @@ def _validate_techdraw_execution(
     return dict(validation)
 
 
+def _validated_partdesign_history_reference(
+    value: Any,
+    *,
+    object_names: set[str],
+    external_references: Mapping[tuple[str, str], Mapping[str, Any]],
+    path: str,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{path} must be an object or null.")
+    scope = str(value.get("scope") or "")
+    if scope in {"body", "origin"}:
+        if set(value) != {"scope"}:
+            raise ValueError(f"{path} has unexpected {scope} reference fields.")
+        return {"scope": scope}
+    if scope == "origin_feature":
+        if set(value) != {"scope", "index", "role"}:
+            raise ValueError(f"{path} has malformed origin-feature fields.")
+        index = value.get("index")
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or not 0 <= index <= 31
+        ):
+            raise ValueError(f"{path}.index is invalid.")
+        role = str(value.get("role") or "")
+        if not role or len(role) > 128:
+            raise ValueError(f"{path}.role is invalid.")
+        return {"scope": scope, "index": index, "role": role}
+    if scope == "history":
+        if set(value) != {"scope", "name"}:
+            raise ValueError(f"{path} has malformed history-reference fields.")
+        name = str(value.get("name") or "")
+        if name not in object_names:
+            raise ValueError(f"{path} refers to unknown history object {name!r}.")
+        return {"scope": scope, "name": name}
+    if scope == "external_reference":
+        if set(value) != {
+            "scope",
+            "document_uid",
+            "object_name",
+            "selection",
+        }:
+            raise ValueError(f"{path} has malformed external-reference fields.")
+        document_uid = str(value.get("document_uid") or "")
+        object_name = str(value.get("object_name") or "")
+        reference = external_references.get((document_uid, object_name))
+        if reference is None:
+            raise ValueError(
+                f"{path} was not authenticated as a prepared input reference."
+            )
+        selection = value.get("selection")
+        if not isinstance(selection, Mapping):
+            raise ValueError(f"{path}.selection must be an object.")
+        selection_type = str(selection.get("type") or "")
+        if selection_type == "subelements":
+            if set(selection) != {"type", "subelements"} or bool(
+                reference.get("transient_topology")
+            ):
+                raise ValueError(
+                    f"{path}.selection is not a stable subelement contract."
+                )
+            subelements = selection.get("subelements")
+            if not isinstance(subelements, list) or not 1 <= len(subelements) <= 4:
+                raise ValueError(f"{path}.selection.subelements is invalid.")
+        elif selection_type == "published_interface":
+            if set(selection) != {"type", "interface_name"}:
+                raise ValueError(f"{path}.selection has malformed interface fields.")
+            interfaces = reference.get("published_interfaces")
+            if (
+                not isinstance(interfaces, Mapping)
+                or str(selection.get("interface_name") or "") not in interfaces
+            ):
+                raise ValueError(f"{path}.selection names an unavailable interface.")
+        else:
+            raise ValueError(
+                f"{path}.selection has unsupported type {selection_type!r}."
+            )
+        return {
+            "scope": scope,
+            "document_uid": document_uid,
+            "object_name": object_name,
+            "selection": dict(selection),
+        }
+    raise ValueError(f"{path} has unsupported reference scope {scope!r}.")
+
+
+def _validated_partdesign_history_subelements(
+    value: Any,
+    *,
+    object_names: set[str],
+    external_references: Mapping[tuple[str, str], Mapping[str, Any]],
+    path: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "target",
+        "subelements",
+    }:
+        raise ValueError(f"{path} must contain target and subelements.")
+    raw_subelements = value.get("subelements")
+    if not isinstance(raw_subelements, list) or len(raw_subelements) > 256:
+        raise ValueError(f"{path}.subelements is invalid.")
+    subelements = [str(item) for item in raw_subelements]
+    if any(len(item) > 1024 for item in subelements):
+        raise ValueError(f"{path}.subelements contains an oversized name.")
+    return {
+        "target": _validated_partdesign_history_reference(
+            value.get("target"),
+            object_names=object_names,
+            external_references=external_references,
+            path=f"{path}.target",
+        ),
+        "subelements": subelements,
+    }
+
+
+def _validated_partdesign_history_links(
+    value: Any,
+    *,
+    object_names: set[str],
+    external_references: Mapping[tuple[str, str], Mapping[str, Any]],
+    path: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or len(value) > 512:
+        raise ValueError(f"{path} must be a bounded object.")
+    result: dict[str, Any] = {}
+    for raw_name, raw_specification in value.items():
+        name = str(raw_name)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError(f"{path} has invalid property name {name!r}.")
+        if not isinstance(raw_specification, Mapping) or set(raw_specification) != {
+            "kind",
+            "read_only",
+            "value",
+        }:
+            raise ValueError(f"{path}.{name} has malformed fields.")
+        kind = str(raw_specification.get("kind") or "")
+        read_only = raw_specification.get("read_only")
+        if not isinstance(read_only, bool):
+            raise ValueError(f"{path}.{name}.read_only must be boolean.")
+        raw = raw_specification.get("value")
+        if kind == "link":
+            clean = _validated_partdesign_history_reference(
+                raw,
+                object_names=object_names,
+                external_references=external_references,
+                path=f"{path}.{name}.value",
+            )
+        elif kind == "link_list":
+            if not isinstance(raw, list) or len(raw) > 4096:
+                raise ValueError(f"{path}.{name}.value is invalid.")
+            clean = [
+                _validated_partdesign_history_reference(
+                    item,
+                    object_names=object_names,
+                    external_references=external_references,
+                    path=f"{path}.{name}.value[{index}]",
+                )
+                for index, item in enumerate(raw)
+            ]
+        elif kind == "link_sub":
+            clean = (
+                None
+                if raw is None
+                else _validated_partdesign_history_subelements(
+                    raw,
+                    object_names=object_names,
+                    external_references=external_references,
+                    path=f"{path}.{name}.value",
+                )
+            )
+        elif kind == "link_sub_list":
+            if not isinstance(raw, list) or len(raw) > 4096:
+                raise ValueError(f"{path}.{name}.value is invalid.")
+            clean = [
+                _validated_partdesign_history_subelements(
+                    item,
+                    object_names=object_names,
+                    external_references=external_references,
+                    path=f"{path}.{name}.value[{index}]",
+                )
+                for index, item in enumerate(raw)
+            ]
+        else:
+            raise ValueError(f"{path}.{name} has unsupported link kind {kind!r}.")
+        result[name] = {
+            "kind": kind,
+            "read_only": read_only,
+            "value": clean,
+        }
+    return result
+
+
+def _validate_partdesign_native_history(
+    prepared: Mapping[str, Any],
+    execution: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Load the worker's native Body snapshots before entering the document thread."""
+
+    metadata = execution.get("partdesign_native_history")
+    if metadata is None:
+        # Additive compatibility for attempts made by a pre-history worker.
+        return None
+    expected_fields = {
+        "schema",
+        "artifact_path",
+        "artifact_sha256",
+        "artifact_bytes",
+        "outputs",
+    }
+    if not isinstance(metadata, Mapping) or set(metadata) != expected_fields:
+        raise ValueError("Part Design native-history metadata is malformed.")
+    if metadata.get("schema") != _PARTDESIGN_NATIVE_HISTORY_SCHEMA:
+        raise ValueError("Part Design native-history schema is unsupported.")
+    expected_names = [str(item["name"]) for item in list(prepared["expected_outputs"])]
+    if metadata.get("outputs") != expected_names:
+        raise ValueError("Part Design native history changed output identity.")
+
+    staging = Path(str(prepared["staging"])).resolve()
+    raw_relative = Path(str(metadata.get("artifact_path") or ""))
+    if raw_relative.is_absolute():
+        raise ValueError("Part Design native-history path must be relative.")
+    artifact = (staging / raw_relative).resolve()
+    if staging not in artifact.parents or not artifact.is_file():
+        raise ValueError("Part Design native-history artifact is missing.")
+    artifact_size = artifact.stat().st_size
+    reported_size = metadata.get("artifact_bytes")
+    if (
+        isinstance(reported_size, bool)
+        or not isinstance(reported_size, int)
+        or reported_size != artifact_size
+        or not 0 < artifact_size <= _MAX_PARTDESIGN_NATIVE_HISTORY_BYTES
+    ):
+        raise ValueError("Part Design native-history artifact size is invalid.")
+    encoded = artifact.read_bytes()
+    digest = hashlib.sha256(encoded).hexdigest()
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", str(metadata.get("artifact_sha256") or ""))
+        or digest != metadata["artifact_sha256"]
+    ):
+        raise ValueError("Part Design native-history artifact digest changed.")
+    try:
+        payload = json.loads(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Part Design native-history artifact is invalid JSON: {exc}"
+        ) from exc
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != {"schema", "outputs"}
+        or payload.get("schema") != _PARTDESIGN_NATIVE_HISTORY_SCHEMA
+        or not isinstance(payload.get("outputs"), list)
+    ):
+        raise ValueError("Part Design native-history payload is malformed.")
+    histories = list(payload["outputs"])
+    if len(histories) != len(expected_names) or any(
+        not isinstance(item, Mapping) for item in histories
+    ):
+        raise ValueError("Part Design native-history outputs are malformed.")
+    if [str(item.get("output_name") or "") for item in histories] != expected_names:
+        raise ValueError("Part Design native-history payload changed output order.")
+
+    clean_histories: list[dict[str, Any]] = []
+    external_references = {
+        (
+            str(item.get("document_uid") or ""),
+            str(item.get("object_name") or ""),
+        ): item
+        for item in list(prepared.get("resolved_references") or [])
+        if isinstance(item, Mapping)
+    }
+    body_names: set[str] = set()
+    document_object_names: set[str] = set()
+    total_objects = 0
+    total_content_bytes = 0
+    for history_index, history in enumerate(histories):
+        path = f"partdesign_native_history.outputs[{history_index}]"
+        if not isinstance(history, Mapping) or set(history) != {
+            "output_name",
+            "body_name",
+            "body_label",
+            "representation",
+            "tip_name",
+            "objects",
+        }:
+            raise ValueError(f"{path} has malformed fields.")
+        body_name = str(history.get("body_name") or "")
+        if (
+            not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", body_name)
+            or body_name in body_names
+            or body_name in document_object_names
+        ):
+            raise ValueError(f"{path}.body_name is invalid or duplicated.")
+        body_names.add(body_name)
+        document_object_names.add(body_name)
+        body_label = str(history.get("body_label") or "")
+        if not body_label or len(body_label) > 4096:
+            raise ValueError(f"{path}.body_label is invalid.")
+        representation = str(history.get("representation") or "")
+        if representation not in {"body", "publish"}:
+            raise ValueError(f"{path}.representation is invalid.")
+        raw_objects = history.get("objects")
+        if not isinstance(raw_objects, list):
+            raise ValueError(f"{path}.objects must be an array.")
+        total_objects += len(raw_objects)
+        if total_objects > _MAX_PARTDESIGN_NATIVE_HISTORY_OBJECTS:
+            raise ValueError("Part Design native history contains too many objects.")
+
+        if any(not isinstance(item, Mapping) for item in raw_objects):
+            raise ValueError(f"{path}.objects contains a malformed entry.")
+        names = [str(item.get("name") or "") for item in raw_objects]
+        object_names = set(names)
+        if (
+            len(object_names) != len(names)
+            or bool(document_object_names.intersection(object_names))
+            or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in names)
+        ):
+            raise ValueError(f"{path}.objects has invalid or duplicate names.")
+        document_object_names.update(object_names)
+        tip_name = str(history.get("tip_name") or "")
+        if tip_name and tip_name not in object_names:
+            raise ValueError(f"{path}.tip_name is not a history object.")
+
+        clean_objects = []
+        for object_index, item in enumerate(raw_objects):
+            object_path = f"{path}.objects[{object_index}]"
+            if not isinstance(item, Mapping) or set(item) != {
+                "name",
+                "label",
+                "type_id",
+                "content",
+                "content_sha256",
+                "links",
+                "visible",
+            }:
+                raise ValueError(f"{object_path} has malformed fields.")
+            type_id = str(item.get("type_id") or "")
+            if type_id not in _PARTDESIGN_NATIVE_HISTORY_TYPES:
+                raise ValueError(
+                    f"{object_path}.type_id {type_id!r} is not a native Body object."
+                )
+            label = str(item.get("label") or "")
+            if len(label) > 4096:
+                raise ValueError(f"{object_path}.label is oversized.")
+            raw_content = item.get("content")
+            if not isinstance(raw_content, str):
+                raise ValueError(f"{object_path}.content must be base64 text.")
+            try:
+                content = base64.b64decode(raw_content, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError(f"{object_path}.content is invalid base64.") from exc
+            total_content_bytes += len(content)
+            if (
+                not content
+                or total_content_bytes > _MAX_PARTDESIGN_NATIVE_HISTORY_BYTES
+                or hashlib.sha256(content).hexdigest()
+                != str(item.get("content_sha256") or "")
+            ):
+                raise ValueError(
+                    f"{object_path}.content failed bounded digest validation."
+                )
+            if not isinstance(item.get("visible"), bool):
+                raise ValueError(f"{object_path}.visible must be boolean.")
+            clean_objects.append(
+                {
+                    "name": names[object_index],
+                    "label": label,
+                    "type_id": type_id,
+                    "content": content,
+                    "links": _validated_partdesign_history_links(
+                        item.get("links"),
+                        object_names=object_names,
+                        external_references=external_references,
+                        path=f"{object_path}.links",
+                    ),
+                    "visible": bool(item["visible"]),
+                }
+            )
+        clean_histories.append(
+            {
+                "output_name": expected_names[history_index],
+                "body_name": body_name,
+                "body_label": body_label,
+                "representation": representation,
+                "tip_name": tip_name,
+                "objects": clean_objects,
+            }
+        )
+    return {
+        "schema": _PARTDESIGN_NATIVE_HISTORY_SCHEMA,
+        "artifact_sha256": digest,
+        "artifact_bytes": artifact_size,
+        "outputs": clean_histories,
+    }
+
+
 def validate_candidate(
     prepared: Mapping[str, Any], execution: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -14345,6 +15591,11 @@ def validate_candidate(
         )
     staging = Path(str(prepared["staging"])).resolve()
     validated: list[dict[str, Any]] = []
+    partdesign_material_resolver = None
+    if pack.domain == "partdesign":
+        from vibescript_partdesign_worker import PartDesignMaterialResolver
+
+        partdesign_material_resolver = PartDesignMaterialResolver()
     for declaration, raw in zip(expected, outputs):
         if not isinstance(raw, dict) or raw.get("type") != declaration["type"]:
             raise ValueError(f"Output {declaration['name']!r} has the wrong type.")
@@ -14419,9 +15670,13 @@ def validate_candidate(
                 history = data.get("feature_history")
                 sketches = data.get("sketches")
                 interfaces = data.get("interfaces")
+                feature_count = data.get("feature_count")
                 if (
                     not isinstance(history, list)
-                    or int(data.get("feature_count") or -1) != len(history)
+                    or isinstance(feature_count, bool)
+                    or not isinstance(feature_count, int)
+                    or feature_count < 0
+                    or feature_count != len(history)
                     or not isinstance(sketches, list)
                     or not isinstance(interfaces, dict)
                     or any(
@@ -14437,6 +15692,20 @@ def validate_candidate(
                         f"Part Design output {declaration['name']!r} has malformed "
                         "native feature or sketch evidence."
                     )
+                assert partdesign_material_resolver is not None
+                expected_presentation, native_material = (
+                    partdesign_material_resolver.resolve(
+                        definition,
+                        output_name=str(declaration["name"]),
+                    )
+                )
+                if data.get("presentation") != expected_presentation:
+                    raise ValueError(
+                        f"Part Design output {declaration['name']!r} Material/"
+                        "appearance evidence differs between worker and host."
+                    )
+                item["partdesign_presentation"] = expected_presentation
+                item["partdesign_native_material"] = native_material
             item["facts"] = facts
             item["detached_shape"] = shape
         elif output_type == "mesh" and pack.domain != "fem":
@@ -14544,13 +15813,14 @@ def validate_candidate(
                 )
         validated.append(item)
     partdesign_validation = None
+    partdesign_native_history = None
     assembly_validation = None
+    assembly_members: list[dict[str, Any]] = []
     sketch_validation = None
     draft_validation = None
     surface_validation = None
     spreadsheet_validation = None
     material_validation = None
-    bim_validation = None
     mesh_validation = None
     meshpart_validation = None
     points_validation = None
@@ -14567,15 +15837,94 @@ def validate_candidate(
         if not isinstance(partdesign_validation, dict):
             raise ValueError("The Part Design worker returned no domain validation.")
         reported = partdesign_validation.get("outputs")
-        if not isinstance(reported, list) or [item.get("name") for item in reported] != [
-            item["name"] for item in validated
-        ]:
+        if not isinstance(reported, list) or [
+            item.get("name") for item in reported
+        ] != [item["name"] for item in validated]:
             raise ValueError("Part Design domain validation changed output identity.")
+        partdesign_native_history = _validate_partdesign_native_history(
+            prepared,
+            execution,
+        )
     elif pack.domain == "assembly":
+        raw_members = execution.get("assembly_members", [])
+        if not isinstance(raw_members, list) or len(raw_members) > 8192:
+            raise ValueError("The Assembly worker returned malformed owned members.")
+        public_names = {str(item["name"]) for item in validated}
+        member_names: set[str] = set()
+        allowed_member_types = {"component_link", "joint", "motion"}
+        allowed_fields = {
+            "component_link": {
+                "name",
+                "type",
+                "definition",
+                "internal",
+                "assembly_data",
+                "solved_placement_matrix",
+            },
+            "joint": {
+                "name",
+                "type",
+                "definition",
+                "internal",
+                "assembly_data",
+                "connector_frames",
+            },
+            "motion": {
+                "name",
+                "type",
+                "definition",
+                "internal",
+                "assembly_data",
+            },
+        }
+        for index, raw_member in enumerate(raw_members):
+            if not isinstance(raw_member, dict):
+                raise ValueError(f"Assembly-owned member {index} is malformed.")
+            member = dict(raw_member)
+            name = str(member.get("name") or "")
+            output_type = str(member.get("type") or "")
+            if (
+                not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name)
+                or name in public_names
+                or name in member_names
+                or output_type not in allowed_member_types
+                or member.get("internal") is not True
+                or set(member) != allowed_fields[output_type]
+            ):
+                raise ValueError(
+                    f"Assembly-owned member {index} has an invalid identity or shape."
+                )
+            definition = member.get("definition")
+            _validate_definition_value(
+                definition,
+                prepared,
+                f"assembly_members.{name}.definition",
+            )
+            if (
+                not isinstance(definition, dict)
+                or definition.get("domain") != "assembly"
+                or definition.get("output_type") != output_type
+            ):
+                raise ValueError(
+                    f"Assembly-owned member {name!r} has the wrong definition type."
+                )
+            encoded = json.dumps(
+                definition,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            if len(encoded) > _STRUCTURED_DEFINITION_LIMIT:
+                raise ValueError(
+                    f"Assembly-owned member {name!r} definition is too large."
+                )
+            member_names.add(name)
+            assembly_members.append(member)
         assembly_validation = _validate_assembly_execution(
             prepared,
             execution,
-            validated,
+            [*validated, *assembly_members],
         )
     elif pack.domain == "sketcher":
         sketch_validation = _validate_sketcher_execution(
@@ -14607,14 +15956,8 @@ def validate_candidate(
             execution,
             validated,
         )
-    elif pack.domain == "bim":
-        bim_validation = _validate_bim_execution(
-            prepared,
-            execution,
-            validated,
-        )
     elif pack.domain == "mesh":
-        mesh_validation = _validate_mesh_execution(
+        mesh_validation, meshpart_validation = _validate_mesh_workbench_execution(
             prepared,
             execution,
             validated,
@@ -14699,8 +16042,12 @@ def validate_candidate(
     }
     if partdesign_validation is not None:
         result["partdesign_validation"] = partdesign_validation
+    if partdesign_native_history is not None:
+        result["partdesign_native_history"] = partdesign_native_history
     if assembly_validation is not None:
         result["assembly_validation"] = assembly_validation
+    if assembly_members:
+        result["assembly_members"] = assembly_members
     if sketch_validation is not None:
         result["sketch_validation"] = sketch_validation
     if draft_validation is not None:
@@ -14711,8 +16058,6 @@ def validate_candidate(
         result["spreadsheet_validation"] = spreadsheet_validation
     if material_validation is not None:
         result["material_validation"] = material_validation
-    if bim_validation is not None:
-        result["bim_validation"] = bim_validation
     if mesh_validation is not None:
         result["mesh_validation"] = mesh_validation
     if meshpart_validation is not None:
@@ -14828,21 +16173,6 @@ def accept_candidate(
             "status": "accepted",
             "accepted_is_current": True,
             "next_write_expected_revision": revision,
-            "verification_call": {
-                "tool": "core.inspect",
-                "arguments": {
-                    "scope": "program",
-                    "target": program_id,
-                    "path": "",
-                    "offset": 0,
-                    "limit": 50,
-                    "attach": False,
-                },
-            },
-            "verification_goal": (
-                "Confirm accepted_revision equals working_revision and every declared "
-                "output has the expected stable live identity and accepted evidence."
-            ),
         },
     }
 
@@ -14870,8 +16200,9 @@ def capture_inspection_state(
     return captured
 
 
-
-def capture_editor_inspection_state(service: Any, domain: str, program_id: str) -> dict[str, Any]:
+def capture_editor_inspection_state(
+    service: Any, domain: str, program_id: str
+) -> dict[str, Any]:
     """Capture the minimum live state required by the human source editor.
 
     Provider inspection intentionally captures the broader operation contract.
@@ -14909,16 +16240,95 @@ def capture_editor_inspection_state(service: Any, domain: str, program_id: str) 
             tool_name,
             "DOMAIN_SURFACE_CHANGED",
             "surface",
-            "The active workbench and modeling engine no longer authorize this editor domain.",
+            "The active workbench no longer authorizes this editor API.",
             observed=resolution.summary(),
         )
     scope = service.project_scope_snapshot()
+    document_program = contracts.capture_document_program_payload(
+        doc,
+        clean_domain,
+        clean_program_id,
+    )
     return {
         "tool_name": tool_name,
         "pack": pack,
         "program_id": clean_program_id,
         "project_root": str(scope.get("root") or ""),
         "live_programs": _live_programs(doc, clean_domain),
+        "document_program": document_program,
+    }
+
+
+def capture_history_delete_state(
+    service: Any,
+    domain: str,
+    program_id: str,
+    expected_revision: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Capture one human History deletion independently of the active ribbon.
+
+    History is document-global. Deleting its exact source operation must not
+    become unavailable merely because the user switched from Model to another
+    workbench after selecting it.
+    """
+
+    clean_domain = str(domain or "").strip().lower()
+    clean_program_id = str(program_id or "").strip().lower()
+    if not _PROGRAM_ID.fullmatch(clean_program_id):
+        raise ValueError("A History VibeScript operation has an invalid program id.")
+    packs = [
+        pack
+        for pack in contracts.VIBESCRIPT_WORKBENCH_PACKS.values()
+        if pack.domain == clean_domain
+    ]
+    if len(packs) != 1:
+        raise ValueError(
+            f"No unique VibeScript domain is registered for {clean_domain!r}."
+        )
+    pack = packs[0]
+    doc = service._active_document()
+    if doc is None:
+        raise RuntimeError("No active document is available for History deletion.")
+    live_programs = _live_programs(doc, clean_domain)
+    live = [
+        item
+        for item in live_programs
+        if str(item.get("program_id") or "") == clean_program_id
+    ]
+    if len(live) != 1:
+        raise RuntimeError(
+            "The selected History operation does not resolve to one live "
+            "VibeScript program."
+        )
+    revisions = list(live[0].get("revisions") or [])
+    if len(revisions) != 1 or str(revisions[0]) != str(expected_revision or ""):
+        raise RuntimeError(
+            "The selected VibeScript program changed before History deletion."
+        )
+    scope = service.project_scope_snapshot()
+    return {
+        "tool_name": f"vibescript.{clean_domain}.delete_program",
+        "operation": "delete_program",
+        "arguments": {
+            "program_id": clean_program_id,
+            "expected_revision": str(expected_revision or ""),
+            "reason": str(reason or ""),
+        },
+        "pack": pack,
+        "project_root": str(scope.get("root") or ""),
+        "project_id": str(scope.get("project_id") or ""),
+        "document_name": str(getattr(doc, "Name", "") or ""),
+        "document_uid": str(getattr(doc, "Uid", "") or ""),
+        "document_revision": str(service.provider_document_revision()),
+        "live_programs": live_programs,
+        "document_program": contracts.capture_document_program_payload(
+            doc,
+            clean_domain,
+            clean_program_id,
+        ),
+        "surface": {"history_lifecycle": True},
+        "history_lifecycle": True,
     }
 
 
@@ -14926,7 +16336,7 @@ def complete_inspection(captured: Mapping[str, Any]) -> dict[str, Any]:
     pack: contracts.VibeScriptWorkbenchPack = captured["pack"]
     program_id = str(captured["program_id"])
     try:
-        manifest = _load_manifest(captured["project_root"], pack, program_id)
+        manifest = _load_captured_manifest(captured, pack, program_id)
     except Exception as exc:
         return _failure(
             str(captured["tool_name"]),
@@ -14945,7 +16355,27 @@ def complete_inspection(captured: Mapping[str, Any]) -> dict[str, Any]:
     )
     adapter = contracts.get_domain_adapter(pack.domain)
     assert adapter is not None
-    return adapter.inspect(dict(captured), manifest | {"live_state": live})
+    inspected = adapter.inspect(dict(captured), manifest | {"live_state": live})
+    document_program = captured.get("document_program")
+    raw_draft = (
+        str(document_program.get("editor_draft") or "")
+        if isinstance(document_program, Mapping)
+        else ""
+    )
+    if raw_draft and inspected.get("ok") is True:
+        try:
+            draft = contracts.decode_editor_draft(
+                raw_draft,
+                expected_program_id=program_id,
+                expected_domain=pack.domain,
+            )
+        except Exception as exc:
+            inspected["editor_draft_error"] = str(exc)
+        else:
+            program = inspected.get("program")
+            if isinstance(program, dict):
+                program["editor_draft"] = draft
+    return inspected
 
 
 def prepare_delete(captured: Mapping[str, Any]) -> dict[str, Any]:
@@ -14953,7 +16383,12 @@ def prepare_delete(captured: Mapping[str, Any]) -> dict[str, Any]:
     arguments = dict(captured["arguments"])
     program_id = str(arguments.get("program_id") or "").strip().lower()
     try:
-        manifest = _load_manifest(captured["project_root"], pack, program_id)
+        manifest = _load_captured_manifest(
+            captured,
+            pack,
+            program_id,
+            hydrate_document_contract=True,
+        )
     except Exception as exc:
         _raise(
             str(captured["tool_name"]),
@@ -15032,8 +16467,56 @@ class DeclarativeDomainAdapter:
             "workbench": self.pack.workbench,
             "program_schema": contracts.PROGRAM_SCHEMA,
             "runtime_exports": exports,
+            "api_groups": contracts.api_groups(self.pack),
             "accepted_output_types": list(self.pack.output_types),
             "source_globals": ["doc", "inputs", "api"],
+            "source_global_contracts": {
+                "inputs": (
+                    "Immutable values validated against this program's input_schema. "
+                    "Stable document-reference inputs contain only authenticated identity."
+                ),
+                "api": (
+                    "Immutable workbench API selected by the active ribbon. Read exact "
+                    "callables with vibescript.read_api(names=[...])."
+                ),
+                "doc": {
+                    "purpose": (
+                        "Read-only names and labels in the isolated candidate document. "
+                        "It does not expose Shapes, mutation, FreeCAD, or the live GUI document."
+                    ),
+                    "members": [
+                        "doc.Name",
+                        "doc.Objects",
+                        "doc.getObject(exact_name)",
+                        "object.Name",
+                        "object.Label",
+                        "object.TypeId",
+                    ],
+                },
+            },
+            "source_value_contract": {
+                "type": "DomainValue",
+                "purpose": (
+                    "Every api call returns an immutable declarative graph value; it is not "
+                    "live FreeCAD geometry and is evaluated only when reachable from result."
+                ),
+                "readable_fields": [
+                    "domain",
+                    "operation",
+                    "output_type",
+                    "arguments",
+                    "properties",
+                ],
+                "output_type_rule": (
+                    "Use output_type to distinguish profiles, Body features, standalone "
+                    "topology, checks, materials, occurrences, and other domain values. "
+                    "Pass only the exact types named by a callable signature or error."
+                ),
+                "identity_rule": (
+                    "Bind a returned value once and reuse that exact variable downstream. "
+                    "Recreating equivalent calls creates a different graph node."
+                ),
+            },
             "result_contract": (
                 "Assign result to a dict whose keys exactly match expected_outputs "
                 "in declared order and whose values come from this domain api."
@@ -15041,56 +16524,11 @@ class DeclarativeDomainAdapter:
             "instructions": self.pack.instructions,
             "model_operating_contract": {
                 "context_first": (
-                    "Read the injected vibescript_domain context before calling a write "
-                    "tool. Reuse a matching persisted program and copy candidate stable "
-                    "references exactly; do not invent document_uid or object_name values."
+                    "Each editable_sources item is one part or program. Use its exact "
+                    "source_id with vibescript.read_source before changing that code. "
+                    "Use vibescript.read_api when an exact callable or signature is "
+                    "missing. Never invent source ids, revisions, or API calls."
                 ),
-                "authoring_sequence": [
-                    {
-                        "step": 1,
-                        "action": "discover",
-                        "instruction": (
-                            "Read existing programs and domain candidates in the injected "
-                            "context. Inspect a matching program before deciding to mutate it."
-                        ),
-                    },
-                    {
-                        "step": 2,
-                        "action": "learn_api",
-                        "instruction": (
-                            "Use this describe_api response as the exact runtime contract; "
-                            "never guess exports, signatures, units, or output types."
-                        ),
-                    },
-                    {
-                        "step": 3,
-                        "action": "author",
-                        "instruction": (
-                            "Create only when no existing program owns the intent. Keep output "
-                            "names semantic and stable, and make result keys exactly match "
-                            "expected_outputs in the same order."
-                        ),
-                    },
-                    {
-                        "step": 4,
-                        "action": "repair",
-                        "instruction": (
-                            "On failure, use failure_stage, observed values, native diagnostics, "
-                            "retry.required_changes, and model_state. Repair the smallest exact "
-                            "cause against next_write_expected_revision; the prior accepted "
-                            "revision remains live."
-                        ),
-                    },
-                    {
-                        "step": 5,
-                        "action": "verify",
-                        "instruction": (
-                            "After a successful write, call the returned verification_call and "
-                            "confirm accepted_revision equals working_revision plus the domain's "
-                            "accepted live evidence."
-                        ),
-                    },
-                ],
                 "mutation_selection": {
                     "edit_source": (
                         "Use only for exact source-text changes while input_schema, inputs, "
@@ -15107,7 +16545,7 @@ class DeclarativeDomainAdapter:
                 },
                 "revision_rule": (
                     "Guard every mutation with the latest working_revision returned by a write "
-                    "or inspect_program. After a failed candidate this is the failed candidate "
+                    "or vibescript.read_source. After a failed candidate this is the failed candidate "
                     "revision, not the still-live accepted_revision."
                 ),
                 "input_schema_templates": {
@@ -15215,7 +16653,7 @@ class DeclarativeDomainAdapter:
                 **({"migration_required": True} if migration_required else {}),
                 "next_write_expected_revision": working_revision,
                 "mutation_selection": {
-                    "source_only": f"vibescript.{self.pack.domain}.edit_source",
+                    "source_only": "vibescript.edit_source",
                     "input_values_only": f"vibescript.{self.pack.domain}.set_inputs",
                     "contract_or_outputs": (
                         f"vibescript.{self.pack.domain}.reconfigure_program"
@@ -15493,10 +16931,9 @@ class PartDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "after_write": (
-                        "Call the write response's verification_call. Confirm the accepted "
-                        "and working revisions match, then verify every output's declared "
-                        "shape_type, validity, topology counts, volume/area/length as "
-                        "applicable, and bounds against the design intent."
+                        "Use the successful write result to verify each output's declared "
+                        "shape_type, validity, topology counts, applicable measurements, "
+                        "and bounds. Inspect only when a required detail is absent."
                     ),
                     "selection_repair": (
                         "For an index failure, use the reported available 1-based range and "
@@ -15528,9 +16965,9 @@ class PartDomainAdapter(DeclarativeDomainAdapter):
                         "Part operation."
                     ),
                     "rule": (
-                        "The model cannot switch workbench or engine. Explain the required "
-                        "handoff and ask the human to switch; never call or describe another "
-                        "domain from this Part surface."
+                        "The active workbench determines the available API. Use only this Part "
+                        "API and describe any required follow-on work without calling another "
+                        "workbench's tools."
                     ),
                 },
                 "recommended_patterns": [
@@ -15646,162 +17083,588 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
     production_ready: bool = True
 
     def describe_api(self) -> dict[str, Any]:
+        from vibescript_assembly_api import JOINT_TYPES
+
         description = super().describe_api()
         description.update(
             {
                 "api_contract": "vibecad-vibescript-partdesign-api-v2",
-                "units": {"length": "millimetres", "angle": "degrees"},
+                "units": {
+                    "length": "millimetres",
+                    "angle": "degrees",
+                    "tolerance": "millimetres",
+                    "display_rgb": "integer channels from 0 through 255",
+                    "transparency": "integer percentage from 0 through 100",
+                },
                 "evaluation_model": (
-                    "API calls build one immutable Body/sketch/feature graph. The graph "
-                    "is evaluated as native PartDesign and Sketcher objects in an isolated "
-                    "FreeCADCmd document; only exact validated single-solid BREP tips cross "
-                    "the publication boundary."
+                    "API calls build an immutable graph regenerated from inputs. "
+                    "Publication updates one global History operation and retains "
+                    "each output Body identity by result key."
                 ),
+                "authoring_priority": {
+                    "default": (
+                        "Use api.sketch plus native feature operations for solids defined "
+                        "by planar profiles. The source code is the editable "
+                        "parametric definition."
+                    ),
+                    "planar_profile_rule": (
+                        "Every planar feature profile is an api.sketch on a principal plane, "
+                        "an arbitrary placement, or a stable attached support; it is not a "
+                        "*_3d curve or api.wire."
+                    ),
+                    "direct_topology_exception": (
+                        "Use direct OCC topology only for nonplanar, imported, repair, "
+                        "standalone, or otherwise unrepresentable geometry."
+                    ),
+                    "do_not_regress": (
+                        "Do not replace valid native history or clear sketch-and-feature "
+                        "intent with direct topology merely to shorten source or bypass a "
+                        "failing feature."
+                    ),
+                    "verification": (
+                        "A sketch-driven Body must report its sketches and feature "
+                        "types in accepted validation evidence; an empty sketch list means "
+                        "the intended native profile history was not built."
+                    ),
+                },
                 "profile_contract": {
                     "geometry": (
-                        "Create geometry with point/line/arc/circle/ellipse/bspline and "
-                        "constraints with api.constraint, then pass those exact graph values "
-                        "to api.sketch."
+                        "point, line, arc, circle, ellipse, and bspline are 2D sketch geometry. "
+                        "Names ending in _3d and helix_curve create standalone spatial curves."
                     ),
                     "invariants": (
-                        "Set require_fully_constrained and require_closed_profile whenever "
-                        "the downstream feature depends on those invariants. Solver conflicts, "
-                        "redundancy, malformed constraints, DoF, and profile readiness are "
-                        "validated in the worker."
+                        "Constraints must reference the same geometry values passed to "
+                        "api.sketch. Material features require closed profiles. Set "
+                        "require_fully_constrained=True when all profile dimensions must be fixed."
                     ),
                 },
                 "feature_contract": {
-                    "additive": ["pad", "revolve", "loft"],
-                    "subtractive": ["pocket", "groove", "loft(subtractive=True)"],
-                    "transform": ["polar_pattern", "mirror"],
-                    "dressup": ["fillet", "chamfer"],
+                    "add_material": [
+                        "extrude(operation='add_material')",
+                        "revolve(operation='add_material')",
+                        "loft(operation='add_material')",
+                        "sweep(operation='add_material')",
+                        "helix(operation='add_material')",
+                    ],
+                    "remove_material": [
+                        "extrude(operation='remove_material')",
+                        "revolve(operation='remove_material')",
+                        "loft(operation='remove_material')",
+                        "sweep(operation='remove_material')",
+                        "helix(operation='remove_material')",
+                    ],
+                    "new_geometry": [
+                        "fastener",
+                        "involute_gear",
+                        "extrude(operation='new_solid')",
+                        "extrude(operation='new_surface')",
+                        "revolve(operation='new_solid')",
+                        "revolve(operation='new_surface')",
+                        "loft(operation='new_solid')",
+                        "loft(operation='new_surface')",
+                        "sweep(operation='new_solid')",
+                        "sweep(operation='new_surface')",
+                        "primitives and direct topology constructors",
+                    ],
+                    "combine": ["boolean", "compound", "general_fuse", "section"],
+                    "transform": [
+                        "polar_pattern",
+                        "linear_pattern",
+                        "multi_transform",
+                        "mirror",
+                        "transform",
+                    ],
+                    "dressup": [
+                        "fillet",
+                        "chamfer",
+                        "thickness",
+                        "hole",
+                        "fastener_hole",
+                        "draft",
+                    ],
                     "publication": (
-                        "Return api.body(final_feature, ...) for every declared solid. "
-                        "Keep result names stable across regeneration."
+                        "api.body publishes one connected solid as a stable Design "
+                        "Body. api.publish publishes standalone solid, shell, face, "
+                        "wire, or compound topology."
                     ),
                 },
                 "operation_selection": {
-                    "profile_geometry": (
-                        "Use point, line, arc, circle, ellipse, bspline, and "
-                        "external_geometry only for the exact native curve type needed."
+                    "material_intent": (
+                        "extrude, revolve, loft, and sweep use operation='new_solid', "
+                        "'new_surface', 'add_material', or 'remove_material'. helix accepts "
+                        "only add_material or remove_material."
                     ),
-                    "profile_constraints": (
-                        "Use the single api.constraint operation for geometric and "
-                        "dimensional intent; do not recreate geometry or invent native indexes."
+                    "connected_boolean": (
+                        "api.boolean performs union, subtract, or intersect. A solid result must "
+                        "be exactly one connected solid."
                     ),
-                    "add_material": "pad, revolve, loft(subtractive=False)",
-                    "remove_material": "pocket, groove, loft(subtractive=True)",
-                    "repeat_or_reflect": "polar_pattern or mirror",
-                    "edge_finish": "fillet or chamfer with one geometric query",
-                    "publish": "api.body",
+                    "disconnected_geometry": (
+                        "api.compound preserves separate shapes. Do not use disconnected shapes "
+                        "as additive Body features."
+                    ),
+                    "stable_selection": (
+                        "api.find_subelements creates count-guarded geometric selections. Raw "
+                        "FaceN and EdgeN names are not stable across regeneration."
+                    ),
+                    "verification": (
+                        "api.measure declares dimensional or topology checks passed to api.body "
+                        "or api.publish."
+                    ),
+                    "physical_material": (
+                        "api.material selects an exact catalog UUID and is passed as material= "
+                        "to api.body or api.publish."
+                    ),
+                    "visible_appearance": (
+                        "api.appearance defines color, transparency, display mode, visibility, "
+                        "and selection state. RGB channels are 0-255. Pass it as appearance= "
+                        "to api.body or api.publish."
+                    ),
+                    "standard_hardware": (
+                        "Use fastener_catalog.search for exact standard, thread, length, and "
+                        "option values. Create catalog hardware with api.fastener; never draw "
+                        "a standard fastener from primitives. Use api.fastener_hole to derive "
+                        "clearance, tapped, counterbore, or countersink dimensions from that "
+                        "same returned fastener value."
+                    ),
+                    "publish": "api.body for one solid Body; api.publish for standalone topology",
                     "redundancy_contract": (
-                        "Each native feature family has one model-facing operation. There "
-                        "are no rectangle, box, add-feature, recompute, update, or output "
-                        "aliases. Compose profiles from explicit geometry, reuse graph values, "
-                        "and publish only the final feature through api.body."
+                        "Use api.extrude for straight constant-cross-section additions and cuts, "
+                        "api.revolve for axial features, api.sweep when a profile follows a path, "
+                        "and api.loft only when the cross-section itself genuinely changes between "
+                        "section planes. Do not use api.loft as a shortcut for a wedge, dovetail, "
+                        "simple taper, or diagonal transition that api.sketch plus api.extrude, "
+                        "api.draft, api.chamfer, or a sketch cut expresses directly. Use "
+                        "api.boolean for union, subtraction, or intersection."
                     ),
                 },
                 "semantic_interfaces": {
                     "purpose": (
-                        "Declare mating, datum, load, drawing, and machining references in "
-                        "api.body(interfaces=...). Origin or geometric query selections are "
-                        "resolved against the accepted solid in the worker; raw FaceN/EdgeN "
-                        "interface declarations are forbidden."
+                        "Declare stable mating, datum, load, drawing, or machining references "
+                        "on api.body or api.publish with origin or geometric-query selections."
                     ),
                     "selection_modes": ["origin", "query"],
                 },
                 "publication_contract": {
                     "identity": (
-                        "Each program/output pair owns one stable native publication identity "
-                        "updated in place after worker validation."
+                        "Each program output has one stable native identity updated in place."
                     ),
-                    "shape": "exact OCC Solid containing exactly one valid solid",
-                    "gui_thread": (
-                        "The document thread applies detached validated shapes and metadata "
-                        "only; it performs no provider wait, subprocess wait, recompute-heavy "
-                        "feature construction, or artifact I/O."
+                    "shape": (
+                        "The declared type must match the OCC Solid, Shell, Face, Wire, or "
+                        "Compound result. A compound is not a solid."
+                    ),
+                    "presentation": (
+                        "Published material and appearance update in place and persist through "
+                        "save and reopen."
+                    ),
+                },
+                "domain_context": {
+                    "material_catalog": (
+                        "Call material_catalog.search with the required properties and pass one "
+                        "returned api.material constructor unchanged; never invent a UUID."
                     ),
                 },
                 "workbench_handoffs": {
                     "sketcher": (
-                        "Use Sketcher when the requested result is an independently editable "
-                        "2D constraint definition rather than a Body feature history."
+                        "Use embedded api.sketch for Body profiles. The Sketcher domain is only "
+                        "for a separately published 2D sketch result."
                     ),
-                    "part": (
-                        "Use Part for direct OCC construction without a PartDesign::Body "
-                        "history."
+                    "part_compatibility": (
+                        "The Part workbench is retired. Its direct OCC operations are available "
+                        "here for standalone topology and repair."
                     ),
                     "assembly": (
-                        "Use Assembly to link accepted components, ground instances, add "
-                        "joints, and solve motion. Part Design publishes component geometry "
-                        "and semantic interfaces; it does not position an assembly."
+                        "Part Design authors one reusable component definition and publishes "
+                        "stable interfaces. Assembly consumes its reference from the injected "
+                        "available_components inventory, creates lightweight linked occurrences with "
+                        "api.component/api.instances, and owns joints, collision/clearance checks, "
+                        "solved motion, exploded views, and bills of materials. Use "
+                        "component_catalog.search only when the definition is not listed."
+                    ),
+                    "material": (
+                        "Use api.material and api.appearance here; no Material workbench switch "
+                        "is needed for a Part Design output."
                     ),
                     "rule": (
-                        "The model cannot switch workbench or engine. Explain the exact "
-                        "handoff and ask the human to switch when the requested result belongs "
-                        "to another domain."
+                        "The active workbench determines the available API. Use this Part Design "
+                        "API for the complete part, and describe follow-on work only when the "
+                        "requested output belongs to another workbench."
                     ),
                 },
                 "error_contract": {
                     "source_or_contract": (
-                        "Correct the exact policy, schema, graph, or output declaration named "
-                        "by the failure; do not broaden the source or change unrelated inputs."
+                        "Correct the named source, schema, graph, or output error only."
                     ),
                     "sketch": (
-                        "Use the returned graph ids, constraint names, solver sets, DoF, and "
-                        "profile openings to correct only the failing profile intent."
+                        "Use returned graph ids, constraint names, DoF, conflicts, and profile "
+                        "openings to correct the failing profile."
                     ),
                     "feature": (
-                        "Use feature_history and native validation evidence to correct the "
-                        "first invalid feature; the accepted revision remains live."
+                        "Correct the first invalid feature reported by native validation."
                     ),
                     "publication": (
-                        "A reference-preflight or stale-consumer rejection is not permission "
-                        "to delete a consumer. Preserve its semantic reference or ask the human."
+                        "Do not delete a dependent consumer to bypass a stale-reference failure."
                     ),
                 },
-                "recommended_patterns": [
-                    {
-                        "goal": "fully constrained parametric rectangular Body",
-                        "source": (
-                            "bottom = api.line([0,0], [inputs['width'],0], name='Bottom')\n"
-                            "right = api.line([inputs['width'],0], "
-                            "[inputs['width'],inputs['depth']], name='Right')\n"
-                            "top = api.line([inputs['width'],inputs['depth']], "
-                            "[0,inputs['depth']], name='Top')\n"
-                            "left = api.line([0,inputs['depth']], [0,0], name='Left')\n"
-                            "constraints = [\n"
-                            " api.constraint('coincident',[{'geometry':bottom,'point':'end'},"
-                            "{'geometry':right,'point':'start'}]),\n"
-                            " api.constraint('coincident',[{'geometry':right,'point':'end'},"
-                            "{'geometry':top,'point':'start'}]),\n"
-                            " api.constraint('coincident',[{'geometry':top,'point':'end'},"
-                            "{'geometry':left,'point':'start'}]),\n"
-                            " api.constraint('coincident',[{'geometry':left,'point':'end'},"
-                            "{'geometry':bottom,'point':'start'}]),\n"
-                            " api.constraint('horizontal',[bottom]),\n"
-                            " api.constraint('horizontal',[top]),\n"
-                            " api.constraint('vertical',[right]),\n"
-                            " api.constraint('vertical',[left]),\n"
-                            " api.constraint('distance',[bottom],value=inputs['width'],name='Width'),\n"
-                            " api.constraint('distance',[right],value=inputs['depth'],name='Depth'),\n"
-                            " api.constraint('coincident',[{'geometry':bottom,'point':'start'},"
-                            "'origin'],name='Anchored'),\n"
-                            "]\n"
-                            "profile = api.sketch([bottom,right,top,left], constraints, "
-                            "require_fully_constrained=True, require_closed_profile=True, "
-                            "label='Base Profile')\n"
-                            "base = api.pad(profile, inputs['height'], label='Base Pad')\n"
-                            "result = {'Part': api.body(base, interfaces={'Top': {"
-                            "'selection': {'type':'query','element_type':'face',"
-                            "'expected_count':1,'geometry_type':'plane','normal':[0,0,1]},"
-                            "'description':'Top mating face'}}, label='Part')}"
-                        ),
-                        "expected_outputs": [{"name": "Part", "type": "solid"}],
-                    }
-                ],
             }
         )
+        from vibescript_sketcher_api import _CONSTRAINT_KINDS
+
+        constraint_forms = {
+            "coincident": "[point, point]",
+            "horizontal": "[whole line]",
+            "vertical": "[whole line]",
+            "parallel": "[whole line, whole line]",
+            "perpendicular": (
+                "[whole line, whole line], [point on first, whole line], or two points"
+            ),
+            "tangent": (
+                "[whole curve, whole curve], [point on first, whole curve], or two points"
+            ),
+            "distance": (
+                "[whole line] for length, or [point, point]; value is required"
+            ),
+            "distance_x": "[point] from origin or [point, point]; value is required",
+            "distance_y": "[point] from origin or [point, point]; value is required",
+            "angle": (
+                "[whole line/arc], [whole curve, whole curve], or [point, point]; "
+                "value is required in degrees"
+            ),
+            "angle_via_point": (
+                "[whole curve, whole curve, point]; value is required in degrees"
+            ),
+            "radius": "[whole arc/circle]; positive value is required",
+            "diameter": "[whole arc/circle]; positive value is required",
+            "equal": "[whole geometry, whole geometry]",
+            "point_on_object": "[point, whole geometry or axis]",
+            "symmetric": "[point, point, symmetry point or axis]",
+            "block": "[whole geometry]",
+            "weight": (
+                "[whole construction circle used as a B-spline handle]; positive value required"
+            ),
+            "snells_law": (
+                "[point, point, whole interface line]; positive ratio value required"
+            ),
+            "internal_alignment": (
+                "two entities in the alignment-specific order; set alignment and, for "
+                "B-splines, zero-based internal_index"
+            ),
+            "group": "[whole construction group line, then ordered member entities]",
+            "text": (
+                "[whole construction group line, then ordered member entities]; set text/font"
+            ),
+        }
+        axis_contract = {
+            "body_feature": (
+                "H and X mean the sketch's local horizontal axis; V and Y mean its "
+                "local vertical axis; N and Z mean its local normal. These follow the "
+                "sketch placement and are not unconditional global axes."
+            ),
+            "standalone": (
+                "Use explicit origin plus non-zero direction: axis_origin/axis_direction "
+                "for revolve, center/axis_direction for polar_pattern, and "
+                "plane_origin/plane_normal for mirror."
+            ),
+            "vector_format": "[x, y, z] in global model coordinates",
+        }
+        first_feature = {
+            "native_body": (
+                "For the first native Body feature, use operation='add_material' with "
+                "base omitted. For every later addition or removal, pass the exact prior "
+                "feature as base."
+            ),
+            "standalone": (
+                "operation='new_solid' creates standalone topology. api.publish keeps it "
+                "standalone; api.body adopts it and promotes supported sketch extrusions, "
+                "revolutions, and lofts to native initial Body history."
+            ),
+        }
+        selector_schema = {
+            "type": "query",
+            "element_type": "face or edge",
+            "expected_count": "positive exact cardinality",
+            "optional_filters": {
+                "geometry_type": (
+                    "case-insensitive native analytic type. Edge values include Line, "
+                    "Circle, Ellipse, BezierCurve, and BSplineCurve; face values include "
+                    "Plane, Cylinder, Cone, Sphere, and Toroid"
+                ),
+                "normal": "face normal [x,y,z] plus normal_tolerance_degrees",
+                "direction": "edge tangent [x,y,z] plus direction_tolerance_degrees",
+                "radius": "analytic radius plus radius_tolerance",
+                "area": "min_area and/or max_area in mm^2",
+                "length": "min_length and/or max_length in mm",
+                "location": "near_point [x,y,z] plus max_distance in mm",
+            },
+            "return": (
+                "A plain selector object consumed by topology operations, checks, and "
+                "semantic interfaces. It is not geometry and expected_count is rechecked "
+                "on every build."
+            ),
+        }
+        interface_schema = {
+            "shape": {
+                "StableName": {
+                    "selection": (
+                        "{'type':'origin'}, {'type':'frame','origin':[x,y,z],"
+                        "'axis_direction':[x,y,z],'x_direction':[x,y,z]}, or one "
+                        "find_subelements query"
+                    ),
+                    "description": "optional human meaning, at most 500 characters",
+                    "connector": {
+                        "kind": "axis|plane|point|frame",
+                        "allowed_joints": list(JOINT_TYPES),
+                        "compatibility": "optional exact mating token",
+                    },
+                }
+            },
+            "frame": (
+                "Use type='frame' for an exact local connector coordinate system. "
+                "axis_direction is Assembly joint +Z; x_direction fixes rotation about it."
+            ),
+            "examples": {
+                "mounting_plane_or_shaft_end": {
+                    "EndFace": {
+                        "selection": {
+                            "type": "query",
+                            "element_type": "face",
+                            "expected_count": 1,
+                            "geometry_type": "Plane",
+                            "normal": [1, 0, 0],
+                        },
+                        "description": "Axial mounting face",
+                    }
+                },
+                "bearing_seat_or_axis": {
+                    "BearingSeat": {
+                        "selection": {
+                            "type": "query",
+                            "element_type": "face",
+                            "expected_count": 1,
+                            "geometry_type": "Cylinder",
+                            "radius": 10.0,
+                        },
+                        "description": "Bearing seat and connector axis",
+                    }
+                },
+                "bolt_circle": {
+                    "BoltCircleHoles": {
+                        "selection": {
+                            "type": "query",
+                            "element_type": "face",
+                            "expected_count": 6,
+                            "geometry_type": "Cylinder",
+                            "radius": 2.5,
+                        },
+                        "description": "Six mounting-hole bores",
+                    }
+                },
+                "spline_or_flow_boundary": (
+                    "Use an exact BSplineCurve edge query for a spline edge, or an exact "
+                    "face query for each named inlet/outlet boundary."
+                ),
+            },
+            "assembly_rule": (
+                "Explicit metadata; native solver; no geometry inference."
+            ),
+        }
+        description["api_details"] = {
+            "constraint": {
+                "kinds": sorted(_CONSTRAINT_KINDS),
+                "entity_selectors": {
+                    "whole_geometry": "pass the exact geometry variable",
+                    "point": (
+                        "{'geometry': value, 'point': 'point|start|end|center'}; valid "
+                        "point names depend on geometry type"
+                    ),
+                    "external": ["x_axis", "y_axis", "origin"],
+                },
+                "forms": constraint_forms,
+                "state": {
+                    "name": "stable constraint identifier used by expressions and diagnostics",
+                    "expression": "driving dimensional expression",
+                    "driving": "false makes a dimensional reference constraint",
+                    "active": "false keeps the native constraint inactive",
+                    "virtual": "true places it in virtual space",
+                },
+                "source_example": (
+                    "end = {'geometry': edge, 'point': 'end'}\n"
+                    "lock = api.constraint('coincident', [end, 'origin'], name='Anchor')"
+                ),
+            },
+            "sketch": {
+                "principal_planes": ["XY", "XZ", "YZ"],
+                "parallel_offset": (
+                    "plane_offset_mm moves along the selected plane's local normal. "
+                    "z_offset_mm is the compatibility alias with identical behavior."
+                ),
+                "arbitrary_placement": {
+                    "schema": {
+                        "origin": [0, 0, 0],
+                        "normal": [0, 0, 1],
+                        "x_direction": [1, 0, 0],
+                    },
+                    "rule": (
+                        "Vectors are normalized; x_direction is projected into the plane "
+                        "and must not be parallel to normal. Do not combine with support."
+                    ),
+                },
+                "attached_support": {
+                    "schema": {
+                        "reference": {
+                            "document_uid": "from an x-vibecad-reference input",
+                            "object_name": "from that same input",
+                        },
+                        "selection": {
+                            "type": "published_interface",
+                            "interface_name": "MountingFace",
+                        },
+                    },
+                    "native_selection": (
+                        "A non-transient native source may instead use type='subelements' "
+                        "with one to four FaceN/EdgeN/VertexN names."
+                    ),
+                    "map_mode": (
+                        "Required with support. Use the exact native mode for that support; "
+                        "FlatFace is valid for a planar face."
+                    ),
+                    "attachment_offset": (
+                        "{'position':[x,y,z], 'rotation':[x,y,z,w]}; quaternion is normalized"
+                    ),
+                },
+                "constraint_policy": (
+                    "Calculated source coordinates remain parametric inputs, but they do not "
+                    "remove native Sketcher degrees of freedom. Set require_fully_constrained "
+                    "only when downstream design intent requires a natively locked sketch."
+                ),
+            },
+            "find_subelements": selector_schema,
+            "measure": {
+                "single_shape_quantities": [
+                    "length_mm",
+                    "area_mm2",
+                    "volume_mm3",
+                    "solid_count",
+                    "face_count",
+                    "edge_count",
+                    "bounds_min_x_mm",
+                    "bounds_min_y_mm",
+                    "bounds_min_z_mm",
+                    "bounds_max_x_mm",
+                    "bounds_max_y_mm",
+                    "bounds_max_z_mm",
+                    "bounds_size_x_mm",
+                    "bounds_size_y_mm",
+                    "bounds_size_z_mm",
+                    "center_of_mass_x_mm",
+                    "center_of_mass_y_mm",
+                    "center_of_mass_z_mm",
+                ],
+                "pair_quantities": {
+                    "minimum_distance_mm": "requires other=shape",
+                    "interference_volume_mm3": "requires other=shape",
+                },
+                "selected_quantities": {
+                    "radius_mm": "requires one exact edge or face selector",
+                    "diameter_mm": "requires one exact edge or face selector",
+                    "minimum_wall_thickness_mm": (
+                        "requires selection and other_selection, each matching one "
+                        "non-touching opposing face on the same shape"
+                    ),
+                },
+                "material_quantities": {
+                    "names": [
+                        "mass_kg",
+                        "inertia_xx_kg_mm2",
+                        "inertia_xy_kg_mm2",
+                        "inertia_xz_kg_mm2",
+                        "inertia_yy_kg_mm2",
+                        "inertia_yz_kg_mm2",
+                        "inertia_zz_kg_mm2",
+                    ],
+                    "requirement": (
+                        "The measured shape must contain exactly one solid. Pass "
+                        "material=api.material(..., "
+                        "require_physical_properties=['Density'])."
+                    ),
+                },
+                "evidence_rule": (
+                    "All values come from regenerated BREP topology. A helper line, face, "
+                    "or arithmetic value cannot certify another shape."
+                ),
+            },
+            "body": {
+                "interfaces": interface_schema,
+                "first_feature": "See api_details.extrude.first_feature.",
+                "assembly_boundary": (
+                    "One connected solid; one rigid Assembly definition."
+                ),
+            },
+            "publish": {
+                "interfaces": "See api_details.body.interfaces.",
+                "first_feature": "See api_details.extrude.first_feature.",
+                "assembly_boundary": (
+                    "One result key is one rigid Assembly definition. Compound children "
+                    "cannot move independently. Use separate outputs for moving parts; "
+                    "use one master plus Assembly api.instances for identical repeats."
+                ),
+            },
+            "compound": {
+                "assembly_boundary": (
+                    "Disconnected topology retained as one rigid publication."
+                )
+            },
+            "extrude": {"first_feature": first_feature},
+            "revolve": {
+                "first_feature": "See api_details.extrude.first_feature.",
+                "axis": axis_contract,
+            },
+            "loft": {"first_feature": "See api_details.extrude.first_feature."},
+            "sweep": {"first_feature": "See api_details.extrude.first_feature."},
+            "helix": {"first_feature": "See api_details.extrude.first_feature."},
+            "polar_pattern": {
+                "axis": "See api_details.revolve.axis.",
+                "assembly_boundary": (
+                    "A standalone pattern is rigid. Use Assembly instances for moving copies."
+                ),
+            },
+            "mirror": {"axis": "See api_details.revolve.axis."},
+            "draft": {
+                "axis": (
+                    "neutral_plane is global XY, XZ, or YZ; pull_direction is global "
+                    "X, Y, or Z. The selected faces are count-guarded geometric queries."
+                )
+            },
+            "fastener": {
+                "catalog_tool": "fastener_catalog.search",
+                "options": (
+                    "Use only option keys and exact defaults/allowed values returned for the "
+                    "selected standard and nominal_thread. The catalog response is the option schema."
+                ),
+                "threads": "model_thread is a boolean; true builds real helical thread geometry.",
+            },
+            "appearance": {
+                "display_mode": {
+                    "common_partdesign_values": [
+                        "Flat Lines",
+                        "Shaded",
+                        "Wireframe",
+                        "Points",
+                    ],
+                    "validation": (
+                        "The selected publication's native view provider is authoritative; an "
+                        "unsupported value fails with its exact available modes."
+                    ),
+                },
+                "color": "RGB channels are integer 0-255; transparency_percent is 0-100.",
+            },
+            "material": {
+                "catalog_tool": "material_catalog.search",
+                "rule": (
+                    "Search by name, alloy, UUID, or required properties, then pass one "
+                    "returned constructor unchanged. Never invent a UUID."
+                ),
+            },
+        }
         return description
 
 
@@ -16094,9 +17957,9 @@ class SketcherDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "after_write": (
-                        "Call verification_call, confirm accepted_revision equals working_revision, "
-                        "then inspect solver_code, DoF, conflict sets, named constraint readback, "
-                        "wire counts, profile_ready, support, and the live Sketcher::SketchObject identity."
+                        "Use the successful write result to verify solver state, DoF, conflict "
+                        "sets, named constraint readback, wire counts, profile readiness, support, "
+                        "and live identity. Inspect only when a required detail is absent."
                     ),
                     "underconstrained": (
                         "underconstraint_guidance is a bounded native heuristic, not a recipe. "
@@ -16131,9 +17994,9 @@ class SketcherDomainAdapter(DeclarativeDomainAdapter):
                     ),
                     "surface": "Use Surface for surface fills, blends, extensions, and shell work.",
                     "rule": (
-                        "The model cannot switch workbench or engine. Explain the required "
-                        "handoff and ask the human to switch; never call or describe another "
-                        "domain from this Sketcher surface."
+                        "The active workbench determines the available API. Use only this "
+                        "Sketcher API and describe any required follow-on work without calling "
+                        "another workbench's tools."
                     ),
                 },
                 "support_contract": {
@@ -16530,9 +18393,8 @@ class DraftDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "success": (
-                        "Call verification_call after every write and inspect the accepted "
-                        "program. working_revision must equal accepted_revision and every "
-                        "expected result must have a stable live object identity."
+                        "A successful write must report every expected result with a stable "
+                        "live object identity. Inspect only when required readback is absent."
                     ),
                     "primitive_readback": (
                         "Verify native proxy class, Draft type, points/dimensions, placement, "
@@ -16550,9 +18412,9 @@ class DraftDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Author only Draft "
-                        "objects in this surface and state the required human handoff when the next "
-                        "step belongs to Sketcher, Part, Part Design, BIM, or TechDraw."
+                        "The active workbench determines the available API. Author Draft objects "
+                        "here and describe follow-on work when the next result belongs to "
+                        "Sketcher, Part, Part Design, or TechDraw."
                     ),
                     "use_draft_for": (
                         "editable 2D/3D construction geometry, simple planar faces, repeated "
@@ -16561,7 +18423,6 @@ class DraftDomainAdapter(DeclarativeDomainAdapter):
                     "handoff_examples": {
                         "constrained_profile": "Sketcher for solver-backed dimensional constraints",
                         "solid_modeling": "Part or Part Design after a stable closed Draft profile exists",
-                        "building_semantics": "BIM for walls, levels, openings, and spatial relationships",
                         "drawing_sheet": "TechDraw for projected views, dimensions, and page layout",
                     },
                 },
@@ -16804,7 +18665,7 @@ class SurfaceDomainAdapter(DeclarativeDomainAdapter):
                         "edits. Intermediate graph values have no live document identity."
                     ),
                     "large_models": (
-                        "For vehicle skins, robot covers, or architectural envelopes, divide the "
+                        "For vehicle skins, robot covers, or smooth exterior envelopes, divide the "
                         "surface network into semantic patches with shared authenticated boundaries; "
                         "publish stable patches/shells and perform final sewing in a separate result."
                     ),
@@ -16839,8 +18700,8 @@ class SurfaceDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "success": (
-                        "Call verification_call after every mutation. Confirm working_revision "
-                        "equals accepted_revision and every expected result has one stable live identity."
+                        "A successful write must report every expected result with one stable "
+                        "live identity. Inspect only when required topology or native readback is absent."
                     ),
                     "topology": (
                         "Verify declared output type against exact OCC ShapeType, underlying "
@@ -16864,9 +18725,9 @@ class SurfaceDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Author only Surface "
-                        "graph operations here and state the required human handoff when the next "
-                        "step belongs to Sketcher, Part, Part Design, Draft, Mesh, or TechDraw."
+                        "The active workbench determines the available API. Author Surface graph "
+                        "operations here and describe follow-on work when the next result belongs "
+                        "to Sketcher, Part, Part Design, Draft, Mesh, or TechDraw."
                     ),
                     "use_surface_for": (
                         "freeform faces, continuity-controlled patches, blends, extensions, "
@@ -17108,9 +18969,10 @@ class SpreadsheetDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "success": (
-                        "Call verification_call after every write and inspect the accepted program. "
-                        "working_revision must equal accepted_revision and every expected sheet must "
-                        "have one stable Spreadsheet::Sheet live identity."
+                        "A successful write must report working_revision equal to "
+                        "accepted_revision and every expected sheet with one stable "
+                        "Spreadsheet::Sheet live identity. Inspect only when required cell "
+                        "or native readback is absent."
                     ),
                     "assigned_state": (
                         "Verify bounded native contents, aliases, display units, styles, alignment, "
@@ -17133,9 +18995,9 @@ class SpreadsheetDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Author only native sheets "
-                        "in this surface; state the exact human handoff when an accepted alias or result "
-                        "must be consumed by a geometry, analysis, manufacturing, BIM, or drawing workbench."
+                        "The active workbench determines the available API. Author native sheets "
+                        "here and describe where an accepted alias or result must be consumed by "
+                        "geometry, analysis, manufacturing, or drawing tools."
                     ),
                     "use_spreadsheet_for": (
                         "parameter sets, unit-aware calculations, schedules, tabular reports, and stable "
@@ -17145,7 +19007,6 @@ class SpreadsheetDomainAdapter(DeclarativeDomainAdapter):
                         "robot_or_vehicle_geometry": (
                             "Part Design, Assembly, or Sketcher consumes accepted dimensional aliases"
                         ),
-                        "building_model": "BIM consumes accepted level, wall, slab, and schedule parameters",
                         "engineering_analysis": "FEM consumes accepted material, load, and solver parameters",
                         "drawing_or_schedule": "TechDraw consumes accepted model state for pages and annotations",
                     },
@@ -17388,9 +19249,9 @@ class MaterialDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "success": (
-                        "Call verification_call after every write. working_revision must equal "
-                        "accepted_revision, every declared result must retain one stable carrier, "
-                        "and target/channel identities must match the requested inputs."
+                        "A successful write must report one stable carrier for every declared "
+                        "result, with target and channel identities matching the requested inputs. "
+                        "Inspect only when required material or display readback is absent."
                     ),
                     "physical": (
                         "For each material_assignment, inspect live_outputs.validation.material_card: "
@@ -17416,19 +19277,15 @@ class MaterialDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. This surface only "
+                        "The active workbench determines the available API. This Material API "
                         "assigns physical material state and display appearance to existing native "
-                        "objects; state the exact human handoff when geometry, analysis, assembly, "
-                        "manufacturing, or drawings are still required."
+                        "objects; describe follow-on geometry, analysis, assembly, manufacturing, "
+                        "or drawing work when required."
                     ),
                     "robot_or_vehicle": (
                         "Part Design/Part creates components, Assembly composes them, Material owns "
                         "their cards and finishes, FEM creates explicit analysis materials and loads, "
                         "and Robot handles trajectories after the human activates each workbench."
-                    ),
-                    "building": (
-                        "BIM creates spatial and construction objects; Material then assigns eligible "
-                        "native targets. FEM and TechDraw remain separate human-selected handoffs."
                     ),
                     "analysis_caution": (
                         "Do not claim a ShapeMaterial assignment automatically creates a FEM material. "
@@ -17514,361 +19371,8 @@ class MaterialDomainAdapter(DeclarativeDomainAdapter):
 
 
 @dataclass
-class BIMDomainAdapter(DeclarativeDomainAdapter):
-    """Dedicated adapter for native Arch hierarchy and hosted-opening programs."""
-
-    production_ready: bool = True
-
-    def describe_api(self) -> dict[str, Any]:
-        description = super().describe_api()
-        description.update(
-            {
-                "api_contract": "vibecad-vibescript-bim-api-v1",
-                "units": {
-                    "coordinates_and_lengths": "millimetres",
-                    "latitude_longitude": "decimal degrees",
-                    "structure_rotation": "normalized quaternion [x,y,z,w]",
-                },
-                "coordinate_system": {
-                    "handedness": "right-handed",
-                    "wall_and_slab_points": "level-local XY [x,y]",
-                    "vertical_axis": "+Z",
-                    "level_elevation": (
-                        "stored on the native Building Storey Placement; children retain "
-                        "level-local Shapes and placements"
-                    ),
-                },
-                "evaluation_model": (
-                    "Every API call creates one immutable hierarchy graph value. All graph "
-                    "nodes referenced by another node must also be returned as declared outputs. "
-                    "FreeCADCmd creates real Arch and Draft proxies, applies Group and Hosts "
-                    "relationships, recomputes wall/slab/structure geometry, performs opening "
-                    "cuts, validates native readback, and exports detached BREP state."
-                ),
-                "operation_selection": {
-                    "geographic_and_spatial_root": (
-                        "api.site for address/geolocation metadata, then api.building for each "
-                        "facility and api.level for each native Building Storey."
-                    ),
-                    "continuous_wall_run": (
-                        "api.wall. Use one ordered polyline for connected segments sharing level, "
-                        "width, height, alignment, and offset; closed=True closes the last segment."
-                    ),
-                    "horizontal_floor_or_roof_plate": (
-                        "api.slab for one simple polygonal plate extruded downward from top_offset. "
-                        "It is semantically an IFC Slab, not a generic structure."
-                    ),
-                    "rectangular_structural_member": (
-                        "api.structure with role='column', 'beam', or 'member'. Role is the single "
-                        "canonical selector; there are no separate redundant column/beam tools."
-                    ),
-                    "hosted_wall_void": (
-                        "api.opening for one rectangular cut in a returned wall segment. It creates "
-                        "an IFC Opening Element only, not a visible door, window, frame, or panel."
-                    ),
-                    "redundancy_contract": (
-                        "The seven exports are distinct spatial or semantic native roles. Use one "
-                        "api.wall polyline instead of one wall per collinear segment when properties "
-                        "match, one api.structure plus role instead of role-specific alternatives, "
-                        "and one api.opening per physical void. Never model a slab with structure, "
-                        "duplicate hierarchy containers, or create a second opening for the same cut."
-                    ),
-                },
-                "hierarchy_contract": {
-                    "site_to_building": "api.building requires exactly one returned Site",
-                    "building_to_level": "api.level requires exactly one returned Building",
-                    "level_to_elements": (
-                        "walls, slabs, and structures require one returned Building Storey"
-                    ),
-                    "opening_to_wall": (
-                        "api.opening requires a returned Wall; its containing Storey is derived "
-                        "from that wall and the native Hosts list contains exactly the wall"
-                    ),
-                    "no_hidden_graph_nodes": (
-                        "referenced API values not returned in result are rejected. Publisher-"
-                        "owned profile objects are internal stable document objects, not API nodes"
-                    ),
-                    "creation_order": (
-                        "create ancestors before descendants in source: Site, Building, Storey, "
-                        "elements, then hosted Openings. Pass the same immutable variable to every "
-                        "child and return every referenced value"
-                    ),
-                    "program_scope": (
-                        "a hierarchy is self-contained in one program and may publish at most 64 "
-                        "nodes. Existing native objects and outputs from another BIM program are "
-                        "read-only context and cannot be adopted as graph parents or hosts"
-                    ),
-                },
-                "native_object_contracts": {
-                    "site": "Part::FeaturePython, ArchSite._Site, IfcType Site",
-                    "building": (
-                        "App::GeometryPython, ArchBuildingPart.BuildingPart, IfcType Building"
-                    ),
-                    "level": (
-                        "App::GeometryPython, ArchBuildingPart.BuildingPart, IfcType Building Storey"
-                    ),
-                    "wall": (
-                        "Part::FeaturePython, ArchWall._Wall, stable hidden Draft Wire Base"
-                    ),
-                    "slab": (
-                        "Part::FeaturePython, ArchStructure._Structure, IfcType Slab, stable "
-                        "closed Draft profile, downward normal"
-                    ),
-                    "structure": (
-                        "Part::FeaturePython, ArchStructure._Structure, explicit Column/Beam/Member role"
-                    ),
-                    "opening": (
-                        "Part::FeaturePython, ArchWindow._Window, IfcType Opening Element, stable "
-                        "profile Base, exactly one Hosts Wall, intentionally null display Shape"
-                    ),
-                },
-                "geometry_contract": {
-                    "wall": (
-                        "2-512 non-repeating non-self-intersecting level-local points; closed "
-                        "walls require at least three; width and height are strictly positive. "
-                        "Point order defines zero-based segment direction and opening offset origin"
-                    ),
-                    "slab": (
-                        "3-4096 non-self-intersecting points with non-zero signed area; native "
-                        "solid volume must equal planar area times thickness. top_offset is the "
-                        "level-local top face and thickness extends toward -Z"
-                    ),
-                    "structure": (
-                        "strictly positive local X length, local Y width, and local Z height; an "
-                        "explicit column, beam, or member role; placement is level-local and its "
-                        "quaternion is normalized"
-                    ),
-                    "opening": (
-                        "zero-based host segment, along-segment offset, width, sill, and height "
-                        "must fit the host; same-segment openings may touch but cannot overlap. "
-                        "The native wall volume reduction is checked against width*height*wall width. "
-                        "hole_depth=0 selects wall width plus a validated cutting allowance"
-                    ),
-                },
-                "coordinate_planning": {
-                    "site_elevation": (
-                        "Site elevation is geolocation metadata; it is not automatically added to "
-                        "Storey or child placements"
-                    ),
-                    "storeys": (
-                        "level elevation is the Storey document Z placement. Wall/slab points and "
-                        "structure/opening placements remain level-local; do not add elevation twice"
-                    ),
-                    "opening_segments": (
-                        "For points [p0,p1,p2], segment 0 runs p0->p1 and segment 1 runs p1->p2; "
-                        "on a closed wall the final segment runs last->p0. offset measures from the "
-                        "selected segment's first point"
-                    ),
-                },
-                "publication_contract": {
-                    "identity": (
-                        "Every returned name updates the same native object in place; wall/slab/"
-                        "opening profiles have stable internal identities grouped with their root output"
-                    ),
-                    "relationships": (
-                        "Managed Group and Hosts links are updated exactly while foreign objects "
-                        "inside a managed spatial group are preserved"
-                    ),
-                    "asynchronous_boundary": (
-                        "Arch/Draft proxy execution, recompute, OCC construction and cuts, topology "
-                        "validation, and BREP I/O occur in FreeCADCmd. Live publication creates "
-                        "property-only proxies, transfers detached Shapes, and never recomputes"
-                    ),
-                    "downstream_consumers": (
-                        "Whole-object native consumers retain stable identities. Regeneration is "
-                        "rejected while foreign consumers hold transient subelement references; "
-                        "retirement and deletion reject all foreign references"
-                    ),
-                },
-                "composition_contract": {
-                    "construction_order": [
-                        "Plan a single right-handed, millimetre, level-local coordinate system and stable semantic result names before creating graph values.",
-                        "Create and return Site, Building, and every required Storey ancestor first; never hide a parent only in a child argument.",
-                        "Create slabs and the fewest continuous wall polylines consistent with distinct thickness, height, alignment, and offset requirements.",
-                        "Create rectangular structural members with api.structure(role=...) and explicit level-local placements; reuse no graph node for two physical members.",
-                        "Map each wall segment from point order, then create every non-overlapping opening void with explicit segment, offset, sill, width, and height.",
-                        "Return every graph node once under unchanged expected_outputs names in exact order, then verify the accepted native hierarchy and geometry evidence.",
-                    ],
-                    "input_design": (
-                        "Keep user-controlled dimensions, elevations, locations, and repeated design "
-                        "parameters in validated inputs. Use set_inputs for value changes and exact "
-                        "source edits only when topology, hierarchy, or output membership changes."
-                    ),
-                    "large_buildings": (
-                        "Use compact polylines and one graph for a coherent building hierarchy. If "
-                        "the required graph exceeds 64 returned nodes, report that exact unsupported "
-                        "state; do not fabricate cross-program parent links or duplicate the Site/"
-                        "Building merely to evade the bound. Independent buildings may use separate "
-                        "self-contained programs."
-                    ),
-                    "identity": (
-                        "Stable result names, not labels or graph_id values, are the live identity. "
-                        "Keep names unchanged across edits so native BIM objects and their internal "
-                        "profiles update in place."
-                    ),
-                },
-                "domain_context": {
-                    "document_bim_objects": (
-                        "bounded native/proxy/IFC types, placements, dimensions, Base, Group, "
-                        "parent-group, Hosts, and managed-program identities without recompute. "
-                        "This is read-only planning/verification context, not an implicit reference API"
-                    ),
-                    "programs": (
-                        "bounded persisted contracts, accepted and working revisions, candidate "
-                        "state, and stable live output identities"
-                    ),
-                },
-                "capability_boundary": {
-                    "supported": (
-                        "native Sites, Buildings, Storeys, polyline Walls, simple polygon Slabs, "
-                        "rectangular Columns/Beams/Members, and rectangular hosted wall voids"
-                    ),
-                    "not_yet_exposed": (
-                        "door/window fills, roofs distinct from IFC Slab, stairs, spaces, equipment, "
-                        "curved walls, profile-based structures, multilayer compositions, IFC import/"
-                        "export, and adoption of pre-existing or cross-program BIM parents"
-                    ),
-                    "model_rule": (
-                        "Never claim an unsupported object was authored. Build only the supported "
-                        "core graph, identify each missing element precisely, and state the required "
-                        "human-selected native BIM or other workbench handoff."
-                    ),
-                },
-                "model_verification_contract": {
-                    "success": (
-                        "Call verification_call after every write. Require working_revision equal to "
-                        "accepted_revision and one unchanged live identity for every declared result."
-                    ),
-                    "hierarchy": (
-                        "Verify each live_outputs.bim_data graph_id, parent_graph_id, group_graph_ids, "
-                        "native/proxy/Arch/IFC type, Storey membership, and each Opening's one Hosts Wall."
-                    ),
-                    "geometry": (
-                        "Verify wall baseline points/properties and opening volume delta; slab boundary, "
-                        "normal, thickness, and volume; structure dimensions, role, placement, and volume; "
-                        "and every stable Base profile identity."
-                    ),
-                    "regeneration": (
-                        "After set_inputs or edit_source, confirm result and internal Base object names "
-                        "are unchanged and any compatible whole-object human consumer remains linked."
-                    ),
-                    "failure_repair": (
-                        "Read domain_failure_stage, observed.details, and retry.required_changes. Change "
-                        "only the named hierarchy parent, point/segment, dimension, placement, opening "
-                        "interval, or result entry; retry against next_write_expected_revision and never "
-                        "recreate the program to bypass a retained failure or external-reference guard."
-                    ),
-                },
-                "workbench_handoffs": {
-                    "rule": (
-                        "The model cannot switch workbench or modeling engine. Author only the supported "
-                        "native BIM graph here and state the exact human handoff for every remaining "
-                        "material, detailed component, analysis, manufacturing, or drawing task."
-                    ),
-                    "house_flow": (
-                        "BIM creates the supported spatial/core shell; Material assigns eligible cards "
-                        "and finishes; Part Design/Part creates detailed reusable components; FEM creates "
-                        "analysis definitions; TechDraw produces documentation after the human activates "
-                        "each workbench."
-                    ),
-                    "opening_fill": (
-                        "api.opening proves and publishes only a hosted void. A door/window fill requires "
-                        "the human to activate a surface that actually exposes that native feature; do "
-                        "not represent a void as a completed door or window."
-                    ),
-                },
-                "recommended_patterns": [
-                    {
-                        "goal": "one storey with wall, slab, column, and hosted opening",
-                        "source": (
-                            "site = api.site(city=inputs['city'], label='Project Site')\n"
-                            "building = api.building(site, label='Main Building')\n"
-                            "ground = api.level(building, 0, height=3000, label='Ground Floor')\n"
-                            "wall = api.wall(ground, [[0,0],[4000,0]], width=200, "
-                            "height=2800, label='South Wall')\n"
-                            "slab = api.slab(ground, [[0,0],[4000,0],[4000,3000],[0,3000]], "
-                            "thickness=200, label='Ground Slab')\n"
-                            "column = api.structure(ground, 300, 300, 2800, "
-                            "placement={'position':[200,200,0],'rotation':[0,0,0,1]}, "
-                            "role='column', label='Column')\n"
-                            "opening = api.opening(wall, 900, 1200, offset=800, sill=900, "
-                            "label='Window Opening')\n"
-                            "result = {'Site':site,'Building':building,'Ground':ground,"
-                            "'Wall':wall,'Slab':slab,'Column':column,'Opening':opening}"
-                        ),
-                        "expected_outputs": [
-                            {"name": "Site", "type": "site"},
-                            {"name": "Building", "type": "building"},
-                            {"name": "Ground", "type": "level"},
-                            {"name": "Wall", "type": "wall"},
-                            {"name": "Slab", "type": "slab"},
-                            {"name": "Column", "type": "structure"},
-                            {"name": "Opening", "type": "opening"},
-                        ],
-                    },
-                    {
-                        "goal": "compact two-storey building core with segment-addressed openings",
-                        "source": (
-                            "site = api.site(city=inputs['city'], label='Site')\n"
-                            "building = api.building(site, label='House')\n"
-                            "ground = api.level(building, 0, height=3000, label='Ground')\n"
-                            "upper = api.level(building, 3000, height=3000, label='Upper')\n"
-                            "footprint = [[0,0],[9000,0],[9000,7000],[0,7000]]\n"
-                            "ground_wall = api.wall(ground, footprint, closed=True, width=250, "
-                            "height=2800, label='Ground Exterior')\n"
-                            "upper_wall = api.wall(upper, footprint, closed=True, width=200, "
-                            "height=2800, label='Upper Exterior')\n"
-                            "ground_slab = api.slab(ground, footprint, thickness=250, "
-                            "label='Ground Slab')\n"
-                            "upper_slab = api.slab(upper, footprint, thickness=200, "
-                            "label='Upper Slab')\n"
-                            "door_void = api.opening(ground_wall, 1000, 2100, segment=0, "
-                            "offset=1200, sill=0, label='Entry Void')\n"
-                            "window_void = api.opening(upper_wall, 1400, 1200, segment=1, "
-                            "offset=1800, sill=900, label='Upper Window Void')\n"
-                            "result = {'Site':site,'Building':building,'Ground':ground,'Upper':upper,"
-                            "'GroundWall':ground_wall,'UpperWall':upper_wall,"
-                            "'GroundSlab':ground_slab,'UpperSlab':upper_slab,"
-                            "'DoorVoid':door_void,'WindowVoid':window_void}"
-                        ),
-                        "expected_outputs": [
-                            {"name": "Site", "type": "site"},
-                            {"name": "Building", "type": "building"},
-                            {"name": "Ground", "type": "level"},
-                            {"name": "Upper", "type": "level"},
-                            {"name": "GroundWall", "type": "wall"},
-                            {"name": "UpperWall", "type": "wall"},
-                            {"name": "GroundSlab", "type": "slab"},
-                            {"name": "UpperSlab", "type": "slab"},
-                            {"name": "DoorVoid", "type": "opening"},
-                            {"name": "WindowVoid", "type": "opening"},
-                        ],
-                    },
-                ],
-                "error_contract": {
-                    "source": (
-                        "argument errors name api.operation and the exact hierarchy, point, "
-                        "dimension, enum, bound, fit, or overlap path, and propagate "
-                        "source_validation plus one exact retry.required_changes instruction"
-                    ),
-                    "native": (
-                        "worker failures retain factory/recompute/cut stage, native type/proxy/"
-                        "IFC observations, topology facts, volume diagnostics, and correction"
-                    ),
-                    "publication": (
-                        "native-type drift, missing internal profiles, changed Group/Hosts/Base "
-                        "links, invalid detached Shapes, and external-reference conflicts abort "
-                        "the transaction before the candidate can be accepted"
-                    ),
-                },
-            }
-        )
-        return description
-
-
-@dataclass
 class MeshDomainAdapter(DeclarativeDomainAdapter):
-    """Dedicated adapter for isolated native Mesh generation and repair."""
+    """Adapter for native Mesh operations and explicit BREP conversion."""
 
     production_ready: bool = True
 
@@ -17883,12 +19387,20 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                     "volume": "cubic millimetres",
                     "rotation": "normalized quaternion [x,y,z,w]",
                     "scale": "positive dimensionless [x,y,z]",
+                    "boolean_linear_deflection": "millimetres",
+                    "boolean_angular_deflection": "degrees",
+                    "conversion_tolerance": "millimetres",
+                    "facet_and_segment_indices": "1-based",
                 },
                 "evaluation_model": (
                     "The model builds one immutable mesh graph from either bounded triangles "
                     "or an authenticated placement-baked Mesh::Feature snapshot. The isolated "
-                    "FreeCADCmd worker performs every native transform, repair, analysis, and "
-                    "BMS operation; the document thread only publishes validated native state."
+                    "FreeCADCmd worker performs native transforms, OCC solid booleans through "
+                    "MeshPart::Boolean, remeshing, repair, analysis, and explicit BREP/mesh "
+                    "conversion. CSG operands and "
+                    "booleans remain in memory with no external executable or interchange "
+                    "temp files. Validated results are exported as authenticated BMS or typed "
+                    "BREP artifacts; the document thread only publishes validated native state."
                 ),
                 "input_reference_schema": {
                     "type": "object",
@@ -17915,6 +19427,18 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "Use only when geometry itself must be baked to a new coordinate frame. "
                         "Scale about the origin, rotate by [x,y,z,w], then translate."
                     ),
+                    "union": (
+                        "Combine two valid closed mesh solids. Use this explicit call for union; "
+                        "disconnected valid result solids are preserved."
+                    ),
+                    "difference": (
+                        "Remove the second valid closed mesh solid from the first. A disjoint "
+                        "second operand validly returns the unchanged first solid."
+                    ),
+                    "intersection": (
+                        "Keep only positive solid volume shared by two valid closed mesh solids. "
+                        "Touching faces or edges are not a solid intersection."
+                    ),
                     "repair": (
                         "Use only when diagnostics identify a defect or the request explicitly "
                         "requires simplification. Select the minimum relevant passes."
@@ -17924,13 +19448,25 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "requirement must reject a bad candidate; every output already carries "
                         "the same full diagnostics for inspection."
                     ),
+                    "mesh_from_shape": (
+                        "Convert an eligible document BREP to a native mesh. Use standard "
+                        "deflection unless the request supplies a quantitative edge, area, "
+                        "local-length, or Netgen requirement."
+                    ),
+                    "shape_from_mesh": (
+                        "Convert an eligible document mesh to one declared OCC solid, shell, "
+                        "face, wire, or compound. State surface versus boundary representation "
+                        "whenever compound would otherwise be ambiguous."
+                    ),
                 },
                 "redundancy_contract": (
-                    "The five exports have non-overlapping model roles: construct, acquire an "
-                    "existing object, bake a transform, mutate/repair, and enforce requirements. "
-                    "Do not emit identity transforms, default-only diagnostics, or speculative "
-                    "repair passes. One api.repair call consolidates every selected native repair "
-                    "pass; there are no separate model-facing cleanup tools."
+                    "The ten exports have distinct roles: construct, acquire, transform, union, "
+                    "subtract, intersect, repair, verify, BREP-to-mesh conversion, and "
+                    "mesh-to-BREP conversion. Each boolean and conversion direction is a named "
+                    "call; there is no operation enum. Do not emit identity transforms, "
+                    "default-only diagnostics, speculative repair passes, or round-trip "
+                    "conversions. One api.repair call consolidates every selected native repair "
+                    "pass."
                 ),
                 "operation_contracts": {
                     "mesh": (
@@ -17946,6 +19482,20 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "bakes translation, normalized quaternion rotation, and strictly "
                         "positive non-uniform scale into a detached native mesh"
                     ),
+                    "union": (
+                        "converts both placement-baked, closed manifold meshes into typed OCC "
+                        "solids, fuses them, preserves disconnected result solids and nested "
+                        "cavities, then remeshes the result with explicit deflection controls"
+                    ),
+                    "difference": (
+                        "computes first minus second as an OCC solid boolean, preserves first "
+                        "when second is disjoint, and rejects only an empty result that cannot "
+                        "be published as a solid mesh"
+                    ),
+                    "intersection": (
+                        "computes the OCC common volume and rejects disjoint or merely touching "
+                        "operands because they produce no positive solid volume"
+                    ),
                     "repair": (
                         "runs selected duplicate-point, duplicate-facet, degeneration, "
                         "non-manifold edge/point, self-intersection, bounded hole-fill, normal "
@@ -17957,6 +19507,14 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "characteristic, components, boundary edges, orientation, manifold, "
                         "self-intersection, corruption, index, neighbourhood, and range checks; "
                         "intersection details are sampled only for meshes of at most 128 facets"
+                    ),
+                    "mesh_from_shape": (
+                        "meshes one authenticated whole BREP or one FaceN/ShellN/SolidN "
+                        "selection using exactly one explicit native mesher method"
+                    ),
+                    "shape_from_mesh": (
+                        "converts one authenticated full mesh, facet subset, or preserved "
+                        "segment into exactly one declared OCC topology class"
                     ),
                 },
                 "repair_order": [
@@ -18004,6 +19562,8 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "Apply api.transform only when baked geometry coordinates must change.",
                         "Apply one api.repair only for evidenced defects or an explicit reduction "
                         "goal, with the smallest pass set.",
+                        "Combine valid closed solids with the exact api.union, api.difference, "
+                        "or api.intersection call that states the intended result.",
                         "Add api.diagnostics only as a final rejection gate, then return that "
                         "value; otherwise return the latest mesh value directly.",
                     ],
@@ -18016,9 +19576,17 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "data is therefore for compact explicit designs; use from_object for "
                         "eligible existing meshes and never invent omitted facets."
                     ),
+                    "conversion_sources": (
+                        "Both conversion calls consume authenticated document references rather "
+                        "than another graph value. Publish and verify an intermediate result "
+                        "before a genuinely necessary representation round trip."
+                    ),
                 },
                 "publication_contract": {
-                    "native_type": "stable Mesh::Feature with an assigned native Mesh.Mesh",
+                    "native_type": (
+                        "stable Mesh::Feature for mesh outputs and stable Part::Feature for "
+                        "solid, shell, face, wire, or compound outputs"
+                    ),
                     "identity": (
                         "program/output ids update the same native object in place; output "
                         "retirement and deletion reject foreign live references"
@@ -18026,7 +19594,9 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                     "validation": (
                         "the host authenticates the BMS digest, imports a detached Mesh, "
                         "independently recomputes diagnostics, and compares native counts, "
-                        "area, volume, and bounds after assignment"
+                        "area, volume, and bounds after assignment. Boolean traces bind both "
+                        "operand definitions, tessellation controls, OCC backend, operand "
+                        "topology, and final artifact facts."
                     ),
                     "rollback": (
                         "publication and deletion failures explicitly recreate the accepted "
@@ -18034,16 +19604,20 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                     ),
                     "asynchronous_boundary": (
                         "mesh construction, repair, self-intersection analysis, validation, "
-                        "and BMS I/O occur off the document thread; publication only assigns "
-                        "already-validated detached native state"
+                        "OCC booleans, remeshing, and BMS I/O occur off the document thread; "
+                        "publication only assigns already-validated detached native state"
                     ),
                 },
                 "domain_context": {
                     "document_meshes": (
                         "bounded stable references, native point/facet/edge/segment counts, "
                         "bounds, and compact accepted validation summaries. Copy reference "
-                        "verbatim into inputs for api.from_object; do not address an object by "
-                        "label or reconstruct it from the summary"
+                        "verbatim into inputs for api.from_object or api.shape_from_mesh; do not "
+                        "address an object by label or reconstruct it from the summary"
+                    ),
+                    "document_shape_sources": (
+                        "bounded BREP facts and copy-ready references for api.mesh_from_shape; "
+                        "use only entries explicitly marked eligible"
                     ),
                     "programs": (
                         "bounded persisted contracts, working/accepted revisions, candidate "
@@ -18052,7 +19626,7 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "accepted_evidence": (
-                        "inspect_program and live output validation expose the authenticated "
+                        "vibescript.read_source and live output validation expose the authenticated "
                         "artifact digest, terminal operation, exact operation_trace, and full "
                         "native diagnostics. For repair, compare each trace item's before/after "
                         "counts and applied pass list; for from_object, verify source identity, "
@@ -18061,8 +19635,9 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                     "success_criteria": (
                         "Check the metrics implied by intent: solid/closed/manifold/orientation "
                         "for printable solids, open edges and components for surfaces, bounds "
-                        "after transforms, and facet change after decimation. Do not claim repair "
-                        "from a successful tool call alone."
+                        "after transforms, facet change after decimation, mesher backend and "
+                        "segments after meshing, and exact OCC topology after conversion. Do not "
+                        "claim repair or conversion quality from a successful tool call alone."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and "
@@ -18074,19 +19649,19 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Finish only native "
-                        "Mesh construction, transform, repair, and validation here, then state the "
-                        "exact human workbench handoff for a different representation or task."
+                        "The active workbench determines the available API. Complete native Mesh "
+                        "construction, transform, boolean, repair, validation, and explicit "
+                        "BREP conversion here, then describe follow-on work for a different task."
                     ),
                     "conversions": (
-                        "MeshPart converts BREP to mesh or mesh to typed BREP. Points and Reverse "
-                        "Engineering handle point-cloud and reconstruction workflows. Material "
-                        "handles physical cards or display appearance."
+                        "api.mesh_from_shape and api.shape_from_mesh expose the useful MeshPart "
+                        "conversion capability directly in this shipped Mesh workbench. Points "
+                        "and Reverse Engineering handle point-cloud and reconstruction workflows."
                     ),
                     "unsupported_here": (
-                        "This API does not import raw filesystem paths, mesh a BREP, reconstruct "
-                        "CAD surfaces, assign material cards, or run FEM/CAM. Preserve the mesh "
-                        "and request the corresponding human-activated workbench."
+                        "This API does not import raw filesystem paths, fit or reconstruct CAD "
+                        "surfaces, assign material cards, or run FEM/CAM. Preserve validated "
+                        "geometry and describe the corresponding follow-on work."
                     ),
                 },
                 "recommended_patterns": [
@@ -18122,12 +19697,45 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         ),
                         "expected_outputs": [{"name": "Mesh", "type": "mesh"}],
                     },
+                    {
+                        "goal": "subtract one positioned closed mesh from another",
+                        "source": (
+                            "base = api.from_object(inputs['base'], label='Base')\n"
+                            "tool = api.from_object(inputs['tool'], label='Cutting Tool')\n"
+                            "cut = api.difference(base, tool, linear_deflection=0.1, "
+                            "angular_deflection_degrees=28.64788975654116, "
+                            "relative=False, label='Cut Mesh')\n"
+                            "result = {'Mesh': cut}"
+                        ),
+                        "expected_outputs": [{"name": "Mesh", "type": "mesh"}],
+                    },
+                    {
+                        "goal": "mesh one authenticated solid with stable face groups",
+                        "source": (
+                            "converted = api.mesh_from_shape(inputs['shape'], "
+                            "method='standard', linear_deflection=0.25, "
+                            "angular_deflection_degrees=15, preserve_face_groups=True, "
+                            "label='Body Mesh')\nresult = {'Mesh': converted}"
+                        ),
+                        "expected_outputs": [{"name": "Mesh", "type": "mesh"}],
+                    },
+                    {
+                        "goal": "convert one repaired closed mesh to a refined solid",
+                        "source": (
+                            "converted = api.shape_from_mesh(inputs['mesh'], "
+                            "output_type='solid', tolerance=0.01, "
+                            "harmonize_normals=True, refine=True, label='Recovered Solid')\n"
+                            "result = {'Solid': converted}"
+                        ),
+                        "expected_outputs": [{"name": "Solid", "type": "solid"}],
+                    },
                 ],
                 "error_contract": {
                     "source": (
                         "argument errors name api.operation and the exact triangle, vector, "
-                        "reference, quaternion, repair option, diagnostic bound, or label path, "
-                        "and propagate source_validation plus one exact correction"
+                        "reference, quaternion, repair option, diagnostic bound, conversion "
+                        "method, topology selector, tolerance, or label path, and propagate "
+                        "source_validation plus one exact correction"
                     ),
                     "native": (
                         "every worker failure retains its exact reference, definition, native-"
@@ -18135,8 +19743,9 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "observations, and one actionable correction"
                     ),
                     "publication": (
-                        "artifact/hash mismatch, diagnostics drift, native-type drift, assigned "
-                        "mesh mismatch, and external-reference conflicts reject the candidate"
+                        "artifact/hash mismatch, diagnostics or topology drift, native-type "
+                        "drift, assigned-kernel mismatch, and external-reference conflicts "
+                        "reject the candidate"
                     ),
                 },
             }
@@ -18348,8 +19957,8 @@ class MeshPartDomainAdapter(DeclarativeDomainAdapter):
                         "closed state for solids, boundary counts, and refinement result."
                     ),
                     "stable_state": (
-                        "After every mutation inspect the program: working_revision must equal "
-                        "accepted_revision and every result must retain its stable live identity."
+                        "A successful write must report matching working and accepted revisions "
+                        "and stable live identities for every result."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and "
@@ -18361,9 +19970,9 @@ class MeshPartDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Perform only "
-                        "BREP/mesh conversion here and state the exact human workbench handoff "
-                        "for source repair, modeling, inspection, analysis, or appearance."
+                        "The active workbench determines the available API. Perform BREP/mesh "
+                        "conversion here and describe follow-on source repair, modeling, "
+                        "inspection, analysis, or appearance work."
                     ),
                     "before_conversion": (
                         "Mesh repairs and topology diagnostics belong to Mesh; BREP creation and "
@@ -18623,8 +20232,8 @@ class PointsDomainAdapter(DeclarativeDomainAdapter):
                         "attribute components, structured dimensions, and authenticated artifact SHA-256."
                     ),
                     "stable_state": (
-                        "After every mutation inspect the program: working_revision must equal "
-                        "accepted_revision and the output must retain its stable live object identity."
+                        "A successful write must report matching working and accepted revisions "
+                        "and the output's stable live object identity."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and "
@@ -18635,9 +20244,9 @@ class PointsDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Finish only point-cloud "
-                        "ingestion, transform, filtering, sampling, and native publication here, then "
-                        "state the exact human-activated workbench needed for another representation."
+                        "The active workbench determines the available API. Complete point-cloud "
+                        "ingestion, transform, filtering, sampling, and native publication here, "
+                        "then describe follow-on work for another representation."
                     ),
                     "next_domains": {
                         "Reverse Engineering": "curve/surface fitting, segmentation, or reconstruction",
@@ -18916,8 +20525,8 @@ class ReverseEngineeringDomainAdapter(DeclarativeDomainAdapter):
                         "all, retained facets, and published groups; never infer success from color alone."
                     ),
                     "stable_state": (
-                        "After every mutation inspect the program: working_revision must equal "
-                        "accepted_revision and all output object names must remain stable."
+                        "A successful write must report matching working and accepted revisions "
+                        "and unchanged output object names."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and "
@@ -18928,9 +20537,9 @@ class ReverseEngineeringDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or engine. Finish only fitting, "
-                        "reconstruction, segmentation, and deviation evidence here, then request the "
-                        "exact human-activated workbench for downstream work."
+                        "The active workbench determines the available API. Complete fitting, "
+                        "reconstruction, segmentation, and deviation evidence here, then describe "
+                        "the downstream work that remains."
                     ),
                     "next_domains": {
                         "Points": "crop, clean, transform, or downsample source scans",
@@ -19206,8 +20815,8 @@ class InspectionDomainAdapter(DeclarativeDomainAdapter):
                         "requires unmeasured_count=0; verify sign only for oriented nominal geometry."
                     ),
                     "stable_state": (
-                        "After every mutation inspect the program: working_revision must equal accepted_revision "
-                        "and all output object names and human consumers must remain stable."
+                        "A successful write must report matching working and accepted revisions, "
+                        "stable output object names, and preserved human consumers."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and retry.required_changes. "
@@ -19217,9 +20826,9 @@ class InspectionDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or engine. Finish only nominal-versus-actual solve, "
-                        "metrics, groups, and reports here, then request the exact human-activated workbench "
-                        "for source correction or downstream use."
+                        "The active workbench determines the available API. Complete the "
+                        "nominal-versus-actual solve, metrics, groups, and reports here, then "
+                        "describe any source correction or downstream work."
                     ),
                     "source_preparation": {
                         "Points": "transform, crop, clean, or downsample actual point clouds",
@@ -19598,8 +21207,8 @@ class RobotDomainAdapter(DeclarativeDomainAdapter):
                         "authenticated artifact digest before making a motion claim."
                     ),
                     "stable_state": (
-                        "After every mutation inspect the program: working_revision must equal accepted_revision "
-                        "and native output names, frozen dress-up state, and human consumers must remain stable."
+                        "A successful write must report matching working and accepted revisions, "
+                        "stable native output names, frozen dress-up state, and preserved consumers."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and retry.required_changes. "
@@ -19609,8 +21218,9 @@ class RobotDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or engine. Finish and verify the Robot-domain graph, "
-                        "then request the exact human-activated workbench needed for the next deliverable."
+                        "The active workbench determines the available API. Complete and verify "
+                        "the Robot graph here, then describe the work required for the next "
+                        "deliverable."
                     ),
                     "complete_robot": {
                         "Part Design/Part": "design link, housing, flange, end-effector, and fixture geometry",
@@ -19955,7 +21565,7 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                     ),
                     "graph": (
                         "Verify native solver settings, exact analysis membership, one-scenario load "
-                        "semantics, material properties/regions, constraint magnitudes/directions/" 
+                        "semantics, material properties/regions, constraint magnitudes/directions/"
                         "selections, mesh topology/order/source, and exact stable links."
                     ),
                     "evidence": (
@@ -19977,8 +21587,9 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or engine. Finish and inspect this FEM graph, "
-                        "then request the exact human-activated workbench for the next deliverable."
+                        "The active workbench determines the available API. Complete and inspect "
+                        "this FEM graph here, then describe the work required for the next "
+                        "deliverable."
                     ),
                     "upstream": {
                         "Part Design/Part": "stable load-bearing geometry and semantic interfaces",
@@ -20423,8 +22034,8 @@ class CAMDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or engine. Finish and inspect this CAM graph, "
-                        "then request the exact human-activated workbench for upstream or downstream work."
+                        "The active workbench determines the available API. Complete and inspect "
+                        "this CAM graph here, then describe any upstream or downstream work."
                     ),
                     "upstream": {
                         "Part Design/Part": "accepted manufacturable solid geometry and semantic machining faces",
@@ -20740,15 +22351,16 @@ class TechDrawDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "upstream": {
-                        "Part Design/Part/Assembly/BIM": "accepted geometry and placements to document",
+                        "Part Design/Part/Assembly": "accepted geometry and placements to document",
                         "Material/FEM/CAM/Inspection": "verified properties or results to summarize as notes; this API does not query them implicitly",
                     },
                     "downstream": {
                         "external release workflow": "explicitly export/review the accepted native page outside this VibeScript contract",
                     },
                     "rule": (
-                        "If geometry, analysis, manufacturing, or release work is needed, explain the "
-                        "handoff and ask the human to switch workbenches; never call another domain's tools."
+                        "The active workbench determines the available API. When geometry, "
+                        "analysis, manufacturing, or release work is needed, describe it without "
+                        "calling another workbench's tools."
                     ),
                 },
                 "recommended_patterns": [
@@ -20808,10 +22420,19 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
     production_ready: bool = True
 
     def describe_api(self) -> dict[str, Any]:
+        from vibescript_assembly_api import (
+            JOINT_LIMIT_PARAMETERS,
+            JOINT_REQUIRED_PARAMETERS,
+            JOINT_TYPES,
+        )
+
         description = super().describe_api()
         description.update(
             {
                 "api_contract": "vibecad-vibescript-assembly-api-v1",
+                "mechanism_verification_contract": (
+                    "vibecad-mechanism-verification-report-v1"
+                ),
                 "units": {
                     "length": "millimetres",
                     "angle": "degrees",
@@ -20835,16 +22456,25 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                     "are authenticated snapshots of stable input references. FreeCADCmd "
                     "creates real native links, grounds components, derives connector frames, "
                     "creates native joints, solves, and derives simulations, exploded-view "
-                    "moves, and native bills of materials from that exact graph. It returns "
-                    "placements, line endpoints, table cells, and diagnostics. The document "
-                    "thread only applies independently reauthorized, precomputed state."
+                    "moves, native bills of materials, and exact static pair evidence from "
+                    "that graph. It returns placements, geometry witnesses, line endpoints, "
+                    "table cells, and diagnostics. The document thread only applies "
+                    "independently reauthorized, precomputed state."
                 ),
                 "input_reference_contract": {
                     "purpose": (
                         "Pass component sources through inputs. The host detaches each exact "
                         "Shape, hashes the BREP and semantic-interface contract into the "
                         "program revision, and marks accepted Assembly outputs stale if a "
-                        "source changes. Raw document access from source is unavailable."
+                        "source changes. Copy references from available_components. Use "
+                        "component_catalog.search only when the needed definition is omitted "
+                        "from that bounded inventory or more catalog metadata is required. Its "
+                        "optional document_path is portable relative "
+                        "to the saved Assembly file and loads the exact native source document. "
+                        "The legacy document_uid/object_name reference remains valid. Raw "
+                        "document access from source is unavailable. "
+                        "Catalog fasteners are created directly with api.fastener and do "
+                        "not require an input reference."
                     ),
                     "schema": {
                         "type": "object",
@@ -20852,6 +22482,14 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "properties": {
                             "document_uid": {"type": "string", "minLength": 1},
                             "object_name": {"type": "string", "minLength": 1},
+                            "document_path": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": (
+                                    "Optional forward-slash .FCStd path below the saved "
+                                    "Assembly document directory."
+                                ),
+                            },
                         },
                         "required": ["document_uid", "object_name"],
                         "additionalProperties": False,
@@ -20866,31 +22504,40 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "graph_contract": {
                     "component": (
-                        "Create each occurrence once, set grounded=True on at least one "
-                        "fixed base, and reuse that exact variable in connectors."
+                        "Create one authored-source occurrence with api.component, or several "
+                        "occurrences of one source with api.instances. Create each exact "
+                        "standard-hardware occurrence with api.fastener. Set "
+                        "grounded=True on at least one fixed base and reuse that exact "
+                        "variable in connectors."
                     ),
                     "joint": (
                         "Each joint consumes two connector variables on two different "
                         "components. Include every joint and component in api.assembly."
                     ),
                     "result": (
-                        "Return exactly one assembly and one solver_diagnostics value. Return "
-                        "every component and joint in that graph exactly once under its stable "
-                        "output name; do not recreate equivalent values. If motion is requested, "
-                        "also return every api.motion value exactly once and exactly one "
-                        "api.simulation value that consumes the returned assembly. If an "
+                        "Pass components and joints to api.assembly as mappings keyed by their "
+                        "stable member names; those native members belong to the assembly and "
+                        "do not go in result. Return exactly one assembly and one "
+                        "solver_diagnostics value. If motion is requested, pass motions to "
+                        "api.simulation as a stable-key mapping and return only the simulation. "
+                        "The legacy sequence form remains readable but requires every sequence "
+                        "member as a separate result output. If an "
                         "exploded presentation is requested, return each api.exploded_view "
                         "value exactly once. If a bill of materials is requested, return each "
-                        "api.bill_of_materials value exactly once. Every derived value must "
-                        "consume that same assembly variable."
+                        "api.bill_of_materials value exactly once. Return each "
+                        "api.mechanism_check value once. Every derived value must consume "
+                        "that same assembly variable."
                     ),
                 },
                 "operation_selection": {
                     "source_occurrence": "api.component",
+                    "repeated_source_occurrences": "api.instances",
+                    "standard_hardware_occurrence": "api.fastener",
                     "joint_coordinate_system": "api.connector",
                     "mechanical_relationship": "api.joint",
                     "complete_mechanism_graph": "api.assembly",
                     "native_validation_and_diagnostics": "api.solve",
+                    "exact_static_pair_verification": "api.mechanism_check",
                     "one_driven_degree_of_freedom": "api.motion",
                     "time_series_kinematics": "api.simulation",
                     "named_disassembly_presentation": "api.exploded_view",
@@ -20902,14 +22549,73 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "is publishable."
                     ),
                 },
+                "static_mechanism_verification": {
+                    "operation": "api.mechanism_check",
+                    "scope": (
+                        "Exact BREP checks at the solved static state. This does not "
+                        "certify motion between states."
+                    ),
+                    "requirements": {
+                        "collision_free": (
+                            "Declare first, second, and positive tolerance_mm."
+                        ),
+                        "minimum_clearance": (
+                            "Declare first, second, nonnegative minimum_mm, and "
+                            "positive tolerance_mm."
+                        ),
+                    },
+                    "contact_policies": {
+                        "prohibited": (
+                            "Touching within tolerance or positive-volume overlap fails."
+                        ),
+                        "clearance": (
+                            "Separation below minimum_clearance_mm, accounting only for "
+                            "the declared tolerance_mm, fails."
+                        ),
+                        "allowed": (
+                            "Contact may occur only on first_interface and "
+                            "second_interface; positive-volume overlap still fails."
+                        ),
+                        "required": (
+                            "The two named interfaces must contact within tolerance; "
+                            "positive-volume overlap or contact elsewhere fails."
+                        ),
+                        "ignored": (
+                            "Exclude the exact pair and provide a non-empty reason."
+                        ),
+                    },
+                    "identity": (
+                        "Pass the exact component variables from api.assembly. A pair may "
+                        "be declared once across requirements and contacts."
+                    ),
+                    "tolerances": (
+                        "Every evaluated declaration supplies tolerance_mm. There is no "
+                        "default tolerance and no inferred fit or collision exemption."
+                    ),
+                    "interfaces": (
+                        "allowed and required need published semantic interfaces backed "
+                        "by explicit FaceN, EdgeN, or VertexN contact subelements."
+                    ),
+                    "current_limit": (
+                        "This static contract evaluates rigid component occurrences. A "
+                        "flexible occurrence reports an explicit unsupported-scope error "
+                        "instead of a false pass."
+                    ),
+                    "publication": (
+                        "The result is a portable v1 report under the Assembly Verification "
+                        "group with scenario, solve, requirement, engine, verdict, and exact "
+                        "witness evidence. Pass, fail, and indeterminate reports are all "
+                        "published so the failed pair and evidence remain inspectable."
+                    ),
+                },
                 "model_workflow": [
                     {
                         "step": 1,
                         "action": "discover",
                         "instruction": (
-                            "Read component_candidates from the Assembly domain context. "
-                            "Choose only entries with eligible_component_shape=true and "
-                            "copy each candidate's reference object into program inputs. "
+                            "Copy component references from available_components into program "
+                            "inputs. Search only when the needed component is not listed or "
+                            "additional catalog metadata is required. "
                             "Use flexible=True only when eligible_flexible_subassembly=true. "
                             "For internal connectors or detailed BOMs, require "
                             "eligible_detailed_bom_hierarchy=true and copy exact "
@@ -20932,8 +22638,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "action": "author_graph",
                         "instruction": (
                             "Create each component once, ground at least one component, reuse "
-                            "the same variables in connectors and joints, then return every "
-                            "component and joint plus exactly one assembly and diagnostics output."
+                            "the same variables in connectors and joints, and put them in stable-key "
+                            "mappings passed to api.assembly. Return the assembly and diagnostics, "
+                            "not its owned members."
                         ),
                     },
                     {
@@ -20951,7 +22658,8 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "instruction": (
                             "Only after defining a clean solvable mechanism, create one "
                             "api.motion per driven degree of freedom and one api.simulation. "
-                            "Return those same variables. Angular formulas are radians, linear "
+                            "Pass motions as a stable-key mapping and return the simulation only. "
+                            "Angular formulas are radians, linear "
                             "formulas are millimetres, and time is seconds."
                         ),
                     },
@@ -20960,7 +22668,7 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "action": "present",
                         "instruction": (
                             "After a clean solve, use one api.exploded_view call per named "
-                            "presentation. Express its ordered moves with returned component "
+                            "presentation. Express its ordered moves with the component "
                             "variables, using exactly one transform or radial_distance_mm per "
                             "move. Return the view variable under its stable output name."
                         ),
@@ -20971,8 +22679,8 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "instruction": (
                             "Use one api.bill_of_materials call for each requested named table. "
                             "Choose built-in, native-property, and custom columns in that call; "
-                            "do not build rows manually. A top-level row path is its returned "
-                            "component output name. A nested row path is that output name plus "
+                            "do not build rows manually. A top-level row path is its stable "
+                            "api.assembly component-map key. A nested row path is that key plus "
                             "'/' plus an exact component_candidates assembly_hierarchy "
                             "occurrence_paths[].path. Copy accepted or failure-reported paths "
                             "verbatim into row_overrides."
@@ -21096,9 +22804,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         ),
                     },
                     "occurrence_paths": (
-                        "For a returned component named Module and source hierarchy path "
+                        "For a component mapped as Module and source hierarchy path "
                         "Gearbox/GearLeft, use Module/Gearbox/GearLeft. Top-level component "
-                        "rows use only the returned output name. Paths contain stable source "
+                        "rows use only the stable member key. Paths contain stable source "
                         "FreeCAD object names, never generated AssemblyLink child names."
                     ),
                     "quantity_aggregation": (
@@ -21200,6 +22908,23 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "vertex count, and a correction."
                     ),
                 },
+                "standard_hardware": {
+                    "selection": (
+                        "Use fastener_catalog.search for exact standard, thread, length, "
+                        "and option values. Insert the result with api.fastener; never draw "
+                        "a published standard fastener from primitives."
+                    ),
+                    "interfaces": (
+                        "Use a published_interface such as thread_axis, bearing_plane, "
+                        "under_head_plane, tip_plane, first_bearing_plane, or "
+                        "second_bearing_plane when present. These named frames remain stable "
+                        "when the generated topology changes."
+                    ),
+                    "identity": (
+                        "Repeated identical catalog definitions share BOM identity while "
+                        "remaining independent native Assembly occurrences."
+                    ),
+                },
                 "joint_types": {
                     "rigid_and_kinematic": [
                         "fixed",
@@ -21271,6 +22996,8 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "status": "supported",
                         "features": [
                             "repeated links to one source",
+                            "portable links to saved project component documents",
+                            "api.instances for concise repeated occurrences with individual identities",
                             "initial and solved placements",
                             "grounding",
                             "rigid native subassembly links",
@@ -21322,6 +23049,18 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "nested-source invalidation for labels, placements, and BOM properties",
                         ],
                     },
+                    "static_mechanism_verification": {
+                        "status": "supported",
+                        "features": [
+                            "explicit rigid component pairs only",
+                            "exact BREP distance and positive-volume common",
+                            "declared per-pair tolerances",
+                            "prohibited, clearance, allowed, required, and ignored contact policies",
+                            "semantic-interface contact confinement",
+                            "pass, fail, and indeterminate verdicts with witnesses",
+                            "portable v1 reports under Verification",
+                        ],
+                    },
                     "not_yet_provider_exposed": [],
                 },
                 "solver_codes": {
@@ -21338,6 +23077,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "assembly": "Assembly::AssemblyObject",
                         "component": "App::Link or Assembly::AssemblyLink for a subassembly",
                         "joint": "native JointObject in Assembly::JointGroup",
+                        "mechanism_verification": (
+                            "stable App::FeaturePython in the Assembly Verification group"
+                        ),
                         "motion": "stable App::FeaturePython native motion-property contract",
                         "simulation": (
                             "stable App::FeaturePython in Assembly::SimulationGroup"
@@ -21351,15 +23093,17 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                     },
                     "identity": (
                         "Program/output ids update the same assembly, component, joint, motion, "
-                        "simulation, exploded-view, BOM, and diagnostics objects in place. "
+                        "simulation, mechanism-verification, exploded-view, BOM, and "
+                        "diagnostics objects in place. "
                         "Compatible exploded moves retain stable index identities. A component "
                         "cannot change between App::Link and Assembly::AssemblyLink without a "
                         "new output identity."
                     ),
                     "asynchronous_boundary": (
                         "BREP transfer, connector derivation, presolve, solver work, and "
-                        "kinematic trace, exploded-view, and native BOM generation run in the "
-                        "isolated worker. Live joints receive detached precomputed JCS placements "
+                        "kinematic trace, exact static BREP verification, exploded-view, and "
+                        "native BOM generation run in the isolated worker. Live joints receive "
+                        "detached precomputed JCS placements "
                         "and live simulations receive only authenticated settings and previews. "
                         "Live exploded views receive only precomputed move transforms and stable "
                         "references; live BOMs receive only literal precomputed cells. Publication "
@@ -21370,10 +23114,11 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Finish and "
-                        "inspect the Assembly graph available on this surface, then state the "
-                        "exact handoff and ask the human to switch; never call another "
-                        "domain's tools."
+                        "The active workbench determines the available API for authoring the "
+                        "current graph. Universal source tools can still read and edit the exact "
+                        "Part Design programs listed in this Assembly context. Correct a component "
+                        "source without making the user switch workbenches; rebuild it, then rebuild "
+                        "this Assembly graph."
                     ),
                     "handoff_examples": {
                         "Part Design/Part": (
@@ -21402,9 +23147,10 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         ),
                     },
                     "boundary": (
-                        "Assembly owns occurrences, connectors, joints, solve evidence, motion, "
-                        "exploded views, and BOMs. It does not author component solids, material "
-                        "cards, robot trajectories, FEM loads, CAM paths, or drawing projections."
+                        "Assembly VibeScript owns occurrences, connectors, joints, solve evidence, "
+                        "motion, exploded views, and BOMs. Component solids remain owned by their "
+                        "Part Design sources, which may be edited through the universal source "
+                        "tools without changing the visible workbench."
                     ),
                 },
                 "recommended_patterns": [
@@ -21416,16 +23162,13 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "hinge = api.joint('revolute', api.connector(base, 'Face6'), "
                             "api.connector(arm, 'Face1'), angle_limits_degrees=[-90,90], "
                             "label='Hinge')\n"
-                            "model = api.assembly([base, arm], [hinge], label='Robot Arm')\n"
+                            "model = api.assembly({'Base':base, 'Arm':arm}, "
+                            "{'Hinge':hinge}, label='Robot Arm')\n"
                             "diagnostics = api.solve(model)\n"
-                            "result = {'Model': model, 'Base': base, 'Arm': arm, "
-                            "'Hinge': hinge, 'Diagnostics': diagnostics}"
+                            "result = {'Model': model, 'Diagnostics': diagnostics}"
                         ),
                         "expected_outputs": [
                             {"name": "Model", "type": "assembly"},
-                            {"name": "Base", "type": "component_link"},
-                            {"name": "Arm", "type": "component_link"},
-                            {"name": "Hinge", "type": "joint"},
                             {"name": "Diagnostics", "type": "solver_diagnostics"},
                         ],
                     },
@@ -21436,20 +23179,17 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "arm = api.component(inputs['arm'], label='Arm')\n"
                             "hinge = api.joint('revolute', api.connector(base), "
                             "api.connector(arm), label='Hinge')\n"
-                            "model = api.assembly([base, arm], [hinge], label='Robot Arm')\n"
+                            "model = api.assembly({'Base':base, 'Arm':arm}, "
+                            "{'Hinge':hinge}, label='Robot Arm')\n"
                             "diagnostics = api.solve(model)\n"
                             "exploded = api.exploded_view(model, "
                             "[{'components':[arm], 'transform':[0,0,40]}], "
                             "label='Service View')\n"
-                            "result = {'Model':model, 'Base':base, 'Arm':arm, "
-                            "'Hinge':hinge, 'Exploded':exploded, "
+                            "result = {'Model':model, 'Exploded':exploded, "
                             "'Diagnostics':diagnostics}"
                         ),
                         "expected_outputs": [
                             {"name": "Model", "type": "assembly"},
-                            {"name": "Base", "type": "component_link"},
-                            {"name": "Arm", "type": "component_link"},
-                            {"name": "Hinge", "type": "joint"},
                             {"name": "Exploded", "type": "exploded_view"},
                             {"name": "Diagnostics", "type": "solver_diagnostics"},
                         ],
@@ -21462,17 +23202,14 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "mount = api.joint('revolute', api.connector(base), "
                             "api.connector(drive, occurrence_path='CoreOccurrence/GearOccurrence'), "
                             "angle_limits_degrees=[-120,120], label='Drive Mount')\n"
-                            "model = api.assembly([base, drive], [mount], "
+                            "model = api.assembly({'Base':base, 'Drive':drive}, "
+                            "{'Mount':mount}, "
                             "label='Flexible Mechanism')\n"
                             "diagnostics = api.solve(model)\n"
-                            "result = {'Model':model,'Base':base,'Drive':drive,"
-                            "'Mount':mount,'Diagnostics':diagnostics}"
+                            "result = {'Model':model,'Diagnostics':diagnostics}"
                         ),
                         "expected_outputs": [
                             {"name": "Model", "type": "assembly"},
-                            {"name": "Base", "type": "component_link"},
-                            {"name": "Drive", "type": "component_link"},
-                            {"name": "Mount", "type": "joint"},
                             {"name": "Diagnostics", "type": "solver_diagnostics"},
                         ],
                     },
@@ -21483,21 +23220,18 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "arm = api.component(inputs['arm'], label='Arm')\n"
                             "hinge = api.joint('revolute', api.connector(base), "
                             "api.connector(arm), label='Hinge')\n"
-                            "model = api.assembly([base, arm], [hinge], label='Robot Arm')\n"
+                            "model = api.assembly({'Base':base, 'Arm':arm}, "
+                            "{'Hinge':hinge}, label='Robot Arm')\n"
                             "diagnostics = api.solve(model)\n"
                             "bill = api.bill_of_materials(model, columns=['index','name',"
                             "'quantity',{'property':'PartNumber','heading':'Part Number'},"
                             "{'heading':'Description'}], row_overrides=["
                             "{'occurrence_path':'Arm','values':{'Description':'Moving link'}}], "
                             "label='Service BOM')\n"
-                            "result = {'Model':model,'Base':base,'Arm':arm,'Hinge':hinge,"
-                            "'Bill':bill,'Diagnostics':diagnostics}"
+                            "result = {'Model':model,'Bill':bill,'Diagnostics':diagnostics}"
                         ),
                         "expected_outputs": [
                             {"name": "Model", "type": "assembly"},
-                            {"name": "Base", "type": "component_link"},
-                            {"name": "Arm", "type": "component_link"},
-                            {"name": "Hinge", "type": "joint"},
                             {"name": "Bill", "type": "bom"},
                             {"name": "Diagnostics", "type": "solver_diagnostics"},
                         ],
@@ -21509,22 +23243,18 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "arm = api.component(inputs['arm'], label='Arm')\n"
                             "hinge = api.joint('revolute', api.connector(base), "
                             "api.connector(arm), label='Hinge')\n"
-                            "model = api.assembly([base, arm], [hinge], label='Driven Arm')\n"
+                            "model = api.assembly({'Base':base, 'Arm':arm}, "
+                            "{'Hinge':hinge}, label='Driven Arm')\n"
                             "diagnostics = api.solve(model)\n"
                             "drive = api.motion(hinge, 'initialValue + pi/2*time', "
                             "label='Hinge Drive')\n"
-                            "simulation = api.simulation(model, [drive], end_time_s=1, "
+                            "simulation = api.simulation(model, {'HingeDrive':drive}, end_time_s=1, "
                             "time_step_s=0.05, label='One Second')\n"
-                            "result = {'Model':model, 'Base':base, 'Arm':arm, "
-                            "'Hinge':hinge, 'Drive':drive, 'Simulation':simulation, "
+                            "result = {'Model':model, 'Simulation':simulation, "
                             "'Diagnostics':diagnostics}"
                         ),
                         "expected_outputs": [
                             {"name": "Model", "type": "assembly"},
-                            {"name": "Base", "type": "component_link"},
-                            {"name": "Arm", "type": "component_link"},
-                            {"name": "Hinge", "type": "joint"},
-                            {"name": "Drive", "type": "motion"},
                             {"name": "Simulation", "type": "simulation"},
                             {"name": "Diagnostics", "type": "solver_diagnostics"},
                         ],
@@ -21536,7 +23266,7 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "including irrelevant joint parameters and invalid graph membership."
                     ),
                     "connector": (
-                        "Selection failures include component output, requested subelement or "
+                        "Selection failures include component member, requested subelement or "
                         "interface, available range/names, and resolved geometry types. Nested "
                         "occurrence failures include requested_path, failed_segment_index, exact "
                         "available_segments, and a copy-ready correction."
@@ -21566,6 +23296,95 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 },
             }
         )
+        description["api_details"] = {
+            "component": {
+                "definition_rule": (
+                    "The input reference identifies one authored reusable definition. "
+                    "The result is one lightweight native linked occurrence, not copied BREP. "
+                    "Every non-subassembly reference is one rigid mechanism body even when "
+                    "its source Shape contains several solids."
+                ),
+                "discovery": (
+                    "Copy a reference from available_components into an "
+                    "x-vibecad-reference input. Search only for an omitted component or "
+                    "additional metadata."
+                ),
+                "motion_boundary": (
+                    "A compound or multi-solid source does not expose independently moving "
+                    "children. Publish independently moving manufactured parts as separate "
+                    "stable Part Design outputs. Publish one single-solid master for repeated "
+                    "identical parts and create its occurrences with api.instances."
+                ),
+            },
+            "instances": {
+                "definition_rule": (
+                    "Creates several lightweight native links to one authored definition. "
+                    "It does not duplicate or recompute that definition's BREP."
+                ),
+                "identity_rule": (
+                    "Bind/index each returned occurrence once, use those exact values in "
+                    "connectors and api.assembly, and return each under its own stable output key."
+                ),
+            },
+            "connector": {
+                "partdesign_handoff": (
+                    "Use the exact named interface listed on the component. VibeScript parts "
+                    "declare it in api.body(..., interfaces=...); native parts publish an "
+                    "existing LCS with component.publish_interface. Do not guess FaceN/EdgeN "
+                    "or derive a connector from nearby geometry."
+                ),
+                "axis_rule": "Connector local +Z is the joint axis.",
+                "contract_rule": (
+                    "allowed_joints and compatibility are explicit authored contracts. "
+                    "Compatibility tokens must match exactly; otherwise the native joint "
+                    "solver is authoritative. Geometry classes are never used to guess intent."
+                ),
+            },
+            "joint": {
+                "kinds": list(JOINT_TYPES),
+                "required_parameters": {
+                    kind: list(JOINT_REQUIRED_PARAMETERS[kind])
+                    for kind in JOINT_TYPES
+                },
+                "limit_parameters": {
+                    name: list(kinds)
+                    for name, kinds in JOINT_LIMIT_PARAMETERS.items()
+                },
+                "parameter_rules": {
+                    "pitch_radius_mm": (
+                        "Required and non-zero for rack_pinion; sign selects direction."
+                    ),
+                    "thread_pitch_mm": (
+                        "Required and non-zero for screw; sign selects handedness/direction."
+                    ),
+                    "radius1_mm/radius2_mm": (
+                        "Both are required and positive for gears and belt."
+                    ),
+                },
+                "source_example": (
+                    "hinge = api.joint('revolute', api.connector(base, "
+                    "{'type':'published_interface','interface_name':'HingeAxis'}), "
+                    "api.connector(arm, {'type':'published_interface',"
+                    "'interface_name':'HingeAxis'}), angle_limits_degrees=[-90,90])"
+                ),
+            },
+            "assembly": {
+                "ownership": (
+                    "Part Design owns reusable component geometry. Assembly owns occurrence "
+                    "placement, hierarchy, joints, static fit checks, and solved mechanism state."
+                ),
+                "reuse_rule": (
+                    "Edit the source Part Design program once; every linked Assembly occurrence "
+                    "then references that same definition."
+                ),
+            },
+            "mechanism_check": {
+                "scope": (
+                    "Exact solved-state BREP collision, contact, and minimum-clearance checks. "
+                    "Use api.simulation when behavior across motion states is required."
+                )
+            },
+        }
         return description
 
 
@@ -21587,8 +23406,6 @@ def install_builtin_adapters() -> None:
             adapter = SpreadsheetDomainAdapter(pack)
         elif pack.domain == "material":
             adapter = MaterialDomainAdapter(pack)
-        elif pack.domain == "bim":
-            adapter = BIMDomainAdapter(pack)
         elif pack.domain == "mesh":
             adapter = MeshDomainAdapter(pack)
         elif pack.domain == "meshpart":

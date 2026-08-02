@@ -263,18 +263,20 @@ def _exercise_api(document_uid: str) -> dict[str, object]:
 def _exercise_native_worker() -> None:
     surface = resolve_modeling_surface("CAMWorkbench", "vibescript")
     assert surface.available, surface.unavailable_reason
-    assert len(surface.tool_names) == 10
-    assert tuple(
-        name for name in surface.tool_names if name.startswith("vibescript.")
-    ) == tuple(
-        f"vibescript.cam.{operation}"
-        for operation in (
-            "create_program",
-            "edit_source",
-            "set_inputs",
-            "reconfigure_program",
-            "delete_program",
-        )
+    assert surface.tool_names == (
+        "conversation.ask_user",
+        "conversation.review_design",
+        "core.capture_view_screenshot",
+        "core.set_view",
+        "vibescript.read_source",
+        "vibescript.read_api",
+        "vibescript.build_program",
+        "vibescript.edit_source",
+        "vibescript.cam.create_program",
+        "vibescript.cam.set_inputs",
+        "vibescript.cam.reconfigure_program",
+        "vibescript.cam.delete_program",
+        "cam.list_jobs",
     )
     assert not any(name.startswith("native.") for name in surface.tool_names)
     adapter = get_domain_adapter("cam")
@@ -300,7 +302,7 @@ def _exercise_native_worker() -> None:
     assert "machine_configured=false" in description[
         "fixture_and_machine_contract"
     ]["machine"]
-    assert "cannot switch workbench or engine" in description[
+    assert "active workbench determines" in description[
         "workbench_handoffs"
     ]["rule"]
 
@@ -917,6 +919,7 @@ def _prepare_execute(
         "vibescript_cam_api.py",
         "vibescript_cam_worker.py",
         "vibescript_part_worker.py",
+        "vibescript_worker_progress.py",
     }, sorted(staged_names)
     execution = execute_candidate(prepared, cancellation_check=None)
     return prepared, execution
@@ -1030,6 +1033,85 @@ def _managed_objects(document, program_id: str) -> list[object]:
     ]
 
 
+def _assert_timeline_resource_block(document, owner, resources) -> None:
+    timeline = document.getObject("VibeCADTimeline")
+    assert timeline is not None
+    operations = list(timeline.Operations)
+    exact_resources = list(resources)
+    owner_index = operations.index(owner)
+    assert [
+        operations.index(resource) for resource in exact_resources
+    ] == list(range(owner_index - len(exact_resources), owner_index))
+    assert owner.VibeCADTimelineRole == "operation"
+    assert all(
+        resource.VibeCADTimelineRole == "resource"
+        and resource.VibeCADTimelineOwner is owner
+        and resource.getTypeIdOfProperty("VibeCADTimelineOwner")
+        == "App::PropertyLinkHidden"
+        for resource in exact_resources
+    )
+
+
+def _cam_job_resources(outputs: dict[str, object]) -> list[object]:
+    job = outputs["Job"]
+    tools = list(job.Tools.Group)
+    assert tools == [outputs["Tool"]]
+    return [
+        *list(job.Model.Group),
+        job.Model,
+        outputs["Stock"],
+        *[
+            resource
+            for controller in tools
+            for resource in (controller.Tool, controller)
+        ],
+        job.Tools,
+        job.Operations,
+        job.SetupSheet,
+        outputs["Toolpath"],
+    ]
+
+
+def _assert_cam_timeline_graph(
+    document,
+    outputs: dict[str, object],
+    source,
+) -> dict[str, object]:
+    assert document.getObject(source.Name) is source
+    job = outputs["Job"]
+    resources = _cam_job_resources(outputs)
+    _assert_timeline_resource_block(document, job, resources)
+    profile = outputs["Profile"]
+    timeline = document.getObject("VibeCADTimeline")
+    assert timeline is not None
+    assert profile in list(timeline.Operations)
+    assert profile.VibeCADTimelineRole == "operation"
+    assert getattr(profile, "VibeCADTimelineOwner", None) is None
+    assert job.getTypeIdOfProperty(
+        "VibeCADTimelineReplacedInputs"
+    ) == "App::PropertyLinkListHidden"
+    assert list(job.VibeCADTimelineReplacedInputs) == [source]
+    model_clones = list(job.Model.Group)
+    assert model_clones
+    assert all(clone.VibeCADCAMOriginal is source for clone in model_clones)
+    return {
+        "job": str(job.Name),
+        "profile": str(profile.Name),
+        "resources": [str(resource.Name) for resource in resources],
+        "resource_owners": {
+            str(resource.Name): str(resource.VibeCADTimelineOwner.Name)
+            for resource in resources
+        },
+        "replaced_inputs": [
+            str(obj.Name) for obj in job.VibeCADTimelineReplacedInputs
+        ],
+        "model_sources": {
+            str(clone.Name): str(clone.VibeCADCAMOriginal.Name)
+            for clone in model_clones
+        },
+    }
+
+
 def _rounded_native_state(value, *, digits: int):
     if isinstance(value, dict):
         return {
@@ -1110,9 +1192,12 @@ def _exercise_isolated_lifecycle() -> None:
         root = FilesystemPath(raw_root).resolve()
         document = App.newDocument("CAMVibeScriptLifecycle")
         try:
+            document.UndoMode = 1
             source = document.addObject("Part::Feature", "SourceSolid")
             source.Label = "Human source solid"
             source.Shape = Part.makeBox(20, 16, 10)
+            source_name = str(source.Name)
+            document.commitTransaction()
             service = _Service(root)
             prepared, execution, validated = _prepare_execute_validate(
                 _captured(root, document, source),
@@ -1200,10 +1285,48 @@ def _exercise_isolated_lifecycle() -> None:
             assert outputs["Tool"] in list(outputs["Job"].Tools.Group)
             assert outputs["Profile"] in list(outputs["Job"].Operations.Group)
             assert outputs["Job"].Model.Group
+            _assert_timeline_resource_block(
+                document,
+                outputs["Job"],
+                _cam_job_resources(outputs),
+            )
+            assert outputs["Profile"].VibeCADTimelineRole == "operation"
+            assert getattr(
+                outputs["Profile"],
+                "VibeCADTimelineOwner",
+                None,
+            ) is None
             assert all(obj.isFrozen() for obj in outputs.values())
             assert all(PROP_CAM_VALIDATION in obj.PropertiesList for obj in outputs.values())
 
             initial_names = {name: str(obj.Name) for name, obj in outputs.items()}
+            created_state = _assert_cam_timeline_graph(
+                document,
+                outputs,
+                source,
+            )
+            created_managed_names = {
+                str(obj.Name)
+                for obj in _managed_objects(document, prepared["program_id"])
+            }
+            document.undo()
+            assert not _managed_objects(document, prepared["program_id"])
+            assert document.getObject(source_name) is not None
+            document.redo()
+            outputs = {
+                name: document.getObject(object_name)
+                for name, object_name in initial_names.items()
+            }
+            assert all(outputs.values())
+            assert {
+                str(obj.Name)
+                for obj in _managed_objects(document, prepared["program_id"])
+            } == created_managed_names
+            assert _assert_cam_timeline_graph(
+                document,
+                outputs,
+                document.getObject(source_name),
+            ) == created_state
             invalid_selections = (
                 "selections=[{'target':inputs['solid'],'selection':"
                 "{'type':'subelement','name':'Face999'}}], "
@@ -1217,9 +1340,10 @@ def _exercise_isolated_lifecycle() -> None:
                     arguments={
                         "program_id": prepared["program_id"],
                         "expected_revision": accepted["working_revision"],
-                        "replacements": [
-                            {"old": "selections=[], ", "new": invalid_selections}
-                        ],
+                        "source": _program_source().replace(
+                            "selections=[], ",
+                            invalid_selections,
+                        ),
                     },
                 ),
                 service,
@@ -1250,9 +1374,7 @@ def _exercise_isolated_lifecycle() -> None:
                         arguments={
                             "program_id": prepared["program_id"],
                             "expected_revision": failed["revision"],
-                            "replacements": [
-                                {"old": invalid_selections, "new": "selections=[], "}
-                            ],
+                            "source": _program_source(),
                         },
                     ),
                     service,
@@ -1320,7 +1442,7 @@ def _exercise_isolated_lifecycle() -> None:
             consumer.addProperty("App::PropertyLinkList", "Sources")
             consumer.Sources = list(outputs.values())
             consumer_name = str(consumer.Name)
-            source_name = str(source.Name)
+            document.commitTransaction()
 
             updated, _execution, update_validated = _prepare_execute_validate(
                 _captured(
@@ -1350,6 +1472,32 @@ def _exercise_isolated_lifecycle() -> None:
             for name, obj in outputs.items():
                 assert obj.HumanCAMNote == f"preserve {name}"
                 assert obj.isFrozen()
+            document.undo()
+            outputs = {
+                name: document.getObject(object_name)
+                for name, object_name in stable_names.items()
+            }
+            assert all(outputs.values())
+            assert abs(float(outputs["Profile"].StepDown.Value) - 5.0) <= 1.0e-9
+            _assert_cam_timeline_graph(
+                document,
+                outputs,
+                document.getObject(source_name),
+            )
+            assert consumer.Sources == list(outputs.values())
+            document.redo()
+            outputs = {
+                name: document.getObject(object_name)
+                for name, object_name in stable_names.items()
+            }
+            assert all(outputs.values())
+            assert abs(float(outputs["Profile"].StepDown.Value) - 2.5) <= 1.0e-9
+            _assert_cam_timeline_graph(
+                document,
+                outputs,
+                document.getObject(source_name),
+            )
+            assert consumer.Sources == list(outputs.values())
 
             accepted_snapshot = {
                 str(obj.Name): _object_snapshot(obj)
@@ -1445,6 +1593,7 @@ def _exercise_isolated_lifecycle() -> None:
             App.closeDocument(document_name)
             document = App.openDocument(str(save_path))
             App.setActiveDocument(document.Name)
+            document.UndoMode = 1
             document.recompute()
             reopened_snapshot = {
                 str(obj.Name): _object_snapshot(obj)
@@ -1472,6 +1621,11 @@ def _exercise_isolated_lifecycle() -> None:
             assert isinstance(
                 reopened_outputs["Profile"].Proxy,
                 NativeProfile.ObjectProfile,
+            )
+            _assert_timeline_resource_block(
+                document,
+                reopened_outputs["Job"],
+                _cam_job_resources(reopened_outputs),
             )
             reopened_consumer = document.getObject(consumer_name)
             assert reopened_consumer.Sources == list(reopened_outputs.values())
@@ -1505,6 +1659,24 @@ def _exercise_isolated_lifecycle() -> None:
             assert finished_delete["artifacts_deleted"] is True
             assert not FilesystemPath(prepared_delete["program_directory"]).exists()
             assert not FilesystemPath(prepared_delete["trash_directory"]).exists()
+            assert not _managed_objects(document, prepared["program_id"])
+            assert document.getObject(source_name) is not None
+            document.undo()
+            reopened_outputs = {
+                name: document.getObject(object_name)
+                for name, object_name in stable_names.items()
+            }
+            assert all(reopened_outputs.values())
+            assert _assert_cam_timeline_graph(
+                document,
+                reopened_outputs,
+                document.getObject(source_name),
+            ) == created_state
+            assert (
+                abs(float(reopened_outputs["Profile"].StepDown.Value) - 2.5)
+                <= 1.0e-9
+            )
+            document.redo()
             assert not _managed_objects(document, prepared["program_id"])
             assert document.getObject(source_name) is not None
         finally:

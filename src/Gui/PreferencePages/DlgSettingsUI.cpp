@@ -20,19 +20,8 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <QPushButton>
-
-
-#include <Gui/Application.h>
-#include <Gui/ParamHandler.h>
-
 #include "DlgSettingsUI.h"
 #include "ui_DlgSettingsUI.h"
-
-#include "Dialogs/DlgThemeEditor.h"
-
-#include <Base/ServiceProvider.h>
-
 
 using namespace Gui::Dialog;
 
@@ -47,8 +36,6 @@ DlgSettingsUI::DlgSettingsUI(QWidget* parent)
     , ui(new Ui_DlgSettingsUI)
 {
     ui->setupUi(this);
-
-    connect(ui->themeEditorButton, &QPushButton::clicked, [this]() { openThemeEditor(); });
 }
 
 /**
@@ -58,13 +45,6 @@ DlgSettingsUI::~DlgSettingsUI() = default;
 
 void DlgSettingsUI::saveSettings()
 {
-    // Theme
-    ui->ThemeAccentColor1->onSave();
-    ui->ThemeAccentColor2->onSave();
-    ui->ThemeAccentColor3->onSave();
-    ui->StyleSheets->onSave();
-    ui->OverlayStyleSheets->onSave();
-
     // Tree View
     ui->fontSizeSpinBox->onSave();
     ui->iconSizeSpinBox->onSave();
@@ -89,11 +69,6 @@ void DlgSettingsUI::saveSettings()
 
 void DlgSettingsUI::loadSettings()
 {
-    // Theme
-    ui->ThemeAccentColor1->onRestore();
-    ui->ThemeAccentColor2->onRestore();
-    ui->ThemeAccentColor3->onRestore();
-
     // Tree View
     ui->fontSizeSpinBox->onRestore();
     ui->iconSizeSpinBox->onRestore();
@@ -115,83 +90,6 @@ void DlgSettingsUI::loadSettings()
     // TaskWatcher
     ui->showTaskWatcherCheckBox->onRestore();
 
-    loadStyleSheet();
-}
-
-void DlgSettingsUI::loadStyleSheet()
-{
-    static std::string translatedString;  // Make sure the memory doesn't disappear on us
-    translatedString = tr("No style sheet").toStdString();
-    populateStylesheets("StyleSheet", "qss", ui->StyleSheets, translatedString.c_str());
-    populateStylesheets("OverlayActiveStyleSheet", "overlay", ui->OverlayStyleSheets, "Auto");
-}
-
-void DlgSettingsUI::populateStylesheets(
-    const char* key,
-    const char* path,
-    PrefComboBox* combo,
-    const char* def,
-    QStringList filter
-)
-{
-    auto hGrp = App::GetApplication().GetParameterGroupByPath(
-        "User parameter:BaseApp/Preferences/MainWindow"
-    );
-    // List all .qss/.css files
-    QMap<QString, QString> cssFiles;
-    QDir dir;
-    if (filter.isEmpty()) {
-        filter << QStringLiteral("*.qss");
-        filter << QStringLiteral("*.css");
-    }
-    QFileInfoList fileNames;
-
-    // read from user, resource and built-in directory
-    QStringList qssPaths = QDir::searchPaths(QString::fromUtf8(path));
-    for (QStringList::iterator it = qssPaths.begin(); it != qssPaths.end(); ++it) {
-        dir.setPath(*it);
-        fileNames = dir.entryInfoList(filter, QDir::Files, QDir::Name);
-        for (QFileInfoList::iterator jt = fileNames.begin(); jt != fileNames.end(); ++jt) {
-            if (cssFiles.find(jt->baseName()) == cssFiles.end()) {
-                cssFiles[jt->baseName()] = jt->fileName();
-            }
-        }
-    }
-
-    combo->clear();
-
-    // now add all unique items
-    combo->addItem(tr(def), QStringLiteral(""));
-    for (QMap<QString, QString>::iterator it = cssFiles.begin(); it != cssFiles.end(); ++it) {
-        combo->addItem(it.key(), it.value());
-    }
-
-    QString selectedStyleSheet = QString::fromUtf8(hGrp->GetASCII(key).c_str());
-    int index = combo->findData(selectedStyleSheet);
-
-    // might be an absolute path name
-    if (index < 0 && !selectedStyleSheet.isEmpty()) {
-        QFileInfo fi(selectedStyleSheet);
-        if (fi.isAbsolute()) {
-            QString path = fi.absolutePath();
-            if (qssPaths.indexOf(path) >= 0) {
-                selectedStyleSheet = fi.fileName();
-            }
-            else {
-                selectedStyleSheet = fi.absoluteFilePath();
-                combo->addItem(fi.baseName(), selectedStyleSheet);
-            }
-        }
-    }
-
-    combo->setCurrentIndex(index);
-    combo->onRestore();
-}
-
-void DlgSettingsUI::openThemeEditor()
-{
-    Gui::DlgThemeEditor editor;
-    editor.exec();
 }
 
 /**
@@ -201,7 +99,6 @@ void DlgSettingsUI::changeEvent(QEvent* e)
 {
     if (e->type() == QEvent::LanguageChange) {
         ui->retranslateUi(this);
-        loadStyleSheet();
     }
     else {
         QWidget::changeEvent(e);

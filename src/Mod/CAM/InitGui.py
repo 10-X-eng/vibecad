@@ -52,11 +52,12 @@ class PathCommandGroup:
         return {"MenuText": self.menu, "ToolTip": self.tooltip}
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument is not None:
-            for o in FreeCAD.ActiveDocument.Objects:
-                if o.Name[:3] == "Job":
-                    return True
-        return False
+        from Path.CommandBoundary import (
+            active_jobs,
+            can_start_document_command,
+        )
+
+        return can_start_document_command() and bool(active_jobs())
 
 
 class CAMWorkbench(Workbench):
@@ -218,7 +219,6 @@ class CAMWorkbench(Workbench):
         if Path.Preferences.experimentalFeaturesEnabled():
             prepcmdlist.append("CAM_PathShapeTC")
             extracmdlist.extend(["CAM_Area", "CAM_Area_Workplane"])
-            twodopcmdlist.append("CAM_Slot")
 
         if Path.Preferences.advancedOCLFeaturesEnabled():
             try:

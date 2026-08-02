@@ -23,8 +23,9 @@
 
 #pragma once
 
-#include <QWidget>
 #include <array>
+
+#include <QWidget>
 
 class QBoxLayout;
 class QLabel;
@@ -35,7 +36,6 @@ namespace StartGui
 
 enum class Theme
 {
-    Classic,
     Light,
     Dark
 };
@@ -55,12 +55,9 @@ private:
     void retranslateUi();
     void setupUi();
     void setupButtons(QBoxLayout* layout);
-    void onLinkActivated(const QString& link);
-    void preselectThemeFromSystemSettings();
 
     QLabel* _titleLabel;
-    QLabel* _descriptionLabel;
-    std::array<QToolButton*, 3> _buttons;
+    std::array<QToolButton*, 2> _buttons;
 };
 
 }  // namespace StartGui

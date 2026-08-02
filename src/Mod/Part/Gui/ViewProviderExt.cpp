@@ -51,6 +51,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QEventLoop>
 #include <QMenu>
 #include <QTimer>
@@ -130,6 +131,8 @@ struct DeferredVisual
 
 std::deque<DeferredVisual> deferredVisuals;
 bool deferredVisualRefreshScheduled = false;
+bool deferredVisualShutdown = false;
+bool deferredVisualShutdownConnected = false;
 std::unique_ptr<Base::SequencerLauncher> deferredVisualProgress;
 Gui::ProgressBar* deferredVisualProgressBar = nullptr;
 int deferredVisualProgressMinimumDuration = -1;
@@ -173,15 +176,43 @@ void finishDeferredVisualProgress()
     }
 }
 
+void shutdownDeferredVisualRestore()
+{
+    deferredVisualShutdown = true;
+    deferredVisuals.clear();
+    deferredVisualRefreshScheduled = false;
+    finishDeferredVisualProgress();
+}
+
+void connectDeferredVisualShutdown()
+{
+    if (deferredVisualShutdownConnected || !qApp) {
+        return;
+    }
+
+    deferredVisualShutdownConnected = true;
+    QObject::connect(qApp,
+                     &QCoreApplication::aboutToQuit,
+                     qApp,
+                     shutdownDeferredVisualRestore,
+                     Qt::DirectConnection);
+}
+
 void refreshNextDeferredVisual();
 
 void scheduleNextDeferredVisual(int delay = 0)
 {
+    if (deferredVisualShutdown || !qApp) {
+        return;
+    }
     QTimer::singleShot(delay, qApp, refreshNextDeferredVisual);
 }
 
 void refreshNextDeferredVisual()
 {
+    if (deferredVisualShutdown) {
+        return;
+    }
     if (App::Document::isAnyRestoring()) {
         scheduleNextDeferredVisual(25);
         return;
@@ -212,11 +243,15 @@ void refreshNextDeferredVisual()
 
 void deferVisualRestore(const ViewProviderPartExt& viewProvider)
 {
+    if (deferredVisualShutdown) {
+        return;
+    }
     const auto* object = viewProvider.getObject();
     const auto* document = object ? object->getDocument() : nullptr;
     if (!object || !document) {
         return;
     }
+    connectDeferredVisualShutdown();
     deferredVisuals.push_back({document->getName(), object->getNameInDocument()});
     if (!deferredVisualRefreshScheduled) {
         deferredVisualRefreshScheduled = true;
@@ -551,7 +586,19 @@ void ViewProviderPartExt::onChanged(const App::Property* prop)
     else {
         // if the object was invisible and has been changed, recreate the visual
         if (prop == &Visibility && (isUpdateForced() || Visibility.getValue()) && VisualTouched) {
-            updateVisual();
+            auto* object = getObject();
+            auto* document = object ? object->getDocument() : nullptr;
+            if (!isRestoring() && document && document->testStatus(App::Document::Status::Restoring)) {
+                // Another view provider can restore the logical visibility of
+                // this object after its own finishRestoring() callback has
+                // already run. Tessellation cannot execute until the App
+                // document leaves restore, so put it on the same deferred
+                // visual queue used by finishRestoring().
+                deferVisualRestore(*this);
+            }
+            else {
+                updateVisual();
+            }
             // updateVisual() may not be triggered by any change (e.g.
             // triggered by an external object through forceUpdate()). And
             // since ShapeAppearance is not changed here either, do not falsely set
@@ -795,7 +842,13 @@ void ViewProviderPartExt::setHighlightedFaces(const std::vector<App::Material>& 
     action.apply(this->faceset);
 
     int size = static_cast<int>(materials.size());
-    if (size > 1 && size == this->faceset->partIndex.getNum()) {
+    int faceCount = this->faceset->partIndex.getNum();
+    if (faceCount == 0) {
+        if (const auto* feature = getObject<Part::Feature>()) {
+            faceCount = static_cast<int>(feature->Shape.getShape().countSubShapes(TopAbs_FACE));
+        }
+    }
+    if (size > 1 && size == faceCount) {
         pcFaceBind->value = SoMaterialBinding::PER_PART;
         texture.activateMaterial();
 

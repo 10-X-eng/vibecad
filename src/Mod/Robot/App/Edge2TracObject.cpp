@@ -22,6 +22,9 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
+#include <cmath>
+
 #include <BRepAdaptor_Curve.hxx>
 #include <CPnts_AbscissaPoint.hxx>
 #include <TopoDS.hxx>
@@ -33,6 +36,7 @@
 #include <Mod/Part/App/edgecluster.h>
 
 #include "Edge2TracObject.h"
+#include "TimelineSupport.h"
 #include "Trajectory.h"
 #include "Waypoint.h"
 
@@ -49,18 +53,34 @@ Edge2TracObject::Edge2TracObject()
     ADD_PROPERTY_TYPE(Source, (nullptr), "Edge2Trac", Prop_None, "Edges to generate the Trajectory");
     ADD_PROPERTY_TYPE(SegValue, (0.5), "Edge2Trac", Prop_None, "Max deviation from original geometry");
     ADD_PROPERTY_TYPE(UseRotation, (0), "Edge2Trac", Prop_None, "use orientation of the edge");
+    Source.setScope(App::LinkScope::Global);
     NbrOfEdges = 0;
     NbrOfCluster = 0;
 }
 
 App::DocumentObjectExecReturn* Edge2TracObject::execute()
 {
+    if (TimelineSupport::isSuppressedOrInactive(*this)) {
+        Trajectory.setValue(Robot::Trajectory());
+        NbrOfEdges = 0;
+        NbrOfCluster = 0;
+        return App::DocumentObject::StdReturn;
+    }
     App::DocumentObject* link = Source.getValue();
     if (!link) {
         return new App::DocumentObjectExecReturn("No object linked");
     }
     if (!link->isDerivedFrom<Part::Feature>()) {
         return new App::DocumentObjectExecReturn("Linked object is not a Part object");
+    }
+    if (!TimelineSupport::isUsableInput(*this, link)) {
+        return new App::DocumentObjectExecReturn(
+            "Linked geometry is suppressed or outside the current History position"
+        );
+    }
+    const double sizingValue = SegValue.getValue();
+    if (!std::isfinite(sizingValue) || sizingValue <= 0.0) {
+        return new App::DocumentObjectExecReturn("Trajectory sizing value must be greater than zero");
     }
     Part::Feature* base = static_cast<Part::Feature*>(Source.getValue());
     const Part::TopoShape& TopShape = base->Shape.getShape();
@@ -142,7 +162,8 @@ App::DocumentObjectExecReturn* Edge2TracObject::execute()
                 case GeomAbs_BSplineCurve: {
                     Standard_Real Length = CPnts_AbscissaPoint::Length(adapt);
                     Standard_Real ParLength = adapt.LastParameter() - adapt.FirstParameter();
-                    Standard_Real NbrSegments = Round(Length / SegValue.getValue());
+                    const Standard_Real NbrSegments
+                        = std::max<Standard_Real>(1.0, Round(Length / sizingValue));
 
                     Standard_Real beg = adapt.FirstParameter();
                     Standard_Real end = adapt.LastParameter();
@@ -198,7 +219,8 @@ App::DocumentObjectExecReturn* Edge2TracObject::execute()
                 case GeomAbs_Circle: {
                     Standard_Real Length = CPnts_AbscissaPoint::Length(adapt);
                     Standard_Real ParLength = adapt.LastParameter() - adapt.FirstParameter();
-                    Standard_Real NbrSegments = Round(Length / SegValue.getValue());
+                    const Standard_Real NbrSegments
+                        = std::max<Standard_Real>(1.0, Round(Length / sizingValue));
                     Standard_Real SegLength = ParLength / NbrSegments;
 
                     if (it2.Orientation() == TopAbs_REVERSED) {

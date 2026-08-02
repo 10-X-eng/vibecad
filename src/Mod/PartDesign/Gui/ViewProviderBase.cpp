@@ -65,6 +65,15 @@ bool ViewProviderBase::doubleClicked()
     return false;
 }
 
+bool ViewProviderBase::supportsDocumentTimelineEdit() const noexcept
+{
+    const auto* base = getObject<PartDesign::FeatureBase>();
+    return base
+        && !base->Placement.testStatus(App::Property::Immutable)
+        && !base->Placement.testStatus(App::Property::ReadOnly)
+        && !base->Placement.testStatus(App::Property::Hidden);
+}
+
 void ViewProviderBase::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)
 {
     // If the Placement is mutable then show the context-menu of the base class.

@@ -338,8 +338,6 @@ def get_type(obj):
         return None
     if isinstance(obj, Part.Shape):
         return "Shape"
-    if hasattr(obj, "Class") and "Ifc" in str(obj.Class):
-        return obj.Class
     if hasattr(obj, "Proxy") and hasattr(obj.Proxy, "Type"):
         return obj.Proxy.Type
     if hasattr(obj, "TypeId"):
@@ -918,7 +916,7 @@ def _modifiers_process_selection(sels, copy, scale=False, add_movable_children=F
 def _modifiers_get_group_contents(obj):
     from draftutils import groups
 
-    return groups.get_group_contents(obj, addgroups=True, spaces=True, noarchchild=True)
+    return groups.get_group_contents(obj, addgroups=True)
 
 
 def _modifiers_get_movable_children(obj):

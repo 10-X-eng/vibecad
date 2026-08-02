@@ -26,6 +26,7 @@
 
 #include "DrawViewClip.h"
 #include "DrawPage.h"
+#include "DrawUtil.h"
 #include <Mod/TechDraw/App/DrawViewClipPy.h>  // generated from DrawViewClipPy.xml
 
 
@@ -131,14 +132,37 @@ std::vector<App::DocumentObject*> DrawViewClip::getViews() const
     return allViews;
 }
 
+std::vector<App::DocumentObject*> DrawViewClip::getActiveViews() const
+{
+    std::vector<App::DocumentObject*> result;
+    if (!isActiveInDocumentTimeline()) {
+        return result;
+    }
+
+    for (auto* storedView : Views.getValues()) {
+        if (!DrawUtil::isActiveInDocumentTimeline(storedView)) {
+            continue;
+        }
+
+        auto* view = storedView;
+        if (view->isDerivedFrom<App::Link>()) {
+            view = static_cast<App::Link*>(view)->getLinkedObject();
+        }
+        auto* drawingView = freecad_cast<DrawView*>(view);
+        if (drawingView && drawingView->isActiveInDocumentTimeline()) {
+            result.push_back(drawingView);
+        }
+    }
+    return result;
+}
+
 App::DocumentObjectExecReturn *DrawViewClip::execute()
 {
     if (!keepUpdated()) {
         return App::DocumentObject::StdReturn;
     }
 
-    std::vector<App::DocumentObject*> children = getViews();
-    for (auto* obj : getViews()) {
+    for (auto* obj : getActiveViews()) {
         if (obj->isDerivedFrom<DrawView>()) {
             auto* view = static_cast<TechDraw::DrawView*>(obj);
             view->requestPaint();
@@ -171,6 +195,15 @@ std::vector<std::string> DrawViewClip::getChildViewNames()
             std::string name = obj->getNameInDocument();
             childNames.push_back(name);
         }
+    }
+    return childNames;
+}
+
+std::vector<std::string> DrawViewClip::getActiveChildViewNames()
+{
+    std::vector<std::string> childNames;
+    for (auto* obj : getActiveViews()) {
+        childNames.emplace_back(obj->getNameInDocument());
     }
     return childNames;
 }

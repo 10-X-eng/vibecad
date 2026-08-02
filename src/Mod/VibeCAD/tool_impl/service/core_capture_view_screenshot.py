@@ -24,13 +24,10 @@ DUPLICATE_VISUAL_DIFFERENCE_THRESHOLD = 0.005
 
 TOOL_SPEC = {
     "description": (
-        "Capture a viewport image for visual verification from a preset or arbitrary "
-        "absolute camera direction. frame='auto' frames an open sketch from its actual "
-        "curves, otherwise the full model. "
-        "sketch_annotations='clean' removes Sketcher constraint labels, B-spline "
-        "information overlays, leaders, and internal alignment graphics from the "
-        "captured image without changing the sketch or the user's persistent "
-        "display settings."
+        "Return an image of the current 3D view for visual verification of shape, "
+        "proportion, placement, and appearance. frame='auto' frames the open sketch "
+        "or otherwise the full model. sketch_annotations='clean' hides sketch overlays "
+        "for this image without changing the model or saved display settings."
     ),
     "name": "core.capture_view_screenshot",
     "parameters": {

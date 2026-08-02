@@ -28,9 +28,11 @@ __doc__ = "Implementation of document objects (features) to adjust/manipulate to
 
 import FreeCAD
 import Part
+from PartLinkScope import migrate_many_to_global
 
 if FreeCAD.GuiUp:
     import FreeCADGui
+    import PartGui
     from PySide import QtCore, QtGui
 
     # -------------------------- common stuff -------------------------------------
@@ -54,55 +56,121 @@ def getParamRefine():
     )
 
 
+def _selected_shape_objects():
+    objects = []
+    for selection in FreeCADGui.Selection.getSelectionEx():
+        selected = selection.Object
+        if not PartGui.isModelingObjectActive(selected):
+            continue
+        obj = PartGui.resolveModelingObject(selected)
+        if (
+            obj is not None
+            and hasattr(obj, "Shape")
+            and not obj.Shape.isNull()
+            and obj not in objects
+        ):
+            objects.append(obj)
+    return objects
+
+
+def _visible_presentations(operands):
+    presentations = []
+    for operand in operands:
+        presentation = PartGui.resolveModelingPresentationObject(
+            operand
+        )
+        if (
+            presentation is not None
+            and presentation not in presentations
+            and bool(presentation.Visibility)
+        ):
+            presentations.append(presentation)
+    return presentations
+
+
+def _replace_visible_presentations(result, presentations):
+    if (
+        presentations
+        and PartGui.setModelingReplacedInputs(
+            result,
+            presentations,
+        )
+    ):
+        for presentation in presentations:
+            presentation.Visibility = False
+
+
+def _object_expression(obj):
+    """Return a recorded command expression for one exact document object."""
+
+    return (
+        f"App.getDocument({obj.Document.Name!r})"
+        f".getObject({obj.Name!r})"
+    )
+
+
 def cmdCreateToleranceSetFeature(name, minTolerance=1e-7, maxTolerance=0):
     """cmdCreateToleranceSetFeature(name, minTolerance, maxTolerance): generalized implementation of GUI commands."""
-    sel = FreeCADGui.Selection.getSelectionEx()
+    document = FreeCAD.ActiveDocument
+    operands = _selected_shape_objects()
+    presentations = _visible_presentations(operands)
 
-    FreeCAD.ActiveDocument.openTransaction("Create ToleranceSet")
-    FreeCADGui.addModule("BOPTools.ToleranceFeatures")
-    FreeCADGui.doCommand(
-        "j = BOPTools.ToleranceFeatures.makeToleranceSet(name='{name}')".format(name=name)
-    )
-    FreeCADGui.doCommand("j.minTolerance = {minTolerance}".format(minTolerance=minTolerance))
-    FreeCADGui.doCommand("j.maxTolerance = {maxTolerance}".format(maxTolerance=maxTolerance))
-    FreeCADGui.doCommand(
-        "j.Objects = {sel}".format(
-            sel="[" + ", ".join(["App.ActiveDocument." + so.Object.Name for so in sel]) + "]"
-        )
-    )
-
+    document.openTransaction("Create ToleranceSet")
     try:
-        FreeCADGui.doCommand("j.Proxy.execute(j)")
-        FreeCADGui.doCommand("j.purgeTouched()")
+        FreeCADGui.addModule("BOPTools.ToleranceFeatures")
+        result = FreeCADGui.runDocumentObjectCommand(
+            document,
+            "BOPTools.ToleranceFeatures."
+            f"makeToleranceSet(name={name!r})",
+            "Part::Feature",
+        )
+        result_expression = _object_expression(result)
+        FreeCADGui.doCommand(
+            f"{result_expression}.minTolerance = {minTolerance!r}"
+        )
+        FreeCADGui.doCommand(
+            f"{result_expression}.maxTolerance = {maxTolerance!r}"
+        )
+        FreeCADGui.doCommand(
+            f"{result_expression}.Objects = ["
+            + ", ".join(_object_expression(obj) for obj in operands)
+            + "]"
+        )
+        FreeCADGui.doCommand(
+            f"{result_expression}.Proxy.execute({result_expression})"
+        )
+        FreeCADGui.doCommand(f"{result_expression}.purgeTouched()")
+        if result.Shape.isNull() or not result.Shape.isValid():
+            raise RuntimeError(
+                "Tolerance Set did not produce valid geometry"
+            )
+
+        presentation_expression = ", ".join(
+            _object_expression(presentation)
+            for presentation in presentations
+        )
+        FreeCADGui.doCommand(
+            "BOPTools.ToleranceFeatures."
+            "_replace_visible_presentations("
+            f"{result_expression}, [{presentation_expression}])"
+        )
+        FreeCADGui.addModule("PartGui")
+        FreeCADGui.doCommand(
+            "PartGui.publishDesignDefinitionBlock("
+            f"[{result_expression}])"
+        )
+        document.commitTransaction()
     except Exception as err:
-        mb = QtGui.QMessageBox()
-        mb.setIcon(mb.Icon.Warning)
-        error_text1 = translate(
-            "Part_ToleranceFeatures", "Computing the result failed with an error:"
+        document.abortTransaction()
+        QtGui.QMessageBox.warning(
+            FreeCADGui.getMainWindow(),
+            translate(
+                "Part_ToleranceFeatures",
+                "Tolerance Set failed",
+                None,
+            ),
+            str(err),
         )
-        error_text2 = translate(
-            "Part_ToleranceFeatures",
-            "Click 'Continue' to create the feature anyway, or 'Abort' to cancel.",
-        )
-        mb.setText(error_text1 + "\n\n" + str(err) + "\n\n" + error_text2)
-        mb.setWindowTitle(translate("Part_ToleranceFeatures", "Bad Selection", None))
-        btnAbort = mb.addButton(QtGui.QMessageBox.StandardButton.Abort)
-        btnOK = mb.addButton(
-            translate("Part_ToleranceFeatures", "Continue", None),
-            QtGui.QMessageBox.ButtonRole.ActionRole,
-        )
-        mb.setDefaultButton(btnOK)
-        mb.exec_()
-
-        if mb.clickedButton() is btnAbort:
-            FreeCAD.ActiveDocument.abortTransaction()
-            return
-
-    FreeCADGui.doCommand(
-        "for obj in j.ViewObject.Proxy.claimChildren():\n" "    obj.ViewObject.hide()"
-    )
-
-    FreeCAD.ActiveDocument.commitTransaction()
 
 
 def getIconPath(icon_dot_svg):
@@ -128,7 +196,7 @@ class FeatureToleranceSet:
 
     def __init__(self, obj):
         obj.addProperty(
-            "App::PropertyLinkList",
+            "App::PropertyLinkListGlobal",
             "Objects",
             "ToleranceSet",
             "Objects to have tolerance adjusted.",
@@ -151,6 +219,7 @@ class FeatureToleranceSet:
         self.Type = "FeatureToleranceSet"
 
     def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Objects")
         if not hasattr(obj, "maxTolerance"):
             obj.addProperty("App::PropertyLength", "maxTolerance", "ToleranceSet", "0", locked=True)
 
@@ -179,7 +248,7 @@ class ViewProviderToleranceSet:
         vobj.Proxy = self
 
     def getIcon(self):
-        return ":/icons/preferences-part_design.svg"
+        return ":/icons/tools/Part_ToleranceSet.svg"
 
     def attach(self, vobj):
         self.ViewObject = vobj
@@ -228,7 +297,7 @@ class CommandToleranceSet:
 
     def GetResources(self):
         return {
-            "Pixmap": getIconPath("preferences-part_design.svg"),
+            "Pixmap": getIconPath("Part_ToleranceSet.svg"),
             "MenuText": QtCore.QT_TRANSLATE_NOOP("Part_ToleranceSet", "Set Tolerance"),
             "Accel": "",
             "ToolTip": QtCore.QT_TRANSLATE_NOOP(
@@ -238,7 +307,7 @@ class CommandToleranceSet:
         }
 
     def Activated(self):
-        if len(FreeCADGui.Selection.getSelectionEx()) >= 1:
+        if _selected_shape_objects():
             cmdCreateToleranceSetFeature(name="Tolerance")
         else:
             mb = QtGui.QMessageBox()
@@ -250,10 +319,7 @@ class CommandToleranceSet:
             mb.exec_()
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return FreeCAD.ActiveDocument is not None and bool(_selected_shape_objects())
 
 
 # -------------------------- /Connect -----------------------------------------

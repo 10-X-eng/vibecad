@@ -50,6 +50,11 @@ FeatureShape::~FeatureShape()
 App::DocumentObjectExecReturn* FeatureShape::execute()
 {
     Toolpath path;
+    if (Suppressed.getValue()) {
+        Path.setValue(path);
+        return App::DocumentObject::StdReturn;
+    }
+
     std::vector<App::DocumentObject*> links = Sources.getValues();
     if (links.empty()) {
         Path.setValue(path);
@@ -61,12 +66,14 @@ App::DocumentObjectExecReturn* FeatureShape::execute()
 
     std::list<TopoDS_Shape> shapes;
     for (std::vector<App::DocumentObject*>::iterator it = links.begin(); it != links.end(); ++it) {
-        if (!(*it && (*it)->isDerivedFrom<Part::Feature>())) {
-            continue;
+        if (!(*it && (*it)->isDerivedFrom<Part::Feature>()) || !(*it)->isValid()) {
+            Path.setValue(path);
+            return new App::DocumentObjectExecReturn("Linked shape source is invalid");
         }
         const TopoDS_Shape& shape = static_cast<Part::Feature*>(*it)->Shape.getShape().getShape();
         if (shape.IsNull()) {
-            continue;
+            Path.setValue(path);
+            return new App::DocumentObjectExecReturn("Linked shape source is empty");
         }
         shapes.push_back(shape);
     }
@@ -79,6 +86,10 @@ App::DocumentObjectExecReturn* FeatureShape::execute()
         PARAM_PROP_ARGS(AREA_PARAMS_PATH)
     );
 
+    if (path.getCommands().empty()) {
+        Path.setValue(path);
+        return new App::DocumentObjectExecReturn("Linked shapes produced no toolpath");
+    }
     Path.setValue(path);
     return App::DocumentObject::StdReturn;
 }
@@ -89,8 +100,7 @@ namespace App
 {
 /// @cond DOXERR
 PROPERTY_SOURCE_TEMPLATE(Path::FeatureShapePython, Path::FeatureShape)
-template<>
-const char* Path::FeatureShapePython::getViewProviderName() const
+template<> const char* Path::FeatureShapePython::getViewProviderName() const
 {
     return "PathGui::ViewProviderPathShape";
 }

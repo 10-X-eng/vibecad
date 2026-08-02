@@ -226,14 +226,19 @@ class Scale(gui_base_original.Modifier):
         else:
             cmd_name = translate("draft", "Scale")
         Gui.addModule("Draft")
-        cmd = "Draft.scale(selection, "
-        cmd += "scale=" + DraftVecUtils.toString(self.delta) + ", "
+        Gui.addModule("draftutils.timeline")
+        cmd = "scaled = draftutils.timeline.scale(selection, "
+        cmd += "scale_vector=" + DraftVecUtils.toString(self.delta) + ", "
         cmd += "center=" + DraftVecUtils.toString(self.center) + ", "
         cmd += "copy=" + str(self.task.isCopy.isChecked()) + ", "
         cmd += "clone=" + str(self.task.isClone.isChecked()) + ", "
         cmd += "subelements=" + str(self.task.isSubelementMode.isChecked()) + ")"
         cmd_list = [cmd, "FreeCAD.ActiveDocument.recompute()"]
-        self.commit(cmd_name, cmd_list)
+        self.commit(
+            cmd_name,
+            cmd_list,
+            inputs=(selected.Object for selected in self.selection),
+        )
         self.finish()
 
     def numericInput(self, numx, numy, numz):
@@ -244,7 +249,13 @@ class Scale(gui_base_original.Modifier):
         """
 
         def _show_dialog():
-            dia = Gui.Control.showDialog(self.task)
+            gui_document = Gui.getDocument(self.doc.Name)
+            if (
+                gui_document is None
+                or gui_document.Document is not self.doc
+            ):
+                return
+            dia = Gui.Control.showDialog(self.task, gui_document)
             dia.setDocumentName(self.doc.Name)
             dia.setAutoCloseOnDeletedDocument(True)
 
@@ -269,7 +280,7 @@ class Scale(gui_base_original.Modifier):
             self.update_hints()
         elif len(self.node) == 3:
             if hasattr(Gui, "Snapper"):
-                Gui.Snapper.off()
+                Gui.Snapper.off(view=self.view)
             if self.call:
                 self.view.removeEventCallback("SoEvent", self.call)
             d1 = (self.node[1].sub(self.node[0])).Length

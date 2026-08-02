@@ -50,12 +50,30 @@ PropertyCosmeticVertexList::PropertyCosmeticVertexList()
 
 PropertyCosmeticVertexList::~PropertyCosmeticVertexList()
 {
+    clearOwnedValues();
+}
+
+void PropertyCosmeticVertexList::clearOwnedValues()
+{
+    if (!_ownsValues) {
+        return;
+    }
+    for (auto* value : _lValueList) {
+        delete value;
+    }
+    _lValueList.clear();
 }
 
 void PropertyCosmeticVertexList::setSize(int newSize)
 {
-    for (unsigned int i = newSize; i < _lValueList.size(); i++)
-        delete _lValueList[i];
+    if (_ownsValues && newSize >= 0
+        && static_cast<std::size_t>(newSize) < _lValueList.size()) {
+        for (std::size_t i = static_cast<std::size_t>(newSize);
+             i < _lValueList.size();
+             ++i) {
+            delete _lValueList[i];
+        }
+    }
     _lValueList.resize(newSize);
 }
 
@@ -184,14 +202,23 @@ void PropertyCosmeticVertexList::Restore(Base::XMLReader &reader)
 App::Property *PropertyCosmeticVertexList::Copy() const
 {
     PropertyCosmeticVertexList *p = new PropertyCosmeticVertexList();
-    p->setValues(_lValueList);
+    p->_ownsValues = true;
+    p->_lValueList.reserve(_lValueList.size());
+    for (const auto* value : _lValueList) {
+        p->_lValueList.push_back(value ? value->clone() : nullptr);
+    }
     return p;
 }
 
 void PropertyCosmeticVertexList::Paste(const Property &from)
 {
     const PropertyCosmeticVertexList& FromList = dynamic_cast<const PropertyCosmeticVertexList&>(from);
-    setValues(FromList._lValueList);
+    std::vector<CosmeticVertex*> restored;
+    restored.reserve(FromList._lValueList.size());
+    for (const auto* value : FromList._lValueList) {
+        restored.push_back(value ? value->clone() : nullptr);
+    }
+    setValues(restored);
 }
 
 unsigned int PropertyCosmeticVertexList::getMemSize() const

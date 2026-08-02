@@ -557,49 +557,21 @@ TaskDlgFemConstraintContact::TaskDlgFemConstraintContact(
 
 bool TaskDlgFemConstraintContact::accept()
 {
-    /* Note: */
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintContact* parameterContact = static_cast<const TaskFemConstraintContact*>(
         parameter
     );
 
     try {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Slope = \"%s\"",
-            name.c_str(),
-            parameterContact->getSlope().c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Adjust = \"%s\"",
-            name.c_str(),
-            parameterContact->getAdjust().c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Friction = %s",
-            name.c_str(),
-            parameterContact->getFriction() ? "True" : "False"
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.FrictionCoefficient = %f",
-            name.c_str(),
-            parameterContact->getFrictionCoeff()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.StickSlope = \"%s\"",
-            name.c_str(),
-            parameterContact->getStickSlope().c_str()
-        );
+        runConstraintCommand("Slope = \"%s\"", parameterContact->getSlope().c_str());
+        runConstraintCommand("Adjust = \"%s\"", parameterContact->getAdjust().c_str());
+        runConstraintCommand("Friction = %s", parameterContact->getFriction() ? "True" : "False");
+        runConstraintCommand("FrictionCoefficient = %f", parameterContact->getFrictionCoeff());
+        runConstraintCommand("StickSlope = \"%s\"", parameterContact->getStickSlope().c_str());
     }
     catch (const Base::Exception& e) {
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));
         return false;
     }
-    /* */
     return TaskDlgFemConstraint::accept();
 }
 

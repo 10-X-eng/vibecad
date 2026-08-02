@@ -28,6 +28,7 @@
 #include <Mod/TechDraw/TechDrawGlobal.h>
 #include "mrichtextedit.h"
 #include "MDIViewPage.h"
+#include "TaskDocumentGuard.h"
 
 class Ui_TaskRichAnno;
 
@@ -106,6 +107,7 @@ private:
     void enterPlacementMode();
     void createAndSetupAnnotation(const QPointF* scenePos = nullptr);
     void createAnnoIfNotAlready();
+    bool resolveTargets();
 
     std::unique_ptr<Ui_TaskRichAnno> ui;
 
@@ -114,6 +116,13 @@ private:
     TechDraw::DrawView* m_baseFeat;
     TechDraw::DrawPage* m_basePage;
     TechDraw::DrawRichAnno* m_annoFeat;
+    TaskInternal::DocumentIdentity m_documentIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage>
+        m_pageIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawView>
+        m_baseIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawRichAnno>
+        m_annotationIdentity;
     QGIView* m_qgParent;
     std::string m_qgParentName;
 

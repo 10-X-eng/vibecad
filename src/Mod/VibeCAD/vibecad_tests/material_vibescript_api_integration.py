@@ -272,6 +272,7 @@ def _assert_exact_api() -> None:
 def main() -> int:
     import Materials
     import Part
+    from vibescript_material_worker import search_material_catalog
 
     _assert_exact_api()
     root = Path(tempfile.mkdtemp(prefix="vibecad-material-native-"))
@@ -306,6 +307,20 @@ def main() -> int:
         original_target_appearance = _appearance(target)
         original_physical_only_appearance = _appearance(physical_only_target)
         original_appearance_only_appearance = _appearance(appearance_only_target)
+        hot_section_materials = search_material_catalog(
+            "nickel alloy 718",
+            require_physical_properties=(
+                "Density",
+                "YoungsModulus",
+                "PoissonRatio",
+                "ThermalConductivity",
+            ),
+            limit=5,
+        )
+        assert hot_section_materials["match_count"] == 1
+        hot_section_card = hot_section_materials["materials"][0]
+        assert hot_section_card["uuid"] == "db767dc3-7a48-4fbe-a284-78181f5f05df"
+        assert "UNS N07718" in hot_section_card["tags"]
         standard_appearance = {
             "AmbientColor",
             "DiffuseColor",
@@ -556,7 +571,10 @@ def main() -> int:
             arguments={
                 "program_id": prepared["program_id"],
                 "expected_revision": update_prepared["revision"],
-                "replacements": [{"old": "Chassis display", "new": "Updated display"}],
+                "source": source.replace(
+                    "Chassis display",
+                    "Updated display",
+                ),
             },
         )
         next_prepared, _next_execution, next_validated = _prepare_execute_validate(next_captured)
@@ -882,13 +900,15 @@ def main() -> int:
             },
         )
         fault_prepared_delete = prepare_delete(fault_delete_capture)
-        original_remove_owned = publication_module._remove_owned_objects
+        original_remove_timeline_deletion = (
+            publication_module._remove_timeline_deletion
+        )
 
         def fail_after_carrier_removal(*args, **kwargs):
-            original_remove_owned(*args, **kwargs)
+            original_remove_timeline_deletion(*args, **kwargs)
             raise RuntimeError("injected post-removal deletion failure")
 
-        publication_module._remove_owned_objects = fail_after_carrier_removal
+        publication_module._remove_timeline_deletion = fail_after_carrier_removal
         try:
             try:
                 delete_live_program(service, fault_prepared_delete)
@@ -898,7 +918,9 @@ def main() -> int:
             else:
                 raise AssertionError("Injected Material deletion failure did not fire.")
         finally:
-            publication_module._remove_owned_objects = original_remove_owned
+            publication_module._remove_timeline_deletion = (
+                original_remove_timeline_deletion
+            )
         assert reopened.getObject(carrier_names["Physical"]) is not None
         assert reopened.getObject(carrier_names["Axle"]) is not None
         assert reopened.getObject(carrier_names["Display"]) is not None
@@ -962,6 +984,7 @@ def main() -> int:
                     "ok": True,
                     "integration": "material_vibescript_api",
                     "catalog_uuid": str(first_card.UUID),
+                    "hot_section_uuid": hot_section_card["uuid"],
                     "stable_carriers": carrier_names,
                     "explicit_rollback": True,
                     "delete_restored_baseline": True,

@@ -39,6 +39,7 @@
 
 #include <Mod/TechDraw/App/DrawPage.h>
 #include <Mod/TechDraw/App/DrawView.h>
+#include <Mod/TechDraw/App/DrawUtil.h>
 #include <Mod/TechDraw/App/DrawViewBalloon.h>
 #include <Mod/TechDraw/App/DrawViewDimension.h>
 #include <Mod/TechDraw/App/Preferences.h>
@@ -132,7 +133,8 @@ void ViewProviderDrawingView::show()
     if (!obj || obj->isRestoring())
         return;
 
-    if (obj->isDerivedFrom<TechDraw::DrawView>()) {
+    if (obj->isDerivedFrom<TechDraw::DrawView>()
+        && obj->isActiveInDocumentTimeline()) {
         QGIView* qView = getQView();
         if (qView) {
             qView->draw();
@@ -312,6 +314,10 @@ Gui::MDIView *ViewProviderDrawingView::getMDIView() const
 
 void ViewProviderDrawingView::onGuiRepaint(const TechDraw::DrawView* dv)
 {
+    if (!dv->isActiveInDocumentTimeline()) {
+        return;
+    }
+
     Gui::Document* guiDoc = Gui::Application::Instance->getDocument(getViewObject()->getDocument());
     if (!guiDoc) {
         return;
@@ -328,7 +334,7 @@ void ViewProviderDrawingView::onGuiRepaint(const TechDraw::DrawView* dv)
 void ViewProviderDrawingView::multiParentPaint(std::vector<TechDraw::DrawPage*>& pages)
 {
     for (auto& p : pages) {
-        std::vector<App::DocumentObject*> views = p->Views.getValues();
+        std::vector<App::DocumentObject*> views = p->getActiveViews();
         for (auto& v: views) {
             if (v != getViewObject()) {  //should this be dv from onGuiRepaint?
                 continue;
@@ -351,7 +357,8 @@ void ViewProviderDrawingView::multiParentPaint(std::vector<TechDraw::DrawPage*>&
 void ViewProviderDrawingView::singleParentPaint(const TechDraw::DrawView* dv)
 {
     //original logic for 1 view on 1 page
-    if (dv->isRemoving() ||
+    if (!dv->isActiveInDocumentTimeline()
+        || dv->isRemoving() ||
         dv->isRestoring()) {
         return;
     }

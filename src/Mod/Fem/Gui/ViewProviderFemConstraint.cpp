@@ -34,6 +34,7 @@
 
 
 #include "App/Application.h"
+#include "App/Document.h"
 #include "Gui/Command.h"
 #include "Gui/Control.h"
 #include "Gui/Document.h"
@@ -266,7 +267,18 @@ void ViewProviderFemConstraint::transformExtraSymbol() const
 // OvG: Visibility automation show parts and hide meshes on activation of a constraint
 std::string ViewProviderFemConstraint::gethideMeshShowPartStr(const std::string showConstr)
 {
-    return "for amesh in App.activeDocument().Objects:\n\
+    return gethideMeshShowPartStr({}, showConstr);
+}
+
+std::string ViewProviderFemConstraint::gethideMeshShowPartStr(
+    const std::string& documentName,
+    const std::string& showConstr
+)
+{
+    const std::string documentExpression = documentName.empty()
+        ? "App.activeDocument()"
+        : "App.getDocument('" + documentName + "')";
+    return "for amesh in " + documentExpression + ".Objects:\n\
     if \""
         + showConstr + "\" == amesh.Name:\n\
         amesh.ViewObject.Visibility = True\n\
@@ -281,10 +293,15 @@ std::string ViewProviderFemConstraint::gethideMeshShowPartStr()
 
 bool ViewProviderFemConstraint::setEdit(int ModNum)
 {
+    auto* object = getObject();
+    auto* document = object ? object->getDocument() : nullptr;
+    if (!document) {
+        return false;
+    }
     Gui::Command::doCommand(
         Gui::Command::Doc,
         "%s",
-        ViewProviderFemConstraint::gethideMeshShowPartStr().c_str()
+        ViewProviderFemConstraint::gethideMeshShowPartStr(document->getName(), {}).c_str()
     );
     return Gui::ViewProviderGeometryObject::setEdit(ModNum);
 }
@@ -295,7 +312,7 @@ void ViewProviderFemConstraint::unsetEdit(int ModNum)
     Gui::Selection().clearSelection();
     if (ModNum == ViewProvider::Default) {
         // when pressing ESC make sure to close the dialog
-        Gui::Control().closeDialog();
+        Gui::Control().closeDialog(getObject()->getDocument());
     }
     else {
         ViewProviderGeometryObject::unsetEdit(ModNum);

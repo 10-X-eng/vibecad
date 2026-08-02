@@ -26,6 +26,7 @@
 #pragma once
 
 #include <App/PropertyLinks.h>
+#include <App/SuppressibleExtension.h>
 #include <Mod/Part/App/FeaturePartSpline.h>
 #include <Mod/Surface/SurfaceGlobal.h>
 
@@ -94,6 +95,7 @@ protected:
 
 private:
     static const char* FillTypeEnums[];
+    App::SuppressibleExtension suppressibleExtension;
 };
 
 }  // namespace Surface

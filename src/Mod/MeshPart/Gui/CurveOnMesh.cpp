@@ -28,17 +28,8 @@
 #include <QStatusBar>
 #include <QTimer>
 
-#include <BRepBuilderAPI_MakeEdge.hxx>
-#include <BRepBuilderAPI_MakePolygon.hxx>
-#include <BRepMesh_IncrementalMesh.hxx>
-#include <BRep_Tool.hxx>
-#include <GeomAPI_PointsToBSpline.hxx>
-#include <Geom_BSplineCurve.hxx>
-#include <Poly_Polygon3D.hxx>
-#include <TColgp_Array1OfPnt.hxx>
-#include <TopoDS_Edge.hxx>
-#include <TopoDS_Wire.hxx>
-#include <gp_Pnt.hxx>
+#include <algorithm>
+#include <optional>
 
 #include <Inventor/SoPickedPoint.h>
 #include <Inventor/details/SoFaceDetail.h>
@@ -51,8 +42,14 @@
 #include <Inventor/nodes/SoSeparator.h>
 
 #include <App/Document.h>
+#include <App/DocumentObserver.h>
+#include <Base/Console.h>
 #include <Base/Converter.h>
+#include <Base/Matrix.h>
+#include <Base/Tools.h>
 #include <Gui/Document.h>
+#include <Gui/DocumentObserver.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Utilities.h>
 #include <Gui/View3DInventor.h>
@@ -63,8 +60,10 @@
 #include <Mod/Mesh/App/Core/Projection.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 #include <Mod/Mesh/Gui/ViewProvider.h>
-#include <Mod/Part/App/PartFeature.h>
+#include <Mod/Mesh/Gui/CommandGuard.h>
+#include <Mod/Mesh/Gui/ParametricMeshFilter.h>
 
+#include "../App/FeatureMeshPartOperations.h"
 #include "CurveOnMesh.h"
 
 
@@ -121,6 +120,89 @@ static const char* cursor_curveonmesh[] = {
 // clang-format on
 
 using namespace MeshPartGui;
+
+namespace
+{
+
+bool sameMeshState(const Mesh::MeshObject& first, const Mesh::MeshObject& second)
+{
+    if (first.getTransform() != second.getTransform()
+        || first.countSegments() != second.countSegments()) {
+        return false;
+    }
+
+    const auto& firstKernel = first.getKernel();
+    const auto& secondKernel = second.getKernel();
+    const auto& firstPoints = firstKernel.GetPoints();
+    const auto& secondPoints = secondKernel.GetPoints();
+    const auto& firstFacets = firstKernel.GetFacets();
+    const auto& secondFacets = secondKernel.GetFacets();
+    if (firstPoints.size() != secondPoints.size() || firstFacets.size() != secondFacets.size()
+        || !std::ranges::equal(firstPoints, secondPoints)
+        || !std::ranges::equal(
+            firstFacets,
+            secondFacets,
+            [](const MeshCore::MeshFacet& left, const MeshCore::MeshFacet& right) {
+                return left._aulPoints[0] == right._aulPoints[0]
+                    && left._aulPoints[1] == right._aulPoints[1]
+                    && left._aulPoints[2] == right._aulPoints[2];
+            }
+        )) {
+        return false;
+    }
+
+    for (unsigned long index = 0; index < first.countSegments(); ++index) {
+        if (first.getSegment(index).getIndices() != second.getSegment(index).getIndices()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<Base::Vector3d> sourceLocalDirection(
+    const Mesh::MeshObject& source,
+    const Base::Vector3d& worldDirection
+)
+{
+    try {
+        Base::Matrix4D inverse = source.getTransform();
+        inverse.inverseGauss();
+        Base::Vector3d local {
+            inverse[0][0] * worldDirection.x + inverse[0][1] * worldDirection.y
+                + inverse[0][2] * worldDirection.z,
+            inverse[1][0] * worldDirection.x + inverse[1][1] * worldDirection.y
+                + inverse[1][2] * worldDirection.z,
+            inverse[2][0] * worldDirection.x + inverse[2][1] * worldDirection.y
+                + inverse[2][2] * worldDirection.z,
+        };
+        if (local.Length() <= 0.0) {
+            return std::nullopt;
+        }
+        local.Normalize();
+        return local;
+    }
+    catch (const Base::Exception&) {
+        return std::nullopt;
+    }
+}
+
+long continuityIndex(GeomAbs_Shape continuity)
+{
+    switch (continuity) {
+        case GeomAbs_C0:
+            return 0;
+        case GeomAbs_C1:
+            return 1;
+        case GeomAbs_C2:
+            return 2;
+        case GeomAbs_C3:
+            return 3;
+        default:
+            throw Base::ValueError("Curve continuity must be C0, C1, C2, or C3");
+    }
+}
+
+}  // namespace
 
 PROPERTY_SOURCE(MeshPartGui::ViewProviderCurveOnMesh, Gui::ViewProviderDocumentObject)
 
@@ -250,6 +332,20 @@ public:
         delete curve;
         delete grid;
     }
+    void clearTarget()
+    {
+        curve->clearVertex();
+        curve->clearPoints();
+        pickedPoints.clear();
+        projectionDirections.clear();
+        cutLines.clear();
+        wireClosed = false;
+        mesh.reset();
+        delete grid;
+        grid = nullptr;
+        kernel.Clear();
+        sourceMesh = Mesh::MeshObject();
+    }
     static void vertexCallback(void* ud, SoEventCallback* n);
     std::vector<SbVec3f> convert(const std::vector<Base::Vector3f>& points) const
     {
@@ -260,16 +356,24 @@ public:
         }
         return pts;
     }
-    void createGrid()
+    bool createGrid()
     {
-        Mesh::Feature* mf = mesh->getObject<Mesh::Feature>();
+        auto* viewProvider = mesh ? mesh->get() : nullptr;
+        Mesh::Feature* mf = viewProvider ? viewProvider->getObject<Mesh::Feature>() : nullptr;
+        App::Document* targetDocument = document ? **document : nullptr;
+        if (!mf || mf->getDocument() != targetDocument || !MeshGui::isNativeMeshInputActive(mf)
+            || mf->Mesh.getValue().countFacets() == 0) {
+            return false;
+        }
         const Mesh::MeshObject& meshObject = mf->Mesh.getValue();
+        sourceMesh = meshObject;
         kernel = meshObject.getKernel();
         kernel.Transform(meshObject.getTransform());
 
         MeshCore::MeshAlgorithm alg(kernel);
         float fAvgLen = alg.GetAverageEdgeLength();
         grid = new MeshCore::MeshFacetGrid(kernel, 5.0f * fAvgLen);
+        return true;
     }
     bool projectLineOnMesh(const PickedPoint& pick)
     {
@@ -279,9 +383,18 @@ public:
         MeshCore::MeshProjection meshProjection(kernel);
         Base::Vector3f v1 = Base::convertTo<Base::Vector3f>(last.point);
         Base::Vector3f v2 = Base::convertTo<Base::Vector3f>(pick.point);
-        Base::Vector3f vd = Base::convertTo<Base::Vector3f>(viewer->getViewer()->getViewDirection());
-        if (meshProjection.projectLineOnMesh(*grid, v1, last.facet, v2, pick.facet, vd, polyline)) {
+        const Base::Vector3f viewDirection = Base::convertTo<Base::Vector3f>(
+            viewer->getViewer()->getViewDirection()
+        );
+        const Base::Vector3d worldViewDirection(viewDirection.x, viewDirection.y, viewDirection.z);
+        if (meshProjection
+                .projectLineOnMesh(*grid, v1, last.facet, v2, pick.facet, viewDirection, polyline)) {
             if (polyline.size() > 1) {
+                const auto localDirection = sourceLocalDirection(sourceMesh, worldViewDirection);
+                if (!localDirection) {
+                    return false;
+                }
+                projectionDirections.push_back(*localDirection);
                 if (cutLines.empty()) {
                     cutLines.push_back(polyline);
                 }
@@ -314,16 +427,20 @@ public:
     }
 
     std::vector<PickedPoint> pickedPoints;
+    std::vector<Base::Vector3d> projectionDirections;
     std::list<std::vector<Base::Vector3f>> cutLines;
     bool wireClosed {false};
     double distance {1};
     double cosAngle {0.7071};  // 45 degree
+    double splitAngle {45.0};
     bool approximate {true};
     ViewProviderCurveOnMesh* curve;
-    Gui::ViewProviderDocumentObject* mesh {0};
+    std::unique_ptr<Gui::WeakPtrT<MeshGui::ViewProviderMesh>> mesh;
     MeshCore::MeshFacetGrid* grid {nullptr};
     MeshCore::MeshKernel kernel;
+    Mesh::MeshObject sourceMesh;
     QPointer<Gui::View3DInventor> viewer;
+    std::unique_ptr<App::DocumentWeakPtrT> document;
     QCursor editcursor;
     ApproxPar par;
 };
@@ -348,7 +465,8 @@ void CurveOnMeshHandler::setParameters(int maxDegree, GeomAbs_Shape cont, double
     d_ptr->par.maxDegree = maxDegree;
     d_ptr->par.cont = cont;
     d_ptr->par.tol3d = tol3d;
-    d_ptr->cosAngle = cos(angle);
+    d_ptr->splitAngle = angle;
+    d_ptr->cosAngle = std::cos(Base::toRadians<double>(angle));
 }
 
 void CurveOnMeshHandler::onContextMenu()
@@ -365,30 +483,97 @@ void CurveOnMeshHandler::onContextMenu()
 
 void CurveOnMeshHandler::onCreate()
 {
-    for (auto it = d_ptr->cutLines.begin(); it != d_ptr->cutLines.end(); ++it) {
-        std::vector<SbVec3f> segm = d_ptr->convert(*it);
-        if (d_ptr->approximate) {
-            Handle(Geom_BSplineCurve) spline = approximateSpline(segm);
-            if (!spline.IsNull()) {
-                displaySpline(spline);
+    App::Document* document = d_ptr->document ? **d_ptr->document : nullptr;
+    auto* viewProvider = d_ptr->mesh ? d_ptr->mesh->get() : nullptr;
+    auto* source = viewProvider ? viewProvider->getObject<Mesh::Feature>() : nullptr;
+    if (!source || source->getDocument() != document || !MeshGui::isNativeMeshInputActive(source)
+        || !sameMeshState(source->Mesh.getValue(), d_ptr->sourceMesh)) {
+        Base::Console().warning("Curve on mesh was cancelled because its source mesh "
+                                "changed\n");
+        d_ptr->clearTarget();
+        return;
+    }
+
+    if (d_ptr->pickedPoints.size() < 2
+        || d_ptr->projectionDirections.size()
+            != (d_ptr->wireClosed ? d_ptr->pickedPoints.size() : d_ptr->pickedPoints.size() - 1)
+        || !MeshGui::hasCleanNativeMutationBoundary(document)) {
+        return;
+    }
+
+    try {
+        std::vector<long> facets;
+        std::vector<Base::Vector3d> weights;
+        facets.reserve(d_ptr->pickedPoints.size());
+        weights.reserve(d_ptr->pickedPoints.size());
+        for (const auto& picked : d_ptr->pickedPoints) {
+            if (picked.facet >= d_ptr->kernel.CountFacets()) {
+                throw Base::ValueError("A curve anchor facet no longer exists");
             }
-        }
-        else {
-            TopoDS_Wire wire;
-            if (makePolyline(segm, wire)) {
-                displayPolyline(wire);
+            const MeshCore::MeshGeomFacet triangle = d_ptr->kernel.GetFacet(picked.facet);
+            float weight0 = 0.0F;
+            float weight1 = 0.0F;
+            float weight2 = 0.0F;
+            Base::Vector3f projected;
+            triangle.ProjectPointToPlane(Base::convertTo<Base::Vector3f>(picked.point), projected);
+            if (!triangle.Weights(projected, weight0, weight1, weight2)) {
+                throw Base::ValueError("A curve anchor is no longer on its source facet");
             }
+            facets.push_back(static_cast<long>(picked.facet));
+            weights.emplace_back(weight0, weight1, weight2);
         }
+
+        Gui::ExactTransaction transaction(*document, "Curve on mesh");
+        auto* feature = document->addObject<MeshPart::CurveOnMesh>("CurveOnMesh");
+        feature->Label.setValue("Curve on Mesh");
+        feature->Source.setValue(source);
+        feature->AnchorFacets.setValues(facets);
+        feature->AnchorWeights.setValues(weights);
+        feature->ProjectionDirections.setValues(d_ptr->projectionDirections);
+        feature->Closed.setValue(d_ptr->wireClosed);
+        feature->Approximate.setValue(d_ptr->approximate);
+        feature->MaximumDegree.setValue(d_ptr->par.maxDegree);
+        feature->Continuity.setValue(continuityIndex(d_ptr->par.cont));
+        feature->Tolerance.setValue(d_ptr->par.tol3d);
+        feature->SplitAngle.setValue(d_ptr->splitAngle);
+        document->recompute();
+        if (feature->Shape.getShape().isNull() || !feature->Shape.getShape().isValid()
+            || feature->isError()) {
+            throw Base::RuntimeError(
+                feature->isError() ? feature->getStatusString() : "Curve projection produced no geometry"
+            );
+        }
+        MeshGui::createSourcePreservingOutputGroup(
+            *document,
+            {source},
+            {feature},
+            "CurvesOnMesh",
+            "Curves on Mesh",
+            "Create curves on mesh"
+        );
+        if (!transaction.commit()) {
+            return;
+        }
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error("Curve on mesh failed: %s\n", error.what());
+        return;
+    }
+    catch (...) {
+        Base::Console().error("Curve on mesh failed because of an unknown error\n");
+        return;
     }
 
     d_ptr->curve->clearVertex();
     d_ptr->curve->clearPoints();
 
     d_ptr->pickedPoints.clear();
+    d_ptr->projectionDirections.clear();
     d_ptr->cutLines.clear();
     d_ptr->wireClosed = false;
 
     disableCallback();
+    d_ptr->clearTarget();
 }
 
 void CurveOnMeshHandler::onCloseWire()
@@ -406,8 +591,10 @@ void CurveOnMeshHandler::onClear()
     d_ptr->curve->clearPoints();
 
     d_ptr->pickedPoints.clear();
+    d_ptr->projectionDirections.clear();
     d_ptr->cutLines.clear();
     d_ptr->wireClosed = false;
+    d_ptr->clearTarget();
 }
 
 void CurveOnMeshHandler::onCancel()
@@ -420,6 +607,7 @@ void CurveOnMeshHandler::onCancel()
     d_ptr->wireClosed = false;
 
     disableCallback();
+    d_ptr->clearTarget();
 }
 
 void CurveOnMeshHandler::enableCallback(Gui::View3DInventor* v)
@@ -427,6 +615,14 @@ void CurveOnMeshHandler::enableCallback(Gui::View3DInventor* v)
     if (v && !d_ptr->viewer) {
         d_ptr->viewer = v;
         Gui::View3DInventorViewer* view3d = d_ptr->viewer->getViewer();
+        Gui::Document* guiDocument = view3d->getDocument();
+        d_ptr->document = guiDocument
+            ? std::make_unique<App::DocumentWeakPtrT>(guiDocument->getDocument())
+            : nullptr;
+        if (!d_ptr->document || !**d_ptr->document) {
+            d_ptr->viewer = nullptr;
+            return;
+        }
         view3d->addEventCallback(SoEvent::getClassTypeId(), Private::vertexCallback, this);
         view3d->addViewProvider(d_ptr->curve);
         view3d->setEditing(true);
@@ -466,99 +662,6 @@ std::vector<SbVec3f> CurveOnMeshHandler::getPoints() const
         pts.insert(pts.end(), segm.begin(), segm.end());
     }
     return pts;
-}
-
-Handle(Geom_BSplineCurve) CurveOnMeshHandler::approximateSpline(const std::vector<SbVec3f>& points)
-{
-    TColgp_Array1OfPnt pnts(1, points.size());
-    Standard_Integer index = 1;
-    for (const auto& it : points) {
-        float x, y, z;
-        it.getValue(x, y, z);
-        pnts(index++) = gp_Pnt(x, y, z);
-    }
-
-    try {
-        // GeomAPI_PointsToBSpline fit(pnts, 1, 2, GeomAbs_C0, 1.0e-3);
-        // GeomAPI_PointsToBSpline fit(pnts, d_ptr->par.weight1, d_ptr->par.weight2,
-        // d_ptr->par.weight3,
-        //                             d_ptr->par.maxDegree, d_ptr->par.cont, d_ptr->par.tol3d);
-        GeomAPI_PointsToBSpline fit(pnts, 1, d_ptr->par.maxDegree, d_ptr->par.cont, d_ptr->par.tol3d);
-        Handle(Geom_BSplineCurve) spline = fit.Curve();
-        return spline;
-    }
-    catch (...) {
-        return Handle(Geom_BSplineCurve)();
-    }
-}
-
-void CurveOnMeshHandler::approximateEdge(const TopoDS_Edge& edge, double tolerance)
-{
-    BRepMesh_IncrementalMesh(edge, tolerance);
-    TopLoc_Location loc;
-    Handle(Poly_Polygon3D) aPoly = BRep_Tool::Polygon3D(edge, loc);
-    if (!aPoly.IsNull()) {
-        int numNodes = aPoly->NbNodes();
-        const TColgp_Array1OfPnt& aNodes = aPoly->Nodes();
-        std::vector<SbVec3f> pts;
-        pts.reserve(numNodes);
-        for (int i = aNodes.Lower(); i <= aNodes.Upper(); i++) {
-            const gp_Pnt& p = aNodes.Value(i);
-            pts.emplace_back(
-                static_cast<float>(p.X()),
-                static_cast<float>(p.Y()),
-                static_cast<float>(p.Z())
-            );
-        }
-
-        d_ptr->curve->setPoints(pts);
-    }
-}
-
-void CurveOnMeshHandler::displaySpline(const Handle(Geom_BSplineCurve) & spline)
-{
-    if (d_ptr->viewer) {
-        double u = spline->FirstParameter();
-        double v = spline->LastParameter();
-        BRepBuilderAPI_MakeEdge mkBuilder(spline, u, v);
-        TopoDS_Edge edge = mkBuilder.Edge();
-
-        Gui::View3DInventorViewer* view3d = d_ptr->viewer->getViewer();
-        App::Document* doc = view3d->getDocument()->getDocument();
-        doc->openTransaction("Add spline");
-        Part::Feature* part = doc->addObject<Part::Feature>("Spline");
-        part->Shape.setValue(edge);
-        doc->commitTransaction();
-    }
-}
-
-bool CurveOnMeshHandler::makePolyline(const std::vector<SbVec3f>& points, TopoDS_Wire& wire)
-{
-    BRepBuilderAPI_MakePolygon mkPoly;
-    for (const auto& it : points) {
-        float x, y, z;
-        it.getValue(x, y, z);
-        mkPoly.Add(gp_Pnt(x, y, z));
-    }
-
-    if (mkPoly.IsDone()) {
-        wire = mkPoly.Wire();
-        return true;
-    }
-
-    return false;
-}
-
-void CurveOnMeshHandler::displayPolyline(const TopoDS_Wire& wire)
-{
-    if (d_ptr->viewer) {
-        Gui::View3DInventorViewer* view3d = d_ptr->viewer->getViewer();
-        App::Document* doc = view3d->getDocument()->getDocument();
-        doc->openTransaction("Add polyline");
-        Part::Feature* part = doc->addObject<Part::Feature>("Polyline");
-        part->Shape.setValue(wire);
-        doc->commitTransaction();
-    }
 }
 
 bool CurveOnMeshHandler::tryCloseWire(const SbVec3f& p) const
@@ -603,14 +706,38 @@ void CurveOnMeshHandler::Private::vertexCallback(void* ud, SoEventCallback* cb)
                     Gui::ViewProvider* vp = view->getViewProviderByPathFromTail(pp->getPath());
                     if (vp && vp->isDerivedFrom<MeshGui::ViewProviderMesh>()) {
                         MeshGui::ViewProviderMesh* mesh = static_cast<MeshGui::ViewProviderMesh*>(vp);
+                        App::Document* targetDocument = self->d_ptr->document
+                            ? **self->d_ptr->document
+                            : nullptr;
+                        auto* pickedSource = mesh->getObject<Mesh::Feature>();
+                        if (!pickedSource || pickedSource->getDocument() != targetDocument
+                            || !MeshGui::isNativeMeshInputActive(pickedSource)) {
+                            self->d_ptr->clearTarget();
+                            return;
+                        }
                         const SoDetail* detail = pp->getDetail();
                         if (detail && detail->getTypeId() == SoFaceDetail::getClassTypeId()) {
                             // get the mesh and build a grid
-                            if (!self->d_ptr->mesh) {
-                                self->d_ptr->mesh = mesh;
-                                self->d_ptr->createGrid();
+                            auto* target = self->d_ptr->mesh ? self->d_ptr->mesh->get() : nullptr;
+                            auto* source = target ? target->getObject<Mesh::Feature>() : nullptr;
+                            if (source
+                                && (source->getDocument() != targetDocument
+                                    || !MeshGui::isNativeMeshInputActive(source)
+                                    || !sameMeshState(source->Mesh.getValue(), self->d_ptr->sourceMesh)
+                                )) {
+                                self->d_ptr->clearTarget();
+                                target = nullptr;
                             }
-                            else if (self->d_ptr->mesh != mesh) {
+                            if (!target) {
+                                self->d_ptr->clearTarget();
+                                self->d_ptr->mesh
+                                    = std::make_unique<Gui::WeakPtrT<MeshGui::ViewProviderMesh>>(mesh);
+                                if (!self->d_ptr->createGrid()) {
+                                    self->d_ptr->clearTarget();
+                                    return;
+                                }
+                            }
+                            else if (target != mesh) {
                                 Gui::getMainWindow()->statusBar()->showMessage(
                                     tr("Wrong mesh selected")
                                 );
@@ -655,9 +782,8 @@ void CurveOnMeshHandler::Private::vertexCallback(void* ud, SoEventCallback* cb)
                 Gui::getMainWindow()->statusBar()->showMessage(tr("No point was selected"));
             }
         }
-        else if (
-            mbe->getButton() == SoMouseButtonEvent::BUTTON2 && mbe->getState() == SoButtonEvent::UP
-        ) {
+        else if (mbe->getButton() == SoMouseButtonEvent::BUTTON2
+                 && mbe->getState() == SoButtonEvent::UP) {
             CurveOnMeshHandler* self = static_cast<CurveOnMeshHandler*>(ud);
             QTimer::singleShot(100, self, &CurveOnMeshHandler::onContextMenu);
         }
@@ -666,10 +792,16 @@ void CurveOnMeshHandler::Private::vertexCallback(void* ud, SoEventCallback* cb)
 
 void CurveOnMeshHandler::recomputeDocument()
 {
-    if (d_ptr->viewer) {
-        Gui::View3DInventorViewer* view3d = d_ptr->viewer->getViewer();
-        App::Document* doc = view3d->getDocument()->getDocument();
-        doc->recompute();
+    if (!d_ptr->viewer) {
+        return;
+    }
+
+    Gui::View3DInventorViewer* view3d = d_ptr->viewer->getViewer();
+    Gui::Document* guiDocument = view3d ? view3d->getDocument() : nullptr;
+    App::Document* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    App::Document* targetDocument = d_ptr->document ? **d_ptr->document : nullptr;
+    if (document && document == targetDocument) {
+        document->recompute();
     }
 }
 

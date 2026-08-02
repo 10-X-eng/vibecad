@@ -33,10 +33,12 @@
 #include <Base/UnitsApi.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/ExactTransaction.h>
 #include <Mod/Spreadsheet/App/Sheet.h>
 #include <Mod/Spreadsheet/App/SheetParameter.h>
 
 #include "SheetModel.h"
+#include "MutationSupport.h"
 #include "App/Range.h"
 
 
@@ -619,19 +621,23 @@ QVariant SheetModel::headerData(int section, Qt::Orientation orientation, int ro
 void SheetModel::setCellData(QModelIndex index, QString str)
 {
     try {
+        auto* document = sheet ? sheet->getDocument() : nullptr;
+        if (!document || !index.isValid()) {
+            return;
+        }
+        MutationSupport::requireCleanBoundary(*document);
         CellAddress address(index.row(), index.column());
-        sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Edit cell"));
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Edit cell"));
         // Because of possible complication of recursively escaped
         // characters, let's take a shortcut and bypass the command
         // interface for now.
 
         sheet->setContent(address, str.toUtf8().constData());
-        sheet->getDocument()->commitTransaction();
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
     }
     catch (const Base::Exception& e) {
         e.reportException();
-        sheet->getDocument()->abortTransaction();
     }
 }
 

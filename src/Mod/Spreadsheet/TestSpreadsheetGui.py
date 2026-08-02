@@ -26,6 +26,10 @@ import FreeCAD
 from PySide import QtCore, QtGui
 import FreeCADGui
 
+from SpreadsheetTests.TestVibeCADRibbonTools import (
+    TestVibeCADSpreadsheetRibbonTools,
+)
+
 # ----------------------------------------------------------------------------------
 # define the functions to test the FreeCAD Spreadsheet GUI
 # ----------------------------------------------------------------------------------
@@ -41,8 +45,7 @@ class SpreadsheetGuiCases(unittest.TestCase):
         return self.view_provider.getView()
 
     def tearDown(self):
-        pass
-        # FreeCAD.closeDocument(self.doc.Name)
+        FreeCAD.closeDocument(self.doc.Name)
 
     def injectSimpleData(self):
         """A utility function to initialize a blank sheet with some known data"""
@@ -69,11 +72,37 @@ class SpreadsheetGuiCases(unittest.TestCase):
         self.injectSimpleData()
         self.view_provider.doubleClicked()
         view = self.getTableView()
-        view.select("A1", QtCore.QItemSelectionModel.SelectCurrent)
+        sheet_widget = FreeCADGui.getMainWindow().findChild(
+            QtGui.QLineEdit,
+            "cellContent",
+        )
+        self.assertIsNotNone(sheet_widget)
         view.setCurrentIndex("A1")
+        view.select(
+            "A1",
+            QtCore.QItemSelectionModel.ClearAndSelect.value,
+        )
+        QtGui.QApplication.setActiveWindow(FreeCADGui.getMainWindow())
+        FreeCADGui.getMainWindow().activateWindow()
+        FreeCADGui.getMainWindow().raise_()
+        QtGui.QApplication.processEvents()
+        sheet_widget.setFocus(QtCore.Qt.OtherFocusReason)
+        self.assertIs(QtGui.QApplication.focusWidget(), sheet_widget)
+        self.assertEqual(view.selectedRanges(), ["A1:A1"])
+        self.assertTrue(FreeCADGui.isCommandActive("Std_Copy"))
         FreeCAD.Gui.runCommand("Std_Copy", 0)
-        view.select("E5", QtCore.QItemSelectionModel.SelectCurrent)
+        self.assertTrue(QtGui.QApplication.clipboard().mimeData().hasText())
         view.setCurrentIndex("E5")
+        view.select(
+            "E5",
+            QtCore.QItemSelectionModel.ClearAndSelect.value,
+        )
+        FreeCADGui.updateGui()
+        QtGui.QApplication.processEvents()
+        self.assertEqual(view.selectedRanges(), ["E5:E5"])
+        self.assertTrue(FreeCADGui.isCommandActive("Std_Paste"))
+        undo_before = self.doc.UndoCount
         FreeCAD.Gui.runCommand("Std_Paste", 0)
+        self.assertEqual(self.doc.UndoCount, undo_before + 1)
         self.doc.recompute()
         self.assertEqual(self.sheet.get("A1"), self.sheet.get("E5"))

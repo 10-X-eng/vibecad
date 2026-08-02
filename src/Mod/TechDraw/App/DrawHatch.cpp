@@ -71,8 +71,11 @@ void DrawHatch::onChanged(const App::Property* prop)
 
 App::DocumentObjectExecReturn *DrawHatch::execute(void)
 {
+    if (!DrawUtil::isActiveInDocumentTimeline(this)) {
+        return App::DocumentObject::StdReturn;
+    }
     DrawViewPart* parent = getSourceView();
-    if (parent) {
+    if (parent && parent->isActiveInDocumentTimeline()) {
         parent->requestPaint();
     }
     return App::DocumentObject::StdReturn;

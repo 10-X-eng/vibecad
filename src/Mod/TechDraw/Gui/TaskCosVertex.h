@@ -28,6 +28,7 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
 
 namespace TechDraw
 {
@@ -57,7 +58,7 @@ class TaskCosVertex : public QWidget
 public:
     TaskCosVertex(TechDraw::DrawViewPart* baseFeat,
                   TechDraw::DrawPage* page);
-    ~TaskCosVertex() override = default;
+    ~TaskCosVertex() override;
 
     virtual bool accept();
     virtual bool reject();
@@ -92,6 +93,8 @@ private:
 
     TechDraw::DrawViewPart* m_baseFeat;
     TechDraw::DrawPage* m_basePage;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewPart> m_baseIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage> m_pageIdentity;
     QGIView* m_qgParent;
     std::string m_qgParentName;
 

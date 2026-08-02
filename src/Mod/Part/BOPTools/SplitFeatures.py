@@ -30,9 +30,11 @@ __doc__ = "Shape splitting document objects (features)."
 from . import SplitAPI
 import FreeCAD
 import Part
+from PartLinkScope import migrate_many_to_global
 
 if FreeCAD.GuiUp:
     import FreeCADGui
+    import PartGui
     from PySide import QtCore, QtGui
 
     # -------------------------- translation-related code -------------------------
@@ -51,6 +53,106 @@ if FreeCAD.GuiUp:
 
 def getIconPath(icon_dot_svg):
     return icon_dot_svg
+
+
+def _selected_shape_objects():
+    objects = []
+    for selection in FreeCADGui.Selection.getSelectionEx():
+        selected = selection.Object
+        if not PartGui.isModelingObjectActive(selected):
+            continue
+        obj = PartGui.resolveModelingObject(selected)
+        if (
+            obj is not None
+            and hasattr(obj, "Shape")
+            and not obj.Shape.isNull()
+            and obj not in objects
+        ):
+            objects.append(obj)
+    return objects
+
+
+def _selected_presentation_objects():
+    """Return the exact viewport owners replaced by a split command."""
+
+    objects = []
+    for selection in FreeCADGui.Selection.getSelectionEx():
+        selected = selection.Object
+        if not PartGui.isModelingObjectActive(selected):
+            continue
+        resolved = PartGui.resolveModelingObject(selected)
+        if resolved is None:
+            continue
+
+        presentation = selected
+        if selected.isDerivedFrom("PartDesign::Body"):
+            presentation = selected
+        else:
+            owner = resolved.getParentGeoFeatureGroup()
+            if owner is not None and owner.isDerivedFrom("PartDesign::Body"):
+                presentation = owner
+
+        if presentation not in objects:
+            objects.append(presentation)
+    return objects
+
+
+def _visible_presentation_objects():
+    return [
+        obj
+        for obj in _selected_presentation_objects()
+        if obj.ViewObject is not None and bool(obj.Visibility)
+    ]
+
+
+def _replace_visible_presentations(result, presentations):
+    if (
+        presentations
+        and PartGui.setModelingReplacedInputs(
+            result,
+            presentations,
+        )
+    ):
+        for presentation in presentations:
+            presentation.Visibility = False
+
+
+def _object_expression(obj):
+    """Return a recorded command expression for one exact document object."""
+
+    return (
+        f"App.getDocument({obj.Document.Name!r})"
+        f".getObject({obj.Name!r})"
+    )
+
+
+def _replace_visible_presentations_command(result_expression, presentations):
+    presentation_expression = ", ".join(
+        _object_expression(presentation)
+        for presentation in presentations
+    )
+    FreeCADGui.doCommand(
+        "BOPTools.SplitFeatures._replace_visible_presentations("
+        f"{result_expression}, [{presentation_expression}])"
+    )
+
+
+def _has_fragment_operands():
+    objects = _selected_shape_objects()
+    if len(objects) >= 2:
+        return True
+    if len(objects) != 1:
+        return False
+    shape = objects[0].Shape
+    return shape.ShapeType == "Compound" and len(shape.childShapes()) >= 2
+
+
+def _mark_timeline_resource(resource, owner):
+    """Persist one private Part implementation object under its operation."""
+
+    from CompoundTools.Explode import _mark_timeline_resource as mark_resource
+
+    mark_resource(resource, owner)
 
 
 # -------------------------- /common stuff ------------------------------------
@@ -72,7 +174,7 @@ class FeatureBooleanFragments:
 
     def __init__(self, obj):
         obj.addProperty(
-            "App::PropertyLinkList",
+            "App::PropertyLinkListGlobal",
             "Objects",
             "BooleanFragments",
             "Object to compute intersections between.",
@@ -99,6 +201,9 @@ class FeatureBooleanFragments:
 
         obj.Proxy = self
         self.Type = "FeatureBooleanFragments"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Objects")
 
     def execute(self, selfobj):
         shapes = [obj.Shape for obj in selfobj.Objects]
@@ -167,22 +272,31 @@ class ViewProviderBooleanFragments:
 def cmdCreateBooleanFragmentsFeature(name, mode):
     """cmdCreateBooleanFragmentsFeature(name, mode): implementation of GUI command to create
     BooleanFragments feature (GFA). Mode can be "Standard", "Split", or "CompSolid"."""
-    sel = FreeCADGui.Selection.getSelectionEx()
-    FreeCAD.ActiveDocument.openTransaction("Create Boolean Fragments")
+    document = FreeCAD.ActiveDocument
+    operands = _selected_shape_objects()
+    presentations = _visible_presentation_objects()
+    document.openTransaction("Create Boolean Fragments")
     FreeCADGui.addModule("BOPTools.SplitFeatures")
+    result = FreeCADGui.runDocumentObjectCommand(
+        document,
+        f"BOPTools.SplitFeatures.makeBooleanFragments(name={name!r})",
+        "Part::Feature",
+    )
+    result_expression = _object_expression(result)
     FreeCADGui.doCommand(
-        "j = BOPTools.SplitFeatures.makeBooleanFragments(name='{name}')".format(name=name)
+        f"{result_expression}.Objects = ["
+        + ", ".join(_object_expression(operand) for operand in operands)
+        + "]"
     )
     FreeCADGui.doCommand(
-        "j.Objects = {sel}".format(
-            sel="[" + ", ".join(["App.ActiveDocument." + so.Object.Name for so in sel]) + "]"
-        )
+        f"{result_expression}.Mode = {mode!r}"
     )
-    FreeCADGui.doCommand("j.Mode = {mode}".format(mode=repr(mode)))
 
     try:
-        FreeCADGui.doCommand("j.Proxy.execute(j)")
-        FreeCADGui.doCommand("j.purgeTouched()")
+        FreeCADGui.doCommand(
+            f"{result_expression}.Proxy.execute({result_expression})"
+        )
+        FreeCADGui.doCommand(f"{result_expression}.purgeTouched()")
     except Exception as err:
         mb = QtGui.QMessageBox()
         mb.setIcon(mb.Icon.Warning)
@@ -203,14 +317,15 @@ def cmdCreateBooleanFragmentsFeature(name, mode):
         mb.exec_()
 
         if mb.clickedButton() is btnAbort:
-            FreeCAD.ActiveDocument.abortTransaction()
+            document.abortTransaction()
             return
 
-    FreeCADGui.doCommand(
-        "for obj in j.ViewObject.Proxy.claimChildren():\n" "    obj.ViewObject.hide()"
+    _replace_visible_presentations_command(
+        result_expression,
+        presentations,
     )
 
-    FreeCAD.ActiveDocument.commitTransaction()
+    document.commitTransaction()
 
 
 class CommandBooleanFragments:
@@ -228,7 +343,7 @@ class CommandBooleanFragments:
         }
 
     def Activated(self):
-        if len(FreeCADGui.Selection.getSelectionEx()) >= 1:
+        if _has_fragment_operands():
             cmdCreateBooleanFragmentsFeature(name="BooleanFragments", mode="Standard")
         else:
             mb = QtGui.QMessageBox()
@@ -246,10 +361,11 @@ class CommandBooleanFragments:
             mb.exec_()
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return (
+            FreeCAD.ActiveDocument is not None
+            and PartGui.canStartRetainedModelingTask()
+            and _has_fragment_operands()
+        )
 
 
 # -------------------------- /BooleanFragments --------------------------------
@@ -270,9 +386,15 @@ class FeatureSlice:
     """The Slice feature object."""
 
     def __init__(self, obj):
-        obj.addProperty("App::PropertyLink", "Base", "Slice", "Object to be sliced.", locked=True)
         obj.addProperty(
-            "App::PropertyLinkList", "Tools", "Slice", "Objects that slice.", locked=True
+            "App::PropertyLinkGlobal", "Base", "Slice", "Object to be sliced.", locked=True
+        )
+        obj.addProperty(
+            "App::PropertyLinkListGlobal",
+            "Tools",
+            "Slice",
+            "Objects that slice.",
+            locked=True,
         )
         obj.addProperty(
             "App::PropertyEnumeration",
@@ -295,6 +417,9 @@ class FeatureSlice:
 
         obj.Proxy = self
         self.Type = "FeatureSlice"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Base", "Tools")
 
     def execute(self, selfobj):
         if len(selfobj.Tools) < 1:
@@ -368,25 +493,50 @@ class ViewProviderSlice:
         return True
 
 
-def cmdCreateSliceFeature(name, mode, transaction=True):
+def cmdCreateSliceFeature(
+    name,
+    mode,
+    transaction=True,
+    *,
+    return_result=False,
+    document=None,
+):
     """cmdCreateSliceFeature(name, mode): implementation of GUI command to create
     Slice feature. Mode can be "Standard", "Split", or "CompSolid"."""
-    sel = FreeCADGui.Selection.getSelectionEx()
+    if document is None:
+        document = FreeCAD.ActiveDocument
+    operands = _selected_shape_objects()
+    presentations = _visible_presentation_objects()
     if transaction:
-        FreeCAD.ActiveDocument.openTransaction("Create Slice")
+        document.openTransaction("Create Slice")
     FreeCADGui.addModule("BOPTools.SplitFeatures")
-    FreeCADGui.doCommand("f = BOPTools.SplitFeatures.makeSlice(name='{name}')".format(name=name))
-    FreeCADGui.doCommand(
-        "f.Base = {sel}[0]\n"
-        "f.Tools = {sel}[1:]".format(
-            sel="[" + ", ".join(["App.ActiveDocument." + so.Object.Name for so in sel]) + "]"
-        )
+    result = FreeCADGui.runDocumentObjectCommand(
+        document,
+        f"BOPTools.SplitFeatures.makeSlice(name={name!r})",
+        "Part::Feature",
     )
-    FreeCADGui.doCommand("f.Mode = {mode}".format(mode=repr(mode)))
+    result_expression = _object_expression(result)
+    operand_expression = (
+        "["
+        + ", ".join(
+            _object_expression(operand)
+            for operand in operands
+        )
+        + "]"
+    )
+    FreeCADGui.doCommand(
+        f"{result_expression}.Base = {operand_expression}[0]\n"
+        f"{result_expression}.Tools = {operand_expression}[1:]"
+    )
+    FreeCADGui.doCommand(
+        f"{result_expression}.Mode = {mode!r}"
+    )
 
     try:
-        FreeCADGui.doCommand("f.Proxy.execute(f)")
-        FreeCADGui.doCommand("f.purgeTouched()")
+        FreeCADGui.doCommand(
+            f"{result_expression}.Proxy.execute({result_expression})"
+        )
+        FreeCADGui.doCommand(f"{result_expression}.purgeTouched()")
     except Exception as err:
         mb = QtGui.QMessageBox()
         mb.setIcon(mb.Icon.Warning)
@@ -408,30 +558,86 @@ def cmdCreateSliceFeature(name, mode, transaction=True):
 
         if mb.clickedButton() is btnAbort:
             if transaction:
-                FreeCAD.ActiveDocument.abortTransaction()
+                document.abortTransaction()
             return False
 
-    FreeCADGui.doCommand(
-        "for obj in f.ViewObject.Proxy.claimChildren():\n" "    obj.ViewObject.hide()"
-    )
+    if transaction:
+        _replace_visible_presentations_command(
+            result_expression,
+            presentations,
+        )
 
     if transaction:
-        FreeCAD.ActiveDocument.commitTransaction()
-    return True
+        document.commitTransaction()
+    return result if return_result else True
 
 
 def cmdSliceApart():
-    FreeCAD.ActiveDocument.openTransaction("Slice apart")
-    made = cmdCreateSliceFeature(name="Slice", mode="Split", transaction=False)
+    document = FreeCAD.ActiveDocument
+    replaced_inputs = [
+        obj
+        for obj in _selected_presentation_objects()
+        if obj.ViewObject is not None and obj.ViewObject.Visibility
+    ]
+    document.openTransaction("Slice apart")
+    try:
+        slice_feature = cmdCreateSliceFeature(
+            name="Slice",
+            mode="Split",
+            transaction=False,
+            return_result=True,
+            document=document,
+        )
+        if slice_feature is None:
+            if document.HasPendingTransaction:
+                document.abortTransaction()
+            return
+        if (
+            not document
+            .isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                slice_feature
+            )
+        ):
+            raise RuntimeError(
+                "Slice Apart did not return its exact Slice feature."
+            )
 
-    if made:
         FreeCADGui.addModule("CompoundTools.Explode")
-        FreeCADGui.doCommand("CompoundTools.Explode.explodeCompound(f)")
-        FreeCADGui.doCommand("f.ViewObject.hide()")
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCADGui.doCommand("App.ActiveDocument.recompute()")
-    else:
-        FreeCAD.ActiveDocument.abortTransaction()
+        slice_expression = _object_expression(slice_feature)
+        replaced_expression = ", ".join(
+            _object_expression(obj)
+            for obj in replaced_inputs
+        )
+        output_component = FreeCADGui.runDocumentObjectCommand(
+            document,
+            "CompoundTools.Explode.makeBodyOutputOperation("
+            f"{slice_expression}, "
+            "label='Slice Apart', "
+            f"replaced_inputs=[{replaced_expression}], "
+            f"editor={slice_expression})",
+            "App::Part",
+        )
+        if (
+            output_component.Document is not document
+            or document.getObject(output_component.Name)
+            is not output_component
+            or getattr(
+                output_component,
+                "VibeCADTimelineRole",
+                None,
+            )
+            != "operation"
+        ):
+            raise RuntimeError(
+                "Slice Apart did not return its exact History operation."
+            )
+
+        if document.HasPendingTransaction:
+            document.commitTransaction()
+    except Exception:
+        if document.HasPendingTransaction:
+            document.abortTransaction()
+        raise
 
 
 class CommandSlice:
@@ -449,7 +655,7 @@ class CommandSlice:
         }
 
     def Activated(self):
-        if len(FreeCADGui.Selection.getSelectionEx()) > 1:
+        if len(_selected_shape_objects()) > 1:
             cmdCreateSliceFeature(name="Slice", mode="Split")
         else:
             mb = QtGui.QMessageBox()
@@ -467,10 +673,11 @@ class CommandSlice:
             mb.exec_()
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return (
+            FreeCAD.ActiveDocument is not None
+            and PartGui.canStartRetainedModelingTask()
+            and len(_selected_shape_objects()) > 1
+        )
 
 
 class CommandSliceApart:
@@ -483,12 +690,13 @@ class CommandSliceApart:
             "Accel": "",
             "ToolTip": QtCore.QT_TRANSLATE_NOOP(
                 "Part_SliceApart",
-                "Slices the selected object by other objects, and splits it apart, creating a compound filter for each slide",
+                "Slices the first selected Body with the others and creates "
+                "independently editable output Bodies",
             ),
         }
 
     def Activated(self):
-        if len(FreeCADGui.Selection.getSelectionEx()) > 1:
+        if len(_selected_shape_objects()) > 1:
             cmdSliceApart()
         else:
             mb = QtGui.QMessageBox()
@@ -506,10 +714,11 @@ class CommandSliceApart:
             mb.exec_()
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return (
+            FreeCAD.ActiveDocument is not None
+            and PartGui.canStartRetainedModelingTask()
+            and len(_selected_shape_objects()) > 1
+        )
 
 
 # -------------------------- /Slice -------------------------------------------
@@ -531,7 +740,7 @@ class FeatureXOR:
 
     def __init__(self, obj):
         obj.addProperty(
-            "App::PropertyLinkList",
+            "App::PropertyLinkListGlobal",
             "Objects",
             "XOR",
             "Object to compute intersections between.",
@@ -548,6 +757,9 @@ class FeatureXOR:
 
         obj.Proxy = self
         self.Type = "FeatureXOR"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Objects")
 
     def execute(self, selfobj):
         shapes = [obj.Shape for obj in selfobj.Objects]
@@ -616,19 +828,28 @@ class ViewProviderXOR:
 def cmdCreateXORFeature(name):
     """cmdCreateXORFeature(name): implementation of GUI command to create
     XOR feature (GFA). Mode can be "Standard", "Split", or "CompSolid"."""
-    sel = FreeCADGui.Selection.getSelectionEx()
-    FreeCAD.ActiveDocument.openTransaction("Create Boolean XOR")
+    document = FreeCAD.ActiveDocument
+    operands = _selected_shape_objects()
+    presentations = _visible_presentation_objects()
+    document.openTransaction("Create Boolean XOR")
     FreeCADGui.addModule("BOPTools.SplitFeatures")
-    FreeCADGui.doCommand("j = BOPTools.SplitFeatures.makeXOR(name='{name}')".format(name=name))
+    result = FreeCADGui.runDocumentObjectCommand(
+        document,
+        f"BOPTools.SplitFeatures.makeXOR(name={name!r})",
+        "Part::Feature",
+    )
+    result_expression = _object_expression(result)
     FreeCADGui.doCommand(
-        "j.Objects = {sel}".format(
-            sel="[" + ", ".join(["App.ActiveDocument." + so.Object.Name for so in sel]) + "]"
-        )
+        f"{result_expression}.Objects = ["
+        + ", ".join(_object_expression(operand) for operand in operands)
+        + "]"
     )
 
     try:
-        FreeCADGui.doCommand("j.Proxy.execute(j)")
-        FreeCADGui.doCommand("j.purgeTouched()")
+        FreeCADGui.doCommand(
+            f"{result_expression}.Proxy.execute({result_expression})"
+        )
+        FreeCADGui.doCommand(f"{result_expression}.purgeTouched()")
     except Exception as err:
         mb = QtGui.QMessageBox()
         mb.setIcon(mb.Icon.Warning)
@@ -649,14 +870,15 @@ def cmdCreateXORFeature(name):
         mb.exec_()
 
         if mb.clickedButton() is btnAbort:
-            FreeCAD.ActiveDocument.abortTransaction()
+            document.abortTransaction()
             return
 
-    FreeCADGui.doCommand(
-        "for obj in j.ViewObject.Proxy.claimChildren():\n" "    obj.ViewObject.hide()"
+    _replace_visible_presentations_command(
+        result_expression,
+        presentations,
     )
 
-    FreeCAD.ActiveDocument.commitTransaction()
+    document.commitTransaction()
 
 
 class CommandXOR:
@@ -676,7 +898,7 @@ class CommandXOR:
         }
 
     def Activated(self):
-        if len(FreeCADGui.Selection.getSelectionEx()) >= 1:
+        if _has_fragment_operands():
             cmdCreateXORFeature(name="XOR")
         else:
             mb = QtGui.QMessageBox()
@@ -694,10 +916,11 @@ class CommandXOR:
             mb.exec_()
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return (
+            FreeCAD.ActiveDocument is not None
+            and PartGui.canStartRetainedModelingTask()
+            and _has_fragment_operands()
+        )
 
 
 # -------------------------- /XOR ---------------------------------------------

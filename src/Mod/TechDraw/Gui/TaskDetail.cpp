@@ -23,6 +23,7 @@
 
 #include <App/Document.h>
 #include <Base/Console.h>
+#include <Base/Interpreter.h>
 #include <Base/UnitsApi.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -59,7 +60,7 @@ TaskDetail::TaskDetail(TechDraw::DrawViewPart* baseFeat):
     m_ghost(nullptr),
     m_detailFeat(nullptr),
     m_baseFeat(baseFeat),
-    m_basePage(m_baseFeat->findParentPage()),
+    m_basePage(baseFeat ? baseFeat->findParentPage() : nullptr),
     m_qgParent(nullptr),
     m_inProgressLock(false),
     m_btnOK(nullptr),
@@ -71,24 +72,38 @@ TaskDetail::TaskDetail(TechDraw::DrawViewPart* baseFeat):
     m_mode(CREATEMODE),
     m_created(false)
 {
-    //existence of baseFeat checked in CmdTechDrawDetailView (Command.cpp)
+    if (!m_baseFeat || !m_baseFeat->getDocument()) {
+        throw Base::TypeError(
+            "The detail task requires a live base view"
+        );
+    }
 
     m_basePage = m_baseFeat->findParentPage();
     //it is possible that the basePage could be unparented and have no corresponding Page
     if (!m_basePage) {
-        Base::Console().error("TaskDetail - bad parameters - base page.  Cannot proceed.\n");
-        return;
+        throw Base::TypeError(
+            "The detail base view is not on a drawing page"
+        );
     }
 
     m_baseName = m_baseFeat->getNameInDocument();
     m_doc      = m_baseFeat->getDocument();
     m_pageName = m_basePage->getNameInDocument();
+    m_baseIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewPart>(m_baseFeat);
+    m_pageIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawPage>(m_basePage);
 
     ui->setupUi(this);
 
     Gui::Document* activeGui = Gui::Application::Instance->getDocument(m_doc);
     Gui::ViewProvider* vp = activeGui->getViewProvider(m_basePage);
-    m_vpp = static_cast<ViewProviderPage*>(vp);
+    m_vpp = dynamic_cast<ViewProviderPage*>(vp);
+    if (!m_vpp) {
+        throw Base::TypeError(
+            "The detail page has no compatible view provider"
+        );
+    }
 
     createDetail();
     setUiFromFeat();
@@ -140,25 +155,40 @@ TaskDetail::TaskDetail(TechDraw::DrawViewDetail* detailFeat):
 {
     if (!m_detailFeat)  {
         //should be caught in CMD caller
-        Base::Console().error("TaskDetail - bad parameters.  Cannot proceed.\n");
-        return;
+        throw Base::TypeError(
+            "The detail task requires a live detail view"
+        );
     }
 
     m_doc = m_detailFeat->getDocument();
     m_detailName = m_detailFeat->getNameInDocument();
+    m_detailIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewDetail>(
+            m_detailFeat
+        );
 
     m_basePage = m_detailFeat->findParentPage();
     if (m_basePage) {
         m_pageName = m_basePage->getNameInDocument();
     }
+    else {
+        throw Base::TypeError(
+            "The detail view is not on a drawing page"
+        );
+    }
 
     App::DocumentObject* baseObj = m_detailFeat->BaseView.getValue();
     m_baseFeat = dynamic_cast<TechDraw::DrawViewPart*>(baseObj);
     if (!m_baseFeat) {
-        Base::Console().error("TaskDetail - no base view.  Cannot proceed.\n");
-        return;
+        throw Base::TypeError(
+            "The detail view has no live base view"
+        );
     }
     m_baseName = m_baseFeat->getNameInDocument();
+    m_baseIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewPart>(m_baseFeat);
+    m_pageIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawPage>(m_basePage);
     // repaint baseObj here to make highlight inactive.
     m_baseFeat->requestPaint();
 
@@ -166,7 +196,12 @@ TaskDetail::TaskDetail(TechDraw::DrawViewDetail* detailFeat):
 
     Gui::Document* activeGui = Gui::Application::Instance->getDocument(m_basePage->getDocument());
     Gui::ViewProvider* vp = activeGui->getViewProvider(m_basePage);
-    m_vpp = static_cast<ViewProviderPage*>(vp);
+    m_vpp = dynamic_cast<ViewProviderPage*>(vp);
+    if (!m_vpp) {
+        throw Base::TypeError(
+            "The detail page has no compatible view provider"
+        );
+    }
 
     saveDetailState();
     setUiFromFeat();
@@ -430,39 +465,96 @@ void TaskDetail::enableTaskButtons(bool button)
 //***** Feature create & edit stuff *******************************************
 void TaskDetail::createDetail()
 {
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create Detail view"));
+    if (!m_doc
+        || m_doc->getBookedTransactionID() == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The detail task has no owning transaction"
+        );
+    }
 
     const std::string objectName{"Detail"};
     m_detailName = m_doc->getUniqueObjectName(objectName.c_str());
-    std::string generatedSuffix {m_detailName.substr(objectName.length())};
+    const std::string documentName = m_doc->getName();
 
-    Gui::Command::doCommand(Command::Doc, "App.activeDocument().addObject('TechDraw::DrawViewDetail', '%s')",
-                            m_detailName.c_str());
-
-    Gui::Command::doCommand(Command::Doc, "App.activeDocument().%s.translateLabel('DrawViewDetail', 'Detail', '%s')",
-              m_detailName.c_str(), m_detailName.c_str());
-
-    App::DocumentObject *docObj = m_baseFeat->getDocument()->getObject(m_detailName.c_str());
-    TechDraw::DrawViewDetail* dvd = dynamic_cast<TechDraw::DrawViewDetail *>(docObj);
+    const QString detailFactory =
+        QStringLiteral(
+            "App.getDocument('%1').addObject("
+            "'TechDraw::DrawViewDetail', '%2')"
+        )
+            .arg(
+                QString::fromStdString(
+                    Base::InterpreterSingleton::strToPython(documentName)
+                ),
+                QString::fromStdString(m_detailName)
+            );
+    auto* dvd = dynamic_cast<TechDraw::DrawViewDetail*>(
+        Gui::Command::runDocumentObjectCommand(
+            Command::Doc,
+            *m_doc,
+            detailFactory.toUtf8(),
+            TechDraw::DrawViewDetail::getClassTypeId()
+        )
+    );
     if (!dvd) {
-        throw Base::TypeError("TaskDetail - new detail view not found\n");
+        throw Base::TypeError(
+            "TaskDetail - detail factory returned an incompatible object"
+        );
     }
+    m_detailName = dvd->getNameInDocument();
+
+    Gui::Command::doCommand(
+        Command::Doc,
+        "App.getDocument('%s').getObject('%s').translateLabel("
+        "'DrawViewDetail', 'Detail', '%s')",
+        documentName.c_str(),
+        m_detailName.c_str(),
+        m_detailName.c_str()
+    );
+
     m_detailFeat = dvd;
+    m_detailIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewDetail>(dvd);
     dvd->Source.setValues(getBaseFeat()->Source.getValues());
 
-    Gui::Command::doCommand(Command::Doc, "App.activeDocument().%s.BaseView = App.activeDocument().%s",
-                            m_detailName.c_str(), m_baseName.c_str());
-    Gui::Command::doCommand(Command::Doc, "App.activeDocument().%s.Direction = App.activeDocument().%s.Direction",
-                            m_detailName.c_str(), m_baseName.c_str());
-    Gui::Command::doCommand(Command::Doc, "App.activeDocument().%s.XDirection = App.activeDocument().%s.XDirection",
-                            m_detailName.c_str(), m_baseName.c_str());
-    Gui::Command::doCommand(Command::Doc, "App.activeDocument().%s.Scale = App.activeDocument().%s.Scale",
-                            m_detailName.c_str(), m_baseName.c_str());
-    Gui::Command::doCommand(Command::Doc, "App.activeDocument().%s.addView(App.activeDocument().%s)",
-                            m_pageName.c_str(), m_detailName.c_str());
+    auto* page = m_pageIdentity.resolve();
+    if (!page) {
+        throw Base::RuntimeError(
+            "The detail task lost its drawing page"
+        );
+    }
+    Gui::Command::doCommand(
+        Command::Doc,
+        "App.getDocument('%s').getObject('%s').BaseView = "
+        "App.getDocument('%s').getObject('%s')",
+        documentName.c_str(),
+        m_detailName.c_str(),
+        documentName.c_str(),
+        m_baseName.c_str()
+    );
+    for (const char* property : {"Direction", "XDirection", "Scale"}) {
+        Gui::Command::doCommand(
+            Command::Doc,
+            "setattr(App.getDocument('%s').getObject('%s'), '%s', "
+            "getattr(App.getDocument('%s').getObject('%s'), '%s'))",
+            documentName.c_str(),
+            m_detailName.c_str(),
+            property,
+            documentName.c_str(),
+            m_baseName.c_str(),
+            property
+        );
+    }
+    Gui::Command::doCommand(
+        Command::Doc,
+        "App.getDocument('%s').getObject('%s').addView("
+        "App.getDocument('%s').getObject('%s'))",
+        documentName.c_str(),
+        m_pageName.c_str(),
+        documentName.c_str(),
+        m_detailName.c_str()
+    );
 
-    Gui::Command::updateActive();
-    Gui::Command::commitCommand(tid);
+    Gui::Command::updateDocument(m_doc);
 
     getBaseFeat()->requestPaint();
     m_created = true;
@@ -472,7 +564,6 @@ void TaskDetail::updateDetail()
 {
     TechDraw::DrawViewDetail* detailFeat = getDetailFeat();
     try {
-        int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Update Detail"));
         double x = ui->qsbX->rawValue();
         double y = ui->qsbY->rawValue();
         Base::Vector3d temp(x, y, 0.0);
@@ -487,8 +578,7 @@ void TaskDetail::updateDetail()
         std::string ref = qRef.toStdString();
         detailFeat->Reference.setValue(ref);
 
-        Gui::Command::updateActive();
-        Gui::Command::commitCommand(tid);
+        Gui::Command::updateDocument(detailFeat->getDocument());
     }
     catch (...) {
         //this is probably due to appl closing while dialog is still open
@@ -540,11 +630,8 @@ QPointF TaskDetail::getAnchorScene()
 // protects against stale pointers
 DrawViewPart* TaskDetail::getBaseFeat()
 {
-    if (m_doc) {
-        App::DocumentObject* baseObj = m_doc->getObject(m_baseName.c_str());
-        if (baseObj) {
-            return static_cast<DrawViewPart*>(baseObj);
-        }
+    if (auto* base = m_baseIdentity.resolve()) {
+        return base;
     }
 
     std::string msg = "TaskDetail - base feature " +
@@ -557,11 +644,8 @@ DrawViewPart* TaskDetail::getBaseFeat()
 // protects against stale pointers
 DrawViewDetail* TaskDetail::getDetailFeat()
 {
-    if (m_baseFeat) {
-        App::DocumentObject* detailObj = m_baseFeat->getDocument()->getObject(m_detailName.c_str());
-        if (detailObj) {
-            return static_cast<DrawViewDetail*>(detailObj);
-        }
+    if (auto* detail = m_detailIdentity.resolve()) {
+        return detail;
     }
 
     std::string msg = "TaskDetail - detail feature " +
@@ -575,40 +659,36 @@ DrawViewDetail* TaskDetail::getDetailFeat()
 
 bool TaskDetail::accept()
 {
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    if (!doc) {
+    auto* page = m_pageIdentity.resolve();
+    if (!page || !m_ghost) {
         return false;
     }
 
     m_ghost->hide();
-    getDetailFeat()->recomputeFeature();
+    auto* detail = getDetailFeat();
+    detail->recomputeFeature();
+    if (detail->isError()) {
+        return false;
+    }
 
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    TaskInternal::resetExactEdit(page->getDocument());
 
     return true;
 }
 
 bool TaskDetail::reject()
 {
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    if (!doc) {
+    auto* page = m_pageIdentity.resolve();
+    if (!page) {
         return false;
     }
 
-    m_ghost->hide();
-    if (m_mode == CREATEMODE) {
-        if (m_created) {
-            Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().removeObject('%s')",
-                                    m_detailName.c_str());
-        }
-    } else {
-        restoreDetailState();
-        getDetailFeat()->recomputeFeature();
-        getBaseFeat()->requestPaint();
+    if (m_ghost) {
+        m_ghost->hide();
     }
-
-    Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().recompute()");
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    // TaskView rolls both creation and live edit changes back through the
+    // exact transaction after the task widgets have been removed.
+    TaskInternal::resetExactEdit(page->getDocument());
 
     return false;
 }
@@ -672,8 +752,7 @@ void TaskDlgDetail::clicked(int)
 
 bool TaskDlgDetail::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgDetail::reject()

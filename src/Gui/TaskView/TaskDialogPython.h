@@ -46,6 +46,7 @@ public:
     Py::Object showDialog(const Py::Tuple&);
     Py::Object activeDialog(const Py::Tuple&);
     Py::Object activeTaskDialog(const Py::Tuple&);
+    Py::Object ownsCommandTransaction(const Py::Tuple&);
     Py::Object closeDialog(const Py::Tuple&);
     Py::Object addTaskWatcher(const Py::Tuple&);
     Py::Object clearTaskWatcher(const Py::Tuple&);
@@ -127,6 +128,7 @@ public:
     */
     Py::Object isAllowedAlterSelection(const Py::Tuple&);
     Py::Object needsFullSpace(const Py::Tuple&);
+    Py::Object ownsCommandTransaction(const Py::Tuple&);
 
     /// is called by the framework if the dialog is accepted (Ok)
     Py::Object accept(const Py::Tuple&);
@@ -174,6 +176,8 @@ public:
 public:
     /// is called by the framework when the dialog is opened
     void open() override;
+    /// is called after the framework removes the dialog from the task view
+    void closed() override;
     /// is called by the framework if a button is clicked which has no accept or reject role
     void clicked(int) override;
     /// is called by the framework if the dialog is accepted (Ok)

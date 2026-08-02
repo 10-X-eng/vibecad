@@ -25,7 +25,9 @@
 
 #include <QCoreApplication>
 #include <QMetaObject>
+#include <QPointer>
 #include <fastsignals/signal.h>
+#include <string>
 
 #include <Mod/Assembly/AssemblyGlobal.h>
 
@@ -200,7 +202,9 @@ public:
     // Dragger controls:
     void initMoveDragger();
     void endMoveDragger();
+    static void draggerStartCallback(void* data, SoDragger* d);
     static void draggerMotionCallback(void* data, SoDragger* d);
+    static void draggerFinishCallback(void* data, SoDragger* d);
 
     void setDragger();
     void unsetDragger();
@@ -226,6 +230,8 @@ public:
     bool enableMovement;
     bool moveOnlyPreselected;
     bool moveInCommand;
+    int moveTransactionId {0};
+    int moveHostTransactionId {0};
     bool ctrlPressed;
 
     long lastClickTime;  // Store last click time as milliseconds
@@ -254,8 +260,23 @@ public:
         signalSetUp;
 
 private:
+    void disconnectEditSignals();
+
+    std::vector<App::DocumentObject*> dependentObjectsToDeleteWith(
+        App::DocumentObject* object
+    ) const;
+
     bool tryMouseMove(const SbVec2s& cursorPos, Gui::View3DInventorViewer* viewer);
     void tryInitMove(const SbVec2s& cursorPos, Gui::View3DInventorViewer* viewer);
+    bool beginMoveSession(Gui::View3DInventorViewer* viewer);
+    void finishMove(bool commit);
+    bool isMoveHostTransactionOwned() const;
+    bool isMoveContextLive() const;
+
+    std::string movingDocumentUid;
+    long movingAssemblyId {-1};
+    std::vector<long> movingObjectIds;
+    std::vector<std::pair<long, bool>> jointVisibilityIdentityBackup;
 
     void collectMovableObjects(
         App::DocumentObject* selRoot,
@@ -279,9 +300,11 @@ private:
         App::Material shapeMaterial;
     };
 
-    std::unordered_map<App::DocumentObject*, ComponentState> stateBackup;
+    std::unordered_map<long, ComponentState> stateBackup;
     App::DocumentObject* temporaryExplosion {nullptr};
+    long temporaryExplosionId {-1};
     App::DocumentObject* isolatedJoint {nullptr};
+    long isolatedJointId {-1};
     bool isolatedJointVisibilityBackup {false};
 
     void highlightJointElements(App::DocumentObject* joint);
@@ -294,11 +317,11 @@ private:
         std::set<App::DocumentObject*>& visited
     );
 
-    TaskAssemblyMessages* taskSolver {nullptr};
+    QPointer<TaskAssemblyMessages> taskSolver;
 
     QMetaObject::Connection workbenchConnection;
-    fastsignals::connection connectActivatedVP;
-    fastsignals::connection connectSolverUpdate;
+    fastsignals::scoped_connection connectActivatedVP;
+    fastsignals::scoped_connection connectSolverUpdate;
     fastsignals::scoped_connection m_preTransactionConn;
 };
 

@@ -22,8 +22,10 @@
  ***************************************************************************/
 
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <QApplication>
@@ -36,6 +38,7 @@
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <Base/Console.h>
+#include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <Gui/Action.h>
 #include <Gui/Application.h>
@@ -59,6 +62,7 @@
 #include <Mod/TechDraw/App/Preferences.h>
 
 #include "CommandExtensionDims.h"
+#include "CommandHelpers.h"
 #include "DimensionValidators.h"
 #include "DrawGuiUtil.h"
 #include "QGIDatumLabel.h"
@@ -66,11 +70,13 @@
 #include "QGVPage.h"
 #include "MDIViewPage.h"
 #include "TaskDimRepair.h"
+#include "TaskDocumentGuard.h"
 #include "TaskLinkDim.h"
 #include "TaskSelectLineAttributes.h"
 #include "TechDrawHandler.h"
 #include "ViewProviderDimension.h"
 #include "ViewProviderDrawingView.h"
+#include "ViewProviderPage.h"
 
 
 using namespace TechDrawGui;
@@ -210,7 +216,8 @@ public:
         , blockRemoveSel(false)
         , AreaLeaderPoint(Base::Vector3d(0.0, 0.0, 0.0))
         , hasAreaLeaderPoint(false)
-        , tid(0)
+        , tid(App::NullTransaction)
+        , partIdentity(pFeat)
     {
     }
     ~TDHandlerDimension()
@@ -238,25 +245,66 @@ public:
 
     void activated() override
     {
+        auto* page = getPage();
+        auto* document = page ? page->getDocument() : nullptr;
+        if (!page || !document) {
+            return;
+        }
+        documentIdentity =
+            TaskInternal::DocumentIdentity(document);
+        pageIdentity =
+            TaskInternal::ObjectIdentity<TechDraw::DrawPage>(page);
+        if (partFeat
+            && (partFeat->getDocument() != document
+                || partFeat->findParentPage() != page)) {
+            partFeat = nullptr;
+            partIdentity = {};
+            initialSelection.clear();
+        }
+        if (document->getBookedTransactionID()
+            != App::NullTransaction) {
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                QObject::tr("Task in progress"),
+                QObject::tr(
+                    "Finish the current operation before inserting dimensions."
+                )
+            );
+            viewPage->deactivateHandler();
+            return;
+        }
+
         auto* mdi = qobject_cast<MDIViewPage*>(Gui::getMainWindow()->activeWindow());
         if (mdi) {
             mdi->setDimensionsSelectability(false);
         }
         Gui::Selection().setSelectionStyle(Gui::SelectionSingleton::SelectionStyle::GreedySelection);
 
-        tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Insert dimension"));
+        openSessionTransaction(
+            QT_TRANSLATE_NOOP("Command", "Insert dimension")
+        );
 
         handleInitialSelection();
     }
 
     void deactivated() override
     {
-        auto* mdi = qobject_cast<MDIViewPage*>(Gui::getMainWindow()->activeWindow());
-        if (mdi) {
-            mdi->setDimensionsSelectability(true);
+        auto* page = pageIdentity.resolve();
+        if (page) {
+            auto* pageProvider =
+                freecad_cast<ViewProviderPage*>(
+                    Gui::Application::Instance->getViewProvider(page)
+                );
+            auto* mdi =
+                pageProvider
+                ? pageProvider->getMDIViewPage()
+                : nullptr;
+            if (mdi) {
+                mdi->setDimensionsSelectability(true);
+            }
         }
         Gui::Selection().setSelectionStyle(Gui::SelectionSingleton::SelectionStyle::NormalSelection);
-        Gui::Command::abortCommand(tid);
+        abortSessionTransaction();
     }
 
     void keyPressEvent(QKeyEvent* event) override
@@ -323,7 +371,11 @@ public:
             dirMaster = pp.second() - pp.first();
             //dirMaster.y = -dirMaster.y; // not needed because y is reversed between property X/Y and scenePositions
 
-            QPointF firstPos = getDimLabel(dims[0])->pos();
+            auto* firstLabel = getDimLabel(dims[0]);
+            if (!firstLabel) {
+                return;
+            }
+            QPointF firstPos = firstLabel->pos();
             Base::Vector3d pMaster(firstPos.x(), firstPos.y(), 0.0);
             Base::Vector3d ipDelta = DrawUtil::getTrianglePoint(pMaster, dirMaster, Base::Vector3d());
             delta = ipDelta.Normalize() * Rez::guiX(activeDimAttributes.getCascadeSpacing());
@@ -364,8 +416,13 @@ public:
     QPointF getDimPositionToBe(QPoint pos, QPointF curPos = QPointF(), bool textToMiddle = false, Base::Vector3d dir = Base::Vector3d(),
         Base::Vector3d delta = Base::Vector3d(), DimensionType type = DimensionType::Distance, int i = 0)
     {
+        if (!resolvePartFeature()) {
+            return {};
+        }
         auto* vpp = freecad_cast<ViewProviderDrawingView*>(Gui::Application::Instance->getViewProvider(partFeat));
-        if (!vpp) { return QPointF(); }
+        if (!vpp || !vpp->getQView() || !viewPage) {
+            return QPointF();
+        }
 
 
         QPointF scenePos = viewPage->mapToScene(pos) - vpp->getQView()->scenePos();
@@ -405,12 +462,34 @@ public:
     void finishDimensionMove()
     {
         for (auto* dim : dims) {
+            if (!dim
+                || dim->getDocument()
+                    != documentIdentity.resolve()) {
+                throw Base::RuntimeError(
+                    "A provisional dimension is no longer available"
+                );
+            }
             auto label = getDimLabel(dim);
+            if (!label) {
+                throw Base::RuntimeError(
+                    "A provisional dimension has no movable label"
+                );
+            }
             double x = Rez::appX(label->X()), y = Rez::appX(label->Y());
-            Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.%s.X = %f",
-                dim->getNameInDocument(), x);
-            Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.%s.Y = %f",
-                dim->getNameInDocument(), -y);
+            const std::string dimensionCommand =
+                Gui::Command::getObjectCmd(dim);
+            Gui::Command::doCommand(
+                Gui::Command::Doc,
+                "%s.X = %.17g",
+                dimensionCommand.c_str(),
+                x
+            );
+            Gui::Command::doCommand(
+                Gui::Command::Doc,
+                "%s.Y = %.17g",
+                dimensionCommand.c_str(),
+                -y
+            );
         }
     }
 
@@ -522,10 +601,8 @@ public:
             return;
         }
 
-        App::Document* pageDoc = nullptr;
-        if (auto page = getPage()) {
-            pageDoc = page->getDocument();
-        }
+        App::Document* pageDoc = documentIdentity.resolve();
+        auto* page = pageIdentity.resolve();
         if (msg.Object.getObjectName().empty()
             || (msg.Object.getDocument() != pageDoc)) {
             if (msg.Type == Gui::SelectionChanges::AddSelection) {
@@ -543,7 +620,8 @@ public:
         }
 
         auto* dvp = dynamic_cast<TechDraw::DrawViewPart*>(obj);
-        if (!dvp) {
+        if (!dvp || !page
+            || dvp->findParentPage() != page) {
             if (msg.Type == Gui::SelectionChanges::AddSelection) {
                 Gui::Selection().rmvSelection(msg.pDocName, msg.pObjectName, msg.pSubName);
             }
@@ -560,6 +638,10 @@ public:
         }
         else {
             partFeat = dvp;
+            partIdentity =
+                TaskInternal::ObjectIdentity<
+                    TechDraw::DrawViewPart
+                >(dvp);
         }
 
         if (msg.Type == Gui::SelectionChanges::AddSelection) {
@@ -606,6 +688,91 @@ protected:
     Base::Vector3d AreaLeaderPoint;
     bool hasAreaLeaderPoint;
     int tid;
+    TaskInternal::DocumentIdentity documentIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage>
+        pageIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewPart>
+        partIdentity;
+
+    App::Document* sessionDocument() const
+    {
+        auto* document = documentIdentity.resolve();
+        auto* page = pageIdentity.resolve();
+        if (!document || !page
+            || page->getDocument() != document) {
+            return nullptr;
+        }
+        return document;
+    }
+
+    bool resolvePartFeature()
+    {
+        if (!partFeat) {
+            return false;
+        }
+        auto* resolved = partIdentity.resolve();
+        auto* page = pageIdentity.resolve();
+        if (!resolved || !page
+            || resolved->findParentPage() != page) {
+            partFeat = nullptr;
+            return false;
+        }
+        partFeat = resolved;
+        return true;
+    }
+
+    void openSessionTransaction(const char* name)
+    {
+        auto* document = sessionDocument();
+        if (!document
+            || document->getBookedTransactionID()
+                != App::NullTransaction) {
+            throw Base::RuntimeError(
+                "The drawing document is not ready for dimensioning"
+            );
+        }
+        tid = Gui::Command::openDocumentCommand(
+            document,
+            std::string(name)
+        );
+        if (tid == App::NullTransaction
+            || document->getBookedTransactionID() != tid) {
+            tid = App::NullTransaction;
+            throw Base::RuntimeError(
+                "The dimension transaction could not be started"
+            );
+        }
+    }
+
+    void abortSessionTransaction()
+    {
+        auto* document = sessionDocument();
+        const int transactionId = std::exchange(
+            tid,
+            App::NullTransaction
+        );
+        if (document && transactionId != App::NullTransaction
+            && document->getBookedTransactionID()
+                == transactionId) {
+            Gui::Command::abortCommand(transactionId);
+        }
+    }
+
+    void commitSessionTransaction()
+    {
+        auto* document = sessionDocument();
+        if (!document || tid == App::NullTransaction
+            || document->getBookedTransactionID() != tid) {
+            throw Base::RuntimeError(
+                "The dimension operation lost its transaction"
+            );
+        }
+        const int transactionId = std::exchange(
+            tid,
+            App::NullTransaction
+        );
+        Gui::Command::commitCommand(transactionId);
+    }
 
     void handleInitialSelection()
     {
@@ -615,8 +782,23 @@ protected:
 
         availableDimension = AvailableDimension::FIRST;
 
-        partFeat = dynamic_cast<TechDraw::DrawViewPart*>(initialSelection[0].getObject());
-        if (!partFeat) { return; }
+        partFeat = dynamic_cast<TechDraw::DrawViewPart*>(
+            initialSelection[0].getObject()
+        );
+        auto* page = pageIdentity.resolve();
+        if (!partFeat || !page
+            || partFeat->getDocument()
+                != documentIdentity.resolve()
+            || partFeat->findParentPage() != page) {
+            partFeat = nullptr;
+            partIdentity = {};
+            initialSelection.clear();
+            return;
+        }
+        partIdentity =
+            TaskInternal::ObjectIdentity<
+                TechDraw::DrawViewPart
+            >(partFeat);
 
         // Add the selected elements to their corresponding selection vectors
         for (auto& ref : initialSelection) {
@@ -634,12 +816,52 @@ protected:
 
     void finalizeCommand()
     {
+        if (!resolvePartFeature() || dims.empty()) {
+            abortSessionTransaction();
+            return;
+        }
         finishDimensionMove();
 
         // Ask for the value of datum dimensions
-        ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Mod/TechDraw");
+        ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
+            "User parameter:BaseApp/Preferences/Mod/TechDraw"
+        );
 
-        Gui::Command::commitCommand(tid);
+        try {
+            std::vector<App::DocumentObject*> outputs(dims.begin(), dims.end());
+            const char* operationName = specialDimension == SpecialDimension::ChainDistance
+                ? "ChainDimensions"
+                : specialDimension == SpecialDimension::CoordDistance ? "CoordinateDimensions"
+                                                                      : "Dimensions";
+            const char* operationLabel = specialDimension == SpecialDimension::ChainDistance
+                ? QT_TRANSLATE_NOOP("Command", "Chain Dimensions")
+                : specialDimension == SpecialDimension::CoordDistance
+                ? QT_TRANSLATE_NOOP("Command", "Coordinate Dimensions")
+                : QT_TRANSLATE_NOOP("Command", "Dimensions");
+            CommandHelpers::groupTimelineOutputs(sessionDocument(), outputs, operationName, operationLabel);
+        }
+        catch (const Base::Exception& error) {
+            abortSessionTransaction();
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                QObject::tr("Dimension"),
+                QString::fromUtf8(error.what())
+            );
+            viewPage->deactivateHandler();
+            return;
+        }
+        catch (const std::exception& error) {
+            abortSessionTransaction();
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                QObject::tr("Dimension"),
+                QString::fromUtf8(error.what())
+            );
+            viewPage->deactivateHandler();
+            return;
+        }
+
+        commitSessionTransaction();
 
         // Touch the parent feature so the dimension in tree view appears as a child
         partFeat->touch(true);
@@ -651,7 +873,7 @@ protected:
             clearAndRestartCommand();
         }
         else {
-            viewPage->deactivateHandler(); // no code after this line, Handler get deleted in QGVPage
+            viewPage->deactivateHandler();  // no code after this line, Handler get deleted in QGVPage
         }
     }
 
@@ -662,7 +884,15 @@ protected:
             return emptyVector;
         }
 
-        auto* dvp = static_cast<TechDraw::DrawViewPart*>(ref.getObject());
+        auto* dvp =
+            dynamic_cast<TechDraw::DrawViewPart*>(
+                ref.getObject()
+            );
+        if (!dvp || dvp->getDocument()
+                != documentIdentity.resolve()
+            || dvp->findParentPage() != pageIdentity.resolve()) {
+            return emptyVector;
+        }
 
         std::string geomName = DrawUtil::getGeomTypeFromName(subName);
         if (geomName == "Face") {
@@ -1113,6 +1343,11 @@ protected:
     void createArcLengthDimension(ReferenceEntry ref)
     {
         DrawViewDimension* dim = makeArcLengthDimension(ref);
+        if (!dim) {
+            throw Base::ValueError(
+                "Arc length requires one projected circular arc"
+            );
+        }
 
         dims.push_back(dim);
         moveDimension(mousePos, dim);
@@ -1127,7 +1362,15 @@ protected:
             TechDraw::pointPair pp = dim->getLinearPoints();
             float dx = pp.first().x - pp.second().x;
             float dy = pp.first().y - pp.second().y;
-            int alpha = std::round(Base::toDegrees(std::abs(std::atan(type == "DistanceY" ? (dx / dy) : (dy / dx)))));
+            int alpha = std::round(
+                Base::toDegrees(
+                    std::abs(
+                        type == "DistanceY"
+                            ? std::atan2(dx, dy)
+                            : std::atan2(dy, dx)
+                    )
+                )
+            );
             std::string sAlpha = std::to_string(alpha);
             std::string formatSpec = dim->FormatSpec.getStrValue();
             formatSpec = formatSpec + " x" + sAlpha + "°";
@@ -1357,20 +1600,22 @@ protected:
 
     void restartCommand(const char* cstrName) {
         specialDimension = SpecialDimension::None;
-        Gui::Command::abortCommand(tid);
-        tid  = Gui::Command::openActiveDocumentCommand(cstrName);
-
         dims.clear();
+        abortSessionTransaction();
+        openSessionTransaction(cstrName);
     }
 
     void clearAndRestartCommand() {
-        Gui::Command::abortCommand(tid);
-        tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Dimension"));
+        dims.clear();
+        abortSessionTransaction();
+        openSessionTransaction(
+            QT_TRANSLATE_NOOP("Command", "Dimension")
+        );
         specialDimension = SpecialDimension::None;
         mousePos = QPoint(0,0);
         clearRefVectors();
         partFeat = nullptr;
-        dims.clear();
+        partIdentity = {};
     }
 
     void clearRefVectors()
@@ -1993,26 +2238,44 @@ bool CmdTechDrawHorizontalExtentDimension::isActive()
 
 void execExtent(Gui::Command* cmd, const std::string& dimType)
 {
-    const char* commandString = nullptr;
+    std::string commandString;
     if (dimType == "DistanceX") {
         commandString = QT_TRANSLATE_NOOP("Command", "Create Dimension DistanceX");
-    } else if (dimType == "DistanceY") {
+    }
+    else if (dimType == "DistanceY") {
         commandString = QT_TRANSLATE_NOOP("Command", "Create Dimension DistanceY");
     }
-    cmd->openCommand(QT_TRANSLATE_NOOP("Command", commandString));
+    else {
+        return;
+    }
 
     bool result = _checkDrawViewPart(cmd);
     if (!result) {
         QMessageBox::warning(Gui::getMainWindow(),
                              QObject::tr("Incorrect Selection"),
                              QObject::tr("No view of a part in selection."));
-        cmd->abortCommand();
         return;
     }
     ReferenceVector references2d;
     ReferenceVector references3d;
     TechDraw::DrawViewPart* partFeat =
         TechDraw::getReferencesFromSelection(references2d, references3d);
+    TechDraw::DrawPage* page = DrawGuiUtil::findPage(cmd);
+    App::Document* document = cmd ? cmd->getDocument() : nullptr;
+    if (!partFeat
+        || !page
+        || !document
+        || partFeat->getDocument() != document
+        || partFeat->findParentPage() != page) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Incorrect Selection"),
+            QObject::tr(
+                "Select a view on the active drawing page"
+            )
+        );
+        return;
+    }
 
     // if sticky selection is in use we may get confusing selections that appear to
     // include both 2d and 3d geometry for the extent dim.
@@ -2022,7 +2285,6 @@ void execExtent(Gui::Command* cmd, const std::string& dimType)
                 QMessageBox::warning(Gui::getMainWindow(),
                     QObject::tr("Incorrect Selection"),
                     QObject::tr("Selection contains both 2D and 3D geometry"));
-                cmd->abortCommand();
                 return;
             }
         }
@@ -2048,7 +2310,6 @@ void execExtent(Gui::Command* cmd, const std::string& dimType)
         QMessageBox::warning(Gui::getMainWindow(),
                              QObject::tr("Incorrect Selection"),
                              QObject::tr("Cannot make 2D extent dimension from selection"));
-        cmd->abortCommand();
         return;
     }
 
@@ -2064,18 +2325,43 @@ void execExtent(Gui::Command* cmd, const std::string& dimType)
             QMessageBox::warning(Gui::getMainWindow(),
                                  QObject::tr("Incorrect Selection"),
                                  QObject::tr("Cannot make 3D extent dimension from selection"));
-            cmd->abortCommand();
             return;
         }
     }
 
-    if (references3d.empty()) {
-        DrawDimHelper::makeExtentDim(partFeat, dimType, references2d);
+    try {
+        TaskInternal::OwnedDocumentTransaction transaction(
+            document,
+            commandString
+        );
+        if (references3d.empty()) {
+            if (!DrawDimHelper::makeExtentDim(
+                    partFeat,
+                    dimType,
+                    references2d
+                )) {
+                throw Base::RuntimeError(
+                    "The extent dimension could not be created"
+                );
+            }
+        }
+        else {
+            DrawDimHelper::makeExtentDim3d(
+                partFeat,
+                dimType,
+                references3d
+            );
+        }
+        TaskInternal::updateExactDocument(document);
+        transaction.commit();
     }
-    else {
-        DrawDimHelper::makeExtentDim3d(partFeat, dimType, references3d);
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Extent Dimension"),
+            QString::fromUtf8(error.what())
+        );
     }
-    cmd->commitCommand();
 }
 
 //===========================================================================
@@ -2149,7 +2435,18 @@ void CmdTechDrawDimensionRepair::activated(int iMsg)
         dim = static_cast<TechDraw::DrawViewDimension*>(dimObjs.at(0));
     }
 
-    Gui::Control().showDialog(new TaskDlgDimReference(dim));
+    if (dim->getDocument() != getDocument()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Incorrect Selection"),
+            QObject::tr("The dimension must belong to the active drawing.")
+        );
+        return;
+    }
+    TaskInternal::showDocumentDialog(
+        new TaskDlgDimReference(dim),
+        dim->getDocument()
+    );
 }
 
 bool CmdTechDrawDimensionRepair::isActive(void)
@@ -2158,7 +2455,8 @@ bool CmdTechDrawDimensionRepair::isActive(void)
     bool haveView = DrawGuiUtil::needView(this);
     bool taskInProgress = false;
     if (havePage) {
-        taskInProgress = Gui::Control().activeDialog();
+        taskInProgress =
+            Gui::Control().activeDialog(getDocument());
     }
     return (havePage && haveView && !taskInProgress);
 }
@@ -2290,11 +2588,26 @@ void execDim(Gui::Command* cmd, std::string type, StringVector acceptableGeometr
 DrawViewDimension* dimensionMaker(TechDraw::DrawViewPart* dvp, std::string dimType,
                                   ReferenceVector references2d, ReferenceVector references3d)
 {
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create dimension"));
-
-    TechDraw::DrawViewDimension* dim = dimMaker(dvp, dimType, references2d, references3d);
-
-    Gui::Command::commitCommand(tid);
+    if (!dvp || !dvp->getDocument()
+        || !dvp->findParentPage()) {
+        throw Base::ValueError(
+            "A dimension requires a drawing view on a page"
+        );
+    }
+    App::Document* document = dvp->getDocument();
+    TaskInternal::OwnedDocumentTransaction transaction(
+        document,
+        QT_TRANSLATE_NOOP("Command", "Create dimension")
+    );
+    TechDraw::DrawViewDimension* dim =
+        dimMaker(dvp, dimType, references2d, references3d);
+    if (!dim || dim->isError()) {
+        throw Base::RuntimeError(
+            "The dimension could not be generated"
+        );
+    }
+    TaskInternal::updateExactDocument(document);
+    transaction.commit();
 
     // Touch the parent feature so the dimension in tree view appears as a child
     dvp->touch(true);
@@ -2309,40 +2622,86 @@ DrawViewDimension* dimensionMaker(TechDraw::DrawViewPart* dvp, std::string dimTy
 DrawViewDimension* dimMaker(TechDraw::DrawViewPart* dvp, std::string dimType,
                             ReferenceVector references2d, ReferenceVector references3d)
 {
-    TechDraw::DrawPage* page = dvp->findParentPage();
-    std::string PageName = page->getNameInDocument();
-
-    std::string dimName = dvp->getDocument()->getUniqueObjectName("Dimension");
-
-    Gui::Command::doCommand(Gui::Command::Doc,
-                            "App.activeDocument().addObject('TechDraw::DrawViewDimension', '%s')",
-                            dimName.c_str());
-    Gui::Command::doCommand(Gui::Command::Doc, "App.activeDocument().%s.translateLabel('DrawViewDimension', 'Dimension', '%s')",
-              dimName.c_str(), dimName.c_str());
-
-    Gui::Command::doCommand(
-        Gui::Command::Doc, "App.activeDocument().%s.Type = '%s'", dimName.c_str(), dimType.c_str());
-
-    Gui::Command::doCommand(Gui::Command::Doc,
-                            "App.activeDocument().%s.MeasureType = '%s'",
-                            dimName.c_str(),
-                            "Projected");
-
-    auto* dim = dynamic_cast<TechDraw::DrawViewDimension*>(dvp->getDocument()->getObject(dimName.c_str()));
-    if (!dim) {
-        throw Base::TypeError("CmdTechDrawNewDiameterDimension - dim not found\n");
+    if (!dvp || !dvp->getDocument()) {
+        throw Base::ValueError(
+            "A dimension requires a live drawing view"
+        );
     }
+    TechDraw::DrawPage* page = dvp->findParentPage();
+    App::Document* document = dvp->getDocument();
+    if (!page || page->getDocument() != document) {
+        throw Base::ValueError(
+            "The dimension view is not attached to a drawing page"
+        );
+    }
+
+    std::string dimName =
+        document->getUniqueObjectName("Dimension");
+    const std::string documentName =
+        Base::InterpreterSingleton::strToPython(
+            document->getName()
+        );
+
+    const QString dimensionFactory =
+        QStringLiteral(
+            "App.getDocument('%1').addObject"
+            "('TechDraw::DrawViewDimension', '%2')"
+        )
+            .arg(
+                QString::fromStdString(documentName),
+                QString::fromStdString(dimName)
+            );
+    auto* dim = dynamic_cast<TechDraw::DrawViewDimension*>(
+        Gui::Command::runDocumentObjectCommand(
+            Gui::Command::Doc,
+            *document,
+            dimensionFactory.toUtf8(),
+            TechDraw::DrawViewDimension::getClassTypeId()
+        )
+    );
+    if (!dim) {
+        throw Base::TypeError(
+            "The dimension object could not be created"
+        );
+    }
+    dim->translateLabel(
+        "DrawViewDimension",
+        "Dimension",
+        dim->getNameInDocument()
+    );
+    const std::string dimensionCommand =
+        Gui::Command::getObjectCmd(dim);
+    const std::string pageCommand =
+        Gui::Command::getObjectCmd(page);
+    Gui::Command::doCommand(
+        Gui::Command::Doc,
+        "%s.Type = '%s'",
+        dimensionCommand.c_str(),
+        dimType.c_str()
+    );
+    Gui::Command::doCommand(
+        Gui::Command::Doc,
+        "%s.MeasureType = 'Projected'",
+        dimensionCommand.c_str()
+    );
 
     //always have References2D, even if only for the parent DVP
     dim->setReferences2d(references2d);
     dim->setReferences3d(references3d);
 
-    Gui::Command::doCommand(Gui::Command::Doc,
-                            "App.activeDocument().%s.addView(App.activeDocument().%s)",
-                            PageName.c_str(),
-                            dimName.c_str());
+    Gui::Command::doCommand(
+        Gui::Command::Doc,
+        "%s.addView(%s)",
+        pageCommand.c_str(),
+        dimensionCommand.c_str()
+    );
 
     dim->recomputeFeature();
+    if (dim->isError()) {
+        throw Base::RuntimeError(
+            "The dimension could not be generated"
+        );
+    }
 
     return dim;
 }

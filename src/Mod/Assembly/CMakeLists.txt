@@ -25,6 +25,7 @@ set(Assembly_Scripts
     CommandInsertNewPart.py
     CommandSolveAssembly.py
     CommandCreateJoint.py
+    CommandEditHistoryOperation.py
     CommandCreateView.py
     CommandCreateSimulation.py
     CommandExportASMT.py
@@ -56,6 +57,7 @@ SET(AssemblyTests_SRCS
     AssemblyTests/__init__.py
     AssemblyTests/TestCore.py
     AssemblyTests/TestCommandInsertLink.py
+    AssemblyTests/TestVibeCADRibbonTools.py
     AssemblyTests/mocks/__init__.py
     AssemblyTests/mocks/MockGui.py
 )
@@ -67,28 +69,33 @@ SET(all_files
 )
 
 ADD_CUSTOM_TARGET(AssemblyScripts ALL
-    SOURCES ${all_files}
+    SOURCES
+        ${all_files}
+        ${Assembly_Scripts}
 )
 
-SET(test_files
+ADD_CUSTOM_TARGET(AssemblyTests ALL)
+
+# AssemblyScripts owns every staged Python file needed by the workbench and
+# its tests, including the top-level runtime commands.
+fc_copy_sources(
+    AssemblyScripts
+    "${CMAKE_BINARY_DIR}/Mod/Assembly"
+    ${all_files}
     ${Assembly_Scripts}
-    ${AssemblyTests_SRCS}
 )
 
-ADD_CUSTOM_TARGET(AssemblyTests ALL
-    SOURCES ${test_files}
-)
-
-# Target AssemblyScripts handles copying AssemblyTests_SRCS and AssemblyScripts_SRCS
-fc_copy_sources(AssemblyScripts "${CMAKE_BINARY_DIR}/Mod/Assembly" ${all_files})
-
-# Target AssemblyTests should only handle copying the remaining Assembly_Scripts
-# to avoid racing with AssemblyScripts over the same files.
-fc_copy_sources(AssemblyTests "${CMAKE_BINARY_DIR}/Mod/Assembly" ${Assembly_Scripts})
-
-# Ensure AssemblyScripts finishes its directory creation and copying before
-# AssemblyTests begins.
+# Keep the historical AssemblyTests target as a compatibility entry point.
+# AssemblyScripts is the single owner of the copy commands, so targeted builds
+# cannot race two writers for the same output.
 add_dependencies(AssemblyTests AssemblyScripts)
+
+# A targeted Assembly GUI build must stage the Python commands that implement
+# its runtime behavior.  Previously only the test-copy target staged these
+# files, so an incremental AssemblyGui build could run stale command code.
+if(TARGET AssemblyGui)
+    add_dependencies(AssemblyGui AssemblyScripts)
+endif()
 
 INSTALL(
     FILES

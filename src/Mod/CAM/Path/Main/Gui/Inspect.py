@@ -28,11 +28,90 @@ from PySide import QtCore, QtGui
 import FreeCAD
 import FreeCADGui
 import Path
+import Path.Geom
+from Path.CommandBoundary import (
+    can_start_document_command,
+    is_timeline_input_usable,
+)
 from PySide.QtCore import QT_TRANSLATE_NOOP
 import PathScripts.PathUtils as PathUtils
 from Path.Main.Gui.Editor import CodeEditor
+from pivy import coin
 
 translate = FreeCAD.Qt.translate
+
+
+class _TransientPathPreview:
+    """Draw an inspect highlight without creating or changing document objects."""
+
+    def __init__(self, document, color):
+        self._document_name = document.Name
+        gui_document = FreeCADGui.getDocument(document.Name)
+        self._scene_graph = gui_document.ActiveView.getSceneGraph()
+        self._root = coin.SoSeparator()
+        # Keep the transient branch alive independently of the view.  A
+        # document/view can be closed while this modal inspector is unwinding;
+        # cleanup must never dereference a scene graph that Qt has destroyed.
+        self._root.ref()
+        self._geometry = coin.SoSeparator()
+
+        draw_style = coin.SoDrawStyle()
+        draw_style.style = coin.SoDrawStyle.LINES
+        draw_style.lineWidth = 4.0
+
+        base_color = coin.SoBaseColor()
+        base_color.rgb = color[:3]
+
+        self._root.addChild(draw_style)
+        self._root.addChild(base_color)
+        self._root.addChild(self._geometry)
+        try:
+            self._scene_graph.addChild(self._root)
+        except Exception:
+            self._root.unref()
+            self._root = None
+            self._geometry = None
+            self._scene_graph = None
+            raise
+
+    def show(self, shape):
+        self._geometry.removeAllChildren()
+        if shape is None or shape.isNull():
+            return
+
+        inventor_input = coin.SoInput()
+        inventor_input.setBuffer(shape.writeInventor())
+        inventor_node = coin.SoDB.readAll(inventor_input)
+        if inventor_node is not None:
+            self._geometry.addChild(inventor_node)
+
+    def close(self):
+        if self._root is None:
+            return
+        root = self._root
+        try:
+            if self._geometry is not None:
+                self._geometry.removeAllChildren()
+            try:
+                gui_document = FreeCADGui.getDocument(self._document_name)
+            except (NameError, RuntimeError):
+                gui_document = None
+            if gui_document is not None:
+                try:
+                    scene_graph = gui_document.ActiveView.getSceneGraph()
+                    if scene_graph.findChild(root) >= 0:
+                        scene_graph.removeChild(root)
+                except (AttributeError, RuntimeError):
+                    # The document survived but its original 3D view did not.
+                    # The explicit root reference below still makes teardown
+                    # safe; the destroyed view no longer has a branch to
+                    # remove.
+                    pass
+        finally:
+            root.unref()
+            self._scene_graph = None
+            self._geometry = None
+            self._root = None
 
 
 class GCodeHighlighter(QtGui.QSyntaxHighlighter):
@@ -110,12 +189,11 @@ class GCodeEditorDialog(QtGui.QDialog):
             Q.alpha() / 255.0,
         )
 
-        self.selectionobj = FreeCAD.ActiveDocument.addObject("Path::Feature", "selection")
-        self.selectionobj.ViewObject.LineWidth = 4
-        self.selectionobj.ViewObject.NormalColor = highlightcolor
+        self.preview = _TransientPathPreview(PathObj.Document, highlightcolor)
 
         # self.editor = QtGui.QTextEdit()  # without lines enumeration
         self.editor = CodeEditor()  # with lines enumeration
+        self.editor.setReadOnly(True)
         font = QtGui.QFont()
         p = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Editor")
         font.setFamily(p.GetString("Font", "Courier"))
@@ -157,13 +235,13 @@ class GCodeEditorDialog(QtGui.QDialog):
         self.move(Xpos, Ypos)
         self.resize(width, height)
 
-    def cleanup(self):
+    def cleanup(self, *_args):
         prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/CAM")
         prefs.SetString("inspecteditorX", str(self.x()))
         prefs.SetString("inspecteditorY", str(self.y()))
         prefs.SetString("inspecteditorW", str(self.width()))
         prefs.SetString("inspecteditorH", str(self.height()))
-        FreeCAD.ActiveDocument.removeObject(self.selectionobj.Name)
+        self.preview.close()
 
     def highlightpath(self):
         cursor = self.editor.textCursor()
@@ -199,18 +277,17 @@ class GCodeEditorDialog(QtGui.QDialog):
         if prevZ is None:
             prevZ = 0.0
 
-        # Build a new path with selection
+        # Build transient presentation geometry for the selected commands.
         p = Path.Path()
         firstrapid = Path.Command("G0", {"X": prevX, "Y": prevY, "Z": prevZ})
 
         selectionpath = [firstrapid] + commands[startrow : endrow + 1]
         p.Commands = selectionpath
-        self.selectionobj.Path = p
-
-        if self.tool is not None:
-            self.tool.Placement.Base.x = prevX
-            self.tool.Placement.Base.y = prevY
-            self.tool.Placement.Base.z = prevZ
+        wire, _rapid, _rapid_indexes = Path.Geom.wireForPath(
+            p,
+            FreeCAD.Vector(prevX, prevY, prevZ),
+        )
+        self.preview.show(wire)
 
 
 def show(obj):
@@ -241,14 +318,7 @@ def show(obj):
                         ),
                     )
                 )
-            result = dia.exec_()
-            # exec_() returns 0 or 1 depending on the button pressed (Ok or Cancel)
-            if result:
-                p = Path.Path(dia.editor.toPlainText())
-                FreeCAD.ActiveDocument.openTransaction("Edit Path")
-                obj.Path = p
-                FreeCAD.ActiveDocument.commitTransaction()
-                FreeCAD.ActiveDocument.recompute()
+            dia.exec_()
 
 
 class CommandPathInspect:
@@ -263,13 +333,27 @@ class CommandPathInspect:
         }
 
     def IsActive(self):
+        if not can_start_document_command():
+            return False
         selection = FreeCADGui.Selection.getSelection()
-        if len(selection) == 0:
+        if len(selection) != 1:
             return False
         obj = selection[0]
-        return hasattr(obj, "Path") and len(obj.Path.Commands) > 0
+        return (
+            obj.Document is FreeCAD.ActiveDocument
+            and is_timeline_input_usable(
+                obj,
+                FreeCAD.ActiveDocument,
+            )
+            and obj.isDerivedFrom("Path::Feature")
+            and hasattr(obj, "Path")
+            and len(obj.Path.Commands) > 0
+        )
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         # check that the selection contains exactly what we want
         selection = FreeCADGui.Selection.getSelection()
         if len(selection) != 1:

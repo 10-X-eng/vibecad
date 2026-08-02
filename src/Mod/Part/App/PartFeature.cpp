@@ -68,6 +68,7 @@
 #include <App/Link.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <App/ElementNamingUtils.h>
+#include <App/Origin.h>
 #include <App/Placement.h>
 #include <App/Datums.h>
 #include <Base/Exception.h>
@@ -1528,6 +1529,16 @@ void Feature::onBeforeChange(const App::Property* prop)
 
 void Feature::onChanged(const App::Property* prop)
 {
+    for (auto* link : _crossContainerLinks) {
+        if (prop == link) {
+            updateCrossContainerLinkScope(
+                *link,
+                App::GeoFeatureGroupExtension::getGroupOfObject(this)
+            );
+            break;
+        }
+    }
+
     // if the placement has changed apply the change to the point data as well
     if (prop == &this->Placement) {
         TopoShape shape = this->Shape.getShape();
@@ -1640,8 +1651,49 @@ Feature* Feature::create(const TopoShape& shape, const char* name, App::Document
 
 void Feature::onDocumentRestored()
 {
+    prepareCrossContainerLinks(App::GeoFeatureGroupExtension::getGroupOfObject(this));
     // expandShapeContents();
     App::GeoFeature::onDocumentRestored();
+}
+
+void Feature::prepareCrossContainerLinks(const App::DocumentObject* prospectiveOwner)
+{
+    for (auto* link : _crossContainerLinks) {
+        updateCrossContainerLinkScope(*link, prospectiveOwner);
+    }
+}
+
+void Feature::allowCrossContainerLink(App::PropertyLinkBase& link)
+{
+    _crossContainerLinks.push_back(&link);
+}
+
+void Feature::updateCrossContainerLinkScope(
+    App::PropertyLinkBase& link,
+    const App::DocumentObject* owner
+)
+{
+    if (link.getScope() == App::LinkScope::Global) {
+        return;
+    }
+
+    std::vector<App::DocumentObject*> linkedObjects;
+    link.getLinks(linkedObjects);
+    for (const auto* linkedObject : linkedObjects) {
+        if (!linkedObject) {
+            continue;
+        }
+        if (linkedObject->isDerivedFrom<App::DatumElement>()
+            || linkedObject->isDerivedFrom<App::Origin>()) {
+            link.setScope(App::LinkScope::Global);
+            return;
+        }
+        const auto* linkedOwner = App::GeoFeatureGroupExtension::getGroupOfObject(linkedObject);
+        if (owner != linkedOwner && (owner || linkedOwner)) {
+            link.setScope(App::LinkScope::Global);
+            return;
+        }
+    }
 }
 
 ShapeHistory Feature::buildHistory(
@@ -1982,6 +2034,8 @@ FilletBase::FilletBase()
     ADD_PROPERTY(Base, (nullptr));
     ADD_PROPERTY(Edges, (0, 0, 0));
     ADD_PROPERTY_TYPE(EdgeLinks, (0), 0, (App::PropertyType)(App::Prop_ReadOnly | App::Prop_Hidden), 0);
+    allowCrossContainerLink(Base);
+    allowCrossContainerLink(EdgeLinks);
     Edges.setSize(0);
 }
 

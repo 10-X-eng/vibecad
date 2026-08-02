@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 #include <memory>
+#include <set>
 #include <BRepAdaptor_CompCurve.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
@@ -51,6 +52,58 @@
 
 using namespace Part;
 
+namespace
+{
+constexpr char ProfileLinksPropertyName[] = "ProfileLinks";
+
+App::PropertyLinkSubList* profileLinksProperty(const App::DocumentObject& object)
+{
+    return dynamic_cast<App::PropertyLinkSubList*>(
+        object.getPropertyByName(ProfileLinksPropertyName)
+    );
+}
+
+std::set<const App::DocumentObject*>& profileLinkSynchronizations()
+{
+    thread_local std::set<const App::DocumentObject*> synchronizations;
+    return synchronizations;
+}
+
+class ProfileLinkSynchronization
+{
+public:
+    explicit ProfileLinkSynchronization(const App::DocumentObject& object)
+        : object(&object)
+    {
+        inserted = profileLinkSynchronizations().insert(this->object).second;
+    }
+
+    ~ProfileLinkSynchronization()
+    {
+        if (inserted) {
+            profileLinkSynchronizations().erase(object);
+        }
+    }
+
+    ProfileLinkSynchronization(const ProfileLinkSynchronization&) = delete;
+    ProfileLinkSynchronization& operator=(const ProfileLinkSynchronization&) = delete;
+
+    explicit operator bool() const
+    {
+        return inserted;
+    }
+
+private:
+    const App::DocumentObject* object;
+    bool inserted = false;
+};
+
+bool isSynchronizingProfileLinks(const App::DocumentObject& object)
+{
+    return profileLinkSynchronizations().contains(&object);
+}
+}  // namespace
+
 PROPERTY_SOURCE(Part::RuledSurface, Part::Feature)
 
 const char* RuledSurface::OrientationEnums[] = {"Automatic", "Forward", "Reversed", nullptr};
@@ -59,6 +112,8 @@ RuledSurface::RuledSurface()
 {
     ADD_PROPERTY_TYPE(Curve1, (nullptr), "Ruled Surface", App::Prop_None, "Curve of ruled surface");
     ADD_PROPERTY_TYPE(Curve2, (nullptr), "Ruled Surface", App::Prop_None, "Curve of ruled surface");
+    allowCrossContainerLink(Curve1);
+    allowCrossContainerLink(Curve2);
     ADD_PROPERTY_TYPE(
         Orientation,
         ((long)0),
@@ -180,6 +235,7 @@ Loft::Loft()
 {
     ADD_PROPERTY_TYPE(Sections, (nullptr), "Loft", App::Prop_None, "List of sections");
     Sections.setSize(0);
+    allowCrossContainerLink(Sections);
     ADD_PROPERTY_TYPE(Solid, (true), "Loft", App::Prop_None, "Create solid");
     ADD_PROPERTY_TYPE(Ruled, (false), "Loft", App::Prop_None, "Ruled surface");
     ADD_PROPERTY_TYPE(Closed, (false), "Loft", App::Prop_None, "Close Last to First Profile");
@@ -192,11 +248,31 @@ Loft::Loft()
         "Linearize the result shape by simplifying linear edge and planar face into line and plane"
     );
     MaxDegree.setConstraints(&Degrees);
+    // Static properties must be registered before per-instance dynamic
+    // properties. Adding another static property after this point is rejected
+    // once the class property table has been merged.
+    auto* profileLinks = dynamic_cast<App::PropertyLinkSubList*>(addDynamicProperty(
+        "App::PropertyLinkSubList",
+        ProfileLinksPropertyName,
+        "Loft",
+        "Exact ordered profile objects and subelements",
+        App::Prop_None
+    ));
+    if (!profileLinks) {
+        throw Base::RuntimeError("Could not create the Loft ProfileLinks property");
+    }
+    profileLinks->setStatus(App::Property::LockDynamic, true);
+    profileLinks->setSize(0);
+    allowCrossContainerLink(*profileLinks);
 }
 
 short Loft::mustExecute() const
 {
     if (Sections.isTouched()) {
+        return 1;
+    }
+    const auto* profileLinks = profileLinksProperty(*this);
+    if (profileLinks && profileLinks->isTouched()) {
         return 1;
     }
     if (Solid.isTouched()) {
@@ -216,21 +292,81 @@ short Loft::mustExecute() const
 
 void Loft::onChanged(const App::Property* prop)
 {
+    const bool replayingState =
+        isRestoring() || (getDocument() && getDocument()->isPerformingTransaction());
+    auto* profileLinks = profileLinksProperty(*this);
+    if (profileLinks && prop == profileLinks
+        && !isSynchronizingProfileLinks(*this) && !replayingState) {
+        // ProfileLinks is authoritative whenever the native command needs
+        // subelement precision. Keep the legacy object-only property derived
+        // from it so existing property readers retain the ordered sources.
+        ProfileLinkSynchronization synchronization(*this);
+        if (synchronization) {
+            Sections.setValues(profileLinks->getValues());
+        }
+    }
+    else if (profileLinks && prop == &Sections
+             && !isSynchronizingProfileLinks(*this) && !replayingState
+             && profileLinks->getSize() > 0) {
+        // Sections remains a supported public contract. An explicit edit by a
+        // legacy caller deliberately switches the feature back to whole-object
+        // profiles instead of leaving two conflicting sources of truth.
+        ProfileLinkSynchronization synchronization(*this);
+        if (synchronization) {
+            profileLinks->setValue(nullptr);
+        }
+    }
     Part::Feature::onChanged(prop);
 }
 
 App::DocumentObjectExecReturn* Loft::execute()
 {
-    if (Sections.getSize() == 0) {
+    auto* profileLinks = profileLinksProperty(*this);
+    if (!profileLinks) {
+        return new App::DocumentObjectExecReturn(
+            "ProfileLinks property is unavailable"
+        );
+    }
+    if (profileLinks->getSize() == 0 && Sections.getSize() == 0) {
         return new App::DocumentObjectExecReturn("No sections linked.");
     }
 
     try {
         std::vector<TopoShape> shapes;
-        for (auto& obj : Sections.getValues()) {
-            shapes.emplace_back(getTopoShape(obj, ShapeOption::ResolveLink | ShapeOption::Transform));
-            if (shapes.back().isNull()) {
-                return new App::DocumentObjectExecReturn("Invalid section link");
+        if (profileLinks->getSize() > 0) {
+            const auto objects = profileLinks->getValues();
+            const auto subNames = profileLinks->getSubValues();
+            if (objects.size() != subNames.size()) {
+                return new App::DocumentObjectExecReturn(
+                    "Profile object and subelement counts differ"
+                );
+            }
+            for (std::size_t index = 0; index < objects.size(); ++index) {
+                auto options = ShapeOption::ResolveLink | ShapeOption::Transform;
+                if (!subNames[index].empty()) {
+                    options |= ShapeOption::NeedSubElement;
+                }
+                shapes.emplace_back(
+                    getTopoShape(
+                        objects[index],
+                        options,
+                        subNames[index].empty() ? nullptr : subNames[index].c_str()
+                    )
+                );
+                if (shapes.back().isNull()) {
+                    return new App::DocumentObjectExecReturn("Invalid profile link");
+                }
+            }
+        }
+        else {
+            // Deterministic fallback for restored legacy features.
+            for (auto& obj : Sections.getValues()) {
+                shapes.emplace_back(
+                    getTopoShape(obj, ShapeOption::ResolveLink | ShapeOption::Transform)
+                );
+                if (shapes.back().isNull()) {
+                    return new App::DocumentObjectExecReturn("Invalid section link");
+                }
             }
         }
         IsSolid isSolid = Solid.getValue() ? IsSolid::solid : IsSolid::notSolid;
@@ -262,6 +398,8 @@ Sweep::Sweep()
     ADD_PROPERTY_TYPE(Sections, (nullptr), "Sweep", App::Prop_None, "List of sections");
     Sections.setSize(0);
     ADD_PROPERTY_TYPE(Spine, (nullptr), "Sweep", App::Prop_None, "Path to sweep along");
+    allowCrossContainerLink(Sections);
+    allowCrossContainerLink(Spine);
     ADD_PROPERTY_TYPE(Solid, (true), "Sweep", App::Prop_None, "Create solid");
     ADD_PROPERTY_TYPE(Frenet, (true), "Sweep", App::Prop_None, "Frenet");
     ADD_PROPERTY_TYPE(Transition, (long(1)), "Sweep", App::Prop_None, "Transition mode");
@@ -273,11 +411,31 @@ Sweep::Sweep()
         "Linearize the result shape by simplifying linear edge and planar face into line and plane"
     );
     Transition.setEnums(TransitionEnums);
+    // Keep every class-owned static property ahead of this per-instance
+    // precision link. PropertyContainer forbids extending the static table
+    // after a dynamic property has been installed.
+    auto* profileLinks = dynamic_cast<App::PropertyLinkSubList*>(addDynamicProperty(
+        "App::PropertyLinkSubList",
+        ProfileLinksPropertyName,
+        "Sweep",
+        "Exact ordered profile objects and subelements",
+        App::Prop_None
+    ));
+    if (!profileLinks) {
+        throw Base::RuntimeError("Could not create the Sweep ProfileLinks property");
+    }
+    profileLinks->setStatus(App::Property::LockDynamic, true);
+    profileLinks->setSize(0);
+    allowCrossContainerLink(*profileLinks);
 }
 
 short Sweep::mustExecute() const
 {
     if (Sections.isTouched()) {
+        return 1;
+    }
+    const auto* profileLinks = profileLinksProperty(*this);
+    if (profileLinks && profileLinks->isTouched()) {
         return 1;
     }
     if (Spine.isTouched()) {
@@ -297,12 +455,36 @@ short Sweep::mustExecute() const
 
 void Sweep::onChanged(const App::Property* prop)
 {
+    const bool replayingState =
+        isRestoring() || (getDocument() && getDocument()->isPerformingTransaction());
+    auto* profileLinks = profileLinksProperty(*this);
+    if (profileLinks && prop == profileLinks
+        && !isSynchronizingProfileLinks(*this) && !replayingState) {
+        ProfileLinkSynchronization synchronization(*this);
+        if (synchronization) {
+            Sections.setValues(profileLinks->getValues());
+        }
+    }
+    else if (profileLinks && prop == &Sections
+             && !isSynchronizingProfileLinks(*this) && !replayingState
+             && profileLinks->getSize() > 0) {
+        ProfileLinkSynchronization synchronization(*this);
+        if (synchronization) {
+            profileLinks->setValue(nullptr);
+        }
+    }
     Part::Feature::onChanged(prop);
 }
 
 App::DocumentObjectExecReturn* Sweep::execute()
 {
-    if (Sections.getSize() == 0) {
+    auto* profileLinks = profileLinksProperty(*this);
+    if (!profileLinks) {
+        return new App::DocumentObjectExecReturn(
+            "ProfileLinks property is unavailable"
+        );
+    }
+    if (profileLinks->getSize() == 0 && Sections.getSize() == 0) {
         return new App::DocumentObjectExecReturn("No sections linked.");
     }
     if (!Spine.getValue()) {
@@ -330,10 +512,40 @@ App::DocumentObjectExecReturn* Sweep::execute()
     }
     std::vector<TopoShape> shapes;
     shapes.push_back(spine);
-    for (auto& obj : Sections.getValues()) {
-        shapes.emplace_back(getTopoShape(obj, ShapeOption::ResolveLink | ShapeOption::Transform));
-        if (shapes.back().isNull()) {
-            return new App::DocumentObjectExecReturn("Invalid section link");
+    if (profileLinks->getSize() > 0) {
+        const auto objects = profileLinks->getValues();
+        const auto subNames = profileLinks->getSubValues();
+        if (objects.size() != subNames.size()) {
+            return new App::DocumentObjectExecReturn(
+                "Profile object and subelement counts differ"
+            );
+        }
+        for (std::size_t index = 0; index < objects.size(); ++index) {
+            auto options = ShapeOption::ResolveLink | ShapeOption::Transform;
+            if (!subNames[index].empty()) {
+                options |= ShapeOption::NeedSubElement;
+            }
+            shapes.emplace_back(
+                getTopoShape(
+                    objects[index],
+                    options,
+                    subNames[index].empty() ? nullptr : subNames[index].c_str()
+                )
+            );
+            if (shapes.back().isNull()) {
+                return new App::DocumentObjectExecReturn("Invalid profile link");
+            }
+        }
+    }
+    else {
+        // Deterministic fallback for restored legacy features.
+        for (auto& obj : Sections.getValues()) {
+            shapes.emplace_back(
+                getTopoShape(obj, ShapeOption::ResolveLink | ShapeOption::Transform)
+            );
+            if (shapes.back().isNull()) {
+                return new App::DocumentObjectExecReturn("Invalid section link");
+            }
         }
     }
     MakeSolid isSolid = Solid.getValue() ? MakeSolid::makeSolid : MakeSolid::noSolid;
@@ -367,6 +579,7 @@ PROPERTY_SOURCE(Part::Thickness, Part::Feature)
 Thickness::Thickness()
 {
     ADD_PROPERTY_TYPE(Faces, (nullptr), "Thickness", App::Prop_None, "Faces to be removed");
+    allowCrossContainerLink(Faces);
     ADD_PROPERTY_TYPE(Value, (1.0), "Thickness", App::Prop_None, "Thickness value");
     ADD_PROPERTY_TYPE(Mode, (long(0)), "Thickness", App::Prop_None, "Mode");
     Mode.setEnums(ModeEnums);
@@ -457,6 +670,7 @@ PROPERTY_SOURCE(Part::Refine, Part::Feature)
 Refine::Refine()
 {
     ADD_PROPERTY_TYPE(Source, (nullptr), "Refine", App::Prop_None, "Source shape");
+    allowCrossContainerLink(Source);
 }
 
 App::DocumentObjectExecReturn* Refine::execute()
@@ -483,6 +697,7 @@ PROPERTY_SOURCE(Part::Reverse, Part::Feature)
 Reverse::Reverse()
 {
     ADD_PROPERTY_TYPE(Source, (nullptr), "Reverse", App::Prop_None, "Source shape");
+    allowCrossContainerLink(Source);
 }
 
 App::DocumentObjectExecReturn* Reverse::execute()

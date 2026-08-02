@@ -21,7 +21,6 @@ from typing import Any, Callable
 from VibeCADDebug import capture_provider_request
 from VibeCADModelingSurface import resolve_modeling_surface, validate_surface_names
 from VibeCADVibeScriptDomains import get_vibescript_pack
-from VibeCADWorkbenchTools import get_tool_pack
 
 
 MAX_PROVIDER_IMAGE_BYTES = 2_000_000
@@ -29,6 +28,7 @@ CODEX_INLINE_IMAGE_MAX_BYTES = 60_000
 PROVIDER_IMAGE_MAX_EDGE = 1568
 PROVIDER_IMAGE_MIN_EDGE = 512
 MAX_PROVIDER_TOOL_RESULT_BYTES = 40 * 1024
+MAX_PROVIDER_COMPLETE_READ_BYTES = 2 * 1024 * 1024
 MAX_PROVIDER_RESULT_TOP_LEVEL_FIELDS = 256
 MAX_PROVIDER_INSTRUCTIONS_BYTES = 8 * 1024
 DEFAULT_ANTHROPIC_MAX_TOKENS = 8192
@@ -49,26 +49,15 @@ ANTHROPIC_ADAPTIVE_EFFORT = {
 ANTHROPIC_STREAM_MAX_ATTEMPTS = 3
 
 
-VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, a principal mechanical design engineer operating the user's live FreeCAD document through the supplied tools. The current user message is the authority. A simple solid that only resembles the request is a failure.
+VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical design engineer for the user's live FreeCAD model.
 
-Turn-start context is deliberately sparse and exact: the active workbench/engine/domain, document identity/count/edit object, and explicit selection. Conversation history is not copied into this packet. Absence from it does not mean an object or program does not exist. Use core.inspect to read only the document, selection, object, active domain, program, API, or image details required by the request. Never guess an internal name, stable reference, revision, API member, or document fact.
+CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Treat explicit user constraints as requirements. A correction changes only the named geometry; preserve the existing architecture, identity, and history unless replacement or redesign was requested. Build editable, parametric geometry meeting function, dimensions, fit, manufacturability, and appearance. Default to catalog fasteners. Decide unspecified details; ask only if a choice changes function or geometry.
 
-For a new substantial design, begin with a concise written restatement of the intended outcome and the concrete design you propose before the first CAD write. Cover the parts, interfaces, load/contact/motion paths, fit and swept envelopes, manufacturing approach, critical dimensions, and credible failure modes. Challenge whether it assembles, moves, clears, carries load, and can be manufactured. Once the design is accepted or already present in context, continue it; do not restart requirement refinement. Resolve ordinary engineering choices with defensible defaults. When a customer choice materially changes geometry or function, use conversation.ask_user with useful options and a recommended answer. Questions clarify intent; they are not approval gates.
-
-Preserve an existing document, component structure, editable history, and model identity unless replacement was explicitly requested. In a blank user-created document, create the editable component models needed for the new design. The human owns document creation, opening, saving, and project selection.
-
-Use only the tools supplied for the active workbench and edit state. Read each structured result before the next operation.
-
-A failed or ineffective feature is a stop condition. Diagnose and repair its upstream cause before adding dependent work, and never repeat an unchanged failed call. Verify features against functional intent, mating geometry, motion and clearance envelopes, manufacturing constraints, and visible form, not merely nonzero volume or solid count. Capture the viewport when visual form matters. State incomplete work as incomplete, keep progress prose concise, and never claim verification you did not perform."""
+Use only active-workbench tools and exact state returned in the current context or by a tool; never guess names, references, revisions, or API members. Fix failures before dependent features; never repeat an unchanged failure. Before claiming completion, verify requested dimensions, topology, interfaces, clearances, assembly retention, service motion, manufacturability, and appearance; capture the viewport for visual judgment. Never claim work or verification not performed."""
 
 
-def _vibescript_engine_active(context: dict[str, Any]) -> bool:
-    """True when the surfaced tool schemas include the VibeScript engine tools.
-
-    The session only surfaces vibescript.* tools when the vibescript engine is
-    selected, so the schema list is the engine-mode signal that stays correct
-    across mid-run context refreshes on every wire format.
-    """
+def _vibescript_surface_active(context: dict[str, Any]) -> bool:
+    """Return whether this turn exposes the VibeScript authoring surface."""
     for schema in context.get("provider_tool_schemas") or []:
         if isinstance(schema, dict) and str(schema.get("name", "")).startswith(
             "vibescript."
@@ -95,72 +84,41 @@ def _vibescript_domain(context: dict[str, Any]) -> str | None:
     return next(iter(domains)) if len(domains) == 1 else None
 
 
-def _surface_authoring_instruction(context: dict[str, Any]) -> str:
-    surface = context.get("modeling_surface")
-    if not isinstance(surface, dict) or surface.get("engine") != "native":
-        return ""
-    workbench = str(surface.get("workbench") or context.get("workbench") or "")
-    pack = get_tool_pack(workbench)
-    if pack is None or not surface.get("available"):
-        return ""
-    return (
-        f"ACTIVE NATIVE WORKBENCH: {workbench}\n"
-        f"Domain: {pack.domain}. {pack.instructions}\n"
-        "Use only this workbench's declared native tools. Do not infer or call "
-        "tools from adjacent workbenches."
-    )
-
-
 def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
     domain = _vibescript_domain(context)
     workbench = str(context.get("workbench") or "")
     pack = get_vibescript_pack(workbench)
     if pack is None or pack.domain != domain:
         return ""
+    component_instruction = (
+        " Use available_components references directly. Search the component catalog "
+        "only when the needed definition is not listed or more metadata is required. "
+        "If its inventory is truncated, enumerate compact references with limit=200 "
+        "and always follow next_offset until it is null; byte-safe pages may be smaller."
+        if domain == "assembly"
+        else ""
+    )
     return (
         f"VIBESCRIPT {pack.title.upper()} AUTHORING\n"
-        f"The selected global engine is VibeScript and the only CAD authoring "
-        f"domain is {pack.title}. {pack.instructions}\n\n"
-        "Use core.inspect scope='domain' to discover existing programs and exact "
-        "document references before creating one; inspect and update a matching "
-        "program instead of creating a duplicate.\n\n"
-        "Call core.inspect with scope='api' before writing the first program. Programs "
-        "receive only doc, validated inputs, and the returned domain api. Inputs "
-        "are bounded JSON scalars, arrays, enums, or stable document references; "
-        "raw filesystem paths and arbitrary Python objects are forbidden. Every "
-        "output must have a stable declared name and one of these types: "
+        f"Write CAD only through the active {pack.title} VibeScript API. "
+        f"{pack.instructions}{component_instruction}\n\n"
+        "Each editable_sources item is one editable part or program, including failed "
+        "and unbuilt code. Read its exact source_id with vibescript.read_source before "
+        "editing; send the complete updated source and returned revision to "
+        "vibescript.edit_source. Use vibescript.build_program to rebuild unchanged code. "
+        "Read only needed API calls with vibescript.read_api(names=[...]) or groups=[...]. "
+        "Source receives immutable doc and api values plus validated inputs. Outputs "
+        "keep stable names and must use these types: "
         + ", ".join(pack.output_types)
-        + ". Choose the narrowest lifecycle mutation: edit_source for source-only "
-        "changes, set_inputs for value-only changes, and reconfigure_program only "
-        "when source, input schema, inputs, or declared outputs must change together. "
-        "Use core.inspect scope='program' for source, live identity, and the latest "
-        "working_revision before mutation. A failed candidate "
-        "becomes the working revision while the previous accepted revision stays live; "
-        "inspect it, repair the smallest exact cause, and verify the accepted/live state "
-        "after success. Never call native workbench tools from this mode."
+        + ". Reuse existing source. Use vibescript.set_inputs for values and "
+        "vibescript.reconfigure_program only when schema or outputs change."
     )
 
 
 def _system_instruction_sections(context: dict[str, Any]) -> list[str]:
     """Ordered system-instruction sections shared by every wire format."""
     sections = [VIBECAD_SYSTEM_INSTRUCTIONS]
-    native_instruction = _surface_authoring_instruction(context)
-    if native_instruction:
-        sections.append(native_instruction)
-    if any(
-        isinstance(schema, dict)
-        and schema.get("name") == "conversation.review_design"
-        for schema in context.get("provider_tool_schemas") or []
-    ):
-        sections.append(
-            "INDEPENDENT DESIGN REVIEW\n"
-            "Before the first CAD write for a substantial new design, write the "
-            "concrete proposal and call conversation.review_design exactly once. "
-            "Repair the proposal from its findings before construction. Do not "
-            "call it for routine edits, continuation of an accepted design, or "
-            "as a user approval gate."
-        )
-    if _vibescript_engine_active(context):
+    if _vibescript_surface_active(context):
         instruction = _vibescript_authoring_instruction(context)
         if instruction:
             sections.append(instruction)
@@ -242,61 +200,6 @@ class OfflineProvider(BaseProvider):
         )
 
 
-class OpenAIProvider(BaseProvider):
-    """OpenAI SDK adapter driven by VibeCAD's own streaming tool loop."""
-
-    def __init__(
-        self,
-        model: str = "gpt-5.5",
-        api_key: str | None = None,
-        reasoning_effort: str = "high",
-        timeout_seconds: float | None = None,
-        max_turns: int | None = None,
-        base_url: str | None = None,
-        web_search_enabled: bool = False,
-    ) -> None:
-        self.model = model
-        self.api_key = api_key
-        self.reasoning_effort = reasoning_effort
-        self.timeout_seconds = timeout_seconds
-        self.max_turns = max_turns
-        self.base_url = base_url
-        self.web_search_enabled = bool(web_search_enabled)
-
-    def run(
-        self,
-        prompt: str,
-        context: dict[str, Any],
-        tool_runner: ToolRunner | None = None,
-        cancellation_check: CancellationCheck | None = None,
-        progress_callback: ProgressCallback | None = None,
-    ) -> ProviderResult:
-        try:
-            provider_context = dict(context)
-            provider_context["_vibecad_provider_options"] = {
-                "web_search_enabled": self.web_search_enabled,
-            }
-            return _run_provider_subprocess(
-                prompt=prompt,
-                context=provider_context,
-                tool_runner=tool_runner,
-                model=self.model,
-                api_key=self.api_key,
-                reasoning_effort=self.reasoning_effort,
-                timeout_seconds=self.timeout_seconds,
-                max_turns=self.max_turns,
-                base_url=self.base_url,
-                cancellation_check=cancellation_check,
-                progress_callback=progress_callback,
-            )
-        except TimeoutError as exc:
-            if self.timeout_seconds and self.timeout_seconds > 0:
-                raise ProviderUnavailable(
-                    f"OpenAI provider timed out after {self.timeout_seconds:g} seconds."
-                ) from exc
-            raise
-
-
 def provider_tool_schema_digest(schemas: list[dict[str, Any]]) -> str:
     """Return a deterministic digest for one ordered provider schema list."""
     try:
@@ -326,7 +229,7 @@ def _codex_dynamic_tool_surface(
     ):
         reason = str(surface.get("reason") or "") if isinstance(surface, dict) else ""
         raise ProviderUnavailable(
-            "ChatGPT subscription mode requires a valid frozen turn-start VibeCAD "
+            "Codex mode requires a valid frozen turn-start VibeCAD "
             "tool surface." + (f" {reason}" if reason else "")
         )
     expected_surface_fields = {
@@ -405,7 +308,8 @@ def _codex_dynamic_tool_surface(
         or str(surface.get("unavailable_reason") or "") != resolution.unavailable_reason
     ):
         raise ProviderUnavailable(
-            "The modeling-engine/domain declaration does not match the frozen " "VibeCAD surface."
+            "The modeling-engine/domain declaration does not match the frozen "
+            "VibeCAD surface."
         )
     try:
         validate_surface_names(
@@ -533,22 +437,43 @@ def _codex_tool_image_content_items(
     return items
 
 
-class ChatGPTSubscriptionProvider(BaseProvider):
-    """ChatGPT subscription adapter backed by the official Codex app-server."""
+class CodexProvider(BaseProvider):
+    """OpenAI adapter backed exclusively by the official Codex app-server."""
 
     def __init__(
         self,
         model: str = "",
+        api_key: str | None = None,
+        auth_mode: str = "chatgpt",
         reasoning_effort: str = "high",
         timeout_seconds: float | None = None,
+        base_url: str | None = None,
         web_search_enabled: bool = False,
         skills_enabled: bool = False,
     ) -> None:
+        clean_auth_mode = str(auth_mode or "").strip().lower()
+        if clean_auth_mode not in {"api_key", "chatgpt"}:
+            raise ValueError("Codex auth_mode must be api_key or chatgpt.")
         self.model = str(model or "").strip()
+        self.api_key = str(api_key or "").strip() or None
+        self.auth_mode = clean_auth_mode
         self.reasoning_effort = reasoning_effort
         self.timeout_seconds = timeout_seconds
+        self.base_url = str(base_url or "").strip() or None
         self.web_search_enabled = bool(web_search_enabled)
         self.skills_enabled = bool(skills_enabled)
+
+    @property
+    def provider_id(self) -> str:
+        return "openai" if self.auth_mode == "api_key" else "chatgpt"
+
+    @property
+    def provider_label(self) -> str:
+        return (
+            "OpenAI API key via Codex"
+            if self.auth_mode == "api_key"
+            else "ChatGPT subscription via Codex"
+        )
 
     def run(
         self,
@@ -559,6 +484,8 @@ class ChatGPTSubscriptionProvider(BaseProvider):
         progress_callback: ProgressCallback | None = None,
     ) -> ProviderResult:
         from VibeCADCodex import (
+            CODEX_OPENAI_API_KEY_ENV,
+            CODEX_OPENAI_PROVIDER_ID,
             CodexAppServerClient,
             CodexAppServerError,
             codex_workspace,
@@ -569,11 +496,20 @@ class ChatGPTSubscriptionProvider(BaseProvider):
         )
 
         live_context = dict(context)
+        interaction_mode = (
+            str(live_context.get("_vibecad_interaction_mode") or "build")
+            .strip()
+            .lower()
+        )
+        if interaction_mode not in {"build", "plan"}:
+            raise ProviderUnavailable(
+                f"Unknown VibeCAD interaction mode {interaction_mode!r}."
+            )
+        plan_mode = interaction_mode == "plan"
         dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(live_context)
         if not dynamic_tools:
             raise ProviderUnavailable(
-                "ChatGPT subscription mode has no declared VibeCAD tools for the "
-                "current workbench."
+                "Codex mode has no declared VibeCAD tools for the current workbench."
             )
 
         state_lock = threading.RLock()
@@ -593,14 +529,14 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                 return
             if turn_id and event_turn_id and event_turn_id != turn_id:
                 return
-            if method == "item/agentMessage/delta":
+            if method in {"item/agentMessage/delta", "item/plan/delta"}:
                 delta = str(params.get("delta") or "")
                 if delta:
                     _emit_provider_progress(
                         progress_callback,
                         {
                             "event": "provider_text_delta",
-                            "provider": "ChatGPT subscription",
+                            "provider": self.provider_label,
                             "turn": 1,
                             "text": delta,
                         },
@@ -616,7 +552,7 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                         progress_callback,
                         {
                             "event": "provider_reasoning_delta",
-                            "provider": "ChatGPT subscription",
+                            "provider": self.provider_label,
                             "turn": 1,
                             "text": delta,
                         },
@@ -632,7 +568,7 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                         progress_callback,
                         {
                             "event": "provider_web_search_started",
-                            "provider": "ChatGPT subscription",
+                            "provider": self.provider_label,
                         },
                     )
                 return
@@ -650,12 +586,15 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                         progress_callback,
                         {
                             "event": "provider_web_search_completed",
-                            "provider": "ChatGPT subscription",
+                            "provider": self.provider_label,
                             "query": query,
                         },
                     )
                     return
-                if isinstance(item, dict) and item.get("type") == "agentMessage":
+                if isinstance(item, dict) and item.get("type") in {
+                    "agentMessage",
+                    "plan",
+                }:
                     text = str(item.get("text") or "").strip()
                     if text:
                         with state_lock:
@@ -699,7 +638,7 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                     progress_callback,
                     {
                         "event": "provider_tool_requested",
-                        "provider": "ChatGPT subscription",
+                        "provider": self.provider_label,
                         "tool_name": "skills.read",
                         "tool_kind": "skill",
                         "arguments": _tool_arguments_summary(
@@ -720,7 +659,7 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                     progress_callback,
                     {
                         "event": "provider_tool_result_sent",
-                        "provider": "ChatGPT subscription",
+                        "provider": self.provider_label,
                         "tool_name": "skills.read",
                         "tool_kind": "skill",
                         "ok": bool(model_result.get("ok")),
@@ -753,7 +692,7 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                 progress_callback,
                 {
                     "event": "provider_tool_requested",
-                    "provider": "ChatGPT subscription",
+                    "provider": self.provider_label,
                     "tool_name": tool_name,
                     "arguments": _tool_arguments_summary(arguments_json),
                 },
@@ -781,9 +720,7 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                 and result.get("captured")
                 and result.get("new_observation", True)
             ):
-                content_items.extend(
-                    _codex_tool_image_content_items(updated_context)
-                )
+                content_items.extend(_codex_tool_image_content_items(updated_context))
             inspected_image_context = _tool_result_image_context(result)
             if inspected_image_context is not None:
                 content_items.extend(
@@ -793,7 +730,7 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                 progress_callback,
                 {
                     "event": "provider_tool_result_sent",
-                    "provider": "ChatGPT subscription",
+                    "provider": self.provider_label,
                     "tool_name": tool_name,
                     "ok": bool(result.get("ok")),
                     "error": result.get("error"),
@@ -805,9 +742,16 @@ class ChatGPTSubscriptionProvider(BaseProvider):
             # the model can diagnose and repair them in the same turn.
             return {"contentItems": content_items, "success": True}
 
+        if self.auth_mode == "api_key" and not self.api_key:
+            raise ProviderUnavailable("No OpenAI API key is configured.")
         client = CodexAppServerClient(
             notification_handler=notification,
             server_request_handler=server_request,
+            environment=(
+                {CODEX_OPENAI_API_KEY_ENV: self.api_key}
+                if self.auth_mode == "api_key" and self.api_key
+                else None
+            ),
         )
         deadline = (
             time.monotonic() + self.timeout_seconds
@@ -816,21 +760,22 @@ class ChatGPTSubscriptionProvider(BaseProvider):
         )
         try:
             client.start()
-            account_result = client.request(
-                "account/read", {"refreshToken": False}, timeout=30.0
-            )
-            account = (
-                account_result.get("account")
-                if isinstance(account_result, dict)
-                else None
-            )
-            if not isinstance(account, dict) or account.get("type") != "chatgpt":
-                update_cached_account(None)
-                raise ProviderUnavailable(
-                    "No ChatGPT subscription is signed in. Open VibeCAD Preferences "
-                    "and choose Sign in with ChatGPT."
+            if self.auth_mode == "chatgpt":
+                account_result = client.request(
+                    "account/read", {"refreshToken": False}, timeout=30.0
                 )
-            update_cached_account(account)
+                account = (
+                    account_result.get("account")
+                    if isinstance(account_result, dict)
+                    else None
+                )
+                if not isinstance(account, dict) or account.get("type") != "chatgpt":
+                    update_cached_account(None)
+                    raise ProviderUnavailable(
+                        "No ChatGPT subscription is signed in. Open VibeCAD "
+                        "Preferences and choose Sign in with ChatGPT."
+                    )
+                update_cached_account(account)
 
             if self.skills_enabled:
                 skill_catalog = load_codex_skill_catalog(
@@ -874,18 +819,24 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                 "config": vibecad_thread_config(
                     web_search_enabled=self.web_search_enabled,
                     skills_enabled=self.skills_enabled,
+                    collaboration_mode_enabled=plan_mode,
+                    openai_base_url=(
+                        (self.base_url or "") if self.auth_mode == "api_key" else None
+                    ),
                 ),
                 "serviceName": "vibecad",
             }
+            if self.auth_mode == "api_key":
+                thread_request["modelProvider"] = CODEX_OPENAI_PROVIDER_ID
             if self.model:
                 thread_request["model"] = self.model
             _capture_outbound_request(
                 live_context,
-                provider="chatgpt",
+                provider=self.provider_id,
                 sdk_call="codex-app-server.thread/start",
                 turn=1,
                 request=thread_request,
-                base_url=None,
+                base_url=(self.base_url if self.auth_mode == "api_key" else None),
             )
             thread_result = client.request("thread/start", thread_request, timeout=30.0)
             thread = (
@@ -901,7 +852,28 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                 "environments": [],
             }
             effort = _provider_reasoning_effort(self.reasoning_effort)
-            if effort:
+            if plan_mode:
+                effective_model = str(
+                    thread_result.get("model")
+                    if isinstance(thread_result, dict)
+                    else ""
+                ).strip()
+                if not effective_model:
+                    effective_model = self.model
+                if not effective_model:
+                    raise ProviderUnavailable(
+                        "Codex did not report the model required for Plan mode."
+                    )
+                turn_request["collaborationMode"] = {
+                    "mode": "plan",
+                    "settings": {
+                        "model": effective_model,
+                        "reasoning_effort": effort or "medium",
+                        "developer_instructions": None,
+                    },
+                }
+                turn_request["summary"] = "auto"
+            elif effort:
                 turn_request["effort"] = effort
                 turn_request["summary"] = "auto"
             else:
@@ -909,11 +881,11 @@ class ChatGPTSubscriptionProvider(BaseProvider):
                 turn_request["summary"] = "none"
             _capture_outbound_request(
                 live_context,
-                provider="chatgpt",
+                provider=self.provider_id,
                 sdk_call="codex-app-server.turn/start",
                 turn=1,
                 request=turn_request,
-                base_url=None,
+                base_url=(self.base_url if self.auth_mode == "api_key" else None),
             )
             turn_result = client.request("turn/start", turn_request, timeout=30.0)
             turn = turn_result.get("turn") if isinstance(turn_result, dict) else None
@@ -956,10 +928,15 @@ class ChatGPTSubscriptionProvider(BaseProvider):
             if completed_status != "completed":
                 raise ProviderUnavailable(
                     completed_error
-                    or f"ChatGPT subscription turn ended with {completed_status or 'unknown status'}."
+                    or f"Codex turn ended with {completed_status or 'unknown status'}."
                 )
             return ProviderResult(
-                final_output=final_output, raw={"thread_id": thread_id}
+                final_output=final_output,
+                raw={
+                    "thread_id": thread_id,
+                    "interaction_mode": interaction_mode,
+                    "auth_mode": self.auth_mode,
+                },
             )
         except CodexAppServerError as exc:
             raise ProviderUnavailable(str(exc)) from exc
@@ -978,7 +955,7 @@ class AnthropicProvider(BaseProvider):
     """Native Anthropic Messages API adapter.
 
     Drives a tool-use loop over the same parent/child pipe bridge as the
-    OpenAI path: the child sends ``tool`` requests, the parent executes the
+    parent process: the child sends ``tool`` requests, the parent executes the
     real FreeCAD tool and replies with ``tool_result``. The dependency on the
     ``anthropic`` SDK stays optional so FreeCAD can start without it.
     """
@@ -1284,16 +1261,18 @@ def _run_provider_subprocess(
     cancellation_check: CancellationCheck | None = None,
     progress_callback: ProgressCallback | None = None,
     child_main: Callable[..., None] | None = None,
-    provider_label: str = "OpenAI provider",
+    provider_label: str = "VibeCAD provider",
     prefer_windowless_python: bool | None = None,
 ) -> ProviderResult:
+    if child_main is None:
+        raise ValueError("Provider subprocess execution requires an explicit child.")
     multiprocessing_context = _provider_multiprocessing_context(
         prefer_windowless_python=prefer_windowless_python
     )
     reasoning_effort = _provider_reasoning_effort(reasoning_effort)
     parent_conn, child_conn = multiprocessing_context.Pipe()
     process = multiprocessing_context.Process(
-        target=child_main or _openai_child_main,
+        target=child_main,
         args=(
             child_conn,
             prompt,
@@ -1541,6 +1520,8 @@ def _model_visible_context(
         "modeling_surface",
         "document",
         "selection",
+        "editable_sources",
+        "available_components",
         "view_screenshot",
         "reference_images",
     )
@@ -1572,18 +1553,6 @@ def _provider_tool_parameters(schema: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(parameters.get("properties"), dict):
         raise ValueError(f"Provider tool {schema.get('name')!r} has no properties.")
     return _json_safe(parameters)
-
-
-def _openai_tool_definition(schema: dict[str, Any]) -> dict[str, Any]:
-    tool_name = str(schema.get("name") or "").strip()
-    if not tool_name:
-        raise ValueError("Provider tool schema is missing name.")
-    return {
-        "type": "function",
-        "name": _provider_function_name(tool_name),
-        "description": str(schema.get("description") or ""),
-        "parameters": _provider_tool_parameters(schema),
-    }
 
 
 def _anthropic_tool_definition(schema: dict[str, Any]) -> dict[str, Any]:
@@ -1738,6 +1707,10 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
 
     visible = dict(result)
     visible.pop("_vibecad_image_attachment", None)
+    complete_read = bool(
+        visible.pop("_vibecad_complete_source_result", False)
+        or visible.pop("_vibecad_complete_api_result", False)
+    )
     safe = _json_safe(visible)
     encoded = json.dumps(
         safe,
@@ -1745,7 +1718,12 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    if len(encoded) <= MAX_PROVIDER_TOOL_RESULT_BYTES:
+    result_limit = (
+        MAX_PROVIDER_COMPLETE_READ_BYTES
+        if complete_read
+        else MAX_PROVIDER_TOOL_RESULT_BYTES
+    )
+    if len(encoded) <= result_limit:
         return safe
 
     priority_fields = (
@@ -1785,18 +1763,18 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
         "bounded": True,
         "reason": "provider_tool_result_byte_limit",
         "original_json_bytes": len(encoded),
-        "limit_json_bytes": MAX_PROVIDER_TOOL_RESULT_BYTES,
+        "limit_json_bytes": result_limit,
         "original_sha256": hashlib.sha256(encoded).hexdigest(),
         "original_top_level_field_count": len(safe),
         "omitted_top_level_field_count": omitted_count,
         "recovery": (
-            "Use core.inspect for only the exact live document, domain, object, "
-            "program, or API facts needed next."
+            "Use the active surface's declared read tool for only the exact fact "
+            "needed next."
         ),
     }
     projected["vibecad_result_boundary"] = boundary
 
-    while _provider_json_bytes(projected) > MAX_PROVIDER_TOOL_RESULT_BYTES:
+    while _provider_json_bytes(projected) > result_limit:
         candidates = []
         for key, value in projected.items():
             if key in {"ok", "vibecad_result_boundary"}:
@@ -1814,7 +1792,7 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
         omitted_count += 1
         boundary["omitted_top_level_field_count"] = omitted_count
 
-    if _provider_json_bytes(projected) > MAX_PROVIDER_TOOL_RESULT_BYTES:
+    if _provider_json_bytes(projected) > result_limit:
         # This is reachable only for a pathological mapping with enormous key
         # overhead. Keep the operation verdict and the fixed-size boundary.
         projected = {
@@ -1920,30 +1898,6 @@ def _capture_outbound_request(
     )
 
 
-def _responses_output_as_input(response: Any) -> list[dict[str, Any]]:
-    """Serialize every Responses output item for client-managed continuation."""
-    output = getattr(response, "output", None)
-    if output is None:
-        raise RuntimeError("Responses API result has no output item list.")
-    items: list[dict[str, Any]] = []
-    for index, item in enumerate(list(output)):
-        model_dump = getattr(item, "model_dump", None)
-        if not callable(model_dump):
-            raise TypeError(
-                f"Responses output item {index} does not support model_dump()."
-            )
-        payload = model_dump(mode="json", exclude_none=True)
-        if not isinstance(payload, dict):
-            raise TypeError(
-                f"Responses output item {index} did not serialize to an object."
-            )
-        item_type = str(payload.get("type") or "").strip()
-        if not item_type:
-            raise ValueError(f"Responses output item {index} has no type.")
-        items.append(_json_safe(payload))
-    return items
-
-
 def _object_payload(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -1972,348 +1926,15 @@ def _markdown_with_sources(text: str, sources: list[tuple[str, str]]) -> str:
     return clean_text + "\n\nSources:\n" + "\n".join(source_lines)
 
 
-def _openai_final_text(response: Any, streamed_text: str = "") -> str:
-    text = str(getattr(response, "output_text", "") or streamed_text).strip()
-    sources: list[tuple[str, str]] = []
-    for item in list(getattr(response, "output", []) or []):
-        payload = _object_payload(item)
-        if payload.get("type") != "message":
-            continue
-        for content in payload.get("content") or []:
-            if not isinstance(content, dict) or content.get("type") != "output_text":
-                continue
-            for annotation in content.get("annotations") or []:
-                if not isinstance(annotation, dict):
-                    continue
-                if annotation.get("type") != "url_citation":
-                    continue
-                sources.append(
-                    (
-                        str(annotation.get("url") or ""),
-                        str(annotation.get("title") or ""),
-                    )
-                )
-    for citation in list(getattr(response, "citations", []) or []):
-        if isinstance(citation, str):
-            sources.append((citation, ""))
-            continue
-        payload = _object_payload(citation)
-        url = str(payload.get("url") or "").strip()
-        if url:
-            sources.append((url, str(payload.get("title") or "")))
-    return _markdown_with_sources(text, sources)
-
-
-def _openai_request_tools(
-    cad_tools: list[dict[str, Any]], web_search_enabled: bool
-) -> list[dict[str, Any]]:
-    tools = list(cad_tools)
-    if web_search_enabled:
-        tools.append({"type": "web_search"})
-    return tools
-
-
 def _validate_provider_wire_surface(context: dict[str, Any]) -> None:
     """Apply the frozen resolver contract to every online provider transport."""
 
     # A few isolated transport tests and extension callers still supply schemas
     # without a session snapshot. Production sessions always include one. When
-    # it is present, use the same strict validation as subscription mode before
-    # serializing schemas for OpenAI-compatible or Anthropic APIs.
+    # it is present, use the same strict validation as Codex before serializing
+    # schemas for the Anthropic API.
     if "provider_tool_surface" in context:
         _codex_dynamic_tool_surface(context)
-
-
-def _openai_child_main(
-    conn,
-    prompt: str,
-    context: dict[str, Any],
-    model: str,
-    api_key: str | None,
-    reasoning_effort: str | None,
-    timeout_seconds: float | None,
-    max_turns: int | None,
-    clear_inherited_modules: bool,
-    base_url: str | None = None,
-) -> None:
-    try:
-        if clear_inherited_modules:
-            _clear_inherited_sdk_modules()
-        from openai import OpenAI
-    except Exception as exc:
-        conn.send(
-            {
-                "type": "error",
-                "error": (
-                    f"OpenAI SDK is not available in the VibeCAD runtime. ({exc})"
-                ),
-            }
-        )
-        conn.close()
-        return
-
-    def tool_surface(
-        live_context: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-        _validate_provider_wire_surface(live_context)
-        definitions: list[dict[str, Any]] = []
-        names: dict[str, str] = {}
-        for index, schema in enumerate(live_context.get("provider_tool_schemas") or []):
-            if not isinstance(schema, dict):
-                raise ValueError(f"Provider tool schema {index} must be an object.")
-            tool_name = str(schema.get("name") or "").strip()
-            if not tool_name:
-                raise ValueError(f"Provider tool schema {index} is missing name.")
-            definition = _openai_tool_definition(schema)
-            function_name = str(definition["name"])
-            if function_name in names:
-                raise RuntimeError(f"Duplicate provider function name: {function_name}")
-            names[function_name] = tool_name
-            definitions.append(definition)
-        return definitions, names
-
-    def user_input(text: str, live_context: dict[str, Any]) -> list[dict[str, Any]]:
-        visible = _model_visible_context(live_context)
-        blocks = _context_image_blocks(visible)
-        notes = _context_image_delivery_notes(visible)
-        content: list[dict[str, Any]] = [{"type": "input_text", "text": text}]
-        for note in notes:
-            content.append({"type": "input_text", "text": note})
-        for label, mime_type, data in blocks:
-            content.append({"type": "input_text", "text": label})
-            content.append(
-                {
-                    "type": "input_image",
-                    "image_url": f"data:{mime_type};base64,{data}",
-                    "detail": "high",
-                }
-            )
-        return [{"role": "user", "content": content}]
-
-    client_kwargs: dict[str, Any] = {
-        "api_key": api_key or os.environ.get("OPENAI_API_KEY") or "vibecad-local",
-        "max_retries": 2,
-    }
-    if base_url:
-        client_kwargs["base_url"] = base_url
-    if timeout_seconds is not None and timeout_seconds > 0:
-        client_kwargs["timeout"] = timeout_seconds
-    client = OpenAI(**client_kwargs)
-    live_context = dict(context)
-    web_search_enabled = _provider_option(live_context, "web_search_enabled")
-    tools, function_to_tool = tool_surface(live_context)
-    input_history = user_input(prompt, live_context)
-    try:
-        turn = 1
-        while max_turns is None or max_turns <= 0 or turn <= max_turns:
-            request: dict[str, Any] = {
-                "model": model,
-                "instructions": _provider_instructions(live_context),
-                "input": list(input_history),
-                "parallel_tool_calls": False,
-                "stream": True,
-            }
-            request_tools = _openai_request_tools(tools, web_search_enabled)
-            if request_tools:
-                request["tools"] = request_tools
-                request["tool_choice"] = "auto"
-            include_items: list[str] = []
-            if reasoning_effort:
-                reasoning: dict[str, Any] = {"effort": reasoning_effort}
-                if str(reasoning_effort).strip().lower() != "none":
-                    reasoning["summary"] = "auto"
-                    include_items.append("reasoning.encrypted_content")
-                request["reasoning"] = reasoning
-            if include_items:
-                request["include"] = include_items
-            _capture_outbound_request(
-                live_context,
-                provider="openai",
-                sdk_call="OpenAI.responses.create",
-                turn=turn,
-                request=request,
-                base_url=base_url,
-            )
-            stream = client.responses.create(**request)
-            text_parts: list[str] = []
-            completed_response = None
-            active_web_searches: set[str] = set()
-            try:
-                for event in stream:
-                    event_type = str(getattr(event, "type", "") or "")
-                    if event_type == "response.output_text.delta":
-                        text = str(getattr(event, "delta", "") or "")
-                        if not text:
-                            continue
-                        text_parts.append(text)
-                        _send_child_progress(
-                            conn,
-                            {
-                                "event": "provider_text_delta",
-                                "provider": "OpenAI",
-                                "turn": turn,
-                                "text": text,
-                            },
-                        )
-                    elif event_type == "response.reasoning_summary_text.delta":
-                        delta = str(getattr(event, "delta", "") or "")
-                        if delta:
-                            _send_child_progress(
-                                conn,
-                                {
-                                    "event": "provider_reasoning_delta",
-                                    "provider": "OpenAI",
-                                    "turn": turn,
-                                    "text": delta,
-                                },
-                            )
-                    elif event_type.startswith("response.web_search_call."):
-                        item_id = str(
-                            getattr(event, "item_id", "")
-                            or getattr(event, "output_index", "")
-                            or "web_search"
-                        )
-                        if event_type.endswith(".completed"):
-                            item = _object_payload(getattr(event, "item", None))
-                            action = item.get("action")
-                            query = (
-                                str(action.get("query") or "").strip()
-                                if isinstance(action, dict)
-                                else ""
-                            )
-                            _send_child_progress(
-                                conn,
-                                {
-                                    "event": "provider_web_search_completed",
-                                    "provider": "OpenAI-compatible",
-                                    "turn": turn,
-                                    "query": query,
-                                },
-                            )
-                            active_web_searches.discard(item_id)
-                        elif item_id not in active_web_searches:
-                            active_web_searches.add(item_id)
-                            _send_child_progress(
-                                conn,
-                                {
-                                    "event": "provider_web_search_started",
-                                    "provider": "OpenAI-compatible",
-                                    "turn": turn,
-                                },
-                            )
-                    elif event_type == "response.completed":
-                        completed_response = getattr(event, "response", None)
-                    elif event_type in {"response.failed", "response.incomplete"}:
-                        failed_response = getattr(event, "response", None)
-                        error = getattr(failed_response, "error", None)
-                        raise RuntimeError(
-                            f"OpenAI response did not complete: {error or event_type}"
-                        )
-            finally:
-                close_stream = getattr(stream, "close", None)
-                if callable(close_stream):
-                    close_stream()
-            if completed_response is None:
-                raise RuntimeError(
-                    "OpenAI Responses stream ended without response.completed."
-                )
-            assistant_text = _openai_final_text(
-                completed_response, "".join(text_parts)
-            )
-            calls = [
-                item
-                for item in list(getattr(completed_response, "output", []) or [])
-                if getattr(item, "type", None) == "function_call"
-            ]
-            if not calls:
-                conn.send(
-                    {
-                        "type": "done",
-                        "final_output": assistant_text.strip(),
-                        "raw": None,
-                    }
-                )
-                return
-
-            response_function_map = dict(function_to_tool)
-            input_history.extend(_responses_output_as_input(completed_response))
-            tool_outputs: list[dict[str, Any]] = []
-            repin_context: dict[str, Any] | None = None
-            repin_text = "Current viewport observation captured after the preceding CAD operation."
-            for item in calls:
-                function_name = str(getattr(item, "name", "") or "")
-                call_id = str(getattr(item, "call_id", "") or "")
-                arguments_json = str(getattr(item, "arguments", "") or "{}")
-                if not call_id:
-                    raise RuntimeError(
-                        f"OpenAI function call {function_name!r} has no call_id."
-                    )
-                tool_name = response_function_map.get(function_name)
-                if tool_name is None:
-                    result: dict[str, Any] = {
-                        "ok": False,
-                        "error": f"Unknown VibeCAD operation: {function_name}",
-                    }
-                    updated_context = None
-                else:
-                    conn.send(
-                        {
-                            "type": "tool",
-                            "tool_name": tool_name,
-                            "arguments_json": arguments_json,
-                        }
-                    )
-                    bridge = conn.recv()
-                    if bridge.get("type") != "tool_result":
-                        raise RuntimeError("Invalid VibeCAD tool bridge response.")
-                    result = bridge.get("result")
-                    if not isinstance(result, dict):
-                        result = {
-                            "ok": False,
-                            "error": "Missing structured tool result.",
-                        }
-                    updated_context = bridge.get("context")
-                    if isinstance(updated_context, dict):
-                        live_context = updated_context
-                        tools, function_to_tool = tool_surface(live_context)
-                    if (
-                        tool_name == "core.capture_view_screenshot"
-                        and result.get("captured")
-                        and result.get("new_observation", True)
-                    ):
-                        repin_context = live_context
-                    inspected_image_context = _tool_result_image_context(result)
-                    if inspected_image_context is not None:
-                        repin_context = inspected_image_context
-                        repin_text = "Explicitly requested project reference image."
-                model_result = _provider_visible_tool_result(result)
-                model_result["vibecad_state_after"] = _provider_state_after_tool(
-                    live_context,
-                    result,
-                )
-                tool_outputs.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": json.dumps(
-                            _json_safe(model_result), separators=(",", ":")
-                        ),
-                    }
-                )
-            input_history.extend(tool_outputs)
-            if repin_context is not None:
-                input_history.extend(
-                    user_input(
-                        repin_text,
-                        repin_context,
-                    )
-                )
-            turn += 1
-        conn.send({"type": "error", "error": "OpenAI provider turn limit reached."})
-    except Exception as exc:
-        conn.send({"type": "error", "error": str(exc)})
-    finally:
-        conn.close()
 
 
 def _provider_qt_modules() -> tuple[Any, Any] | None:
@@ -2399,8 +2020,7 @@ def _provider_encoded_image_payload(
             if saved and payload:
                 metadata = {
                     "resized": (
-                        int(scaled.width()) != width
-                        or int(scaled.height()) != height
+                        int(scaled.width()) != width or int(scaled.height()) != height
                     ),
                     "transcoded": encode_format != original_format,
                     "encoded_format": encode_format.lower(),
@@ -2587,7 +2207,7 @@ def _context_image_blocks(
 def _codex_context_image_blocks(
     context: dict[str, Any],
 ) -> list[tuple[str, str, str]]:
-    """Return inline images that fit the ChatGPT subscription URL boundary."""
+    """Return inline images that fit the Codex app-server URL boundary."""
     return _context_image_blocks(
         context,
         max_bytes=CODEX_INLINE_IMAGE_MAX_BYTES,
@@ -3027,9 +2647,7 @@ def _anthropic_child_main(
             "model": model,
             "max_tokens": max_tokens,
             "system": system_blocks,
-            "tools": _anthropic_request_tools(
-                tool_definitions, web_search_enabled
-            ),
+            "tools": _anthropic_request_tools(tool_definitions, web_search_enabled),
         }
         if thinking is not None:
             request_kwargs["thinking"] = thinking
@@ -3126,8 +2744,7 @@ def _anthropic_child_main(
                         )
                     elif (
                         stream_event_type == "content_block_start"
-                        and summary.get("block_type")
-                        == "web_search_tool_result"
+                        and summary.get("block_type") == "web_search_tool_result"
                     ):
                         _send_child_progress(
                             conn,
@@ -3234,11 +2851,7 @@ def _anthropic_child_main(
                 )
                 return
             server_use_ids = {
-                str(
-                    getattr(block, "id", "")
-                    or _object_payload(block).get("id")
-                    or ""
-                )
+                str(getattr(block, "id", "") or _object_payload(block).get("id") or "")
                 for block in content_blocks
                 if _anthropic_block_type(block) == "server_tool_use"
             }
@@ -3345,8 +2958,6 @@ def _clear_inherited_sdk_modules() -> None:
         if (
             name == "pydantic"
             or name.startswith("pydantic.")
-            or name == "openai"
-            or name.startswith("openai.")
             or name == "anthropic"
             or name.startswith("anthropic.")
             or name == "httpx"

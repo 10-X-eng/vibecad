@@ -895,13 +895,20 @@ FemPostContoursFilter::FemPostContoursFilter()
     FilterPipeline contours;
     m_contours = vtkSmartPointer<vtkContourFilter>::New();
     m_contours->ComputeScalarsOn();
-    smoothExtension.getFilter()->SetInputConnection(m_contours->GetOutputPort());
     contours.source = m_contours;
-    contours.target = smoothExtension.getFilter();
+    contours.target = m_contours;
     addFilterPipeline(contours, "contours");
-    setActiveFilterPipeline("contours");
+
+    FilterPipeline smoothedContours;
+    smoothExtension.getFilter()->SetInputConnection(m_contours->GetOutputPort());
+    smoothedContours.source = m_contours;
+    smoothedContours.target = smoothExtension.getFilter();
+    addFilterPipeline(smoothedContours, "smoothedContours");
 
     smoothExtension.initExtension(this);
+    setActiveFilterPipeline(
+        smoothExtension.EnableSmoothing.getValue() ? "smoothedContours" : "contours"
+    );
 }
 
 FemPostContoursFilter::~FemPostContoursFilter() = default;
@@ -925,7 +932,12 @@ void FemPostContoursFilter::onChanged(const Property* prop)
         return;
     }
 
-    if (prop == &Field && (Field.isValid())) {
+    if (prop == &smoothExtension.EnableSmoothing) {
+        setActiveFilterPipeline(
+            smoothExtension.EnableSmoothing.getValue() ? "smoothedContours" : "contours"
+        );
+    }
+    else if (prop == &Field && (Field.isValid())) {
         refreshVectors();
     }
 

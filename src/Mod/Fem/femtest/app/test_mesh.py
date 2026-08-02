@@ -92,6 +92,95 @@ class TestMeshCommon(unittest.TestCase):
             edge_data, expected_edges, "Edges of Python created seg2 element are unexpected"
         )
 
+    def test_remove_elements_is_atomic_and_preserves_the_source(self):
+        source = Fem.FemMesh()
+        source.addNode(0, 0, 0, 1)
+        source.addNode(1, 0, 0, 2)
+        source.addNode(0, 1, 0, 3)
+        source.addNode(1, 1, 0, 4)
+        source.addFace([1, 2, 3], 11)
+        source.addFace([2, 4, 3], 12)
+
+        face_group = source.addGroup("Faces", "Face")
+        source.addGroupElements(face_group, [11, 12])
+
+        filtered = source.copy()
+        with self.assertRaises(TypeError):
+            filtered.removeElements([True], True)
+        with self.assertRaises(ValueError):
+            filtered.removeElements([11, 999], True)
+
+        self.assertEqual(filtered.Faces, (11, 12))
+        self.assertEqual(filtered.NodeCount, 4)
+        self.assertEqual(filtered.getGroupElements(face_group), (11, 12))
+
+        filtered.removeElements([11], True)
+        self.assertEqual(filtered.Faces, (12,))
+        self.assertEqual(filtered.NodeCount, 3)
+        self.assertNotIn(1, filtered.Nodes)
+        self.assertEqual(filtered.getGroupElements(face_group), (12,))
+
+        # Filtering a clone must never mutate the source mesh used by the
+        # document or by task-dialog Cancel restoration.
+        self.assertEqual(source.Faces, (11, 12))
+        self.assertEqual(source.NodeCount, 4)
+        self.assertEqual(source.getGroupElements(face_group), (11, 12))
+
+        keep_orphans = source.copy()
+        keep_orphans.removeElements([11], False)
+        self.assertEqual(keep_orphans.NodeCount, 4)
+
+    def test_document_roundtrip_preserves_sparse_ids_and_groups(self):
+        mesh = Fem.FemMesh()
+        mesh.addNode(0, 0, 0, 101)
+        mesh.addNode(1, 0, 0, 103)
+        mesh.addNode(0, 1, 0, 107)
+        mesh.addNode(0, 0, 1, 109)
+        mesh.addEdge([101, 103], 401)
+        mesh.addFace([101, 103, 107], 601)
+        mesh.addVolume([101, 103, 107, 109], 901)
+
+        group_elements = {
+            "Selected nodes": ("Node", (101, 109)),
+            "Selected edge": ("Edge", (401,)),
+            "Selected face": ("Face", (601,)),
+            "Selected volume": ("Volume", (901,)),
+        }
+        for name, (element_type, element_ids) in group_elements.items():
+            group_id = mesh.addGroup(name, element_type)
+            mesh.addGroupElements(group_id, list(element_ids))
+
+        mesh_object = self.document.addObject(
+            "Fem::FemMeshObject",
+            "SparseIdMesh",
+        )
+        mesh_object.FemMesh = mesh
+        self.document.recompute()
+
+        file_name = join(
+            testtools.get_fem_test_tmp_dir(),
+            "fem_mesh_sparse_id_roundtrip.FCStd",
+        )
+        object_name = mesh_object.Name
+        self.document.saveAs(file_name)
+        FreeCAD.closeDocument(self.document.Name)
+        self.document = FreeCAD.openDocument(file_name)
+
+        restored = self.document.getObject(object_name).FemMesh
+        self.assertEqual(tuple(sorted(restored.Nodes)), (101, 103, 107, 109))
+        self.assertEqual(restored.Edges, (401,))
+        self.assertEqual(restored.Faces, (601,))
+        self.assertEqual(restored.Volumes, (901,))
+
+        restored_groups = {
+            restored.getGroupName(group_id): (
+                restored.getGroupElementType(group_id),
+                restored.getGroupElements(group_id),
+            )
+            for group_id in restored.Groups
+        }
+        self.assertEqual(restored_groups, group_elements)
+
     # ********************************************************************************************
     def test_mesh_seg3_python(self):
         seg3 = Fem.FemMesh()

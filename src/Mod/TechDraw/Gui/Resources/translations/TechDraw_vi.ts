@@ -124,24 +124,7 @@
       <translation>Chèn chú thích</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1401"/>
-      <source>TechDraw</source>
-      <translation>Vẽ Công nghệ</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1402"/>
-      <source>Insert Arch Workbench Object</source>
-      <translation type="unfinished">Insert Arch Workbench Object</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1403"/>
-      <source>Insert a View of a Section Plane from Arch Workbench</source>
-      <translation type="unfinished">Insert a View of a Section Plane from Arch Workbench</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2004,11 +1987,6 @@
       <translation type="unfinished">Create DraftView</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1443"/>
-      <source>Create ArchView</source>
-      <translation type="unfinished">Create ArchView</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1491"/>
       <source>Create spreadsheet view</source>
       <translation type="unfinished">Create spreadsheet view</translation>
@@ -2764,16 +2742,6 @@
       <translation>Chọn ít nhất một đối tượng.</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1431"/>
-      <source>Please select only 1 Arch Section.</source>
-      <translation type="unfinished">Please select only 1 Arch Section.</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1437"/>
-      <source>No Arch Sections in selection.</source>
-      <translation type="unfinished">No Arch Sections in selection.</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1480"/>
       <source>Select exactly one Spreadsheet object.</source>
       <translation>Chọn chính xác một đối tượng bảng tính.</translation>
@@ -2792,11 +2760,6 @@
       <location filename="../../Command.cpp" line="1588"/>
       <source>Can not export selection</source>
       <translation type="unfinished">Can not export selection</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1589"/>
-      <source>Page contains DrawViewArch which will not be exported. Continue?</source>
-      <translation type="unfinished">Page contains DrawViewArch which will not be exported. Continue?</translation>
     </message>
     <message>
       <location filename="../../CommandCreateDims.cpp" line="212"/>

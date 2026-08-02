@@ -36,6 +36,8 @@ namespace PartDesignGui
 {
 
 class Ui_TaskPreviewParameters;
+class TaskDesignOperationTargets;
+class TaskDesignProfileRegions;
 
 class TaskPreviewParameters: public Gui::TaskView::TaskBox
 {
@@ -180,10 +182,19 @@ public:
     }
 
 protected:
+    /**
+     * Finalize feature-specific persistent state after validation and before
+     * resetEdit commits the task transaction.
+     */
+    virtual void finalizeAcceptedFeature(App::DocumentObject*)
+    {}
+
     PartDesignGui::TaskPreviewParameters* preview;
 
 private:
     PartDesignGui::ViewProvider* vp;
+    TaskDesignProfileRegions* designProfileRegions;
+    TaskDesignOperationTargets* designTargets;
 };
 
 }  // namespace PartDesignGui

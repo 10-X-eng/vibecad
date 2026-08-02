@@ -1031,58 +1031,25 @@ TaskDlgFemConstraintFluidBoundary::TaskDlgFemConstraintFluidBoundary(
 
 bool TaskDlgFemConstraintFluidBoundary::accept()
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintFluidBoundary* boundary
         = static_cast<const TaskFemConstraintFluidBoundary*>(parameter);
 
     // no need to backup pcConstraint object content, if rejected, content can be recovered by
     // transaction manager
     try {
-        // Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Fluid boundary condition
-        // changed"));
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.BoundaryType = '%s'",
-            name.c_str(),
-            boundary->getBoundaryType().c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Subtype = '%s'",
-            name.c_str(),
-            boundary->getSubtype().c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.BoundaryValue = %f",
-            name.c_str(),
-            boundary->getBoundaryValue()
-        );
+        runConstraintCommand("BoundaryType = '%s'", boundary->getBoundaryType().c_str());
+        runConstraintCommand("Subtype = '%s'", boundary->getSubtype().c_str());
+        runConstraintCommand("BoundaryValue = %f", boundary->getBoundaryValue());
 
         std::string dirname = boundary->getDirectionName().data();
         std::string dirobj = boundary->getDirectionObject().data();
 
         if (!dirname.empty()) {
-            QString buf = QStringLiteral("(App.ActiveDocument.%1,[\"%2\"])");
-            buf = buf.arg(QString::fromStdString(dirname));
-            buf = buf.arg(QString::fromStdString(dirobj));
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.Direction = %s",
-                name.c_str(),
-                buf.toStdString().c_str()
-            );
+            runConstraintCommand("Direction = %s", constraintReference(dirname, dirobj));
         }
         else {
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.Direction = None",
-                name.c_str()
-            );
+            runConstraintCommand("Direction = None");
         }
-        // Reverse control is done at BoundaryType selection, this UI is hidden from user
-        // Gui::Command::doCommand(Gui::Command::Doc,"App.ActiveDocument.%s.Reversed = %s",
-        // name.c_str(), boundary->getReverse() ? "True" : "False");
 
         // solver specific setting, physical model selection
         const Fem::FemSolverObject* pcSolver = boundary->getFemSolver();
@@ -1098,54 +1065,28 @@ bool TaskDlgFemConstraintFluidBoundary::accept()
             );
 
             if (pHeatTransferring && pHeatTransferring->getValue()) {
-                Gui::Command::doCommand(
-                    Gui::Command::Doc,
-                    "App.ActiveDocument.%s.ThermalBoundaryType = '%s'",
-                    name.c_str(),
+                runConstraintCommand(
+                    "ThermalBoundaryType = '%s'",
                     boundary->getThermalBoundaryType().c_str()
                 );
-                Gui::Command::doCommand(
-                    Gui::Command::Doc,
-                    "App.ActiveDocument.%s.TemperatureValue = %f",
-                    name.c_str(),
-                    boundary->getTemperatureValue()
-                );
-                Gui::Command::doCommand(
-                    Gui::Command::Doc,
-                    "App.ActiveDocument.%s.HeatFluxValue = %f",
-                    name.c_str(),
-                    boundary->getHeatFluxValue()
-                );
-                Gui::Command::doCommand(
-                    Gui::Command::Doc,
-                    "App.ActiveDocument.%s.HTCoeffValue = %f",
-                    name.c_str(),
-                    boundary->getHTCoeffValue()
-                );
+                runConstraintCommand("TemperatureValue = %f", boundary->getTemperatureValue());
+                runConstraintCommand("HeatFluxValue = %f", boundary->getHeatFluxValue());
+                runConstraintCommand("HTCoeffValue = %f", boundary->getHTCoeffValue());
             }
             if (
                 pTurbulenceModel && std::string(pTurbulenceModel->getValueAsString()) != "laminar"
             ) {  // Invisic and DNS flow also does not need this
                 // update turbulence and thermal boundary settings, only if those models are
                 // activated
-                Gui::Command::doCommand(
-                    Gui::Command::Doc,
-                    "App.ActiveDocument.%s.TurbulenceSpecification = '%s'",
-                    name.c_str(),
+                runConstraintCommand(
+                    "TurbulenceSpecification = '%s'",
                     boundary->getTurbulenceSpecification().c_str()
                 );
-                Gui::Command::doCommand(
-                    Gui::Command::Doc,
-                    "App.ActiveDocument.%s.TurbulentIntensityValue = %f",
-                    name.c_str(),
+                runConstraintCommand(
+                    "TurbulentIntensityValue = %f",
                     boundary->getTurbulentIntensityValue()
                 );
-                Gui::Command::doCommand(
-                    Gui::Command::Doc,
-                    "App.ActiveDocument.%s.TurbulentLengthValue = %f",
-                    name.c_str(),
-                    boundary->getTurbulentLengthValue()
-                );
+                runConstraintCommand("TurbulentLengthValue = %f", boundary->getTurbulentLengthValue());
             }
         }
         else {

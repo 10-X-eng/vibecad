@@ -126,8 +126,14 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         return signals
 
     def registerSignalHandlers(self, obj):
-        self.form.value_W.editingFinished.connect(self.updateWidth)
-        self.form.value_h.editingFinished.connect(self.updateExtraDepth)
+        self.connectSignal(
+            self.form.value_W.editingFinished,
+            self.updateWidth,
+        )
+        self.connectSignal(
+            self.form.value_h.editingFinished,
+            self.updateExtraDepth,
+        )
 
     def taskPanelBaseGeometryPage(self, obj, features):
         """taskPanelBaseGeometryPage(obj, features) ... return page for adding base geometries."""

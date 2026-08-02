@@ -30,7 +30,6 @@
 # include <QRegularExpressionMatch>
 
 #include <Base/Console.h>
-#include <Mod/TechDraw/App/DrawViewArch.h>
 #include <Mod/TechDraw/App/DrawViewDraft.h>
 #include <Mod/TechDraw/App/DrawViewSymbol.h>
 
@@ -173,9 +172,8 @@ double QGIViewSymbol::legacyScaler(TechDraw::DrawViewSymbol* feature) const
     double pxMm = 3.78;//96px/25.4mm ( CSS/SVG defined value of 96 pixels per inch)
     //    double pxMm = 3.54;                 //90px/25.4mm ( inkscape value version <= 0.91)
     //some software uses different px/in, so symbol will need Scale adjusted.
-    //Arch/Draft views are in px and need to be scaled @ rezfactor px/mm to ensure proper representation
-    if (feature->isDerivedFrom<TechDraw::DrawViewArch>()
-        || feature->isDerivedFrom<TechDraw::DrawViewDraft>()) {
+    // Draft views are in px and need scaling at rezfactor px/mm.
+    if (feature->isDerivedFrom<TechDraw::DrawViewDraft>()) {
         scaling = scaling * rezfactor;
     }
     else {
@@ -223,5 +221,4 @@ double QGIViewSymbol::symbolScaler(TechDraw::DrawViewSymbol* feature) const
 
     return scaling;
 }
-
 

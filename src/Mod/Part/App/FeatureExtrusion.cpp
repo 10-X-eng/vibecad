@@ -148,6 +148,9 @@ Extrusion::Extrusion()
                       "Controls taper direction for inner wires (holes).");
     InnerWireTaper.setEnums(eInnerWireTaperStrings);
     // clang-format on
+
+    allowCrossContainerLink(Base);
+    allowCrossContainerLink(DirLink);
 }
 
 short Extrusion::mustExecute() const

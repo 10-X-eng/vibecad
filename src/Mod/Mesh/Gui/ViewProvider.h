@@ -28,6 +28,7 @@
 
 #include <Gui/ViewProviderBuilder.h>
 #include <Gui/ViewProviderGeometryObject.h>
+#include <Gui/ViewProviderGroupExtension.h>
 #include <Mod/Mesh/App/Core/Elements.h>
 #include <Mod/Mesh/App/Types.h>
 
@@ -324,8 +325,41 @@ private:
 };
 
 /**
+ * View provider for a semantic multi-output mesh operation.
+ *
+ * The mesh node is used only to
+ * present the exact upstream state while the
+ * history marker is before the operation. Group
+ * children are the independently
+ * visible physical results. The controller itself has no editable
+ * geometry.
+ */
+class MeshGuiExport ViewProviderMeshOutputGroup: public ViewProviderMesh,
+                                                 public Gui::ViewProviderGroupExtension
+{
+    PROPERTY_HEADER_WITH_EXTENSIONS(MeshGui::ViewProviderMeshOutputGroup);
+
+public:
+    ViewProviderMeshOutputGroup();
+    ~ViewProviderMeshOutputGroup() override;
+
+    bool extensionCanDragObjects() const override
+    {
+        return false;
+    }
+    bool extensionCanDropObjects() const override
+    {
+        return false;
+    }
+
+protected:
+    bool setEdit(int mode) override;
+};
+
+/**
  * The ViewProviderIndexedFaceSet class creates an indexed faceset node in order
- * to render the mesh data structure.
+ * to render
+ * the mesh data structure.
  * @author Werner Mayer
  */
 class MeshGuiExport ViewProviderIndexedFaceSet: public ViewProviderMesh

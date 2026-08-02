@@ -108,7 +108,7 @@
             <dc:title>[wmayer]</dc:title>
           </cc:Agent>
         </dc:creator>
-        <dc:title>Arch_Remove</dc:title>
+        <dc:title>list-remove</dc:title>
         <dc:date>2011-10-10</dc:date>
         <dc:relation>https://www.freecad.org/wiki/index.php?title=Artwork</dc:relation>
         <dc:publisher>
@@ -116,7 +116,7 @@
             <dc:title>FreeCAD</dc:title>
           </cc:Agent>
         </dc:publisher>
-        <dc:identifier>FreeCAD/src/Mod/Arch/Resources/icons/Arch_Remove.svg</dc:identifier>
+        <dc:identifier>FreeCAD/src/Gui/Icons/list-remove.svg</dc:identifier>
         <dc:rights>
           <cc:Agent>
             <dc:title>FreeCAD LGPL2+</dc:title>

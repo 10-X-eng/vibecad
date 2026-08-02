@@ -27,15 +27,11 @@ __version__ = "00.01"
 __date__ = "2023/02/07"
 
 from PySide.QtCore import QT_TRANSLATE_NOOP
-from PySide import QtGui
-from PySide.QtGui import QMessageBox
 
 import FreeCAD as App
 import FreeCADGui as Gui
 
 import TechDrawTools
-
-translate = App.Qt.translate
 
 
 class CommandHoleShaftFit:
@@ -57,35 +53,37 @@ class CommandHoleShaftFit:
 
     def Activated(self):
         """Run the following code when the command is activated (button press)."""
+        if not self.IsActive():
+            return
         sel = Gui.Selection.getSelectionEx()
-        # if sel and sel[0].Object.TypeId == 'TechDraw::DrawViewDimension':
-        if sel[0].Object.TypeId == "TechDraw::DrawViewDimension":
-            self.ui = TechDrawTools.TaskHoleShaftFit(sel)
-            Gui.Control.showDialog(self.ui)
-        else:
-            msgBox = QtGui.QMessageBox()
-            msgTitle = translate(
-                "TechDraw_HoleShaftFit", "Add a hole or shaft fit to a dimension"
-            )
-            msg = translate(
-                "TechDraw_HoleShaftFit",
-                "Select one length dimension or diameter dimension and retry",
-            )
-            msgBox.setText(msg)
-            msgBox.setWindowTitle(msgTitle)
-            msgBox.exec_()
+        self.ui = TechDrawTools.TaskHoleShaftFit(sel)
+        dialog = Gui.Control.showDialog(
+            self.ui,
+            self.ui.gui_document,
+        )
+        if dialog is not None:
+            dialog.setAutoCloseOnDeletedDocument(True)
+            dialog.setDocumentName(self.ui.document.Name)
 
     def IsActive(self):
         """Return True when the command should be active or False when it should be disabled (greyed)."""
-        if App.ActiveDocument:
-            sel = Gui.Selection.getSelectionEx()
-            return (
-                TechDrawTools.TDToolsUtil.havePage()
-                and TechDrawTools.TDToolsUtil.haveView()
-                and len(sel) == 1
-            )
-        else:
+        document = App.ActiveDocument
+        if (
+            document is None
+            or Gui.Control.activeDialog()
+            or document.getBookedTransactionID() != 0
+            or document.HasPendingTransaction
+        ):
             return False
+        sel = Gui.Selection.getSelectionEx()
+        return (
+            TechDrawTools.TDToolsUtil.havePage()
+            and TechDrawTools.TDToolsUtil.haveView()
+            and len(sel) == 1
+            and sel[0].Object is not None
+            and sel[0].Object.Document is document
+            and sel[0].Object.TypeId == "TechDraw::DrawViewDimension"
+        )
 
 #
 # The command must be "registered" with a unique name by calling its class.

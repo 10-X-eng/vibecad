@@ -21,10 +21,16 @@ SET(Features_SRCS
     Feature.h
     FeatureSolid.cpp
     FeatureSolid.h
+    Component.cpp
+    Component.h
     Body.cpp
     Body.h
     FeatureBase.h
     FeatureBase.cpp
+    DesignFeature.cpp
+    DesignFeature.h
+    DesignModel.cpp
+    DesignModel.h
 )
 SOURCE_GROUP("Features" FILES ${Features_SRCS})
 

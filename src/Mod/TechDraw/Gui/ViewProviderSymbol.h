@@ -66,18 +66,4 @@ public:
     ~ViewProviderDraft() override = default ;
 };
 
-
-//NOLINTBEGIN
-class TechDrawGuiExport ViewProviderArch : public ViewProviderSymbol
-{
-    PROPERTY_HEADER_WITH_OVERRIDE(TechDrawGui::ViewProviderArch);
-//NOLINTEND
-
-public:
-    /// constructor
-    ViewProviderArch();
-    /// destructor
-    ~ViewProviderArch() override  = default ;
-};
-
 } // namespace TechDrawGui

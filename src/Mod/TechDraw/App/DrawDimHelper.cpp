@@ -80,7 +80,7 @@ DrawViewDimension* DrawDimHelper::makeExtentDim(DrawViewPart* dvp, std::vector<s
 {
     //    Base::Console().message("DDH::makeExtentDim() - dvp: %s edgeNames: %d\n",
     //                            dvp->Label.getValue(), edgeNames.size());
-    if (!dvp) {
+    if (!dvp || !dvp->getDocument()) {
         return nullptr;
     }
 
@@ -96,23 +96,25 @@ DrawViewDimension* DrawDimHelper::makeExtentDim(DrawViewPart* dvp, std::vector<s
     }
 
     DrawPage* page = dvp->findParentPage();
-    std::string pageName = page->getNameInDocument();
-
     App::Document* doc = dvp->getDocument();
+    if (!page || page->getDocument() != doc) {
+        throw Base::ValueError(
+            "The extent dimension requires a view attached to a page"
+        );
+    }
     std::string dimName = doc->getUniqueObjectName("DimExtent");
-    Base::Interpreter().runStringArg(
-        "App.activeDocument().addObject('TechDraw::DrawViewDimExtent', '%s')", dimName.c_str());
-        Base::Interpreter().runStringArg(
-            "App.activeDocument().%s.translateLabel('DrawViewDimExtent', 'DimExtent', '%s')",
-              dimName.c_str(), dimName.c_str());    Base::Interpreter().runStringArg(
-        "App.activeDocument().%s.Type = '%s'", dimName.c_str(), dimType.c_str());
-    Base::Interpreter().runStringArg(
-        "App.activeDocument().%s.DirExtent = %d", dimName.c_str(), dimNum);
-
-    auto* dimExt = freecad_cast<DrawViewDimExtent*>(doc->getObject(dimName.c_str()));
+    auto* dimExt =
+        doc->addObject<DrawViewDimExtent>(dimName.c_str());
     if (!dimExt) {
         throw Base::TypeError("Dim extent not found");
     }
+    dimExt->translateLabel(
+        "DrawViewDimExtent",
+        "DimExtent",
+        dimName
+    );
+    dimExt->Type.setValue(dimType.c_str());
+    dimExt->DirExtent.setValue(dimNum);
     dimExt->Source.setValue(dvp, edgeNames);
     ReferenceVector newRefs;
     if (edgeNames.empty()) {
@@ -127,11 +129,14 @@ DrawViewDimension* DrawDimHelper::makeExtentDim(DrawViewPart* dvp, std::vector<s
     }
     dimExt->setReferences2d(newRefs);
 
-    Base::Interpreter().runStringArg("App.activeDocument().%s.addView(App.activeDocument().%s)",
-                                     pageName.c_str(),
-                                     dimName.c_str());
+    page->addView(dimExt);
 
     dimExt->recomputeFeature();
+    if (dimExt->isError()) {
+        throw Base::RuntimeError(
+            "The extent dimension could not be generated"
+        );
+    }
 
     return dimExt;
 }
@@ -146,7 +151,7 @@ void DrawDimHelper::makeExtentDim3d(DrawViewPart* dvp, ReferenceVector reference
 {
     //    Base::Console().message("DDH::makeExtentDim3d() - dvp: %s references: %d\n",
     //                            dvp->Label.getValue(), references.size());
-    if (!dvp) {
+    if (!dvp || !dvp->getDocument()) {
         return;
     }
 
@@ -158,23 +163,25 @@ void DrawDimHelper::makeExtentDim3d(DrawViewPart* dvp, ReferenceVector reference
     }
 
     DrawPage* page = dvp->findParentPage();
-    std::string pageName = page->getNameInDocument();
-
     App::Document* doc = dvp->getDocument();
+    if (!page || page->getDocument() != doc) {
+        throw Base::ValueError(
+            "The extent dimension requires a view attached to a page"
+        );
+    }
     std::string dimName = doc->getUniqueObjectName("DimExtent");
-    Base::Interpreter().runStringArg(
-        "App.activeDocument().addObject('TechDraw::DrawViewDimExtent', '%s')", dimName.c_str());
-        Base::Interpreter().runStringArg(
-            "App.activeDocument().%s.translateLabel('DrawViewDimExtent', 'DimExtent', '%s')",
-              dimName.c_str(), dimName.c_str());    Base::Interpreter().runStringArg(
-        "App.activeDocument().%s.Type = '%s'", dimName.c_str(), dimType.c_str());
-    Base::Interpreter().runStringArg(
-        "App.activeDocument().%s.DirExtent = %d", dimName.c_str(), dimNum);
-
-    auto* dimExt = freecad_cast<DrawViewDimExtent*>(doc->getObject(dimName.c_str()));
+    auto* dimExt =
+        doc->addObject<DrawViewDimExtent>(dimName.c_str());
     if (!dimExt) {
         throw Base::TypeError("Dim extent not found");
     }
+    dimExt->translateLabel(
+        "DrawViewDimExtent",
+        "DimExtent",
+        dimName
+    );
+    dimExt->Type.setValue(dimType.c_str());
+    dimExt->DirExtent.setValue(dimNum);
 
     dimExt->Source.setValue(dvp);
 
@@ -193,11 +200,14 @@ void DrawDimHelper::makeExtentDim3d(DrawViewPart* dvp, ReferenceVector reference
 
     dimExt->setReferences3d(references);
 
-    Base::Interpreter().runStringArg("App.activeDocument().%s.addView(App.activeDocument().%s)",
-                                     pageName.c_str(),
-                                     dimName.c_str());
+    page->addView(dimExt);
 
     dimExt->recomputeFeature();
+    if (dimExt->isError()) {
+        throw Base::RuntimeError(
+            "The extent dimension could not be generated"
+        );
+    }
 }
 std::pair<Base::Vector3d, Base::Vector3d>
 DrawDimHelper::minMax(DrawViewPart* dvp, std::vector<std::string> edgeNames, int direction)
@@ -420,11 +430,16 @@ DrawDimHelper::makeDistDim(DrawViewPart* dvp, std::string dimType,
     //    Base::Console().message("DDH::makeDistDim() - inMin: %s inMax: %s\n",
     //                            DrawUtil::formatVector(inMin).c_str(),
     //                            DrawUtil::formatVector(inMax).c_str());
+    if (!dvp || !dvp->getDocument()) {
+        return nullptr;
+    }
     TechDraw::DrawPage* page = dvp->findParentPage();
-    std::string pageName = page->getNameInDocument();
-
-    TechDraw::DrawViewDimension* dim = nullptr;
     App::Document* doc = dvp->getDocument();
+    if (!page || page->getDocument() != doc) {
+        throw Base::ValueError(
+            "The distance dimension requires a view attached to a page"
+        );
+    }
     std::string dimName = doc->getUniqueObjectName("Dimension");
     if (extent) {
         dimName = doc->getUniqueObjectName("DimExtent");
@@ -442,6 +457,11 @@ DrawDimHelper::makeDistDim(DrawViewPart* dvp, std::string dimType,
    cleanMax = CosmeticVertex::makeCanonicalPoint(dvp, cleanMax);
     std::string tag2 = dvp->addCosmeticVertex(cleanMax);
     int iGV2 = dvp->add1CVToGV(tag2);
+    if (iGV1 < 0 || iGV2 < 0) {
+        throw Base::RuntimeError(
+            "The dimension reference vertices could not be created"
+        );
+    }
 
     gVerts = dvp->getVertexGeometry();
     std::vector<App::DocumentObject*> objs;
@@ -460,34 +480,43 @@ DrawDimHelper::makeDistDim(DrawViewPart* dvp, std::string dimType,
     subs.push_back(vertexName);
     objs.push_back(dvp);
 
+    TechDraw::DrawViewDimension* dim = nullptr;
     if (extent) {
-        Base::Interpreter().runStringArg(
-            "App.activeDocument().addObject('TechDraw::DrawViewDimExtent', '%s')", dimName.c_str());
-        Base::Interpreter().runStringArg(
-            "App.activeDocument().%s.translateLabel('DrawViewDimExtent', 'DimExtent', '%s')",
-              dimName.c_str(), dimName.c_str());
+        auto* extentDimension =
+            doc->addObject<DrawViewDimExtent>(dimName.c_str());
+        if (extentDimension) {
+            extentDimension->translateLabel(
+                "DrawViewDimExtent",
+                "DimExtent",
+                dimName
+            );
+        }
+        dim = extentDimension;
     }
     else {
-        Base::Interpreter().runStringArg(
-            "App.activeDocument().addObject('TechDraw::DrawViewDimension', '%s')", dimName.c_str());
-        Base::Interpreter().runStringArg(
-            "App.activeDocument().%s.translateLabel('DrawViewDimimension', 'Dimension', '%s')",
-              dimName.c_str(), dimName.c_str());
+        dim = doc->addObject<DrawViewDimension>(dimName.c_str());
+        if (dim) {
+            dim->translateLabel(
+                "DrawViewDimension",
+                "Dimension",
+                dimName
+            );
+        }
     }
-
-    Base::Interpreter().runStringArg(
-        "App.activeDocument().%s.Type = '%s'", dimName.c_str(), dimType.c_str());
-
-    dim = dynamic_cast<TechDraw::DrawViewDimension*>(doc->getObject(dimName.c_str()));
     if (!dim) {
         throw Base::TypeError("DDH::makeDistDim - dim not found\n");
     }
+    dim->Type.setValue(dimType.c_str());
     dim->References2D.setValues(objs, subs);
 
-    Base::Interpreter().runStringArg("App.activeDocument().%s.addView(App.activeDocument().%s)",
-                                     pageName.c_str(),
-                                     dimName.c_str());
+    page->addView(dim);
 
+    dim->recomputeFeature();
+    if (dim->isError()) {
+        throw Base::RuntimeError(
+            "The distance dimension could not be generated"
+        );
+    }
     dvp->requestPaint();
     return dim;
 }

@@ -15,11 +15,12 @@ from .mesh_analyze import analyze_mesh
 TOOL_SPEC = {
     "name": "mesh.repair",
     "description": (
-        "Repair one exact mesh object by running the selected repair passes "
-        "in a safe fixed order (orientation, duplicates, non-manifolds, "
-        "degenerations, self-intersections, hole filling). Run mesh.analyze "
-        "first and select only the repairs that its report justifies; the "
-        "result includes a before/after defect comparison."
+        "Create one linked, parametric Mesh::Repair result from one exact "
+        "mesh object. The selected repair passes run in a safe fixed order "
+        "(orientation, duplicates, non-manifolds, degenerations, "
+        "self-intersections, hole filling) without changing the source mesh. "
+        "Run mesh.analyze first and select only justified repairs; the result "
+        "includes a before/after defect comparison."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
@@ -32,7 +33,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Exact internal name of the mesh object (Mesh::Feature) "
-                    "to repair, as returned by core.inspect scope='domain'."
+                    "to repair, as returned by mesh.list_meshes."
                 ),
             },
             "harmonize_normals": {
@@ -112,7 +113,7 @@ def run(
     if getattr(obj, "Mesh", None) is None:
         return _invalid(
             f"Object is not a mesh (no Mesh property): {clean_name}. Use "
-            "core.inspect scope='domain' for mesh names."
+            "mesh.list_meshes for mesh names."
         )
     max_hole_edges = int(fill_holes_max_edges)
     selected = (
@@ -169,78 +170,67 @@ def run(
         target = active.getObject(clean_name)
         if target is None:
             raise RuntimeError("The mesh object no longer exists.")
+        source_was_visible = bool(getattr(target, "Visibility", False))
         before = analyze_mesh(target.Mesh)
-        mesh = target.Mesh.copy()
-        pass_results: list[dict[str, Any]] = []
-        failed = False
-        for spec in pass_specs:
-            pass_before = analyze_mesh(mesh)
-            if not any(
-                _defect_value(pass_before, name) for name in spec["target_checks"]
-            ):
-                pass_results.append(
-                    {
-                        "pass": spec["name"],
-                        "status": "already_resolved_by_prior_pass",
-                        "target_checks": spec["target_checks"],
-                        "before": pass_before,
-                        "after": pass_before,
-                        "native_calls": [],
-                    }
-                )
-                continue
-            native_calls: list[dict[str, Any]] = []
-            for method_name, arguments in spec["calls"]:
-                try:
-                    native_result = getattr(mesh, method_name)(*arguments)
-                    native_calls.append(
-                        {
-                            "method": method_name,
-                            "arguments": list(arguments),
-                            "status": "completed",
-                            "native_result": _native_result(native_result),
-                        }
+        pass_results, unattempted = _diagnose_repair_passes(
+            target.Mesh,
+            pass_specs,
+        )
+
+        with domain_runtime.NewTimelineOperation() as timeline:
+            operation = active.addObject("Mesh::Repair", "MeshRepair")
+            if operation is None:
+                raise RuntimeError("FreeCAD could not create the native mesh repair.")
+            timeline.set_operation(operation)
+            operation.Label = f"{target.Label} Repair"
+            operation.Source = target
+            operation.HarmonizeNormals = bool(harmonize_normals)
+            operation.RemoveDuplicates = bool(remove_duplicates)
+            operation.RemoveNonManifolds = bool(remove_non_manifolds)
+            operation.RemoveNonManifoldPoints = bool(remove_non_manifolds)
+            operation.FixIndices = False
+            operation.FixDegenerations = bool(fix_degenerations)
+            operation.FixSelfIntersections = bool(fix_self_intersections)
+            operation.RemoveFolds = False
+            operation.FillHolesMaxEdges = max_hole_edges
+            operation.Repeat = False
+            operation.MaxIterations = 1
+            if source_was_visible:
+                if not domain_runtime.mark_modeling_replaced_inputs(
+                    operation,
+                    [target],
+                ):
+                    raise RuntimeError(
+                        "The native exact replaced-input API is unavailable; "
+                        "the retained repair was not allowed to hide its source."
                     )
-                except Exception as exc:
-                    native_calls.append(
-                        {
-                            "method": method_name,
-                            "arguments": list(arguments),
-                            "status": "failed",
-                            "native_error": str(exc),
-                        }
-                    )
-                    failed = True
-                    break
-            # Retain the exact successful prefix even when a later native call
-            # in this pass fails.
-            target.Mesh = mesh
+            operation.Visibility = True
             active.recompute()
-            pass_after = analyze_mesh(target.Mesh)
-            pass_results.append(
-                {
-                    "pass": spec["name"],
-                    "status": "failed" if failed else "completed",
-                    "target_checks": spec["target_checks"],
-                    "before": pass_before,
-                    "after": pass_after,
-                    "native_calls": native_calls,
-                    "intended_defect_delta": _selected_defect_delta(
-                        pass_before, pass_after, spec["target_checks"]
-                    ),
-                    "regressions": _analysis_regressions(pass_before, pass_after),
-                }
-            )
-            if failed:
-                break
-        unattempted = [
-            spec["name"] for spec in pass_specs[len(pass_results) :]
-        ]
-        after = analyze_mesh(target.Mesh)
+            if not operation.isValid():
+                raise RuntimeError(
+                    operation.getStatusString()
+                    or "The native mesh repair did not recompute successfully."
+                )
+            if int(operation.Mesh.CountFacets) <= 0:
+                raise RuntimeError("The native mesh repair produced an empty result.")
+
+        # Atomic publication requires every pre-existing operation to retain
+        # its accepted state until the new semantic block has been validated.
+        # Hide the declared replaced input only after that publication; the
+        # open transaction still captures this presentation change, and
+        # History uses the replacement contract to reveal it before the
+        # repair and hide it after the repair.
+        if source_was_visible:
+            target.Visibility = False
+
+        after = analyze_mesh(operation.Mesh)
         return {
             "document": active.Name,
-            "object": target.Name,
-            "object_label": target.Label,
+            "object": operation.Name,
+            "object_label": operation.Label,
+            "source_object": target.Name,
+            "source_object_label": target.Label,
+            "native_type": operation.TypeId,
             "before": before,
             "passes": pass_results,
             "unattempted_passes": unattempted,
@@ -389,6 +379,82 @@ def _selected_passes(**options: Any) -> list[dict[str, Any]]:
             }
         )
     return passes
+
+
+def _diagnose_repair_passes(
+    source_mesh: Any,
+    pass_specs: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Replay selected passes on a detached copy for per-pass diagnostics."""
+    mesh = source_mesh.copy()
+    results: list[dict[str, Any]] = []
+    failed = False
+    for spec in pass_specs:
+        pass_before = analyze_mesh(mesh)
+        if not any(
+            _defect_value(pass_before, name) for name in spec["target_checks"]
+        ):
+            results.append(
+                {
+                    "pass": spec["name"],
+                    "status": "already_resolved_by_prior_pass",
+                    "target_checks": spec["target_checks"],
+                    "before": pass_before,
+                    "after": pass_before,
+                    "native_calls": [],
+                }
+            )
+            continue
+
+        native_calls: list[dict[str, Any]] = []
+        for method_name, arguments in spec["calls"]:
+            try:
+                native_result = getattr(mesh, method_name)(*arguments)
+                native_calls.append(
+                    {
+                        "method": method_name,
+                        "arguments": list(arguments),
+                        "status": "completed",
+                        "native_result": _native_result(native_result),
+                    }
+                )
+            except Exception as exc:
+                native_calls.append(
+                    {
+                        "method": method_name,
+                        "arguments": list(arguments),
+                        "status": "failed",
+                        "native_error": str(exc),
+                    }
+                )
+                failed = True
+                break
+        pass_after = analyze_mesh(mesh)
+        results.append(
+            {
+                "pass": spec["name"],
+                "status": "failed" if failed else "completed",
+                "target_checks": spec["target_checks"],
+                "before": pass_before,
+                "after": pass_after,
+                "native_calls": native_calls,
+                "intended_defect_delta": _selected_defect_delta(
+                    pass_before,
+                    pass_after,
+                    spec["target_checks"],
+                ),
+                "regressions": _analysis_regressions(
+                    pass_before,
+                    pass_after,
+                ),
+            }
+        )
+        if failed:
+            break
+
+    return results, [
+        spec["name"] for spec in pass_specs[len(results) :]
+    ]
 
 
 def _defect_value(analysis: dict[str, Any], name: str) -> bool:

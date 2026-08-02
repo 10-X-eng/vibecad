@@ -35,7 +35,12 @@ class SurfaceWorkbench(Gui.Workbench):
     """Surface workbench object."""
 
     Icon = os.path.join(
-        App.getResourceDir(), "Mod", "Surface", "Resources", "icons", "Surface_Workbench.svg"
+        App.getResourceDir(),
+        "Mod",
+        "Surface",
+        "Resources",
+        "icons",
+        "Surface_Workbench.svg",
     )
     MenuText = "Surface"
     ToolTip = "Surface workbench: Create and edit complex surfaces"
@@ -50,3 +55,5 @@ class SurfaceWorkbench(Gui.Workbench):
 
 
 Gui.addWorkbench(SurfaceWorkbench())
+
+App.__unit_test__ += ["TestSurfaceGui"]

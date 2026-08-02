@@ -763,7 +763,11 @@ class ObjectVcarve(PathEngraveBase.ObjectOp):
             Path.Log.error("debugVoronoi: empty debug cache. Recompute VCarve operation first")
             return
 
-        vPart = FreeCAD.activeDocument().addObject("App::Part", f"{obj.Name}-VoronoiDebugMedial")
+        document = obj.Document
+        vPart = document.addObject(
+            "App::Part",
+            f"{obj.Name}-VoronoiDebugMedial",
+        )
 
         wiresToShow = []
 
@@ -781,7 +785,9 @@ class ObjectVcarve(PathEngraveBase.ObjectOp):
                 wiresToShow.append(currentPartWire)
 
         for w in wiresToShow:
-            vPart.addObject(Part.show(w))
+            debug_wire = document.addObject("Part::Feature", "VoronoiMedial")
+            debug_wire.Shape = w
+            vPart.addObject(debug_wire)
 
     def debugVoronoiEdges(self, obj):
         """Debug function to display calculated voronoi edges"""
@@ -790,7 +796,11 @@ class ObjectVcarve(PathEngraveBase.ObjectOp):
             Path.Log.error("debugVoronoi: empty debug cache. Recompute VCarve operation first")
             return
 
-        vPart = FreeCAD.activeDocument().addObject("App::Part", f"{obj.Name}-VoronoiDebugEdge")
+        document = obj.Document
+        vPart = document.addObject(
+            "App::Part",
+            f"{obj.Name}-VoronoiDebugEdge",
+        )
 
         edgesToShow = []
 
@@ -801,7 +811,9 @@ class ObjectVcarve(PathEngraveBase.ObjectOp):
                 edgesToShow.append(currentEdge)
 
         for e in edgesToShow:
-            vPart.addObject(Part.show(e))
+            debug_edge = document.addObject("Part::Feature", "VoronoiEdge")
+            debug_edge.Shape = e
+            vPart.addObject(debug_edge)
 
 
 def SetupProperties():
@@ -810,7 +822,6 @@ def SetupProperties():
 
 def Create(name, obj=None, parentJob=None):
     """Create(name) ... Creates and returns a Vcarve operation."""
-    if obj is None:
-        obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = PathOp.createOperationObject(name, obj, parentJob)
     obj.Proxy = ObjectVcarve(obj, name, parentJob)
     return obj

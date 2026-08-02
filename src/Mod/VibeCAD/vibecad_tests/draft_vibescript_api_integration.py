@@ -703,7 +703,10 @@ def _exercise_lifecycle(root: Path) -> None:
         "arguments": {
             "program_id": prepared["program_id"],
             "expected_revision": prepared["revision"],
-            "replacements": [{"old": "closed=True, make_face=True", "new": "closed=False, make_face=True"}],
+            "source": create_capture["arguments"]["source"].replace(
+                "closed=True, make_face=True",
+                "closed=False, make_face=True",
+            ),
         },
     }
     failed_prepared = _finalize_prepared(prepare_candidate(failed_capture), service)
@@ -736,7 +739,7 @@ def _exercise_lifecycle(root: Path) -> None:
         "arguments": {
             "program_id": prepared["program_id"],
             "expected_revision": failed_prepared["revision"],
-            "replacements": [{"old": "closed=False, make_face=True", "new": "closed=True, make_face=True"}],
+            "source": create_capture["arguments"]["source"],
         },
     }
     (
@@ -760,10 +763,10 @@ def _exercise_lifecycle(root: Path) -> None:
         "arguments": {
             "program_id": prepared["program_id"],
             "expected_revision": recovery_prepared["revision"],
-            "replacements": [{
-                "old": "count_x=2, count_y=2, count_z=1, use_link=True",
-                "new": "count_x=2, count_y=2, count_z=1, use_link=False",
-            }],
+            "source": create_capture["arguments"]["source"].replace(
+                "count_x=2, count_y=2, count_z=1, use_link=True",
+                "count_x=2, count_y=2, count_z=1, use_link=False",
+            ),
         },
     }
     mode_prepared = _finalize_prepared(prepare_candidate(mode_capture), service)
@@ -796,10 +799,7 @@ def _exercise_lifecycle(root: Path) -> None:
         "arguments": {
             "program_id": prepared["program_id"],
             "expected_revision": mode_prepared["revision"],
-            "replacements": [{
-                "old": "count_x=2, count_y=2, count_z=1, use_link=False",
-                "new": "count_x=2, count_y=2, count_z=1, use_link=True",
-            }],
+            "source": create_capture["arguments"]["source"],
         },
     }
     restored_prepared, _execution, _validated, _publication, accepted = _run_candidate(

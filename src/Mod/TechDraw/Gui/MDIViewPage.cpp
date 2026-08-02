@@ -39,6 +39,7 @@
 #include <QMetaObject>
 #include <fastsignals/signal.h>
 #include <cmath>
+#include <map>
 
 
 #include <App/Application.h>
@@ -90,29 +91,36 @@ MDIViewPage::MDIViewPage(ViewProviderPage* pageVp, Gui::Document* doc, QWidget* 
     setMouseTracking(true);
 
     m_toggleKeepUpdatedAction = new QAction(tr("Toggle &Keep Updated"), this);
+    m_toggleKeepUpdatedAction->setObjectName(QStringLiteral("TechDrawContextToggleKeepUpdated"));
     connect(m_toggleKeepUpdatedAction, &QAction::triggered, this, &MDIViewPage::toggleKeepUpdated);
 
     m_toggleFrameAction = new QAction(tr("Toggle &Frames"), this);
+    m_toggleFrameAction->setObjectName(QStringLiteral("TechDrawContextToggleFrames"));
     connect(m_toggleFrameAction, &QAction::triggered, this, &MDIViewPage::toggleFrame);
 
     m_toggleGridAction = new QAction(tr("Toggle &Grid"), this);
+    m_toggleGridAction->setObjectName(QStringLiteral("TechDrawContextToggleGrid"));
     connect(m_toggleGridAction, &QAction::triggered, this, &MDIViewPage::toggleGrid);
 
     m_exportSVGAction = new QAction(tr("&Export SVG"), this);
+    m_exportSVGAction->setObjectName(QStringLiteral("TechDrawContextExportSVG"));
 
     connect(m_exportSVGAction, &QAction::triggered, this, qOverload<>(&MDIViewPage::saveSVG));
 
     m_exportDXFAction = new QAction(tr("Export DXF"), this);
+    m_exportDXFAction->setObjectName(QStringLiteral("TechDrawContextExportDXF"));
 
     connect(m_exportDXFAction, &QAction::triggered, this, qOverload<>(&MDIViewPage::saveDXF));
 
     m_exportPDFAction = new QAction(tr("Export PDF"), this);
+    m_exportPDFAction->setObjectName(QStringLiteral("TechDrawContextExportPDF"));
 
     connect(m_exportPDFAction, &QAction::triggered, this, qOverload<>(&MDIViewPage::slotContextExportPdf));
 
     m_printAllAction = new QAction(tr("Print All Pages"), this);
+    m_printAllAction->setObjectName(QStringLiteral("TechDrawContextPrintAll"));
 
-    connect(m_printAllAction, &QAction::triggered, this, qOverload<>(&MDIViewPage::printAllPages));
+    connect(m_printAllAction, &QAction::triggered, this, qOverload<>(&MDIViewPage::printAll));
 
     isSelectionBlocked = false;
     isContextualMenuEnabled = true;
@@ -493,8 +501,9 @@ void MDIViewPage::toggleGrid()
 
 void MDIViewPage::toggleKeepUpdated()
 {
-    bool state = m_vpPage->getDrawPage()->KeepUpdated.getValue();
-    m_vpPage->getDrawPage()->KeepUpdated.setValue(!state);
+    if (m_vpPage) {
+        m_vpPage->toggleKeepUpdated();
+    }
 }
 
 void MDIViewPage::viewAll()
@@ -509,8 +518,9 @@ QString MDIViewPage::defaultFileName()
     auto doc = getPage()->getDocument();
     std::string docLabel{doc->Label.getValue()};
     std::string pageLabel{getPage()->Label.getValue()};
-    auto pageTemplate = dynamic_cast<TechDraw::DrawTemplate*>(getPage()->Template.getValue());
-    auto textMap = pageTemplate->EditableTexts.getValues();
+    auto* pageTemplate = getPage()->getActiveTemplate();
+    auto textMap =
+        pageTemplate ? pageTemplate->EditableTexts.getValues() : std::map<std::string, std::string> {};
     auto drawingNumber = textMap["drawing_number"];
     auto revision = textMap["revision_index"];
     auto defaultName = docLabel + separator + pageLabel + separator + drawingNumber + separator + revision;
@@ -628,27 +638,40 @@ QString MDIViewPage::getPdfFileName() const
 /// a slot for printing all the pages. just redirects to printAllPages
 void MDIViewPage::printAll()
 {
-    MDIViewPage::printAllPages();
+    auto* page = getPage();
+    MDIViewPage::printAllPages(page ? page->getDocument() : nullptr);
 }
 
 //static routine for PrintAll command
 /// prints all the pages in the active document
 void MDIViewPage::printAllPages()
 {
+    MDIViewPage::printAllPages(App::GetApplication().getActiveDocument());
+}
+
+/// prints all pages in the specified document, provided it remains open
+void MDIViewPage::printAllPages(App::Document* document)
+{
+    if (!document) {
+        return;
+    }
+    const std::string documentName = document->getName();
+
     QPrinter printer(QPrinter::HighResolution);
     printer.setFullPage(true);
 
     QPrintDialog dlg(&printer, Gui::getMainWindow());
     if (dlg.exec() == QDialog::Accepted) {
-        App::Document* doc = App::GetApplication().getActiveDocument();
-        if (!doc) {
+        App::Document* liveDocument =
+            App::GetApplication().getDocument(documentName.c_str());
+        if (liveDocument != document) {
             return;
         }
         if (printer.outputFileName().isEmpty()) {
-            PagePrinter::printAll(&printer, doc);
+            PagePrinter::printAll(&printer, liveDocument);
         }
         else {
-            PagePrinter::printAllPdf(&printer, doc);
+            PagePrinter::printAllPdf(&printer, liveDocument);
         }
     }
 }

@@ -122,24 +122,7 @@
       <translation>Inserta una anotación de texto editable en la página actual</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>TechDraw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>Vista BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Inserta una vista de un plano de sección BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2137,12 +2120,6 @@ Si no hay ningún objeto seleccionado, se abre un explorador de archivos para el
       <translation>Página de creación de dibujo</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>Crea una vista BIM</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Crear una imagen</translation>
@@ -3295,11 +3272,6 @@ Si no hay ningún objeto seleccionado, se abre un explorador de archivos para el
       <translation>Seleccione un grupo de clips y una vista</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Esta página contiene una vista BIM que no se exportará. ¿Desea continuar?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>Guardar archivo DXF</translation>
@@ -3333,16 +3305,6 @@ Si no hay ningún objeto seleccionado, se abre un explorador de archivos para el
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Seleccione al menos un objeto</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Seleccione solo 1 plano de sección BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>No hay plano de sección BIM en la selección</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -6085,7 +6047,7 @@ Los cambios no tendrán efecto en cotas existentes.</translation>
       <location filename="../../DlgPrefsTechDrawHLR.ui" line="66"/>
       <source>Use an approximation to find hidden lines.
 Fast, but result is a collection of short straight lines.</source>
-      <translation>Utilice una aproximación para encontrar líneas ocultas. 
+      <translation>Utilice una aproximación para encontrar líneas ocultas.
 Rápido, pero los resultados son una colección de líneas rectas cortas.</translation>
     </message>
     <message>
@@ -10064,14 +10026,7 @@ hay un diálogo de tareas abierto.</translation>
       <translation>Línea</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

@@ -291,6 +291,10 @@ DrawViewDimension::~DrawViewDimension()
 
 std::vector<Base::Vector3d> DrawViewDimension::getPrecomputedDimensionVectors() const
 {
+    const auto& persisted = PrecomputedDimensionVectors.getValues();
+    if (!persisted.empty()) {
+        return persisted;
+    }
     const pointPair angleEnds = m_anglePoints.ends();
     return {
         m_linearPoints.first(),
@@ -316,11 +320,22 @@ std::vector<Base::Vector3d> DrawViewDimension::getPrecomputedDimensionVectors() 
 
 std::vector<double> DrawViewDimension::getPrecomputedDimensionScalars() const
 {
+    if (!PrecomputedDimensionVectors.getValues().empty()) {
+        return PrecomputedDimensionScalars.getValues();
+    }
     return {m_arcPoints.radius, m_areaPoint.area, m_areaPoint.actualArea};
 }
 
 std::vector<bool> DrawViewDimension::getPrecomputedDimensionFlags() const
 {
+    if (!PrecomputedDimensionVectors.getValues().empty()) {
+        const auto& persisted = PrecomputedDimensionFlags.getValues();
+        std::vector<bool> result(persisted.size());
+        for (size_t index = 0; index < persisted.size(); ++index) {
+            result[index] = persisted.test(index);
+        }
+        return result;
+    }
     return {m_hasGeometry, m_arcPoints.isArc, m_arcPoints.arcCW, m_referencesCorrect};
 }
 
@@ -699,6 +714,26 @@ App::DocumentObjectExecReturn* DrawViewDimension::execute()
 
     overrideKeepUpdated(false);
     return DrawView::execute();
+}
+
+bool DrawViewDimension::timelineDependenciesActive(
+    TimelineDependencyStack& stack) const
+{
+    if (!DrawView::timelineDependenciesActive(stack)) {
+        return false;
+    }
+
+    for (auto* object : References2D.getValues()) {
+        if (!timelineDependencyIsActive(object, stack)) {
+            return false;
+        }
+    }
+    for (auto* object : References3D.getValues()) {
+        if (!timelineDependencyIsActive(object, stack)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // true if we have enough information to execute, false otherwise

@@ -57,6 +57,10 @@ public:
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;
     bool setEdit(int ModNum) override;
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     bool canDelete(App::DocumentObject* obj) const override;
     bool onDelete(const std::vector<std::string> & parms) override;
 

@@ -38,6 +38,10 @@ import Path.Main.Job as PathJob
 import Path.Main.Stock as PathStock
 import Path.Tool.Gui.Controller as PathToolControllerGui
 import PathScripts.PathUtils as PathUtils
+from Path.CommandBoundary import (
+    TaskDocumentTransaction,
+    open_timeline_mode_zero_editor,
+)
 from Path.Tool.toolbit.ui.selector import ToolBitSelector
 from Machine.models import MachineFactory
 from Machine.ui.editor import MachineEditorDialog
@@ -81,12 +85,20 @@ def _OpenCloseResourceEditor(obj, vobj, edit):
 
 
 @contextmanager
-def selectionEx():
-    sel = FreeCADGui.Selection.getSelectionEx()
+def selectionEx(document=None):
+    document_name = document.Name if document is not None else None
+    sel = (
+        FreeCADGui.Selection.getSelectionEx(document_name)
+        if document_name
+        else FreeCADGui.Selection.getSelectionEx()
+    )
     try:
         yield sel
     finally:
-        FreeCADGui.Selection.clearSelection()
+        if document_name:
+            FreeCADGui.Selection.clearSelection(document_name)
+        else:
+            FreeCADGui.Selection.clearSelection()
         for s in sel:
             if s.SubElementNames:
                 FreeCADGui.Selection.addSelection(s.Object, s.SubElementNames)
@@ -114,18 +126,33 @@ class ViewProvider:
         self.sph = None
         self.switch = None
         self.taskPanel = None
+        self._taskTransaction = None
         self.vobj = None
         self.baseVisibility = {}
         self.stockVisibility = False
+        self._acceptedReplacementInputs = ()
+        self._replacementVisibilityEditActive = False
+        self.operationEditBaseVisibility = []
+        self.operationEditSourceVisibility = []
+        self.operationEditStockVisibility = None
 
     def attach(self, vobj):
         self.vobj = vobj
         self.obj = vobj.Object
         self.taskPanel = None
+        self._taskTransaction = None
         if not hasattr(self, "baseVisibility"):
             self.baseVisibility = {}
         if not hasattr(self, "stockVisibility"):
             self.stockVisibility = False
+        self._acceptedReplacementInputs = ()
+        self._replacementVisibilityEditActive = False
+        if not hasattr(self, "operationEditBaseVisibility"):
+            self.operationEditBaseVisibility = []
+        if not hasattr(self, "operationEditSourceVisibility"):
+            self.operationEditSourceVisibility = []
+        if not hasattr(self, "operationEditStockVisibility"):
+            self.operationEditStockVisibility = None
 
         # Setup the axis display at the origin
         self.switch = coin.SoSwitch()
@@ -158,7 +185,7 @@ class ViewProvider:
             # explicitly hidden by the user and prevent showing them when
             # showing the job
 
-            if self.obj.Document.Restoring:
+            if self.obj.Document.Restoring or self.obj.Document.isApplyingTimelineState():
                 return
 
             if vobj.Visibility:
@@ -181,11 +208,10 @@ class ViewProvider:
     def restoreOperationsVisibility(self):
         if hasattr(self, "operationsVisibility"):
             for op in self.obj.Operations.Group:
-                if self.operationsVisibility.get(op.Name, True):
-                    op.Visibility = True
-        else:
-            for op in self.obj.Operations.Group:
-                op.Visibility = True
+                op.Visibility = self.operationsVisibility.get(
+                    op.Name,
+                    True,
+                )
 
     def hideModels(self):
         self.modelsVisibility = {}
@@ -196,11 +222,10 @@ class ViewProvider:
     def restoreModelsVisibility(self):
         if hasattr(self, "modelsVisibility"):
             for model in self.obj.Model.Group:
-                if self.modelsVisibility.get(model.Name, True):
-                    model.Visibility = True
-        else:
-            for model in self.obj.Model.Group:
-                model.Visibility = True
+                model.Visibility = self.modelsVisibility.get(
+                    model.Name,
+                    True,
+                )
 
     def hideStock(self):
         self.stockVisibility = self.obj.Stock.Visibility
@@ -208,8 +233,7 @@ class ViewProvider:
 
     def restoreStockVisibility(self):
         if hasattr(self, "stockVisibility"):
-            if self.stockVisibility:
-                self.obj.Stock.Visibility = True
+            self.obj.Stock.Visibility = self.stockVisibility
 
     def hideTools(self):
         self.toolsVisibility = {}
@@ -220,8 +244,10 @@ class ViewProvider:
     def restoreToolsVisibility(self):
         if hasattr(self, "toolsVisibility"):
             for tc in self.obj.Tools.Group:
-                if self.toolsVisibility.get(tc.Tool.Name, True):
-                    tc.Tool.Visibility = True
+                tc.Tool.Visibility = self.toolsVisibility.get(
+                    tc.Tool.Name,
+                    True,
+                )
 
     def showOriginAxis(self, yes):
         sw = coin.SO_SWITCH_ALL if yes else coin.SO_SWITCH_NONE
@@ -236,6 +262,13 @@ class ViewProvider:
     def deleteObjectsOnReject(self):
         return hasattr(self, "deleteOnReject") and self.deleteOnReject
 
+    def supportsDocumentTimelineEdit(self):
+        """A CAM job owns a real setup task-panel editor."""
+        return True
+
+    def doubleClicked(self, vobj=None):
+        return open_timeline_mode_zero_editor(self.obj)
+
     def setEdit(self, vobj=None, mode=0):
         Path.Log.track(mode)
         if 0 == mode:
@@ -246,12 +279,30 @@ class ViewProvider:
         return True
 
     def openTaskPanel(self, activate=None):
-        self.taskPanel = TaskPanel(self.vobj, self.deleteObjectsOnReject())
-        FreeCADGui.Control.closeDialog()
-        FreeCADGui.Control.showDialog(self.taskPanel)
-        self.taskPanel.setupUi(activate)
-        self.showOriginAxis(True)
-        self.deleteOnReject = False
+        transaction = self._taskTransaction
+        self._taskTransaction = None
+        if transaction is None:
+            transaction = TaskDocumentTransaction(
+                self.vobj.Object,
+                "Edit Job",
+            )
+        try:
+            self.taskPanel = TaskPanel(
+                self.vobj,
+                self.deleteObjectsOnReject(),
+                transaction=transaction,
+            )
+            transaction.close_dialog()
+            transaction.show_dialog(self.taskPanel)
+            self.taskPanel.setupUi(activate)
+            self.showOriginAxis(True)
+            self.deleteOnReject = False
+        except Exception:
+            self.taskPanel = None
+            transaction.close_dialog()
+            if transaction.owns_transaction():
+                transaction.abort()
+            raise
 
     def resetTaskPanel(self):
         self.showOriginAxis(self.vobj.Visibility)
@@ -317,29 +368,185 @@ class ViewProvider:
         ):
             self.obj.Stock.ViewObject.Proxy.onEdit(_OpenCloseResourceEditor)
 
+    @staticmethod
+    def _timelineReplacedInputs(obj):
+        """Return one validated snapshot of the Job's accepted replacements."""
+
+        property_name = "VibeCADTimelineReplacedInputs"
+        if property_name not in obj.PropertiesList:
+            return ()
+        if obj.getTypeIdOfProperty(property_name) != "App::PropertyLinkListHidden":
+            raise RuntimeError("The CAM Job has malformed replacement metadata")
+
+        document = obj.Document
+        replacements = []
+        for source in getattr(obj, property_name):
+            if (
+                source is obj
+                or source is None
+                or source.Document is not document
+                or document.getObject(source.Name) is not source
+                or source in replacements
+                or not getattr(source, "ViewObject", None)
+            ):
+                raise RuntimeError("The CAM Job has an invalid accepted model input")
+            replacements.append(source)
+        return tuple(replacements)
+
     def rememberBaseVisibility(self, obj, base):
         Path.Log.track()
         if base.ViewObject:
             orig = PathUtil.getPublicObject(obj.Proxy.baseObject(obj, base))
+            if orig is None or not getattr(orig, "ViewObject", None):
+                return
             self.baseVisibility[base.Name] = (
                 base,
                 base.ViewObject.Visibility,
                 orig,
                 orig.ViewObject.Visibility,
             )
-            orig.ViewObject.Visibility = False
-            base.ViewObject.Visibility = True
+            self._setTransientVisibility(orig.ViewObject, False)
+            self._setTransientVisibility(base.ViewObject, True)
 
-    def forgetBaseVisibility(self, obj, base):
+    def forgetBaseVisibility(self, obj, base, restoreOriginal=False):
         Path.Log.track()
-        # if self.baseVisibility.get(base.Name):
-        #     visibility = self.baseVisibility[base.Name]
-        #     visibility[0].ViewObject.Visibility = visibility[1]
-        #     visibility[2].ViewObject.Visibility = visibility[3]
-        #     del self.baseVisibility[base.Name]
+        visibility = self.baseVisibility.pop(base.Name, None)
+        if visibility is None:
+            return
+
+        remembered_base = visibility[0]
+        document = obj.Document
+        if (
+            getattr(remembered_base, "Document", None) is document
+            and document.getObject(getattr(remembered_base, "Name", "")) is remembered_base
+            and getattr(remembered_base, "ViewObject", None)
+        ):
+            self._setTransientVisibility(
+                remembered_base.ViewObject,
+                bool(visibility[1]),
+            )
+
+        if not restoreOriginal:
+            return
+
+        original = visibility[2]
+        original_was_visible = bool(visibility[3])
+        remaining_bases = [
+            candidate
+            for candidate in obj.Model.Group
+            if (
+                candidate is not base
+                and obj.Proxy.baseObject(
+                    obj,
+                    candidate,
+                )
+                is original
+            )
+        ]
+        if remaining_bases:
+            if original_was_visible:
+                remaining_visibility = self.baseVisibility.get(remaining_bases[0].Name)
+                if remaining_visibility is not None:
+                    self.baseVisibility[remaining_bases[0].Name] = (
+                        remaining_visibility[0],
+                        remaining_visibility[1],
+                        remaining_visibility[2],
+                        True,
+                    )
+            return
+
+        tracked = getattr(
+            self,
+            "_acceptedReplacementInputs",
+            (),
+        )
+        if (
+            original is not None
+            and getattr(original, "ViewObject", None)
+            and (original_was_visible or original in tracked)
+        ):
+            self._setTransientVisibility(
+                original.ViewObject,
+                True,
+            )
+
+    def syncTimelineReplacedInputs(self, obj):
+        """Persist the exact public model objects hidden by this Job."""
+        document = obj.Document
+        tracked = (
+            self._acceptedReplacementInputs
+            if self._replacementVisibilityEditActive
+            else self._timelineReplacedInputs(obj)
+        )
+
+        replacements = []
+        for base in obj.Model.Group:
+            source = PathUtil.getPublicObject(obj.Proxy.baseObject(obj, base))
+            if (
+                source is None
+                or source.Document is not document
+                or document.getObject(source.Name) is not source
+            ):
+                continue
+            visibility = self.baseVisibility.get(base.Name)
+            source_was_visible = (
+                visibility is not None and visibility[2] is source and bool(visibility[3])
+            )
+            if (source in tracked or source_was_visible) and source not in replacements:
+                replacements.append(source)
+
+        PathUtil.markTimelineReplacedInputs(obj, replacements)
+
+    @staticmethod
+    def applyAcceptedReplacementVisibility(obj):
+        """Hide the Job's exact public inputs after graph reconciliation."""
+
+        document = obj.Document
+        replacements = tuple(
+            getattr(
+                obj,
+                "VibeCADTimelineReplacedInputs",
+                (),
+            )
+        )
+        for source in replacements:
+            if (
+                source is None
+                or source.Document is not document
+                or document.getObject(source.Name) is not source
+                or not getattr(source, "ViewObject", None)
+            ):
+                raise RuntimeError("The CAM Job lost one of its accepted model inputs")
+            source.ViewObject.Visibility = False
+            if source.ViewObject.Visibility:
+                raise RuntimeError("The CAM Job could not hide one of its accepted model inputs")
+
+    def applyAcceptedReplacementVisibilityTransition(self, obj):
+        """Publish the visibility delta from the staged model edit."""
+
+        current = self._timelineReplacedInputs(obj)
+        previous = self._acceptedReplacementInputs if self._replacementVisibilityEditActive else ()
+        for source in previous:
+            if source in current:
+                continue
+            source.ViewObject.Visibility = True
+            if not source.ViewObject.Visibility:
+                raise RuntimeError("The CAM Job could not reveal a removed model input")
+
+        self.applyAcceptedReplacementVisibility(obj)
+        self._acceptedReplacementInputs = current
+        self._replacementVisibilityEditActive = False
+
+    def discardReplacementVisibilityTransition(self):
+        """Forget task-only replacement state without changing the document."""
+
+        self._acceptedReplacementInputs = ()
+        self._replacementVisibilityEditActive = False
 
     def setupEditVisibility(self, obj):
         Path.Log.track()
+        self._acceptedReplacementInputs = self._timelineReplacedInputs(obj)
+        self._replacementVisibilityEditActive = True
         self.baseVisibility = {}
         for base in obj.Model.Group:
             self.rememberBaseVisibility(obj, base)
@@ -347,14 +554,117 @@ class ViewProvider:
         self.stockVisibility = False
         if obj.Stock and obj.Stock.ViewObject:
             self.stockVisibility = obj.Stock.ViewObject.Visibility
-            self.obj.Stock.ViewObject.Visibility = True
+            self._setTransientVisibility(
+                self.obj.Stock.ViewObject,
+                True,
+            )
 
     def resetEditVisibility(self, obj):
         Path.Log.track()
         for base in obj.Model.Group:
             self.forgetBaseVisibility(obj, base)
         if obj.Stock and obj.Stock.ViewObject:
-            obj.Stock.ViewObject.Visibility = self.stockVisibility
+            self._setTransientVisibility(
+                obj.Stock.ViewObject,
+                self.stockVisibility,
+            )
+
+    @staticmethod
+    def _setTransientVisibility(view_object, visible):
+        """Change only the rendered scene, leaving saved visibility untouched."""
+
+        view_object.setTemporaryVisibility(bool(visible))
+
+    def setupOperationEditVisibility(self, obj):
+        """Show Job geometry for an operation editor without model mutations.
+
+        Operation task panels run inside the same document transaction as
+        their provisional operation.  Writing ``Visibility`` for a preview
+        would therefore become part of that operation's undo record.  Direct
+        ViewProvider show/hide calls alter only scene presentation, so the
+        accepted document state and its native History snapshots stay exact.
+        """
+
+        Path.Log.track()
+        self.resetOperationEditVisibility(obj)
+        document = obj.Document
+        base_visibility = []
+        source_visibility = []
+
+        for base in obj.Model.Group:
+            base_view = getattr(base, "ViewObject", None)
+            if base_view is None:
+                continue
+            base_visibility.append((base, bool(base_view.isVisible())))
+
+            source = PathUtil.getPublicObject(obj.Proxy.baseObject(obj, base))
+            source_view = getattr(source, "ViewObject", None)
+            if (
+                source is not None
+                and source is not base
+                and getattr(source, "Document", None) is document
+                and document.getObject(source.Name) is source
+                and source_view is not None
+                and not any(source is remembered[0] for remembered in source_visibility)
+            ):
+                source_visibility.append((source, bool(source_view.isVisible())))
+                source_view.setTemporaryVisibility(False)
+
+            base_view.setTemporaryVisibility(True)
+
+        stock = getattr(obj, "Stock", None)
+        stock_view = getattr(stock, "ViewObject", None)
+        stock_visibility = None
+        if (
+            stock is not None
+            and getattr(stock, "Document", None) is document
+            and document.getObject(stock.Name) is stock
+            and stock_view is not None
+        ):
+            stock_visibility = (
+                stock,
+                bool(stock_view.isVisible()),
+            )
+            stock_view.setTemporaryVisibility(True)
+
+        self.operationEditBaseVisibility = base_visibility
+        self.operationEditSourceVisibility = source_visibility
+        self.operationEditStockVisibility = stock_visibility
+
+    def resetOperationEditVisibility(self, obj):
+        """Restore the exact rendered state saved for an operation editor."""
+
+        Path.Log.track()
+        document = getattr(obj, "Document", None)
+        base_visibility = tuple(getattr(self, "operationEditBaseVisibility", ()))
+        source_visibility = tuple(getattr(self, "operationEditSourceVisibility", ()))
+        stock_visibility = getattr(
+            self,
+            "operationEditStockVisibility",
+            None,
+        )
+        self.operationEditBaseVisibility = []
+        self.operationEditSourceVisibility = []
+        self.operationEditStockVisibility = None
+
+        for candidate, visible in (
+            *base_visibility,
+            *source_visibility,
+            *((stock_visibility,) if stock_visibility is not None else ()),
+        ):
+            try:
+                if (
+                    document is not None
+                    and getattr(candidate, "Document", None) is document
+                    and document.getObject(candidate.Name) is candidate
+                    and getattr(candidate, "ViewObject", None) is not None
+                ):
+                    self._setTransientVisibility(
+                        candidate.ViewObject,
+                        visible,
+                    )
+            except (AttributeError, ReferenceError, RuntimeError):
+                continue
 
     def setupContextMenu(self, vobj, menu):
         Path.Log.track()
@@ -423,11 +733,18 @@ class StockEdit(object):
     Index = -1
     StockType = PathStock.StockType.Unknown
 
-    def __init__(self, obj, form, force):
+    def __init__(
+        self,
+        obj,
+        form,
+        force,
+        timeline_edit=None,
+    ):
         Path.Log.track(obj.Label, force)
         self.obj = obj
         self.form = form
         self.force = force
+        self.timelineEdit = timeline_edit
         self.setupUi(obj)
 
     @classmethod
@@ -454,9 +771,24 @@ class StockEdit(object):
 
     def setStock(self, obj, stock):
         Path.Log.track(obj.Label, stock)
-        if obj.Stock:
-            Path.Log.track(obj.Stock.Name)
-            obj.Document.removeObject(obj.Stock.Name)
+        old_stock = obj.Stock
+        if self.timelineEdit is not None:
+            if old_stock:
+                PathUtil.recordTimelineResourceGraphReplacement(
+                    obj,
+                    self.timelineEdit,
+                    old_stock,
+                    stock,
+                )
+            else:
+                PathUtil.recordTimelineResourceGraphAddition(
+                    obj,
+                    self.timelineEdit,
+                    (stock,),
+                )
+        if old_stock:
+            Path.Log.track(old_stock.Name)
+            obj.Document.removeObject(old_stock.Name)
         Path.Log.track(stock.Name)
         obj.Stock = stock
         PathStock.ApplyStockViewDefaults(stock)
@@ -483,8 +815,19 @@ class StockFromBaseBoundBoxEdit(StockEdit):
     Index = 2
     StockType = PathStock.StockType.FromBase
 
-    def __init__(self, obj, form, force):
-        super(StockFromBaseBoundBoxEdit, self).__init__(obj, form, force)
+    def __init__(
+        self,
+        obj,
+        form,
+        force,
+        timeline_edit=None,
+    ):
+        super(StockFromBaseBoundBoxEdit, self).__init__(
+            obj,
+            form,
+            force,
+            timeline_edit,
+        )
 
         self.trackXpos = None
         self.trackYpos = None
@@ -790,11 +1133,20 @@ class TaskPanel:
     DataObject = QtCore.Qt.ItemDataRole.UserRole
     DataProperty = QtCore.Qt.ItemDataRole.UserRole + 1
 
-    def __init__(self, vobj, deleteOnReject):
-        FreeCAD.ActiveDocument.openTransaction("Edit Job")
+    def __init__(self, vobj, deleteOnReject, transaction=None):
         self.vobj = vobj
         self.vproxy = vobj.Proxy
         self.obj = vobj.Object
+        if transaction is None:
+            transaction = TaskDocumentTransaction(
+                self.obj,
+                "Edit Job",
+            )
+        elif transaction.document is not self.obj.Document:
+            raise RuntimeError("The CAM Job task transaction belongs to another document")
+        self.transaction = transaction
+        self.document = transaction.document
+        self.timelineResourceGraphEdit = PathUtil.stageTimelineResourceGraphEdit(self.obj)
         self.deleteOnReject = deleteOnReject
         self.form = FreeCADGui.PySideUic.loadUi(":/panels/PathEdit.ui")
         self.name = self.obj.Name
@@ -923,41 +1275,55 @@ class TaskPanel:
 
     def accept(self, resetEdit=True):
         Path.Log.track()
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
         self._jobIntegrityCheck()  # Check existence of Model and Tools
-        self.preCleanup()
         self.getFields()
         self.setupGlobal.accept()
         self.setupOps.accept()
-        FreeCAD.ActiveDocument.commitTransaction()
-        self.cleanup(resetEdit)
-
-    def reject(self, resetEdit=True):
-        Path.Log.track()
+        self.vproxy.syncTimelineReplacedInputs(self.obj)
+        self.transaction.recompute((self.obj,))
         self.preCleanup()
-        self.setupGlobal.reject()
-        self.setupOps.reject()
-        FreeCAD.ActiveDocument.abortTransaction()
-        if self.deleteOnReject and FreeCAD.ActiveDocument.getObject(self.name):
-            Path.Log.info("Uncreate Job")
-            FreeCAD.ActiveDocument.openTransaction("Uncreate Job")
-            if self.obj.ViewObject.Proxy.onDelete(self.obj.ViewObject, None):
-                FreeCAD.ActiveDocument.removeObject(self.obj.Name)
-            FreeCAD.ActiveDocument.commitTransaction()
-        else:
-            Path.Log.track(
-                self.name,
-                self.deleteOnReject,
-                FreeCAD.ActiveDocument.getObject(self.name),
-            )
+        PathUtil.finalizeTimelineResourceGraphEdit(
+            self.obj,
+            self.timelineResourceGraphEdit,
+        )
+        self.vproxy.applyAcceptedReplacementVisibilityTransition(self.obj)
+        self.transaction.commit((self.obj,), recompute=False)
         self.cleanup(resetEdit)
         return True
 
+    def reject(self, resetEdit=True):
+        Path.Log.track()
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
+        self.preCleanup()
+        self.setupGlobal.reject()
+        self.setupOps.reject()
+        # A newly created Job and its task-panel edits belong to the same
+        # transaction, so rollback already removes the entire provisional
+        # Job.  Do not issue a second delete transaction during Cancel.
+        self.transaction.abort()
+        self.vproxy.discardReplacementVisibilityTransition()
+        self.cleanup(resetEdit)
+        return True
+
+    def closeDeletedDocumentTask(self):
+        """Release task-only state after the Job document was closed."""
+
+        FreeCADGui.Selection.removeObserver(self)
+        self.vproxy.taskPanel = None
+        self.vproxy.discardReplacementVisibilityTransition()
+        self.transaction.close_dialog()
+
     def cleanup(self, resetEdit):
         Path.Log.track()
-        FreeCADGui.Control.closeDialog()
+        self.transaction.close_dialog()
         if resetEdit:
-            FreeCADGui.ActiveDocument.resetEdit()
-        FreeCAD.ActiveDocument.recompute()
+            self.transaction.reset_edit()
+        self.transaction.recompute_after_close()
 
     def updateTooltips(self):
         if (
@@ -1172,7 +1538,7 @@ class TaskPanel:
                 and hasattr(obj.ViewObject.Proxy, "onDelete")
             ):
                 obj.ViewObject.Proxy.onDelete(obj.ViewObject, None)
-            FreeCAD.ActiveDocument.removeObject(obj.Name)
+            self.document.removeObject(obj.Name)
         self.setFields()
 
     def operationDelete(self):
@@ -1237,8 +1603,12 @@ class TaskPanel:
         tool_numbers = selector.get_tool_numbers()
 
         # Add each selected tool
-        for toolbit in toolbits:
-            toolbit.attach_to_doc(FreeCAD.ActiveDocument)
+        for selected_toolbit in toolbits:
+            toolbit = selected_toolbit.from_dict(selected_toolbit.to_dict())
+            toolbit.attach_to_doc(
+                self.document,
+                timeline_owner=self.obj,
+            )
 
             # Get tool number: use library number if available, otherwise auto-increment
             toolbit_uri = str(toolbit.get_uri())
@@ -1247,14 +1617,30 @@ class TaskPanel:
                 toolNum = self.obj.Proxy.nextToolNumber()
 
             tc = PathToolControllerGui.Create(
-                name=f"TC: {toolbit.label}", tool=toolbit.obj, toolNumber=toolNum
+                name=f"TC: {toolbit.label}",
+                tool=toolbit.obj,
+                toolNumber=toolNum,
+                document=self.document,
+                timelineOwner=self.obj,
             )
             self.obj.Proxy.addToolController(tc)
+            PathUtil.recordTimelineResourceGraphAddition(
+                self.obj,
+                self.timelineResourceGraphEdit,
+                PathUtil.toolControllerResourceGraph(tc),
+            )
 
-        FreeCAD.ActiveDocument.recompute()
+        self.transaction.recompute((self.obj,))
         self.updateToolController()
 
     def toolControllerDelete(self):
+        for item in self.form.toolControllerList.selectedItems():
+            controller = item.data(self.DataObject)
+            PathUtil.discardTimelineResourceGraphAdditions(
+                self.obj,
+                self.timelineResourceGraphEdit,
+                PathUtil.toolControllerResourceGraph(controller),
+            )
         self.objectDelete(self.form.toolControllerList)
 
     def toolControllerChanged(self, item):
@@ -1329,7 +1715,7 @@ class TaskPanel:
 
         selObject = None
         selFeature = None
-        with selectionEx() as selection:
+        with selectionEx(self.document) as selection:
             for sel in selection:
                 selObject = sel.Object
                 for feature in sel.SubElementNames:
@@ -1373,17 +1759,17 @@ class TaskPanel:
                         Path.Log.track(sub.ShapeType)
 
         if selObject and selFeature:
-            FreeCADGui.Selection.clearSelection()
+            FreeCADGui.Selection.clearSelection(self.document.Name)
             FreeCADGui.Selection.addSelection(selObject, selFeature)
 
     def restoreSelection(self, selection):
-        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.clearSelection(self.document.Name)
         for sel in selection:
             FreeCADGui.Selection.addSelection(sel.Object, sel.SubElementNames)
 
     def modelSet0(self, axis):
         Path.Log.track(axis)
-        with selectionEx() as selection:
+        with selectionEx(self.document) as selection:
             for sel in selection:
                 selObject = sel.Object
                 Path.Log.track(selObject.Label)
@@ -1409,14 +1795,14 @@ class TaskPanel:
 
     def modelMove(self, axis):
         scale = self.form.modelMoveValue.value()
-        with selectionEx() as selection:
+        with selectionEx(self.document) as selection:
             for sel in selection:
                 offset = axis * scale
                 Draft.move(sel.Object, offset)
 
     def modelRotate(self, axis):
         angle = self.form.modelRotateValue.value()
-        with selectionEx() as selection:
+        with selectionEx(self.document) as selection:
             if self.form.modelRotateCompound.isChecked() and len(selection) > 1:
                 bb = PathStock.shapeBoundBox([sel.Object for sel in selection])
                 for sel in selection:
@@ -1490,16 +1876,19 @@ class TaskPanel:
         if obj != self.obj.Stock and self.obj.Stock:
             Draft.move(self.obj.Stock, by)
 
-        placement = FreeCADGui.ActiveDocument.ActiveView.viewPosition()
+        gui_document = self.transaction.gui_document()
+        if gui_document is None:
+            return
+        placement = gui_document.ActiveView.viewPosition()
         placement.Base = placement.Base + by
-        FreeCADGui.ActiveDocument.ActiveView.viewPosition(placement, 0)
-        FreeCADGui.Selection.clearSelection()
+        gui_document.ActiveView.viewPosition(placement, 0)
+        FreeCADGui.Selection.clearSelection(self.document.Name)
 
     def alignMoveToOrigin(self):
         selObject = None
         selFeature = None
         p = None
-        for sel in FreeCADGui.Selection.getSelectionEx():
+        for sel in FreeCADGui.Selection.getSelectionEx(self.document.Name):
             selObject = sel.Object
             for feature in sel.SubElementNames:
                 selFeature = feature
@@ -1515,7 +1904,7 @@ class TaskPanel:
                     Draft.move(sel.Object, p)
 
         if selObject and selFeature:
-            FreeCADGui.Selection.clearSelection()
+            FreeCADGui.Selection.clearSelection(self.document.Name)
             FreeCADGui.Selection.addSelection(selObject, selFeature)
         return (selObject, p)
 
@@ -1523,25 +1912,45 @@ class TaskPanel:
         def setupFromBaseEdit():
             Path.Log.track(index, force)
             if force or not self.stockFromBase:
-                self.stockFromBase = StockFromBaseBoundBoxEdit(self.obj, self.form, force)
+                self.stockFromBase = StockFromBaseBoundBoxEdit(
+                    self.obj,
+                    self.form,
+                    force,
+                    self.timelineResourceGraphEdit,
+                )
             self.stockEdit = self.stockFromBase
 
         def setupCreateBoxEdit():
             Path.Log.track(index, force)
             if force or not self.stockCreateBox:
-                self.stockCreateBox = StockCreateBoxEdit(self.obj, self.form, force)
+                self.stockCreateBox = StockCreateBoxEdit(
+                    self.obj,
+                    self.form,
+                    force,
+                    self.timelineResourceGraphEdit,
+                )
             self.stockEdit = self.stockCreateBox
 
         def setupCreateCylinderEdit():
             Path.Log.track(index, force)
             if force or not self.stockCreateCylinder:
-                self.stockCreateCylinder = StockCreateCylinderEdit(self.obj, self.form, force)
+                self.stockCreateCylinder = StockCreateCylinderEdit(
+                    self.obj,
+                    self.form,
+                    force,
+                    self.timelineResourceGraphEdit,
+                )
             self.stockEdit = self.stockCreateCylinder
 
         def setupFromExisting():
             Path.Log.track(index, force)
             if force or not self.stockFromExisting:
-                self.stockFromExisting = StockFromExistingEdit(self.obj, self.form, force)
+                self.stockFromExisting = StockFromExistingEdit(
+                    self.obj,
+                    self.form,
+                    force,
+                    self.timelineResourceGraphEdit,
+                )
             if self.stockFromExisting.candidates(self.obj):
                 self.stockEdit = self.stockFromExisting
                 return True
@@ -1583,14 +1992,14 @@ class TaskPanel:
 
     def alignCenterInStock(self):
         bbs = self.obj.Stock.Shape.BoundBox
-        for sel in FreeCADGui.Selection.getSelectionEx():
+        for sel in FreeCADGui.Selection.getSelectionEx(self.document.Name):
             bbb = sel.Object.Shape.BoundBox
             by = bbs.Center - bbb.Center
             Draft.move(sel.Object, by)
 
     def alignCenterInStockXY(self):
         bbs = self.obj.Stock.Shape.BoundBox
-        for sel in FreeCADGui.Selection.getSelectionEx():
+        for sel in FreeCADGui.Selection.getSelectionEx(self.document.Name):
             bbb = sel.Object.Shape.BoundBox
             by = bbs.Center - bbb.Center
             by.z = 0
@@ -1618,10 +2027,10 @@ class TaskPanel:
 
     def updateSelection(self):
         # Remove Job object if present in Selection: source of phantom paths
-        if self.obj in FreeCADGui.Selection.getSelection():
+        if self.obj in FreeCADGui.Selection.getSelection(self.document.Name):
             FreeCADGui.Selection.removeSelection(self.obj)
 
-        sel = FreeCADGui.Selection.getSelectionEx()
+        sel = FreeCADGui.Selection.getSelectionEx(self.document.Name)
 
         self.form.setOrigin.setEnabled(False)
         self.form.moveToOrigin.setEnabled(False)
@@ -1681,7 +2090,16 @@ class TaskPanel:
                     for i in range(count):
                         # it seems natural to remove the last of all the base objects for a given model
                         base = [b for b in obj.Model.Group if proxy.baseObject(obj, b) == model][-1]
-                        self.vproxy.forgetBaseVisibility(obj, base)
+                        self.vproxy.forgetBaseVisibility(
+                            obj,
+                            base,
+                            restoreOriginal=True,
+                        )
+                        PathUtil.discardTimelineResourceGraphAdditions(
+                            obj,
+                            self.timelineResourceGraphEdit,
+                            (base,),
+                        )
                         self.obj.Proxy.removeBase(obj, base, True)
                 # do not access any of the retired objects after this point, they don't exist anymore
 
@@ -1690,6 +2108,11 @@ class TaskPanel:
                     for i in range(count):
                         base = PathJob.createModelResourceClone(obj, model)
                         obj.Model.addObject(base)
+                        PathUtil.recordTimelineResourceGraphAddition(
+                            obj,
+                            self.timelineResourceGraphEdit,
+                            (base,),
+                        )
                         self.vproxy.rememberBaseVisibility(obj, base)
 
                 # refresh the view
@@ -1713,7 +2136,7 @@ class TaskPanel:
             Path.Log.error(str(ee))
         self.updateStockEditor(-1, False)
         self.setFields()
-        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.clearSelection(self.document.Name)
 
         # Info
         self.form.jobLabel.editingFinished.connect(self.getFields)
@@ -1845,38 +2268,60 @@ class TaskPanel:
 
     # SelectionObserver interface
     def addSelection(self, doc, obj, sub, pnt):
-        self.updateSelection()
+        if doc == self.document.Name:
+            self.updateSelection()
 
     def removeSelection(self, doc, obj, sub):
-        self.updateSelection()
+        if doc == self.document.Name:
+            self.updateSelection()
 
     def setSelection(self, doc):
-        self.updateSelection()
+        if doc == self.document.Name:
+            self.updateSelection()
 
     def clearSelection(self, doc):
-        self.updateSelection()
+        if doc == self.document.Name:
+            self.updateSelection()
 
 
 def Create(base, template=None, openTaskPanel=True):
     """Create(base, template) ... creates a job instance for the given base object
     using template to configure it."""
     FreeCADGui.addModule("Path.Main.Job")
-    FreeCAD.ActiveDocument.openTransaction("Create Job")
+    if not base:
+        raise RuntimeError("A CAM Job requires at least one base object")
+    if isinstance(base[0], str):
+        document = FreeCAD.ActiveDocument
+    else:
+        document = base[0].Document
+        if any(item.Document is not document for item in base):
+            raise RuntimeError("A CAM Job cannot span multiple documents")
+    if document is None:
+        raise RuntimeError("A CAM Job requires an active document")
+    transaction = TaskDocumentTransaction(
+        document,
+        "Create Job",
+        allow_caller_transaction=True,
+    )
     try:
         obj = PathJob.Create("Job", base, template)
-        obj.ViewObject.Proxy = ViewProvider(obj.ViewObject)
+        provider = ViewProvider(obj.ViewObject)
+        obj.ViewObject.Proxy = provider
         obj.ViewObject.addExtension("Gui::ViewProviderGroupExtensionPython")
-        FreeCAD.ActiveDocument.commitTransaction()
         obj.Document.recompute()
         if openTaskPanel:
+            provider._taskTransaction = transaction
             obj.ViewObject.Proxy.editObject(obj.Stock)
         else:
             obj.ViewObject.Proxy.deleteOnReject = False
+            transaction.commit((obj,))
         return obj
     except Exception as exc:
         Path.Log.error(exc)
         traceback.print_exc()
-        FreeCAD.ActiveDocument.abortTransaction()
+        if transaction.owns_transaction():
+            transaction.abort()
+        transaction.recompute_after_close()
 
 
 # make sure the UI has been initialized

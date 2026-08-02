@@ -17,10 +17,10 @@ JtReader    export-ignore
 # find . -type f -name '*.*' | sed 's|.*\.||' | sort -u
 
 # in Mod directory for normalized modules
-# find AddonManager Arch Complete Draft Fem Material OpenSCAD Show Tux -type f -name '*.*' | sed 's|.*\.||' | sort -u
+# find AddonManager Complete Draft Fem Material Show Tux -type f -name '*.*' | sed 's|.*\.||' | sort -u
 
 # search for a specific file ending in normalized folders
-# find AddonManager Arch Complete Draft Fem Material OpenSCAD Show Tux -type f -name '*.emn'
+# find AddonManager Complete Draft Fem Material Show Tux -type f -name '*.emn'
 
 
 # normalize the line endings of the following files
@@ -74,7 +74,6 @@ JtReader    export-ignore
 # Draft/** -text
 # Fem/** -text
 # Material/** -text
-# OpenSCAD/** -text
 # Path/** -text
 # Show/** -text
 # Tux/** -text

@@ -190,10 +190,27 @@ class DlgProjectOnSurface: public QWidget, public Gui::SelectionObserver
     Q_OBJECT
 
 public:
-    explicit DlgProjectOnSurface(Part::ProjectOnSurface* feature, QWidget* parent = nullptr);
+    enum class AcceptResult
+    {
+        KeepOpen,
+        Accepted,
+        Aborted
+    };
+
+    explicit DlgProjectOnSurface(
+        Part::ProjectOnSurface* feature,
+        QWidget* parent = nullptr
+    );
+    DlgProjectOnSurface(
+        Part::ProjectOnSurface* feature,
+        QWidget* parent,
+        bool recordCreation
+    );
     ~DlgProjectOnSurface() override;
 
     void accept();
+    AcceptResult tryAccept();
+    Part::ProjectOnSurface* lastAcceptedResult() const noexcept;
     void reject();
     void setSelectionGate();
 
@@ -230,6 +247,8 @@ private:
     void setSupportFace(const Gui::SelectionChanges& msg);
     void fetchDirection();
     void fetchMode();
+    void rollback();
+    void releaseSelectionGate();
 
 private:
     std::unique_ptr<Ui::DlgProjectionOnSurface> ui;

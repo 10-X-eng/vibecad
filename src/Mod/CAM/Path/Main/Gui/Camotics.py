@@ -28,6 +28,7 @@ import FreeCAD
 import FreeCADGui
 import Mesh
 import Path
+from Path.CommandBoundary import can_start_document_command, is_job
 import PathScripts
 import PathScripts.PathUtils as PathUtils
 import Path.Post.Command as PathPost
@@ -106,8 +107,6 @@ class CAMoticsUI:
 
     def reject(self):
         self.simulation.cancel()
-        if self.simulation.simmesh is not None:
-            FreeCAD.ActiveDocument.removeObject(self.simulation.simmesh.Name)
         FreeCADGui.Control.closeDialog()
 
     def setRunTime(self, duration):
@@ -124,12 +123,9 @@ class CAMoticsUI:
 
 class CamoticsSimulation(QtCore.QObject):
 
-    SIM = camotics.Simulation()
-    q = queue.Queue()
     progressUpdate = QtCore.Signal(object)
     statusChange = QtCore.Signal(object)
-    simmesh = None
-    filenames = []
+    surfaceReady = QtCore.Signal(object)
 
     SHAPEMAP = {
         "ballend": "Ballnose",
@@ -150,13 +146,20 @@ class CamoticsSimulation(QtCore.QObject):
                         self.SIM.wait()
                         surface = self.SIM.get_surface("binary")
                         self.SIM.wait()
-                        self.addMesh(surface)
+                        self.surfaceReady.emit(surface)
                 elif item["TYPE"] == "PROGRESS":
                     self.progressUpdate.emit(item["VALUE"])
             self.q.task_done()
 
     def __init__(self):
         super().__init__()  # needed for QT signals
+        self.SIM = camotics.Simulation()
+        self.q = queue.Queue()
+        self.simmesh = None
+        self.filenames = []
+        self.document = None
+        self.job = None
+        self.surfaceReady.connect(self.addMesh)
         lock = Lock()
         Thread(target=self.worker, daemon=True, args=(lock,)).start()
 
@@ -168,10 +171,25 @@ class CamoticsSimulation(QtCore.QObject):
         self.q.put({"TYPE": "STATUS", "VALUE": "DONE"})
 
     def addMesh(self, surface):
-        """takes a binary stl and adds a Mesh to the current document"""
+        """Take a binary STL and add its preview to the launch document."""
 
+        document = self.document
+        if (
+            document is None
+            or self.job is None
+            or getattr(self.job, "Document", None) is not document
+        ):
+            return
+        try:
+            if FreeCAD.getDocument(document.Name) is not document:
+                return
+        except (NameError, ReferenceError, RuntimeError):
+            return
         if self.simmesh is None:
-            self.simmesh = FreeCAD.ActiveDocument.addObject("Mesh::Feature", "Camotics")
+            self.simmesh = document.addObject(
+                "Mesh::Feature",
+                "Camotics",
+            )
         buffer = io.BytesIO()
         buffer.write(surface)
         buffer.seek(0)
@@ -181,9 +199,14 @@ class CamoticsSimulation(QtCore.QObject):
         # Mesh.show(mesh)
 
     def Activate(self):
+        selection = FreeCADGui.Selection.getSelectionEx()
+        if len(selection) != 1 or not is_job(selection[0].Object):
+            raise RuntimeError("CAMotics requires one selected CAM Job")
+        self.job = selection[0].Object
+        self.document = self.job.Document
         self.taskForm = CAMoticsUI(self)
-        FreeCADGui.Control.showDialog(self.taskForm)
-        self.job = FreeCADGui.Selection.getSelectionEx()[0].Object
+        gui_document = FreeCADGui.getDocument(self.document.Name)
+        FreeCADGui.Control.showDialog(self.taskForm, gui_document)
         self.SIM.set_metric()
         self.SIM.set_resolution("high")
 
@@ -240,10 +263,29 @@ class CamoticsSimulation(QtCore.QObject):
         self.SIM.start(self.callback, time=timeIndex, done=self.isDone)
 
     def accept(self):
-        pass
+        self._removePreview()
 
     def cancel(self):
-        pass
+        self._removePreview()
+
+    def _removePreview(self):
+        preview = self.simmesh
+        self.simmesh = None
+        document = self.document
+        self.document = None
+        self.job = None
+        if preview is None or document is None:
+            return
+        try:
+            if (
+                FreeCAD.getDocument(document.Name) is document
+                and preview.Document is document
+                and document.getObject(preview.Name) is preview
+            ):
+                document.removeObject(preview.Name)
+                document.recompute()
+        except (NameError, ReferenceError, RuntimeError):
+            pass
 
     def buildproject(self):  # , files=[]):
         Path.Log.track()
@@ -319,15 +361,15 @@ class CommandCamoticsSimulate:
         }
 
     def IsActive(self):
-        if bool(FreeCADGui.Selection.getSelection()) is False:
+        if not can_start_document_command():
             return False
-        try:
-            job = FreeCADGui.Selection.getSelectionEx()[0].Object
-            return isinstance(job.Proxy, Path.Main.Job.ObjectJob)
-        except:
-            return False
+        selection = FreeCADGui.Selection.getSelectionEx()
+        return len(selection) == 1 and is_job(selection[0].Object)
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         pathSimulation = CamoticsSimulation()
         pathSimulation.Activate()
 

@@ -26,6 +26,7 @@
 #include <App/DocumentObject.h>
 #include <App/GeoFeature.h>
 #include <App/FeaturePython.h>
+#include <App/SuppressibleExtension.h>
 
 #include "PropertyPath.h"
 
@@ -33,7 +34,7 @@
 namespace Path
 {
 
-class PathExport Feature: public App::GeoFeature
+class PathExport Feature: public App::GeoFeature, public App::SuppressibleExtension
 {
     PROPERTY_HEADER_WITH_OVERRIDE(Path::Feature);
 

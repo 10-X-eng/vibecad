@@ -119,6 +119,20 @@ def main() -> int:
             _wait_until(lambda: not controller.point_artifact_busy)
             assert controller.engine == "vibescript"
             assert controller.domain == "points"
+            visible_editor_actions = [
+                controller.button(name).text()
+                for name in (
+                    "VibeScriptedNew",
+                    "VibeScriptedSave",
+                    "VibeScriptedRender",
+                    "VibeScriptedAccept",
+                    "VibeScriptedRevert",
+                    "VibeScriptedImport",
+                    "VibeScriptedExport",
+                )
+                if not controller.button(name).isHidden()
+            ]
+            assert visible_editor_actions == ["New", "Save", "Build"]
             assert not controller.point_artifact_row.isHidden()
             assert controller.point_artifact_selector.count() == 1
             assert controller.point_artifact_selector.currentData() == ""

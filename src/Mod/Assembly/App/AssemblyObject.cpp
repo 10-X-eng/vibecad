@@ -31,9 +31,11 @@
 #include <App/Application.h>
 #include <App/Datums.h>
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/FeaturePythonPyImp.h>
 #include <App/Link.h>
+#include <App/PropertyLinks.h>
 #include <App/PropertyPythonObject.h>
 #include <Base/Console.h>
 #include <Base/Placement.h>
@@ -93,6 +95,54 @@ using namespace MbD;
 
 namespace PartApp = Part;
 
+namespace
+{
+struct GroundedJointMaps
+{
+    std::unordered_map<App::DocumentObject*, App::DocumentObject*> all;
+    std::unordered_map<App::DocumentObject*, App::DocumentObject*> active;
+};
+
+GroundedJointMaps collectGroundedJointMaps(Assembly::JointGroup* jointGroup)
+{
+    GroundedJointMaps result;
+    if (!jointGroup) {
+        return result;
+    }
+
+    for (auto* joint : jointGroup->getObjects()) {
+        if (!joint) {
+            continue;
+        }
+        auto* target = joint->getPropertyByName<App::PropertyLink>("ObjectToGround");
+        auto* component = target ? target->getValue() : nullptr;
+        if (!component) {
+            continue;
+        }
+
+        result.all.emplace(component, joint);
+        if (Assembly::isTimelineOperationActive(joint)) {
+            result.active.emplace(component, joint);
+        }
+    }
+    return result;
+}
+
+void setGroundingReadOnly(App::DocumentObject* component, bool readOnly)
+{
+    if (!component) {
+        return;
+    }
+
+    for (const char* propertyName : {"Placement", "LinkPlacement"}) {
+        if (auto* placement = component->getPropertyByName(propertyName);
+            placement && placement->isReadOnly() != readOnly) {
+            placement->setStatus(App::Property::ReadOnly, readOnly);
+        }
+    }
+}
+}  // namespace
+
 
 // ================================ Assembly Object ============================
 
@@ -128,6 +178,11 @@ PyObject* AssemblyObject::getPyObject()
 App::DocumentObjectExecReturn* AssemblyObject::execute()
 {
     App::DocumentObjectExecReturn* ret = App::Part::execute();
+    if (!isTimelineOperationActive(this)) {
+        syncGroundedJoints();
+        captureTimelineState();
+        return ret;
+    }
 
     ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Mod/Assembly"
@@ -135,7 +190,48 @@ App::DocumentObjectExecReturn* AssemblyObject::execute()
     if (hGrp->GetBool("SolveOnRecompute", true)) {
         solve(false);
     }
+    else {
+        // Grounding is structural Assembly state, not a solver side effect.
+        // It must still follow the document marker when automatic solving is
+        // disabled.
+        syncGroundedJoints();
+    }
+    captureTimelineState();
     return ret;
+}
+
+short AssemblyObject::mustExecute() const
+{
+    if (const short inherited = App::Part::mustExecute()) {
+        return inherited;
+    }
+
+    const auto* timeline = App::DocumentTimeline::get(getDocument());
+    if (!timeline) {
+        return lastTimelinePosition != -1 || !lastTimelineOperations.empty();
+    }
+
+    return timeline->Position.getValue() != lastTimelinePosition
+            || timeline->Operations.getValues() != lastTimelineOperations
+        ? 1
+        : 0;
+}
+
+void AssemblyObject::captureTimelineState() noexcept
+{
+    if (App::GetApplication().isRestoring()) {
+        return;
+    }
+
+    const auto* timeline = App::DocumentTimeline::get(getDocument());
+    if (!timeline) {
+        lastTimelinePosition = -1;
+        lastTimelineOperations.clear();
+        return;
+    }
+
+    lastTimelinePosition = timeline->Position.getValue();
+    lastTimelineOperations = timeline->Operations.getValues();
 }
 
 void AssemblyObject::onChanged(const App::Property* prop)
@@ -270,10 +366,8 @@ void AssemblyObject::updateSolveStatus()
             const double residual = con->aG;
             diagnostic.constraints.push_back({spec, residual, redundant});
             ++diagnostic.constraintCount;
-            diagnostic.maximumAbsoluteResidual = std::max(
-                diagnostic.maximumAbsoluteResidual,
-                std::abs(residual)
-            );
+            diagnostic.maximumAbsoluteResidual
+                = std::max(diagnostic.maximumAbsoluteResidual, std::abs(residual));
             if (redundant) {
                 ++diagnostic.redundantConstraintCount;
             }
@@ -361,7 +455,7 @@ int AssemblyObject::generateSimulation(App::DocumentObject* sim)
 
 std::vector<App::DocumentObject*> AssemblyObject::getMotionsFromSimulation(App::DocumentObject* sim)
 {
-    if (!sim) {
+    if (!isTimelineOperationActive(sim)) {
         return {};
     }
 
@@ -370,7 +464,13 @@ std::vector<App::DocumentObject*> AssemblyObject::getMotionsFromSimulation(App::
         return {};
     }
 
-    return prop->getValue();
+    std::vector<App::DocumentObject*> activeMotions;
+    for (auto* motion : prop->getValues()) {
+        if (isTimelineOperationActive(motion)) {
+            activeMotions.push_back(motion);
+        }
+    }
+    return activeMotions;
 }
 
 int Assembly::AssemblyObject::updateForFrame(size_t index)
@@ -781,7 +881,7 @@ std::vector<App::DocumentObject*> AssemblyObject::getJoints(bool delBadJoints, b
 
     Base::PyGILStateLocker lock;
     for (auto joint : jointGroup->getObjects()) {
-        if (!joint) {
+        if (!joint || !isTimelineOperationActive(joint)) {
             continue;
         }
 
@@ -832,7 +932,7 @@ std::vector<App::DocumentObject*> AssemblyObject::getGroundedJoints()
 
     Base::PyGILStateLocker lock;
     for (auto obj : jointGroup->getObjects()) {
-        if (!obj) {
+        if (!obj || !isTimelineOperationActive(obj)) {
             continue;
         }
 
@@ -888,11 +988,14 @@ std::vector<App::DocumentObject*> AssemblyObject::getJointsOfPart(App::DocumentO
 std::unordered_set<App::DocumentObject*> AssemblyObject::getGroundedParts()
 {
     std::unordered_set<App::DocumentObject*> groundedSet;
+    const auto groundedJoints = collectGroundedJointMaps(getJointGroup());
     std::vector<App::DocumentObject*> allParts = getAssemblyComponents(this);
     for (auto part : allParts) {
         if (part) {
             auto propPlc = part->getPlacementProperty();
-            if (propPlc && propPlc->isReadOnly()) {
+            const bool hasActiveGround = groundedJoints.active.contains(part);
+            const bool hasAnyGround = groundedJoints.all.contains(part);
+            if (hasActiveGround || (!hasAnyGround && propPlc && propPlc->isReadOnly())) {
                 groundedSet.insert(part);
             }
         }
@@ -901,8 +1004,9 @@ std::unordered_set<App::DocumentObject*> AssemblyObject::getGroundedParts()
     // We also need to add all the root-level datums objects that are not attached.
     std::vector<App::DocumentObject*> objs = Group.getValues();
     for (auto* obj : objs) {
-        if (obj->isDerivedFrom<App::LocalCoordinateSystem>()
-            || obj->isDerivedFrom<App::DatumElement>()) {
+        if (isTimelineOperationActive(obj)
+            && (obj->isDerivedFrom<App::LocalCoordinateSystem>()
+                || obj->isDerivedFrom<App::DatumElement>())) {
             auto* pcAttach = obj->getExtensionByType<PartApp::AttachExtension>();
             if (pcAttach) {
                 // If it's a Part datums, we check if it's attached. If yes then we ignore it.
@@ -2096,7 +2200,7 @@ std::vector<AssemblyLink*> AssemblyObject::getSubAssemblies()
         Assembly::AssemblyLink::getClassTypeId()
     );
     for (auto assembly : assemblies) {
-        if (hasObject(assembly)) {
+        if (hasObject(assembly) && isTimelineOperationActive(assembly)) {
             subAssemblies.push_back(freecad_cast<AssemblyLink*>(assembly));
         }
     }
@@ -2108,6 +2212,9 @@ void AssemblyObject::ensureIdentityPlacements()
 {
     std::vector<App::DocumentObject*> group = Group.getValues();
     for (auto* obj : group) {
+        if (!isTimelineOperationActive(obj)) {
+            continue;
+        }
         // When used in assembly, link groups must have identity placements.
         if (obj->isLinkGroup()) {
             auto* link = dynamic_cast<App::Link*>(obj);
@@ -2141,16 +2248,8 @@ void AssemblyObject::syncGroundedJoints()
         return;
     }
 
-    std::vector<App::DocumentObject*> groundedJoints = getGroundedJoints();
-    std::map<App::DocumentObject*, App::DocumentObject*> groundedMap;
-    for (auto gJoint : groundedJoints) {
-        auto propObj = dynamic_cast<App::PropertyLink*>(gJoint->getPropertyByName("ObjectToGround"));
-        if (propObj && propObj->getValue()) {
-            groundedMap[propObj->getValue()] = gJoint;
-        }
-    }
-
-    std::vector<App::DocumentObject*> allParts = getAssemblyComponents(this);
+    const auto groundedJoints = collectGroundedJointMaps(getJointGroup());
+    const auto allParts = getAssemblyComponentsIncludingInactive(this);
 
     for (auto part : allParts) {
         if (!part) {
@@ -2162,11 +2261,20 @@ void AssemblyObject::syncGroundedJoints()
         }
 
         bool isReadOnly = propPlc->isReadOnly();
-        auto it = groundedMap.find(part);
-        bool hasJoint = (it != groundedMap.end());
+        const bool componentActive = isTimelineOperationActive(part);
+        const bool hasAnyJoint = groundedJoints.all.contains(part);
+        const bool hasActiveJoint = componentActive && groundedJoints.active.contains(part);
+
+        if (hasAnyJoint) {
+            // A future GroundedJoint remains in the document so moving the
+            // marker forward can reactivate the exact same object.  Its
+            // read-only side effect, however, must follow current history.
+            setGroundingReadOnly(part, hasActiveJoint);
+            continue;
+        }
 
         // Create grounding joint if placement is locked but no joint exists
-        if (isReadOnly && !hasJoint) {
+        if (componentActive && isReadOnly) {
             Base::PyGILStateLocker lock;
             try {
                 std::string docName = getDocument()->getName();
@@ -2199,10 +2307,6 @@ void AssemblyObject::syncGroundedJoints()
             }
             catch (...) {
             }
-        }
-        // Delete grounding joint if placement lock was lifted
-        else if (!isReadOnly && hasJoint) {
-            getDocument()->removeObject(it->second->getNameInDocument());
         }
     }
 }

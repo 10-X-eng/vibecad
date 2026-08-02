@@ -23,17 +23,24 @@
  ***************************************************************************/
 
 #include <limits>
+#include <memory>
 #include <sstream>
+#include <string>
+#include <vector>
 
 #include <App/Application.h>
 #include <App/Document.h>
-#include <App/DocumentObjectGroup.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Mod/Mesh/App/Core/Curvature.h>
 #include <Mod/Mesh/App/Core/Segmentation.h>
 #include <Mod/Mesh/App/Core/Smoothing.h>
+#include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 
 #include "Segmentation.h"
+#include "CommandGuard.h"
+#include "ParametricMeshFilter.h"
 #include "ui_Segmentation.h"
 
 
@@ -70,7 +77,14 @@ Segmentation::~Segmentation()
 
 void Segmentation::accept()
 {
-    const Mesh::MeshObject* mesh = myMesh->Mesh.getValuePtr();
+    auto* target = myMesh.get<Mesh::Feature>();
+    if (!target || !target->getNameInDocument()
+        || !MeshGui::isNativeMeshInputActive(target)) {
+        throw Base::RuntimeError(
+            "The mesh selected for segmentation is no longer active in History"
+        );
+    }
+    const Mesh::MeshObject* mesh = target->Mesh.getValuePtr();
     // make a copy because we might smooth the mesh before
     MeshCore::MeshKernel kernel = mesh->getKernel();
 
@@ -128,31 +142,80 @@ void Segmentation::accept()
     }
     finder.FindSegments(segm);
 
-    App::Document* document = App::GetApplication().getActiveDocument();
-    document->openTransaction("Segmentation");
-
-    std::string internalname = "Segments_";
-    internalname += myMesh->getNameInDocument();
-    auto* group = document->addObject<App::DocumentObjectGroup>(internalname.c_str());
-    std::string labelname = "Segments ";
-    labelname += myMesh->Label.getValue();
-    group->Label.setValue(labelname);
-    for (const auto& it : segm) {
-        const std::vector<MeshCore::MeshSegment>& data = it->GetSegments();
-        for (const auto& jt : data) {
-            Mesh::MeshObject* segment = mesh->meshFromSegment(jt);
-            auto* feaSegm = group->addObject<Mesh::Feature>("Segment");
-            Mesh::MeshObject* feaMesh = feaSegm->Mesh.startEditing();
-            feaMesh->swap(*segment);
-            feaSegm->Mesh.finishEditing();
-            delete segment;
-
-            std::stringstream label;
-            label << feaSegm->Label.getValue() << " (" << it->GetType() << ")";
-            feaSegm->Label.setValue(label.str());
+    struct Result
+    {
+        std::vector<long> facets;
+        std::string type;
+    };
+    std::vector<Result> results;
+    for (const auto& segment : segm) {
+        for (const auto& result : segment->GetSegments()) {
+            if (result.empty()) {
+                continue;
+            }
+            results.push_back(
+                {
+                    std::vector<long>(result.begin(), result.end()),
+                    segment->GetType(),
+                }
+            );
         }
     }
-    document->commitTransaction();
+    if (results.empty()) {
+        throw Base::RuntimeError("The current settings did not find any mesh segments");
+    }
+
+    App::Document* document = target->getDocument();
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+        throw Base::RuntimeError("Another document operation is already in progress");
+    }
+    std::vector<std::string> labels;
+    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
+    labels.reserve(results.size());
+    operations.reserve(results.size());
+    for (const auto& result : results) {
+        std::stringstream label;
+        label << "Mesh Segment (" << result.type << ")";
+        labels.push_back(label.str());
+        operations.push_back(
+            MeshGui::ParametricMeshFilterTarget {
+                target,
+                [target,
+                 facets = result.facets,
+                 label = labels.back(),
+                 type = result.type](
+                    App::DocumentObject& object
+                ) {
+                    auto& subset =
+                        static_cast<Mesh::FacetSubset&>(object);
+                    subset.Label.setValue(label);
+                    subset.FacetIndices.setValues(facets);
+                    subset.AcceptedTopology.setValue(
+                        target->Mesh.getValue()
+                    );
+                    subset.SelectionKind.setValue(type);
+                },
+            }
+        );
+    }
+    std::string groupLabel = "Curvature Segments ";
+    groupLabel += target->Label.getValue();
+    MeshGui::createParametricMeshFilters(
+        *document,
+        operations,
+        MeshGui::ParametricMeshFilterSpec {
+            "Mesh::FacetSubset",
+            "Segment",
+            "Mesh Segment",
+            "Segmentation",
+            true,
+            true,
+            true,
+            "CurvatureSegmentation",
+            groupLabel.c_str(),
+            "Curvature segmentation",
+        }
+    );
 }
 
 void Segmentation::changeEvent(QEvent* e)
@@ -169,12 +232,27 @@ void Segmentation::changeEvent(QEvent* e)
 
 TaskSegmentation::TaskSegmentation(Mesh::Feature* mesh)
 {
+    if (mesh && mesh->getDocument()) {
+        setDocumentName(mesh->getDocument()->getName());
+        setAutoCloseOnDeletedDocument(true);
+        associateToObject3dView(mesh);
+    }
     widget = new Segmentation(mesh);  // NOLINT
     addTaskBox(widget, false);
 }
 
 bool TaskSegmentation::accept()
 {
-    widget->accept();
-    return true;
+    try {
+        widget->accept();
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        error.reportException();
+        return false;
+    }
+    catch (...) {
+        Base::Console().error("Mesh segmentation failed because of an unknown error\n");
+        return false;
+    }
 }

@@ -36,6 +36,7 @@
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
 #include <Gui/Control.h>
+#include <Gui/Document.h>
 #include <Gui/Selection/SelectionObject.h>
 #include <Gui/Tools.h>
 #include <Gui/Widgets.h>
@@ -47,6 +48,20 @@
 
 
 using namespace SurfaceGui;
+
+namespace
+{
+void resetSurfaceEdit(App::Document* document)
+{
+    if (!document || !Gui::Application::Instance) {
+        return;
+    }
+    if (auto* guiDocument = Gui::Application::Instance->getDocument(document)) {
+        guiDocument->resetEdit();
+    }
+    Gui::Command::updateDocument(document);
+}
+}  // namespace
 
 PROPERTY_SOURCE(SurfaceGui::ViewProviderSections, PartGui::ViewProviderSpline)
 
@@ -78,10 +93,10 @@ bool ViewProviderSections::setEdit(int ModNum)
             if (tDlg) {
                 tDlg->setEditedObject(obj);
             }
-            Gui::Control().showDialog(dlg);
+            Gui::Control().showDialog(dlg, obj->getDocument());
         }
         else {
-            Gui::Control().showDialog(new TaskSections(this, obj));
+            Gui::Control().showDialog(new TaskSections(this, obj), obj->getDocument());
         }
         return true;
     }
@@ -628,6 +643,9 @@ void SectionsPanel::exitSelectionMode()
 TaskSections::TaskSections(ViewProviderSections* vp, Surface::Sections* obj)
     : editedObj(obj)
 {
+    setDocumentName(obj->getDocument()->getName());
+    setAutoCloseOnDeletedDocument(true);
+
     // first task box
     widget1 = new SectionsPanel(vp, obj);
     addTaskBox(Gui::BitmapFactory().pixmap("Surface_Sections"), widget1);
@@ -651,9 +669,9 @@ bool TaskSections::accept()
 {
     bool ok = widget1->accept();
     if (ok) {
-        editedObj->getDocument()->commitTransaction();
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-        Gui::Command::updateActive();
+        App::Document* document = editedObj->getDocument();
+        document->commitTransaction();
+        resetSurfaceEdit(document);
     }
 
     return ok;
@@ -663,9 +681,9 @@ bool TaskSections::reject()
 {
     bool ok = widget1->reject();
     if (ok) {
-        editedObj->getDocument()->abortTransaction();
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-        Gui::Command::updateActive();
+        App::Document* document = editedObj->getDocument();
+        document->abortTransaction();
+        resetSurfaceEdit(document);
     }
 
     return ok;

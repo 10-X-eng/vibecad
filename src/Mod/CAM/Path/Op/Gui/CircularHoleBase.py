@@ -136,6 +136,11 @@ class TaskPanelHoleGeometryPage(PathOpGui.TaskPanelBaseGeometryPage):
 
     InitBase = True
 
+    def cleanupPage(self, obj):
+        table = getattr(self.form, "baseList", None)
+        if isinstance(table, RowMoveTableWidget):
+            table.controller = None
+
     def getForm(self):
         form = FreeCADGui.PySideUic.loadUi(":/panels/PageBaseHoleGeometryEdit.ui")
         old_table = form.baseList
@@ -206,7 +211,7 @@ class TaskPanelHoleGeometryPage(PathOpGui.TaskPanelBaseGeometryPage):
                     else:
                         item.setFlags(item.flags() | QtCore.Qt.ItemIsEditable)
             self.form.baseList.blockSignals(False)
-            FreeCAD.ActiveDocument.recompute()
+            self.document.recompute()
 
     def initPage(self, obj):
         self.updating = False
@@ -333,13 +338,13 @@ class TaskPanelHoleGeometryPage(PathOpGui.TaskPanelBaseGeometryPage):
         selected_rows = set(item.row() for item in self.form.baseList.selectedItems())
         if selected_rows:
             self.form.deleteBase.setEnabled(True)
-            FreeCADGui.Selection.clearSelection()
+            FreeCADGui.Selection.clearSelection(self.document.Name)
             for row in selected_rows:
                 item = self.form.baseList.item(row, COL_FEATURE)
                 obj_name = item.data(self.DataObjectName)
                 sub = str(item.data(self.DataObjectSub))
                 if obj_name is not None:
-                    obj = FreeCAD.ActiveDocument.getObject(obj_name)
+                    obj = self.document.getObject(obj_name)
                     if obj is not None:
                         Path.Log.debug("itemActivated() -> %s.%s" % (obj.Label, sub))
                         if sub:
@@ -360,7 +365,7 @@ class TaskPanelHoleGeometryPage(PathOpGui.TaskPanelBaseGeometryPage):
         self.form.baseList.resizeColumnToContents(0)
         self.form.baseList.blockSignals(False)
         # self.obj.Proxy.execute(self.obj)
-        FreeCAD.ActiveDocument.recompute()
+        self.document.recompute()
         self.setFields(self.obj)
 
     def updateBase(self):
@@ -372,7 +377,7 @@ class TaskPanelHoleGeometryPage(PathOpGui.TaskPanelBaseGeometryPage):
             obj_name = item.data(self.DataObjectName)
             sub = str(item.data(self.DataObjectSub))
             if obj_name is not None:
-                obj = FreeCAD.ActiveDocument.getObject(obj_name)
+                obj = self.document.getObject(obj_name)
                 if obj is not None:
                     base = (obj, sub)
                     Path.Log.debug("keeping (%s.%s)" % (obj.Label, sub))
@@ -391,14 +396,14 @@ class TaskPanelHoleGeometryPage(PathOpGui.TaskPanelBaseGeometryPage):
             if item.checkState() != QtCore.Qt.Checked:
                 disabled.append(item.data(self.DataFeatureName))
         self.obj.Disabled = disabled
-        FreeCAD.ActiveDocument.recompute()
+        self.document.recompute()
 
     def updateChecked(self):
         self.updating = True
         for i in range(self.form.baseList.rowCount()):
             item = self.form.baseList.item(i, COL_FEATURE)
             base_name = item.data(self.DataObjectName)
-            base = FreeCAD.ActiveDocument.getObject(base_name)
+            base = self.document.getObject(base_name)
             sub = str(item.data(self.DataObjectSub))
             guiState = item.checkState() == QtCore.Qt.Checked
             holeEnabled = self.obj.Proxy.isHoleEnabled(self.obj, base, sub)
@@ -417,7 +422,7 @@ class TaskPanelHoleGeometryPage(PathOpGui.TaskPanelBaseGeometryPage):
                 item.setData(QtCore.Qt.DisplayRole, row + 1)
         self.updateBase()
         self.filterBaseList(self.form.lineEdit.text())  # Reapply filter after
-        FreeCAD.ActiveDocument.recompute()
+        self.document.recompute()
 
     def updateSelectAllCheckbox(self):
         """Set the Select All checkbox state based on visible rows."""
@@ -439,19 +444,44 @@ class TaskPanelHoleGeometryPage(PathOpGui.TaskPanelBaseGeometryPage):
 
     def registerSignalHandlers(self, obj):
         """registerSignalHandlers(obj) ... setup signal handlers"""
-        self.form.baseList.rowsReordered.connect(self.updateOrderNumbers)
-        self.form.baseList.itemSelectionChanged.connect(self.itemActivated)
-        self.form.addBase.clicked.connect(self.addBase)
-        self.form.deleteBase.clicked.connect(self.deleteBase)
-        self.form.resetBase.clicked.connect(self.resetBase)
-        self.form.clearBase.clicked.connect(self.clearBase)
-        self.form.baseList.itemChanged.connect(self.itemChanged)
-        self.form.lineEdit.textChanged.connect(self.filterBaseList)
-        self.form.checkBox.stateChanged.connect(self.selectVisibleRows)
-        self.form.baseList.cellChanged.connect(self.cellManuallyChanged)
-        self.form.sortMode.currentTextChanged.connect(self.onSortModeChanged)
-        self.form.baseList.horizontalHeader().sortIndicatorChanged.connect(
-            self.onSortIndicatorChanged
+        self.connectSignal(
+            self.form.baseList.rowsReordered,
+            self.updateOrderNumbers,
+        )
+        self.connectSignal(
+            self.form.baseList.itemSelectionChanged,
+            self.itemActivated,
+        )
+        self.connectSignal(self.form.addBase.clicked, self.addBase)
+        self.connectSignal(
+            self.form.deleteBase.clicked,
+            self.deleteBase,
+        )
+        self.connectSignal(self.form.resetBase.clicked, self.resetBase)
+        self.connectSignal(self.form.clearBase.clicked, self.clearBase)
+        self.connectSignal(
+            self.form.baseList.itemChanged,
+            self.itemChanged,
+        )
+        self.connectSignal(
+            self.form.lineEdit.textChanged,
+            self.filterBaseList,
+        )
+        self.connectSignal(
+            self.form.checkBox.stateChanged,
+            self.selectVisibleRows,
+        )
+        self.connectSignal(
+            self.form.baseList.cellChanged,
+            self.cellManuallyChanged,
+        )
+        self.connectSignal(
+            self.form.sortMode.currentTextChanged,
+            self.onSortModeChanged,
+        )
+        self.connectSignal(
+            self.form.baseList.horizontalHeader().sortIndicatorChanged,
+            self.onSortIndicatorChanged,
         )
 
     def onSortIndicatorChanged(self, column, order):
@@ -500,10 +530,10 @@ class TaskPanelHoleGeometryPage(PathOpGui.TaskPanelBaseGeometryPage):
         self.obj.Base = []
         self.obj.Disabled = []
         self.form.baseList.horizontalHeader().setSortIndicator(-1, QtCore.Qt.AscendingOrder)
-        selection = FreeCADGui.Selection.getSelection()
+        selection = FreeCADGui.Selection.getSelection(self.document.Name)
         self.obj.Proxy.findAllHoles(self.obj, selection)
         self.obj.Proxy.execute(self.obj)
-        FreeCAD.ActiveDocument.recompute()
+        self.document.recompute()
 
     def clearBase(self):
         """clearBase() ... Clear All button callback"""
@@ -511,7 +541,7 @@ class TaskPanelHoleGeometryPage(PathOpGui.TaskPanelBaseGeometryPage):
         self.obj.Disabled = []
         self.form.baseList.horizontalHeader().setSortIndicator(-1, QtCore.Qt.AscendingOrder)
         self.obj.Proxy.execute(self.obj)
-        FreeCAD.ActiveDocument.recompute()
+        self.document.recompute()
 
     def updateData(self, obj, prop):
         """updateData(obj, prop) ... callback whenever a property of the model changed"""

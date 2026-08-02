@@ -57,6 +57,7 @@
 
 #include <Base/Interpreter.h>
 #include <Base/TimeInfo.h>
+#include <App/Document.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Document.h>
@@ -66,6 +67,7 @@
 #include <Gui/WaitCursor.h>
 #include <Mod/Part/App/PartFeature.h>
 
+#include "ModelingSelection.h"
 #include "TaskCheckGeometry.h"
 
 
@@ -399,6 +401,19 @@ ResultEntry* ResultModel::nodeFromIndex(const QModelIndex& index) const
 TaskCheckGeometryResults::TaskCheckGeometryResults(QWidget* parent)
     : QWidget(parent)
 {
+    for (const auto& selected :
+         Gui::Selection().getSelection(nullptr, Gui::ResolveMode::NoResolve)) {
+        initialSelection.push_back(
+            {
+                selected.DocName ? selected.DocName : "",
+                selected.FeatName ? selected.FeatName : "",
+                selected.SubName ? selected.SubName : "",
+                selected.x,
+                selected.y,
+                selected.z,
+            }
+        );
+    }
     this->setWindowTitle(tr("Check Geometry Results"));
     setupInterface();
     setupFunctionMap();
@@ -408,6 +423,16 @@ TaskCheckGeometryResults::~TaskCheckGeometryResults()
 {
     try {
         Gui::Selection().clearSelection();
+        for (const auto& selected : initialSelection) {
+            Gui::Selection().addSelection(
+                selected.documentName.c_str(),
+                selected.objectName.c_str(),
+                selected.subElementName.empty() ? nullptr : selected.subElementName.c_str(),
+                selected.x,
+                selected.y,
+                selected.z
+            );
+        }
     }
     catch (const Py::Exception&) {
         Base::PyException e;  // extract the Python error text
@@ -444,7 +469,23 @@ void TaskCheckGeometryResults::setupInterface()
 void TaskCheckGeometryResults::goCheck()
 {
     Gui::WaitCursor wc;
-    auto selection = Gui::Selection().getSelection();
+    struct CheckTarget
+    {
+        App::DocumentObject* object;
+        std::string subName;
+    };
+
+    std::vector<CheckTarget> selection;
+    auto modelingSelection = PartGui::getModelingShapeSelection();
+    for (auto& selected : modelingSelection) {
+        if (selected.getSubNames().empty()) {
+            selection.push_back(CheckTarget {selected.getObject(), std::string()});
+            continue;
+        }
+        for (const auto& subName : selected.getSubNames()) {
+            selection.push_back(CheckTarget {selected.getObject(), subName});
+        }
+    }
 
     int selectedCount(0), checkedCount(0), invalidShapes(0);
     ResultEntry* theRoot = new ResultEntry();
@@ -468,18 +509,18 @@ void TaskCheckGeometryResults::goCheck()
         int localInvalidShapeCount(0);
         QString baseName;
         QTextStream baseStream(&baseName);
-        baseStream << sel.DocName;
-        baseStream << "." << sel.FeatName;
-        std::string label = sel.pObject->Label.getValue();
-        if (sel.FeatName != label) {
+        baseStream << sel.object->getDocument()->getName();
+        baseStream << "." << sel.object->getNameInDocument();
+        std::string label = sel.object->Label.getValue();
+        if (sel.object->getNameInDocument() != label) {
             baseStream << " (" << label.c_str() << ")";
         }
 
         TopoDS_Shape shape = Part::Feature::getShape(
-            sel.pObject,
+            sel.object,
             Part::ShapeOption::NeedSubElement | Part::ShapeOption::ResolveLink
                 | Part::ShapeOption::Transform,
-            sel.SubName
+            sel.subName.c_str()
         );
 
         if (shape.IsNull()) {
@@ -506,7 +547,7 @@ void TaskCheckGeometryResults::goCheck()
             theRoot->children.push_back(entry);
             continue;
         }
-        currentSeparator = Gui::Application::Instance->getViewProvider(sel.pObject)->getRoot();
+        currentSeparator = Gui::Application::Instance->getViewProvider(sel.object)->getRoot();
         if (!currentSeparator) {
             continue;
         }
@@ -514,7 +555,7 @@ void TaskCheckGeometryResults::goCheck()
         checkedCount++;
         checkedMap.Clear();
 
-        buildShapeContent(sel.pObject, baseName, shape);
+        buildShapeContent(sel.object, baseName, shape);
 
         BRepCheck_Analyzer shapeCheck(shape);
         if (!shapeCheck.IsValid()) {
@@ -552,7 +593,7 @@ void TaskCheckGeometryResults::goCheck()
             group->SetBool("RunBOPCheck", runSignal);
             if (runSignal) {
                 std::string label = tr("Checking").toStdString() + " ";
-                label += sel.pObject->Label.getStrValue();
+                label += sel.object->Label.getStrValue();
                 label += "…";
 
                 Message_ProgressScope theInnerScope(

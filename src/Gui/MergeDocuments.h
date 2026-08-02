@@ -54,6 +54,10 @@ public:
     void Restore(Base::XMLReader& r) override;
     void SaveDocFile(Base::Writer& w) const override;
     void RestoreDocFile(Base::Reader& r) override;
+    const std::map<std::string, std::string>& getNameMap() const
+    {
+        return nameMap;
+    }
 
 private:
     zipios::ZipInputStream* stream {nullptr};

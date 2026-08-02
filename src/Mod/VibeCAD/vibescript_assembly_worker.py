@@ -13,6 +13,22 @@ import re
 from types import MappingProxyType
 from typing import Any
 
+from VibeCADDocumentReferences import (
+    DocumentReferenceError,
+    normalize_document_reference,
+)
+from VibeCADMechanismEngine import (
+    MECHANISM_SCENARIO_SCHEMA,
+    MECHANISM_SOLVE_REPORT_SCHEMA,
+    MECHANISM_STATIC_CHECK_SCHEMA,
+    evaluate_static_mechanism_check,
+    evaluate_mechanism_scenario,
+    mechanism_scenario_sha256,
+    normalize_mechanism_static_check,
+    normalize_mechanism_scenario,
+)
+from VibeCADMechanismGeometry import measure_static_mechanism_pairs
+from vibescript_assembly_api import explicit_connector_compatibility
 from vibescript_domain_api import DomainValue
 from vibescript_part_worker import (
     configure_part_references,
@@ -848,17 +864,13 @@ def _properties(value: DomainValue, operation: str) -> dict[str, Any]:
 
 
 def _reference(value: Any, *, context: str) -> dict[str, str]:
-    if not isinstance(value, Mapping) or set(value) != {
-        "document_uid",
-        "object_name",
-    }:
+    try:
+        result = normalize_document_reference(value)
+    except DocumentReferenceError as exc:
         raise AssemblyCandidateError(
-            f"{context} must contain exactly document_uid and object_name."
-        )
-    result = {
-        "document_uid": str(value.get("document_uid") or ""),
-        "object_name": str(value.get("object_name") or ""),
-    }
+            f"{context} must contain document_uid and object_name, with an "
+            f"optional portable document_path: {exc}"
+        ) from exc
     reference_key = (result["document_uid"], result["object_name"])
     if reference_key not in _REFERENCE_METADATA:
         raise AssemblyCandidateError(
@@ -874,6 +886,80 @@ def _reference(value: Any, *, context: str) -> dict[str, str]:
             },
         )
     return result
+
+
+def _catalog_fastener_identity(
+    value: DomainValue,
+    *,
+    context: str,
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, DomainValue)
+        or value.domain != "assembly"
+        or value.operation != "fastener"
+        or value.output_type != "component_link"
+        or len(value.arguments) != 2
+    ):
+        raise AssemblyCandidateError(
+            f"{context} must come from api.fastener.",
+            details={"stage": "fastener_graph"},
+        )
+    properties = _properties(value, "fastener")
+    try:
+        from VibeCADFasteners import resolve_fastener
+
+        return resolve_fastener(
+            standard=value.arguments[0],
+            nominal_thread=value.arguments[1],
+            length_mm=properties.get("length_mm"),
+            model_thread=properties["model_thread"],
+            left_handed=bool(properties.get("left_handed")),
+            options=dict(properties.get("options") or {}),
+        )
+    except Exception as exc:
+        raise AssemblyCandidateError(
+            f"{context} rejected the exact catalog request: {exc}",
+            details={
+                "stage": "fastener_catalog",
+                "standard": str(value.arguments[0]),
+                "nominal_thread": str(value.arguments[1]),
+            },
+        ) from exc
+
+
+def _catalog_fastener_source(
+    identity: Mapping[str, Any],
+) -> dict[str, str]:
+    from VibeCADFasteners import catalog_component_reference
+
+    return catalog_component_reference(identity)
+
+
+def _catalog_fastener_brep(
+    shape: Any,
+    *,
+    artifact_root: Path,
+    component_index: int,
+) -> dict[str, Any]:
+    relative = Path("outputs") / f"assembly-fastener-{component_index}.brep"
+    target = artifact_root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shape.exportBrep(str(target))
+    size = target.stat().st_size
+    if not 1 <= size <= 256 * 1024 * 1024:
+        raise AssemblyCandidateError(
+            "Generated fastener BREP exceeds the bounded Assembly artifact size.",
+            details={
+                "stage": "fastener_brep",
+                "artifact_bytes": size,
+            },
+        )
+    return {
+        "artifact_kind": "brep",
+        "artifact_path": str(relative),
+        "artifact_sha256": _sha256_path(target),
+        "artifact_bytes": size,
+    }
 
 
 def _native_placement(value: Any, *, context: str) -> Any:
@@ -1683,34 +1769,81 @@ def _graph_contract(
     joints = list(assembly_properties.get("joints") or [])
     if not components:
         raise AssemblyCandidateError("api.assembly must contain at least one component.")
-    component_outputs = {
+    returned_component_outputs = {
         id(value): name
         for name, value in raw_result.items()
         if isinstance(value, DomainValue) and value.output_type == "component_link"
     }
-    joint_outputs = {
+    returned_joint_outputs = {
         id(value): name
         for name, value in raw_result.items()
         if isinstance(value, DomainValue) and value.output_type == "joint"
     }
-    if {id(value) for value in components} != set(component_outputs):
-        raise AssemblyCandidateError(
-            "Every component listed in api.assembly must be returned exactly once, "
-            "and no unlisted component_link output is allowed.",
-            details={
-                "returned_components": list(component_outputs.values()),
-                "assembly_component_count": len(components),
-            },
-        )
-    if {id(value) for value in joints} != set(joint_outputs):
-        raise AssemblyCandidateError(
-            "Every joint listed in api.assembly must be returned exactly once, "
-            "and no unlisted joint output is allowed.",
-            details={
-                "returned_joints": list(joint_outputs.values()),
-                "assembly_joint_count": len(joints),
-            },
-        )
+    component_names = assembly_properties.get("component_names")
+    joint_names = assembly_properties.get("joint_names")
+    mapped_graph = component_names is not None
+    if mapped_graph:
+        if not isinstance(component_names, (list, tuple)) or len(component_names) != len(
+            components
+        ):
+            raise AssemblyCandidateError(
+                "api.assembly has malformed stable component member identities."
+            )
+        if joint_names is None:
+            joint_names = []
+        if not isinstance(joint_names, (list, tuple)) or len(joint_names) != len(joints):
+            raise AssemblyCandidateError(
+                "api.assembly has malformed stable joint member identities."
+            )
+        member_names = [str(name) for name in [*component_names, *joint_names]]
+        if (
+            len(member_names) != len(set(member_names))
+            or any(not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) for name in member_names)
+        ):
+            raise AssemblyCandidateError(
+                "api.assembly stable member identities are duplicated or invalid."
+            )
+        collisions = set(member_names).intersection(raw_result)
+        if collisions or returned_component_outputs or returned_joint_outputs:
+            raise AssemblyCandidateError(
+                "Mapped Assembly members are owned by api.assembly and must not also "
+                "be returned as public result outputs.",
+                details={
+                    "colliding_outputs": sorted(collisions),
+                    "returned_components": list(returned_component_outputs.values()),
+                    "returned_joints": list(returned_joint_outputs.values()),
+                },
+            )
+        component_outputs = {
+            id(value): str(name)
+            for value, name in zip(components, component_names, strict=True)
+        }
+        joint_outputs = {
+            id(value): str(name)
+            for value, name in zip(joints, joint_names, strict=True)
+        }
+    else:
+        component_outputs = returned_component_outputs
+        joint_outputs = returned_joint_outputs
+        if {id(value) for value in components} != set(component_outputs):
+            raise AssemblyCandidateError(
+                "Every component listed in the sequence form of api.assembly must "
+                "be returned exactly once, and no unlisted component_link output "
+                "is allowed.",
+                details={
+                    "returned_components": list(component_outputs.values()),
+                    "assembly_component_count": len(components),
+                },
+            )
+        if {id(value) for value in joints} != set(joint_outputs):
+            raise AssemblyCandidateError(
+                "Every joint listed in the sequence form of api.assembly must be "
+                "returned exactly once, and no unlisted joint output is allowed.",
+                details={
+                    "returned_joints": list(joint_outputs.values()),
+                    "assembly_joint_count": len(joints),
+                },
+            )
     if not diagnostics_value.arguments or diagnostics_value.arguments[0] is not assembly_value:
         raise AssemblyCandidateError(
             "api.solve must receive the exact api.assembly variable returned in result."
@@ -1736,12 +1869,12 @@ def _simulation_contract(
         for name, value in raw_result.items()
         if isinstance(value, DomainValue) and value.output_type == "simulation"
     ]
-    motion_outputs = {
+    returned_motion_outputs = {
         id(value): name
         for name, value in raw_result.items()
         if isinstance(value, DomainValue) and value.output_type == "motion"
     }
-    if not simulations and not motion_outputs:
+    if not simulations and not returned_motion_outputs:
         return None
     if len(simulations) != 1:
         raise AssemblyCandidateError(
@@ -1749,7 +1882,7 @@ def _simulation_contract(
             details={
                 "stage": "simulation_graph",
                 "simulation_outputs": [name for name, _value in simulations],
-                "motion_outputs": list(motion_outputs.values()),
+                "motion_outputs": list(returned_motion_outputs.values()),
             },
         )
     simulation_output, simulation_value = simulations[0]
@@ -1769,16 +1902,38 @@ def _simulation_contract(
             f"Simulation output {simulation_output!r} must contain at least one "
             "api.motion value."
         )
-    if {id(value) for value in motions} != set(motion_outputs):
-        raise AssemblyCandidateError(
-            "Every api.motion value used by api.simulation must be returned exactly "
-            "once, and no unlisted motion output is allowed.",
-            details={
-                "stage": "simulation_graph",
-                "returned_motions": list(motion_outputs.values()),
-                "simulation_motion_count": len(motions),
-            },
-        )
+    motion_names = properties.get("motion_names")
+    if motion_names is not None:
+        if not isinstance(motion_names, (list, tuple)) or len(motion_names) != len(motions):
+            raise AssemblyCandidateError(
+                "api.simulation has malformed stable motion member identities."
+            )
+        clean_names = [str(name) for name in motion_names]
+        if (
+            len(clean_names) != len(set(clean_names))
+            or any(not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) for name in clean_names)
+            or set(clean_names).intersection(raw_result)
+            or returned_motion_outputs
+        ):
+            raise AssemblyCandidateError(
+                "Mapped simulation motions must have unique stable identities and "
+                "must not also be returned as public result outputs."
+            )
+        motion_outputs = {
+            id(value): name for value, name in zip(motions, clean_names, strict=True)
+        }
+    else:
+        motion_outputs = returned_motion_outputs
+        if {id(value) for value in motions} != set(motion_outputs):
+            raise AssemblyCandidateError(
+                "Every api.motion value used by the sequence form of api.simulation "
+                "must be returned exactly once, and no unlisted motion output is allowed.",
+                details={
+                    "stage": "simulation_graph",
+                    "returned_motions": list(motion_outputs.values()),
+                    "simulation_motion_count": len(motions),
+                },
+            )
     drives: set[tuple[int, str]] = set()
     for index, motion in enumerate(motions):
         if (
@@ -1835,9 +1990,9 @@ def _exploded_view_contract(
             )
         properties = _properties(value, "exploded_view")
         moves = list(properties.get("moves") or [])
-        if not 1 <= len(moves) <= 64:
+        if not 1 <= len(moves) <= 4096:
             raise AssemblyCandidateError(
-                f"Exploded-view output {output_name!r} must contain 1-64 moves.",
+                f"Exploded-view output {output_name!r} must contain 1-4096 moves.",
                 details={"stage": "exploded_view_graph"},
             )
         reference_count = 0
@@ -1860,9 +2015,9 @@ def _exploded_view_contract(
                             "component_index": component_index,
                         },
                     )
-        if reference_count > 256:
+        if reference_count > 16384:
             raise AssemblyCandidateError(
-                f"Exploded-view output {output_name!r} exceeds 256 component references."
+                f"Exploded-view output {output_name!r} exceeds 16384 component references."
             )
     return views
 
@@ -1909,6 +2064,438 @@ def _bom_contract(
                 },
             )
     return boms
+
+
+def _mechanism_check_contract(
+    raw_result: Mapping[str, Any],
+    *,
+    assembly_value: DomainValue,
+    component_outputs: Mapping[int, str],
+    mechanism_scenario: Mapping[str, Any],
+) -> list[tuple[str, DomainValue, dict[str, Any]]]:
+    """Bind static verification declarations to exact returned graph values."""
+
+    verifications = [
+        (name, value)
+        for name, value in raw_result.items()
+        if isinstance(value, DomainValue)
+        and value.output_type == "mechanism_verification"
+    ]
+    if len(verifications) > 8:
+        raise AssemblyCandidateError(
+            "An Assembly program may publish at most eight mechanism verifications.",
+            details={
+                "stage": "mechanism_verification_graph",
+                "verification_outputs": [name for name, _value in verifications],
+            },
+        )
+    result: list[tuple[str, DomainValue, dict[str, Any]]] = []
+    for output_name, value in verifications:
+        if (
+            value.operation != "mechanism_check"
+            or len(value.arguments) != 1
+            or value.arguments[0] is not assembly_value
+        ):
+            raise AssemblyCandidateError(
+                f"Mechanism verification output {output_name!r} must come from "
+                "api.mechanism_check using the exact returned assembly variable.",
+                details={
+                    "stage": "mechanism_verification_graph",
+                    "verification_output": output_name,
+                },
+            )
+        properties = _properties(value, "mechanism_check")
+        requirements = []
+        for index, item in enumerate(list(properties.get("requirements") or [])):
+            if not isinstance(item, Mapping):
+                raise AssemblyCandidateError(
+                    f"Mechanism verification output {output_name!r} requirement "
+                    f"{index} is malformed."
+                )
+            first = component_outputs.get(id(item.get("first")))
+            second = component_outputs.get(id(item.get("second")))
+            if first is None or second is None:
+                raise AssemblyCandidateError(
+                    f"Mechanism verification output {output_name!r} requirement "
+                    f"{index} references an unreturned component.",
+                    details={"stage": "mechanism_verification_graph"},
+                )
+            normalized = {
+                "id": f"Requirement{index + 1:03d}",
+                "type": str(item.get("type") or ""),
+                "first_component": first,
+                "second_component": second,
+                "tolerance_mm": item.get("tolerance_mm"),
+            }
+            if normalized["type"] == "minimum_clearance":
+                normalized["minimum_mm"] = item.get("minimum_mm")
+            requirements.append(normalized)
+        contacts = []
+        for index, item in enumerate(list(properties.get("contacts") or [])):
+            if not isinstance(item, Mapping):
+                raise AssemblyCandidateError(
+                    f"Mechanism verification output {output_name!r} contact "
+                    f"{index} is malformed."
+                )
+            first = component_outputs.get(id(item.get("first")))
+            second = component_outputs.get(id(item.get("second")))
+            if first is None or second is None:
+                raise AssemblyCandidateError(
+                    f"Mechanism verification output {output_name!r} contact "
+                    f"{index} references an unreturned component.",
+                    details={"stage": "mechanism_verification_graph"},
+                )
+            policy = str(item.get("policy") or "")
+            normalized = {
+                "id": f"Contact{index + 1:03d}",
+                "policy": policy,
+                "first_component": first,
+                "second_component": second,
+            }
+            if policy == "ignored":
+                normalized["reason"] = item.get("reason")
+            else:
+                normalized["tolerance_mm"] = item.get("tolerance_mm")
+            if policy == "clearance":
+                normalized["minimum_clearance_mm"] = item.get(
+                    "minimum_clearance_mm"
+                )
+            elif policy in {"allowed", "required"}:
+                normalized["first_interface"] = item.get("first_interface")
+                normalized["second_interface"] = item.get("second_interface")
+            contacts.append(normalized)
+        contract = normalize_mechanism_static_check(
+            mechanism_scenario,
+            {
+                "schema": MECHANISM_STATIC_CHECK_SCHEMA,
+                "id": output_name,
+                "label": str(properties.get("label") or ""),
+                "scenario_sha256": mechanism_scenario_sha256(
+                    mechanism_scenario
+                ),
+                "requirements": requirements,
+                "contacts": contacts,
+            },
+        )
+        result.append((output_name, value, contract))
+    return result
+
+
+def _static_mechanism_geometry(
+    check: Mapping[str, Any],
+    *,
+    components: Mapping[str, Any],
+    component_values: Mapping[str, DomainValue],
+    component_source_metadata: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Evaluate one explicit rigid-component static geometry request."""
+
+    declarations = [
+        dict(item) for item in list(check.get("requirements") or [])
+    ] + [
+        dict(item)
+        for item in list(check.get("contacts") or [])
+        if str(item.get("policy") or "") != "ignored"
+    ]
+    requested_components = {
+        str(item[field])
+        for item in declarations
+        for field in ("first_component", "second_component")
+    }
+    for component_name in sorted(requested_components):
+        component_value = component_values.get(component_name)
+        if component_value is None:
+            raise AssemblyCandidateError(
+                f"Mechanism verification {check['id']!r} references unknown "
+                f"component {component_name!r}.",
+                details={"stage": "mechanism_verification_geometry"},
+            )
+        properties = _properties(component_value, component_value.operation)
+        if bool(properties.get("flexible", False)):
+            raise AssemblyCandidateError(
+                f"Mechanism verification {check['id']!r} cannot certify flexible "
+                f"component {component_name!r} as one rigid static shape.",
+                details={
+                    "stage": "mechanism_verification_geometry",
+                    "verification_output": str(check["id"]),
+                    "component_output": component_name,
+                    "correction": (
+                        "Use a rigid occurrence for this static check. Flexible "
+                        "occurrence-path certification is not part of the static "
+                        "solved-state contract."
+                    ),
+                },
+            )
+
+    geometry_components: dict[str, dict[str, Any]] = {}
+    geometry_interfaces: dict[str, dict[str, list[str]]] = {}
+    for component_name in sorted(requested_components):
+        component = components[component_name]
+        source = getattr(component, "LinkedObject", None)
+        shape = getattr(source, "Shape", None)
+        if (
+            shape is None
+            or bool(shape.isNull())
+            or not bool(shape.isValid())
+            or len(list(shape.Solids)) < 1
+        ):
+            raise AssemblyCandidateError(
+                f"Component output {component_name!r} has no valid source BREP for "
+                "static mechanism verification.",
+                details={
+                    "stage": "mechanism_verification_geometry",
+                    "component_output": component_name,
+                },
+            )
+        placement = component.Placement
+        geometry_components[component_name] = {
+            "shape": shape,
+            "placement": {
+                "position": [
+                    float(placement.Base.x),
+                    float(placement.Base.y),
+                    float(placement.Base.z),
+                ],
+                "rotation": [
+                    float(value) for value in placement.Rotation.Q
+                ],
+            },
+        }
+        metadata = component_source_metadata.get(component_name)
+        published = (
+            dict(metadata.get("published_interfaces") or {})
+            if isinstance(metadata, Mapping)
+            else {}
+        )
+        geometry_interfaces[component_name] = {
+            str(name): [str(item) for item in list(raw.get("subelements") or [])]
+            for name, raw in published.items()
+            if isinstance(raw, Mapping)
+            and list(raw.get("subelements") or [])
+        }
+
+    geometry_declarations = []
+    for item in declarations:
+        policy = str(item.get("policy") or "")
+        first_interface = (
+            str(item["first_interface"])
+            if policy in {"allowed", "required"}
+            else None
+        )
+        second_interface = (
+            str(item["second_interface"])
+            if policy in {"allowed", "required"}
+            else None
+        )
+        if first_interface is not None:
+            first_name = str(item["first_component"])
+            second_name = str(item["second_component"])
+            for component_name, interface_name, field in (
+                (first_name, first_interface, "first_interface"),
+                (second_name, second_interface, "second_interface"),
+            ):
+                if interface_name not in geometry_interfaces.get(
+                    component_name,
+                    {},
+                ):
+                    raise AssemblyCandidateError(
+                        f"Mechanism verification {check['id']!r} {field} "
+                        f"{interface_name!r} on component {component_name!r} has "
+                        "no published contact subelements.",
+                        details={
+                            "stage": "mechanism_verification_interface",
+                            "verification_output": str(check["id"]),
+                            "component_output": component_name,
+                            "requested_interface": interface_name,
+                            "available_contact_interfaces": sorted(
+                                geometry_interfaces.get(component_name, {})
+                            ),
+                            "correction": (
+                                "Publish a semantic interface backed by one or more "
+                                "FaceN, EdgeN, or VertexN subelements, then use its "
+                                "exact name."
+                            ),
+                        },
+                    )
+        geometry_declarations.append(
+            {
+                "declaration_id": str(item["id"]),
+                "first_component": str(item["first_component"]),
+                "second_component": str(item["second_component"]),
+                "tolerance_mm": float(item["tolerance_mm"]),
+                "first_interface": first_interface,
+                "second_interface": second_interface,
+            }
+        )
+    try:
+        return measure_static_mechanism_pairs(
+            geometry_components,
+            geometry_declarations,
+            interfaces=geometry_interfaces,
+        )
+    except Exception as exc:
+        raise AssemblyCandidateError(
+            f"Mechanism verification {check['id']!r} could not prepare exact "
+            f"static geometry: {exc}",
+            details={
+                "stage": "mechanism_verification_geometry",
+                "verification_output": str(check["id"]),
+            },
+        ) from exc
+
+
+def _mechanism_scenario_contract(
+    *,
+    assembly_output: str,
+    assembly_value: DomainValue,
+    diagnostics_output: str,
+    diagnostics_value: DomainValue,
+    component_outputs: Mapping[int, str],
+    joint_outputs: Mapping[int, str],
+    simulation_contract: tuple[str, DomainValue, dict[int, str]] | None,
+) -> dict[str, Any]:
+    """Adapt the Assembly graph into the shared, FreeCAD-independent contract."""
+
+    assembly_properties = _properties(assembly_value, "assembly")
+    components = []
+    for value in list(assembly_properties.get("components") or []):
+        output_name = component_outputs[id(value)]
+        properties = _properties(value, value.operation)
+        if value.operation == "component":
+            source = {
+                "kind": "document_object",
+                **_reference(
+                    value.arguments[0],
+                    context=f"component output {output_name!r} source",
+                ),
+            }
+            flexible = bool(properties.get("flexible"))
+        elif value.operation == "fastener":
+            source = {
+                "kind": "standard_fastener",
+                "standard": str(value.arguments[0]),
+                "nominal_thread": str(value.arguments[1]),
+                "length_mm": properties.get("length_mm"),
+                "model_thread": bool(properties.get("model_thread")),
+                "left_handed": bool(properties.get("left_handed")),
+                "options": dict(properties.get("options") or {}),
+            }
+            flexible = False
+        else:
+            raise AssemblyCandidateError(
+                f"Component output {output_name!r} must come from "
+                "api.component or api.fastener."
+            )
+        components.append(
+            {
+                "id": output_name,
+                "label": str(properties.get("label") or ""),
+                "source": source,
+                "initial_placement": dict(properties.get("placement") or {}),
+                "grounded": bool(properties.get("grounded")),
+                "flexible": flexible,
+            }
+        )
+
+    joints = []
+    for value in list(assembly_properties.get("joints") or []):
+        output_name = joint_outputs[id(value)]
+        properties = _properties(value, "joint")
+        connectors = []
+        for connector in value.arguments:
+            connector_properties = _properties(connector, "connector")
+            component = connector.arguments[0]
+            component_output = component_outputs.get(id(component))
+            if component_output is None:
+                raise AssemblyCandidateError(
+                    f"Joint output {output_name!r} references an unreturned component."
+                )
+            connectors.append(
+                {
+                    "component_id": component_output,
+                    "selection": dict(
+                        connector_properties.get("selection") or {}
+                    ),
+                    "occurrence_path": connector_properties.get(
+                        "occurrence_path"
+                    ),
+                    "anchor": connector_properties.get("anchor"),
+                    "offset": dict(connector_properties.get("offset") or {}),
+                }
+            )
+        joints.append(
+            {
+                "id": output_name,
+                "label": str(properties.get("label") or ""),
+                "kind": str(properties.get("kind") or ""),
+                "connectors": connectors,
+                "parameters": dict(properties.get("parameters") or {}),
+                "length_limits_mm": properties.get("length_limits_mm"),
+                "angle_limits_degrees": properties.get(
+                    "angle_limits_degrees"
+                ),
+                "suppressed": bool(properties.get("suppressed")),
+            }
+        )
+
+    diagnostics_properties = _properties(diagnostics_value, "solve")
+    motions: list[dict[str, Any]] = []
+    simulation = None
+    if simulation_contract is not None:
+        simulation_output, simulation_value, motion_outputs = simulation_contract
+        simulation_properties = _properties(simulation_value, "simulation")
+        for motion in list(simulation_properties.get("motions") or []):
+            motion_output = motion_outputs[id(motion)]
+            motion_properties = _properties(motion, "motion")
+            joint_output = joint_outputs.get(id(motion.arguments[0]))
+            if joint_output is None:
+                raise AssemblyCandidateError(
+                    f"Motion output {motion_output!r} drives an unreturned joint."
+                )
+            motions.append(
+                {
+                    "id": motion_output,
+                    "label": str(motion_properties.get("label") or ""),
+                    "joint_id": joint_output,
+                    "motion_type": str(
+                        motion_properties.get("motion_type") or ""
+                    ),
+                    "formula": str(motion_properties.get("formula") or ""),
+                }
+            )
+        simulation = {
+            "id": simulation_output,
+            "label": str(simulation_properties.get("label") or ""),
+            "motion_ids": [item["id"] for item in motions],
+            "start_time_s": simulation_properties.get("start_time_s"),
+            "end_time_s": simulation_properties.get("end_time_s"),
+            "time_step_s": simulation_properties.get("time_step_s"),
+            "error_tolerance": simulation_properties.get("error_tolerance"),
+            "frames_per_second": simulation_properties.get(
+                "frames_per_second"
+            ),
+        }
+
+    return normalize_mechanism_scenario(
+        {
+            "schema": MECHANISM_SCENARIO_SCHEMA,
+            "assembly": {
+                "id": assembly_output,
+                "label": str(assembly_properties.get("label") or ""),
+            },
+            "components": components,
+            "joints": joints,
+            "solve": {
+                "id": diagnostics_output,
+                "label": str(diagnostics_properties.get("label") or ""),
+                "require_solved": bool(
+                    diagnostics_properties.get("require_solved", True)
+                ),
+            },
+            "motions": motions,
+            "simulation": simulation,
+        }
+    )
 
 
 def _compact_placement(placement: Any) -> dict[str, list[float]]:
@@ -2258,9 +2845,31 @@ def _bom_component_sources(
     result: list[dict[str, Any]] = []
     for value in component_values:
         output_name = component_outputs[id(value)]
+        if value.operation == "fastener":
+            identity = _catalog_fastener_identity(
+                value,
+                context=f"BOM component output {output_name!r}",
+            )
+            from VibeCADFasteners import fastener_bom_properties
+
+            source = _catalog_fastener_source(identity)
+            result.append(
+                {
+                    "output_name": output_name,
+                    "reference": {
+                        **source,
+                        "label": str(identity["part_number"]),
+                        "source_kind": "standard_fastener",
+                        "document_file_name": "",
+                        "bom_properties": fastener_bom_properties(identity),
+                    },
+                }
+            )
+            continue
         if value.operation != "component" or len(value.arguments) != 1:
             raise AssemblyCandidateError(
-                f"BOM component output {output_name!r} must come from api.component.",
+                f"BOM component output {output_name!r} must come from "
+                "api.component or api.fastener.",
                 details={"stage": "bom_graph", "component_output": output_name},
             )
         source = _reference(
@@ -2908,6 +3517,7 @@ def _resolve_connector(
     component_outputs: Mapping[int, str],
     components: Mapping[str, Any],
     component_sources: Mapping[str, dict[str, str]],
+    component_source_metadata: Mapping[str, Mapping[str, Any]],
     component_reconstructions: Mapping[str, dict[str, Any] | None],
     context: str,
 ) -> dict[str, Any]:
@@ -2927,8 +3537,11 @@ def _resolve_connector(
     selection = properties.get("selection")
     if not isinstance(selection, Mapping):
         raise AssemblyCandidateError(f"{context}.selection is malformed.")
-    source_key = (source_ref["document_uid"], source_ref["object_name"])
-    metadata: Mapping[str, Any] = _REFERENCE_METADATA[source_key]
+    metadata = component_source_metadata.get(str(output_name or ""))
+    if metadata is None:
+        raise AssemblyCandidateError(
+            f"{context} lost its authenticated component-source metadata."
+        )
     reconstruction = component_reconstructions.get(str(output_name or ""))
     occurrence_path = str(properties.get("occurrence_path") or "")
     hierarchy_chain = None
@@ -2985,6 +3598,9 @@ def _resolve_connector(
         )
     mode = str(selection.get("type") or "")
     semantic: dict[str, Any] | None = None
+    standard_frame: Mapping[str, Any] | None = None
+    semantic_frame: Mapping[str, Any] | None = None
+    connector_contract: dict[str, Any] | None = None
     if mode == "component_origin":
         if properties.get("anchor") is not None:
             raise AssemblyCandidateError(
@@ -3071,16 +3687,42 @@ def _resolve_connector(
             )
         element = str(subelements[0]) if subelements else ""
         anchor = element
+        interface_selection = dict(raw.get("selection") or {})
         if element:
             subshape, category = _subelement(
                 selection_component, element, context=context
             )
             inferred = _geometry_type(subshape, category)
         else:
-            inferred = "component_origin"
+            inferred = (
+                "component_frame"
+                if interface_selection.get("type") == "frame"
+                else "component_origin"
+            )
         geometry_type = str(
             (geometry[0] if geometry else {}).get("geometry_type") or inferred
         )
+        raw_standard_frame = raw.get("standard_frame")
+        if raw_standard_frame is not None:
+            if not isinstance(raw_standard_frame, Mapping):
+                raise AssemblyCandidateError(
+                    f"{context} published interface has a malformed standard frame."
+                )
+            standard_frame = raw_standard_frame
+        raw_semantic_frame = raw.get("connector_frame")
+        if interface_selection.get("type") == "frame":
+            if not isinstance(raw_semantic_frame, Mapping):
+                raise AssemblyCandidateError(
+                    f"{context} published interface has no explicit connector frame."
+                )
+            semantic_frame = raw_semantic_frame
+        raw_connector_contract = raw.get("connector")
+        if raw_connector_contract is not None:
+            if not isinstance(raw_connector_contract, Mapping):
+                raise AssemblyCandidateError(
+                    f"{context} published interface has a malformed connector contract."
+                )
+            connector_contract = dict(raw_connector_contract)
         semantic = {
             "type": "published_interface",
             "interface_name": interface_name,
@@ -3107,7 +3749,27 @@ def _resolve_connector(
         )
         native_component = hierarchy_reference["target"]
         native_element, native_anchor = hierarchy_reference["subelements"]
-    offset = _native_placement(properties.get("offset"), context=f"{context}.offset")
+    user_offset = _native_placement(
+        properties.get("offset"),
+        context=f"{context}.offset",
+    )
+    if standard_frame is not None:
+        interface_frame = _native_placement(
+            standard_frame,
+            context=f"{context} published-interface frame",
+        )
+    elif semantic_frame is not None:
+        interface_frame = _native_placement_matrix(
+            semantic_frame.get("matrix"),
+            context=f"{context} semantic connector frame",
+        )
+    else:
+        interface_frame = None
+    offset = (
+        interface_frame.multiply(user_offset)
+        if interface_frame is not None
+        else user_offset
+    )
     return {
         "component_output": output_name,
         "component": native_component,
@@ -3118,6 +3780,7 @@ def _resolve_connector(
         "native_element": native_element,
         "native_anchor": native_anchor,
         "geometry_type": geometry_type,
+        "connector_contract": connector_contract,
         "occurrence_path": occurrence_path or None,
         "native_target_mode": (
             str(hierarchy_reference["target_mode"])
@@ -3129,37 +3792,22 @@ def _resolve_connector(
             if hierarchy_reference is not None
             else []
         ),
+        "interface_frame": (
+            _placement_fact(interface_frame)
+            if interface_frame is not None
+            else None
+        ),
         "offset": offset,
     }
 
 
-def _compatibility(kind: str, connectors: list[dict[str, Any]]) -> dict[str, Any]:
-    geometry = [str(item.get("geometry_type") or "") for item in connectors]
-    axis_capable = {"line", "circle", "plane", "cylinder", "cone", "component_origin"}
-    rotary = {"circle", "cylinder", "cone"}
-    linear = {"line", "plane"}
-    criteria = "any valid connector geometry"
-    compatible = all(geometry)
-    if kind in {"revolute", "cylindrical", "screw", "gears", "belt"}:
-        criteria = "both connectors must define axes"
-        compatible = all(item in axis_capable for item in geometry)
-    elif kind == "slider":
-        criteria = "both connectors must define linear axes or plane normals"
-        compatible = all(item in linear | {"component_origin"} for item in geometry)
-    elif kind == "rack_pinion":
-        criteria = "one linear connector and one circular/cylindrical connector"
-        compatible = any(item in linear for item in geometry) and any(
-            item in rotary for item in geometry
-        )
-    elif kind in {"parallel", "perpendicular", "angle"}:
-        criteria = "both connectors must define orientations"
-        compatible = all(item in axis_capable for item in geometry)
-    return {
-        "ok": compatible,
-        "joint_type": kind,
-        "criteria": criteria,
-        "resolved_geometry_types": geometry,
-    }
+def _explicit_connector_compatibility(
+    kind: str, connectors: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return explicit_connector_compatibility(
+        kind,
+        [item.get("connector_contract") for item in connectors],
+    )
 
 
 def _apply_joint_properties(joint: Any, properties: Mapping[str, Any]) -> None:
@@ -3371,14 +4019,79 @@ def validate_and_solve_assembly(
         assembly_value=assembly_value,
         joint_outputs=joint_outputs,
     )
+    public_names = {str(name) for name in raw_result}
+    internal_items: list[dict[str, Any]] = []
+    assembly_properties = _properties(assembly_value, "assembly")
+    for value in list(assembly_properties.get("components") or []):
+        name = component_outputs[id(value)]
+        if name not in public_names:
+            internal_items.append(
+                {
+                    "name": name,
+                    "type": "component_link",
+                    "definition": value.to_payload(),
+                    "internal": True,
+                }
+            )
+    for value in list(assembly_properties.get("joints") or []):
+        name = joint_outputs[id(value)]
+        if name not in public_names:
+            internal_items.append(
+                {
+                    "name": name,
+                    "type": "joint",
+                    "definition": value.to_payload(),
+                    "internal": True,
+                }
+            )
+    if simulation_contract is not None:
+        _simulation_output, simulation_value, motion_outputs = simulation_contract
+        for value in list(_properties(simulation_value, "simulation").get("motions") or []):
+            name = motion_outputs[id(value)]
+            if name not in public_names:
+                internal_items.append(
+                    {
+                        "name": name,
+                        "type": "motion",
+                        "definition": value.to_payload(),
+                        "internal": True,
+                    }
+                )
+    existing_output_names = {str(item.get("name") or "") for item in outputs}
+    internal_names = [str(item["name"]) for item in internal_items]
+    if (
+        len(internal_names) != len(set(internal_names))
+        or existing_output_names.intersection(internal_names)
+    ):
+        raise AssemblyCandidateError(
+            "Assembly-owned member identities collide with public outputs."
+        )
+    outputs.extend(internal_items)
     exploded_view_contract = _exploded_view_contract(
         raw_result,
         assembly_value=assembly_value,
         component_outputs=component_outputs,
     )
     bom_contract = _bom_contract(raw_result, assembly_value=assembly_value)
-    assembly_properties = _properties(assembly_value, "assembly")
+    mechanism_scenario = _mechanism_scenario_contract(
+        assembly_output=assembly_output,
+        assembly_value=assembly_value,
+        diagnostics_output=diagnostics_output,
+        diagnostics_value=diagnostics_value,
+        component_outputs=component_outputs,
+        joint_outputs=joint_outputs,
+        simulation_contract=simulation_contract,
+    )
+    mechanism_check_contracts = _mechanism_check_contract(
+        raw_result,
+        assembly_value=assembly_value,
+        component_outputs=component_outputs,
+        mechanism_scenario=mechanism_scenario,
+    )
     component_values = list(assembly_properties.get("components") or [])
+    component_values_by_output = {
+        component_outputs[id(value)]: value for value in component_values
+    }
     joint_values = list(assembly_properties.get("joints") or [])
     bom_sources = _bom_component_sources(component_values, component_outputs)
 
@@ -3395,25 +4108,111 @@ def validate_and_solve_assembly(
     source_reconstructions: dict[tuple[str, str], dict[str, Any]] = {}
     components: dict[str, Any] = {}
     component_sources: dict[str, dict[str, str]] = {}
+    component_source_metadata: dict[str, Mapping[str, Any]] = {}
     component_reconstructions: dict[str, dict[str, Any] | None] = {}
     grounded_outputs: list[str] = []
     pending_grounding: list[tuple[int, str, Any]] = []
     component_data: dict[str, dict[str, Any]] = {}
     for index, value in enumerate(component_values):
         output_name = component_outputs[id(value)]
-        if value.operation != "component" or len(value.arguments) != 1:
+        if value.operation not in {"component", "fastener"}:
             raise AssemblyCandidateError(
-                f"Component output {output_name!r} must come from api.component."
+                f"Component output {output_name!r} must come from "
+                "api.component or api.fastener."
             )
-        properties = _properties(value, "component")
-        source_ref = _reference(
-            value.arguments[0],
-            context=f"component output {output_name!r} source",
-        )
-        source_key = (source_ref["document_uid"], source_ref["object_name"])
-        metadata = _REFERENCE_METADATA[source_key]
-        source_kind = str(metadata.get("source_kind") or "shape")
-        flexible = bool(properties.get("flexible", False))
+        properties = _properties(value, value.operation)
+        catalog_identity: dict[str, Any] | None = None
+        catalog_brep: dict[str, Any] | None = None
+        if value.operation == "fastener":
+            if artifact_root is None:
+                raise AssemblyCandidateError(
+                    f"Component output {output_name!r} requires a staged fastener BREP.",
+                    details={"stage": "fastener_brep"},
+                )
+            catalog_identity = _catalog_fastener_identity(
+                value,
+                context=f"Component output {output_name!r}",
+            )
+            source_ref = _catalog_fastener_source(catalog_identity)
+            source_key = (
+                source_ref["document_uid"],
+                source_ref["object_name"],
+            )
+            try:
+                from VibeCADFasteners import (
+                    assembly_component_contract,
+                    create_fastener_feature,
+                )
+
+                source = source_objects.get(source_key)
+                if source is None:
+                    source, observed_identity = create_fastener_feature(
+                        document,
+                        standard=catalog_identity["standard"],
+                        nominal_thread=catalog_identity["nominal_size"],
+                        length_mm=catalog_identity["length_mm"],
+                        model_thread=bool(catalog_identity["model_thread"]),
+                        left_handed=bool(catalog_identity["left_handed"]),
+                        options=dict(catalog_identity["options"]),
+                        object_name=f"CandidateFastenerSource{index}",
+                        label=str(catalog_identity["part_number"]),
+                    )
+                    if (
+                        observed_identity["canonical_key"]
+                        != catalog_identity["canonical_key"]
+                    ):
+                        raise AssemblyCandidateError(
+                            f"Component output {output_name!r} generated a different "
+                            "catalog identity.",
+                            details={"stage": "fastener_generation"},
+                        )
+                    source_objects[source_key] = source
+                metadata = assembly_component_contract(
+                    source.Shape,
+                    catalog_identity,
+                )
+                catalog_brep = _catalog_fastener_brep(
+                    source.Shape,
+                    artifact_root=artifact_root,
+                    component_index=index,
+                )
+            except AssemblyCandidateError:
+                raise
+            except Exception as exc:
+                raise AssemblyCandidateError(
+                    f"Component output {output_name!r} could not generate its "
+                    f"catalog fastener: {exc}",
+                    details={
+                        "stage": "fastener_generation",
+                        "standard": str(catalog_identity["standard"]),
+                        "nominal_thread": str(catalog_identity["nominal_size"]),
+                    },
+                ) from exc
+            source_kind = "standard_fastener"
+            flexible = False
+            reconstruction = None
+            component = assembly.newObject(
+                "App::Link",
+                f"CandidateComponent{index}",
+            )
+        else:
+            if len(value.arguments) != 1:
+                raise AssemblyCandidateError(
+                    f"Component output {output_name!r} has a malformed source."
+                )
+            source_ref = _reference(
+                value.arguments[0],
+                context=f"component output {output_name!r} source",
+            )
+            source_key = (
+                source_ref["document_uid"],
+                source_ref["object_name"],
+            )
+            metadata = _REFERENCE_METADATA[source_key]
+            source_kind = str(metadata.get("source_kind") or "shape")
+            flexible = bool(properties.get("flexible", False))
+            hierarchy = _REFERENCE_HIERARCHIES.get(source_key)
+            reconstruction = None
         grounded = bool(properties.get("grounded"))
         if flexible and source_kind != "assembly":
             raise AssemblyCandidateError(
@@ -3442,9 +4241,11 @@ def validate_and_solve_assembly(
                 },
             )
 
-        hierarchy = _REFERENCE_HIERARCHIES.get(source_key)
-        reconstruction: dict[str, Any] | None = None
-        if source_kind in {"assembly", "part"} and hierarchy is not None:
+        if (
+            value.operation == "component"
+            and source_kind in {"assembly", "part"}
+            and hierarchy is not None
+        ):
             reconstruction = source_reconstructions.get(source_key)
             if reconstruction is None:
                 reconstruction = _reconstruct_assembly_hierarchy(
@@ -3463,7 +4264,7 @@ def validate_and_solve_assembly(
                 f"CandidateComponent{index}",
             )
             source = reconstruction["root"]
-        else:
+        elif value.operation == "component":
             if flexible:
                 raise AssemblyCandidateError(
                     f"Component output {output_name!r} cannot expose source internals "
@@ -3481,18 +4282,25 @@ def validate_and_solve_assembly(
             source = source_objects.get(source_key)
             if source is None:
                 source = document.addObject("Part::Feature", f"CandidateSource{index}")
-                source.Shape = detached_reference_shape(source_ref)
+                source_identity = {
+                    "document_uid": source_ref["document_uid"],
+                    "object_name": source_ref["object_name"],
+                }
+                source.Shape = detached_reference_shape(source_identity)
                 source.Label = str(metadata.get("label") or output_name)
                 _apply_hierarchy_properties(
                     source,
                     {
                         "node_id": source_ref["object_name"],
-                        "identity": source_ref,
+                        "identity": source_identity,
                         "bom_properties": list(metadata.get("bom_properties") or []),
                     },
                 )
                 source_objects[source_key] = source
-            component = assembly.newObject("App::Link", f"CandidateComponent{index}")
+            component = assembly.newObject(
+                "App::Link",
+                f"CandidateComponent{index}",
+            )
         if component is None:
             raise AssemblyCandidateError(
                 f"FreeCAD did not create component output {output_name!r}."
@@ -3508,6 +4316,7 @@ def validate_and_solve_assembly(
             component.Rigid = not flexible
         components[output_name] = component
         component_sources[output_name] = source_ref
+        component_source_metadata[output_name] = metadata
         component_reconstructions[output_name] = reconstruction
         if grounded:
             grounded_outputs.append(output_name)
@@ -3539,6 +4348,14 @@ def validate_and_solve_assembly(
             "occurrence_path_count": len(occurrence_paths),
             "occurrence_paths": occurrence_paths,
         }
+        if catalog_identity is not None and catalog_brep is not None:
+            component_data[output_name].update(
+                {
+                    "catalog_fastener": catalog_identity,
+                    "source_contract": dict(metadata),
+                    "source_brep": catalog_brep,
+                }
+            )
 
     # Native AssemblyLinks synchronize their generated children and internal
     # joints in the worker before any model-authored connector is resolved.
@@ -3590,6 +4407,7 @@ def validate_and_solve_assembly(
                 component_outputs=component_outputs,
                 components=components,
                 component_sources=component_sources,
+                component_source_metadata=component_source_metadata,
                 component_reconstructions=component_reconstructions,
                 context=f"joint output {output_name!r} connector {connector_index}",
             )
@@ -3599,11 +4417,11 @@ def validate_and_solve_assembly(
             raise AssemblyCandidateError(
                 f"Joint output {output_name!r} connects a component to itself."
             )
-        compatibility = _compatibility(kind, connectors)
+        compatibility = _explicit_connector_compatibility(kind, connectors)
         if not compatibility["ok"]:
             raise AssemblyCandidateError(
-                f"Joint output {output_name!r} has connector geometry incompatible "
-                f"with a {kind} joint: {compatibility['criteria']}.",
+                f"Joint output {output_name!r} violates an explicit connector "
+                f"contract: {compatibility['reason']}.",
                 details={
                     "stage": "joint_compatibility",
                     "joint_output": output_name,
@@ -3685,6 +4503,7 @@ def validate_and_solve_assembly(
                         "native_hierarchy_chain"
                     ],
                     "native_reference": _native_reference(native_reference),
+                    "interface_frame": connector["interface_frame"],
                     "offset": _placement_fact(connector["offset"]),
                     "local_frame": _placement_fact(local_frame),
                     "global_frame": _placement_fact(global_frame),
@@ -3717,30 +4536,73 @@ def validate_and_solve_assembly(
             },
         )
 
-    document.recompute()
-    solver_code = int(assembly.solve(False))
-    document.recompute()
-    native_diagnostics = _native_diagnostics(assembly)
-    solver_verdict = _SOLVER_VERDICTS.get(solver_code, f"unknown_status_{solver_code}")
-    component_placements = {
-        name: _placement_fact(component.Placement)
-        for name, component in components.items()
-    }
-    component_occurrence_states = {
-        name: _component_hierarchy_state(
-            components[name],
-            reconstruction,
-            component_output=name,
+    def evaluate_native_solve(
+        _scenario: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        document.recompute()
+        native_solver_code = int(assembly.solve(False))
+        document.recompute()
+        native = _native_diagnostics(assembly)
+        verdict = _SOLVER_VERDICTS.get(
+            native_solver_code,
+            f"unknown_status_{native_solver_code}",
         )
+        placements = {
+            name: _placement_fact(component.Placement)
+            for name, component in components.items()
+        }
+        occurrences = {
+            name: (
+                _component_hierarchy_state(
+                    components[name],
+                    reconstruction,
+                    component_output=name,
+                )
+                if reconstruction is not None
+                else []
+            )
+            for name, reconstruction in component_reconstructions.items()
+        }
+        status = (
+            "solved"
+            if native_solver_code == 0
+            and not _diagnostics_conflict(native)
+            and not joint_dependency_issues
+            else "failed"
+        )
+        return {
+            "schema": MECHANISM_SOLVE_REPORT_SCHEMA,
+            "scenario_sha256": mechanism_scenario_sha256(
+                _scenario
+            ),
+            "status": status,
+            "solver_code": native_solver_code,
+            "solver_verdict": verdict,
+            "require_solved": require_solved,
+            "component_count": len(components),
+            "joint_count": len(joint_values),
+            "grounded_components": grounded_outputs,
+            "native_diagnostics": native,
+            "component_placements": placements,
+            "component_occurrences": occurrences,
+            "joint_dependency_issues": joint_dependency_issues,
+        }
+
+    solve_report = evaluate_mechanism_scenario(
+        mechanism_scenario,
+        evaluate_native_solve,
+    )
+    solver_code = int(solve_report["solver_code"])
+    solver_verdict = str(solve_report["solver_verdict"])
+    native_diagnostics = dict(solve_report["native_diagnostics"])
+    component_placements = dict(solve_report["component_placements"])
+    component_occurrence_states = {
+        name: list(solve_report["component_occurrences"][name])
         for name, reconstruction in component_reconstructions.items()
         if reconstruction is not None
     }
     diagnostics = {
-        "status": "solved"
-        if solver_code == 0
-        and not _diagnostics_conflict(native_diagnostics)
-        and not joint_dependency_issues
-        else "failed",
+        "status": solve_report["status"],
         "solver_code": solver_code,
         "solver_verdict": solver_verdict,
         "native": native_diagnostics,
@@ -3766,6 +4628,48 @@ def validate_and_solve_assembly(
         )
 
     by_name = {str(item.get("name") or ""): item for item in outputs}
+    verification_summaries: list[dict[str, Any]] = []
+    for verification_output, _verification_value, check in (
+        mechanism_check_contracts
+    ):
+        geometry_evidence = _static_mechanism_geometry(
+            check,
+            components=components,
+            component_values=component_values_by_output,
+            component_source_metadata=component_source_metadata,
+        )
+        verification_report = evaluate_static_mechanism_check(
+            mechanism_scenario,
+            solve_report,
+            check,
+            geometry_evidence,
+        )
+        by_name[verification_output]["assembly_data"] = {
+            "assembly_output": assembly_output,
+            "static_check": check,
+            "report": verification_report,
+        }
+        summary = {
+            "verification_output": verification_output,
+            "verdict": str(verification_report["verdict"]),
+            "declaration_count": int(
+                verification_report["summary"]["declaration_count"]
+            ),
+            "pass_count": int(verification_report["summary"]["pass_count"]),
+            "fail_count": int(verification_report["summary"]["fail_count"]),
+            "indeterminate_count": int(
+                verification_report["summary"]["indeterminate_count"]
+            ),
+            "ignored_count": int(
+                verification_report["summary"]["ignored_count"]
+            ),
+            "static_check_sha256": str(
+                verification_report["static_check_sha256"]
+            ),
+        }
+        verification_summaries.append(summary)
+    if verification_summaries:
+        diagnostics["verifications"] = verification_summaries
     simulation_summary = None
     if simulation_contract is not None:
         simulation_output, simulation_value, motion_outputs = simulation_contract
@@ -3894,6 +4798,12 @@ def validate_and_solve_assembly(
         by_name[assembly_output]["assembly_data"]["bom_outputs"] = [
             item["bom_output"] for item in bom_summaries
         ]
+    if verification_summaries:
+        by_name[assembly_output]["assembly_data"][
+            "mechanism_verification_outputs"
+        ] = [
+            item["verification_output"] for item in verification_summaries
+        ]
     for output_name, data in component_data.items():
         data["solved_placement"] = component_placements[output_name]
         if output_name in component_occurrence_states:
@@ -3910,18 +4820,19 @@ def validate_and_solve_assembly(
         "assembly_output": assembly_output
     }
     result = {
-        "status": diagnostics["status"],
-        "solver_code": solver_code,
-        "solver_verdict": solver_verdict,
-        "component_count": len(components),
-        "joint_count": len(joint_values),
-        "grounded_components": grounded_outputs,
-        "native_diagnostics": native_diagnostics,
-        "component_placements": component_placements,
+        "status": solve_report["status"],
+        "solver_code": solve_report["solver_code"],
+        "solver_verdict": solve_report["solver_verdict"],
+        "component_count": solve_report["component_count"],
+        "joint_count": solve_report["joint_count"],
+        "grounded_components": solve_report["grounded_components"],
+        "native_diagnostics": solve_report["native_diagnostics"],
+        "component_placements": solve_report["component_placements"],
         "component_occurrence_counts": {
             name: len(items) for name, items in component_occurrence_states.items()
         },
-        "joint_dependency_issues": joint_dependency_issues,
+        "joint_dependency_issues": solve_report["joint_dependency_issues"],
+        "internal_member_outputs": internal_names,
     }
     if simulation_summary is not None:
         result["simulation"] = simulation_summary
@@ -3929,6 +4840,8 @@ def validate_and_solve_assembly(
         result["exploded_views"] = exploded_view_summaries
     if bom_summaries:
         result["boms"] = bom_summaries
+    if verification_summaries:
+        result["verifications"] = verification_summaries
     return result
 
 

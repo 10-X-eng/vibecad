@@ -27,6 +27,7 @@
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
 #include <App/DocumentObject.h>
+#include <App/SuppressibleExtension.h>
 #include <Mod/Part/App/PartFeature.h>
 
 
@@ -61,7 +62,11 @@ public:
     //@{
     /// recalculate the Feature
     App::DocumentObjectExecReturn *execute() override;
+    short mustExecute() const override;
     //@}
+
+private:
+    App::SuppressibleExtension suppressibleExtension;
 };
 
 } //namespace TechDraw

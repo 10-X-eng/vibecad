@@ -40,6 +40,14 @@ class DrawPage(DocumentObject):
         """getAllViews() - returns a list of all the views on page including Views inside Collections"""
         ...
 
+    def getActiveViews(self) -> Any:
+        """getActiveViews() - returns direct page views active at the document timeline marker"""
+        ...
+
+    def getAllActiveViews(self) -> Any:
+        """getAllActiveViews() - returns all page views active at the document timeline marker"""
+        ...
+
     def translateLabel(self) -> Any:
         """
         translateLabel(translationContext, objectBaseName, objectUniqueName).

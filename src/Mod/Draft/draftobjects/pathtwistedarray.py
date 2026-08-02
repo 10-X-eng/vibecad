@@ -43,7 +43,7 @@ A `twisted bridge` would consist of three parts:
 This module builds only the first element, the twisted ribcage.
 
 The tunnel and walkway are built with the `twisted bridge`
-object in the Arch Workbench.
+object in Draft.
 """
 
 ## @package pathtwistedarray

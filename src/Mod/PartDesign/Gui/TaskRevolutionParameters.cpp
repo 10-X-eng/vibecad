@@ -380,8 +380,16 @@ void TaskRevolutionParameters::onSelectionChanged(const Gui::SelectionChanges& m
             if (refText.length() > 0) {
                 QSignalBlocker block(ui->lineFaceName);
                 ui->lineFaceName->setText(refText);
-                ui->lineFaceName->setProperty("FeatureName", QByteArray(msg.pObjectName));
-                ui->lineFaceName->setProperty("FaceName", QByteArray(msg.pSubName));
+                auto* reference = rev->UpToFace.getValue();
+                const auto subElements = rev->UpToFace.getSubValues();
+                ui->lineFaceName->setProperty(
+                    "FeatureName",
+                    reference ? QByteArray(reference->getNameInDocument()) : QByteArray()
+                );
+                ui->lineFaceName->setProperty(
+                    "FaceName",
+                    subElements.empty() ? QByteArray() : QByteArray(subElements.front().c_str())
+                );
                 // Turn off reference selection mode
                 ui->buttonFace->setChecked(false);
             }

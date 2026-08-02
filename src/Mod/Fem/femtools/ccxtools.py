@@ -132,6 +132,8 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
             raise Exception("FEM: The analysis and solver are not in the same document!")
         if self.solver not in self.analysis.Group:
             raise Exception("FEM: The solver is not part of the analysis Group!")
+        if membertools._is_suppressed(self.solver):
+            raise ValueError("A suppressed FEM solver cannot be executed")
 
         # print(self.solver)
         # print(self.analysis)
@@ -208,7 +210,7 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
 
     def find_solver(self):
         found_solver_for_use = False
-        for m in self.analysis.Group:
+        for m in membertools._active_group_members(self.analysis):
             if femutils.is_of_type(m, "Fem::SolverCcxTools"):
                 # we are going to explicitly check for the ccx tools solver type only,
                 # thus it is possible to have lots of framework solvers inside the analysis anyway
@@ -748,9 +750,88 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
         FreeCAD.Console.PrintMessage("\n")  # because of time print in separate line
         FreeCAD.Console.PrintMessage("CalculiX read results...\n")
         self.results_present = False
-        self.load_results_ccxfrd()
-        self.load_results_ccxdat()
-        self.analysis.Document.recompute()
+        if not FreeCAD.GuiUp:
+            self.load_results_ccxfrd()
+            self.load_results_ccxdat()
+            self.analysis.Document.recompute()
+            return
+
+        document = self.analysis.Document
+        if any(
+            candidate.getBookedTransactionID() != 0
+            or candidate.HasPendingTransaction
+            for candidate in FreeCAD.listDocuments().values()
+        ):
+            raise RuntimeError(
+                "CalculiX results cannot be imported while another "
+                "document transaction is active"
+            )
+
+        transaction_id = 0
+        try:
+            document.openTransaction("Import CalculiX solver results")
+            transaction_id = int(document.getBookedTransactionID())
+            if transaction_id == 0:
+                raise RuntimeError(
+                    "Could not open the CalculiX result import transaction"
+                )
+
+            result_graph = self.load_results_ccxfrd()
+            dat = self.load_results_ccxdat()
+            if result_graph is not None:
+                (
+                    root,
+                    resources,
+                    root_is_new,
+                    reconciliation,
+                ) = result_graph
+                resources = list(resources)
+                if dat is not None and dat is not root:
+                    resources.append(dat)
+                from femcommands.manager import (
+                    _finalize_timeline_result_graph,
+                )
+
+                _finalize_timeline_result_graph(
+                    self.solver,
+                    root,
+                    resources,
+                    root_is_new=root_is_new,
+                    reconciliation=reconciliation,
+                )
+                solver_results = list(self.solver.Results)
+                for result in (root, dat):
+                    if (
+                        result is not None
+                        and result not in solver_results
+                    ):
+                        solver_results.append(result)
+                self.solver.Results = solver_results
+            elif dat is not None:
+                from femcommands.manager import (
+                    _finalize_timeline_result_graph,
+                )
+
+                _finalize_timeline_result_graph(
+                    self.solver,
+                    dat,
+                )
+                solver_results = list(self.solver.Results)
+                if dat not in solver_results:
+                    solver_results.append(dat)
+                    self.solver.Results = solver_results
+
+            document.recompute()
+            FreeCAD.closeActiveTransaction(False, transaction_id)
+            transaction_id = 0
+        except Exception:
+            if (
+                transaction_id
+                and document.getBookedTransactionID()
+                == transaction_id
+            ):
+                FreeCAD.closeActiveTransaction(True, transaction_id)
+            raise
 
     def load_results_ccxfrd(self):
         """Load results of ccx calculations from .frd file."""
@@ -758,13 +839,21 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
 
         frd_result_file = os.path.splitext(self.inp_file_name)[0] + ".frd"
         if os.path.isfile(frd_result_file):
-            importCcxFrdResults.importFrd(
-                frd_result_file, self.analysis, "CCX_", self.solver.AnalysisType
+            (
+                legacy_result,
+                root,
+                resources,
+                root_is_new,
+                reconciliation,
+            ) = importCcxFrdResults.importFrdResultGraph(
+                frd_result_file,
+                self.analysis,
+                "CCX_",
+                self.solver.AnalysisType,
+                include_reconciliation=True,
             )
-            for m in self.analysis.Group:
-                if m.isDerivedFrom("Fem::FemResultObject"):
-                    self.results_present = True
-                    break
+            if legacy_result is not None:
+                self.results_present = True
             else:
                 if self.solver.AnalysisType == "check":
                     for m in self.analysis.Group:
@@ -774,8 +863,16 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
                             break
                 else:
                     FreeCAD.Console.PrintError("FEM: No result object in active Analysis.\n")
+            if root is not None:
+                return (
+                    root,
+                    resources,
+                    root_is_new,
+                    reconciliation,
+                )
         else:
             FreeCAD.Console.PrintError(f"FEM: No frd result file found at {frd_result_file}\n")
+        return None
 
     def load_results_ccxdat(self):
         """Load results of ccx calculations from .dat file."""
@@ -810,6 +907,8 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
             if FreeCAD.GuiUp:
                 dat_text_obj.ViewObject.ReadOnly = True  # set editor view readonly
             self.analysis.addObject(dat_text_obj)
+            return dat_text_obj
+        return None
 
 
 class CcxTools(FemToolsCcx):

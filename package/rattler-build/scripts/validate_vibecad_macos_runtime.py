@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import importlib.util
 from pathlib import Path
 import sys
 import traceback
@@ -77,10 +76,13 @@ def _check_macos_keyring(prefix: Path) -> None:
     print(f"macOS Keychain backend priority: {priority}", flush=True)
 
 
-def _check_removed_agents(_prefix: Path) -> None:
-    if importlib.util.find_spec("agents") is not None:
-        raise RuntimeError("The removed OpenAI Agents SDK is present in the bundle.")
-    print("agents: absent as required", flush=True)
+def _check_removed_openai_sdk(_prefix: Path) -> None:
+    for module_name in ("openai", "agents"):
+        if importlib.util.find_spec(module_name) is not None:
+            raise RuntimeError(
+                f"The retired direct OpenAI module {module_name!r} is present."
+            )
+    print("direct OpenAI SDK: absent as required", flush=True)
 
 
 def _check_pivy(prefix: Path) -> None:
@@ -100,18 +102,6 @@ def _check_provider_subprocess(prefix: Path) -> None:
     print("provider subprocess: spawn smoke passed", flush=True)
 
 
-def _check_build123d(prefix: Path) -> None:
-    module = _require_bundle_module("VibeCADBuild123d", prefix)
-    result = module.runtime_execution_smoke()
-    print(f"build123d sidecar: {result['version']}", flush=True)
-
-
-def _check_openscad(prefix: Path) -> None:
-    module = _require_bundle_module("VibeCADOpenSCAD", prefix)
-    result = module.runtime_execution_smoke()
-    print(f"OpenSCAD sidecar: {result['version']}", flush=True)
-
-
 def _check_codex(prefix: Path) -> None:
     module = _require_bundle_module("VibeCADCodex", prefix)
     result = module.runtime_execution_smoke()
@@ -120,16 +110,13 @@ def _check_codex(prefix: Path) -> None:
 
 CHECKS: dict[str, Callable[[Path], None]] = {
     "python": _check_python,
-    "openai": _check_module("openai"),
     "anthropic": _check_module("anthropic"),
     "keyring": _check_module("keyring"),
     "jsonschema": _check_module("jsonschema"),
     "macos-keyring": _check_macos_keyring,
-    "removed-agents": _check_removed_agents,
+    "removed-openai-sdk": _check_removed_openai_sdk,
     "pivy": _check_pivy,
     "provider-subprocess": _check_provider_subprocess,
-    "build123d": _check_build123d,
-    "openscad": _check_openscad,
     "codex": _check_codex,
 }
 

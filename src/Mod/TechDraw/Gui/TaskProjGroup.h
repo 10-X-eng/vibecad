@@ -23,6 +23,8 @@
 
 #pragma once
 
+#include <unordered_set>
+
 #include <QString>
 #include <QDialog>
 
@@ -30,6 +32,8 @@
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
+
+#include "TaskDocumentGuard.h"
 
 namespace Gui {
     class QuantitySpinBox;
@@ -84,6 +88,8 @@ protected:
     void updateUi();
     void connectWidgets();
     void initializeUi();
+    bool resolveTargets();
+    void captureCurrentView();
 
     void turnViewToProjGroup();
     void turnProjGroupToView();
@@ -109,6 +115,13 @@ protected Q_SLOTS:
 private:
     TechDraw::DrawPage* m_page;
     MDIViewPage* m_mdi;
+    TaskInternal::DocumentIdentity m_documentIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage> m_pageIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawView> m_viewIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawProjGroup>
+        m_groupIdentity;
+    long m_initialGroupId {-1};
+    std::unordered_set<long> m_initialProjectionIds;
 
     std::unique_ptr<Ui_TaskProjGroup> ui;
     TechDraw::DrawView* view;

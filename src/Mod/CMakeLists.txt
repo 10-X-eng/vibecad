@@ -25,9 +25,41 @@ if(BUILD_ADDONMGR)
   endif()
 endif(BUILD_ADDONMGR)
 
-if(BUILD_BIM)
-  add_subdirectory(BIM)
-endif(BUILD_BIM)
+if(BUILD_FASTENERS)
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Fasteners/Init.py"
+     OR NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Fasteners/LICENSE")
+    message(FATAL_ERROR "The pinned Fasteners workbench git submodule is not available. Please run
+    git submodule update --init src/Mod/Fasteners")
+  endif()
+
+  file(GLOB_RECURSE FastenersModule_SRCS
+    CONFIGURE_DEPENDS
+    LIST_DIRECTORIES false
+    RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
+    Fasteners/*
+  )
+  list(FILTER FastenersModule_SRCS EXCLUDE REGEX
+    "^Fasteners/(\\.git($|/)|.*__pycache__($|/)|.*\\.pyc$)"
+  )
+
+  add_custom_target(FastenersModule ALL
+    SOURCES ${FastenersModule_SRCS}
+  )
+
+  fc_target_copy_resource(FastenersModule
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}/Mod
+    ${FastenersModule_SRCS}
+  )
+
+  install(
+    DIRECTORY Fasteners/
+    DESTINATION Mod/Fasteners
+    PATTERN ".git*" EXCLUDE
+    PATTERN "__pycache__" EXCLUDE
+    PATTERN "*.pyc" EXCLUDE
+  )
+endif(BUILD_FASTENERS)
 
 if(BUILD_ASSEMBLY)
   add_subdirectory(Assembly)
@@ -68,10 +100,6 @@ endif(BUILD_MESH)
 if(BUILD_MESH_PART)
   add_subdirectory(MeshPart)
 endif(BUILD_MESH_PART)
-
-if(BUILD_OPENSCAD)
-  add_subdirectory(OpenSCAD)
-endif(BUILD_OPENSCAD)
 
 if(BUILD_PART)
   add_subdirectory(Part)

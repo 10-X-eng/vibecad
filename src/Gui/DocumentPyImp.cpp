@@ -21,6 +21,7 @@
  ***************************************************************************/
 
 #include <sstream>
+#include <optional>
 
 #include <App/Document.h>
 #include <App/DocumentObjectPy.h>
@@ -29,9 +30,11 @@
 #include <Base/Stream.h>
 
 #include "Application.h"
+#include "ExactTransaction.h"
 #include "MergeDocuments.h"
 #include "MDIView.h"
 #include "Tree.h"
+#include "TimelineImport.h"
 #include "ViewProviderDocumentObject.h"
 #include "ViewProviderExtern.h"
 
@@ -391,8 +394,19 @@ PyObject* DocumentPy::mergeProject(PyObject* args)
         Base::FileInfo fi(filename);
         Base::ifstream str(fi, std::ios::in | std::ios::binary);
         App::Document* doc = getDocumentPtr()->getDocument();
-        MergeDocuments md(doc);
-        md.importObjects(str);
+        std::optional<ExactTransaction> transaction;
+        if (doc->getBookedTransactionID()
+            == App::NullTransaction) {
+            transaction.emplace(*doc, "Merge document");
+        }
+        auto imported = restoreTimelineImport(*doc, str);
+        str.close();
+        adoptTimelineImport(imported);
+        if (transaction && !transaction->commit()) {
+            throw Base::RuntimeError(
+                "The exact merge transaction could not be committed"
+            );
+        }
 
         Py_Return;
     }

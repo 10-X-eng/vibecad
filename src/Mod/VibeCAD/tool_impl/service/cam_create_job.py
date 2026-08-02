@@ -160,23 +160,36 @@ def run(
 
     def create() -> dict[str, Any]:
         import FreeCAD as App
+        import Path.Base.Util as PathUtil
         import Path.Main.Stock as PathStock
 
         active = App.ActiveDocument
         if active is None:
             raise RuntimeError("No active document.")
         models = []
+        initially_visible_models = []
         for name in clean_names:
             model = active.getObject(name)
             if model is None:
                 raise RuntimeError(f"Model object no longer exists: {name}")
             models.append(model)
+            view = getattr(model, "ViewObject", None)
+            if (
+                view is not None
+                and hasattr(view, "Visibility")
+                and bool(view.Visibility)
+            ):
+                initially_visible_models.append(model)
         job = PathJob.Create(
             "Job",
             models,
             None,
             createDefaultToolController=False,
-            createDefaultStock=False,
+            createDefaultStock=True,
+        )
+        PathUtil.markTimelineReplacedInputs(
+            job,
+            initially_visible_models,
         )
         job.Label = clean_label
         stock = getattr(job, "Stock", None)
@@ -185,13 +198,25 @@ def run(
             stock is not None and type(getattr(stock, "Proxy", None)) is PathStock.StockFromBase
         )
         if not stock_is_from_base:
-            if stock is not None:
-                replaced_stock = stock.Name
-                job.Stock = None
-                active.removeObject(stock.Name)
+            if stock is None:
+                raise RuntimeError(
+                    "Native CAM Job creation did not provide a tracked Stock resource."
+                )
+            replaced_stock = stock.Name
+            stock_replacement = PathUtil.stageTimelineDirectResourceReplacement(
+                job,
+                stock,
+            )
+            job.Stock = None
+            active.removeObject(stock.Name)
             vector = App.Vector(margins["x"], margins["y"], margins["z"])
             stock = PathStock.CreateFromBase(job, neg=vector, pos=vector)
             job.Stock = stock
+            PathUtil.finalizeTimelineDirectResourceReplacement(
+                job,
+                stock_replacement,
+                stock,
+            )
         required_stock_properties = [
             "Base",
             "ExtXneg",

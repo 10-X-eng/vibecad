@@ -34,6 +34,7 @@
 #include <Gui/Selection/Selection.h>
 #include <Gui/Command.h>
 #include <Gui/ViewProvider.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/FeatureThickness.h>
 #include <Mod/Part/App/GizmoHelper.h>
 
@@ -82,10 +83,7 @@ void TaskThicknessParameters::initControls()
     bool i = thickness->Intersection.getValue();
     ui->checkIntersection->setChecked(i);
 
-    std::vector<std::string> strings = thickness->Base.getSubValues();
-    for (const auto& string : strings) {
-        ui->listWidgetReferences->addItem(QString::fromStdString(string));
-    }
+    populateReferences(ui->listWidgetReferences);
 
     setupConnections();
 
@@ -95,7 +93,7 @@ void TaskThicknessParameters::initControls()
     int join = static_cast<int>(thickness->Join.getValue());
     ui->joinComboBox->setCurrentIndex(join);
 
-    if (strings.empty()) {
+    if (ui->listWidgetReferences->count() == 0) {
         setSelectionMode(refSel);
     }
     else {
@@ -245,7 +243,11 @@ int TaskThicknessParameters::getMode() const
 TaskThicknessParameters::~TaskThicknessParameters()
 {
     try {
-        Gui::Selection().clearSelection();
+        if (auto* object = getObject()) {
+            Gui::Selection().clearSelection(
+                object->getDocument()->getName()
+            );
+        }
         Gui::Selection().rmvSelectionGate();
     }
     catch (const Py::Exception&) {
@@ -295,21 +297,87 @@ void TaskThicknessParameters::setGizmoPositions()
         gizmoContainer->visible = false;
         return;
     }
-    auto baseShape = thickness->getBaseTopoShape();
-    auto shapes = thickness->getContinuousEdges(baseShape);
-    auto faces = thickness->getFaces(baseShape);
+    try {
+        Part::TopoShape face;
+        Base::Placement frame;
+        if (auto* design =
+                dynamic_cast<PartDesign::DesignOperationProperties*>(
+                    thickness
+                )) {
+            auto* selections =
+                dynamic_cast<PartDesign::DesignSubelementOperationProperties*>(
+                    thickness
+                );
+            const auto inputs = design->InputStates.getValues();
+            const auto frames = design->InputFrames.getValues();
+            const auto groups = selections
+                ? selections->targetElementGroups()
+                : std::vector<std::vector<std::string>> {};
+            if (inputs.size() != frames.size()
+                || inputs.size() != groups.size()) {
+                gizmoContainer->visible = false;
+                return;
+            }
+            for (std::size_t index = 0; index < inputs.size(); ++index) {
+                auto* state = freecad_cast<Part::Feature*>(inputs[index]);
+                if (!state || groups[index].empty()) {
+                    continue;
+                }
+                auto faces = PartDesign::resolveDesignTargetFaces(
+                    state->Shape.getShape(),
+                    {groups[index].front()}
+                );
+                if (!faces.empty()) {
+                    face = std::move(faces.front());
+                    frame = frames[index];
+                    break;
+                }
+            }
+        }
+        else {
+            const auto baseShape = thickness->getBaseTopoShape();
+            auto faces = thickness->getFaces(baseShape);
+            if (!faces.empty()) {
+                face = std::move(faces.front());
+            }
+        }
 
-    if (shapes.size() == 0 || faces.size() == 0) {
-        gizmoContainer->visible = false;
-        return;
+        if (face.isNull()) {
+            gizmoContainer->visible = false;
+            return;
+        }
+        auto edges = getAdjacentEdgesFromFace(face);
+        if (edges.empty()) {
+            gizmoContainer->visible = false;
+            return;
+        }
+
+        DraggerPlacementProps props =
+            getDraggerPlacementFromEdgeAndFace(edges.front(), face);
+        frame.multVec(props.position, props.position);
+        frame.getRotation().multVec(props.dir, props.dir);
+        props.dir *= thickness->Reversed.getValue() ? 1 : -1;
+
+        linearGizmo->Gizmo::setDraggerPlacement(
+            props.position,
+            props.dir
+        );
+        gizmoContainer->visible = true;
     }
-    gizmoContainer->visible = true;
-
-    Part::TopoShape edge = shapes[0];
-    DraggerPlacementProps props = getDraggerPlacementFromEdgeAndFace(edge, faces[0]);
-    props.dir *= thickness->Reversed.getValue() ? 1 : -1;
-
-    linearGizmo->Gizmo::setDraggerPlacement(props.position, props.dir);
+    catch (const Base::Exception& error) {
+        Base::Console().warning(
+            "Cannot position Thickness gizmo: %s\n",
+            error.what()
+        );
+        gizmoContainer->visible = false;
+    }
+    catch (const Standard_Failure& error) {
+        Base::Console().warning(
+            "Cannot position Thickness gizmo: %s\n",
+            error.GetMessageString()
+        );
+        gizmoContainer->visible = false;
+    }
 }
 
 //**************************************************************************

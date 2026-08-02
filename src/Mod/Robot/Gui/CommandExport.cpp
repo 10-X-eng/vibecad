@@ -34,8 +34,63 @@
 #include <Mod/Robot/App/RobotObject.h>
 #include <Mod/Robot/App/TrajectoryObject.h>
 
+#include "OperationSupport.h"
 
 using namespace std;
+
+namespace
+{
+
+void exportKukaProgram(const char* functionName, const QString& title)
+{
+    const auto selection = RobotGui::OperationSupport::selectedRobotAndTrajectory();
+    if (!selection || !RobotGui::OperationSupport::cleanActiveDocument()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Wrong selection"),
+            QObject::tr("Select one robot and one trajectory in the current document.")
+        );
+        return;
+    }
+    if (selection.trajectory->Trajectory.getValue().getSize() == 0) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Trajectory Is Empty"),
+            QObject::tr("Add at least one waypoint before exporting the trajectory.")
+        );
+        return;
+    }
+
+    const Gui::FileDialog::FilterList filter {
+        {QObject::tr("KRL source"), {"*.src"}},
+        Gui::FileDialog::Filter::AllFiles(),
+    };
+    const QString fileName
+        = Gui::FileDialog::getSaveFileName(Gui::getMainWindow(), title, QString(), filter);
+    if (fileName.isEmpty()) {
+        return;
+    }
+
+    const std::string fileLiteral = RobotGui::OperationSupport::pythonString(fileName.toStdString());
+    Gui::Command::doCommand(Gui::Command::Doc, "from KukaExporter import %s", functionName);
+    Gui::Command::doCommand(
+        Gui::Command::Doc,
+        "%s(%s, %s, %s)",
+        functionName,
+        Gui::Command::getObjectCmd(selection.robot).c_str(),
+        Gui::Command::getObjectCmd(selection.trajectory).c_str(),
+        fileLiteral.c_str()
+    );
+}
+
+bool canExportKukaProgram()
+{
+    const auto selection = RobotGui::OperationSupport::selectedRobotAndTrajectory();
+    return RobotGui::OperationSupport::cleanActiveDocument() && selection
+        && selection.trajectory->Trajectory.getValue().getSize() > 0;
+}
+
+}  // namespace
 
 DEF_STD_CMD_A(CmdRobotExportKukaCompact)
 
@@ -54,66 +109,12 @@ CmdRobotExportKukaCompact::CmdRobotExportKukaCompact()
 
 void CmdRobotExportKukaCompact::activated(int)
 {
-    unsigned int n1 = getSelection().countObjectsOfType<Robot::RobotObject>();
-    unsigned int n2 = getSelection().countObjectsOfType<Robot::TrajectoryObject>();
-
-    if (n1 != 1 || n2 != 1) {
-        QMessageBox::warning(
-            Gui::getMainWindow(),
-            QObject::tr("Wrong selection"),
-            QObject::tr("Select one Robot and one Trajectory object.")
-        );
-        return;
-    }
-
-    std::vector<Gui::SelectionSingleton::SelObj> Sel = getSelection().getSelection();
-
-
-    Robot::RobotObject* pcRobotObject = nullptr;
-    if (Sel[0].pObject->is<Robot::RobotObject>()) {
-        pcRobotObject = static_cast<Robot::RobotObject*>(Sel[0].pObject);
-    }
-    else if (Sel[1].pObject->is<Robot::RobotObject>()) {
-        pcRobotObject = static_cast<Robot::RobotObject*>(Sel[1].pObject);
-    }
-    std::string RoboName = pcRobotObject->getNameInDocument();
-
-    Robot::TrajectoryObject* pcTrajectoryObject = nullptr;
-    if (Sel[0].pObject->is<Robot::TrajectoryObject>()) {
-        pcTrajectoryObject = static_cast<Robot::TrajectoryObject*>(Sel[0].pObject);
-    }
-    else if (Sel[1].pObject->is<Robot::TrajectoryObject>()) {
-        pcTrajectoryObject = static_cast<Robot::TrajectoryObject*>(Sel[1].pObject);
-    }
-    // std::string TrakName = pcTrajectoryObject->getNameInDocument();
-
-    const Gui::FileDialog::FilterList filter {
-        {QObject::tr("KRL file"), {"*.src"}},
-        Gui::FileDialog::Filter::AllFiles(),
-    };
-    QString fn = Gui::FileDialog::getSaveFileName(
-        Gui::getMainWindow(),
-        QObject::tr("Export program"),
-        QString(),
-        filter
-    );
-    if (fn.isEmpty()) {
-        return;
-    }
-
-    doCommand(Doc, "from KukaExporter import ExportCompactSub");
-    doCommand(
-        Doc,
-        "ExportCompactSub(App.activeDocument().%s,App.activeDocument().%s,'%s')",
-        pcRobotObject->getNameInDocument(),
-        pcTrajectoryObject->getNameInDocument(),
-        (const char*)fn.toLatin1()
-    );
+    exportKukaProgram("ExportCompactSub", QObject::tr("Export Compact KUKA Program"));
 }
 
 bool CmdRobotExportKukaCompact::isActive()
 {
-    return hasActiveDocument();
+    return canExportKukaProgram();
 }
 
 // #####################################################################################################
@@ -136,66 +137,12 @@ CmdRobotExportKukaFull::CmdRobotExportKukaFull()
 
 void CmdRobotExportKukaFull::activated(int)
 {
-    unsigned int n1 = getSelection().countObjectsOfType<Robot::RobotObject>();
-    unsigned int n2 = getSelection().countObjectsOfType<Robot::TrajectoryObject>();
-
-    if (n1 != 1 || n2 != 1) {
-        QMessageBox::warning(
-            Gui::getMainWindow(),
-            QObject::tr("Wrong selection"),
-            QObject::tr("Select one Robot and one Trajectory object.")
-        );
-        return;
-    }
-
-    std::vector<Gui::SelectionSingleton::SelObj> Sel = getSelection().getSelection();
-
-
-    Robot::RobotObject* pcRobotObject = nullptr;
-    if (Sel[0].pObject->is<Robot::RobotObject>()) {
-        pcRobotObject = static_cast<Robot::RobotObject*>(Sel[0].pObject);
-    }
-    else if (Sel[1].pObject->is<Robot::RobotObject>()) {
-        pcRobotObject = static_cast<Robot::RobotObject*>(Sel[1].pObject);
-    }
-    // std::string RoboName = pcRobotObject->getNameInDocument();
-
-    Robot::TrajectoryObject* pcTrajectoryObject = nullptr;
-    if (Sel[0].pObject->is<Robot::TrajectoryObject>()) {
-        pcTrajectoryObject = static_cast<Robot::TrajectoryObject*>(Sel[0].pObject);
-    }
-    else if (Sel[1].pObject->is<Robot::TrajectoryObject>()) {
-        pcTrajectoryObject = static_cast<Robot::TrajectoryObject*>(Sel[1].pObject);
-    }
-    // std::string TrakName = pcTrajectoryObject->getNameInDocument();
-
-    const Gui::FileDialog::FilterList filter {
-        {QObject::tr("KRL file"), {"*.src"}},
-        Gui::FileDialog::Filter::AllFiles(),
-    };
-    QString fn = Gui::FileDialog::getSaveFileName(
-        Gui::getMainWindow(),
-        QObject::tr("Export program"),
-        QString(),
-        filter
-    );
-    if (fn.isEmpty()) {
-        return;
-    }
-
-    doCommand(Doc, "from KukaExporter import ExportFullSub");
-    doCommand(
-        Doc,
-        "ExportFullSub(App.activeDocument().%s,App.activeDocument().%s,'%s')",
-        pcRobotObject->getNameInDocument(),
-        pcTrajectoryObject->getNameInDocument(),
-        (const char*)fn.toLatin1()
-    );
+    exportKukaProgram("ExportFullSub", QObject::tr("Export Full KUKA Program"));
 }
 
 bool CmdRobotExportKukaFull::isActive()
 {
-    return hasActiveDocument();
+    return canExportKukaProgram();
 }
 
 // #####################################################################################################

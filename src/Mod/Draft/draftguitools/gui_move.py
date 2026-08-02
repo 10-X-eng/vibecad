@@ -218,12 +218,17 @@ class Move(gui_base_original.Modifier):
         else:
             cmd_name = translate("draft", "Move")
         Gui.addModule("Draft")
-        cmd = "Draft.move(selection, "
+        Gui.addModule("draftutils.timeline")
+        cmd = "moved = draftutils.timeline.move(selection, "
         cmd += DraftVecUtils.toString(self.vector) + ", "
         cmd += "copy=" + str(copy) + ", "
         cmd += "subelements=" + str(self.ui.isSubelementMode.isChecked()) + ")"
         cmd_list = [cmd, "FreeCAD.ActiveDocument.recompute()"]
-        self.commit(cmd_name, cmd_list)
+        self.commit(
+            cmd_name,
+            cmd_list,
+            inputs=(selected.Object for selected in self.selection),
+        )
 
     def numericInput(self, numx, numy, numz):
         """Validate the entry fields in the user interface.

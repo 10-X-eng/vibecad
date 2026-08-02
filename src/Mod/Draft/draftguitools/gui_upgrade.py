@@ -82,15 +82,21 @@ class Upgrade(gui_base_original.Modifier):
         """Proceed with execution of the command after selection."""
         if self.call is not None:
             self.end_callbacks(self.call)
-        if Gui.Selection.getSelection():
-            Gui.addModule("Draft")
-            _cmd = "Draft.upgrade"
-            _cmd += "("
-            _cmd += "FreeCADGui.Selection.getSelection(), "
-            _cmd += "delete=True"
-            _cmd += ")"
+        selection = Gui.Selection.getSelection()
+        if selection:
+            Gui.addModule("draftutils.timeline")
+            selected_objects = ", ".join(
+                "FreeCAD.ActiveDocument.getObject(" + repr(obj.Name) + ")"
+                for obj in selection
+            )
+            _cmd = "draftutils.timeline.upgrade_replacement"
+            _cmd += "([" + selected_objects + "])"
             _cmd_list = ["_objs_ = " + _cmd, "FreeCAD.ActiveDocument.recompute()"]
-            self.commit(translate("draft", "Upgrade"), _cmd_list)
+            self.commit(
+                translate("draft", "Upgrade"),
+                _cmd_list,
+                inputs=selection,
+            )
         self.finish()
 
 

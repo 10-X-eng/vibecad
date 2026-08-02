@@ -32,7 +32,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Exact internal name of the target assembly from "
-                    "core.inspect scope='domain'."
+                    "assembly.list_structure."
                 ),
             },
             "source_object_name": {
@@ -77,7 +77,7 @@ def run(
     if assembly is None:
         return _invalid(
             f"Assembly not found by exact internal name: {assembly_name}. "
-            "Call core.inspect with scope='domain' for exact names."
+            "Call assembly.list_structure for exact names."
         )
     source_name = str(source_object_name or "").strip()
     source = doc.getObject(source_name) if source_name else None
@@ -111,11 +111,21 @@ def run(
         component = target_assembly.newObject(link_type, base.Name)
         if component is None:
             raise RuntimeError("FreeCAD did not create the component link.")
-        component.LinkedObject = base
-        component.Label = clean_label
-        component.Placement = App.Placement(
-            domain_runtime.parse_vector(local_position), App.Rotation()
-        )
+        import UtilsAssembly
+
+        timeline_publication_attempted = False
+        try:
+            component.LinkedObject = base
+            component.Label = clean_label
+            component.Placement = App.Placement(
+                domain_runtime.parse_vector(local_position),
+                App.Rotation(),
+            )
+            timeline_publication_attempted = True
+            UtilsAssembly.finalizeInsertedComponentTimeline(component)
+        finally:
+            if not timeline_publication_attempted:
+                UtilsAssembly.finalizeInsertedComponentTimeline(component)
         active.recompute()
         return {
             "document": active.Name,

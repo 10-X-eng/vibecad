@@ -34,7 +34,7 @@ TOOL_SPEC = {
         "object by exact material UUID. This sets the object's ShapeMaterial, "
         "which carries physical properties (density, elasticity) used by FEM "
         "and updates the rendered appearance when the card defines one. Find "
-        "UUIDs with core.inspect scope='domain' first."
+        "UUIDs with material.list_materials first."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
@@ -54,7 +54,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Exact UUID of the material card, as returned by "
-                    "core.inspect scope='domain'."
+                    "material.list_materials."
                 ),
             },
         },
@@ -92,12 +92,12 @@ def run(service: Any, object_name: str, material_uuid: str) -> dict[str, Any]:
     except Exception as exc:
         return _invalid(
             f"Material not found by UUID {clean_uuid}: {exc}. Use "
-            "core.inspect scope='domain' to find valid UUIDs."
+            "material.list_materials to find valid UUIDs."
         )
     if material is None:
         return _invalid(
             f"Material not found by UUID: {clean_uuid}. Use "
-            "core.inspect scope='domain' to find valid UUIDs."
+            "material.list_materials to find valid UUIDs."
         )
     requested_material = _material_summary(material)
     material_before = _material_summary(getattr(obj, "ShapeMaterial", None))

@@ -53,13 +53,16 @@ class _Thread(QtCore.QThread):
         super().__init__()
         self.tool = tool
         self.prepare_ok = False
+        self.error_message = ""
 
     def run(self):
         try:
+            self.error_message = ""
             self.tool.prepare()
             self.prepare_ok = True
         except Exception as e:
             self.prepare_ok = False
+            self.error_message = str(e)
             FreeCAD.Console.PrintError("{}\n".format(e))
 
 
@@ -131,11 +134,30 @@ class _BaseLogTaskPanel(base_femtaskpanel._BaseTaskPanel, ABC):
             self.preparation_finished()
         else:
             self.timer.stop()
+            if self._thread.error_message:
+                self.write_log(
+                    self._thread.error_message + "\n",
+                    QtGui.QColor(getOutputWinColor("Error")),
+                )
             self.write_log("Preparation failed.\n", QtGui.QColor(getOutputWinColor("Error")))
             return None
 
     def preparation_finished(self):
-        self.tool.compute()
+        self._start_compute()
+
+    def _start_compute(self):
+        try:
+            self.tool.compute()
+        except Exception as error:
+            self.timer.stop()
+            message = f"Solver could not start: {error}"
+            FreeCAD.Console.PrintError(message + "\n")
+            self.write_log(
+                message + "\n",
+                QtGui.QColor(getOutputWinColor("Error")),
+            )
+            return False
+        return True
 
     def process_finished(self, code, status):
         if status == QtCore.QProcess.ExitStatus.NormalExit:
@@ -258,7 +280,15 @@ class _BaseLogTaskPanel(base_femtaskpanel._BaseTaskPanel, ABC):
         self._thread.start()
 
     def get_version(self):
-        full_message = self.tool.version()
+        try:
+            full_message = self.tool.version()
+        except Exception as error:
+            QtGui.QMessageBox.critical(
+                None,
+                "{} - Error".format(self.tool.name),
+                str(error),
+            )
+            return
         QtGui.QMessageBox.information(None, "{} - Info".format(self.tool.name), full_message)
 
 
@@ -314,7 +344,7 @@ class _BaseWorkerTaskPanel(_BaseLogTaskPanel):
         self.elapsed.restart()
         if self.prepared:
             self.timer.start(100)
-            self.tool.compute()
+            self._start_compute()
         else:
             # run complete process if 'Apply' is pressed without
             # previously write the input files

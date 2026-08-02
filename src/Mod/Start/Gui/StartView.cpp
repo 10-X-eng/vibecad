@@ -231,17 +231,10 @@ void StartView::configureNewFileButtons(QLayout* layout) const
     auto draft = gsl::owner<NewFileButton*>(new NewFileButton(
         {tr("2D Draft"), tr("Creates a 2D Draft document"), QLatin1String(":/icons/DraftWorkbench.svg")}
     ));
-    auto arch = gsl::owner<NewFileButton*>(new NewFileButton(
-        {tr("BIM/Architecture"),
-         tr("Creates an architectural project"),
-         QLatin1String(":/icons/BIMWorkbench.svg")}
-    ));
-
     // TODO: Ensure all of the required WBs are actually available
     layout->addWidget(partDesign);
     layout->addWidget(assembly);
     layout->addWidget(draft);
-    layout->addWidget(arch);
     layout->addWidget(newEmptyFile);
     layout->addWidget(openFile);
 
@@ -250,7 +243,6 @@ void StartView::configureNewFileButtons(QLayout* layout) const
     connect(partDesign, &QPushButton::clicked, this, &StartView::newPartDesignFile);
     connect(assembly, &QPushButton::clicked, this, &StartView::newAssemblyFile);
     connect(draft, &QPushButton::clicked, this, &StartView::newDraftFile);
-    connect(arch, &QPushButton::clicked, this, &StartView::newArchFile);
 }
 
 void StartView::configureFileCardWidget(QListView* fileCardWidget)
@@ -342,24 +334,6 @@ void StartView::newDraftFile()
     Gui::Application::Instance->commandManager().runCommandByName("Std_New");
     Gui::Application::Instance->activateWorkbench("DraftWorkbench");
     Gui::Application::Instance->commandManager().runCommandByName("Std_ViewTop");
-    postStart(PostStartBehavior::doNotSwitchWorkbench);
-}
-
-void StartView::newArchFile()
-{
-    Gui::Application::Instance->commandManager().runCommandByName("Std_New");
-    try {
-        Gui::Application::Instance->activateWorkbench("BIMWorkbench");
-    }
-    catch (...) {
-        Gui::Application::Instance->activateWorkbench("ArchWorkbench");
-    }
-
-    // Set the camera zoom level to 10 m, which is more appropriate for architectural projects
-    Gui::Command::doCommand(
-        Gui::Command::Gui,
-        "Gui.activeDocument().activeView().viewDefaultOrientation(None, 10000.0)"
-    );
     postStart(PostStartBehavior::doNotSwitchWorkbench);
 }
 

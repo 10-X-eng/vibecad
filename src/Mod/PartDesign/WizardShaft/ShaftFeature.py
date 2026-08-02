@@ -23,7 +23,7 @@
 # ******************************************************************************/
 
 import FreeCAD, FreeCADGui
-import Part, Sketcher
+import Part, PartDesign, Sketcher
 
 
 class ShaftFeature:
@@ -38,11 +38,13 @@ class ShaftFeature:
 
         # TODO: Discover existing sketch and get data from it
         self.sketch = self.Doc.addObject("Sketcher::SketchObject", "SketchShaft")
+        PartDesign.initializeDesignDefinition(self.sketch)
         self.sketch.Placement = self.App.Placement(
             self.App.Vector(0, 0, 0), self.App.Rotation(0, 0, 0, 1)
         )
 
         self.feature = 0
+        self.body = None
         self.segments = 0  # number of segments
         self.totalLength = 0  # total length of all segments
         self.lastRadius = 0  # radius of last segment (required for adding segments)
@@ -142,12 +144,28 @@ class ShaftFeature:
         self.lastRadius = radius
 
         if oldLength == 0:
-            # create feature
-            self.feature = self.Doc.addObject("PartDesign::Revolution", "RevolutionShaft")
+            # Publish the reusable profile before the operation which consumes
+            # it, then create one Design-global History operation and one
+            # stable Body output. Both remain inside the wizard's transaction,
+            # so Cancel removes the complete graph atomically.
+            PartDesign.finalizeDesignDefinition(self.sketch)
+            self.feature = self.Doc.addObject(
+                "PartDesign::DesignRevolve",
+                "RevolutionShaft",
+            )
+            edit = PartDesign.beginDesignOperationEdit(self.feature)
             self.feature.Profile = self.sketch
             self.feature.ReferenceAxis = (self.sketch, ["H_Axis"])
             self.feature.Angle = 360.0
+            PartDesign.setDesignOperationTargets(edit, "New Body", [])
             self.Doc.recompute()
+            outputs = PartDesign.finalizeDesignOperationEdit(edit)
+            if len(outputs) != 1:
+                raise RuntimeError(
+                    "The shaft wizard did not publish exactly one Body"
+                )
+            self.body = outputs[0]
+            self.body.Label = "Shaft"
             self.Gui.hide("SketchShaft")
         else:
             self.Doc.recompute()

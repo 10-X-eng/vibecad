@@ -392,7 +392,7 @@
       <location filename="../ui/TaskPanel_CircularArray.ui" line="68"/>
       <source>Distance from one element in one ring of the array to the next element in the same ring.
 It cannot be zero.</source>
-      <translation>அணிவரிசையின் ஒரு வளையத்தில் உள்ள ஒரு உறுப்புக்கும் அதே வளையத்தில் உள்ள அடுத்த உறுப்புக்கும் உள்ள தூரம். 
+      <translation>அணிவரிசையின் ஒரு வளையத்தில் உள்ள ஒரு உறுப்புக்கும் அதே வளையத்தில் உள்ள அடுத்த உறுப்புக்கும் உள்ள தூரம்.
 இது பூச்சியமாக இருக்க முடியாது.</translation>
     </message>
     <message>
@@ -431,7 +431,7 @@ It cannot be zero.</source>
       <location filename="../ui/TaskPanel_CircularArray.ui" line="93"/>
       <source>Number of concentric circles to create, including a copy of the original object.
 It must be at least 2.</source>
-      <translation>அசல் பொருளின் நகல் உட்பட உருவாக்க வேண்டிய செறிவு வட்டங்களின் எண்ணிக்கை. 
+      <translation>அசல் பொருளின் நகல் உட்பட உருவாக்க வேண்டிய செறிவு வட்டங்களின் எண்ணிக்கை.
 இது குறைந்தது 2 ஆக இருக்க வேண்டும்.</translation>
     </message>
     <message>
@@ -443,7 +443,7 @@ It must be at least 2.</source>
       <location filename="../ui/TaskPanel_CircularArray.ui" line="135"/>
       <source>The coordinates of the point through which the axis of rotation passes.
 Change the direction of the axis itself in the property editor.</source>
-      <translation>சுழற்சியின் அச்சு கடந்து செல்லும் புள்ளியின் ஆயத்தொலைவுகள். 
+      <translation>சுழற்சியின் அச்சு கடந்து செல்லும் புள்ளியின் ஆயத்தொலைவுகள்.
 சொத்து எடிட்டரில் அச்சின் திசையை மாற்றவும்.</translation>
     </message>
     <message>
@@ -465,7 +465,7 @@ Change the direction of the axis itself in the property editor.</source>
       <location filename="../ui/TaskPanel_CircularArray.ui" line="224"/>
       <source>If checked, the resulting objects in the array will be fused if they touch each other.
 This only works if "Link array" is off.</source>
-      <translation>சரிபார்க்கப்பட்டால், வரிசையில் உள்ள பொருள்கள் ஒன்றையொன்று தொட்டால் அவை இணைக்கப்படும். 
+      <translation>சரிபார்க்கப்பட்டால், வரிசையில் உள்ள பொருள்கள் ஒன்றையொன்று தொட்டால் அவை இணைக்கப்படும்.
 "இணைப்பு வரிசை" முடக்கப்பட்டிருந்தால் மட்டுமே இது செயல்படும்.</translation>
     </message>
     <message>
@@ -477,7 +477,7 @@ This only works if "Link array" is off.</source>
       <location filename="../ui/TaskPanel_CircularArray.ui" line="235"/>
       <source>If checked, the resulting object will be a "Link array" instead of a regular array.
 A Link array is more efficient when creating multiple copies, but it cannot be fused together.</source>
-      <translation>சரிபார்த்தால், இதன் விளைவாக வரும் பொருள் வழக்கமான அணிவரிசைக்கு பதிலாக "இணைப்பு வரிசை" ஆக இருக்கும். 
+      <translation>சரிபார்த்தால், இதன் விளைவாக வரும் பொருள் வழக்கமான அணிவரிசைக்கு பதிலாக "இணைப்பு வரிசை" ஆக இருக்கும்.
 பல நகல்களை உருவாக்கும் போது இணைப்பு வரிசை மிகவும் திறமையானது, ஆனால் அதை ஒன்றாக இணைக்க முடியாது.</translation>
     </message>
     <message>
@@ -492,7 +492,7 @@ A Link array is more efficient when creating multiple copies, but it cannot be f
       <location filename="../ui/TaskPanel_OrthoArray.ui" line="79"/>
       <source>Number of elements in the array in the specified direction, including a copy of the original object.
 The number must be at least 1 in each direction.</source>
-      <translation>அசல் பொருளின் நகல் உட்பட, குறிப்பிட்ட திசையில் வரிசையில் உள்ள உறுப்புகளின் எண்ணிக்கை. 
+      <translation>அசல் பொருளின் நகல் உட்பட, குறிப்பிட்ட திசையில் வரிசையில் உள்ள உறுப்புகளின் எண்ணிக்கை.
 ஒவ்வொரு திசையிலும் எண் குறைந்தது 1 ஆக இருக்க வேண்டும்.</translation>
     </message>
     <message>
@@ -534,8 +534,8 @@ The number must be at least 1 in each direction.</source>
       <source>Distance between the elements in the Z direction.
 Normally, only the Z value is necessary; the other two values can give an additional shift in their respective directions.
 Negative values will result in copies produced in the negative direction.</source>
-      <translation>சட் திசையில் உள்ள உறுப்புகளுக்கு இடையே உள்ள தூரம். 
-பொதுவாக, சட் மதிப்பு மட்டுமே அவசியம்; மற்ற இரண்டு மதிப்புகள் அந்தந்த திசைகளில் கூடுதல் மாற்றத்தை கொடுக்கலாம். 
+      <translation>சட் திசையில் உள்ள உறுப்புகளுக்கு இடையே உள்ள தூரம்.
+பொதுவாக, சட் மதிப்பு மட்டுமே அவசியம்; மற்ற இரண்டு மதிப்புகள் அந்தந்த திசைகளில் கூடுதல் மாற்றத்தை கொடுக்கலாம்.
 எதிர்மறை மதிப்புகள் எதிர்மறை திசையில் விளைவாக்கம் செய்யப்படும் நகல்களுக்கு வழிவகுக்கும்.</translation>
     </message>
     <message>
@@ -583,8 +583,8 @@ Negative values will result in copies produced in the negative direction.</sourc
       <source>Distance between the elements in the X-direction.
 Normally, only the X value is necessary; the other two values can give an additional shift in their respective directions.
 Negative values will result in copies produced in the negative direction.</source>
-      <translation>எக்ச்-திசையில் உள்ள உறுப்புகளுக்கு இடையே உள்ள தூரம். 
-பொதுவாக, ஃச் மதிப்பு மட்டுமே அவசியம்; மற்ற இரண்டு மதிப்புகள் அந்தந்த திசைகளில் கூடுதல் மாற்றத்தை கொடுக்கலாம். 
+      <translation>எக்ச்-திசையில் உள்ள உறுப்புகளுக்கு இடையே உள்ள தூரம்.
+பொதுவாக, ஃச் மதிப்பு மட்டுமே அவசியம்; மற்ற இரண்டு மதிப்புகள் அந்தந்த திசைகளில் கூடுதல் மாற்றத்தை கொடுக்கலாம்.
 எதிர்மறை மதிப்புகள் எதிர்மறை திசையில் விளைவாக்கம் செய்யப்படும் நகல்களுக்கு வழிவகுக்கும்.</translation>
     </message>
     <message>
@@ -604,8 +604,8 @@ Negative values will result in copies produced in the negative direction.</sourc
       <source>Distance between the elements in the Y-direction.
 Normally, only the Y value is necessary; the other two values can give an additional shift in their respective directions.
 Negative values will result in copies produced in the negative direction.</source>
-      <translation>Y-திசையில் உள்ள உறுப்புகளுக்கு இடையே உள்ள தூரம். 
-பொதுவாக, ஒய் மதிப்பு மட்டுமே அவசியம்; மற்ற இரண்டு மதிப்புகள் அந்தந்த திசைகளில் கூடுதல் மாற்றத்தை கொடுக்கலாம். 
+      <translation>Y-திசையில் உள்ள உறுப்புகளுக்கு இடையே உள்ள தூரம்.
+பொதுவாக, ஒய் மதிப்பு மட்டுமே அவசியம்; மற்ற இரண்டு மதிப்புகள் அந்தந்த திசைகளில் கூடுதல் மாற்றத்தை கொடுக்கலாம்.
 எதிர்மறை மதிப்புகள் எதிர்மறை திசையில் விளைவாக்கம் செய்யப்படும் நகல்களுக்கு வழிவகுக்கும்.</translation>
     </message>
     <message>
@@ -627,7 +627,7 @@ Negative values will result in copies produced in the negative direction.</sourc
       <location filename="../ui/TaskPanel_OrthoArray.ui" line="443"/>
       <source>If checked, the resulting objects in the array will be fused if they touch each other.
 This only works if "Link array" is off.</source>
-      <translation>சரிபார்க்கப்பட்டால், வரிசையில் உள்ள பொருள்கள் ஒன்றையொன்று தொட்டால் அவை இணைக்கப்படும். 
+      <translation>சரிபார்க்கப்பட்டால், வரிசையில் உள்ள பொருள்கள் ஒன்றையொன்று தொட்டால் அவை இணைக்கப்படும்.
 "இணைப்பு வரிசை" முடக்கப்பட்டிருந்தால் மட்டுமே இது செயல்படும்.</translation>
     </message>
     <message>
@@ -639,7 +639,7 @@ This only works if "Link array" is off.</source>
       <location filename="../ui/TaskPanel_OrthoArray.ui" line="454"/>
       <source>If checked, the resulting object will be a "Link array" instead of a regular array.
 A Link array is more efficient when creating multiple copies, but it cannot be fused together.</source>
-      <translation>சரிபார்த்தால், இதன் விளைவாக வரும் பொருள் வழக்கமான அணிவரிசைக்கு பதிலாக "இணைப்பு வரிசை" ஆக இருக்கும். 
+      <translation>சரிபார்த்தால், இதன் விளைவாக வரும் பொருள் வழக்கமான அணிவரிசைக்கு பதிலாக "இணைப்பு வரிசை" ஆக இருக்கும்.
 பல நகல்களை உருவாக்கும் போது இணைப்பு வரிசை மிகவும் திறமையானது, ஆனால் அதை ஒன்றாக இணைக்க முடியாது.</translation>
     </message>
     <message>
@@ -661,8 +661,8 @@ A Link array is more efficient when creating multiple copies, but it cannot be f
       <source>Sweeping angle of the polar distribution.
 A negative angle produces a polar pattern in the opposite direction.
 The maximum absolute value is 360 degrees.</source>
-      <translation>துருவப் பரவலின் ச்வீப்பிங் கோணம். 
-எதிர்மறை கோணம் எதிர் திசையில் ஒரு துருவ வடிவத்தை உருவாக்குகிறது. 
+      <translation>துருவப் பரவலின் ச்வீப்பிங் கோணம்.
+எதிர்மறை கோணம் எதிர் திசையில் ஒரு துருவ வடிவத்தை உருவாக்குகிறது.
 அதிகபட்ச முழுமையான மதிப்பு 360 டிகிரி ஆகும்.</translation>
     </message>
     <message>
@@ -675,7 +675,7 @@ The maximum absolute value is 360 degrees.</source>
       <location filename="../ui/TaskPanel_PolarArray.ui" line="78"/>
       <source>Number of elements in the array, including a copy of the original object.
 It must be at least 2.</source>
-      <translation>அசல் பொருளின் நகல் உட்பட, வரிசையில் உள்ள உறுப்புகளின் எண்ணிக்கை. 
+      <translation>அசல் பொருளின் நகல் உட்பட, வரிசையில் உள்ள உறுப்புகளின் எண்ணிக்கை.
 இது குறைந்தது 2 ஆக இருக்க வேண்டும்.</translation>
     </message>
     <message>
@@ -687,7 +687,7 @@ It must be at least 2.</source>
       <location filename="../ui/TaskPanel_PolarArray.ui" line="97"/>
       <source>The coordinates of the point through which the axis of rotation passes.
 Change the direction of the axis itself in the property editor.</source>
-      <translation>சுழற்சியின் அச்சு கடந்து செல்லும் புள்ளியின் ஆயத்தொலைவுகள். 
+      <translation>சுழற்சியின் அச்சு கடந்து செல்லும் புள்ளியின் ஆயத்தொலைவுகள்.
 சொத்து எடிட்டரில் அச்சின் திசையை மாற்றவும்.</translation>
     </message>
     <message>
@@ -724,7 +724,7 @@ Change the direction of the axis itself in the property editor.</source>
       <location filename="../ui/TaskPanel_PolarArray.ui" line="186"/>
       <source>If checked, the resulting objects in the array will be fused if they touch each other.
 This only works if "Link array" is off.</source>
-      <translation>சரிபார்க்கப்பட்டால், வரிசையில் உள்ள பொருள்கள் ஒன்றையொன்று தொட்டால் அவை இணைக்கப்படும். 
+      <translation>சரிபார்க்கப்பட்டால், வரிசையில் உள்ள பொருள்கள் ஒன்றையொன்று தொட்டால் அவை இணைக்கப்படும்.
 "இணைப்பு வரிசை" முடக்கப்பட்டிருந்தால் மட்டுமே இது செயல்படும்.</translation>
     </message>
     <message>
@@ -736,7 +736,7 @@ This only works if "Link array" is off.</source>
       <location filename="../ui/TaskPanel_PolarArray.ui" line="197"/>
       <source>If checked, the resulting object will be a "Link array" instead of a regular array.
 A Link array is more efficient when creating multiple copies, but it cannot be fused together.</source>
-      <translation>சரிபார்த்தால், இதன் விளைவாக வரும் பொருள் வழக்கமான அணிவரிசைக்கு பதிலாக "இணைப்பு வரிசை" ஆக இருக்கும். 
+      <translation>சரிபார்த்தால், இதன் விளைவாக வரும் பொருள் வழக்கமான அணிவரிசைக்கு பதிலாக "இணைப்பு வரிசை" ஆக இருக்கும்.
 பல நகல்களை உருவாக்கும் போது இணைப்பு வரிசை மிகவும் திறமையானது, ஆனால் அதை ஒன்றாக இணைக்க முடியாது.</translation>
     </message>
     <message>
@@ -771,7 +771,7 @@ A Link array is more efficient when creating multiple copies, but it cannot be f
       <location filename="../ui/TaskShapeString.ui" line="85"/>
       <source>Coordinates relative to global coordinate system.
 Uncheck to use working plane coordinate system</source>
-      <translation>உலகளாவிய ஒருங்கிணைப்பு அமைப்புடன் தொடர்புடைய ஒருங்கிணைப்புகள். 
+      <translation>உலகளாவிய ஒருங்கிணைப்பு அமைப்புடன் தொடர்புடைய ஒருங்கிணைப்புகள்.
 வேலை செய்யும் விமான ஒருங்கிணைப்பு அமைப்பைப் பயன்படுத்த தேர்வுநீக்கவும்</translation>
     </message>
     <message>
@@ -878,7 +878,7 @@ Uncheck to use working plane coordinate system</source>
       <location filename="../ui/TaskSelectPlane.ui" line="70"/>
       <source>The working plane will align to the current
 view each time a command is started</source>
-      <translation>வேலை செய்யும் வானூர்தி மின்னோட்டத்திற்கு சீரமைக்கும் 
+      <translation>வேலை செய்யும் வானூர்தி மின்னோட்டத்திற்கு சீரமைக்கும்
 ஒவ்வொரு முறை கட்டளை தொடங்கப்படும்போதும் பார்க்கவும்</translation>
     </message>
     <message>
@@ -896,8 +896,8 @@ view each time a command is started</source>
       <source>An optional offset to give to the working plane
 above its base position. Use this together with one
 of the buttons above</source>
-      <translation>வேலை செய்யும் விமானத்திற்கு வழங்குவதற்கான விருப்பமான ஆஃப்செட் 
-அதன் அடிப்படை நிலைக்கு மேலே. இதை ஒன்றாகப் பயன்படுத்தவும் 
+      <translation>வேலை செய்யும் விமானத்திற்கு வழங்குவதற்கான விருப்பமான ஆஃப்செட்
+அதன் அடிப்படை நிலைக்கு மேலே. இதை ஒன்றாகப் பயன்படுத்தவும்
 மேலே உள்ள பொத்தான்களில்</translation>
     </message>
     <message>
@@ -905,8 +905,8 @@ of the buttons above</source>
       <source>If this is selected, the working plane will be
 centered on the current view when pressing one
 of the buttons above</source>
-      <translation>இது தேர்ந்தெடுக்கப்பட்டால், வேலை செய்யும் வானூர்தி இருக்கும் 
-ஒன்றை அழுத்தும் போது தற்போதைய காட்சியை மையமாகக் கொண்டது 
+      <translation>இது தேர்ந்தெடுக்கப்பட்டால், வேலை செய்யும் வானூர்தி இருக்கும்
+ஒன்றை அழுத்தும் போது தற்போதைய காட்சியை மையமாகக் கொண்டது
 மேலே உள்ள பொத்தான்களில்</translation>
     </message>
     <message>
@@ -918,7 +918,7 @@ of the buttons above</source>
       <location filename="../ui/TaskSelectPlane.ui" line="117"/>
       <source>Centers the working plane on the current view when pressing one
 of the buttons above</source>
-      <translation>ஒன்றை அழுத்தும் போது வேலை செய்யும் விமானத்தை தற்போதைய காட்சியில் மையப்படுத்துகிறது 
+      <translation>ஒன்றை அழுத்தும் போது வேலை செய்யும் விமானத்தை தற்போதைய காட்சியில் மையப்படுத்துகிறது
 மேலே உள்ள பொத்தான்களில்</translation>
     </message>
     <message>
@@ -931,8 +931,8 @@ of the buttons above</source>
       <source>Moves the working plane without changing its
 orientation. If no point is selected, the plane
 will be moved to the center of the view.</source>
-      <translation>வேலை செய்யும் விமானத்தை மாற்றாமல் நகர்த்துகிறது 
-நோக்குநிலை. புள்ளி எதுவும் தேர்ந்தெடுக்கப்படவில்லை என்றால், வானூர்தி 
+      <translation>வேலை செய்யும் விமானத்தை மாற்றாமல் நகர்த்துகிறது
+நோக்குநிலை. புள்ளி எதுவும் தேர்ந்தெடுக்கப்படவில்லை என்றால், வானூர்தி
 பார்வையின் மையத்திற்கு நகர்த்தப்படும்.</translation>
     </message>
     <message>
@@ -1221,7 +1221,7 @@ will be moved to the center of the view.</source>
       <location filename="../ui/TaskPanel_SetStyle.ui" line="298"/>
       <source>The annotation scale multiplier is the inverse of the scale set in the
 Annotation scale widget. If the scale is 1:100 the multiplier is 100.</source>
-      <translation>சிறுகுறிப்பு அளவு பெருக்கி என்பது, இல் அமைக்கப்பட்ட அளவின் தலைகீழ் ஆகும் 
+      <translation>சிறுகுறிப்பு அளவு பெருக்கி என்பது, இல் அமைக்கப்பட்ட அளவின் தலைகீழ் ஆகும்
 சிறுகுறிப்பு அளவிலான விட்செட். அளவுகோல் 1:100 என்றால் பெருக்கி 100 ஆகும்.</translation>
     </message>
     <message>
@@ -1360,9 +1360,9 @@ Annotation scale widget. If the scale is 1:100 the multiplier is 100.</source>
 defines the gap between the ends of the extension lines and the measured points.
 A positive value defines the maximum length of the extension lines. Only used
 for linear dimensions.</source>
-      <translation>நீட்டிப்பு வரிகளின் நீளம். முழு நீட்டிப்பு வரிகளுக்கு 0 ஐப் பயன்படுத்தவும். எதிர்மறை மதிப்பு 
-நீட்டிப்பு கோடுகளின் முனைகளுக்கும் அளவிடப்பட்ட புள்ளிகளுக்கும் இடையிலான இடைவெளியை வரையறுக்கிறது. 
-நேர்மறை மதிப்பு நீட்டிப்பு வரிகளின் அதிகபட்ச நீளத்தை வரையறுக்கிறது. மட்டுமே பயன்படுத்தப்பட்டது 
+      <translation>நீட்டிப்பு வரிகளின் நீளம். முழு நீட்டிப்பு வரிகளுக்கு 0 ஐப் பயன்படுத்தவும். எதிர்மறை மதிப்பு
+நீட்டிப்பு கோடுகளின் முனைகளுக்கும் அளவிடப்பட்ட புள்ளிகளுக்கும் இடையிலான இடைவெளியை வரையறுக்கிறது.
+நேர்மறை மதிப்பு நீட்டிப்பு வரிகளின் அதிகபட்ச நீளத்தை வரையறுக்கிறது. மட்டுமே பயன்படுத்தப்பட்டது
 நேரியல் பரிமாணங்களுக்கு.</translation>
     </message>
     <message>
@@ -1435,8 +1435,8 @@ for linear dimensions.</source>
       <source>Aligns the pattern with the base object.
 Otherwise, the pattern aligns with the global coordinate system.
 This setting modifies the Translate property.</source>
-      <translation>பேட்டர்னை அடிப்படை பொருளுடன் சீரமைக்கிறது. 
-இல்லையெனில், முறை உலகளாவிய ஒருங்கிணைப்பு அமைப்புடன் இணைகிறது. 
+      <translation>பேட்டர்னை அடிப்படை பொருளுடன் சீரமைக்கிறது.
+இல்லையெனில், முறை உலகளாவிய ஒருங்கிணைப்பு அமைப்புடன் இணைகிறது.
 இந்த அமைப்பு மொழியாக்கப் பண்புகளை மாற்றியமைக்கிறது.</translation>
     </message>
     <message>
@@ -1463,7 +1463,7 @@ This setting modifies the Translate property.</source>
       <location filename="../ui/preferences-draft.ui" line="39"/>
       <source>The number of decimals used in internal coordinate operations (for example 3 = 0.001).
 Values between 6 and 8 are usually considered the best trade-off.</source>
-      <translation>உள் ஒருங்கிணைப்பு செயல்பாடுகளில் பயன்படுத்தப்படும் தசமங்களின் எண்ணிக்கை (எடுத்துக்காட்டாக 3 = 0.001). 
+      <translation>உள் ஒருங்கிணைப்பு செயல்பாடுகளில் பயன்படுத்தப்படும் தசமங்களின் எண்ணிக்கை (எடுத்துக்காட்டாக 3 = 0.001).
 6 மற்றும் 8 க்கு இடையில் உள்ள மதிப்புகள் பொதுவாக சிறந்த வர்த்தகமாக கருதப்படுகிறது.</translation>
     </message>
     <message>
@@ -1472,9 +1472,9 @@ Values between 6 and 8 are usually considered the best trade-off.</source>
 will automatically align with the current view whenever a command is started.
 Additionally it will align to preselected planar faces, or when points on planar
 faces are picked during commands.</source>
-      <translation>புதிய காட்சிகளுக்கான இயல்புநிலை வேலை செய்யும் வானூர்தி. வேலை செய்யும் விமானத்தை "தானியங்கி" என அமைத்தால் 
-கட்டளை தொடங்கும் போதெல்லாம் தற்போதைய காட்சியுடன் தானாகவே சீரமைக்கும். 
-கூடுதலாக, இது முன்தேர்ந்தெடுக்கப்பட்ட பிளானர் முகங்களுக்கு அல்லது பிளானரில் புள்ளிகள் இருக்கும் போது சீரமைக்கும் 
+      <translation>புதிய காட்சிகளுக்கான இயல்புநிலை வேலை செய்யும் வானூர்தி. வேலை செய்யும் விமானத்தை "தானியங்கி" என அமைத்தால்
+கட்டளை தொடங்கும் போதெல்லாம் தற்போதைய காட்சியுடன் தானாகவே சீரமைக்கும்.
+கூடுதலாக, இது முன்தேர்ந்தெடுக்கப்பட்ட பிளானர் முகங்களுக்கு அல்லது பிளானரில் புள்ளிகள் இருக்கும் போது சீரமைக்கும்
 கட்டளைகளின் போது முகங்கள் தேர்ந்தெடுக்கப்படுகின்றன.</translation>
     </message>
     <message>
@@ -1496,14 +1496,14 @@ faces are picked during commands.</source>
       <location filename="../ui/preferences-draft.ui" line="112"/>
       <source>If checked, a widget indicating the current working
 plane orientation appears when picking points</source>
-      <translation>சரிபார்க்கப்பட்டால், தற்போதைய செயல்பாட்டைக் குறிக்கும் விட்செட் 
+      <translation>சரிபார்க்கப்பட்டால், தற்போதைய செயல்பாட்டைக் குறிக்கும் விட்செட்
 புள்ளிகளை எடுக்கும்போது விமான நோக்குநிலை தோன்றும்</translation>
     </message>
     <message>
       <location filename="../ui/preferences-draft.ui" line="129"/>
       <source>If checked, the layers drop-down list also includes groups.
 Objects can then automatically be added to groups as well.</source>
-      <translation>சரிபார்த்தால், அடுக்குகள் கீழ்தோன்றும் பட்டியலில் குழுக்களும் அடங்கும். 
+      <translation>சரிபார்த்தால், அடுக்குகள் கீழ்தோன்றும் பட்டியலில் குழுக்களும் அடங்கும்.
 பொருள்கள் தானாகவே குழுக்களிலும் சேர்க்கப்படும்.</translation>
     </message>
     <message>
@@ -1521,8 +1521,8 @@ Objects can then automatically be added to groups as well.</source>
       <source>If checked, Draft commands will create Part primitives instead of Draft objects.
 Note that this is not fully supported, and many objects will not be editable with
 Draft modification commands.</source>
-      <translation>சரிபார்த்தால், வரைவு கட்டளைகள் வரைவு பொருள்களுக்குப் பதிலாக பகுதி முதன்மைகளை உருவாக்கும். 
-இது முழுமையாக ஆதரிக்கப்படவில்லை என்பதை நினைவில் கொள்ளவும், மேலும் பல பொருட்களை திருத்து செய்ய முடியாது 
+      <translation>சரிபார்த்தால், வரைவு கட்டளைகள் வரைவு பொருள்களுக்குப் பதிலாக பகுதி முதன்மைகளை உருவாக்கும்.
+இது முழுமையாக ஆதரிக்கப்படவில்லை என்பதை நினைவில் கொள்ளவும், மேலும் பல பொருட்களை திருத்து செய்ய முடியாது
 வரைவு மாற்றம் கட்டளைகள்.</translation>
     </message>
     <message>
@@ -1534,7 +1534,7 @@ Draft modification commands.</source>
       <location filename="../ui/preferences-draft.ui" line="222"/>
       <source>If checked, Draft Downgrade and Draft Upgrade will keep face colors.
 Only for the splitFaces and makeShell options.</source>
-      <translation>சரிபார்த்தால், வரைவு தரமிறக்குதல் மற்றும் வரைவு மேம்படுத்தல் ஆகியவை முகத்தின் நிறத்தை வைத்திருக்கும். 
+      <translation>சரிபார்த்தால், வரைவு தரமிறக்குதல் மற்றும் வரைவு மேம்படுத்தல் ஆகியவை முகத்தின் நிறத்தை வைத்திருக்கும்.
 splitFaces மற்றும் makeShell விருப்பங்களுக்கு மட்டும்.</translation>
     </message>
     <message>
@@ -1546,7 +1546,7 @@ splitFaces மற்றும் makeShell விருப்பங்களு�
       <location filename="../ui/preferences-draft.ui" line="239"/>
       <source>If checked, Draft Downgrade and Draft Upgrade will keep face names.
 Only for the splitFaces and makeShell options.</source>
-      <translation>சரிபார்த்தால், வரைவு தரமிறக்குதல் மற்றும் வரைவு மேம்படுத்தல் ஆகியவை முகப் பெயர்களை வைத்திருக்கும். 
+      <translation>சரிபார்த்தால், வரைவு தரமிறக்குதல் மற்றும் வரைவு மேம்படுத்தல் ஆகியவை முகப் பெயர்களை வைத்திருக்கும்.
 splitFaces மற்றும் makeShell விருப்பங்களுக்கு மட்டும்.</translation>
     </message>
     <message>
@@ -1561,10 +1561,10 @@ manually in any of the coordinate fields. Setting this to 0 disables the delay.
 If a delay of 1 is set, after entering a numeric value, the mouse will not
 update the field anymore during one second, to avoid moving the mouse
 accidentally and modifying the entered value.</source>
-      <translation>எண்களை உள்ளிட்ட பிறகு, மவுச் செயலற்றதாக இருக்கும் போது இது தாமதமாகும் 
-எந்தவொரு ஒருங்கிணைப்பு துறையிலும் கைமுறையாக. இதை 0 ஆக அமைப்பது தாமதத்தை முடக்கும். 
-1 இன் நேரந்தவறுகை அமைக்கப்பட்டால், எண் மதிப்பை உள்ளிட்ட பிறகு, மவுச் செய்யாது 
-சுட்டியை நகர்த்துவதைத் தவிர்க்க, ஒரு நொடியில் புலத்தைப் புதுப்பிக்கவும் 
+      <translation>எண்களை உள்ளிட்ட பிறகு, மவுச் செயலற்றதாக இருக்கும் போது இது தாமதமாகும்
+எந்தவொரு ஒருங்கிணைப்பு துறையிலும் கைமுறையாக. இதை 0 ஆக அமைப்பது தாமதத்தை முடக்கும்.
+1 இன் நேரந்தவறுகை அமைக்கப்பட்டால், எண் மதிப்பை உள்ளிட்ட பிறகு, மவுச் செய்யாது
+சுட்டியை நகர்த்துவதைத் தவிர்க்க, ஒரு நொடியில் புலத்தைப் புதுப்பிக்கவும்
 தற்செயலாக மற்றும் உள்ளிட்ட மதிப்பை மாற்றியமைக்கிறது.</translation>
     </message>
     <message>
@@ -1631,7 +1631,7 @@ accidentally and modifying the entered value.</source>
       <location filename="../ui/preferences-draft.ui" line="171"/>
       <source>If checked, Length input, instead of the X coordinate, will have the initial focus.
 This allows indicating a direction and then type a distance.</source>
-      <translation>சரிபார்த்தால், ஃச் ஒருங்கிணைப்புக்குப் பதிலாக நீள உள்ளீடு, ஆரம்பக் கவனம் செலுத்தும். 
+      <translation>சரிபார்த்தால், ஃச் ஒருங்கிணைப்புக்குப் பதிலாக நீள உள்ளீடு, ஆரம்பக் கவனம் செலுத்தும்.
 இது ஒரு திசையைக் குறிக்கவும் பின்னர் தூரத்தைத் தட்டச்சு செய்யவும் அனுமதிக்கிறது.</translation>
     </message>
     <message>
@@ -1698,7 +1698,7 @@ This allows indicating a direction and then type a distance.</source>
       <location filename="../ui/preferences-draftvisual.ui" line="75"/>
       <source>An optional directory with custom SVG files containing
 pattern definitions to be added to the standard patterns</source>
-      <translation>தனிப்பயன் SVG கோப்புகளைக் கொண்ட விருப்ப அடைவு 
+      <translation>தனிப்பயன் SVG கோப்புகளைக் கொண்ட விருப்ப அடைவு
 நிலையான வடிவங்களில் சேர்க்கப்பட வேண்டிய வடிவ வரையறைகள்</translation>
     </message>
     <message>
@@ -1825,7 +1825,7 @@ pattern definitions to be added to the standard patterns</source>
       <location filename="../ui/preferences-drafttexts.ui" line="39"/>
       <source>The default annotation scale multiplier. This is the inverse of the scale set
 in the Draft Scale Widget. If the scale is 1:100 the multiplier is 100.</source>
-      <translation>இயல்புநிலை சிறுகுறிப்பு அளவு பெருக்கி. இது அளவுகோலின் தலைகீழ் 
+      <translation>இயல்புநிலை சிறுகுறிப்பு அளவு பெருக்கி. இது அளவுகோலின் தலைகீழ்
 வரைவு அளவு விட்செட்டில். அளவுகோல் 1:100 என்றால் பெருக்கி 100 ஆகும்.</translation>
     </message>
     <message>
@@ -1973,7 +1973,7 @@ in the Draft Scale Widget. If the scale is 1:100 the multiplier is 100.</source>
       <location filename="../ui/preferences-drafttexts.ui" line="510"/>
       <source>The default unit override for dimensions. Enter a unit such as m
 or cm, leave blank to use the current unit defined in FreeCAD.</source>
-      <translation>இயல்புநிலை அலகு பரிமாணங்களை மீறுகிறது. m போன்ற ஒரு அலகு உள்ளிடவும் 
+      <translation>இயல்புநிலை அலகு பரிமாணங்களை மீறுகிறது. m போன்ற ஒரு அலகு உள்ளிடவும்
 அல்லது செ.மீ., FreeCAD இல் வரையறுக்கப்பட்ட தற்போதைய அலகு பயன்படுத்த காலியாக விடவும்.</translation>
     </message>
     <message>
@@ -2002,9 +2002,9 @@ or cm, leave blank to use the current unit defined in FreeCAD.</source>
 value defines the gap between the ends of the extension lines and the measured
 points. A positive value defines the maximum length of the extension lines. Only
 used for linear dimensions.</source>
-      <translation>நீட்டிப்பு வரிகளின் இயல்புநிலை நீளம். முழு நீட்டிப்பு வரிகளுக்கு 0 ஐப் பயன்படுத்தவும். ஒரு எதிர்மறை 
-மதிப்பு நீட்டிப்புக் கோடுகளின் முனைகளுக்கும் அளவிடப்பட்டவற்றுக்கும் இடையே உள்ள இடைவெளியை வரையறுக்கிறது 
-புள்ளிகள். நேர்மறை மதிப்பு நீட்டிப்பு வரிகளின் அதிகபட்ச நீளத்தை வரையறுக்கிறது. மட்டுமே 
+      <translation>நீட்டிப்பு வரிகளின் இயல்புநிலை நீளம். முழு நீட்டிப்பு வரிகளுக்கு 0 ஐப் பயன்படுத்தவும். ஒரு எதிர்மறை
+மதிப்பு நீட்டிப்புக் கோடுகளின் முனைகளுக்கும் அளவிடப்பட்டவற்றுக்கும் இடையே உள்ள இடைவெளியை வரையறுக்கிறது
+புள்ளிகள். நேர்மறை மதிப்பு நீட்டிப்பு வரிகளின் அதிகபட்ச நீளத்தை வரையறுக்கிறது. மட்டுமே
 நேரியல் பரிமாணங்களுக்கு பயன்படுத்தப்படுகிறது.</translation>
     </message>
     <message>
@@ -2051,7 +2051,7 @@ used for linear dimensions.</source>
       <location filename="../ui/preferences-svg.ui" line="77"/>
       <source>If checked, no unit conversion will occur.
 One unit in the SVG file will be interpreted as one millimeter.</source>
-      <translation>சரிபார்த்தால், அலகு மாற்றம் ஏற்படாது. 
+      <translation>சரிபார்த்தால், அலகு மாற்றம் ஏற்படாது.
 SVG கோப்பில் உள்ள ஒரு அலகு ஒரு மில்லிமீட்டராக விளக்கப்படும்.</translation>
     </message>
     <message>
@@ -2073,7 +2073,7 @@ SVG கோப்பில் உள்ள ஒரு அலகு ஒரு ம�
       <location filename="../ui/preferences-svg.ui" line="97"/>
       <source>If face generation results in a degenerated face,
 a raw wire from the original shape is added</source>
-      <translation>முகத்தை உருவாக்குவதால் முகம் சிதைந்தால், 
+      <translation>முகத்தை உருவாக்குவதால் முகம் சிதைந்தால்,
 அசல் வடிவத்திலிருந்து ஒரு மூல கம்பி சேர்க்கப்படுகிறது</translation>
     </message>
     <message>
@@ -2095,7 +2095,7 @@ a raw wire from the original shape is added</source>
       <location filename="../ui/preferences-svg.ui" line="166"/>
       <source>The number of decimal places used in internal coordinate operations (for example 3 = 0.001).
 	The optimal value depends on the absolute size of the import. Typical values are between 1 and 5.</source>
-      <translation>உள் ஒருங்கிணைப்பு செயல்பாடுகளில் பயன்படுத்தப்படும் தசம இடங்களின் எண்ணிக்கை (எடுத்துக்காட்டாக 3 = 0.001). 
+      <translation>உள் ஒருங்கிணைப்பு செயல்பாடுகளில் பயன்படுத்தப்படும் தசம இடங்களின் எண்ணிக்கை (எடுத்துக்காட்டாக 3 = 0.001).
 உகந்த மதிப்பு இறக்குமதியின் முழுமையான அளவைப் பொறுத்தது. வழக்கமான மதிப்புகள் 1 முதல் 5 வரை இருக்கும்.</translation>
     </message>
     <message>
@@ -2152,8 +2152,8 @@ Set to zero to disable approximation.</translation>
       <source>Versions of OpenCASCADE older than version 6.8 don't support arc projection.
 In this case arcs will be discretized into small line segments.
 This value is the maximum segment length.</source>
-      <translation>பதிப்பு 6.8 ஐ விட பழைய OpenCASCADE பதிப்புகள் ஆர்க் ப்ரொசெக்சனை ஆதரிக்காது. 
-இந்த வழக்கில் வளைவுகள் சிறிய வரி பிரிவுகளாக பிரிக்கப்படும். 
+      <translation>பதிப்பு 6.8 ஐ விட பழைய OpenCASCADE பதிப்புகள் ஆர்க் ப்ரொசெக்சனை ஆதரிக்காது.
+இந்த வழக்கில் வளைவுகள் சிறிய வரி பிரிவுகளாக பிரிக்கப்படும்.
 இந்த மதிப்பு அதிகபட்ச பிரிவு நீளம்.</translation>
     </message>
     <message>
@@ -2236,7 +2236,7 @@ This value is the maximum segment length.</source>
       <location filename="../ui/preferences-dxf.ui" line="26"/>
       <source>If checked, this preferences dialog will be shown each time you import or export
 a DXF file.</source>
-      <translation>சரிபார்க்கப்பட்டால், ஒவ்வொரு முறையும் நீங்கள் இறக்குமதி அல்லது ஏற்றுமதி செய்யும் போது இந்த விருப்பத்தேர்வுகள் உரையாடல் காண்பிக்கப்படும் 
+      <translation>சரிபார்க்கப்பட்டால், ஒவ்வொரு முறையும் நீங்கள் இறக்குமதி அல்லது ஏற்றுமதி செய்யும் போது இந்த விருப்பத்தேர்வுகள் உரையாடல் காண்பிக்கப்படும்
 ஒரு DXF கோப்பு.</translation>
     </message>
     <message>
@@ -2274,8 +2274,8 @@ a DXF file.</source>
       <source>If checked, FreeCAD is allowed to download and update the Python libraries
 required by the legacy importer. This can also be done manually by installing
 the 'dxf_library' addon from the Addon Manager.</source>
-      <translation>சரிபார்க்கப்பட்டால், பைதான் நூலகங்களைப் பதிவிறக்கம் செய்து புதுப்பிக்க FreeCAD அனுமதிக்கப்படுகிறது 
-மரபு இறக்குமதியாளர் தேவை. இதை நிறுவுவதன் மூலம் கைமுறையாகவும் செய்யலாம் 
+      <translation>சரிபார்க்கப்பட்டால், பைதான் நூலகங்களைப் பதிவிறக்கம் செய்து புதுப்பிக்க FreeCAD அனுமதிக்கப்படுகிறது
+மரபு இறக்குமதியாளர் தேவை. இதை நிறுவுவதன் மூலம் கைமுறையாகவும் செய்யலாம்
 Addon மேலாளரிடமிருந்து 'dxf_library' addon.</translation>
     </message>
     <message>
@@ -2289,9 +2289,9 @@ Addon மேலாளரிடமிருந்து 'dxf_library' addon.</tra
 reusable objects (Part Compounds) and instances become `App::Link` objects,
 maintaining the block structure. Best for full integration with the Draft
 workbench. </source>
-      <translation>முழு அளவுரு வரைவு பொருள்களை உருவாக்குகிறது. தொகுதி வரையறைகள் இவ்வாறு இறக்குமதி செய்யப்படுகின்றன 
-மீண்டும் பயன்படுத்தக்கூடிய பொருள்கள் (பகுதி கலவைகள்) மற்றும் நிகழ்வுகள் `ஆப்::இணைப்பு` பொருள்களாக மாறும், 
-தொகுதி கட்டமைப்பை பராமரித்தல். வரைவுடன் முழு ஒருங்கிணைப்புக்கு சிறந்தது 
+      <translation>முழு அளவுரு வரைவு பொருள்களை உருவாக்குகிறது. தொகுதி வரையறைகள் இவ்வாறு இறக்குமதி செய்யப்படுகின்றன
+மீண்டும் பயன்படுத்தக்கூடிய பொருள்கள் (பகுதி கலவைகள்) மற்றும் நிகழ்வுகள் `ஆப்::இணைப்பு` பொருள்களாக மாறும்,
+தொகுதி கட்டமைப்பை பராமரித்தல். வரைவுடன் முழு ஒருங்கிணைப்புக்கு சிறந்தது
 பணிமனை.</translation>
     </message>
     <message>
@@ -2313,9 +2313,9 @@ workbench. </source>
 definitions are imported as reusable objects (Part Compounds) and instances
 become `App::Link` objects, maintaining the block structure. Best for
 script-based post-processing and Part workbench integration.</source>
-      <translation>அளவுரு பகுதி பொருட்களை உருவாக்குகிறது (எ.கா., பகுதி::கோடு, பகுதி::வட்டம்). தடு 
-வரையறைகள் மீண்டும் பயன்படுத்தக்கூடிய பொருள்கள் (பகுதி கலவைகள்) மற்றும் நிகழ்வுகளாக இறக்குமதி செய்யப்படுகின்றன 
-`ஆப்::லிங்க்` ஆப்செக்ட்களாகி, பிளாக் கட்டமைப்பைப் பராமரிக்கிறது. சிறந்தது 
+      <translation>அளவுரு பகுதி பொருட்களை உருவாக்குகிறது (எ.கா., பகுதி::கோடு, பகுதி::வட்டம்). தடு
+வரையறைகள் மீண்டும் பயன்படுத்தக்கூடிய பொருள்கள் (பகுதி கலவைகள்) மற்றும் நிகழ்வுகளாக இறக்குமதி செய்யப்படுகின்றன
+`ஆப்::லிங்க்` ஆப்செக்ட்களாகி, பிளாக் கட்டமைப்பைப் பராமரிக்கிறது. சிறந்தது
 ச்கிரிப்ட் அடிப்படையிலான பிந்தைய செயலாக்கம் மற்றும் பகுதி பணியிட ஒருங்கிணைப்பு.</translation>
     </message>
     <message>
@@ -2328,8 +2328,8 @@ script-based post-processing and Part workbench integration.</source>
       <source>Creates a non-parametric shape for each DXF entity. Block definitions are
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
-      <translation>ஒவ்வொரு DXF நிறுவனத்திற்கும் அளவுரு அல்லாத வடிவத்தை உருவாக்குகிறது. தொகுதி வரையறைகள் 
-மீண்டும் பயன்படுத்தக்கூடிய பொருள்களாக (பகுதி கலவைகள்) இறக்குமதி செய்யப்பட்டு, 'ஆப்::இணைப்பு' 
+      <translation>ஒவ்வொரு DXF நிறுவனத்திற்கும் அளவுரு அல்லாத வடிவத்தை உருவாக்குகிறது. தொகுதி வரையறைகள்
+மீண்டும் பயன்படுத்தக்கூடிய பொருள்களாக (பகுதி கலவைகள்) இறக்குமதி செய்யப்பட்டு, 'ஆப்::இணைப்பு'
 பொருள்கள், தொகுதி கட்டமைப்பை பராமரித்தல். குறிப்பிடுவதற்கும் அளவிடுவதற்கும் நல்லது.</translation>
     </message>
     <message>
@@ -2342,8 +2342,8 @@ objects, maintaining the block structure. Good for referencing and measuring.</s
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for importing and viewing very large files with maximum performance.</source>
-      <translation>ஒரு அடுக்கில் உள்ள அனைத்து வடிவவியலையும் ஒற்றை, திருத்த முடியாத வடிவத்தில் ஒன்றிணைக்கிறது. தடு 
-கட்டமைப்புகள் பாதுகாக்கப்படவில்லை; அவற்றின் வடிவியல் அடுக்குகளின் ஒரு பகுதியாக மாறும் 
+      <translation>ஒரு அடுக்கில் உள்ள அனைத்து வடிவவியலையும் ஒற்றை, திருத்த முடியாத வடிவத்தில் ஒன்றிணைக்கிறது. தடு
+கட்டமைப்புகள் பாதுகாக்கப்படவில்லை; அவற்றின் வடிவியல் அடுக்குகளின் ஒரு பகுதியாக மாறும்
 வடிவம். அதிகபட்ச செயல்திறன் கொண்ட மிகப் பெரிய கோப்புகளை இறக்குமதி செய்வதற்கும் பார்ப்பதற்கும் சிறந்தது.</translation>
     </message>
     <message>
@@ -2367,9 +2367,9 @@ shape. Best for importing and viewing very large files with maximum performance.
 between the DXF file's unit and millimeters. Example: for files in
 millimeters: 1, in centimeters: 10, in meters: 1000, in inches: 25.4,
 in feet: 304.8</source>
-      <translation>இறக்குமதியில் DXF கோப்புகளுக்குப் பயன்படுத்துவதற்கான அளவுகோல். காரணி மாற்றமாகும் 
-DXF கோப்பின் அலகுக்கும் மில்லிமீட்டருக்கும் இடையில். எடுத்துக்காட்டு: உள்ள கோப்புகளுக்கு 
-மில்லிமீட்டர்கள்: 1, சென்டிமீட்டரில்: 10, மீட்டரில்: 1000, அங்குலங்களில்: 25.4, 
+      <translation>இறக்குமதியில் DXF கோப்புகளுக்குப் பயன்படுத்துவதற்கான அளவுகோல். காரணி மாற்றமாகும்
+DXF கோப்பின் அலகுக்கும் மில்லிமீட்டருக்கும் இடையில். எடுத்துக்காட்டு: உள்ள கோப்புகளுக்கு
+மில்லிமீட்டர்கள்: 1, சென்டிமீட்டரில்: 10, மீட்டரில்: 1000, அங்குலங்களில்: 25.4,
 அடிகளில்: 304.8</translation>
     </message>
     <message>
@@ -2391,7 +2391,7 @@ DXF கோப்பின் அலகுக்கும் மில்லி�
       <location filename="../ui/preferences-dxf.ui" line="323"/>
       <source>If checked, entities from the paper space will also be imported. By default,
 only model space is imported</source>
-      <translation>சரிபார்க்கப்பட்டால், காகித இடத்திலிருந்து பொருட்கள் இறக்குமதி செய்யப்படும். இயல்பாக, 
+      <translation>சரிபார்க்கப்பட்டால், காகித இடத்திலிருந்து பொருட்கள் இறக்குமதி செய்யப்படும். இயல்பாக,
 மாதிரி இடம் மட்டுமே இறக்குமதி செய்யப்படுகிறது</translation>
     </message>
     <message>
@@ -2403,7 +2403,7 @@ only model space is imported</source>
       <location filename="../ui/preferences-dxf.ui" line="340"/>
       <source>If checked, anonymous blocks (whose names begin with *) will also be imported.
 These are often used for hatches and dimensions</source>
-      <translation>சரிபார்க்கப்பட்டால், அநாமதேய தொகுதிகள் (இதன் பெயர்கள் * உடன் தொடங்கும்) இறக்குமதி செய்யப்படும். 
+      <translation>சரிபார்க்கப்பட்டால், அநாமதேய தொகுதிகள் (இதன் பெயர்கள் * உடன் தொடங்கும்) இறக்குமதி செய்யப்படும்.
 இவை பெரும்பாலும் குஞ்சுகள் மற்றும் பரிமாணங்களுக்கு பயன்படுத்தப்படுகின்றன</translation>
     </message>
     <message>
@@ -2415,7 +2415,7 @@ These are often used for hatches and dimensions</source>
       <location filename="../ui/preferences-dxf.ui" line="360"/>
       <source>If checked, the boundaries of hatch objects will be imported as closed wires.
 (Legacy importer only)</source>
-      <translation>சரிபார்க்கப்பட்டால், அட்ச் பொருட்களின் எல்லைகள் மூடிய கம்பிகளாக இறக்குமதி செய்யப்படும். 
+      <translation>சரிபார்க்கப்பட்டால், அட்ச் பொருட்களின் எல்லைகள் மூடிய கம்பிகளாக இறக்குமதி செய்யப்படும்.
 (மரபு இறக்குமதியாளர் மட்டும்)</translation>
     </message>
     <message>
@@ -2432,14 +2432,14 @@ These are often used for hatches and dimensions</source>
       <location filename="../ui/preferences-dxf.ui" line="388"/>
       <source>If checked, colors will be set as specified in the DXF file whenever
 possible. Otherwise, default FreeCAD colors are applied</source>
-      <translation>சரிபார்க்கப்பட்டால், DXF கோப்பில் குறிப்பிடப்பட்ட வண்ணங்கள் எப்போது வேண்டுமானாலும் அமைக்கப்படும் 
+      <translation>சரிபார்க்கப்பட்டால், DXF கோப்பில் குறிப்பிடப்பட்ட வண்ணங்கள் எப்போது வேண்டுமானாலும் அமைக்கப்படும்
 நிகழக்கூடிய. இல்லையெனில், இயல்புநிலை FreeCAD வண்ணங்கள் பயன்படுத்தப்படும்</translation>
     </message>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="411"/>
       <source>If checked, imported texts will get the standard Draft text size, instead of
 the size defined in the DXF document. (Legacy importer only)</source>
-      <translation>சரிபார்க்கப்பட்டால், இறக்குமதி செய்யப்பட்ட உரைகள் நிலையான வரைவு உரை அளவைப் பெறும் 
+      <translation>சரிபார்க்கப்பட்டால், இறக்குமதி செய்யப்பட்ட உரைகள் நிலையான வரைவு உரை அளவைப் பெறும்
 DXF ஆவணத்தில் வரையறுக்கப்பட்ட அளவு. (மரபு இறக்குமதியாளர் மட்டும்)</translation>
     </message>
     <message>
@@ -2451,21 +2451,21 @@ DXF ஆவணத்தில் வரையறுக்கப்பட்ட �
       <location filename="../ui/preferences-dxf.ui" line="442"/>
       <source>If checked, the legacy importer will attempt to join coincident geometric
 objects into wires. This can be slow for large files. (Legacy importer only)</source>
-      <translation>சரிபார்க்கப்பட்டால், மரபு இறக்குமதியாளர் தற்செயலான வடிவவியலில் சேர முயற்சிப்பார் 
+      <translation>சரிபார்க்கப்பட்டால், மரபு இறக்குமதியாளர் தற்செயலான வடிவவியலில் சேர முயற்சிப்பார்
 கம்பிகளாக பொருள்கள். பெரிய கோப்புகளுக்கு இது மெதுவாக இருக்கலாம். (மரபு இறக்குமதியாளர் மட்டும்)</translation>
     </message>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="462"/>
       <source>If checked, polylines that have a width property will be rendered as faces
 representing that width. (Legacy importer only)</source>
-      <translation>சரிபார்க்கப்பட்டால், அகலப் பண்பு கொண்ட பாலிலைன்கள் முகங்களாக வழங்கப்படும் 
+      <translation>சரிபார்க்கப்பட்டால், அகலப் பண்பு கொண்ட பாலிலைன்கள் முகங்களாக வழங்கப்படும்
 அந்த அகலத்தை குறிக்கும். (மரபு இறக்குமதியாளர் மட்டும்)</translation>
     </message>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="482"/>
       <source>If checked, the legacy importer will attempt to create Sketcher objects
 instead of Draft or Part objects. This overrides the 'Import As' setting</source>
-      <translation>சரிபார்க்கப்பட்டால், மரபு இறக்குமதியாளர் ச்கெட்சர் பொருட்களை உருவாக்க முயற்சிப்பார் 
+      <translation>சரிபார்க்கப்பட்டால், மரபு இறக்குமதியாளர் ச்கெட்சர் பொருட்களை உருவாக்க முயற்சிப்பார்
 வரைவு அல்லது பகுதி பொருள்களுக்கு பதிலாக. இது 'இறக்குமதி என' அமைப்பை மீறுகிறது</translation>
     </message>
     <message>
@@ -2498,7 +2498,7 @@ instead of Draft or Part objects. This overrides the 'Import As' setting</source
       <location filename="../ui/preferences-dxf.ui" line="603"/>
       <source>TechDraw Views will be exported as blocks.
 This might fail for post DXF R12 templates.</source>
-      <translation>TechDraw காட்சிகள் தொகுதிகளாக ஏற்றுமதி செய்யப்படும். 
+      <translation>TechDraw காட்சிகள் தொகுதிகளாக ஏற்றுமதி செய்யப்படும்.
 பிந்தைய DXF R12 டெம்ப்ளேட்டுகளுக்கு இது தோல்வியடையக்கூடும்.</translation>
     </message>
     <message>
@@ -2532,7 +2532,7 @@ This might fail for post DXF R12 templates.</source>
       <location filename="../ui/preferences-draftsnap.ui" line="92"/>
       <source>If checked, the outline of a human figure is displayed at the bottom left
 corner of the grid. Only effective if "Show grid border" is enabled.</source>
-      <translation>சரிபார்க்கப்பட்டால், கீழே இடதுபுறத்தில் மனித உருவத்தின் அவுட்லைன் காட்டப்படும் 
+      <translation>சரிபார்க்கப்பட்டால், கீழே இடதுபுறத்தில் மனித உருவத்தின் அவுட்லைன் காட்டப்படும்
 கட்டத்தின் மூலையில். "கட்டம் பார்டரைக் காட்டு" இயக்கப்பட்டிருந்தால் மட்டுமே பயனுள்ளதாக இருக்கும்.</translation>
     </message>
     <message>
@@ -2544,7 +2544,7 @@ corner of the grid. Only effective if "Show grid border" is enabled.</source>
       <location filename="../ui/preferences-draftsnap.ui" line="145"/>
       <source>The number of squares between major grid lines.
 Major grid lines are thicker than minor grid lines.</source>
-      <translation>முக்கிய கட்டக் கோடுகளுக்கு இடையே உள்ள சதுரங்களின் எண்ணிக்கை. 
+      <translation>முக்கிய கட்டக் கோடுகளுக்கு இடையே உள்ள சதுரங்களின் எண்ணிக்கை.
 மேசர் கிரிட் கோடுகள் மைனர் கிரிட் கோடுகளை விட தடிமனாக இருக்கும்.</translation>
     </message>
     <message>
@@ -2601,7 +2601,7 @@ Major grid lines are thicker than minor grid lines.</source>
       <location filename="../ui/preferences-draftsnap.ui" line="26"/>
       <source>If checked, the grid will always be visible in new views.
 Use Draft ToggleGrid to change this for the active view.</source>
-      <translation>சரிபார்த்தால், கட்டம் எப்போதும் புதிய காட்சிகளில் தெரியும். 
+      <translation>சரிபார்த்தால், கட்டம் எப்போதும் புதிய காட்சிகளில் தெரியும்.
 செயலில் உள்ள காட்சிக்கு இதை மாற்ற வரைவு ToggleGrid ஐப் பயன்படுத்தவும்.</translation>
     </message>
     <message>
@@ -2628,7 +2628,7 @@ Use Draft ToggleGrid to change this for the active view.</source>
       <location filename="../ui/preferences-draftsnap.ui" line="49"/>
       <source>If checked, the grid will be visible during commands in new views.
 Use Draft ToggleGrid to change this for the active view.</source>
-      <translation>சரிபார்க்கப்பட்டால், புதிய காட்சிகளில் கட்டளைகளின் போது கட்டம் தெரியும். 
+      <translation>சரிபார்க்கப்பட்டால், புதிய காட்சிகளில் கட்டளைகளின் போது கட்டம் தெரியும்.
 செயலில் உள்ள காட்சிக்கு இதை மாற்ற வரைவு ToggleGrid ஐப் பயன்படுத்தவும்.</translation>
     </message>
     <message>
@@ -2640,7 +2640,7 @@ Use Draft ToggleGrid to change this for the active view.</source>
       <location filename="../ui/preferences-draftsnap.ui" line="69"/>
       <source>If checked, an additional border is displayed around the grid,
 showing the main square size in the bottom left corner</source>
-      <translation>சரிபார்க்கப்பட்டால், கட்டத்தைச் சுற்றி கூடுதல் பார்டர் காட்டப்படும், 
+      <translation>சரிபார்க்கப்பட்டால், கட்டத்தைச் சுற்றி கூடுதல் பார்டர் காட்டப்படும்,
 கீழ் இடது மூலையில் முதன்மையான சதுர அளவைக் காட்டுகிறது</translation>
     </message>
     <message>
@@ -2657,7 +2657,7 @@ showing the main square size in the bottom left corner</source>
       <location filename="../ui/preferences-draftsnap.ui" line="112"/>
       <source>If checked, the two main axes of the grid are colored red, green or blue
 if they match the X, Y or Z axis of the global coordinate system</source>
-      <translation>சரிபார்க்கப்பட்டால், கட்டத்தின் இரண்டு முக்கிய அச்சுகள் சிவப்பு, பச்சை அல்லது நீல நிறத்தில் இருக்கும் 
+      <translation>சரிபார்க்கப்பட்டால், கட்டத்தின் இரண்டு முக்கிய அச்சுகள் சிவப்பு, பச்சை அல்லது நீல நிறத்தில் இருக்கும்
 அவை உலகளாவிய ஒருங்கிணைப்பு அமைப்பின் X, ஒய் அல்லது சட் அச்சுடன் பொருந்தினால்</translation>
     </message>
     <message>
@@ -3264,7 +3264,7 @@ if they match the X, Y or Z axis of the global coordinate system</source>
       <location filename="../../DraftGui.py" line="721"/>
       <source>Coordinates relative to last point or to coordinate system origin
 if is the first point to set</source>
-      <translation>கடைசி புள்ளியுடன் தொடர்புடைய ஆயத்தொகுப்புகள் அல்லது அமைப்பின் தோற்றத்தை ஒருங்கிணைக்க 
+      <translation>கடைசி புள்ளியுடன் தொடர்புடைய ஆயத்தொகுப்புகள் அல்லது அமைப்பின் தோற்றத்தை ஒருங்கிணைக்க
 அமைக்க முதல் புள்ளி என்றால்</translation>
     </message>
     <message>
@@ -3301,7 +3301,7 @@ if is the first point to set</source>
       <location filename="../../DraftGui.py" line="731"/>
       <source>Coordinates relative to global coordinate system.
 Uncheck to use working plane coordinate system</source>
-      <translation>உலகளாவிய ஒருங்கிணைப்பு அமைப்புடன் தொடர்புடைய ஒருங்கிணைப்புகள். 
+      <translation>உலகளாவிய ஒருங்கிணைப்பு அமைப்புடன் தொடர்புடைய ஒருங்கிணைப்புகள்.
 வேலை செய்யும் விமான ஒருங்கிணைப்பு அமைப்பைப் பயன்படுத்த தேர்வுநீக்கவும்</translation>
     </message>
     <message>
@@ -3363,7 +3363,7 @@ Uncheck to use working plane coordinate system</source>
       <location filename="../../DraftGui.py" line="741"/>
       <source>If checked, the object will be filled with a face.
 Not available if the 'Use Part Primitives' preference is enabled</source>
-      <translation>சரிபார்த்தால், பொருள் முகத்தால் நிரப்பப்படும். 
+      <translation>சரிபார்த்தால், பொருள் முகத்தால் நிரப்பப்படும்.
 'பகுதி முதன்மைகளைப் பயன்படுத்து' விருப்பம் இயக்கப்பட்டிருந்தால் கிடைக்காது</translation>
     </message>
     <message>
@@ -3575,9 +3575,9 @@ Not available if the 'Use Part Primitives' preference is enabled</source>
 Please set one manually under menu Edit → Preferences → Import/Export → DWG
 For more information see:
 https://wiki.freecad.org/Import_Export_Preferences</source>
-      <translation>பொருத்தமான வெளிப்புற DWG மாற்றி எதுவும் கண்டறியப்படவில்லை. 
-மெனுவின் கீழ் கைமுறையாக ஒன்றை அமைக்கவும் திருத்து → விருப்பத்தேர்வுகள் → இறக்குமதி/ஏற்றுமதி → DWG 
-மேலும் தகவலுக்கு பார்க்கவும்: 
+      <translation>பொருத்தமான வெளிப்புற DWG மாற்றி எதுவும் கண்டறியப்படவில்லை.
+மெனுவின் கீழ் கைமுறையாக ஒன்றை அமைக்கவும் திருத்து → விருப்பத்தேர்வுகள் → இறக்குமதி/ஏற்றுமதி → DWG
+மேலும் தகவலுக்கு பார்க்கவும்:
 https://wiki.freecad.org/Import_Export_Preferences</translation>
     </message>
     <message>
@@ -3585,8 +3585,8 @@ https://wiki.freecad.org/Import_Export_Preferences</translation>
       <source>Error during DWG conversion.
 Try moving the DWG file to a directory path without spaces and non-english characters,
 or try saving to a lower DWG version.</source>
-      <translation>DWG மாற்றத்தின் போது பிழை. 
-DWG கோப்பை இடைவெளிகள் மற்றும் ஆங்கிலம் அல்லாத எழுத்துக்கள் இல்லாத அடைவுப் பாதைக்கு நகர்த்த முயற்சிக்கவும், 
+      <translation>DWG மாற்றத்தின் போது பிழை.
+DWG கோப்பை இடைவெளிகள் மற்றும் ஆங்கிலம் அல்லாத எழுத்துக்கள் இல்லாத அடைவுப் பாதைக்கு நகர்த்த முயற்சிக்கவும்,
 அல்லது குறைந்த DWG பதிப்பில் சேமிக்க முயற்சிக்கவும்.</translation>
     </message>
     <message>
@@ -4330,7 +4330,7 @@ DWG கோப்பை இடைவெளிகள் மற்றும் ஆ�
       <location filename="../../draftguitools/gui_rotate.py" line="336"/>
       <source>The amount of rotation to perform.
 The final angle will be the base angle plus this amount.</source>
-      <translation>செய்ய வேண்டிய சுழற்சியின் அளவு. 
+      <translation>செய்ய வேண்டிய சுழற்சியின் அளவு.
 இறுதிக் கோணம் அடிப்படைக் கோணமும் இந்தத் தொகையும் இருக்கும்.</translation>
     </message>
     <message>
@@ -5903,7 +5903,7 @@ The final angle will be the base angle plus this amount.</source>
       <location filename="../../draftutils/params.py" line="225"/>
       <source>Do you want to update the SVG pattern options
 of existing objects in all opened documents?</source>
-      <translation>SVG பேட்டர்ன் விருப்பங்களைப் புதுப்பிக்க விரும்புகிறீர்களா 
+      <translation>SVG பேட்டர்ன் விருப்பங்களைப் புதுப்பிக்க விரும்புகிறீர்களா
 திறக்கப்பட்ட அனைத்து ஆவணங்களிலும் இருக்கும் பொருள்கள் என்ன?</translation>
     </message>
     <message>
@@ -6088,13 +6088,13 @@ Please either allow FreeCAD to download these libraries:
 Or download these libraries manually, as explained on
 https://github.com/yorikvanhavre/Draft-dxf-importer
 To enabled FreeCAD to download these libraries, answer Yes.</source>
-      <translation>DXF இறக்குமதி/ஏற்றுமதி நூலகங்களைக் கையாள FreeCADக்குத் தேவை 
-இந்த கணினியில் DXF வடிவம் காணப்படவில்லை. 
-இந்த நூலகங்களைப் பதிவிறக்க FreeCAD ஐ அனுமதிக்கவும்: 
-1 - சுமை வரைவு வொர்க்பெஞ்ச் 
-2 - பட்டியல் திருத்து → விருப்பத்தேர்வுகள் → இறக்குமதி-ஏற்றுமதி → DXF → பதிவிறக்கங்களை இயக்கு 
-அல்லது விளக்கப்பட்டுள்ளபடி, இந்த நூலகங்களை கைமுறையாகப் பதிவிறக்கவும் 
-https://github.com/yorikvanhavre/Draft-dxf-importer 
+      <translation>DXF இறக்குமதி/ஏற்றுமதி நூலகங்களைக் கையாள FreeCADக்குத் தேவை
+இந்த கணினியில் DXF வடிவம் காணப்படவில்லை.
+இந்த நூலகங்களைப் பதிவிறக்க FreeCAD ஐ அனுமதிக்கவும்:
+1 - சுமை வரைவு வொர்க்பெஞ்ச்
+2 - பட்டியல் திருத்து → விருப்பத்தேர்வுகள் → இறக்குமதி-ஏற்றுமதி → DXF → பதிவிறக்கங்களை இயக்கு
+அல்லது விளக்கப்பட்டுள்ளபடி, இந்த நூலகங்களை கைமுறையாகப் பதிவிறக்கவும்
+https://github.com/yorikvanhavre/Draft-dxf-importer
 இந்த நூலகங்களைப் பதிவிறக்க FreeCAD ஐ இயக்க, ஆம் என்று பதிலளிக்கவும்.</translation>
     </message>
     <message>
@@ -6455,8 +6455,8 @@ https://github.com/yorikvanhavre/Draft-dxf-importer
       <source>Download of DXF libraries failed.
 Please install the DXF Library addon manually
 from menu Tools → Addon Manager</source>
-      <translation>DXF நூலகங்களின் பதிவிறக்கம் தோல்வியடைந்தது. 
-DXF லைப்ரரி addon ஐ கைமுறையாக நிறுவவும் 
+      <translation>DXF நூலகங்களின் பதிவிறக்கம் தோல்வியடைந்தது.
+DXF லைப்ரரி addon ஐ கைமுறையாக நிறுவவும்
 பட்டியல் கருவிகள் → Addon Manager இலிருந்து</translation>
     </message>
   </context>
@@ -6557,7 +6557,7 @@ DXF லைப்ரரி addon ஐ கைமுறையாக நிறுவ�
       <location filename="../../draftguitools/gui_join.py" line="62"/>
       <source>Joins the selected lines or polylines into a single object.
 The lines must share a common point at the start or at the end.</source>
-      <translation>தேர்ந்தெடுக்கப்பட்ட கோடுகள் அல்லது பாலிலைன்களை ஒரு பொருளில் இணைக்கிறது. 
+      <translation>தேர்ந்தெடுக்கப்பட்ட கோடுகள் அல்லது பாலிலைன்களை ஒரு பொருளில் இணைக்கிறது.
 கோடுகள் தொடக்கத்திலோ அல்லது முடிவிலோ பொதுவான புள்ளியைப் பகிர வேண்டும்.</translation>
     </message>
   </context>
@@ -6585,7 +6585,7 @@ The lines must share a common point at the start or at the end.</source>
       <location filename="../../draftguitools/gui_move.py" line="63"/>
       <source>Moves the selected objects.
 If the "Copy" option is active, it creates displaced copies.</source>
-      <translation>தேர்ந்தெடுக்கப்பட்ட பொருட்களை நகர்த்துகிறது. 
+      <translation>தேர்ந்தெடுக்கப்பட்ட பொருட்களை நகர்த்துகிறது.
 "நகல்" விருப்பம் செயலில் இருந்தால், அது இடம்பெயர்ந்த நகல்களை உருவாக்குகிறது.</translation>
     </message>
   </context>
@@ -6639,7 +6639,7 @@ If the "Copy" option is active, it creates displaced copies.</source>
       <location filename="../../draftguitools/gui_rotate.py" line="65"/>
       <source>Rotates the selected objects.
 If the "Copy" option is active, it will create rotated copies.</source>
-      <translation>தேர்ந்தெடுக்கப்பட்ட பொருட்களை சுழற்றுகிறது. 
+      <translation>தேர்ந்தெடுக்கப்பட்ட பொருட்களை சுழற்றுகிறது.
 "நகல்" விருப்பம் செயலில் இருந்தால், அது சுழற்றப்பட்ட நகல்களை உருவாக்கும்.</translation>
     </message>
   </context>
@@ -6771,7 +6771,7 @@ If the "Copy" option is active, it will create rotated copies.</source>
       <location filename="../../draftguitools/gui_layers.py" line="78"/>
       <source>Adds a layer to the document.
 Objects added to this layer can share the same visual properties.</source>
-      <translation>ஆவணத்தில் ஒரு அடுக்கு சேர்க்கிறது. 
+      <translation>ஆவணத்தில் ஒரு அடுக்கு சேர்க்கிறது.
 இந்த லேயரில் சேர்க்கப்பட்ட பொருள்கள் அதே காட்சி பண்புகளைப் பகிர்ந்து கொள்ளலாம்.</translation>
     </message>
   </context>
@@ -6853,9 +6853,9 @@ Objects added to this layer can share the same visual properties.</source>
 The result of the operation depends on the types of objects, which may be able to be upgraded several times in a row.
 For example, it can join the selected objects into one, convert simple edges into parametric polylines,
 convert closed edges into filled faces and parametric polygons, and merge faces into a single face.</source>
-      <translation>தேர்ந்தெடுக்கப்பட்ட பொருட்களை மிகவும் சிக்கலான வடிவங்களுக்கு மேம்படுத்துகிறது. 
-செயல்பாட்டின் முடிவு பொருள்களின் வகைகளைப் பொறுத்தது, இது ஒரு வரிசையில் பல முறை மேம்படுத்தப்படலாம். 
-எடுத்துக்காட்டாக, இது தேர்ந்தெடுக்கப்பட்ட பொருட்களை ஒன்றாக இணைக்கலாம், எளிய விளிம்புகளை அளவுரு பாலிலைன்களாக மாற்றலாம், 
+      <translation>தேர்ந்தெடுக்கப்பட்ட பொருட்களை மிகவும் சிக்கலான வடிவங்களுக்கு மேம்படுத்துகிறது.
+செயல்பாட்டின் முடிவு பொருள்களின் வகைகளைப் பொறுத்தது, இது ஒரு வரிசையில் பல முறை மேம்படுத்தப்படலாம்.
+எடுத்துக்காட்டாக, இது தேர்ந்தெடுக்கப்பட்ட பொருட்களை ஒன்றாக இணைக்கலாம், எளிய விளிம்புகளை அளவுரு பாலிலைன்களாக மாற்றலாம்,
 மூடிய விளிம்புகளை நிரப்பப்பட்ட முகங்கள் மற்றும் அளவுரு பலகோணங்களாக மாற்றவும், மேலும் முகங்களை ஒரு முகமாக இணைக்கவும்.</translation>
     </message>
   </context>
@@ -6870,7 +6870,7 @@ convert closed edges into filled faces and parametric polygons, and merge faces 
       <location filename="../../draftguitools/gui_offset.py" line="76"/>
       <source>Offsets the selected object.
 It can also create an offset copy of the original object.</source>
-      <translation>தேர்ந்தெடுக்கப்பட்ட பொருளை ஈடுசெய்கிறது. 
+      <translation>தேர்ந்தெடுக்கப்பட்ட பொருளை ஈடுசெய்கிறது.
 இது அசல் பொருளின் ஆஃப்செட் நகலை உருவாக்கலாம்.</translation>
     </message>
   </context>
@@ -6886,8 +6886,8 @@ It can also create an offset copy of the original object.</source>
       <source>Heals faulty Draft objects saved with an earlier version of FreeCAD.
 If an object is selected it tries to heal only that object,
 otherwise it tries to heal all objects in the active document.</source>
-      <translation>FreeCAD இன் முந்தைய பதிப்பில் சேமிக்கப்பட்ட தவறான வரைவு பொருள்களை குணப்படுத்துகிறது. 
-ஒரு பொருள் தேர்ந்தெடுக்கப்பட்டால் அது அந்த பொருளை மட்டும் குணப்படுத்த முயல்கிறது. 
+      <translation>FreeCAD இன் முந்தைய பதிப்பில் சேமிக்கப்பட்ட தவறான வரைவு பொருள்களை குணப்படுத்துகிறது.
+ஒரு பொருள் தேர்ந்தெடுக்கப்பட்டால் அது அந்த பொருளை மட்டும் குணப்படுத்த முயல்கிறது.
 இல்லையெனில் செயலில் உள்ள ஆவணத்தில் உள்ள அனைத்து பொருட்களையும் குணப்படுத்த முயற்சிக்கிறது.</translation>
     </message>
   </context>
@@ -6903,8 +6903,8 @@ otherwise it tries to heal all objects in the active document.</source>
       <source>Downgrades the selected objects into simpler shapes.
 The result of the operation depends on the types of objects, which may be downgraded several times in a row.
 For example, a 3D solid is deconstructed into separate faces, wires, and then edges. Faces can also be subtracted.</source>
-      <translation>தேர்ந்தெடுக்கப்பட்ட பொருட்களை எளிமையான வடிவங்களில் தரமிறக்குகிறது. 
-செயல்பாட்டின் முடிவு பொருள்களின் வகைகளைப் பொறுத்தது, இது ஒரு வரிசையில் பல முறை தரமிறக்கப்படலாம். 
+      <translation>தேர்ந்தெடுக்கப்பட்ட பொருட்களை எளிமையான வடிவங்களில் தரமிறக்குகிறது.
+செயல்பாட்டின் முடிவு பொருள்களின் வகைகளைப் பொறுத்தது, இது ஒரு வரிசையில் பல முறை தரமிறக்கப்படலாம்.
 எடுத்துக்காட்டாக, ஒரு 3D திடமானது தனித்தனி முகங்கள், கம்பிகள் மற்றும் பின்னர் விளிம்புகளாக சிதைக்கப்படுகிறது. முகங்களையும் கழிக்க முடியும்.</translation>
     </message>
   </context>
@@ -6919,7 +6919,7 @@ For example, a 3D solid is deconstructed into separate faces, wires, and then ed
       <location filename="../../draftobjects/text.py" line="69"/>
       <source>The text displayed by this object.
 It is a list of strings; each element in the list will be displayed in its own line.</source>
-      <translation>இந்த பொருளால் காட்டப்படும் உரை. 
+      <translation>இந்த பொருளால் காட்டப்படும் உரை.
 இது சரங்களின் பட்டியல்; பட்டியலில் உள்ள ஒவ்வொரு உறுப்பும் அதன் சொந்த வரியில் காட்டப்படும்.</translation>
     </message>
     <message>
@@ -7021,7 +7021,7 @@ It is a list of strings; each element in the list will be displayed in its own l
       <location filename="../../draftobjects/clone.py" line="63"/>
       <source>If Clones includes several objects,
 set True for fusion or False for compound</source>
-      <translation>குளோன்கள் பல பொருட்களை உள்ளடக்கியிருந்தால், 
+      <translation>குளோன்கள் பல பொருட்களை உள்ளடக்கியிருந்தால்,
 இணைவுக்கு உண்மை அல்லது கலவைக்கு தவறு என அமைக்கவும்</translation>
     </message>
     <message>
@@ -7036,9 +7036,9 @@ set True for fusion or False for compound</source>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>பரிதியின் இறுதிக் கோணம் (முழு வட்டத்திற்கு, 
+      <translation>பரிதியின் இறுதிக் கோணம் (முழு வட்டத்திற்கு,
 முதல் கோணத்தின் அதே மதிப்பைக் கொடுங்கள்)</translation>
     </message>
     <message>
@@ -7139,7 +7139,7 @@ set True for fusion or False for compound</source>
       <location filename="../../draftobjects/label.py" line="71"/>
       <source>The position of the tip of the leader line.
 This point can be decorated with an arrow or another symbol.</source>
-      <translation>தலைவர் கோட்டின் முனையின் நிலை. 
+      <translation>தலைவர் கோட்டின் முனையின் நிலை.
 இந்த புள்ளியை ஒரு அம்பு அல்லது மற்றொரு சின்னத்துடன் அலங்கரிக்கலாம்.</translation>
     </message>
     <message>
@@ -7148,8 +7148,8 @@ This point can be decorated with an arrow or another symbol.</source>
 as 'Text', depending on 'Label Type'.
 
 'Target' won't be used if 'Label Type' is set to 'Custom'.</source>
-      <translation>பொருள் மற்றும் விருப்பமாக துணை உறுப்பு, அதன் பண்புகள் காட்டப்படும் 
-'உரை' என, 'சிட்டை வகை' பொறுத்து. 
+      <translation>பொருள் மற்றும் விருப்பமாக துணை உறுப்பு, அதன் பண்புகள் காட்டப்படும்
+'உரை' என, 'சிட்டை வகை' பொறுத்து.
 
 'லேபிள் வகை' 'தனிப்பயன்' என அமைக்கப்பட்டால் 'இலக்கு' பயன்படுத்தப்படாது.</translation>
     </message>
@@ -7164,14 +7164,14 @@ The middle point is calculated automatically depending on the chosen
 
 If 'Straight Direction' is set to 'Custom', the 'Points' property
 can be set as a list of arbitrary points.</source>
-      <translation>தலைவர் வரியை வரையறுக்கும் புள்ளிகளின் பட்டியல்; பொதுவாக மூன்று புள்ளிகளின் பட்டியல். 
+      <translation>தலைவர் வரியை வரையறுக்கும் புள்ளிகளின் பட்டியல்; பொதுவாக மூன்று புள்ளிகளின் பட்டியல்.
 
-முதல் புள்ளி உரையின் நிலையாக இருக்க வேண்டும், அதாவது 'இடம்', 
-மற்றும் கடைசி புள்ளி வரியின் முனையாக இருக்க வேண்டும், அதாவது 'இலக்கு புள்ளி'. 
-தேர்ந்தெடுக்கப்பட்டதைப் பொறுத்து நடுத்தர புள்ளி தானாகவே கணக்கிடப்படுகிறது 
-'நேரான திசை' மற்றும் 'நேரான தூரம்' மதிப்பு மற்றும் அடையாளம். 
+முதல் புள்ளி உரையின் நிலையாக இருக்க வேண்டும், அதாவது 'இடம்',
+மற்றும் கடைசி புள்ளி வரியின் முனையாக இருக்க வேண்டும், அதாவது 'இலக்கு புள்ளி'.
+தேர்ந்தெடுக்கப்பட்டதைப் பொறுத்து நடுத்தர புள்ளி தானாகவே கணக்கிடப்படுகிறது
+'நேரான திசை' மற்றும் 'நேரான தூரம்' மதிப்பு மற்றும் அடையாளம்.
 
-'நேரான திசை' என்பது 'தனிப்பயன்' என அமைக்கப்பட்டால், 'புள்ளிகள்' பண்பு 
+'நேரான திசை' என்பது 'தனிப்பயன்' என அமைக்கப்பட்டால், 'புள்ளிகள்' பண்பு
 தன்னிச்சையான புள்ளிகளின் பட்டியலாக அமைக்கலாம்.</translation>
     </message>
     <message>
@@ -7180,9 +7180,9 @@ can be set as a list of arbitrary points.</source>
 
 If 'Custom' is chosen, the points of the leader can be specified by
 assigning a custom list to the 'Points' attribute.</source>
-      <translation>லீடர் கோட்டின் நேரான பிரிவின் திசை. 
+      <translation>லீடர் கோட்டின் நேரான பிரிவின் திசை.
 
-'Custom' தேர்வு செய்யப்பட்டால், தலைவரின் புள்ளிகள் மூலம் குறிப்பிடலாம் 
+'Custom' தேர்வு செய்யப்பட்டால், தலைவரின் புள்ளிகள் மூலம் குறிப்பிடலாம்
 'புள்ளிகள்' பண்புக்கூறுக்கு தனிப்பயன் பட்டியலை ஒதுக்குகிறது.</translation>
     </message>
     <message>
@@ -7192,10 +7192,10 @@ assigning a custom list to the 'Points' attribute.</source>
 This is an oriented distance; if it is negative, the line will be drawn
 to the left or below the 'Text', otherwise to the right or above it,
 depending on the value of 'Straight Direction'.</source>
-      <translation>லீடர் கோட்டின் நேரான பிரிவின் நீளம். 
+      <translation>லீடர் கோட்டின் நேரான பிரிவின் நீளம்.
 
-இது ஒரு சார்ந்த தூரம்; அது எதிர்மறையாக இருந்தால், கோடு வரையப்படும் 
-'உரை'க்கு இடது அல்லது கீழே, இல்லையெனில் வலது அல்லது அதற்கு மேல், 
+இது ஒரு சார்ந்த தூரம்; அது எதிர்மறையாக இருந்தால், கோடு வரையப்படும்
+'உரை'க்கு இடது அல்லது கீழே, இல்லையெனில் வலது அல்லது அதற்கு மேல்,
 'நேரான திசை' மதிப்பைப் பொறுத்து.</translation>
     </message>
     <message>
@@ -7215,38 +7215,19 @@ depending on the value of 'Straight Direction'.</source>
 This property is read-only, as the final text depends on 'Label Type',
 and the object defined in 'Target'.
 The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
-      <translation>இந்த லேபிளால் காட்டப்படும் உரை. 
+      <translation>இந்த லேபிளால் காட்டப்படும் உரை.
 
-இறுதி உரை 'சிட்டை வகை' சார்ந்து இருப்பதால், இந்த சொத்து படிக்க மட்டுமே உள்ளது, 
-மற்றும் 'இலக்கு' இல் வரையறுக்கப்பட்ட பொருள். 
+இறுதி உரை 'சிட்டை வகை' சார்ந்து இருப்பதால், இந்த சொத்து படிக்க மட்டுமே உள்ளது,
+மற்றும் 'இலக்கு' இல் வரையறுக்கப்பட்ட பொருள்.
 'Label Type' 'Custom' என அமைக்கப்பட்டால் மட்டுமே 'Custom Text' காட்டப்படும்.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>இந்த லேபிளால் காட்டப்படும் செய்தி வகை. 
-
-'தனிப்பயன்' தேர்வு செய்யப்பட்டால், 'தனிப்பயன் உரை'யின் உள்ளடக்கங்கள் பயன்படுத்தப்படும். 
-மற்ற வகைகளுக்கு, 'இலக்கு' இல் வரையறுக்கப்பட்ட பொருளிலிருந்து சரம் தானாகவே கணக்கிடப்படும். 
-'டேக்' மற்றும் 'மெட்டீரியல்' ஆகியவை பிஐஎம் பொருள்கள் போன்ற இந்தப் பண்புகளைக் கொண்ட பொருட்களுக்கு மட்டுமே வேலை செய்யும். 
-
-'நிலை', 'நீளம்' மற்றும் 'பகுதி' ஆகியவற்றிற்கு இந்த பண்புகள் 'இலக்கு' இல் உள்ள முக்கிய பொருளில் இருந்து பிரித்தெடுக்கப்படும், 
-அல்லது துணை உறுப்பு 'VertexN', 'EdgeN' அல்லது 'FaceN' ஆகியவற்றிலிருந்து முறையே, அது குறிப்பிடப்பட்டிருந்தால்.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
       <source>General scaling factor that affects the annotation consistently
 because it scales the text, and the line decorations, if any,
 in the same proportion.</source>
-      <translation>சிறுகுறிப்பை தொடர்ந்து பாதிக்கும் பொதுவான அளவிடுதல் காரணி 
-ஏனெனில் இது உரை மற்றும் வரி அலங்காரங்கள் ஏதேனும் இருந்தால், 
+      <translation>சிறுகுறிப்பை தொடர்ந்து பாதிக்கும் பொதுவான அளவிடுதல் காரணி
+ஏனெனில் இது உரை மற்றும் வரி அலங்காரங்கள் ஏதேனும் இருந்தால்,
 அதே விகிதத்தில்.</translation>
     </message>
     <message>
@@ -7254,8 +7235,8 @@ in the same proportion.</source>
       <source>Annotation style to apply to this object.
 When using a saved style some of the view properties will become read-only;
 they will only be editable by changing the style through the 'Annotation style editor' tool.</source>
-      <translation>இந்தப் பொருளுக்குப் பயன்படுத்தப்படும் சிறுகுறிப்பு நடை. 
-சேமித்த பாணியைப் பயன்படுத்தும் போது, ​​சில பார்வை பண்புகள் படிக்க-மட்டும் ஆகிவிடும்; 
+      <translation>இந்தப் பொருளுக்குப் பயன்படுத்தப்படும் சிறுகுறிப்பு நடை.
+சேமித்த பாணியைப் பயன்படுத்தும் போது, ​​சில பார்வை பண்புகள் படிக்க-மட்டும் ஆகிவிடும்;
 'விரிவுரை நடை எடிட்டர்' கருவி மூலம் நடையை மாற்றுவதன் மூலம் மட்டுமே அவற்றைத் திருத்த முடியும்.</translation>
     </message>
     <message>
@@ -7269,8 +7250,8 @@ they will only be editable by changing the style through the 'Annotation style e
       <source>List of connected edges in the 'Path Object'.
 If these are present, the copies will be created along these subelements only.
 Leave this property empty to create copies along the entire 'Path Object'.</source>
-      <translation>'பாத் ஆப்செக்டில்' இணைக்கப்பட்ட விளிம்புகளின் பட்டியல். 
-இவை இருந்தால், இந்த துணை உறுப்புகளுடன் மட்டுமே பிரதிகள் உருவாக்கப்படும். 
+      <translation>'பாத் ஆப்செக்டில்' இணைக்கப்பட்ட விளிம்புகளின் பட்டியல்.
+இவை இருந்தால், இந்த துணை உறுப்புகளுடன் மட்டுமே பிரதிகள் உருவாக்கப்படும்.
 'பாத் ஆப்செக்ட்' முழுவதும் நகல்களை உருவாக்க இந்த சொத்தை காலியாக விடவும்.</translation>
     </message>
     <message>
@@ -7287,7 +7268,7 @@ Leave this property empty to create copies along the entire 'Path Object'.</sour
       <location filename="../../draftobjects/patharray.py" line="281"/>
       <source>Additional translation that will be applied to each copy.
 This is useful to adjust for the difference between shape centre and shape reference point.</source>
-      <translation>ஒவ்வொரு பிரதிக்கும் பயன்படுத்தப்படும் கூடுதல் மொழிபெயர்ப்பு. 
+      <translation>ஒவ்வொரு பிரதிக்கும் பயன்படுத்தப்படும் கூடுதல் மொழிபெயர்ப்பு.
 வடிவ மையத்திற்கும் வடிவ குறிப்பு புள்ளிக்கும் உள்ள வேறுபாட்டை சரிசெய்ய இது பயனுள்ளதாக இருக்கும்.</translation>
     </message>
     <message>
@@ -7308,10 +7289,10 @@ This is useful to adjust for the difference between shape centre and shape refer
 - Tangent: similar to 'Original' but the local X axis is pre-aligned to 'Tangent Vector'.
 
 To get better results with 'Original' or 'Tangent' you may have to set 'Force Vertical' to true.</source>
-      <translation>பாதையில் நகல்களை திசைதிருப்பும் முறை. 
-- அசல்: ஃச் என்பது வளைவு தொடுகோடு, ஒய் என்பது இயல்பானது, மற்றும் சட் என்பது குறுக்கு தயாரிப்பு. 
-- ஃப்ரீனெட்: பாதையில் உள்ள உள்ளக ஒருங்கிணைப்பு அமைப்பைப் பின்பற்றி பொருளை சீரமைக்கிறது. 
-- டேன்சென்ட்: 'ஒரிசினல்' போன்றது, ஆனால் உள்ளக ஃச் அச்சு 'டான்சென்ட் வெக்டருக்கு' முன்பே சீரமைக்கப்பட்டுள்ளது. 
+      <translation>பாதையில் நகல்களை திசைதிருப்பும் முறை.
+- அசல்: ஃச் என்பது வளைவு தொடுகோடு, ஒய் என்பது இயல்பானது, மற்றும் சட் என்பது குறுக்கு தயாரிப்பு.
+- ஃப்ரீனெட்: பாதையில் உள்ள உள்ளக ஒருங்கிணைப்பு அமைப்பைப் பின்பற்றி பொருளை சீரமைக்கிறது.
+- டேன்சென்ட்: 'ஒரிசினல்' போன்றது, ஆனால் உள்ளக ஃச் அச்சு 'டான்சென்ட் வெக்டருக்கு' முன்பே சீரமைக்கப்பட்டுள்ளது.
 
 'ஒரிசினல்' அல்லது 'டேன்சென்ட்' மூலம் சிறந்த முடிவுகளைப் பெற, 'ஃபோர்ச் செங்குத்து' என்பதை உண்மையாக அமைக்க வேண்டும்.</translation>
     </message>
@@ -7326,9 +7307,9 @@ To get better results with 'Original' or 'Tangent' you may have to set 'Force Ve
  - Fixed count: available path length (minus start and end offsets) is evenly divided into n.
  - Fixed spacing: start at "Start offset" and place new copies after traveling a fixed distance along the path.
  - Fixed count and spacing: same as "Fixed spacing", but also stop at given number of copies.</source>
-      <translation>பிரதிகள் எவ்வாறு இடைவெளியில் வைக்கப்படுகின்றன. 
-- நிலையான எண்ணிக்கை: கிடைக்கக்கூடிய பாதை நீளம் (தொடக்க மற்றும் முடிவு ஆஃப்செட் கழித்தல்) சமமாக n ஆக பிரிக்கப்பட்டுள்ளது. 
-- நிலையான இடைவெளி: "ச்டார்ட் ஆஃப்செட்" இல் தொடங்கி, பாதையில் ஒரு குறிப்பிட்ட தூரம் பயணித்த பிறகு புதிய நகல்களை வைக்கவும். 
+      <translation>பிரதிகள் எவ்வாறு இடைவெளியில் வைக்கப்படுகின்றன.
+- நிலையான எண்ணிக்கை: கிடைக்கக்கூடிய பாதை நீளம் (தொடக்க மற்றும் முடிவு ஆஃப்செட் கழித்தல்) சமமாக n ஆக பிரிக்கப்பட்டுள்ளது.
+- நிலையான இடைவெளி: "ச்டார்ட் ஆஃப்செட்" இல் தொடங்கி, பாதையில் ஒரு குறிப்பிட்ட தூரம் பயணித்த பிறகு புதிய நகல்களை வைக்கவும்.
 - நிலையான எண்ணிக்கை மற்றும் இடைவெளி: அதே "நிலையான இடைவெளி", ஆனால் கொடுக்கப்பட்ட நகல்களின் எண்ணிக்கையில் நிறுத்தவும்.</translation>
     </message>
     <message>
@@ -7360,7 +7341,7 @@ To get better results with 'Original' or 'Tangent' you may have to set 'Force Ve
       <location filename="../../draftobjects/patharray.py" line="327"/>
       <source>Orient the copies along the path depending on the 'Align Mode'.
 Otherwise the copies will have the same orientation as the original Base object.</source>
-      <translation>'சீரமைப்பு பயன்முறை'யைப் பொறுத்து நகல்களை பாதையில் ஓரியண்ட் செய்யவும். 
+      <translation>'சீரமைப்பு பயன்முறை'யைப் பொறுத்து நகல்களை பாதையில் ஓரியண்ட் செய்யவும்.
 இல்லையெனில், அசல் அடிப்படைப் பொருளின் அதே நோக்குநிலையைப் பிரதிகள் கொண்டிருக்கும்.</translation>
     </message>
     <message>
@@ -7369,9 +7350,9 @@ Otherwise the copies will have the same orientation as the original Base object.
 - Ortho: places the copies in the direction of the global X, Y, Z axes.
 - Polar: places the copies along a circular arc, up to a specified angle, and with certain orientation defined by a center and an axis.
 - Circular: places the copies in concentric circles around the base object.</source>
-      <translation>உருவாக்க வேண்டிய வரிசை வகை. 
-- ஆர்த்தோ: உலகளாவிய X, Y, சட் அச்சுகளின் திசையில் பிரதிகளை வைக்கிறது. 
-- துருவம்: நகல்களை ஒரு வட்ட வளைவில், ஒரு குறிப்பிட்ட கோணம் வரை மற்றும் ஒரு நடுவண் மற்றும் அச்சினால் வரையறுக்கப்பட்ட குறிப்பிட்ட நோக்குநிலையுடன் வைக்கிறது. 
+      <translation>உருவாக்க வேண்டிய வரிசை வகை.
+- ஆர்த்தோ: உலகளாவிய X, Y, சட் அச்சுகளின் திசையில் பிரதிகளை வைக்கிறது.
+- துருவம்: நகல்களை ஒரு வட்ட வளைவில், ஒரு குறிப்பிட்ட கோணம் வரை மற்றும் ஒரு நடுவண் மற்றும் அச்சினால் வரையறுக்கப்பட்ட குறிப்பிட்ட நோக்குநிலையுடன் வைக்கிறது.
 - சுற்றறிக்கை: அடிப்படைப் பொருளைச் சுற்றி மைய வட்டங்களில் பிரதிகளை வைக்கிறது.</translation>
     </message>
     <message>
@@ -7421,7 +7402,7 @@ Otherwise the copies will have the same orientation as the original Base object.
       <location filename="../../draftobjects/array.py" line="228"/>
       <source>Center point for polar and circular arrays.
 The 'Axis' passes through this point.</source>
-      <translation>துருவ மற்றும் வட்ட வரிசைகளுக்கான மையப் புள்ளி. 
+      <translation>துருவ மற்றும் வட்ட வரிசைகளுக்கான மையப் புள்ளி.
 'அச்சு' இந்தப் புள்ளியைக் கடந்து செல்கிறது.</translation>
     </message>
     <message>
@@ -7429,8 +7410,8 @@ The 'Axis' passes through this point.</source>
       <source>The axis object that overrides the value of 'Axis' and 'Center', for example, a datum line.
 Its placement, position and rotation, will be used when creating polar and circular arrays.
 Leave this property empty to be able to set 'Axis' and 'Center' manually.</source>
-      <translation>'அச்சு' மற்றும் 'நடுவண்' ஆகியவற்றின் மதிப்பை மீறும் அச்சுப் பொருள், எடுத்துக்காட்டாக, தரவுக் கோடு. 
-அதன் இடம், நிலை மற்றும் சுழற்சி, துருவ மற்றும் வட்ட வரிசைகளை உருவாக்கும் போது பயன்படுத்தப்படும். 
+      <translation>'அச்சு' மற்றும் 'நடுவண்' ஆகியவற்றின் மதிப்பை மீறும் அச்சுப் பொருள், எடுத்துக்காட்டாக, தரவுக் கோடு.
+அதன் இடம், நிலை மற்றும் சுழற்சி, துருவ மற்றும் வட்ட வரிசைகளை உருவாக்கும் போது பயன்படுத்தப்படும்.
 'Axis' மற்றும் 'Center' ஐ கைமுறையாக அமைக்க இந்த சொத்தை காலியாக விடவும்.</translation>
     </message>
     <message>
@@ -7472,7 +7453,7 @@ Leave this property empty to be able to set 'Axis' and 'Center' manually.</sourc
       <location filename="../../draftobjects/array.py" line="141"/>
       <source>Total number of elements in the array.
 This property is read-only, as the number depends on the parameters of the array.</source>
-      <translation>வரிசையில் உள்ள உறுப்புகளின் மொத்த எண்ணிக்கை. 
+      <translation>வரிசையில் உள்ள உறுப்புகளின் மொத்த எண்ணிக்கை.
 வரிசையின் அளவுருக்களைப் பொறுத்து எண் சார்ந்திருப்பதால், இந்தப் பண்பு படிக்க மட்டுமே.</translation>
     </message>
     <message>
@@ -7489,7 +7470,7 @@ This property is read-only, as the number depends on the parameters of the array
       <location filename="../../draftobjects/pointarray.py" line="94"/>
       <source>Number of copies in the array.
 This property is read-only, as the number depends on the points in 'Point Object'.</source>
-      <translation>வரிசையில் உள்ள நகல்களின் எண்ணிக்கை. 
+      <translation>வரிசையில் உள்ள நகல்களின் எண்ணிக்கை.
 'பாயிண்ட் ஆப்செக்ட்' இல் உள்ள புள்ளிகளைப் பொறுத்து எண் இருப்பதால், இந்தப் பண்பு படிக்க மட்டுமே.</translation>
     </message>
     <message>
@@ -7521,11 +7502,6 @@ This property is read-only, as the number depends on the points in 'Point Object
       <location filename="../../draftobjects/shape2dview.py" line="90"/>
       <source>Show hidden lines</source>
       <translation>மறைக்கப்பட்ட வரிகளைக் காட்டு</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>ஒரே வகை மற்றும் பொருளின் சுவர் மற்றும் கட்டமைப்பு பொருள்களை உருகவும்</translation>
     </message>
     <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
@@ -7629,10 +7605,10 @@ This property is read-only, as the number depends on the points in 'Point Object
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>நீள்வட்ட வளைவின் இறுதிக் கோணம் 
+      <translation>நீள்வட்ட வளைவின் இறுதிக் கோணம்
 
 (முழு வட்டத்திற்கு, முதல் கோணத்தின் அதே மதிப்பைக் கொடுங்கள்)</translation>
     </message>
@@ -7690,12 +7666,12 @@ There are various possibilities:
 - An object, and one of its edges.
 - An object, and two of its vertices.
 - An arc object, and its edge.</source>
-      <translation>பொருள் மற்றும் அதன் குறிப்பிட்ட துணை கூறுகள், 
-இந்த பரிமாணம் அளவிடுகிறது என்று. 
+      <translation>பொருள் மற்றும் அதன் குறிப்பிட்ட துணை கூறுகள்,
+இந்த பரிமாணம் அளவிடுகிறது என்று.
 
-பல்வேறு சாத்தியங்கள் உள்ளன: 
-- ஒரு பொருள், மற்றும் அதன் விளிம்புகளில் ஒன்று. 
-- ஒரு பொருள் மற்றும் அதன் இரண்டு முனைகள். 
+பல்வேறு சாத்தியங்கள் உள்ளன:
+- ஒரு பொருள், மற்றும் அதன் விளிம்புகளில் ஒன்று.
+- ஒரு பொருள் மற்றும் அதன் இரண்டு முனைகள்.
 - ஒரு வில் பொருள் மற்றும் அதன் விளிம்பு.</translation>
     </message>
     <message>
@@ -7708,13 +7684,13 @@ is to the measured object.
 that displays the measured radius or diameter.
 - For angular dimensions, this controls the radius of the dimension arc
 that displays the measured angle.</source>
-      <translation>பரிமாணக் கோடு அல்லது அதன் எக்ச்ட்ராபோலேசன் கடந்து செல்லும் ஒரு புள்ளி. 
+      <translation>பரிமாணக் கோடு அல்லது அதன் எக்ச்ட்ராபோலேசன் கடந்து செல்லும் ஒரு புள்ளி.
 
-- நேரியல் பரிமாணங்களுக்கு, பரிமாணக் கோடு எவ்வளவு நெருக்கமாக இருக்கிறது என்பதைக் கட்டுப்படுத்துகிறது 
-அளவிடப்பட்ட பொருளுக்கு ஆகும். 
-- ரேடியல் பரிமாணங்களுக்கு, இது பரிமாணக் கோட்டின் திசையைக் கட்டுப்படுத்துகிறது 
-இது அளவிடப்பட்ட ஆரம் அல்லது விட்டத்தைக் காட்டுகிறது. 
-- கோண பரிமாணங்களுக்கு, இது பரிமாண வளைவின் ஆரத்தைக் கட்டுப்படுத்துகிறது 
+- நேரியல் பரிமாணங்களுக்கு, பரிமாணக் கோடு எவ்வளவு நெருக்கமாக இருக்கிறது என்பதைக் கட்டுப்படுத்துகிறது
+அளவிடப்பட்ட பொருளுக்கு ஆகும்.
+- ரேடியல் பரிமாணங்களுக்கு, இது பரிமாணக் கோட்டின் திசையைக் கட்டுப்படுத்துகிறது
+இது அளவிடப்பட்ட ஆரம் அல்லது விட்டத்தைக் காட்டுகிறது.
+- கோண பரிமாணங்களுக்கு, இது பரிமாண வளைவின் ஆரத்தைக் கட்டுப்படுத்துகிறது
 இது அளவிடப்பட்ட கோணத்தைக் காட்டுகிறது.</translation>
     </message>
     <message>
@@ -7723,9 +7699,9 @@ that displays the measured angle.</source>
 
 If it is a radius dimension it will be the center of the arc.
 If it is a diameter dimension it will be a point that lies on the arc.</source>
-      <translation>பரிமாணக் கோட்டின் தொடக்கப் புள்ளி. 
+      <translation>பரிமாணக் கோட்டின் தொடக்கப் புள்ளி.
 
-ஆரம் பரிமாணமாக இருந்தால் அது பரிதியின் மையமாக இருக்கும். 
+ஆரம் பரிமாணமாக இருந்தால் அது பரிதியின் மையமாக இருக்கும்.
 விட்டம் கொண்ட பரிமாணமாக இருந்தால், அது வளைவில் இருக்கும் ஒரு புள்ளியாக இருக்கும்.</translation>
     </message>
     <message>
@@ -7734,16 +7710,16 @@ If it is a diameter dimension it will be a point that lies on the arc.</source>
 
 If it is a radius or diameter dimension
 it will be a point that lies on the arc.</source>
-      <translation>பரிமாணக் கோட்டின் முடிவுப் புள்ளி. 
+      <translation>பரிமாணக் கோட்டின் முடிவுப் புள்ளி.
 
-அது ஒரு ஆரம் அல்லது விட்டம் பரிமாணமாக இருந்தால் 
+அது ஒரு ஆரம் அல்லது விட்டம் பரிமாணமாக இருந்தால்
 அது வளைவில் இருக்கும் ஒரு புள்ளியாக இருக்கும்.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/dimension.py" line="257"/>
       <source>The direction of the dimension line.
 If this remains '(0,0,0)', the direction will be calculated automatically.</source>
-      <translation>பரிமாணக் கோட்டின் திசை. 
+      <translation>பரிமாணக் கோட்டின் திசை.
 இது '(0,0,0)' ஆக இருந்தால், திசை தானாகவே கணக்கிடப்படும்.</translation>
     </message>
     <message>
@@ -7755,33 +7731,33 @@ from the 'Start' and 'End' properties.
 
 If the 'Linked Geometry' is an arc or circle, this 'Distance'
 is the radius or diameter, depending on the 'Diameter' property.</source>
-      <translation>அளவீட்டின் மதிப்பு. 
+      <translation>அளவீட்டின் மதிப்பு.
 
-மதிப்பு கணக்கிடப்பட்டதால் இந்த சொத்து படிக்க மட்டுமே 
-'தொடக்கம்' மற்றும் 'முடிவு' பண்புகளிலிருந்து. 
+மதிப்பு கணக்கிடப்பட்டதால் இந்த சொத்து படிக்க மட்டுமே
+'தொடக்கம்' மற்றும் 'முடிவு' பண்புகளிலிருந்து.
 
-'இணைக்கப்பட்ட வடிவியல்' ஒரு வில் அல்லது வட்டமாக இருந்தால், இந்த 'தூரம்' 
+'இணைக்கப்பட்ட வடிவியல்' ஒரு வில் அல்லது வட்டமாக இருந்தால், இந்த 'தூரம்'
 ஆரம் அல்லது விட்டம், 'விட்டம்' பண்பைப் பொறுத்து.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/dimension.py" line="287"/>
       <source>When measuring circular arcs, it determines whether to display
 the radius or the diameter value</source>
-      <translation>வட்ட வளைவுகளை அளவிடும் போது, அது காட்ட வேண்டுமா என்பதை தீர்மானிக்கிறது 
+      <translation>வட்ட வளைவுகளை அளவிடும் போது, அது காட்ட வேண்டுமா என்பதை தீர்மானிக்கிறது
 ஆரம் அல்லது விட்டம் மதிப்பு</translation>
     </message>
     <message>
       <location filename="../../draftobjects/dimension.py" line="517"/>
       <source>Starting angle of the dimension line (circular arc).
 The arc is drawn counter-clockwise.</source>
-      <translation>பரிமாணக் கோட்டின் தொடக்கக் கோணம் (வட்ட வில்). 
+      <translation>பரிமாணக் கோட்டின் தொடக்கக் கோணம் (வட்ட வில்).
 வளைவு எதிரெதிர் திசையில் வரையப்பட்டுள்ளது.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/dimension.py" line="529"/>
       <source>Ending angle of the dimension line (circular arc).
 The arc is drawn counter-clockwise.</source>
-      <translation>பரிமாணக் கோட்டின் முடிவுக் கோணம் (வட்ட வில்). 
+      <translation>பரிமாணக் கோட்டின் முடிவுக் கோணம் (வட்ட வில்).
 வளைவு எதிரெதிர் திசையில் வரையப்பட்டுள்ளது.</translation>
     </message>
     <message>
@@ -7790,9 +7766,9 @@ The arc is drawn counter-clockwise.</source>
 
 This is normally the point where two line segments, or their extensions
 intersect, resulting in the measured 'Angle' between them.</source>
-      <translation>பரிமாணக் கோட்டின் மையப் புள்ளி, இது ஒரு வட்ட வில். 
+      <translation>பரிமாணக் கோட்டின் மையப் புள்ளி, இது ஒரு வட்ட வில்.
 
-இது பொதுவாக இரண்டு கோடு பிரிவுகள் அல்லது அவற்றின் நீட்டிப்புகளின் புள்ளியாகும் 
+இது பொதுவாக இரண்டு கோடு பிரிவுகள் அல்லது அவற்றின் நீட்டிப்புகளின் புள்ளியாகும்
 வெட்டும், அவற்றுக்கிடையே அளவிடப்பட்ட 'கோணம்' விளைகிறது.</translation>
     </message>
     <message>
@@ -7801,9 +7777,9 @@ intersect, resulting in the measured 'Angle' between them.</source>
 
 This property is read-only because the value is calculated from
 the 'First Angle' and 'Last Angle' properties.</source>
-      <translation>அளவீட்டின் மதிப்பு. 
+      <translation>அளவீட்டின் மதிப்பு.
 
-மதிப்பு கணக்கிடப்பட்டதால் இந்த சொத்து படிக்க மட்டுமே 
+மதிப்பு கணக்கிடப்பட்டதால் இந்த சொத்து படிக்க மட்டுமே
 'முதல் கோணம்' மற்றும் 'கடைசி கோணம்' பண்புகள்.</translation>
     </message>
     <message>
@@ -8067,14 +8043,14 @@ the 'First Angle' and 'Last Angle' properties.</source>
       <location filename="../../draftviewproviders/view_dimension.py" line="140"/>
       <source>Text Position.
 Leave '(0,0,0)' for automatic position</source>
-      <translation>உரை நிலை. 
+      <translation>உரை நிலை.
 தானியங்கு நிலைக்கு '(0,0,0)' விடவும்</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_dimension.py" line="152"/>
       <source>Text override.
 Write '$dim' so that it is replaced by the dimension length.</source>
-      <translation>உரை மேலெழுதுதல். 
+      <translation>உரை மேலெழுதுதல்.
 '$dim' என்று எழுதவும், அது பரிமாண நீளத்தால் மாற்றப்படும்.</translation>
     </message>
     <message>
@@ -8092,8 +8068,8 @@ Write '$dim' so that it is replaced by the dimension length.</source>
       <source>A unit to express the measurement.
 Leave blank for system default.
 Use 'arch' to force US arch notation</source>
-      <translation>அளவீட்டை வெளிப்படுத்தும் அலகு. 
-கணினி இயல்புநிலைக்கு காலியாக விடவும். 
+      <translation>அளவீட்டை வெளிப்படுத்தும் அலகு.
+கணினி இயல்புநிலைக்கு காலியாக விடவும்.
 US arch குறியீட்டை கட்டாயப்படுத்த 'arch' ஐப் பயன்படுத்தவும்</translation>
     </message>
     <message>
@@ -8121,7 +8097,7 @@ US arch குறியீட்டை கட்டாயப்படுத்�
       <location filename="../../draftviewproviders/view_dimension.py" line="193"/>
       <source>The distance the dimension line is extended
 past the extension lines</source>
-      <translation>பரிமாணக் கோடு நீட்டிக்கப்பட்ட தூரம் 
+      <translation>பரிமாணக் கோடு நீட்டிக்கப்பட்ட தூரம்
 நீட்டிப்பு வரிகளை கடந்தது</translation>
     </message>
     <message>
@@ -8133,7 +8109,7 @@ past the extension lines</source>
       <location filename="../../draftviewproviders/view_dimension.py" line="205"/>
       <source>Length of the extension line
 beyond the dimension line</source>
-      <translation>நீட்டிப்பு வரியின் நீளம் 
+      <translation>நீட்டிப்பு வரியின் நீளம்
 பரிமாணக் கோட்டிற்கு அப்பால்</translation>
     </message>
     <message>
@@ -8253,7 +8229,7 @@ beyond the dimension line</source>
       <location filename="../../draftguitools/gui_beziers.py" line="271"/>
       <source>Creates a Bézier curve made of 2nd degree (quadratic) and 3rd degree (cubic) segments. Clicking and dragging allows to define segments.
 Control points and properties of each knot can be edited after creation.</source>
-      <translation>2வது டிகிரி (குவாட்ராடிக்) மற்றும் 3வது டிகிரி (கனசதுரம்) பிரிவுகளால் செய்யப்பட்ட பெசியர் வளைவை உருவாக்குகிறது. சொடுக்கு செய்து இழுப்பது பிரிவுகளை வரையறுக்க அனுமதிக்கிறது. 
+      <translation>2வது டிகிரி (குவாட்ராடிக்) மற்றும் 3வது டிகிரி (கனசதுரம்) பிரிவுகளால் செய்யப்பட்ட பெசியர் வளைவை உருவாக்குகிறது. சொடுக்கு செய்து இழுப்பது பிரிவுகளை வரையறுக்க அனுமதிக்கிறது.
 ஒவ்வொரு முடிச்சின் கட்டுப்பாட்டு புள்ளிகள் மற்றும் பண்புகளை உருவாக்கிய பிறகு திருத்தலாம்.</translation>
     </message>
   </context>
@@ -8294,7 +8270,7 @@ Control points and properties of each knot can be edited after creation.</source
       <location filename="../../draftguitools/gui_dimension_ops.py" line="69"/>
       <source>Flips the normal direction of the selected dimensions (linear, radial, angular).
 If other objects are selected they are ignored.</source>
-      <translation>தேர்ந்தெடுக்கப்பட்ட பரிமாணங்களின் இயல்பான திசையை புரட்டுகிறது (நேரியல், ரேடியல், கோணம்). 
+      <translation>தேர்ந்தெடுக்கப்பட்ட பரிமாணங்களின் இயல்பான திசையை புரட்டுகிறது (நேரியல், ரேடியல், கோணம்).
 பிற பொருள்கள் தேர்ந்தெடுக்கப்பட்டால் அவை புறக்கணிக்கப்படும்.</translation>
     </message>
   </context>
@@ -8310,8 +8286,8 @@ If other objects are selected they are ignored.</source>
       <source>Converts bidirectionally between Draft objects and sketches.
 Multiple selected Draft objects are converted into a single sketch.
 However, a single sketch with disconnected traces is converted into several individual Draft objects.</source>
-      <translation>வரைவு பொருள்கள் மற்றும் ஓவியங்களுக்கு இடையே இருதரப்பு மாற்றுகிறது. 
-தேர்ந்தெடுக்கப்பட்ட பல வரைவு பொருள்கள் ஒரு ஓவியமாக மாற்றப்படும். 
+      <translation>வரைவு பொருள்கள் மற்றும் ஓவியங்களுக்கு இடையே இருதரப்பு மாற்றுகிறது.
+தேர்ந்தெடுக்கப்பட்ட பல வரைவு பொருள்கள் ஒரு ஓவியமாக மாற்றப்படும்.
 இருப்பினும், துண்டிக்கப்பட்ட தடயங்களைக் கொண்ட ஒரு ஓவியம் பல தனிப்பட்ட வரைவுப் பொருட்களாக மாற்றப்படுகிறது.</translation>
     </message>
   </context>
@@ -8361,11 +8337,6 @@ However, a single sketch with disconnected traces is converted into several indi
       <source>Auto-Group</source>
       <translation>தானியங்கு குழு</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>தேர்ந்தெடுக்கப்பட்ட அடுக்கு அல்லது குழுவில் புதிய வரைவு மற்றும் BIM பொருள்களைச் சேர்க்கிறது</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8379,8 +8350,8 @@ However, a single sketch with disconnected traces is converted into several indi
       <source>Adds the selected objects to the construction group,
 and changes their appearance to the construction style.
 The construction group is created if it does not exist.</source>
-      <translation>தேர்ந்தெடுக்கப்பட்ட பொருட்களை கட்டுமானக் குழுவில் சேர்க்கிறது, 
-மற்றும் அவர்களின் தோற்றத்தை கட்டுமான பாணிக்கு மாற்றுகிறது. 
+      <translation>தேர்ந்தெடுக்கப்பட்ட பொருட்களை கட்டுமானக் குழுவில் சேர்க்கிறது,
+மற்றும் அவர்களின் தோற்றத்தை கட்டுமான பாணிக்கு மாற்றுகிறது.
 அது இல்லாவிட்டால் கட்டுமானக் குழு உருவாக்கப்பட்டது.</translation>
     </message>
   </context>
@@ -8450,10 +8421,10 @@ If a polyline is selected, it will apply the slope transformation to each of its
 
 The slope will always change the Z value, therefore this command only works well for
 straight Draft lines that are drawn on the XY-plane.</source>
-      <translation>தேர்ந்தெடுக்கப்பட்ட வரியின் சாய்வை அதன் புள்ளிகளில் ஒன்றின் சட் மதிப்பின் மதிப்பை மாற்றுவதன் மூலம் அமைக்கிறது. 
-ஒரு பாலிலைன் தேர்ந்தெடுக்கப்பட்டால், அதன் ஒவ்வொரு பிரிவுக்கும் சாய்வு மாற்றத்தைப் பயன்படுத்தும். 
+      <translation>தேர்ந்தெடுக்கப்பட்ட வரியின் சாய்வை அதன் புள்ளிகளில் ஒன்றின் சட் மதிப்பின் மதிப்பை மாற்றுவதன் மூலம் அமைக்கிறது.
+ஒரு பாலிலைன் தேர்ந்தெடுக்கப்பட்டால், அதன் ஒவ்வொரு பிரிவுக்கும் சாய்வு மாற்றத்தைப் பயன்படுத்தும்.
 
-சாய்வு எப்போதும் சட் மதிப்பை மாற்றும், எனவே இந்த கட்டளை மட்டும் நன்றாக வேலை செய்கிறது 
+சாய்வு எப்போதும் சட் மதிப்பை மாற்றும், எனவே இந்த கட்டளை மட்டும் நன்றாக வேலை செய்கிறது
 XY-விமானத்தில் வரையப்பட்ட நேரான வரைவு கோடுகள்.</translation>
     </message>
   </context>
@@ -8598,7 +8569,7 @@ XY-விமானத்தில் வரையப்பட்ட நேரா
       <location filename="../../draftguitools/gui_shape2dview.py" line="67"/>
       <source>Creates a 2D projection of the selected objects on the XY-plane.
 The initial projection direction is the opposite of the current active view direction.</source>
-      <translation>XY- விமானத்தில் தேர்ந்தெடுக்கப்பட்ட பொருட்களின் 2D ப்ரொசெக்சனை உருவாக்குகிறது. 
+      <translation>XY- விமானத்தில் தேர்ந்தெடுக்கப்பட்ட பொருட்களின் 2D ப்ரொசெக்சனை உருவாக்குகிறது.
 ஆரம்ப ப்ரொசெக்சன் திசையானது தற்போதைய செயலில் உள்ள பார்வை திசைக்கு எதிரானது.</translation>
     </message>
   </context>
@@ -8725,11 +8696,6 @@ The initial projection direction is the opposite of the current active view dire
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>ச்னாப் நடுவண்</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>முகங்கள் மற்றும் வட்ட விளிம்புகளின் மையப் புள்ளியிலும், வேலை செய்யும் விமானப் ப்ராக்சிகள் மற்றும் கட்டுமானப் பகுதிகளின் இடப் புள்ளியிலும் ச்னாப்கள்</translation>
     </message>
   </context>
   <context>
@@ -8919,9 +8885,9 @@ The initial projection direction is the opposite of the current active view dire
 reusable objects (Part Compounds) and instances become `App::Link` objects,
 maintaining the block structure. Best for full integration with the Draft
 workbench.</source>
-      <translation>முழு அளவுரு வரைவு பொருள்களை உருவாக்குகிறது. தொகுதி வரையறைகள் இவ்வாறு இறக்குமதி செய்யப்படுகின்றன 
-மீண்டும் பயன்படுத்தக்கூடிய பொருள்கள் (பகுதி கலவைகள்) மற்றும் நிகழ்வுகள் `ஆப்::இணைப்பு` பொருள்களாக மாறும், 
-தொகுதி கட்டமைப்பை பராமரித்தல். வரைவுடன் முழு ஒருங்கிணைப்புக்கு சிறந்தது 
+      <translation>முழு அளவுரு வரைவு பொருள்களை உருவாக்குகிறது. தொகுதி வரையறைகள் இவ்வாறு இறக்குமதி செய்யப்படுகின்றன
+மீண்டும் பயன்படுத்தக்கூடிய பொருள்கள் (பகுதி கலவைகள்) மற்றும் நிகழ்வுகள் `ஆப்::இணைப்பு` பொருள்களாக மாறும்,
+தொகுதி கட்டமைப்பை பராமரித்தல். வரைவுடன் முழு ஒருங்கிணைப்புக்கு சிறந்தது
 பணிமனை.</translation>
     </message>
     <message>
@@ -8935,9 +8901,9 @@ workbench.</source>
 definitions are imported as reusable objects (Part Compounds) and instances
 become `App::Link` objects, maintaining the block structure. Best for
 script-based post-processing.</source>
-      <translation>அளவுரு பகுதி பொருட்களை உருவாக்குகிறது (எ.கா., பகுதி::கோடு, பகுதி::வட்டம்). தடு 
-வரையறைகள் மீண்டும் பயன்படுத்தக்கூடிய பொருள்கள் (பகுதி கலவைகள்) மற்றும் நிகழ்வுகளாக இறக்குமதி செய்யப்படுகின்றன 
-`ஆப்::லிங்க்` ஆப்செக்ட்களாகி, பிளாக் கட்டமைப்பைப் பராமரிக்கிறது. சிறந்தது 
+      <translation>அளவுரு பகுதி பொருட்களை உருவாக்குகிறது (எ.கா., பகுதி::கோடு, பகுதி::வட்டம்). தடு
+வரையறைகள் மீண்டும் பயன்படுத்தக்கூடிய பொருள்கள் (பகுதி கலவைகள்) மற்றும் நிகழ்வுகளாக இறக்குமதி செய்யப்படுகின்றன
+`ஆப்::லிங்க்` ஆப்செக்ட்களாகி, பிளாக் கட்டமைப்பைப் பராமரிக்கிறது. சிறந்தது
 ச்கிரிப்ட் அடிப்படையிலான பிந்தைய செயலாக்கம்.</translation>
     </message>
     <message>
@@ -8950,8 +8916,8 @@ script-based post-processing.</source>
       <source>Creates a non-parametric shape for each DXF entity. Block definitions are
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
-      <translation>ஒவ்வொரு DXF நிறுவனத்திற்கும் அளவுரு அல்லாத வடிவத்தை உருவாக்குகிறது. தொகுதி வரையறைகள் 
-மீண்டும் பயன்படுத்தக்கூடிய பொருள்களாக (பகுதி கலவைகள்) இறக்குமதி செய்யப்பட்டு, 'ஆப்::இணைப்பு' 
+      <translation>ஒவ்வொரு DXF நிறுவனத்திற்கும் அளவுரு அல்லாத வடிவத்தை உருவாக்குகிறது. தொகுதி வரையறைகள்
+மீண்டும் பயன்படுத்தக்கூடிய பொருள்களாக (பகுதி கலவைகள்) இறக்குமதி செய்யப்பட்டு, 'ஆப்::இணைப்பு'
 பொருள்கள், தொகுதி கட்டமைப்பை பராமரித்தல். குறிப்பிடுவதற்கும் அளவிடுவதற்கும் நல்லது.</translation>
     </message>
     <message>
@@ -8964,8 +8930,8 @@ objects, maintaining the block structure. Good for referencing and measuring.</s
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for viewing very large files with maximum performance.</source>
-      <translation>ஒரு அடுக்கில் உள்ள அனைத்து வடிவவியலையும் ஒற்றை, திருத்த முடியாத வடிவத்தில் ஒன்றிணைக்கிறது. தடு 
-கட்டமைப்புகள் பாதுகாக்கப்படவில்லை; அவற்றின் வடிவியல் அடுக்குகளின் ஒரு பகுதியாக மாறும் 
+      <translation>ஒரு அடுக்கில் உள்ள அனைத்து வடிவவியலையும் ஒற்றை, திருத்த முடியாத வடிவத்தில் ஒன்றிணைக்கிறது. தடு
+கட்டமைப்புகள் பாதுகாக்கப்படவில்லை; அவற்றின் வடிவியல் அடுக்குகளின் ஒரு பகுதியாக மாறும்
 வடிவம். அதிகபட்ச செயல்திறன் கொண்ட மிகப் பெரிய கோப்புகளைப் பார்ப்பதற்கு சிறந்தது.</translation>
     </message>
     <message>

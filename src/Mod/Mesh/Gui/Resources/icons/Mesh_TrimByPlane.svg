@@ -207,7 +207,7 @@
             <dc:title>[bitacovir]</dc:title>
           </cc:Agent>
         </dc:creator>
-        <dc:title>Arch_CutPlane</dc:title>
+        <dc:title>Mesh_TrimByPlane</dc:title>
         <dc:date>24-06-2020</dc:date>
         <dc:relation />
         <dc:publisher>

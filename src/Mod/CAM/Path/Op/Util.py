@@ -24,6 +24,7 @@
 
 import FreeCAD
 import Path
+import Path.Base.Util as PathUtil
 import Path.Dressup.Utils as PathDressup
 import PathScripts.PathUtils as PathUtils
 import math
@@ -558,12 +559,13 @@ def getClearedAreas(currentOp, bbox):
     currentWp = getattr(currentOp, "Workplane", z_up)
     rotated = not currentWp.isEqual(z_up, 1e-6)
     for op in job.Operations.Group:
+        sourceOp = op
         baseOp = PathDressup.baseOp(op)
         if baseOp.Name == currentOp.Name:
             break
         if getattr(op, "RestMachiningPass", None):
             op = baseOp
-        if not (getattr(baseOp, "Active", False) and op.Path):
+        if not (PathUtil.activeForOp(sourceOp) and op.Path):
             continue
         opWp = getattr(baseOp, "Workplane", z_up)
         if not opWp.isEqual(currentWp, 1e-6):

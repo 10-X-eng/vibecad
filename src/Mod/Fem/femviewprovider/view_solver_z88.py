@@ -29,22 +29,26 @@ __url__ = "https://www.freecad.org"
 #  \ingroup FEM
 #  \brief solver Z88 view provider
 
-import FreeCADGui
-
 from femtaskpanels import task_solver_z88
 from femviewprovider import view_base_femobject
 
 
 class VPSolverZ88(view_base_femobject.VPBaseFemObject):
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def __init__(self, vobj):
         super().__init__(vobj)
+        vobj.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
 
     def getIcon(self):
         return ":/icons/FEM_SolverZ88.svg"
 
     def setEdit(self, vobj, mode=0):
-        task = task_solver_z88._TaskPanel(vobj.Object)
-        FreeCADGui.Control.showDialog(task)
-
-        return True
+        return super().setEdit(
+            vobj,
+            mode,
+            task_solver_z88._TaskPanel,
+            hide_mesh=False,
+        )

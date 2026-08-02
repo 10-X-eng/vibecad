@@ -22,11 +22,15 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
+#include <sstream>
+
 #include <QMessageBox>
 
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentObserver.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Base/Stream.h>
@@ -36,23 +40,61 @@
 #include <Gui/Command.h>
 #include <Gui/Control.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/WaitCursor.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 #include <Mod/Mesh/Gui/ViewProvider.h>
+#include <Mod/Mesh/Gui/CommandGuard.h>
+#include <Mod/Mesh/Gui/ParametricMeshFilter.h>
 #include <Mod/Part/App/BodyBase.h>
 #include <Mod/Part/Gui/ViewProvider.h>
 
+#include "../App/FeatureMeshPartOperations.h"
 #include "Tessellation.h"
 #include "ui_Tessellation.h"
 
 
 using namespace MeshPartGui;
 
+class Tessellation::SelectionState
+{
+public:
+    struct Target
+    {
+        Target(App::DocumentObject* object, std::string subName)
+            : object(object)
+            , subName(std::move(subName))
+        {}
+
+        App::DocumentObjectWeakPtrT object;
+        std::string subName;
+        Part::TopoShape sourceShape;
+    };
+
+    explicit SelectionState(App::Document* targetDocument)
+        : document(targetDocument)
+    {
+        if (!targetDocument) {
+            return;
+        }
+        for (const auto& selected : Gui::Selection().getSelection("*", Gui::ResolveMode::NoResolve)) {
+            if (selected.pObject && selected.pObject->getDocument() == targetDocument
+                && MeshGui::isNativeMeshInputActive(selected.pObject)) {
+                targets.emplace_back(selected.pObject, selected.SubName);
+            }
+        }
+    }
+
+    App::DocumentWeakPtrT document;
+    std::vector<Target> targets;
+};
+
 /* TRANSLATOR MeshPartGui::Tessellation */
 
 Tessellation::Tessellation(QWidget* parent)
     : QWidget(parent)
+    , selectionState(std::make_unique<SelectionState>(App::GetApplication().getActiveDocument()))
     , ui(new Ui_Tessellation)
 {
     ui->setupUi(this);
@@ -204,22 +246,27 @@ void Tessellation::changeEvent(QEvent* e)
 
 void Tessellation::onEstimateMaximumEdgeLengthClicked()
 {
-    App::Document* activeDoc = App::GetApplication().getActiveDocument();
-    if (!activeDoc) {
+    App::Document* targetDocument = selectionState ? *selectionState->document : nullptr;
+    if (!targetDocument) {
         return;
     }
 
-    Gui::Document* activeGui = Gui::Application::Instance->getDocument(activeDoc);
-    if (!activeGui) {
+    Gui::Document* targetGui = Gui::Application::Instance->getDocument(targetDocument);
+    if (!targetGui) {
         return;
     }
 
     double edgeLen = 0;
-    for (auto& sel : Gui::Selection().getSelection("*", Gui::ResolveMode::NoResolve)) {
+    for (const auto& target : selectionState->targets) {
+        auto* object = target.object.get<App::DocumentObject>();
+        if (!object || object->getDocument() != targetDocument
+            || !MeshGui::isNativeMeshInputActive(object)) {
+            continue;
+        }
         auto shape = Part::Feature::getTopoShape(
-            sel.pObject,
+            object,
             Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform,
-            sel.SubName
+            target.subName.c_str()
         );
         if (shape.hasSubShape(TopAbs_FACE)) {
             Base::BoundBox3d bbox = shape.getBoundBox();
@@ -235,36 +282,65 @@ void Tessellation::onEstimateMaximumEdgeLengthClicked()
 bool Tessellation::accept()
 {
     std::list<App::SubObjectT> shapeObjects;
-    App::Document* activeDoc = App::GetApplication().getActiveDocument();
-    if (!activeDoc) {
-        QMessageBox::critical(this, windowTitle(), tr("No Active Document"));
+    App::Document* targetDocument = selectionState ? *selectionState->document : nullptr;
+    if (!targetDocument) {
+        QMessageBox::critical(
+            this,
+            windowTitle(),
+            tr("The document selected for meshing is no longer open.")
+        );
         return false;
     }
 
-    Gui::Document* activeGui = Gui::Application::Instance->getDocument(activeDoc);
-    if (!activeGui) {
-        QMessageBox::critical(this, windowTitle(), tr("No Active Document"));
+    Gui::Document* targetGui = Gui::Application::Instance->getDocument(targetDocument);
+    if (!targetGui) {
+        QMessageBox::critical(
+            this,
+            windowTitle(),
+            tr("The document selected for meshing is no longer open.")
+        );
         return false;
     }
 
-    this->document = QString::fromUtf8(activeDoc->getName());
+    this->document = QString::fromUtf8(targetDocument->getName());
+    if (!MeshGui::hasCleanNativeMutationBoundary(targetDocument)) {
+        QMessageBox::critical(
+            this,
+            windowTitle(),
+            tr("Finish the current document operation before meshing.")
+        );
+        return false;
+    }
 
     bool bodyWithNoTip = false;
     bool partWithNoFace = false;
-    for (auto& sel : Gui::Selection().getSelection("*", Gui::ResolveMode::NoResolve)) {
+    bool missingSelection = false;
+    bool inactiveSelection = false;
+    bool invalidSelection = false;
+    for (const auto& target : selectionState->targets) {
+        auto* object = target.object.get<App::DocumentObject>();
+        if (!object || object->getDocument() != targetDocument) {
+            missingSelection = true;
+            continue;
+        }
+        if (!MeshGui::isNativeMeshInputActive(object)) {
+            inactiveSelection = true;
+            continue;
+        }
         auto shape = Part::Feature::getTopoShape(
-            sel.pObject,
+            object,
             Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform,
-            sel.SubName
+            target.subName.c_str()
         );
         if (shape.hasSubShape(TopAbs_FACE)) {
-            shapeObjects.emplace_back(sel.pObject, sel.SubName);
+            shapeObjects.emplace_back(object, target.subName.c_str());
         }
-        else if (sel.pObject) {
-            if (sel.pObject->isDerivedFrom<Part::Feature>()) {
+        else {
+            invalidSelection = true;
+            if (object->isDerivedFrom<Part::Feature>()) {
                 partWithNoFace = true;
             }
-            if (auto body = dynamic_cast<Part::BodyBase*>(sel.pObject)) {
+            if (auto body = dynamic_cast<Part::BodyBase*>(object)) {
                 if (!body->Tip.getValue()) {
                     bodyWithNoTip = true;
                 }
@@ -272,7 +348,21 @@ bool Tessellation::accept()
         }
     }
 
-    if (shapeObjects.empty()) {
+    if (missingSelection) {
+        QMessageBox::critical(this, windowTitle(), tr("A shape selected for meshing no longer exists."));
+        return false;
+    }
+
+    if (inactiveSelection) {
+        QMessageBox::critical(
+            this,
+            windowTitle(),
+            tr("A shape selected for meshing is no longer active in History.")
+        );
+        return false;
+    }
+
+    if (invalidSelection || shapeObjects.empty()) {
         if (bodyWithNoTip) {
             QMessageBox::critical(
                 this,
@@ -290,7 +380,11 @@ bool Tessellation::accept()
             );
         }
         else {
-            QMessageBox::critical(this, windowTitle(), tr("Select a shape for meshing, first."));
+            QMessageBox::critical(
+                this,
+                windowTitle(),
+                tr("Every selected object must contain faces that can be meshed.")
+            );
         }
         return false;
     }
@@ -301,63 +395,135 @@ bool Tessellation::accept()
     // For Gmsh the workflow is very different because it uses an executable
     // and therefore things are asynchronous
     if (method == Gmsh) {
-        gmsh->process(activeDoc, shapeObjects);
+        gmsh->process(targetDocument, shapeObjects);
         return false;
     }
 
-    process(method, activeDoc, shapeObjects);
-    return doClose;
+    return processAndCommit(method, targetDocument, shapeObjects) && doClose;
+}
+
+void Tessellation::reject()
+{
+    if (gmsh) {
+        gmsh->reject();
+    }
 }
 
 void Tessellation::process(int method, App::Document* doc, const std::list<App::SubObjectT>& shapeObjects)
 {
+    (void)processAndCommit(method, doc, shapeObjects);
+}
+
+bool Tessellation::processAndCommit(
+    int method,
+    App::Document* doc,
+    const std::list<App::SubObjectT>& shapeObjects
+)
+{
     try {
+        if (!doc || shapeObjects.empty() || !MeshGui::hasCleanNativeMutationBoundary(doc)) {
+            return false;
+        }
+        for (const auto& info : shapeObjects) {
+            auto* object = info.getObject();
+            if (!object || object->getDocument() != doc || !MeshGui::isNativeMeshInputActive(object)) {
+                return false;
+            }
+        }
+
         Gui::WaitCursor wc;
 
         saveParameters(method);
 
-        doc->openTransaction("Meshing");
+        Gui::ExactTransaction transaction(*doc, "Meshing");
+        std::vector<App::DocumentObject*> sources;
+        std::vector<App::DocumentObject*> outputs;
+        std::vector<std::pair<App::DocumentObject*, MeshPart::MeshFromShape*>> configuredResults;
+        sources.reserve(shapeObjects.size());
+        outputs.reserve(shapeObjects.size());
+        configuredResults.reserve(shapeObjects.size());
         for (auto& info : shapeObjects) {
-            QString subname = QString::fromUtf8(info.getSubName().c_str());
-            QString objname = QString::fromUtf8(info.getObjectName().c_str());
-
             auto obj = info.getObject();
-            if (!obj) {
-                continue;
+            if (!obj || obj->getDocument() != doc || !MeshGui::isNativeMeshInputActive(obj)) {
+                throw Base::RuntimeError("A shape selected for meshing no longer exists");
             }
             auto sobj = obj->getSubObject(info.getSubName().c_str());
             if (!sobj) {
-                continue;
+                throw Base::RuntimeError("A shape selected for meshing no longer exists");
             }
             sobj = sobj->getLinkedObject(true);
-            if (!sobj) {
-                continue;
+            if (!sobj || !MeshGui::isNativeMeshInputActive(sobj)) {
+                throw Base::RuntimeError("A linked shape selected for meshing no longer exists");
             }
 
-            QString label = QString::fromUtf8(sobj->Label.getValue());
-
-            QString param = getMeshingParameters(method, sobj);
-
-            QString cmd = QStringLiteral(
-                              "__doc__=FreeCAD.getDocument(\"%1\")\n"
-                              "__mesh__=__doc__.addObject(\"Mesh::Feature\",\"Mesh\")\n"
-                              "__part__=__doc__.getObject(\"%2\")\n"
-                              "__shape__=Part.getShape(__part__,\"%3\")\n"
-                              "__mesh__.Mesh=MeshPart.meshFromShape(%4)\n"
-                              "__mesh__.Label=\"%5 (Meshed)\"\n"
-                              "del __doc__, __mesh__, __part__, __shape__\n"
-            )
-                              .arg(QString::fromUtf8(doc->getName()), objname, subname, param, label);
-
-            Gui::Command::runCommand(Gui::Command::Doc, cmd.toUtf8());
-
-            setFaceColors(method, doc, sobj);
+            auto* result = doc->addObject<MeshPart::MeshFromShape>("Mesh");
+            const std::string subName = info.getSubName();
+            if (subName.empty()) {
+                result->Source.setValue(obj);
+            }
+            else {
+                result->Source.setValue(obj, std::vector<std::string> {subName});
+            }
+            result->Method.setValue(method);
+            if (method == Standard) {
+                result->LinearDeflection.setValue(ui->spinSurfaceDeviation->value().getValue());
+                result->AngularDeflection.setValue(
+                    Base::toRadians<double>(ui->spinAngularDeviation->value().getValue())
+                );
+                result->Relative.setValue(ui->relativeDeviation->isChecked());
+                result->Segments.setValue(ui->meshShapeColors->isChecked());
+            }
+            else if (method == Mefisto) {
+                result->MaximumEdgeLength.setValue(
+                    ui->spinMaximumEdgeLength->isEnabled()
+                        ? ui->spinMaximumEdgeLength->value().getValue()
+                        : 0.0
+                );
+            }
+            else if (method == Netgen) {
+                result->Fineness.setValue(ui->comboFineness->currentIndex());
+                result->GrowthRate.setValue(ui->doubleGrading->value());
+                result->SegmentsPerEdge.setValue(ui->spinEdgeElements->value());
+                result->SegmentsPerRadius.setValue(ui->spinCurvatureElements->value());
+                result->SecondOrder.setValue(ui->checkSecondOrder->isChecked());
+                result->Optimize.setValue(ui->checkOptimizeSurface->isChecked());
+                result->QuadDominated.setValue(ui->checkQuadDominated->isChecked());
+            }
+            result->Label.setValue(sobj->Label.getStrValue() + " (Meshed)");
+            sources.push_back(obj);
+            outputs.push_back(result);
+            configuredResults.emplace_back(sobj, result);
         }
-        doc->commitTransaction();
+        doc->recompute();
+        for (const auto& [source, result] : configuredResults) {
+            if (!result || result->Mesh.getValue().countFacets() == 0 || result->isError()) {
+                throw Base::RuntimeError(
+                    result && result->isError() ? result->getStatusString()
+                                                : "Meshing produced an empty mesh"
+                );
+            }
+            setFaceColors(method, doc, source, result);
+        }
+        MeshGui::createSourcePreservingOutputGroup(
+            *doc,
+            sources,
+            outputs,
+            "MeshedShapes",
+            "Meshed Shapes",
+            "Mesh from shape"
+        );
+        if (!transaction.commit()) {
+            return false;
+        }
+        return true;
     }
     catch (const Base::Exception& e) {
-        doc->abortTransaction();
         Base::Console().error(e.what());
+        return false;
+    }
+    catch (...) {
+        Base::Console().error("Meshing failed because of an unknown error\n");
+        return false;
     }
 }
 
@@ -378,12 +544,21 @@ void Tessellation::saveParameters(int method)
 
 void Tessellation::setFaceColors(int method, App::Document* doc, App::DocumentObject* obj)
 {
+    auto* result = doc ? freecad_cast<Mesh::Feature*>(doc->getActiveObject()) : nullptr;
+    setFaceColors(method, doc, obj, result);
+}
+
+void Tessellation::setFaceColors(
+    int method,
+    App::Document* doc,
+    App::DocumentObject* obj,
+    Mesh::Feature* result
+)
+{
     // if Standard mesher is used and face colors should be applied
-    if (method == Standard) {
+    if (method == Standard && doc && obj && result) {
         if (ui->meshShapeColors->isChecked()) {
-            Gui::ViewProvider* vpm = Gui::Application::Instance->getViewProvider(
-                doc->getActiveObject()
-            );
+            Gui::ViewProvider* vpm = Gui::Application::Instance->getViewProvider(result);
             auto vpmesh = dynamic_cast<MeshGui::ViewProviderMesh*>(vpm);
 
             auto svp = freecad_cast<PartGui::ViewProviderPartExt*>(
@@ -466,12 +641,10 @@ QString Tessellation::getStandardParameters(App::DocumentObject* obj) const
     bool relative = ui->relativeDeviation->isChecked();
 
     QString param;
-    param = QStringLiteral(
-                "Shape=__shape__, "
-                "LinearDeflection=%1, "
-                "AngularDeflection=%2, "
-                "Relative=%3"
-    )
+    param = QStringLiteral("Shape=__shape__, "
+                           "LinearDeflection=%1, "
+                           "AngularDeflection=%2, "
+                           "Relative=%3")
                 .arg(devFace)
                 .arg(devAngle)
                 .arg(relative ? QStringLiteral("True") : QStringLiteral("False"));
@@ -524,21 +697,17 @@ QString Tessellation::getNetgenParameters() const
     bool optimize = ui->checkOptimizeSurface->isChecked();
     bool allowquad = ui->checkQuadDominated->isChecked();
     if (fineness <= int(VeryFine)) {
-        param = QStringLiteral(
-                    "Shape=__shape__,"
-                    "Fineness=%1,SecondOrder=%2,Optimize=%3,AllowQuad=%4"
-        )
+        param = QStringLiteral("Shape=__shape__,"
+                               "Fineness=%1,SecondOrder=%2,Optimize=%3,AllowQuad=%4")
                     .arg(fineness)
                     .arg(secondOrder ? 1 : 0)
                     .arg(optimize ? 1 : 0)
                     .arg(allowquad ? 1 : 0);
     }
     else {
-        param = QStringLiteral(
-                    "Shape=__shape__,"
-                    "GrowthRate=%1,SegPerEdge=%2,SegPerRadius=%3,SecondOrder=%4,"
-                    "Optimize=%5,AllowQuad=%6"
-        )
+        param = QStringLiteral("Shape=__shape__,"
+                               "GrowthRate=%1,SegPerEdge=%2,SegPerRadius=%3,SecondOrder=%4,"
+                               "Optimize=%5,AllowQuad=%6")
                     .arg(growthRate)
                     .arg(nbSegPerEdge)
                     .arg(nbSegPerRadius)
@@ -555,12 +724,48 @@ QString Tessellation::getNetgenParameters() const
 class Mesh2ShapeGmsh::Private
 {
 public:
+    struct Target
+    {
+        Target(App::DocumentObject* object, std::string subName)
+            : object(object)
+            , subName(std::move(subName))
+        {}
+
+        App::DocumentObjectWeakPtrT object;
+        std::string subName;
+        Part::TopoShape sourceShape;
+    };
+
+    struct CompletedMesh
+    {
+        CompletedMesh(
+            std::string label,
+            const MeshCore::MeshKernel& kernel,
+            App::DocumentObject* object,
+            std::string subName,
+            const Part::TopoShape& sourceShape
+        )
+            : label(std::move(label))
+            , kernel(kernel)
+            , object(object)
+            , subName(std::move(subName))
+            , sourceShape(sourceShape)
+        {}
+
+        std::string label;
+        MeshCore::MeshKernel kernel;
+        App::DocumentObjectWeakPtrT object;
+        std::string subName;
+        Part::TopoShape sourceShape;
+    };
+
     std::string label;
-    std::list<App::SubObjectT> shapes;
-    App::DocumentT doc;
+    std::vector<Target> targets;
+    std::unique_ptr<App::DocumentWeakPtrT> doc;
     std::string cadFile;
     std::string stlFile;
     std::string geoFile;
+    std::vector<CompletedMesh> completedMeshes;
 };
 
 Mesh2ShapeGmsh::Mesh2ShapeGmsh(QWidget* parent, Qt::WindowFlags fl)
@@ -572,30 +777,63 @@ Mesh2ShapeGmsh::Mesh2ShapeGmsh(QWidget* parent, Qt::WindowFlags fl)
     d->geoFile = App::Application::getTempFileName() + "mesh.geo";
 }
 
-Mesh2ShapeGmsh::~Mesh2ShapeGmsh() = default;
+Mesh2ShapeGmsh::~Mesh2ShapeGmsh()
+{
+    Base::FileInfo(d->stlFile).deleteFile();
+    Base::FileInfo(d->geoFile).deleteFile();
+    Base::FileInfo(d->cadFile).deleteFile();
+}
 
 void Mesh2ShapeGmsh::process(App::Document* doc, const std::list<App::SubObjectT>& objs)
 {
-    d->doc = doc;
-    d->shapes = objs;
+    d->doc = std::make_unique<App::DocumentWeakPtrT>(doc);
+    d->targets.clear();
+    d->targets.reserve(objs.size());
+    for (const auto& target : objs) {
+        auto* object = target.getObject();
+        if (!object || object->getDocument() != doc || !MeshGui::isNativeMeshInputActive(object)) {
+            d->targets.clear();
+            d->doc.reset();
+            return;
+        }
+        d->targets.emplace_back(object, target.getSubName());
+    }
+    d->completedMeshes.clear();
+    if (!d->targets.empty()) {
+        accept();
+    }
+}
 
-    doc->openTransaction("Meshing");
-    accept();
+void Mesh2ShapeGmsh::reject()
+{
+    MeshGui::GmshWidget::reject();
+    Base::FileInfo(d->cadFile).deleteFile();
+    Base::FileInfo(d->stlFile).deleteFile();
+    Base::FileInfo(d->geoFile).deleteFile();
+    d->targets.clear();
+    d->completedMeshes.clear();
+    d->doc.reset();
 }
 
 bool Mesh2ShapeGmsh::writeProject(QString& inpFile, QString& outFile)
 {
-    if (!d->shapes.empty()) {
-        App::SubObjectT sub = d->shapes.front();
-        d->shapes.pop_front();
-
-        App::DocumentObject* part = sub.getObject();
-        if (part) {
+    App::Document* document = d->doc ? **d->doc : nullptr;
+    if (!d->targets.empty()) {
+        auto& target = d->targets.front();
+        App::DocumentObject* part = target.object.get<App::DocumentObject>();
+        if (part && part->getDocument() == document && MeshGui::isNativeMeshInputActive(part)) {
             Part::TopoShape shape = Part::Feature::getTopoShape(
                 part,
                 Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform,
-                sub.getSubName().c_str()
+                target.subName.c_str()
             );
+            if (!shape.hasSubShape(TopAbs_FACE)) {
+                d->targets.clear();
+                d->completedMeshes.clear();
+                Base::Console().error("A shape selected for Gmsh no longer has any faces\n");
+                return false;
+            }
+            target.sourceShape = shape;
             shape.exportBrep(d->cadFile.c_str());
             d->label = part->Label.getStrValue() + " (Meshed)";
 
@@ -610,6 +848,12 @@ bool Mesh2ShapeGmsh::writeProject(QString& inpFile, QString& outFile)
             // Gmsh geo file
             Base::FileInfo geo(d->geoFile);
             Base::ofstream geoOut(geo, std::ios::out);
+            if (!geoOut.is_open()) {
+                Base::Console().error("The Gmsh project file could not be created\n");
+                d->targets.clear();
+                d->completedMeshes.clear();
+                return false;
+            }
             geoOut << "// geo file for meshing with Gmsh meshing software created by FreeCAD\n"
                    << "// open brep geometry\n"
                    << "Merge \"" << d->cadFile << "\";\n\n"
@@ -649,14 +893,108 @@ bool Mesh2ShapeGmsh::writeProject(QString& inpFile, QString& outFile)
 
             return true;
         }
+        d->targets.clear();
+        d->completedMeshes.clear();
+        Base::Console().error("A shape selected for Gmsh no longer exists\n");
+        return false;
     }
     else {
-        App::Document* doc = d->doc.getDocument();
-        if (doc) {
-            doc->commitTransaction();
+        bool committed = false;
+        if (document && !d->completedMeshes.empty()) {
+            bool sourcesCurrent = true;
+            for (const auto& completed : d->completedMeshes) {
+                auto* object = completed.object.get<App::DocumentObject>();
+                if (!object || object->getDocument() != document
+                    || !MeshGui::isNativeMeshInputActive(object)) {
+                    sourcesCurrent = false;
+                    break;
+                }
+                const Part::TopoShape current = Part::Feature::getTopoShape(
+                    object,
+                    Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform,
+                    completed.subName.c_str()
+                );
+                if (!current.hasSubShape(TopAbs_FACE) || !(current == completed.sourceShape)) {
+                    sourcesCurrent = false;
+                    break;
+                }
+            }
+            if (!sourcesCurrent) {
+                Base::Console().warning("Gmsh results were discarded because a selected "
+                                        "shape changed while meshing\n");
+            }
+            else if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+                Base::Console().warning("Gmsh results were not applied because another "
+                                        "document operation is in progress\n");
+            }
+            else {
+                try {
+                    Gui::ExactTransaction transaction(*document, "Meshing");
+                    std::vector<App::DocumentObject*> sources;
+                    std::vector<App::DocumentObject*> outputs;
+                    sources.reserve(d->completedMeshes.size());
+                    outputs.reserve(d->completedMeshes.size());
+                    for (const auto& completed : d->completedMeshes) {
+                        auto* source = completed.object.get<App::DocumentObject>();
+                        auto* feature = document->addObject<MeshPart::MeshFromShape>("Mesh");
+                        feature->Label.setValue(completed.label);
+                        if (completed.subName.empty()) {
+                            feature->Source.setValue(source);
+                        }
+                        else {
+                            feature->Source.setValue(
+                                source,
+                                std::vector<std::string> {completed.subName}
+                            );
+                        }
+                        feature->Method.setValue(
+                            static_cast<long>(MeshPart::MeshFromShape::MeshingMethod::Gmsh)
+                        );
+                        feature->GmshAlgorithm.setValue(meshingAlgorithm());
+                        feature->GmshMinimumSize.setValue(getMinSize());
+                        feature->GmshMaximumSize.setValue(getMaxSize());
+                        feature->GmshGeometryTolerance.setValue(1.0e-6);
+                        feature->GmshElementOrder.setValue(2);
+                        feature->GmshOptimize.setValue(true);
+                        feature->GmshExecutable.setValue(executablePath().toStdString());
+                        std::ostringstream sourceBrep;
+                        completed.sourceShape.exportBrep(sourceBrep);
+                        Mesh::MeshObject accepted(completed.kernel);
+                        feature->CachedGmshSourceBrep.setValue(sourceBrep.str());
+                        feature->CachedGmshResult.setValue(accepted);
+                        feature->Mesh.setValue(accepted);
+                        feature->purgeTouched();
+                        sources.push_back(source);
+                        outputs.push_back(feature);
+                    }
+                    MeshGui::createSourcePreservingOutputGroup(
+                        *document,
+                        sources,
+                        outputs,
+                        "MeshedShapes",
+                        "Meshed Shapes",
+                        "Mesh from shape"
+                    );
+                    if (!transaction.commit()) {
+                        Base::Console().error("Gmsh meshes could not be committed\n");
+                    }
+                    else {
+                        committed = true;
+                    }
+                }
+                catch (const Base::Exception& error) {
+                    Base::Console().error("Gmsh meshes were not applied: %s\n", error.what());
+                }
+                catch (...) {
+                    Base::Console().error("Gmsh meshes were not applied because of an "
+                                          "unknown error\n");
+                }
+            }
         }
-
-        Q_EMIT processed();
+        d->completedMeshes.clear();
+        if (committed) {
+            Q_EMIT processed();
+        }
     }
 
     return false;
@@ -664,27 +1002,82 @@ bool Mesh2ShapeGmsh::writeProject(QString& inpFile, QString& outFile)
 
 bool Mesh2ShapeGmsh::loadOutput()
 {
-    App::Document* doc = d->doc.getDocument();
-    if (!doc) {
+    App::Document* doc = d->doc ? **d->doc : nullptr;
+    if (!doc || d->targets.empty()) {
         return false;
     }
 
     // Now read-in the mesh
     Base::FileInfo stl(d->stlFile);
     Base::FileInfo geo(d->geoFile);
+    Base::FileInfo cad(d->cadFile);
+
+    auto& target = d->targets.front();
+    auto* object = target.object.get<App::DocumentObject>();
+    if (!object || object->getDocument() != doc || !MeshGui::isNativeMeshInputActive(object)) {
+        Base::Console().error("A shape selected for Gmsh no longer exists\n");
+        d->targets.clear();
+        d->completedMeshes.clear();
+        stl.deleteFile();
+        geo.deleteFile();
+        cad.deleteFile();
+        return false;
+    }
+    const Part::TopoShape current = Part::Feature::getTopoShape(
+        object,
+        Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform,
+        target.subName.c_str()
+    );
+    if (!current.hasSubShape(TopAbs_FACE) || !(current == target.sourceShape)) {
+        Base::Console().error("A shape selected for Gmsh changed while meshing\n");
+        d->targets.clear();
+        d->completedMeshes.clear();
+        stl.deleteFile();
+        geo.deleteFile();
+        cad.deleteFile();
+        return false;
+    }
 
     Mesh::MeshObject kernel;
-    MeshCore::MeshInput input(kernel.getKernel());
-    Base::ifstream stlIn(stl, std::ios::in | std::ios::binary);
-    input.LoadBinarySTL(stlIn);
-    stlIn.close();
-    kernel.harmonizeNormals();
-
-    auto fea = doc->addObject<Mesh::Feature>("Mesh");
-    fea->Label.setValue(d->label);
-    fea->Mesh.setValue(kernel.getKernel());
+    try {
+        MeshCore::MeshInput input(kernel.getKernel());
+        Base::ifstream stlIn(stl, std::ios::in | std::ios::binary);
+        if (!stlIn.is_open()) {
+            throw Base::RuntimeError("Gmsh did not create a readable mesh file");
+        }
+        input.LoadBinarySTL(stlIn);
+        stlIn.close();
+        kernel.harmonizeNormals();
+        if (kernel.countFacets() == 0) {
+            throw Base::RuntimeError("Gmsh produced an empty mesh");
+        }
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error("Gmsh output was not accepted: %s\n", error.what());
+        stl.deleteFile();
+        geo.deleteFile();
+        cad.deleteFile();
+        return false;
+    }
+    catch (...) {
+        Base::Console().error("Gmsh output was not accepted because it could not be "
+                              "read\n");
+        stl.deleteFile();
+        geo.deleteFile();
+        cad.deleteFile();
+        return false;
+    }
+    d->completedMeshes.emplace_back(
+        d->label,
+        kernel.getKernel(),
+        target.object.get<App::DocumentObject>(),
+        target.subName,
+        target.sourceShape
+    );
+    d->targets.erase(d->targets.begin());
     stl.deleteFile();
     geo.deleteFile();
+    cad.deleteFile();
 
     // process next object
     accept();
@@ -696,6 +1089,11 @@ bool Mesh2ShapeGmsh::loadOutput()
 
 TaskTessellation::TaskTessellation()
 {
+    App::Document* document = App::GetApplication().getActiveDocument();
+    if (document) {
+        setDocumentName(document->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
     widget = new Tessellation();
     addTaskBox(widget);
 }
@@ -715,6 +1113,7 @@ bool TaskTessellation::accept()
 
 bool TaskTessellation::reject()
 {
+    widget->reject();
     return true;
 }
 

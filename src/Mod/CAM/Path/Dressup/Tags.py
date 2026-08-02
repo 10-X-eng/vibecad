@@ -24,6 +24,7 @@ from PathScripts.PathUtils import waiting_effects
 from PySide.QtCore import QT_TRANSLATE_NOOP
 import FreeCAD
 import Path
+import Path.Base.Util as PathUtil
 import Path.Dressup.Utils as PathDressup
 import PathScripts.PathUtils as PathUtils
 import copy
@@ -1236,18 +1237,28 @@ class ObjectTagDressup:
         # pr.print_stats()
 
     def doExecute(self, obj):
+        if not PathUtil.activeForOp(obj):
+            self.tags = []
+            self.solids = []
+            obj.Path = Path.Path()
+            return
         if not obj.Base:
+            obj.Path = Path.Path()
             return
         if not obj.Base.isDerivedFrom("Path::Feature"):
+            obj.Path = Path.Path()
             return
         if not obj.Base.Path:
+            obj.Path = Path.Path()
             return
         if not obj.Base.Path.Commands:
+            obj.Path = Path.Path()
             return
 
         pathData = self.setup(obj)
         if not pathData:
             logger.debug("execute - no pathData")
+            obj.Path = Path.Path()
             return
 
         self.tags = []
@@ -1365,10 +1376,15 @@ def Create(baseObject, name="DressupTag"):
         logger.error(translate("CAM_DressupTag", "Select a profile object"))
         return None
 
-    obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = baseObject.Document.addObject("Path::FeaturePython", name)
     dbo = ObjectTagDressup(obj, baseObject)
     job = PathUtils.findParentJob(baseObject)
-    job.Proxy.addOperation(obj, baseObject)
+    # A dress-up is the Job's active operation, while its Base remains the
+    # editable predecessor owned by that operation.  Replace the exact group
+    # member transactionally; the old ViewProvider attach hook removed Base
+    # from arbitrary inbound groups after the fact, which left Job membership
+    # outside the creation transaction and made Undo restore a hidden source.
+    job.Proxy.addOperation(obj, baseObject, True)
     dbo.setup(obj, True)
     return obj
 

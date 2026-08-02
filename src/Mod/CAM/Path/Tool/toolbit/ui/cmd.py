@@ -26,6 +26,11 @@ import FreeCAD
 import FreeCADGui
 import Path
 import Path.Tool
+from Path.CommandBoundary import (
+    can_start_document_command,
+    is_document_object,
+    is_timeline_input_usable,
+)
 from PySide.QtCore import QT_TRANSLATE_NOOP
 from ...toolbit import ToolBit
 from ...assets.ui import AssetSaveDialog
@@ -87,19 +92,32 @@ class CommandToolBitSave:
 
     def selectedTool(self):
         sel = FreeCADGui.Selection.getSelectionEx()
-        if 1 == len(sel) and isinstance(sel[0].Object.Proxy, Path.Tool.ToolBit):
-            return sel[0].Object
+        document = FreeCAD.ActiveDocument
+        if len(sel) != 1 or document is None:
+            return None
+        obj = sel[0].Object
+        if (
+            is_document_object(obj, document)
+            and is_timeline_input_usable(obj, document)
+            and isinstance(
+                getattr(obj, "Proxy", None),
+                Path.Tool.ToolBit,
+            )
+        ):
+            return obj
         return None
 
     def IsActive(self):
-        tool = self.selectedTool()
-        if tool:
-            if tool.File:
-                return True
-            return self.saveAs
-        return False
+        if not can_start_document_command():
+            return False
+        # Current ToolBit assets are identified by ToolBitID/asset URI and no
+        # longer retain the legacy ``File`` document property.  Both context
+        # actions export the exact selected asset through the save dialog.
+        return self.selectedTool() is not None
 
     def Activated(self):
+        if not can_start_document_command():
+            return
         tool_obj = self.selectedTool()
         if not tool_obj:
             return

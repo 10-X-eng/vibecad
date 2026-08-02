@@ -4,10 +4,6 @@
 
 from __future__ import annotations
 
-import json
-import sys
-from types import ModuleType, SimpleNamespace
-
 import VibeCADProvider as provider
 import VibeCADSession as session
 
@@ -120,7 +116,7 @@ def _vibescript_mode_context(
                 "description": "Create a VibeScript model.",
                 "parameters": {"type": "object"},
             }
-        ]
+        ],
     }
 
 
@@ -129,14 +125,28 @@ def test_instructions_include_vibescript_guidance_only_in_vibescript_mode() -> N
     guidance = provider._vibescript_authoring_instruction(context)
     instructions = provider._provider_instructions(context)
     assert instructions.startswith(provider.VIBECAD_SYSTEM_INSTRUCTIONS)
+    assert "Default to catalog fasteners." in provider.VIBECAD_SYSTEM_INSTRUCTIONS
+    assert (
+        "A correction changes only the named geometry"
+        in provider.VIBECAD_SYSTEM_INSTRUCTIONS
+    )
+    assert "assembly retention" in provider.VIBECAD_SYSTEM_INSTRUCTIONS
     assert guidance
     assert guidance in instructions
+    assert "api.extrude" in guidance
+    assert "cross-section stays constant" in guidance
+    assert "api.loft only when" in guidance
+    assert "cross-section genuinely changes" in guidance
+
+    assembly_guidance = provider._vibescript_authoring_instruction(
+        _vibescript_mode_context("AssemblyWorkbench", "assembly")
+    )
+    assert "cross-section stays constant" not in assembly_guidance
+    assert "cross-section genuinely changes" not in assembly_guidance
 
     for other_context in (
         {},
         {"provider_tool_schemas": []},
-        {"provider_tool_schemas": [{"name": "build123d.create_model"}]},
-        {"provider_tool_schemas": [{"name": "openscad.create_model"}]},
         {"provider_tool_schemas": [{"name": "partdesign.pad"}]},
     ):
         other = provider._provider_instructions(other_context)
@@ -156,9 +166,11 @@ def test_system_blocks_carry_vibescript_guidance_only_in_vibescript_mode() -> No
     assert all(block["cache_control"] == {"type": "ephemeral"} for block in blocks)
 
     other_blocks = provider._anthropic_system_blocks(
-        {"provider_tool_schemas": [{"name": "build123d.create_model"}]}
+        {"provider_tool_schemas": [{"name": "core.set_view"}]}
     )
-    assert [block["text"] for block in other_blocks] == [provider.VIBECAD_SYSTEM_INSTRUCTIONS]
+    assert [block["text"] for block in other_blocks] == [
+        provider.VIBECAD_SYSTEM_INSTRUCTIONS
+    ]
 
 
 def test_both_wire_formats_do_not_inject_intent_memory() -> None:
@@ -196,24 +208,57 @@ def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
     for removed_contract in ("params", "new_body", "new_sketch", "sketchbuilder"):
         assert removed_contract not in text
     assert "validated inputs" in text
-    assert "scope='api'" in text
+    assert "vibescript.read_source" in text
+    assert "vibescript.read_api" in text
+    assert "complete updated source" in text
 
 
-def test_partdesign_uses_the_same_model_operating_template_as_other_domains() -> None:
-    partdesign = provider._vibescript_authoring_instruction(
-        _vibescript_mode_context()
-    )
+def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> None:
+    partdesign = provider._vibescript_authoring_instruction(_vibescript_mode_context())
     assembly = provider._vibescript_authoring_instruction(
         _vibescript_mode_context("AssemblyWorkbench", "assembly")
     )
     for instruction in (partdesign, assembly):
-        assert "scope='domain'" in instruction
-        assert "scope='api'" in instruction
-        assert "scope='program'" in instruction
-        assert "edit_source" in instruction
+        assert "vibescript.read_source" in instruction
+        assert "vibescript.read_api" in instruction
+        assert "vibescript.edit_source" in instruction
         assert "set_inputs" in instruction
         assert "reconfigure_program" in instruction
-        assert "Never call native workbench tools" in instruction
+        assert "one editable part or program" in instruction
+        assert "before writing the first program" not in instruction
+        assert "after success" not in instruction
+
+
+def test_complete_source_reads_are_not_cut_down_to_the_normal_tool_result_limit() -> (
+    None
+):
+    source = "value = 1\n" * 5000
+    visible = provider._provider_visible_tool_result(
+        {
+            "ok": True,
+            "source_id": "a" * 32,
+            "current_revision": "b" * 64,
+            "source": source,
+            "_vibecad_complete_source_result": True,
+        }
+    )
+
+    assert visible["source"] == source
+    assert "vibecad_result_boundary" not in visible
+    assert "_vibecad_complete_source_result" not in visible
+
+
+def test_partdesign_vibescript_guidance_defaults_to_native_editable_history() -> None:
+    partdesign = provider._vibescript_authoring_instruction(_vibescript_mode_context())
+    assert "editable native Body history" in partdesign
+    assert "api.sketch for planar feature profiles" in partdesign
+    assert "line_3d, arc_3d, wire" in partdesign
+    assert "nonplanar, imported, repair, or standalone geometry" in partdesign
+
+    assembly = provider._vibescript_authoring_instruction(
+        _vibescript_mode_context("AssemblyWorkbench", "assembly")
+    )
+    assert "must be an api.sketch" not in assembly
 
 
 class _ProviderContextService:
@@ -237,6 +282,9 @@ class _ProviderContextService:
     def modeling_engine(self) -> str:
         return self.engine
 
+    def _active_document(self):
+        return None
+
     def provider_debug_config(self) -> dict[str, object]:
         return {"enabled": False}
 
@@ -259,12 +307,13 @@ def _context_schema(name: str) -> dict[str, object]:
     }
 
 
-def test_vibescript_model_context_is_not_eagerly_snapshotted(
+def test_vibescript_model_context_includes_only_the_editable_source_index(
     monkeypatch,
 ) -> None:
     schemas = [
-        _context_schema("core.inspect"),
-        _context_schema("vibescript.part.create_program"),
+        _context_schema("vibescript.read_source"),
+        _context_schema("vibescript.read_api"),
+        _context_schema("vibescript.create_program"),
     ]
     monkeypatch.setattr(
         session,
@@ -275,43 +324,183 @@ def test_vibescript_model_context_is_not_eagerly_snapshotted(
         "PartWorkbench",
         {"cad_state": {}},
     )
+    editable_sources = {
+        "schema": "vibecad-editable-sources-v1",
+        "domain": "part",
+        "sources": [
+            {
+                "source_id": "a" * 32,
+                "current_revision": "b" * 64,
+                "affected_outputs": [],
+            }
+        ],
+    }
     monkeypatch.setattr(
         session.vibescript_domains,
-        "domain_context_snapshot",
+        "capture_editable_sources_snapshot",
         lambda _service, domain: {
-            "_vibecad_deferred_vibescript_domain_context": True,
+            "_vibecad_deferred_vibescript_program_index": True,
             "domain": domain,
-            "programs": [{"program_id": "a" * 32, "label": "Fixture"}],
         },
     )
     monkeypatch.setattr(
         session.vibescript_domains,
-        "complete_domain_context",
+        "complete_editable_sources_snapshot",
         lambda snapshot: {
+            **editable_sources,
             "domain": snapshot["domain"],
-            "programs": list(snapshot["programs"]),
         },
     )
 
     context = session._context_for_provider(service)
 
+    assert context["editable_sources"] == editable_sources
     assert "vibescript_domain" not in context
     assert "partdesign" not in context
-    assert "vibescript_domain" not in provider._model_visible_context(context)
+    visible = provider._model_visible_context(context)
+    assert visible["editable_sources"] == editable_sources
+    assert "vibescript_domain" not in visible
 
 
-def test_vibescript_context_is_absent_when_its_tools_are_not_surfaced(
+def test_editable_source_manifests_complete_after_document_thread_capture(
+    monkeypatch,
+) -> None:
+    schemas = [
+        _context_schema("vibescript.read_source"),
+        _context_schema("vibescript.read_api"),
+        _context_schema("vibescript.create_program"),
+    ]
+    monkeypatch.setattr(
+        session,
+        "provider_tool_schemas",
+        lambda _service, _wb, **_kwargs: schemas,
+    )
+    service = _ProviderContextService("PartWorkbench", {})
+    state = {"on_document_thread": False}
+
+    def capture(_service, domain):
+        assert state["on_document_thread"] is True
+        return {
+            "_vibecad_deferred_vibescript_program_index": True,
+            "domain": domain,
+        }
+
+    def complete(snapshot):
+        assert state["on_document_thread"] is False
+        return {
+            "schema": "vibecad-editable-sources-v1",
+            "domain": snapshot["domain"],
+            "source_count": 0,
+            "sources": [],
+        }
+
+    def dispatch(operation):
+        state["on_document_thread"] = True
+        try:
+            return operation()
+        finally:
+            state["on_document_thread"] = False
+
+    monkeypatch.setattr(
+        session.vibescript_domains,
+        "capture_editable_sources_snapshot",
+        capture,
+    )
+    monkeypatch.setattr(
+        session.vibescript_domains,
+        "complete_editable_sources_snapshot",
+        complete,
+    )
+
+    context = session._build_context_for_provider(
+        service,
+        None,
+        "build",
+        dispatch,
+    )
+
+    assert context["editable_sources"]["domain"] == "part"
+    assert context["editable_sources"]["source_count"] == 0
+
+
+def test_assembly_turn_injects_copy_ready_available_components(
+    monkeypatch,
+) -> None:
+    import VibeCADComponentCatalog as component_catalog
+
+    schemas = [
+        _context_schema("vibescript.read_source"),
+        _context_schema("vibescript.create_program"),
+        _context_schema("component_catalog.search"),
+    ]
+    monkeypatch.setattr(
+        session,
+        "provider_tool_schemas",
+        lambda _service, _wb, **_kwargs: schemas,
+    )
+    monkeypatch.setattr(
+        session.vibescript_domains,
+        "capture_editable_sources_snapshot",
+        lambda _service, domain: {
+            "_vibecad_deferred_vibescript_program_index": True,
+            "domain": domain,
+        },
+    )
+    monkeypatch.setattr(
+        session.vibescript_domains,
+        "complete_editable_sources_snapshot",
+        lambda snapshot: {
+            "schema": "vibecad-editable-sources-v1",
+            "domain": snapshot["domain"],
+            "sources": [],
+        },
+    )
+    reference = {"document_uid": "part-uid", "object_name": "Bracket"}
+    monkeypatch.setattr(
+        component_catalog,
+        "capture_component_catalog",
+        lambda _service: {
+            "owner_document_uid": "assembly-uid",
+            "project_directory": "",
+            "owner_file": "",
+            "open_document_files": [],
+            "open_candidates": [
+                {
+                    "document_label": "Parts",
+                    "object_name": "Bracket",
+                    "label": "Motor Bracket",
+                    "type_id": "PartDesign::Body",
+                    "source": "open_document",
+                    "live_validated": True,
+                    "portable": True,
+                    "reference": reference,
+                }
+            ],
+        },
+    )
+    service = _ProviderContextService("AssemblyWorkbench", {})
+
+    context = session._context_for_provider(service)
+    visible = provider._model_visible_context(context)
+
+    assert visible["available_components"]["component_count"] == 1
+    assert visible["available_components"]["components"][0]["reference"] == reference
+    assert context["_vibecad_component_catalog"]["schema"] == (
+        "vibecad-component-catalog-snapshot-v1"
+    )
+
+
+def test_vibescript_context_is_absent_when_the_workbench_has_no_surface(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
         session,
         "provider_tool_schemas",
-        lambda _service, _wb, **_kwargs: [_context_schema("core.inspect")],
+        lambda _service, _wb, **_kwargs: [_context_schema("core.set_view")],
     )
     service = _ProviderContextService(
-        "BIMWorkbench",
-        {"cad_state": {}, "bim": {"buildings": []}},
-        engine="native",
+        "TestWorkbench",
+        {"cad_state": {}, "draft": {"objects": []}},
     )
 
     context = session._context_for_provider(service)
@@ -327,8 +516,8 @@ def test_partdesign_does_not_inject_a_model_manifest_at_turn_start(
         session,
         "provider_tool_schemas",
         lambda _service, _wb, **_kwargs: [
-            _context_schema("core.inspect"),
-            _context_schema("vibescript.partdesign.create_program"),
+            _context_schema("vibescript.read_source"),
+            _context_schema("vibescript.create_program"),
         ],
     )
     service = _ProviderContextService(
@@ -340,171 +529,4 @@ def test_partdesign_does_not_inject_a_model_manifest_at_turn_start(
 
     assert "partdesign" not in context
     assert "vibescript" not in context
-
-
-class _ResponsesItem:
-    def __init__(self, payload: dict[str, object]) -> None:
-        self.payload = dict(payload)
-        for key, value in payload.items():
-            setattr(self, key, value)
-
-    def model_dump(self, *, mode: str, exclude_none: bool) -> dict[str, object]:
-        assert mode == "json"
-        assert exclude_none
-        return dict(self.payload)
-
-
-class _ResponsesStream:
-    def __init__(self, events: list[SimpleNamespace]) -> None:
-        self.events = events
-        self.closed = False
-
-    def __iter__(self):
-        return iter(self.events)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class _FakeResponses:
-    def __init__(self) -> None:
-        self.requests: list[dict[str, object]] = []
-
-    def create(self, **request):
-        self.requests.append(request)
-        if len(self.requests) == 1:
-            reasoning = _ResponsesItem(
-                {
-                    "type": "reasoning",
-                    "id": "reasoning_1",
-                    "summary": [],
-                    "encrypted_content": "opaque-reasoning-state",
-                }
-            )
-            function_call = _ResponsesItem(
-                {
-                    "type": "function_call",
-                    "id": "function_1",
-                    "call_id": "call_1",
-                    "name": "test_echo",
-                    "arguments": json.dumps({"value": "hello"}),
-                    "status": "completed",
-                }
-            )
-            completed = SimpleNamespace(
-                id="response_1",
-                output=[reasoning, function_call],
-                output_text="",
-            )
-            return _ResponsesStream(
-                [
-                    SimpleNamespace(
-                        type="response.output_item.done",
-                        item=function_call,
-                    ),
-                    SimpleNamespace(type="response.completed", response=completed),
-                ]
-            )
-        completed = SimpleNamespace(
-            id="response_2",
-            output=[
-                _ResponsesItem(
-                    {
-                        "type": "message",
-                        "id": "message_1",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": "finished",
-                                "annotations": [],
-                            }
-                        ],
-                    }
-                )
-            ],
-            output_text="finished",
-        )
-        return _ResponsesStream([SimpleNamespace(type="response.completed", response=completed)])
-
-
-class _FakeOpenAI:
-    instance = None
-
-    def __init__(self, **_kwargs) -> None:
-        self.responses = _FakeResponses()
-        _FakeOpenAI.instance = self
-
-
-class _OpenAIChildConnection:
-    def __init__(self, context: dict[str, object]) -> None:
-        self.context = context
-        self.sent: list[dict[str, object]] = []
-        self.closed = False
-
-    def send(self, message: dict[str, object]) -> None:
-        self.sent.append(message)
-
-    def recv(self) -> dict[str, object]:
-        return {
-            "type": "tool_result",
-            "result": {"ok": True, "echo": "hello"},
-            "context": self.context,
-        }
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def test_openai_tool_loop_manages_response_history_without_response_ids(
-    monkeypatch,
-) -> None:
-    openai_module = ModuleType("openai")
-    openai_module.OpenAI = _FakeOpenAI
-    monkeypatch.setitem(sys.modules, "openai", openai_module)
-    context = {
-        "provider_tool_schemas": [
-            {
-                "name": "test.echo",
-                "description": "Return the supplied value.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"value": {"type": "string"}},
-                    "required": ["value"],
-                    "additionalProperties": False,
-                },
-            }
-        ]
-    }
-    connection = _OpenAIChildConnection(context)
-
-    provider._openai_child_main(
-        connection,
-        prompt="Use the tool.",
-        context=context,
-        model="test-model",
-        api_key="test-key",
-        reasoning_effort="high",
-        timeout_seconds=None,
-        max_turns=3,
-        clear_inherited_modules=False,
-    )
-
-    requests = _FakeOpenAI.instance.responses.requests
-    assert len(requests) == 2
-    assert all("previous_response_id" not in request for request in requests)
-    assert all(request["instructions"] for request in requests)
-    assert all(request["include"] == ["reasoning.encrypted_content"] for request in requests)
-    second_input = requests[1]["input"]
-    assert [item["type"] for item in second_input[1:]] == [
-        "reasoning",
-        "function_call",
-        "function_call_output",
-    ]
-    assert second_input[1]["encrypted_content"] == "opaque-reasoning-state"
-    tool_output = json.loads(second_input[-1]["output"])
-    assert tool_output["ok"] is True
-    assert tool_output["echo"] == "hello"
-    assert any(message.get("type") == "done" for message in connection.sent)
-    assert connection.closed
+    assert context["editable_sources"]["domain"] == "partdesign"

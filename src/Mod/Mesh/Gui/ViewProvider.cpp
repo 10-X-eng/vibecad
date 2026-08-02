@@ -22,6 +22,8 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
+
 #include <QAction>
 #include <QMenu>
 #include <cmath>
@@ -56,6 +58,7 @@
 #include <QtConcurrentMap>
 
 #include <App/Document.h>
+#include <App/DocumentObserver.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Base/Sequencer.h>
@@ -67,6 +70,7 @@
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Flag.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/SoFCDB.h>
@@ -85,9 +89,12 @@
 #include <Mod/Mesh/App/Core/Trim.h>
 #include <Mod/Mesh/App/Core/Visitor.h>
 #include <Mod/Mesh/App/MeshFeature.h>
+#include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/Gui/ViewProviderMeshPy.h>
 #include <zipios++/gzipoutputstream.h>
 
+#include "CommandGuard.h"
+#include "ParametricMeshFilter.h"
 #include "SoFCIndexedFaceSet.h"
 #include "SoFCMeshObject.h"
 #include "ViewProvider.h"
@@ -827,6 +834,22 @@ bool ViewProviderMesh::setEdit(int ModNum)
     return true;
 }
 
+PROPERTY_SOURCE(MeshGui::ViewProviderMeshOutputGroup, MeshGui::ViewProviderMesh)
+
+ViewProviderMeshOutputGroup::ViewProviderMeshOutputGroup()
+{
+    Gui::ViewProviderGroupExtension::initExtension(this);
+}
+
+ViewProviderMeshOutputGroup::~ViewProviderMeshOutputGroup() = default;
+
+bool ViewProviderMeshOutputGroup::setEdit(int /*mode*/)
+{
+    // A snapshot controller has no honest editable driver. Parametric child
+    // results remain editable through their own native properties.
+    return false;
+}
+
 void ViewProviderMesh::unsetEdit(int ModNum)
 {
     if (ModNum == ViewProvider::Transform) {
@@ -941,49 +964,181 @@ void ViewProviderMesh::showOpenEdges(bool show)
 
 namespace MeshGui
 {
+static bool sameMeshGeometry(const Mesh::MeshObject& left, const Mesh::MeshObject& right)
+{
+    const auto& leftKernel = left.getKernel();
+    const auto& rightKernel = right.getKernel();
+    if (leftKernel.GetPoints() != rightKernel.GetPoints()) {
+        return false;
+    }
+    const auto& leftFacets = leftKernel.GetFacets();
+    const auto& rightFacets = rightKernel.GetFacets();
+    if (leftFacets.size() != rightFacets.size()) {
+        return false;
+    }
+    return std::ranges::equal(
+        leftFacets,
+        rightFacets,
+        [](const MeshCore::MeshFacet& first, const MeshCore::MeshFacet& second) {
+            return first._aulPoints[0] == second._aulPoints[0]
+                && first._aulPoints[1] == second._aulPoints[1]
+                && first._aulPoints[2] == second._aulPoints[2];
+        }
+    );
+}
+
 class MeshSplit
 {
 public:
+    using Batch = std::vector<std::shared_ptr<MeshSplit>>;
+
     MeshSplit(ViewProviderMesh* mesh, std::vector<SbVec2f> poly, const Gui::ViewVolumeProjection& proj)
-        : mesh(mesh)
+        : object(mesh ? mesh->getObject<Mesh::Feature>() : nullptr)
         , poly(std::move(poly))
         , proj(proj)
     {}
-    void cutMesh()
+    static void applyBatch(const std::shared_ptr<Batch>& batch, bool trim)
     {
-        Gui::Document* gui = mesh->getDocument();
-        gui->openCommand(QT_TRANSLATE_NOOP("Command", "Cut"));
-        ViewProviderMesh* copy = makeCopy();
-        mesh->cutMesh(poly, proj, false);
-        copy->cutMesh(poly, proj, true);
-        gui->commitCommand();
-        delete this;
-    }
-    void trimMesh()
-    {
-        Gui::Document* gui = mesh->getDocument();
-        gui->openCommand(QT_TRANSLATE_NOOP("Command", "Trim"));
-        ViewProviderMesh* copy = makeCopy();
-        mesh->trimMesh(poly, proj, false);
-        copy->trimMesh(poly, proj, true);
-        gui->commitCommand();
-        delete this;
-    }
-    ViewProviderMesh* makeCopy() const
-    {
-        Gui::Document* gui = mesh->getDocument();
-        App::Document* doc = gui->getDocument();
-
-        auto cpy = doc->addObject<Mesh::Feature>();
-        auto org = mesh->getObject<Mesh::Feature>();
-        cpy->Label.setValue(org->Label.getValue());
-        cpy->Mesh.setValue(org->Mesh.getValue());
-
-        return static_cast<ViewProviderMesh*>(gui->getViewProvider(cpy));
+        if (!batch || batch->empty()) {
+            return;
+        }
+        App::Document* document = batch->front()->document();
+        if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+            return;
+        }
+        try {
+            std::vector<MeshGui::ParametricMeshFilterTarget> cutOperations;
+            std::vector<MeshGui::StoredMeshEditTarget> trimOperations;
+            for (const auto& operation : *batch) {
+                if (!operation || operation->document() != document) {
+                    throw Base::RuntimeError("Mesh cut selection changed before it was applied");
+                }
+                operation->appendOperations(trim, cutOperations, trimOperations);
+            }
+            if (trim) {
+                MeshGui::createStoredMeshEdits(
+                    *document,
+                    trimOperations,
+                    QT_TRANSLATE_NOOP("Command", "Trim"),
+                    true,
+                    "PolygonTrimSplit",
+                    "Split Mesh by Polygon",
+                    "Polygon trim split"
+                );
+            }
+            else {
+                MeshGui::createParametricMeshFilters(
+                    *document,
+                    cutOperations,
+                    MeshGui::ParametricMeshFilterSpec {
+                        "Mesh::FacetEdit",
+                        "PolygonCut",
+                        "Polygon Cut Mesh",
+                        QT_TRANSLATE_NOOP("Command", "Cut"),
+                        true,
+                        true,
+                        true,
+                        "PolygonCutSplit",
+                        "Split Mesh by Polygon",
+                        "Polygon cut split",
+                    }
+                );
+            }
+        }
+        catch (const Base::Exception& error) {
+            Base::Console().error("Mesh polygon operation failed: %s\n", error.what());
+        }
+        catch (...) {
+            Base::Console().error("Mesh polygon operation failed with an unknown error\n");
+        }
     }
 
 private:
-    ViewProviderMesh* mesh;
+    void appendOperations(
+        bool trim,
+        std::vector<MeshGui::ParametricMeshFilterTarget>& cutOperations,
+        std::vector<MeshGui::StoredMeshEditTarget>& trimOperations
+    )
+    {
+        auto* feature = object.get<Mesh::Feature>();
+        if (!MeshGui::isNativeMeshInputActive(feature)) {
+            throw Base::RuntimeError("The mesh selected for splitting is no longer active");
+        }
+        Gui::Document* gui = feature && Gui::Application::Instance
+            ? Gui::Application::Instance->getDocument(document())
+            : nullptr;
+        auto* mesh = gui ? freecad_cast<ViewProviderMesh*>(gui->getViewProvider(feature)) : nullptr;
+        if (!mesh) {
+            throw Base::RuntimeError("The mesh selected for splitting no longer exists");
+        }
+        const Mesh::MeshObject source = feature->Mesh.getValue();
+        if (trim) {
+            Base::Polygon2d polygon;
+            for (const auto& point : poly) {
+                polygon.Add(Base::Vector2d(point[0], point[1]));
+            }
+            Mesh::MeshObject outer = source;
+            Mesh::MeshObject inner = source;
+            outer.trim(polygon, proj, Mesh::MeshObject::OUTER);
+            inner.trim(polygon, proj, Mesh::MeshObject::INNER);
+            if (outer.countFacets() == 0 || inner.countFacets() == 0
+                || sameMeshGeometry(outer, source) || sameMeshGeometry(inner, source)) {
+                throw Base::RuntimeError(
+                    "The selected polygon does not divide the mesh into two usable results"
+                );
+            }
+            trimOperations.push_back(
+                MeshGui::StoredMeshEditTarget {
+                    feature,
+                    std::move(outer),
+                    "PolygonTrim",
+                    "Polygon Trim Mesh",
+                    "Polygon trim outside",
+                }
+            );
+            trimOperations.push_back(
+                MeshGui::StoredMeshEditTarget {
+                    feature,
+                    std::move(inner),
+                    "PolygonTrim",
+                    "Polygon Trim Mesh",
+                    "Polygon trim inside",
+                }
+            );
+        }
+        else {
+            for (bool inner : {false, true}) {
+                std::vector<Mesh::FacetIndex> selected;
+                mesh->getFacetsFromPolygon(poly, proj, inner, selected);
+                if (selected.empty() || selected.size() == source.countFacets()) {
+                    throw Base::RuntimeError(
+                        "The selected polygon does not divide the mesh into two usable results"
+                    );
+                }
+                std::vector<long> indices(selected.begin(), selected.end());
+                cutOperations.push_back(
+                    MeshGui::ParametricMeshFilterTarget {
+                        feature,
+                        [feature, indices = std::move(indices)](App::DocumentObject& object) {
+                            auto& edit = static_cast<Mesh::FacetEdit&>(object);
+                            edit.Action.setValue("Remove Facets");
+                            edit.Indices.setValues(indices);
+                            edit.AcceptedSource.setValue(feature->Mesh.getValue());
+                        },
+                    }
+                );
+            }
+        }
+    }
+
+    App::Document* document() const
+    {
+        auto* feature = object.get<Mesh::Feature>();
+        return feature ? feature->getDocument() : nullptr;
+    }
+
+private:
+    App::DocumentObjectWeakPtrT object;
     std::vector<SbVec2f> poly;
     Gui::ViewVolumeProjection proj;
 };
@@ -1013,42 +1168,94 @@ void ViewProviderMesh::clipMeshCallback(void* ud, SoEventCallback* cb)
         ViewProviderMesh::getClassTypeId()
     );
     if (!views.empty()) {
-        Gui::Application::Instance->activeDocument()->openCommand(QT_TRANSLATE_NOOP("Command", "Cut"));
-        bool commitCommand = false;
-        for (auto it : views) {
-            auto self = static_cast<ViewProviderMesh*>(it);
-            if (self->getEditingMode() > -1) {
-                self->finishEditing();
-                SoCamera* cam = view->getSoRenderManager()->getCamera();
-                SbViewVolume vv = cam->getViewVolume();
-                Gui::ViewVolumeProjection proj(vv);
-                proj.setTransform(self->getObject<Mesh::Feature>()->Placement.getValue().toMatrix());
-                if (role == Gui::SelectionRole::Inner) {
-                    self->cutMesh(clPoly, proj, true);
-                    commitCommand = true;
-                }
-                else if (role == Gui::SelectionRole::Outer) {
-                    self->cutMesh(clPoly, proj, false);
-                    commitCommand = true;
-                }
-                else if (role == Gui::SelectionRole::Split) {
-                    // We must delay the split because it adds a new
-                    // node to the scenegraph which cannot be done while
-                    // traversing it
-                    auto func = new Gui::TimerFunction();
-                    func->setAutoDelete(true);
-                    auto split = new MeshSplit(self, clPoly, proj);
-                    func->setFunction([split]() { split->cutMesh(); });
-                    func->singleShot(0);
+        Gui::Document* guiDocument = view->getDocument();
+        App::Document* document = guiDocument ? guiDocument->getDocument() : nullptr;
+        std::vector<MeshGui::ParametricMeshFilterTarget> cutOperations;
+        auto splitBatch = std::make_shared<MeshSplit::Batch>();
+        try {
+            for (auto it : views) {
+                auto self = static_cast<ViewProviderMesh*>(it);
+                if (self->getEditingMode() > -1) {
+                    self->finishEditing();
+                    auto* source = self->getObject<Mesh::Feature>();
+                    if (!source || source->getDocument() != document
+                        || !MeshGui::isNativeMeshInputActive(source)) {
+                        throw Base::RuntimeError(
+                            "Mesh cut selection changed before it was applied"
+                        );
+                    }
+                    SoCamera* cam = view->getSoRenderManager()->getCamera();
+                    SbViewVolume vv = cam->getViewVolume();
+                    Gui::ViewVolumeProjection proj(vv);
+                    proj.setTransform(
+                        source->Placement.getValue().toMatrix()
+                    );
+                    if (role == Gui::SelectionRole::Inner || role == Gui::SelectionRole::Outer) {
+                        std::vector<Mesh::FacetIndex> selected;
+                        self->getFacetsFromPolygon(
+                            clPoly,
+                            proj,
+                            role == Gui::SelectionRole::Inner,
+                            selected
+                        );
+                        if (!selected.empty()
+                            && selected.size() < source->Mesh.getValue().countFacets()) {
+                            std::vector<long> indices(selected.begin(), selected.end());
+                            cutOperations.push_back(
+                                MeshGui::ParametricMeshFilterTarget {
+                                    source,
+                                    [source,
+                                     indices = std::move(indices)](App::DocumentObject& object) {
+                                        auto& edit = static_cast<Mesh::FacetEdit&>(object);
+                                        edit.Action.setValue("Remove Facets");
+                                        edit.Indices.setValues(indices);
+                                        edit.AcceptedSource.setValue(source->Mesh.getValue());
+                                    },
+                                }
+                            );
+                        }
+                    }
+                    else if (role == Gui::SelectionRole::Split) {
+                        splitBatch->push_back(std::make_shared<MeshSplit>(self, clPoly, proj));
+                    }
                 }
             }
         }
-
-        if (commitCommand) {
-            Gui::Application::Instance->activeDocument()->commitCommand();
+        catch (const Base::Exception& error) {
+            Base::Console().error("Mesh polygon cut failed: %s\n", error.what());
+            view->redraw();
+            return;
         }
-        else {
-            Gui::Application::Instance->activeDocument()->abortCommand();
+        catch (...) {
+            Base::Console().error("Mesh polygon cut failed with an unknown error\n");
+            view->redraw();
+            return;
+        }
+
+        if (!cutOperations.empty()) {
+            try {
+                MeshGui::createParametricMeshFilters(
+                    *document,
+                    cutOperations,
+                    MeshGui::ParametricMeshFilterSpec {
+                        "Mesh::FacetEdit",
+                        "PolygonCut",
+                        "Polygon Cut Mesh",
+                        QT_TRANSLATE_NOOP("Command", "Cut"),
+                    }
+                );
+            }
+            catch (const Base::Exception& error) {
+                Base::Console().error("The mesh cut could not be committed: %s\n", error.what());
+            }
+        }
+        if (!splitBatch->empty()) {
+            // Adding result nodes during scenegraph traversal is unsafe,
+            // so execute the entire split as one delayed transaction.
+            auto func = new Gui::TimerFunction();
+            func->setAutoDelete(true);
+            func->setFunction([splitBatch]() { MeshSplit::applyBatch(splitBatch, false); });
+            func->singleShot(0);
         }
 
         view->redraw();
@@ -1079,42 +1286,90 @@ void ViewProviderMesh::trimMeshCallback(void* ud, SoEventCallback* cb)
         ViewProviderMesh::getClassTypeId()
     );
     if (!views.empty()) {
-        Gui::Application::Instance->activeDocument()->openCommand(QT_TRANSLATE_NOOP("Command", "Trim"));
-        bool commitCommand = false;
-        for (auto it : views) {
-            auto self = static_cast<ViewProviderMesh*>(it);
-            if (self->getEditingMode() > -1) {
-                self->finishEditing();
-                SoCamera* cam = view->getSoRenderManager()->getCamera();
-                SbViewVolume vv = cam->getViewVolume();
-                Gui::ViewVolumeProjection proj(vv);
-                proj.setTransform(self->getObject<Mesh::Feature>()->Placement.getValue().toMatrix());
-                if (role == Gui::SelectionRole::Inner) {
-                    self->trimMesh(clPoly, proj, true);
-                    commitCommand = true;
-                }
-                else if (role == Gui::SelectionRole::Outer) {
-                    self->trimMesh(clPoly, proj, false);
-                    commitCommand = true;
-                }
-                else if (role == Gui::SelectionRole::Split) {
-                    // We must delay the split because it adds a new
-                    // node to the scenegraph which cannot be done while
-                    // traversing it
-                    auto func = new Gui::TimerFunction();
-                    func->setAutoDelete(true);
-                    auto split = new MeshSplit(self, clPoly, proj);
-                    func->setFunction([split]() { split->trimMesh(); });
-                    func->singleShot(0);
+        Gui::Document* guiDocument = view->getDocument();
+        App::Document* document = guiDocument ? guiDocument->getDocument() : nullptr;
+        std::vector<MeshGui::StoredMeshEditTarget> trimOperations;
+        auto splitBatch = std::make_shared<MeshSplit::Batch>();
+        try {
+            for (auto it : views) {
+                auto self = static_cast<ViewProviderMesh*>(it);
+                if (self->getEditingMode() > -1) {
+                    self->finishEditing();
+                    auto* source = self->getObject<Mesh::Feature>();
+                    if (!source || source->getDocument() != document
+                        || !MeshGui::isNativeMeshInputActive(source)) {
+                        throw Base::RuntimeError(
+                            "Mesh trim selection changed before it was applied"
+                        );
+                    }
+                    SoCamera* cam = view->getSoRenderManager()->getCamera();
+                    SbViewVolume vv = cam->getViewVolume();
+                    Gui::ViewVolumeProjection proj(vv);
+                    proj.setTransform(
+                        source->Placement.getValue().toMatrix()
+                    );
+                    if (role == Gui::SelectionRole::Inner || role == Gui::SelectionRole::Outer) {
+                        Mesh::MeshObject accepted = source->Mesh.getValue();
+                        Base::Polygon2d polygon;
+                        for (const auto& point : clPoly) {
+                            polygon.Add(Base::Vector2d(point[0], point[1]));
+                        }
+                        accepted.trim(
+                            polygon,
+                            proj,
+                            role == Gui::SelectionRole::Inner ? Mesh::MeshObject::INNER
+                                                              : Mesh::MeshObject::OUTER
+                        );
+                        if (accepted.countFacets() > 0
+                            && !sameMeshGeometry(accepted, source->Mesh.getValue())) {
+                            trimOperations.push_back(
+                                MeshGui::StoredMeshEditTarget {
+                                    source,
+                                    std::move(accepted),
+                                    "PolygonTrim",
+                                    "Polygon Trim Mesh",
+                                    role == Gui::SelectionRole::Inner ? "Polygon trim inside"
+                                                                      : "Polygon trim outside",
+                                }
+                            );
+                        }
+                    }
+                    else if (role == Gui::SelectionRole::Split) {
+                        splitBatch->push_back(std::make_shared<MeshSplit>(self, clPoly, proj));
+                    }
                 }
             }
         }
-
-        if (commitCommand) {
-            Gui::Application::Instance->activeDocument()->commitCommand();
+        catch (const Base::Exception& error) {
+            Base::Console().error("Mesh polygon trim failed: %s\n", error.what());
+            view->redraw();
+            return;
         }
-        else {
-            Gui::Application::Instance->activeDocument()->abortCommand();
+        catch (...) {
+            Base::Console().error("Mesh polygon trim failed with an unknown error\n");
+            view->redraw();
+            return;
+        }
+
+        if (!trimOperations.empty()) {
+            try {
+                MeshGui::createStoredMeshEdits(
+                    *document,
+                    trimOperations,
+                    QT_TRANSLATE_NOOP("Command", "Trim")
+                );
+            }
+            catch (const Base::Exception& error) {
+                Base::Console().error("The mesh trim could not be committed: %s\n", error.what());
+            }
+        }
+        if (!splitBatch->empty()) {
+            // Adding result nodes during scenegraph traversal is unsafe,
+            // so execute the entire split as one delayed transaction.
+            auto func = new Gui::TimerFunction();
+            func->setAutoDelete(true);
+            func->setFunction([splitBatch]() { MeshSplit::applyBatch(splitBatch, true); });
+            func->singleShot(0);
         }
 
         view->redraw();
@@ -1163,9 +1418,19 @@ void ViewProviderMesh::partMeshCallback(void* ud, SoEventCallback* cb)
     toolMesh = aFaces;
     Base::Sequencer().setLocked(locked);
 
-    // Open a transaction object for the undo/redo stuff
-    Gui::Application::Instance->activeDocument()->openCommand(QT_TRANSLATE_NOOP("Command", "Split"));
-
+    Gui::Document* guiDocument = view->getDocument();
+    App::Document* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+        for (auto* provider : view->getViewProvidersOfType(ViewProviderMesh::getClassTypeId())) {
+            auto* meshProvider = static_cast<ViewProviderMesh*>(provider);
+            if (meshProvider->getEditingMode() > -1) {
+                meshProvider->finishEditing();
+            }
+        }
+        return;
+    }
+    Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Split"));
+    bool changed = false;
     try {
         std::vector<Gui::ViewProvider*> views = view->getViewProvidersOfType(
             ViewProviderMesh::getClassTypeId()
@@ -1184,15 +1449,32 @@ void ViewProviderMesh::partMeshCallback(void* ud, SoEventCallback* cb)
                 else {
                     that->splitMesh(copyToolMesh, cNormal, false);
                 }
+                changed = true;
             }
         }
     }
+    catch (const Base::Exception& error) {
+        Base::Console().error("Mesh split failed: %s\n", error.what());
+        (void)transaction.abort();
+        view->redraw();
+        return;
+    }
     catch (...) {
-        // Don't rethrow any exception
+        Base::Console().error("Mesh split failed with an unknown error\n");
+        (void)transaction.abort();
+        view->redraw();
+        return;
     }
 
-    // Close the transaction
-    Gui::Application::Instance->activeDocument()->commitCommand();
+    if (changed) {
+        document->recompute();
+        if (!transaction.commit()) {
+            Base::Console().error("The mesh split could not be committed\n");
+        }
+    }
+    else {
+        (void)transaction.abort();
+    }
     view->redraw();
 }
 
@@ -1238,9 +1520,19 @@ void ViewProviderMesh::segmMeshCallback(void* ud, SoEventCallback* cb)
     toolMesh = aFaces;
     Base::Sequencer().setLocked(locked);
 
-    // Open a transaction object for the undo/redo stuff
-    Gui::Application::Instance->activeDocument()->openCommand(QT_TRANSLATE_NOOP("Command", "Segment"));
-
+    Gui::Document* guiDocument = view->getDocument();
+    App::Document* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+        for (auto* provider : view->getViewProvidersOfType(ViewProviderMesh::getClassTypeId())) {
+            auto* meshProvider = static_cast<ViewProviderMesh*>(provider);
+            if (meshProvider->getEditingMode() > -1) {
+                meshProvider->finishEditing();
+            }
+        }
+        return;
+    }
+    Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Segment"));
+    bool changed = false;
     try {
         std::vector<Gui::ViewProvider*> views = view->getViewProvidersOfType(
             ViewProviderMesh::getClassTypeId()
@@ -1259,15 +1551,32 @@ void ViewProviderMesh::segmMeshCallback(void* ud, SoEventCallback* cb)
                 else {
                     that->segmentMesh(copyToolMesh, cNormal, false);
                 }
+                changed = true;
             }
         }
     }
+    catch (const Base::Exception& error) {
+        Base::Console().error("Mesh segmentation failed: %s\n", error.what());
+        (void)transaction.abort();
+        view->redraw();
+        return;
+    }
     catch (...) {
-        // Don't rethrow any exception
+        Base::Console().error("Mesh segmentation failed with an unknown error\n");
+        (void)transaction.abort();
+        view->redraw();
+        return;
     }
 
-    // Close the transaction
-    Gui::Application::Instance->activeDocument()->commitCommand();
+    if (changed) {
+        document->recompute();
+        if (!transaction.commit()) {
+            Base::Console().error("The mesh segmentation could not be committed\n");
+        }
+    }
+    else {
+        (void)transaction.abort();
+    }
     view->redraw();
 }
 
@@ -1594,6 +1903,10 @@ void ViewProviderMesh::cutMesh(
     // Get the facet indices inside the tool mesh
     std::vector<Mesh::FacetIndex> indices;
     getFacetsFromPolygon(polygon, proj, inner, indices);
+    const auto facetCount = getMeshObject().countFacets();
+    if (indices.empty() || indices.size() == facetCount) {
+        return;
+    }
     removeFacets(indices);
 }
 
@@ -1604,7 +1917,7 @@ void ViewProviderMesh::trimMesh(
 )
 {
     Mesh::PropertyMeshKernel& prop = getMeshProperty();
-    Mesh::MeshObject* mesh = prop.startEditing();
+    Mesh::MeshObject mesh = prop.getValue();
 
     Base::Polygon2d polygon2d;
     for (auto it : polygon) {
@@ -1612,8 +1925,11 @@ void ViewProviderMesh::trimMesh(
     }
 
     Mesh::MeshObject::CutType type = inner ? Mesh::MeshObject::INNER : Mesh::MeshObject::OUTER;
-    mesh->trim(polygon2d, proj, type);
-    prop.finishEditing();
+    mesh.trim(polygon2d, proj, type);
+    if (mesh.countFacets() == 0) {
+        return;
+    }
+    prop.setValue(mesh);
     getObject()->purgeTouched();
 }
 
@@ -1643,10 +1959,14 @@ void ViewProviderMesh::splitMesh(
         indices = complementary;
     }
 
+    if (indices.empty() || indices.size() == meshPropKernel.CountFacets()) {
+        return;
+    }
+
     // Remove the facets from the mesh and create a new one
     Mesh::MeshObject* kernel = meshProp.getValue().meshFromSegment(indices);
     removeFacets(indices);
-    auto doc = App::GetApplication().getActiveDocument();
+    auto* doc = getObject()->getDocument();
     const char* name = pcObject->getNameInDocument();
     auto splitMesh = doc->addObject<Mesh::Feature>(name);
     // Note: deletes also kernel
@@ -1680,9 +2000,15 @@ void ViewProviderMesh::segmentMesh(
         indices = complementary;
     }
 
-    Mesh::MeshObject* kernel = meshProp.startEditing();
-    kernel->addSegment(indices);
-    meshProp.finishEditing();
+    if (indices.empty() || indices.size() == meshPropKernel.CountFacets()) {
+        return;
+    }
+
+    Mesh::MeshObject segmented = meshProp.getValue();
+    segmented.addSegment(indices);
+    // addSegment() created meaningful segment metadata; assigning only the
+    // kernel would immediately discard it.
+    meshProp.setValue(segmented);
     getObject()->purgeTouched();
 }
 
@@ -1822,6 +2148,12 @@ void ViewProviderMesh::fillHoleCallback(void* ud, SoEventCallback* cb)
                 // get the boundary to the picked facet
                 Mesh::FacetIndex uFacet = static_cast<const SoFaceDetail*>(detail)->getFaceIndex();
                 that->fillHole(uFacet);
+                if (!that->isVisible()) {
+                    view->setEditing(false);
+                    view->setSelectionEnabled(true);
+                    view->getWidget()->setCursor(QCursor(Qt::ArrowCursor));
+                    view->removeEventCallback(SoMouseButtonEvent::getClassTypeId(), fillHoleCallback, ud);
+                }
             }
         }
     }
@@ -1866,17 +2198,88 @@ void ViewProviderMesh::markPartCallback(void* ud, SoEventCallback* cb)
                 }
             }
             else if (rm == id) {
-                Gui::Application::Instance->activeDocument()->openCommand(
-                    QT_TRANSLATE_NOOP("Command", "Delete")
-                );
                 std::vector<ViewProvider*> views = view->getViewProvidersOfType(
                     ViewProviderMesh::getClassTypeId()
                 );
-                for (auto view : views) {
-                    static_cast<ViewProviderMesh*>(view)->deleteSelection();
+                const bool hasSelectedFaces = std::ranges::any_of(views, [](ViewProvider* provider) {
+                    auto* mesh = static_cast<ViewProviderMesh*>(provider);
+                    return mesh->hasSelection();
+                });
+                if (!hasSelectedFaces) {
+                    return;
                 }
-                view->redraw();
-                Gui::Application::Instance->activeDocument()->commitCommand();
+                Gui::Document* guiDocument = view->getDocument();
+                App::Document* document = guiDocument ? guiDocument->getDocument() : nullptr;
+                if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+                    return;
+                }
+                std::vector<MeshGui::ParametricMeshFilterTarget> operations;
+                for (auto* provider : views) {
+                    auto* meshView = static_cast<ViewProviderMesh*>(provider);
+                    auto* source = meshView->getObject<Mesh::Feature>();
+                    std::vector<Mesh::FacetIndex> selected;
+                    if (source) {
+                        source->Mesh.getValue().getFacetsFromSelection(selected);
+                    }
+                    if (selected.empty()) {
+                        continue;
+                    }
+                    if (source->getDocument() != document
+                        || !MeshGui::isNativeMeshInputActive(source)) {
+                        for (auto* candidate : views) {
+                            static_cast<ViewProviderMesh*>(candidate)->clearSelection();
+                        }
+                        view->setEditing(false);
+                        view->setSelectionEnabled(true);
+                        view->removeEventCallback(
+                            SoMouseButtonEvent::getClassTypeId(),
+                            markPartCallback,
+                            ud
+                        );
+                        Base::Console().warning(
+                            "Mesh facet deletion was cancelled because its source is no longer "
+                            "active\n"
+                        );
+                        return;
+                    }
+                    std::vector<long> indices(selected.begin(), selected.end());
+                    meshView->clearSelection();
+                    operations.push_back(
+                        MeshGui::ParametricMeshFilterTarget {
+                            source,
+                            [source, indices = std::move(indices)](App::DocumentObject& object) {
+                                auto& edit = static_cast<Mesh::FacetEdit&>(object);
+                                edit.Action.setValue("Remove Facets");
+                                edit.Indices.setValues(indices);
+                                edit.AcceptedSource.setValue(source->Mesh.getValue());
+                            },
+                        }
+                    );
+                }
+                try {
+                    MeshGui::createParametricMeshFilters(
+                        *document,
+                        operations,
+                        MeshGui::ParametricMeshFilterSpec {
+                            "Mesh::FacetEdit",
+                            "RemoveFacets",
+                            "Remove Mesh Facets",
+                            QT_TRANSLATE_NOOP("Command", "Delete"),
+                            true,
+                            false,
+                        }
+                    );
+                    view->setEditing(false);
+                    view->setSelectionEnabled(true);
+                    view->removeEventCallback(SoMouseButtonEvent::getClassTypeId(), markPartCallback, ud);
+                    view->redraw();
+                }
+                catch (const Base::Exception& error) {
+                    Base::Console().error(
+                        "The mesh deletion could not be committed: %s\n",
+                        error.what()
+                    );
+                }
             }
         }
         else if (
@@ -1938,6 +2341,11 @@ void ViewProviderMesh::faceInfo(Mesh::FacetIndex uFacet)
 
 void ViewProviderMesh::fillHole(Mesh::FacetIndex uFacet)
 {
+    auto* source = getObject<Mesh::Feature>();
+    if (!MeshGui::isNativeMeshInputActive(source)) {
+        return;
+    }
+
     // get parameter from user settings
     Base::Reference<ParameterGrp> hGrp = Gui::WindowParameter::getDefaultParameter()->GetGroup(
         "Mod/Mesh"
@@ -1995,15 +2403,64 @@ void ViewProviderMesh::fillHole(Mesh::FacetIndex uFacet)
         return;  // nothing to do
     }
 
-    // add the facets to the mesh and open a transaction object for the undo/redo stuff
-    Gui::Application::Instance->activeDocument()->openCommand(
-        QT_TRANSLATE_NOOP("Command", "Fill hole")
-    );
+    App::Document* document = source->getDocument();
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+        return;
+    }
     auto& prop = getMeshProperty();
-    Mesh::MeshObject* kernel = prop.startEditing();
-    kernel->addFacets(newFacets, newPoints, true);
-    prop.finishEditing();
-    Gui::Application::Instance->activeDocument()->commitCommand();
+    const Mesh::MeshObject original = prop.getValue();
+    Mesh::MeshObject filled = original;
+    filled.addFacets(newFacets, newPoints, true);
+    if (filled.countFacets() - original.countFacets() != newFacets.size()) {
+        return;
+    }
+
+    // MeshKernel inserts proposed points before it filters invalid facets.
+    // Reject a partial result if that filtering left any newly-added point
+    // unreferenced; committing such a result would corrupt the mesh even
+    // though at least one triangle happened to be accepted.
+    const unsigned long originalPointCount = original.countPoints();
+    const unsigned long appendedPointCount = filled.countPoints() - originalPointCount;
+    std::vector<bool> appendedPointUsed(appendedPointCount, false);
+    const auto& acceptedFacets = filled.getKernel().GetFacets();
+    for (unsigned long facetIndex = original.countFacets(); facetIndex < acceptedFacets.size();
+         ++facetIndex) {
+        for (Mesh::PointIndex pointIndex : acceptedFacets[facetIndex]._aulPoints) {
+            if (pointIndex >= originalPointCount) {
+                appendedPointUsed[pointIndex - originalPointCount] = true;
+            }
+        }
+    }
+    if (std::ranges::any_of(appendedPointUsed, [](bool used) { return !used; })) {
+        return;
+    }
+
+    try {
+        MeshGui::createParametricMeshFilters(
+            *document,
+            {
+                MeshGui::ParametricMeshFilterTarget {
+                    source,
+                    [source, uFacet, level](App::DocumentObject& object) {
+                        auto& edit = static_cast<Mesh::FacetEdit&>(object);
+                        edit.Action.setValue("Fill Hole");
+                        edit.SeedFacet.setValue(static_cast<long>(uFacet));
+                        edit.Level.setValue(level);
+                        edit.AcceptedSource.setValue(source->Mesh.getValue());
+                    },
+                },
+            },
+            MeshGui::ParametricMeshFilterSpec {
+                "Mesh::FacetEdit",
+                "FillHole",
+                "Fill Mesh Hole",
+                QT_TRANSLATE_NOOP("Command", "Fill hole"),
+            }
+        );
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error("The mesh hole could not be filled: %s\n", error.what());
+    }
 }
 
 void ViewProviderMesh::setFacetTransparency(const std::vector<float>& facetTransparency)
@@ -2046,7 +2503,8 @@ void ViewProviderMesh::removeFacets(const std::vector<Mesh::FacetIndex>& facets)
 {
     // Get the attached mesh property
     Mesh::PropertyMeshKernel& meshProp = getMeshProperty();
-    Mesh::MeshObject* kernel = meshProp.startEditing();
+    Mesh::MeshObject edited = meshProp.getValue();
+    Mesh::MeshObject* kernel = &edited;
 
     // get the colour property if there
     App::PropertyColorList* prop = getColorProperty();
@@ -2096,7 +2554,7 @@ void ViewProviderMesh::removeFacets(const std::vector<Mesh::FacetIndex>& facets)
 
     // Remove the facets from the mesh and open a transaction object for the undo/redo stuff
     kernel->deleteFacets(facets);
-    meshProp.finishEditing();
+    meshProp.setValue(edited);
     pcObject->purgeTouched();
 
     Coloring.setValue(ok);
@@ -2266,7 +2724,39 @@ void ViewProviderMesh::deleteSelection()
     if (!indices.empty()) {
         rMesh.clearFacetSelection();
         unhighlightSelection();
-        removeFacets(indices);
+        auto* source = getObject<Mesh::Feature>();
+        App::Document* document = source ? source->getDocument() : nullptr;
+        if (!source || !MeshGui::hasCleanNativeMutationBoundary(document)) {
+            return;
+        }
+        std::vector<long> persisted(indices.begin(), indices.end());
+        try {
+            MeshGui::createParametricMeshFilters(
+                *document,
+                {
+                    MeshGui::ParametricMeshFilterTarget {
+                        source,
+                        [source, persisted = std::move(persisted)](App::DocumentObject& object) {
+                            auto& edit = static_cast<Mesh::FacetEdit&>(object);
+                            edit.Action.setValue("Remove Facets");
+                            edit.Indices.setValues(persisted);
+                            edit.AcceptedSource.setValue(source->Mesh.getValue());
+                        },
+                    },
+                },
+                MeshGui::ParametricMeshFilterSpec {
+                    "Mesh::FacetEdit",
+                    "RemoveFacets",
+                    "Remove Mesh Facets",
+                    QT_TRANSLATE_NOOP("Command", "Delete"),
+                    true,
+                    false,
+                }
+            );
+        }
+        catch (const Base::Exception& error) {
+            Base::Console().error("Mesh facet removal failed: %s\n", error.what());
+        }
     }
 }
 

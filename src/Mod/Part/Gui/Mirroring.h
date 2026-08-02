@@ -24,6 +24,9 @@
 
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
 
@@ -31,6 +34,7 @@ class QTreeWidgetItem;
 
 namespace App
 {
+class Document;
 class DocumentObject;
 class Property;
 }  // namespace App
@@ -48,6 +52,10 @@ public:
     bool accept();
     bool reject();
     void setSelectionGate();
+    const std::vector<App::DocumentObject*>& lastAppliedResults() const
+    {
+        return appliedResults;
+    }
 
 protected:
     void changeEvent(QEvent* e) override;
@@ -59,8 +67,11 @@ private:
 private:
     void onSelectionChanged(const Gui::SelectionChanges& msg) override;
     QString document;
+    App::Document* documentAddress {nullptr};
+    std::string documentUid;
     std::unique_ptr<Ui_Mirroring> ui;
     bool filterSelection;
+    std::vector<App::DocumentObject*> appliedResults;
 };
 
 class TaskMirroring: public Gui::TaskView::TaskDialog

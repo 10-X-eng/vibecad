@@ -731,6 +731,18 @@ protected:
   /// The container for dynamic properties.
   DynamicProperty dynamicProps;
 
+  /**
+   * Remove a dynamic property while replaying a transaction.
+   *
+   * Transaction replay must restore the exact pre-transaction state even
+   * when the property was locked after creation. Concrete removal paths call
+   * this only after performing their normal container-specific bookkeeping.
+   */
+  bool removeDynamicPropertyForTransaction(const char* name)
+  {
+      return dynamicProps.removeDynamicProperty(name, true);
+  }
+
 private:
   std::string _propertyPrefix;
   static PropertyData propertyData;

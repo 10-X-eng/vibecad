@@ -176,6 +176,7 @@ PyMOD_INIT_FUNC(MeshGui)
     MeshGui::SoPolygon                          ::initClass();
     MeshGui::PropertyMeshKernelItem             ::init();
     MeshGui::ViewProviderMesh                   ::init();
+    MeshGui::ViewProviderMeshOutputGroup        ::init();
     MeshGui::ViewProviderMeshObject             ::init();
     MeshGui::ViewProviderIndexedFaceSet         ::init();
     MeshGui::ViewProviderMeshFaceSet            ::init();

@@ -198,6 +198,8 @@ SET(Features_SRCS
     FeatureChamfer.h
     FeatureCompound.cpp
     FeatureCompound.h
+    FeatureCrossSections.cpp
+    FeatureCrossSections.h
     FeatureExtrusion.cpp
     FeatureExtrusion.h
     FeatureScale.cpp

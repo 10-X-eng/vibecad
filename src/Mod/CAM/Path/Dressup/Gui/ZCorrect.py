@@ -22,8 +22,16 @@
 import FreeCAD
 import FreeCADGui
 import Path
+import Path.Base.Util as PathUtil
 import PathScripts.PathUtils as PathUtils
 import Path.Dressup.Utils as PathDressup
+from Path.CommandBoundary import (
+    TaskDocumentTransaction,
+    begin_task_launch,
+    can_start_document_command,
+    is_document_object,
+    open_timeline_mode_zero_editor,
+)
 
 from PySide import QtGui
 from PySide.QtCore import QT_TRANSLATE_NOOP
@@ -174,6 +182,9 @@ class ObjectDressup:
         return
 
     def execute(self, obj):
+        if not PathUtil.activeForOp(obj):
+            obj.Path = Path.Path()
+            return
         if not obj.Base or not obj.Base.isDerivedFrom("Path::Feature") or not obj.Base.Path:
             obj.Path = Path.Path()
             return
@@ -248,11 +259,25 @@ class ObjectDressup:
 
 
 class TaskPanel:
-    def __init__(self, obj):
+    def __init__(self, obj, transaction=None, viewProvider=None):
         self.obj = obj
+        if transaction is None:
+            transaction = TaskDocumentTransaction(
+                obj,
+                "Edit Z Correction Dress-up",
+            )
+        elif transaction.document is not obj.Document:
+            raise RuntimeError(
+                "The Z Correction task transaction belongs to another document"
+            )
+        self.transaction = transaction
+        self.document = self.transaction.document
+        self.viewProvider = viewProvider
         self.form = FreeCADGui.PySideUic.loadUi(":/panels/ZCorrectEdit.ui")
-        FreeCAD.ActiveDocument.openTransaction("Edit Z Correction Dress-up")
-        self.interpshape = FreeCAD.ActiveDocument.addObject("Part::Feature", "InterpolationSurface")
+        self.interpshape = self.document.addObject(
+            "Part::Feature",
+            "InterpolationSurface",
+        )
         self.interpshape.Shape = obj.interpSurface
         self.interpshape.ViewObject.Transparency = 60
         self.interpshape.ViewObject.ShapeColor = (1.00000, 1.00000, 0.01961)
@@ -261,40 +286,69 @@ class TaskPanel:
         self.interpshape.Placement.Base.z = stock.Shape.BoundBox.ZMax
 
     def reject(self):
-        FreeCAD.ActiveDocument.abortTransaction()
-        FreeCADGui.Control.closeDialog()
-        FreeCAD.ActiveDocument.recompute()
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
+        self.transaction.abort()
+        self.clearTaskPanel()
+        self.transaction.close_dialog()
+        self.transaction.recompute_after_close()
+        return True
 
     def accept(self):
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
         self.getFields()
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCAD.ActiveDocument.removeObject(self.interpshape.Name)
-        FreeCADGui.ActiveDocument.resetEdit()
-        FreeCADGui.Control.closeDialog()
-        FreeCAD.ActiveDocument.recompute()
-        FreeCAD.ActiveDocument.recompute()
+        if self.document.getObject(self.interpshape.Name) is self.interpshape:
+            self.document.removeObject(self.interpshape.Name)
+        self.transaction.commit((self.obj,))
+        self.clearTaskPanel()
+        self.transaction.reset_edit()
+        self.transaction.close_dialog()
+        self.transaction.recompute_after_close()
+        return True
+
+    def clearTaskPanel(self):
+        if (
+            self.viewProvider is not None
+            and self.viewProvider.panel is self
+        ):
+            self.viewProvider.panel = None
+
+    def closeDeletedDocumentTask(self):
+        if self.viewProvider is not None:
+            self.viewProvider.panel = None
+        self.interpshape = None
+        self.transaction.close_dialog()
 
     def getFields(self):
         self.obj.Proxy.execute(self.obj)
 
     def updateUI(self):
         if Path.Log.getLevel(LOG_MODULE) == Path.Log.Level.DEBUG:
-            for obj in FreeCAD.ActiveDocument.Objects:
+            for obj in self.document.Objects:
                 if obj.Name.startswith("Shape"):
-                    FreeCAD.ActiveDocument.removeObject(obj.Name)
+                    self.document.removeObject(obj.Name)
             print("object name %s" % self.obj.Name)
             if hasattr(self.obj.Proxy, "shapes"):
                 Path.Log.info("showing shapes attribute")
                 for shapes in self.obj.Proxy.shapes.itervalues():
                     for shape in shapes:
-                        Part.show(shape)
+                        debug_shape = self.document.addObject(
+                            "Part::Feature",
+                            "Shape",
+                        )
+                        debug_shape.Shape = shape
             else:
                 Path.Log.info("no shapes attribute found")
 
     def updateModel(self):
+        if not self.transaction.is_open():
+            return
         self.getFields()
         self.updateUI()
-        FreeCAD.ActiveDocument.recompute()
+        self.transaction.recompute((self.obj,))
 
     def setFields(self):
         self.form.ProbePointFileName.setText(self.obj.probefile)
@@ -323,10 +377,12 @@ class TaskPanel:
 
 class ViewProviderDressup:
     def __init__(self, vobj):
+        self.panel = None
         vobj.Proxy = self
 
     def attach(self, vobj):
         self.obj = vobj.Object
+        self.panel = None
         if self.obj and self.obj.Base:
             for i in self.obj.Base.InList:
                 if hasattr(i, "Group"):
@@ -340,15 +396,42 @@ class ViewProviderDressup:
     def claimChildren(self):
         return [self.obj.Base]
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
+    def doubleClicked(self, vobj=None):
+        return open_timeline_mode_zero_editor(self.obj)
+
     def setEdit(self, vobj, mode=0):
         if mode == 1:
             FreeCADGui.runCommand("Std_TransformManip")
         elif mode == 0:
-            FreeCADGui.Control.closeDialog()
-            panel = TaskPanel(vobj.Object)
-            FreeCADGui.Control.showDialog(panel)
-            panel.setupUi()
+            transaction = TaskDocumentTransaction(
+                vobj.Object,
+                "Edit Z Correction Dress-up",
+            )
+            try:
+                panel = TaskPanel(
+                    vobj.Object,
+                    transaction=transaction,
+                    viewProvider=self,
+                )
+                self.panel = panel
+                transaction.close_dialog()
+                transaction.show_dialog(panel)
+                panel.setupUi()
+            except Exception:
+                self.panel = None
+                transaction.close_dialog()
+                if transaction.owns_transaction():
+                    transaction.abort()
+                raise
         return True
+
+    def unsetEdit(self, vobj, mode=0):
+        if mode == 0 and self.panel is not None:
+            self.panel.reject()
+        return False
 
     def dumps(self):
         return None
@@ -358,17 +441,112 @@ class ViewProviderDressup:
 
     def onDelete(self, arg1=None, arg2=None):
         """this makes sure that the base operation is added back to the project and visible"""
-        FreeCADGui.ActiveDocument.getObject(arg1.Object.Base.Name).Visibility = True
+        gui_document = FreeCADGui.getDocument(
+            arg1.Object.Document.Name
+        )
+        if PathUtil.shouldRestoreTimelineReplacedInput(
+            arg1.Object,
+            arg1.Object.Base,
+        ):
+            gui_document.getObject(
+                arg1.Object.Base.Name
+            ).Visibility = True
         job = PathUtils.findParentJob(arg1.Object)
         job.Proxy.addOperation(arg1.Object.Base)
         arg1.Object.Base = None
         return True
 
     def getIcon(self):
-        if getattr(PathDressup.baseOp(self.obj), "Active", True):
+        if PathUtil.activeForOp(self.obj):
             return ":/icons/CAM_Dressup.svg"
         else:
             return ":/icons/CAM_OpActive.svg"
+
+
+def _validated_base(base, document):
+    if (
+        not is_document_object(base, document)
+        or not base.isDerivedFrom("Path::Feature")
+        or not PathDressup.isOp(base)
+    ):
+        return None
+
+    job = PathUtils.findParentJob(base)
+    if (
+        not is_document_object(job, document)
+        or getattr(job, "Operations", None) is None
+        or not hasattr(getattr(job, "Proxy", None), "addOperation")
+    ):
+        return None
+    return job
+
+
+def _validate_result(
+    document,
+    result,
+    result_name,
+    result_id,
+    base,
+    base_name,
+    base_id,
+    job,
+    job_name,
+    job_id,
+    base_was_visible,
+):
+    replaced_inputs = (
+        [base]
+        if base_was_visible
+        else []
+    )
+    if (
+        document.getObject(result_name) is not result
+        or document.getObject(result_id) is not result
+        or int(result.ID) != result_id
+        or document.getObject(base_name) is not base
+        or document.getObject(base_id) is not base
+        or int(base.ID) != base_id
+        or document.getObject(job_name) is not job
+        or document.getObject(job_id) is not job
+        or int(job.ID) != job_id
+        or result.Document is not document
+        or not result.isDerivedFrom("Path::Feature")
+        or not isinstance(getattr(result, "Proxy", None), ObjectDressup)
+        or not isinstance(
+            getattr(result.ViewObject, "Proxy", None),
+            ViewProviderDressup,
+        )
+        or result.Base is not base
+        or PathUtils.findParentJob(result) is not job
+        or result not in job.Operations.Group
+        or PathUtil.timelineParentJob(result) is not job
+        or "VibeCADTimelineReplacedInputs" not in result.PropertiesList
+        or list(result.VibeCADTimelineReplacedInputs) != replaced_inputs
+        or str(result.VibeCADTimelineRole) != "operation"
+        or not result.isValid()
+        or bool(base.ViewObject.Visibility)
+        or not document.isProvisionallyEnrolledInTimelineByCurrentTransaction(
+            result
+        )
+    ):
+        raise RuntimeError(
+            "The Z Correction CAM dress-up was not created as one exact "
+            "replacement operation"
+        )
+
+
+def createDressupFeature(document):
+    """Create and initialize one exact Z Correction dress-up feature."""
+    if document is None:
+        raise RuntimeError(
+            "A document is required for a Z Correction dress-up"
+        )
+    result = document.addObject(
+        "Path::FeaturePython",
+        "ZCorrectDressup",
+    )
+    ObjectDressup(result)
+    return result
 
 
 class CommandPathDressup:
@@ -383,29 +561,97 @@ class CommandPathDressup:
         }
 
     def IsActive(self):
-        return bool(PathDressup.selection())
+        if not can_start_document_command():
+            return False
+        document = FreeCAD.ActiveDocument
+        return _validated_base(PathDressup.selection(), document) is not None
 
     def Activated(self):
-        # check that the selection contains exactly what we want
+        document = FreeCAD.ActiveDocument
+        if document is None or not can_start_document_command(document):
+            return
+
         op = PathDressup.selection(verbose=True)
         if not op:
             return
+        job = _validated_base(op, document)
+        if job is None:
+            return
 
-        # everything ok!
-        FreeCAD.ActiveDocument.openTransaction("Create Dress-up")
-        FreeCADGui.addModule("Path.Dressup.Gui.ZCorrect")
-        FreeCADGui.addModule("PathScripts.PathUtils")
-        FreeCADGui.doCommand(
-            'obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", "ZCorrectDressup")'
+        base_name = str(op.Name)
+        base_id = int(op.ID)
+        job_name = str(job.Name)
+        job_id = int(job.ID)
+        base_was_visible = bool(op.ViewObject.Visibility)
+        launch = begin_task_launch(
+            "Create Z Correction Dress-up",
+            document,
         )
-        FreeCADGui.doCommand("Path.Dressup.Gui.ZCorrect.ObjectDressup(obj)")
-        FreeCADGui.doCommand("obj.Base = FreeCAD.ActiveDocument." + op.Name)
-        FreeCADGui.doCommand("Path.Dressup.Gui.ZCorrect.ViewProviderDressup(obj.ViewObject)")
-        FreeCADGui.doCommand("PathScripts.PathUtils.addToJob(obj)")
-        FreeCADGui.doCommand("Gui.ActiveDocument.getObject(obj.Base.Name).Visibility = False")
-        FreeCADGui.doCommand("obj.ViewObject.Document.setEdit(obj.ViewObject, 0)")
-        # FreeCAD.ActiveDocument.commitTransaction()  # Final `commitTransaction()` called via TaskPanel.accept()
-        FreeCAD.ActiveDocument.recompute()
+        try:
+            FreeCADGui.addModule("Path.Dressup.Gui.ZCorrect")
+            FreeCADGui.addModule("Path.Base.Util")
+            FreeCADGui.addModule("PathScripts.PathUtils")
+            FreeCADGui.doCommand(
+                "document = FreeCAD.getDocument(%r)"
+                % document.Name
+            )
+            result = FreeCADGui.runDocumentObjectCommand(
+                document,
+                "Path.Dressup.Gui.ZCorrect.createDressupFeature(document)",
+                "Path::FeaturePython",
+            )
+            result_name = str(result.Name)
+            result_id = int(result.ID)
+            result_expression = "document.getObject(%r)" % result_name
+            FreeCADGui.doCommand(
+                "base = document.getObject(%r)" % base_name
+            )
+            FreeCADGui.doCommand(
+                "_cam_base_was_visible = bool(base.ViewObject.Visibility)"
+            )
+            FreeCADGui.doCommand(
+                "job = PathScripts.PathUtils.findParentJob(base)"
+            )
+            FreeCADGui.doCommand(f"{result_expression}.Base = base")
+            FreeCADGui.doCommand(
+                f"job.Proxy.addOperation({result_expression}, base)"
+            )
+            FreeCADGui.doCommand(
+                "Path.Dressup.Gui.ZCorrect.ViewProviderDressup("
+                f"{result_expression}.ViewObject)"
+            )
+            FreeCADGui.doCommand(
+                "Path.Base.Util.markTimelineReplacedInputs("
+                f"{result_expression}, "
+                "[base] if _cam_base_was_visible else [])"
+            )
+            FreeCADGui.doCommand(
+                "Gui.getDocument(document.Name).getObject("
+                "base.Name).Visibility = False"
+            )
+            FreeCADGui.doCommand(
+                f"{result_expression}.ViewObject.Document.setEdit("
+                f"{result_expression}.ViewObject, 0)"
+            )
+
+            document.recompute()
+            _validate_result(
+                document,
+                result,
+                result_name,
+                result_id,
+                op,
+                base_name,
+                base_id,
+                job,
+                job_name,
+                job_id,
+                base_was_visible,
+            )
+            launch.require_claimed()
+        except Exception:
+            launch.abort()
+            raise
 
 
 if FreeCAD.GuiUp:

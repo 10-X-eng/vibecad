@@ -62,6 +62,22 @@ SelectionObject::SelectionObject(const App::DocumentObject* obj)
 
 SelectionObject::~SelectionObject() = default;
 
+SelectionObject SelectionObject::withObject(const App::DocumentObject* obj) const
+{
+    SelectionObject result(*this);
+    if (!obj || !obj->getDocument() || !obj->getNameInDocument()) {
+        result.FeatName.clear();
+        result.DocName.clear();
+        result.TypeName.clear();
+        return result;
+    }
+
+    result.FeatName = obj->getNameInDocument();
+    result.DocName = obj->getDocument()->getName();
+    result.TypeName = obj->getTypeId().getName();
+    return result;
+}
+
 const App::DocumentObject* SelectionObject::getObject() const
 {
     if (!DocName.empty()) {

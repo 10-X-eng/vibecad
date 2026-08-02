@@ -404,6 +404,9 @@ private:
     friend class OverlaySplitterHandle;
     friend class OverlaySizeGrip;
 
+    /// Map the MDI area's origin into this widget's parent coordinate system.
+    QPoint mdiAreaOffset() const;
+
     QSize offset;
     int sizeDelta = 0;
     QRect rectOverlay;

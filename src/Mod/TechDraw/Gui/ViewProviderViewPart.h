@@ -72,6 +72,10 @@ public:
     bool setEdit(int ModNum) override;
     bool setDetailEdit(int ModNum, TechDraw::DrawViewDetail* dvd);
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     void onChanged(const App::Property *prop) override;
     void handleChangedPropertyType(Base::XMLReader &reader, const char *TypeName, App::Property * prop) override;
     Base::Color prefSectionColor();

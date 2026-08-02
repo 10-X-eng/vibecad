@@ -29,10 +29,14 @@
 #include <QLineEdit>
 #include <QCheckBox>
 
+#include <string>
+#include <memory>
+
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/MeasureManager.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 
 #include <Mod/Measure/App/MeasureBase.h>
 #include <Mod/Measure/Gui/ViewProviderMeasureBase.h>
@@ -75,6 +79,9 @@ public:
     void clearSelection();
 
 private:
+    App::Document* targetDocument() const;
+    bool beginPreviewTransaction();
+    bool finishPreviewTransaction(bool commit);
     void setupShortcuts(QWidget* parent);
     void tryUpdate();
     void updateUnitDropdown(const App::MeasureType* measureType);
@@ -120,7 +127,11 @@ private:
     bool delta = true;
     bool mAutoSave = false;
     bool mGreedySelection = false;
-    Gui::Document* mTargetDoc;
+    int mPreviewTransactionId {App::NullTransaction};
+    std::unique_ptr<Gui::ExactTransaction> mPreviewTransaction;
+    std::string mTargetDocumentName;
+    std::string mTargetDocumentUid;
+    const App::Document* mTargetDocumentAddress {nullptr};
 };
 
 }  // namespace MeasureGui

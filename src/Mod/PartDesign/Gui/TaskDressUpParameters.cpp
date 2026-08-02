@@ -31,17 +31,25 @@
 #include <QListWidgetItem>
 #include <QTimer>
 
+#include <algorithm>
+#include <map>
+#include <ranges>
+#include <unordered_set>
 
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/GeoFeature.h>
 #include <App/Transactions.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Tools.h>
 #include <Gui/WaitCursor.h>
+#include <Mod/Part/Gui/ModelingSelection.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
+#include <Mod/PartDesign/App/DesignModel.h>
 #include <Mod/PartDesign/Gui/ReferenceSelection.h>
 
 #include "TaskDressUpParameters.h"
@@ -51,6 +59,12 @@ FC_LOG_LEVEL_INIT("PartDesign", true, true)
 
 using namespace PartDesignGui;
 using namespace Gui;
+
+namespace
+{
+constexpr int bodyIdentityRole = Qt::UserRole;
+constexpr int subelementRole = Qt::UserRole + 1;
+}
 
 
 /* TRANSLATOR PartDesignGui::TaskDressUpParameters */
@@ -99,20 +113,241 @@ void TaskDressUpParameters::setupTransaction()
     transactionID = DressUpView->getObject()->getDocument()->openTransaction(n.c_str());
 }
 
+bool TaskDressUpParameters::isDesignSubelementOperation() const
+{
+    return !DressUpView.expired()
+        && dynamic_cast<PartDesign::DesignSubelementOperationProperties*>(
+            DressUpView->getObject()
+        );
+}
+
+std::vector<PartDesign::Body*>
+TaskDressUpParameters::designTargetBodies() const
+{
+    std::vector<PartDesign::Body*> result;
+    if (DressUpView.expired()) {
+        return result;
+    }
+
+    auto* operation = DressUpView->getObject();
+    auto* properties =
+        dynamic_cast<PartDesign::DesignOperationProperties*>(operation);
+    if (!properties || !operation->getDocument()) {
+        return result;
+    }
+    for (const auto& bodyId : properties->OutputBodyIds.getValues()) {
+        auto* body = PartDesign::DesignModel::bodyWithId(
+            *operation->getDocument(),
+            bodyId
+        );
+        if (!body) {
+            throw Base::RuntimeError(
+                "A selected Body was removed while this operation was being edited"
+            );
+        }
+        result.push_back(body);
+    }
+    return result;
+}
+
+std::vector<std::vector<std::string>>
+TaskDressUpParameters::designTargetGroups() const
+{
+    if (DressUpView.expired()) {
+        return {};
+    }
+    auto* selections =
+        dynamic_cast<PartDesign::DesignSubelementOperationProperties*>(
+            DressUpView->getObject()
+        );
+    return selections ? selections->targetElementGroups()
+                      : std::vector<std::vector<std::string>> {};
+}
+
+void TaskDressUpParameters::populateReferences(QListWidget* widget) const
+{
+    if (!widget || DressUpView.expired()) {
+        return;
+    }
+    widget->clear();
+
+    if (!isDesignSubelementOperation()) {
+        auto* dressUp =
+            DressUpView->getObject<PartDesign::DressUp>();
+        for (const auto& reference : dressUp->Base.getSubValues()) {
+            widget->addItem(QString::fromStdString(reference));
+        }
+        return;
+    }
+
+    const auto bodies = designTargetBodies();
+    const auto groups = designTargetGroups();
+    if (bodies.size() != groups.size()) {
+        throw Base::RuntimeError(
+            "This operation has inconsistent Body and subelement selections"
+        );
+    }
+    for (std::size_t bodyIndex = 0; bodyIndex < bodies.size(); ++bodyIndex) {
+        auto* body = bodies[bodyIndex];
+        const QString bodyLabel =
+            QString::fromUtf8(body->Label.getValue());
+        for (const auto& reference : groups[bodyIndex]) {
+            auto* item = new QListWidgetItem(
+                tr("%1 · %2")
+                    .arg(bodyLabel, QString::fromStdString(reference)),
+                widget
+            );
+            item->setData(
+                bodyIdentityRole,
+                QString::fromStdString(body->VibeCADBodyId.getValueStr())
+            );
+            item->setData(
+                subelementRole,
+                QString::fromStdString(reference)
+            );
+        }
+    }
+}
+
+void TaskDressUpParameters::updateDesignFeature(
+    const std::vector<PartDesign::Body*>& bodies,
+    const std::vector<std::vector<std::string>>& groups,
+    QListWidget* widget
+)
+{
+    if (DressUpView.expired() || bodies.size() != groups.size()) {
+        throw Base::ValueError(
+            "A Design dress-up requires one subelement group per Body"
+        );
+    }
+
+    auto* operation = DressUpView->getObject();
+    auto* properties =
+        dynamic_cast<PartDesign::DesignOperationProperties*>(operation);
+    auto* selections =
+        dynamic_cast<PartDesign::DesignSubelementOperationProperties*>(
+            operation
+        );
+    if (!properties || !selections) {
+        throw Base::TypeError(
+            "This object has no Design subelement-operation contract"
+        );
+    }
+
+    std::map<std::string, Base::Placement> historicalFrames;
+    const auto bodyIds = properties->OutputBodyIds.getValues();
+    const auto frames = properties->OutputFrames.getValues();
+    for (std::size_t index = 0;
+         index < std::min(bodyIds.size(), frames.size());
+         ++index) {
+        historicalFrames.emplace(bodyIds[index], frames[index]);
+    }
+
+    setupTransaction();
+    PartDesign::DesignModel::setOperationTargets(
+        *operation,
+        "Modify",
+        bodies,
+        nullptr,
+        historicalFrames,
+        true
+    );
+    selections->setTargetElementGroups(groups);
+    populateReferences(widget);
+
+    if (auto* feature = freecad_cast<PartDesign::Feature*>(operation)) {
+        feature->recomputeFeature();
+        feature->recomputePreview();
+    }
+    hideOnError();
+}
+
 void TaskDressUpParameters::referenceSelected(const Gui::SelectionChanges& msg, QListWidget* widget)
 {
     if (strcmp(msg.pDocName, DressUpView->getObject()->getDocument()->getName()) != 0) {
         return;
     }
 
-    Gui::Selection().clearSelection();
+    Gui::Selection().clearSelection(
+        DressUpView->getObject()->getDocument()->getName()
+    );
 
     PartDesign::DressUp* pcDressUp = DressUpView->getObject<PartDesign::DressUp>();
+    if (isDesignSubelementOperation()) {
+        auto* operation = DressUpView->getObject();
+        auto* selectedObject =
+            operation->getDocument()->getObject(msg.pObjectName);
+        auto* body = freecad_cast<PartDesign::Body*>(selectedObject);
+        if (!body) {
+            body = freecad_cast<PartDesign::Body*>(
+                PartGui::findModelingBody(selectedObject)
+            );
+        }
+        const std::string subName =
+            msg.pSubName ? msg.pSubName : "";
+        auto* priorState =
+            PartDesign::designBodyStateBefore(body, operation);
+        if (!body || !priorState || subName.empty()) {
+            return;
+        }
+        try {
+            if (allowFaces && !allowEdges) {
+                PartDesign::resolveDesignTargetFaces(
+                    priorState->Shape.getShape(),
+                    {subName}
+                );
+            }
+            else {
+                PartDesign::resolveDesignTargetEdges(
+                    priorState->Shape.getShape(),
+                    {subName},
+                    false
+                );
+            }
+        }
+        catch (const Base::Exception& error) {
+            Base::Console().warning("%s\n", error.what());
+            return;
+        }
+
+        auto bodies = designTargetBodies();
+        auto groups = designTargetGroups();
+        auto bodyPosition = std::ranges::find(bodies, body);
+        std::size_t bodyIndex = 0;
+        if (bodyPosition == bodies.end()) {
+            bodies.push_back(body);
+            groups.emplace_back();
+            bodyIndex = bodies.size() - 1;
+        }
+        else {
+            bodyIndex = static_cast<std::size_t>(
+                std::distance(bodies.begin(), bodyPosition)
+            );
+        }
+
+        auto& group = groups[bodyIndex];
+        if (const auto found = std::ranges::find(group, subName);
+            found != group.end()) {
+            group.erase(found);
+        }
+        else {
+            group.push_back(subName);
+        }
+        if (group.empty()) {
+            groups.erase(groups.begin() + bodyIndex);
+            bodies.erase(bodies.begin() + bodyIndex);
+        }
+        updateDesignFeature(bodies, groups, widget);
+        return;
+    }
+
     App::DocumentObject* base = this->getBase();
 
-    // TODO: Must we make a copy here instead of assigning to const char* ?
-    const char* fname = base->getNameInDocument();
-    if (strcmp(msg.pObjectName, fname) != 0) {
+    auto* selected = resolveModelingReference(
+        pcDressUp,
+        pcDressUp->getDocument()->getObject(msg.pObjectName)
+    );
+    if (selected != base) {
         return;
     }
 
@@ -133,13 +368,56 @@ void TaskDressUpParameters::referenceSelected(const Gui::SelectionChanges& msg, 
 
 void TaskDressUpParameters::addAllEdges(QListWidget* widget)
 {
-    Q_UNUSED(widget)
-
     if (DressUpView.expired()) {
         return;
     }
 
     PartDesign::DressUp* pcDressUp = DressUpView->getObject<PartDesign::DressUp>();
+    if (isDesignSubelementOperation()) {
+        auto* properties =
+            dynamic_cast<PartDesign::DesignOperationProperties*>(
+                DressUpView->getObject()
+            );
+        auto bodies = designTargetBodies();
+        auto groups = designTargetGroups();
+        const auto inputs = properties->InputStates.getValues();
+        if (inputs.size() != bodies.size() || groups.size() != bodies.size()) {
+            throw Base::RuntimeError(
+                "This operation has inconsistent Body-state selections"
+            );
+        }
+        for (std::size_t index = 0; index < inputs.size(); ++index) {
+            auto* state = freecad_cast<Part::Feature*>(inputs[index]);
+            if (!state) {
+                throw Base::RuntimeError(
+                    "One selected Body has no exact prior state"
+                );
+            }
+            const auto& shape = state->Shape.getShape();
+            groups[index].clear();
+            const int edgeCount = shape.countSubShapes(TopAbs_EDGE);
+            for (int edgeIndex = 1; edgeIndex <= edgeCount; ++edgeIndex) {
+                const std::string name =
+                    "Edge" + std::to_string(edgeIndex);
+                try {
+                    if (!PartDesign::resolveDesignTargetEdges(
+                            shape,
+                            {name},
+                            false
+                        )
+                             .empty()) {
+                        groups[index].push_back(name);
+                    }
+                }
+                catch (const Base::Exception&) {
+                    // A tangent seam is not a dressable corner.
+                }
+            }
+        }
+        updateDesignFeature(bodies, groups, widget);
+        return;
+    }
+
     App::DocumentObject* base = pcDressUp->Base.getValue();
     if (!base) {
         return;
@@ -172,12 +450,41 @@ void TaskDressUpParameters::addAllEdges(QListWidget* widget)
 void TaskDressUpParameters::deleteRef(QListWidget* widget)
 {
     // delete any selections since the reference(s) being deleted might be highlighted
-    Gui::Selection().clearSelection();
+    Gui::Selection().clearSelection(
+        DressUpView->getObject()->getDocument()->getName()
+    );
 
     // get the list of items to be deleted
     QList<QListWidgetItem*> selectedList = widget->selectedItems();
 
     PartDesign::DressUp* pcDressUp = DressUpView->getObject<PartDesign::DressUp>();
+    if (isDesignSubelementOperation()) {
+        auto bodies = designTargetBodies();
+        auto groups = designTargetGroups();
+        for (auto* item : selectedList) {
+            const std::string bodyId =
+                item->data(bodyIdentityRole).toString().toStdString();
+            const std::string subelement =
+                item->data(subelementRole).toString().toStdString();
+            for (std::size_t index = 0; index < bodies.size(); ++index) {
+                if (bodies[index]->VibeCADBodyId.getValueStr() != bodyId) {
+                    continue;
+                }
+                std::erase(groups[index], subelement);
+                break;
+            }
+        }
+        for (std::size_t index = groups.size(); index > 0; --index) {
+            if (!groups[index - 1].empty()) {
+                continue;
+            }
+            groups.erase(groups.begin() + static_cast<long>(index - 1));
+            bodies.erase(bodies.begin() + static_cast<long>(index - 1));
+        }
+        updateDesignFeature(bodies, groups, widget);
+        return;
+    }
+
     std::vector<std::string> refs = pcDressUp->Base.getSubValues();
 
     // delete the selection backwards to assure the list index keeps valid for the deletion
@@ -255,10 +562,38 @@ void TaskDressUpParameters::setSelection(QListWidgetItem* current)
             &TaskDressUpParameters::itemClickedTimeout
         );
 
-        // name of the item
-        std::string subName = current->text().toStdString();
         // get the document name
         std::string docName = DressUpView->getObject()->getDocument()->getName();
+        if (isDesignSubelementOperation()) {
+            const std::string bodyId =
+                current->data(bodyIdentityRole).toString().toStdString();
+            const std::string subName =
+                current->data(subelementRole).toString().toStdString();
+            auto* body = PartDesign::DesignModel::bodyWithId(
+                *DressUpView->getObject()->getDocument(),
+                bodyId
+            );
+            if (!body || subName.empty()) {
+                return;
+            }
+            if (selectionMode == none) {
+                setSelectionMode(refSel);
+            }
+            else {
+                Gui::Selection().clearSelection(docName.c_str());
+            }
+            const bool blocked = blockSelection(true);
+            tryAddSelection(
+                docName,
+                body->getNameInDocument(),
+                subName
+            );
+            blockSelection(blocked);
+            return;
+        }
+
+        // name of the item
+        std::string subName = current->text().toStdString();
         // get the name of the body we are in
         Part::BodyBase* body = PartDesign::Body::findBodyOf(DressUpView->getObject());
         if (body) {
@@ -269,7 +604,7 @@ void TaskDressUpParameters::setSelection(QListWidgetItem* current)
                 setSelectionMode(refSel);
             }
             else {
-                Gui::Selection().clearSelection();
+                Gui::Selection().clearSelection(docName.c_str());
             }
 
             // highlight the selected item
@@ -401,6 +736,13 @@ void TaskDressUpParameters::keyPressEvent(QKeyEvent* ke)
 
 const std::vector<std::string> TaskDressUpParameters::getReferences() const
 {
+    if (isDesignSubelementOperation()) {
+        std::vector<std::string> result;
+        for (const auto& group : designTargetGroups()) {
+            result.insert(result.end(), group.begin(), group.end());
+        }
+        return result;
+    }
     PartDesign::DressUp* pcDressUp = DressUpView->getObject<PartDesign::DressUp>();
     std::vector<std::string> result = pcDressUp->Base.getSubValues();
     return result;
@@ -432,6 +774,15 @@ ViewProviderDressUp* TaskDressUpParameters::getDressUpView() const
 Part::Feature* TaskDressUpParameters::getBase() const
 {
     if (ViewProviderDressUp* vp = getDressUpView()) {
+        if (auto* properties =
+                dynamic_cast<PartDesign::DesignOperationProperties*>(
+                    vp->getObject()
+                )) {
+            const auto inputs = properties->InputStates.getValues();
+            return inputs.empty()
+                ? nullptr
+                : freecad_cast<Part::Feature*>(inputs.front());
+        }
         auto dressUp = vp->getObject<PartDesign::DressUp>();
         // Unlikely but this may throw an exception in case we are started to edit an object which
         // base feature was deleted. This exception will be likely unhandled inside the dialog and
@@ -465,6 +816,14 @@ void TaskDressUpParameters::setSelectionMode(selectionModes mode)
     else {
         DressUpView->highlightReferences(true);
 
+        if (isDesignSubelementOperation()) {
+            setSelectionGate();
+            Gui::Selection().clearSelection(
+                DressUpView->getObject()->getDocument()->getName()
+            );
+            return;
+        }
+
         // selection must come from the previous feature, we also need to remember the currently
         // shown so we can restore it later.
         // The body view provider may be null for erroneous documents where the feature is
@@ -476,7 +835,9 @@ void TaskDressUpParameters::setSelectionMode(selectionModes mode)
         DressUpView->showPreviousFeature(true);
     }
     setSelectionGate();
-    Gui::Selection().clearSelection();
+    Gui::Selection().clearSelection(
+        DressUpView->getObject()->getDocument()->getName()
+    );
 }
 void TaskDressUpParameters::setSelectionGate()
 {
@@ -502,6 +863,11 @@ TaskDlgDressUpParameters::TaskDlgDressUpParameters(ViewProviderDressUp* DressUpV
 {
     assert(DressUpView);
     auto pcDressUp = DressUpView->getObject<PartDesign::DressUp>();
+    if (dynamic_cast<PartDesign::DesignSubelementOperationProperties*>(
+            pcDressUp
+        )) {
+        return;
+    }
     auto base = pcDressUp->Base.getValue();
     std::vector<std::string> newSubList;
     bool changed = false;
@@ -527,6 +893,11 @@ TaskDlgDressUpParameters::~TaskDlgDressUpParameters() = default;
 bool TaskDlgDressUpParameters::accept()
 {
     getViewObject<ViewProviderDressUp>()->highlightReferences(false);
+    if (dynamic_cast<PartDesign::DesignSubelementOperationProperties*>(
+            getObject()
+        )) {
+        return TaskDlgFeatureParameters::accept();
+    }
     std::vector<std::string> refs = parameter->getReferences();
     std::stringstream str;
     str << Gui::Command::getObjectCmd(getObject()) << ".Base = ("

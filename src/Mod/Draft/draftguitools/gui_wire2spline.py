@@ -43,9 +43,6 @@ from PySide.QtCore import QT_TRANSLATE_NOOP
 
 import FreeCADGui as Gui
 from draftguitools import gui_base_original
-from draftmake import make_bspline
-from draftmake import make_wire
-from draftutils import gui_utils
 from draftutils import utils
 from draftutils.translate import translate
 
@@ -74,44 +71,28 @@ class WireToBSpline(gui_base_original.Modifier):
         if self.running:
             self.finish()
 
-        # TODO: iterate over all selected items to transform
-        # many objects. As it is right now, it only works on the first object
-        # in the selection.
-        # Also, it is recommended to use the `self.commit` function
-        # in order to properly open a transaction and commit it.
         selection = Gui.Selection.getSelection()
-        if selection:
-            if utils.getType(selection[0]) in ["Wire", "BSpline"]:
-                super(WireToBSpline, self).Activated(name="Convert polyline/B-spline")
-                if self.doc:
-                    self.obj = Gui.Selection.getSelection()
-                    if self.obj:
-                        self.obj = self.obj[0]
-                        self.pl = None
-                        if "Placement" in self.obj.PropertiesList:
-                            self.pl = self.obj.Placement
-                        self.Points = self.obj.Points
-                        self.closed = self.obj.Closed
-                        n = None
-                        if utils.getType(self.obj) == "Wire":
-                            n = make_bspline.make_bspline(
-                                self.Points, closed=self.closed, placement=self.pl
-                            )
-                        elif utils.getType(self.obj) == "BSpline":
-                            self.bs2wire = True
-                            n = make_wire.make_wire(
-                                self.Points,
-                                closed=self.closed,
-                                placement=self.pl,
-                                face=None,
-                                support=None,
-                                bs2wire=self.bs2wire,
-                            )
-                        if n:
-                            gui_utils.format_object(n, self.obj)
-                            self.doc.recompute()
-                    else:
-                        self.finish()
+        if not selection or utils.getType(selection[0]) not in ["Wire", "BSpline"]:
+            return
+
+        super(WireToBSpline, self).Activated(name="Convert polyline/B-spline")
+        if not self.doc:
+            self.finish()
+            return
+
+        obj = selection[0]
+        Gui.addModule("draftutils.timeline")
+        commands = [
+            "obj = FreeCAD.ActiveDocument." + obj.Name,
+            "converted = draftutils.timeline.convert_wire_replacement(obj)",
+            "FreeCAD.ActiveDocument.recompute()",
+        ]
+        self.commit(
+            translate("draft", "Convert polyline/B-spline"),
+            commands,
+            inputs=(obj,),
+        )
+        self.finish()
 
 
 Gui.addCommand("Draft_WireToBSpline", WireToBSpline())

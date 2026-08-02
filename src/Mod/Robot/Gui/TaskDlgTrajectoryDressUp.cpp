@@ -23,9 +23,16 @@
  ***************************************************************************/
 
 
+#include <QMessageBox>
+
+#include <App/Document.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
+#include <Gui/MainWindow.h>
 
+#include "OperationSupport.h"
 #include "TaskDlgTrajectoryDressUp.h"
 
 
@@ -43,13 +50,22 @@ TaskDlgTrajectoryDressUp::TaskDlgTrajectoryDressUp(Robot::TrajectoryDressUpObjec
     param = new TaskTrajectoryDressUpParameter(obj);
 
     Content.push_back(param);
+    if (obj && obj->getDocument()) {
+        setDocumentName(obj->getDocument()->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
 }
 
 //==== calls from the TaskView ===============================================================
 
 
 void TaskDlgTrajectoryDressUp::open()
-{}
+{
+    RobotGui::OperationSupport::ensureEditTransaction(
+        *pcObject,
+        QT_TRANSLATE_NOOP("Command", "Edit trajectory modifier")
+    );
+}
 
 void TaskDlgTrajectoryDressUp::clicked(int button)
 {
@@ -63,23 +79,33 @@ void TaskDlgTrajectoryDressUp::clicked(int button)
 
 bool TaskDlgTrajectoryDressUp::accept()
 {
-    param->writeValues();
-    pcObject->recomputeFeature();
-
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    if (doc) {
-        doc->resetEdit();
+    try {
+        if (!RobotGui::OperationSupport::isUsableObject(pcObject->Source.getValue())) {
+            throw Base::RuntimeError("The source trajectory is suppressed or no longer available");
+        }
+        param->writeValues();
+        if (!pcObject->recomputeFeature() || pcObject->isError()) {
+            throw Base::RuntimeError(pcObject->getStatusString());
+        }
+        if (!RobotGui::OperationSupport::resetEdit(*pcObject)) {
+            throw Base::RuntimeError("The trajectory modifier task could not be finalized");
+        }
+        return true;
     }
-    return true;
+    catch (const Base::Exception& error) {
+        Base::Console().warning("TaskDlgTrajectoryDressUp::accept(): %s\n", error.what());
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Trajectory Modifier"),
+            QString::fromUtf8(error.what())
+        );
+        return false;
+    }
 }
 
 bool TaskDlgTrajectoryDressUp::reject()
 {
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    if (doc) {
-        doc->resetEdit();
-    }
-    return true;
+    return RobotGui::OperationSupport::resetEdit(*pcObject);
 }
 
 void TaskDlgTrajectoryDressUp::helpRequested()

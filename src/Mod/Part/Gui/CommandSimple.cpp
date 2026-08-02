@@ -23,15 +23,24 @@
  ***************************************************************************/
 
 
+#include <algorithm>
+#include <set>
+#include <sstream>
+
 #include <QInputDialog>
 
+#include <TopAbs_ShapeEnum.hxx>
+#include <TopoDS_Shape.hxx>
 
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObserver.h>
+#include <App/ComplexGeoData.h>
+#include <App/PropertyGeo.h>
 #include <Base/Exception.h>
 #include <Base/Interpreter.h>
 #include <Gui/Application.h>
+#include <Gui/Control.h>
 #include <Gui/CommandT.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
@@ -39,8 +48,36 @@
 #include <Gui/WaitCursor.h>
 
 #include "DlgPartCylinderImp.h"
+#include "ModelingSelection.h"
 #include "ShapeFromMesh.h"
+#include "TaskResultValidation.h"
+#include <Mod/Part/App/PartFeatures.h>
 #include <Mod/Part/App/PartFeature.h>
+
+namespace
+{
+
+bool hasMeshFacets(const App::DocumentObject* object)
+{
+    const auto* property = object ? object->getPropertyByName("Mesh") : nullptr;
+    const auto* geometryProperty = property && property->isDerivedFrom<App::PropertyComplexGeoData>()
+        ? static_cast<const App::PropertyComplexGeoData*>(property)
+        : nullptr;
+    const Data::ComplexGeoData* geometry =
+        geometryProperty
+            ? geometryProperty->getComplexData()
+            : nullptr;
+    if (!geometry) {
+        return false;
+    }
+
+    std::vector<Base::Vector3d> points;
+    std::vector<Data::ComplexGeoData::Facet> facets;
+    geometry->getFaces(points, facets, 0.0);
+    return !facets.empty();
+}
+
+}  // namespace
 
 
 //===========================================================================
@@ -128,7 +165,25 @@ void CmdPartShapeFromMesh::activated(int iMsg)
 
 bool CmdPartShapeFromMesh::isActive()
 {
-    return Gui::Selection().countObjectsOfType("Mesh::Feature") > 0;
+    App::Document* document =
+        App::GetApplication().getActiveDocument();
+    if (!document
+        || Gui::Control().activeDialog()
+        || !PartGui::canStartRetainedModelingTask(document)) {
+        return false;
+    }
+    Base::Type meshType = Base::Type::fromName("Mesh::Feature");
+    auto meshes = Gui::Selection().getObjectsOfType(meshType);
+    return !meshes.empty()
+        && std::ranges::all_of(
+            meshes,
+            [document](const App::DocumentObject* mesh) {
+                return mesh
+                    && mesh->getDocument() == document
+                    && PartGui::isModelingObjectActive(mesh)
+                    && hasMeshFacets(mesh);
+            }
+        );
 }
 //===========================================================================
 // Part_PointsFromMesh
@@ -150,25 +205,36 @@ CmdPartPointsFromMesh::CmdPartPointsFromMesh()
 void CmdPartPointsFromMesh::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
+    auto* activeDocument = App::GetApplication().getActiveDocument();
+    if (!activeDocument) {
+        return;
+    }
 
-    auto getDefaultDistance = [](Part::Feature* geometry) {
-        auto bbox = geometry->Shape.getBoundingBox();
+    auto getDefaultDistance = [](App::DocumentObject* geometry) {
+        auto shape = Part::Feature::getTopoShape(
+            geometry,
+            Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform
+        );
+        auto bbox = shape.getBoundBox();
         int steps {20};
         return bbox.CalcDiagonalLength() / steps;
     };
 
-    Base::Type geoid = Base::Type::fromName("App::GeoFeature");
     std::vector<App::DocumentObject*> geoms;
-    geoms = Gui::Selection().getObjectsOfType(geoid);
+    for (auto& selected :
+         PartGui::getModelingShapeSelection(activeDocument->getName())) {
+        if (auto* object = selected.getObject();
+            object && std::ranges::find(geoms, object) == geoms.end()) {
+            geoms.push_back(object);
+        }
+    }
+    if (geoms.empty()) {
+        return;
+    }
 
     double distance {1.0};
-    auto found = std::find_if(geoms.begin(), geoms.end(), [](App::DocumentObject* obj) {
-        return freecad_cast<Part::Feature*>(obj);
-    });
-
-    if (found != geoms.end()) {
-
-        double defaultDistance = getDefaultDistance(freecad_cast<Part::Feature*>(*found));
+    if (!geoms.empty()) {
+        double defaultDistance = getDefaultDistance(geoms.front());
 
         double STD_OCC_TOLERANCE = 1e-6;
 
@@ -197,34 +263,67 @@ void CmdPartPointsFromMesh::activated(int iMsg)
     }
 
     Gui::WaitCursor wc;
-    openCommand(QT_TRANSLATE_NOOP("Command", "Points from geometry"));
-
     Base::PyGILStateLocker lock;
     try {
+        PartGui::ModelingTaskAttempt attempt(
+            *activeDocument,
+            QT_TRANSLATE_NOOP("Command", "Points from geometry")
+        );
         PyObject* module = PyImport_ImportModule("BasicShapes.Utils");
         if (!module) {
             throw Py::Exception();
         }
         Py::Module utils(module, true);
+        std::vector<App::DocumentObject*> commandResults;
 
         for (auto it : geoms) {
             Py::Tuple args(2);
             args.setItem(0, Py::asObject(it->getPyObject()));
             args.setItem(1, Py::Float(distance));
-            utils.callMemberFunction("showCompoundFromPoints", args);
+            auto* result = PartGui::TaskResultValidation::
+                requireExactPartResult(
+                    *activeDocument,
+                    utils.callMemberFunction(
+                        "showCompoundFromPoints",
+                        args
+                    )
+            );
+            attempt.trackCreatedObject(*result);
+            commandResults.push_back(result);
         }
+        if (commandResults.size() != geoms.size()) {
+            throw Base::RuntimeError(
+                "Points from geometry did not create every selected result"
+            );
+        }
+        attempt.markResultAsDesignDefinition(
+            *commandResults.back()
+        );
+        attempt.commit();
     }
     catch (Py::Exception&) {
         Base::PyException e;
         e.reportException();
+        return;
     }
-
-    commitCommand();
+    catch (Base::Exception& e) {
+        e.reportException();
+        return;
+    }
+    catch (...) {
+        throw;
+    }
 }
 
 bool CmdPartPointsFromMesh::isActive()
 {
-    return Gui::Selection().countObjectsOfType<App::GeoFeature>() > 0;
+    auto* document = App::GetApplication().getActiveDocument();
+    return document && !Gui::Control().activeDialog()
+        && PartGui::canStartRetainedModelingTask(document)
+        && !PartGui::getModelingShapeSelection(
+                document->getName()
+            )
+                .empty();
 }
 
 //===========================================================================
@@ -244,65 +343,142 @@ CmdPartSimpleCopy::CmdPartSimpleCopy()
     sPixmap = "Part_3D_object";
 }
 
-static void _copyShape(const char* cmdName, bool resolve, bool needElement = false, bool refine = false)
+static void _copyShape(
+    const char* cmdName,
+    bool resolve,
+    bool needElement = false,
+    bool refine = false,
+    bool replacePresentation = false
+)
 {
     Gui::WaitCursor wc;
-
-    int tid = Gui::Command::openActiveDocumentCommand(cmdName);
-    for (auto& sel : Gui::Selection().getSelectionEx(
-             "*",
-             App::DocumentObject::getClassTypeId(),
-             resolve ? Gui::ResolveMode::OldStyleElement : Gui::ResolveMode::NoResolve
-         )) {
-        std::map<std::string, App::DocumentObject*> subMap;
-        auto obj = sel.getObject();
-        if (!obj) {
-            continue;
-        }
-        if (resolve || !sel.hasSubNames()) {
-            subMap.emplace("", obj);
-        }
-        else {
-            for (const auto& sub : sel.getSubNames()) {
-                const char* element = nullptr;
-                auto sobj = obj->resolve(sub.c_str(), nullptr, nullptr, &element);
-                if (!sobj) {
-                    continue;
-                }
-                if (!needElement && element) {
-                    subMap.emplace(sub.substr(0, element - sub.c_str()), sobj);
-                }
-                else {
-                    subMap.emplace(sub, sobj);
-                }
-            }
-            if (subMap.empty()) {
-                continue;
-            }
-        }
-        auto parentName = Gui::Command::getObjectCmd(obj);
-        for (auto& v : subMap) {
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "__shape = Part.getShape(%s,'%s',needSubElement=%s,refine=%s)%s\n"
-                "App.ActiveDocument.addObject('Part::Feature','%s').Shape=__shape\n"
-                "App.ActiveDocument.ActiveObject.Label=%s.Label\n",
-                parentName.c_str(),
-                v.first.c_str(),
-                needElement ? "True" : "False",
-                refine ? "True" : "False",
-                needElement ? ".copy()" : "",
-                v.second->getNameInDocument(),
-                Gui::Command::getObjectCmd(v.second).c_str()
-            );
-            auto newObj = App::GetApplication().getActiveDocument()->getActiveObject();
-            Gui::Command::copyVisual(newObj, "ShapeAppearance", v.second);
-            Gui::Command::copyVisual(newObj, "LineColor", v.second);
-            Gui::Command::copyVisual(newObj, "PointColor", v.second);
-        }
+    auto* activeDocument = App::GetApplication().getActiveDocument();
+    if (!activeDocument) {
+        return;
     }
-    Gui::Command::commitCommand(tid);
+
+    std::vector<App::DocumentObject*> commandResults;
+    std::vector<App::DocumentObject*> replacedPresentations;
+    try {
+        PartGui::ModelingTaskAttempt attempt(*activeDocument, cmdName);
+        for (auto& sel : PartGui::getModelingSelection(activeDocument->getName())) {
+            const auto resultCountBeforeSelection = commandResults.size();
+            std::map<std::string, App::DocumentObject*> subMap;
+            auto obj = sel.getObject();
+            if (!obj) {
+                throw Base::ValueError("A selected copy source is no longer available");
+            }
+            if (needElement && !sel.hasSubNames()) {
+                throw Base::ValueError("Shape Element Copy requires a selected shape element");
+            }
+            if (resolve || !sel.hasSubNames()) {
+                subMap.emplace("", obj);
+            }
+            else {
+                for (const auto& sub : sel.getSubNames()) {
+                    const char* element = nullptr;
+                    auto sobj = obj->resolve(sub.c_str(), nullptr, nullptr, &element);
+                    if (!sobj) {
+                        throw Base::ValueError("A selected copy element is no longer available");
+                    }
+                    if (!needElement && element) {
+                        subMap.emplace(sub.substr(0, element - sub.c_str()), sobj);
+                    }
+                    else {
+                        subMap.emplace(sub, sobj);
+                    }
+                }
+                if (subMap.empty()) {
+                    throw Base::ValueError("The selected copy source has no usable shape");
+                }
+            }
+            auto parentName = Gui::Command::getObjectCmd(obj);
+            for (auto& v : subMap) {
+                std::ostringstream factory;
+                factory << "(lambda result, shape: ("
+                           "setattr(result, 'Shape', shape), "
+                           "setattr(result, 'Label', "
+                        << Gui::Command::getObjectCmd(v.second)
+                        << ".Label), result)[2])("
+                           "App.ActiveDocument.addObject('Part::Feature','"
+                        << v.second->getNameInDocument() << "'), Part.getShape(" << parentName
+                        << ",'" << v.first << "',needSubElement=" << (needElement ? "True" : "False")
+                        << ",refine=" << (refine ? "True" : "False") << ")"
+                        << (needElement ? ".copy()" : "") << ")";
+                auto* newObj = Gui::Command::runDocumentObjectCommand(
+                    Gui::Command::Doc,
+                    *activeDocument,
+                    QByteArray::fromStdString(factory.str()),
+                    Part::Feature::getClassTypeId()
+                );
+                attempt.trackCreatedObject(*newObj);
+                commandResults.push_back(newObj);
+                auto* presentation = PartGui::resolveModelingPresentationObject(obj);
+                if (replacePresentation && presentation && presentation->Visibility.getValue()) {
+                    if (std::ranges::find(replacedPresentations, presentation)
+                        == replacedPresentations.end()) {
+                        replacedPresentations.push_back(presentation);
+                    }
+                }
+                Gui::Command::copyVisual(newObj, "ShapeAppearance", v.second);
+                Gui::Command::copyVisual(newObj, "LineColor", v.second);
+                Gui::Command::copyVisual(newObj, "PointColor", v.second);
+            }
+            if (commandResults.size() == resultCountBeforeSelection) {
+                throw Base::RuntimeError("Copy did not create a result for every selected source");
+            }
+        }
+        if (commandResults.empty()) {
+            throw Base::RuntimeError("Copy did not create a result");
+        }
+        attempt.markResultAsDesignDefinition(*commandResults.back());
+        if (!replacedPresentations.empty()) {
+            attempt.trackReplacedInputs(*commandResults.back(), replacedPresentations);
+            for (auto* presentation : replacedPresentations) {
+                Gui::cmdAppObjectHide(presentation);
+            }
+        }
+        attempt.commit();
+    }
+    catch (...) {
+        throw;
+    }
     Gui::Command::updateActive();
+}
+
+static bool hasSelectedShapeElement()
+{
+    auto* document = App::GetApplication().getActiveDocument();
+    if (!document) {
+        return false;
+    }
+    const auto selection = PartGui::getModelingShapeSelection(
+        document->getName()
+    );
+    return !selection.empty()
+        && std::ranges::all_of(
+            selection,
+            [](const Gui::SelectionObject& selected) {
+                const auto& subNames = selected.getSubNames();
+                return !subNames.empty()
+                    && std::ranges::all_of(
+                        subNames,
+                        [&selected](const std::string& subName) {
+                            return !Part::Feature::getTopoShape(
+                                        selected.getObject(),
+                                        Part::ShapeOption::
+                                                NeedSubElement
+                                            | Part::ShapeOption::
+                                                  ResolveLink
+                                            | Part::ShapeOption::
+                                                  Transform,
+                                        subName.c_str()
+                                    )
+                                        .isNull();
+                        }
+                    );
+            }
+        );
 }
 
 void CmdPartSimpleCopy::activated(int iMsg)
@@ -313,7 +489,13 @@ void CmdPartSimpleCopy::activated(int iMsg)
 
 bool CmdPartSimpleCopy::isActive()
 {
-    return Gui::Selection().hasSelection();
+    auto* document = App::GetApplication().getActiveDocument();
+    return document && !Gui::Control().activeDialog()
+        && PartGui::canStartRetainedModelingTask(document)
+        && !PartGui::getModelingShapeSelection(
+                document->getName()
+            )
+                .empty();
 }
 
 //===========================================================================
@@ -343,7 +525,13 @@ void CmdPartTransformedCopy::activated(int iMsg)
 
 bool CmdPartTransformedCopy::isActive()
 {
-    return Gui::Selection().hasSelection();
+    auto* document = App::GetApplication().getActiveDocument();
+    return document && !Gui::Control().activeDialog()
+        && PartGui::canStartRetainedModelingTask(document)
+        && !PartGui::getModelingShapeSelection(
+                document->getName()
+            )
+                .empty();
 }
 
 //===========================================================================
@@ -371,7 +559,10 @@ void CmdPartElementCopy::activated(int iMsg)
 
 bool CmdPartElementCopy::isActive()
 {
-    return Gui::Selection().hasSelection();
+    auto* document = App::GetApplication().getActiveDocument();
+    return document && !Gui::Control().activeDialog()
+        && PartGui::canStartRetainedModelingTask(document)
+        && hasSelectedShapeElement();
 }
 
 //===========================================================================
@@ -400,53 +591,92 @@ void CmdPartRefineShape::activated(int iMsg)
     bool parametric = hGrp->GetBool("ParametricRefine", true);
     if (parametric) {
         Gui::WaitCursor wc;
-        Base::Type partid = Base::Type::fromName("Part::Feature");
-        std::vector<App::DocumentObject*> objs = Gui::Selection().getObjectsOfType(partid);
-        openCommand(QT_TRANSLATE_NOOP("Command", "Refine shape"));
-        std::for_each(objs.begin(), objs.end(), [](App::DocumentObject* obj) {
-            try {
+        auto* activeDocument = App::GetApplication().getActiveDocument();
+        if (!activeDocument) {
+            return;
+        }
+        std::vector<App::DocumentObject*> objs;
+        for (auto& selected : PartGui::getModelingShapeSelection(activeDocument->getName())) {
+            if (auto* object = selected.getObject();
+                object && std::ranges::find(objs, object) == objs.end()) {
+                objs.push_back(object);
+            }
+        }
+        if (objs.empty()) {
+            return;
+        }
+        std::vector<App::DocumentObject*> commandResults;
+        std::vector<App::DocumentObject*> replacedPresentations;
+        try {
+            PartGui::ModelingTaskAttempt attempt(
+                *activeDocument,
+                QT_TRANSLATE_NOOP("Command", "Refine shape")
+            );
+            for (auto* obj : objs) {
+                auto* presentation = PartGui::resolveModelingPresentationObject(obj);
+                const bool replacesPresentation = presentation && presentation->Visibility.getValue();
                 App::DocumentObjectT objT(obj);
-                Gui::cmdAppDocumentArgs(
-                    obj->getDocument(),
-                    "addObject('Part::Refine','%s')",
-                    obj->getNameInDocument()
+                const QString factory
+                    = QStringLiteral("%1.addObject("
+                                     "'Part::Refine','%2')")
+                          .arg(
+                              QString::fromStdString(
+                                  App::DocumentT(obj->getDocument()).getDocumentPython()
+                              ),
+                              QString::fromLatin1(obj->getNameInDocument())
+                          );
+                auto* newObj = Gui::Command::runDocumentObjectCommand(
+                    Gui::Command::Doc,
+                    *activeDocument,
+                    factory.toUtf8(),
+                    Part::Refine::getClassTypeId()
                 );
-                Gui::cmdAppDocumentArgs(
-                    obj->getDocument(),
-                    "ActiveObject.Source = %s",
-                    objT.getObjectPython()
-                );
-                Gui::cmdAppDocumentArgs(
-                    obj->getDocument(),
-                    "ActiveObject.Label = %s.Label",
-                    objT.getObjectPython()
-                );
-                Gui::cmdAppObjectHide(obj);
-
-                auto newObj = App::GetApplication().getActiveDocument()->getActiveObject();
-                Gui::copyVisualT(
-                    newObj->getNameInDocument(),
-                    "ShapeAppearance",
-                    obj->getNameInDocument()
-                );
-                Gui::copyVisualT(newObj->getNameInDocument(), "LineColor", obj->getNameInDocument());
-                Gui::copyVisualT(newObj->getNameInDocument(), "PointColor", obj->getNameInDocument());
+                attempt.trackCreatedObject(*newObj);
+                FCMD_OBJ_CMD(newObj, "Source = " << objT.getObjectPython());
+                FCMD_OBJ_CMD(newObj, "Label = " << objT.getObjectPython() << ".Label");
+                if (replacesPresentation) {
+                    if (std::ranges::find(replacedPresentations, presentation)
+                        == replacedPresentations.end()) {
+                        replacedPresentations.push_back(presentation);
+                    }
+                }
+                commandResults.push_back(newObj);
+                Gui::copyVisualT(newObj, "ShapeAppearance", obj);
+                Gui::copyVisualT(newObj, "LineColor", obj);
+                Gui::copyVisualT(newObj, "PointColor", obj);
             }
-            catch (const Base::Exception& e) {
-                Base::Console().warning("%s: %s\n", obj->Label.getValue(), e.what());
+            if (commandResults.size() != objs.size()) {
+                throw Base::RuntimeError("Refine did not create every selected result");
             }
-        });
-        commitCommand();
+            attempt.markResultAsDesignDefinition(*commandResults.back());
+            if (!replacedPresentations.empty()) {
+                attempt.trackReplacedInputs(*commandResults.back(), replacedPresentations);
+                for (auto* presentation : replacedPresentations) {
+                    Gui::cmdAppObjectHide(presentation);
+                }
+            }
+            attempt.commit();
+        }
+        catch (Base::Exception& e) {
+            e.reportException();
+            return;
+        }
+        catch (...) {
+            throw;
+        }
         updateActive();
     }
     else {
-        _copyShape("Refined copy", true, false, true);
+        _copyShape("Refined copy", true, false, true, true);
     }
 }
 
 bool CmdPartRefineShape::isActive()
 {
-    return Gui::Selection().hasSelection();
+    auto* document = App::GetApplication().getActiveDocument();
+    return document && !Gui::Control().activeDialog()
+        && PartGui::canStartRetainedModelingTask(document)
+        && !PartGui::getModelingShapeSelection(document->getName()).empty();
 }
 
 //===========================================================================
@@ -470,63 +700,173 @@ void CmdPartDefeaturing::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
     Gui::WaitCursor wc;
-    Base::Type partid = Base::Type::fromName("Part::Feature");
-    std::vector<Gui::SelectionObject> objs = Gui::Selection().getSelectionEx(nullptr, partid);
-    openCommand(QT_TRANSLATE_NOOP("Command", "Defeaturing"));
-    for (std::vector<Gui::SelectionObject>::iterator it = objs.begin(); it != objs.end(); ++it) {
-        try {
-            std::string shape;
-            shape.append("sh=App.");
-            shape.append(it->getDocName());
-            shape.append(".");
-            shape.append(it->getFeatName());
-            shape.append(".Shape\n");
-
+    auto* activeDocument = App::GetApplication().getActiveDocument();
+    if (!activeDocument) {
+        return;
+    }
+    auto objs = PartGui::getModelingShapeSelection(
+        activeDocument->getName()
+    );
+    if (objs.empty()) {
+        return;
+    }
+    std::vector<App::DocumentObject*> commandResults;
+    std::vector<App::DocumentObject*> replacedPresentations;
+    try {
+        PartGui::ModelingTaskAttempt attempt(
+            *activeDocument,
+            QT_TRANSLATE_NOOP("Command", "Defeaturing")
+        );
+        for (auto it = objs.begin(); it != objs.end(); ++it) {
+            auto* presentation =
+                PartGui::resolveModelingPresentationObject(
+                    it->getObject()
+                );
+            const bool replacesPresentation =
+                presentation
+                && presentation->Visibility.getValue();
+            const auto sourceShape = Part::Feature::getTopoShape(
+                it->getObject(),
+                Part::ShapeOption::ResolveLink
+                    | Part::ShapeOption::Transform
+            );
+            if (sourceShape.isNull()) {
+                throw Base::ValueError(
+                    "Defeaturing requires a valid source shape"
+                );
+            }
+            std::vector<TopoDS_Shape> selectedFaces;
             std::string faces;
             std::vector<std::string> subnames = it->getSubNames();
             for (const auto& subname : subnames) {
-                faces.append("sh.");
+                auto face = sourceShape.getSubShape(
+                    subname.c_str(),
+                    true
+                );
+                if (face.IsNull() || face.ShapeType() != TopAbs_FACE) {
+                    throw Base::ValueError(
+                        "Defeaturing requires selected faces"
+                    );
+                }
+                selectedFaces.push_back(face);
+                faces.append(
+                    Gui::Command::getObjectCmd(it->getObject())
+                );
+                faces.append(".Shape.");
                 faces.append(subname);
                 faces.append(",");
             }
+            const TopoDS_Shape defeatedShape =
+                sourceShape.defeaturing(selectedFaces);
+            if (defeatedShape.IsNull()
+                || sourceShape.getShape().IsPartner(defeatedShape)) {
+                throw Base::RuntimeError("Defeaturing failed");
+            }
 
-            doCommand(
-                Doc,
-                "\nsh = App.getDocument('%s').%s.Shape\n"
-                "nsh = sh.defeaturing([%s])\n"
-                "if not sh.isPartner(nsh):\n"
-                "\t\tdefeat = App.ActiveDocument.addObject('Part::Feature','Defeatured').Shape = "
-                "nsh\n"
-                "\t\tGui.ActiveDocument.%s.hide()\n"
-                "else:\n"
-                "\t\tFreeCAD.Console.PrintError('Defeaturing failed\\n')",
-                it->getDocName(),
-                it->getFeatName(),
-                faces.c_str(),
-                it->getFeatName()
+            const std::string resultName =
+                activeDocument->getUniqueObjectName("Defeatured");
+            const QString factory = QStringLiteral(
+                                        "App.getDocument('%1').addObject("
+                                        "'Part::Feature','%2')"
+                                    )
+                                        .arg(
+                                            QString::fromLatin1(
+                                                activeDocument->getName()
+                                            ),
+                                            QString::fromStdString(
+                                                resultName
+                                            )
+                                        );
+            auto* result = Gui::Command::runDocumentObjectCommand(
+                Gui::Command::Doc,
+                *activeDocument,
+                factory.toUtf8(),
+                Part::Feature::getClassTypeId()
+            );
+            attempt.trackCreatedObject(*result);
+            FCMD_OBJ_CMD(
+                result,
+                "Shape = "
+                    << Gui::Command::getObjectCmd(it->getObject())
+                    << ".Shape.defeaturing([" << faces << "])"
+            );
+            if (replacesPresentation) {
+                if (std::ranges::find(
+                        replacedPresentations,
+                        presentation
+                    )
+                    == replacedPresentations.end()) {
+                    replacedPresentations.push_back(presentation);
+                }
+            }
+            commandResults.push_back(result);
+        }
+        updateDocument(activeDocument);
+        for (auto* result : commandResults) {
+            PartGui::TaskResultValidation::validatePartResult(result);
+        }
+        if (commandResults.size() != objs.size()) {
+            throw Base::RuntimeError(
+                "Defeaturing did not create every selected result"
             );
         }
-        catch (const Base::Exception& e) {
-            Base::Console().warning("%s: %s\n", it->getFeatName(), e.what());
+        attempt.markResultAsDesignDefinition(*commandResults.back());
+        if (!replacedPresentations.empty()) {
+            attempt.trackReplacedInputs(
+                *commandResults.back(),
+                replacedPresentations
+            );
+            for (auto* presentation : replacedPresentations) {
+                Gui::cmdAppObjectHide(presentation);
+            }
         }
+        attempt.commit();
     }
-    commitCommand();
+    catch (Base::Exception& e) {
+        e.reportException();
+        return;
+    }
+    catch (...) {
+        throw;
+    }
     updateActive();
 }
 
 bool CmdPartDefeaturing::isActive()
 {
-    Base::Type partid = Base::Type::fromName("Part::Feature");
-    std::vector<Gui::SelectionObject> objs = Gui::Selection().getSelectionEx(nullptr, partid);
-    for (const auto& obj : objs) {
-        std::vector<std::string> subnames = obj.getSubNames();
-        for (const auto& subname : subnames) {
-            if (subname.substr(0, 4) == "Face") {
-                return true;
-            }
-        }
+    auto* document = App::GetApplication().getActiveDocument();
+    if (!document || Gui::Control().activeDialog()
+        || !PartGui::canStartRetainedModelingTask(document)) {
+        return false;
     }
-    return false;
+    const auto selection = PartGui::getModelingShapeSelection(
+        document->getName()
+    );
+    return !selection.empty()
+        && std::ranges::all_of(
+            selection,
+            [](const Gui::SelectionObject& selected) {
+                const auto& subNames = selected.getSubNames();
+                return !subNames.empty()
+                    && std::ranges::all_of(
+                        subNames,
+                        [&selected](const std::string& subName) {
+                            return subName.starts_with("Face")
+                                && !Part::Feature::getTopoShape(
+                                        selected.getObject(),
+                                        Part::ShapeOption::
+                                                NeedSubElement
+                                            | Part::ShapeOption::
+                                                  ResolveLink
+                                            | Part::ShapeOption::
+                                                  Transform,
+                                        subName.c_str()
+                                    )
+                                        .isNull();
+                        }
+                    );
+            }
+        );
 }
 
 

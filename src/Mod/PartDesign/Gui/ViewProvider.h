@@ -62,6 +62,12 @@ public:
     void attach(App::DocumentObject* pcObject) override;
 
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return false;
+    }
+    bool supportsDocumentTimelineOperationDelete() const noexcept override;
+    bool prepareDocumentTimelineOperationDelete() override;
     void onChanged(const App::Property* prop) override;
 
     Gui::ViewProvider* startEditing(int ModNum) override;
@@ -118,7 +124,7 @@ protected:
     virtual TaskDlgFeatureParameters* getEditDialog();
 
     std::string oldWb;
-    ViewProvider* previouslyShownViewProvider {nullptr};
+    Gui::ViewProvider* previouslyShownViewProvider {nullptr};
 
     bool isSetTipIcon {false};
 

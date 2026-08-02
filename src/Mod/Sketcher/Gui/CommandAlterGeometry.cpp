@@ -22,6 +22,8 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <App/DocumentObject.h>
+#include <App/ElementNamingUtils.h>
 #include <Gui/Action.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -43,14 +45,84 @@ using namespace std;
 using namespace SketcherGui;
 using namespace Sketcher;
 
-bool isAlterGeoActive(Gui::Document* doc)
+namespace
 {
-    if (doc) {
-        // checks if a Sketch Viewprovider is in Edit
-        auto vp = dynamic_cast<SketcherGui::ViewProviderSketch*>(doc->getInEdit());
-        return (vp && vp->isInEditMode());
+
+bool isToggleConstructionInput(
+    const Sketcher::SketchObject& sketch,
+    const std::string& subName
+)
+{
+    const std::string elementName =
+        Data::oldElementName(subName.c_str());
+    if (elementName.size() > 4
+        && elementName.starts_with("Edge")) {
+        const int geometryId =
+            std::atoi(elementName.substr(4, 4000).c_str()) - 1;
+        const auto facade = sketch.getGeometryFacade(geometryId);
+        return facade && !facade->isInternalAligned();
+    }
+    if (elementName.size() > 12
+        && elementName.starts_with("ExternalEdge")) {
+        const int geometryId =
+            GeoEnum::RefExt
+            - std::atoi(
+                elementName.substr(12, 4000).c_str()
+            ) + 1;
+        return sketch.getGeometry(geometryId) != nullptr;
+    }
+    if (elementName.size() <= 6
+        || !elementName.starts_with("Vertex")) {
+        return false;
     }
 
+    const int vertexId =
+        std::atoi(elementName.substr(6, 4000).c_str()) - 1;
+    int geometryId = GeoEnum::GeoUndef;
+    PointPos position = PointPos::none;
+    sketch.getGeoVertexIndex(vertexId, geometryId, position);
+    const auto* geometry = sketch.getGeometry(geometryId);
+    return geometry && geometry->is<Part::GeomPoint>();
+}
+
+}
+
+bool isAlterGeoActive(Gui::Document* doc)
+{
+    auto* view = doc
+        ? dynamic_cast<SketcherGui::ViewProviderSketch*>(
+              doc->getInEdit()
+          )
+        : nullptr;
+    if (!view || !view->isInEditMode()) {
+        return false;
+    }
+    auto* sketch = view->getSketchObject();
+    if (!sketch) {
+        return false;
+    }
+
+    const auto selection = Gui::Selection().getSelectionEx(
+        sketch->getDocument()->getName(),
+        App::DocumentObject::getClassTypeId(),
+        Gui::ResolveMode::NoResolve
+    );
+    if (selection.empty()) {
+        return true;
+    }
+
+    if (selection.size() != 1
+        || selection.front().getObject() != sketch) {
+        return false;
+    }
+    for (const auto& subName : selection.front().getSubNames()) {
+        if (isToggleConstructionInput(
+                *sketch,
+                subName
+            )) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -202,30 +274,40 @@ GeometryCreationMode toggleCreationMode(GeometryCreationMode currentMode)
 void CmdSketcherToggleConstruction::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    // Option A: nothing is selected change creation mode from/to construction
-    if (Gui::Selection().countObjectsOfType<Sketcher::SketchObject>() == 0) {
-        auto doc = getActiveGuiDocument();
-        if (doc) {
-            auto vp = dynamic_cast<SketcherGui::ViewProviderSketch*>(doc->getInEdit());
-            if (vp) {
-                GeometryCreationMode newMode = toggleCreationMode(vp->getGeometryCreationMode());
-                vp->setGeometryCreationMode(newMode);
+    auto* doc = getActiveGuiDocument();
+    auto* view = doc
+        ? dynamic_cast<SketcherGui::ViewProviderSketch*>(
+              doc->getInEdit()
+          )
+        : nullptr;
+    if (!view || !view->isInEditMode()) {
+        return;
+    }
+    auto* Obj = view->getSketchObject();
+    if (!Obj) {
+        return;
+    }
 
-                Gui::CommandManager& rcCmdMgr = Gui::Application::Instance->commandManager();
-                rcCmdMgr.updateCommands("ToggleConstruction", static_cast<int>(newMode));
-            }
-        }
+    const auto selection = Gui::Selection().getSelectionEx(
+        Obj->getDocument()->getName(),
+        App::DocumentObject::getClassTypeId(),
+        Gui::ResolveMode::NoResolve
+    );
+    // Option A: nothing is selected change creation mode from/to construction
+    if (selection.empty()) {
+        GeometryCreationMode newMode =
+            toggleCreationMode(view->getGeometryCreationMode());
+        view->setGeometryCreationMode(newMode);
+
+        Gui::Application::Instance->commandManager().updateCommands(
+            "ToggleConstruction",
+            static_cast<int>(newMode)
+        );
     }
     else  // there was a selection, so operate in toggle mode.
     {
-        // get the selection
-        std::vector<Gui::SelectionObject> selection;
-        selection = getSelection().getSelectionEx(nullptr, Sketcher::SketchObject::getClassTypeId());
-
-        auto* Obj = static_cast<Sketcher::SketchObject*>(selection[0].getObject());
-
-        // only one sketch with its subelements are allowed to be selected
-        if (selection.size() != 1) {
+        if (selection.size() != 1
+            || selection.front().getObject() != Obj) {
             Gui::TranslatedUserWarning(
                 Obj,
                 QObject::tr("Wrong selection"),
@@ -235,7 +317,8 @@ void CmdSketcherToggleConstruction::activated(int iMsg)
         }
 
         // get the needed lists and objects
-        const std::vector<std::string>& SubNames = selection[0].getSubNames();
+        const std::vector<std::string>& SubNames =
+            selection.front().getSubNames();
         if (SubNames.empty()) {
             Gui::TranslatedUserWarning(
                 Obj,
@@ -247,18 +330,23 @@ void CmdSketcherToggleConstruction::activated(int iMsg)
 
         // undo command open
         openCommand(QT_TRANSLATE_NOOP("Command", "Toggle construction geometry"));
+        int changed = 0;
 
         // go through the selected subelements
         bool verticesonly = true;
 
-        for (const auto& subname : SubNames) {
+        for (const auto& selectedSubName : SubNames) {
+            const std::string subname =
+                Data::oldElementName(selectedSubName.c_str());
             if ((subname.size() > 4 && subname.substr(0, 4) == "Edge")
                 || (subname.size() > 12 && subname.substr(0, 12) == "ExternalEdge")) {
                 verticesonly = false;
             }
         }
 
-        for (const auto& subname : SubNames) {
+        for (const auto& selectedSubName : SubNames) {
+            const std::string subname =
+                Data::oldElementName(selectedSubName.c_str());
             // It was decided to provide a special behaviour:
             // Vertices will only be toggled to/from construction IF ONLY
             // vertices are within the group.
@@ -280,10 +368,15 @@ void CmdSketcherToggleConstruction::activated(int iMsg)
                 }
                 // issue the actual commands to toggle
                 Gui::cmdAppObjectArgs(Obj, "toggleConstruction(%d) ", geoId);
+                ++changed;
             }
             else if (subname.size() > 12 && subname.substr(0, 12) == "ExternalEdge") {
                 int geoId = GeoEnum::RefExt - std::atoi(subname.substr(12, 4000).c_str()) + 1;
+                if (!Obj->getGeometry(geoId)) {
+                    continue;
+                }
                 Gui::cmdAppObjectArgs(Obj, "toggleConstruction(%d) ", geoId);
+                ++changed;
             }
             else if (verticesonly && subname.size() > 6 && subname.substr(0, 6) == "Vertex") {
                 int vertexId = std::atoi(subname.substr(6, 4000).c_str()) - 1;
@@ -297,16 +390,23 @@ void CmdSketcherToggleConstruction::activated(int iMsg)
                 if (geo && geo->is<Part::GeomPoint>()) {
                     // issue the actual commands to toggle
                     Gui::cmdAppObjectArgs(Obj, "toggleConstruction(%d) ", geoId);
+                    ++changed;
                 }
             }
         }
         // finish the transaction and update
-        commitCommand();
-
-        tryAutoRecompute(Obj);
+        if (changed > 0) {
+            commitCommand();
+            tryAutoRecompute(Obj);
+        }
+        else {
+            abortCommand();
+        }
 
         // clear the selection (convenience)
-        getSelection().clearSelection();
+        getSelection().clearSelection(
+            doc->getDocument()->getName()
+        );
     }
 }
 

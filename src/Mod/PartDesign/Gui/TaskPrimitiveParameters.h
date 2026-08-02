@@ -104,6 +104,9 @@ public Q_SLOTS:
     void onWedgeX2minChanged(double);
     void onWedgeZ2maxChanged(double);
     void onWedgeZ2minChanged(double);
+    void onTubeOuterRadiusChanged(double);
+    void onTubeInnerRadiusChanged(double);
+    void onTubeHeightChanged(double);
 
     void onPlacementChanged();
 

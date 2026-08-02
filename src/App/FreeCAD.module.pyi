@@ -214,6 +214,10 @@ def getDependentObjects(
     """Return objects that depend on one object or object sequence."""
     ...
 
+def timelineOperationDeletionPlan(obj: DocumentObject, /) -> dict[str, object]:
+    """Return the validated native deletion plan for one history operation."""
+    ...
+
 def setActiveTransaction(name: str, persist: bool = False, /) -> int:
     """Start or select the active transaction and return its identifier."""
     ...

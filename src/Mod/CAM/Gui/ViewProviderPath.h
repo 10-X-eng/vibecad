@@ -28,6 +28,7 @@
 #include <Gui/Selection/Selection.h>
 #include <Gui/ViewProviderGeometryObject.h>
 #include <Gui/ViewProviderFeaturePython.h>
+#include <Gui/ViewProviderSuppressibleExtension.h>
 #include <Mod/Part/Gui/SoBrepEdgeSet.h>
 #include <Mod/CAM/PathGlobal.h>
 
@@ -50,7 +51,8 @@ namespace PathGui
 
 class PathSelectionObserver;
 
-class PathGuiExport ViewProviderPath: public Gui::ViewProviderGeometryObject
+class PathGuiExport ViewProviderPath: public Gui::ViewProviderGeometryObject,
+                                      public Gui::ViewProviderSuppressibleExtension
 {
     PROPERTY_HEADER_WITH_OVERRIDE(PathGui::ViewProviderPath);
     using inherited = ViewProviderGeometryObject;

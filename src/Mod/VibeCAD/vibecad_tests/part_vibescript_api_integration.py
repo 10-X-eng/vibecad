@@ -645,7 +645,10 @@ def _exercise_isolated_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": accepted["working_revision"],
-            "replacements": [{"old": "edges=[1,2,3,4]", "new": "edges=[99]"}],
+            "source": base_capture["arguments"]["source"].replace(
+                "edges=[1,2,3,4]",
+                "edges=[99]",
+            ),
         },
     )
     failed_prepared = prepare_candidate(failed_capture)
@@ -691,13 +694,10 @@ def _exercise_isolated_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": failed_prepared["revision"],
-            "replacements": [
-                {"old": "edges=[99]", "new": "edges=[1,2,3,4]"},
-                {
-                    "old": "base = api.transform(seed, scale=[inputs['length']/30,1,1])",
-                    "new": "base = api.transform(seed, scale=[inputs['length']/30,1.2,1])",
-                },
-            ],
+            "source": base_capture["arguments"]["source"].replace(
+                "base = api.transform(seed, scale=[inputs['length']/30,1,1])",
+                "base = api.transform(seed, scale=[inputs['length']/30,1.2,1])",
+            ),
         },
     )
     live_revision_before_build = str(

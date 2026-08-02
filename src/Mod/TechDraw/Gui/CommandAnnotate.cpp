@@ -24,6 +24,7 @@
 # include <QMessageBox>
 
 #include <App/DocumentObject.h>
+#include <Base/Interpreter.h>
 #include <Gui/Action.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -49,6 +50,7 @@
 #include "TaskCenterLine.h"
 #include "TaskCosmeticLine.h"
 #include "TaskCosVertex.h"
+#include "TaskDocumentGuard.h"
 #include "TaskLeaderLine.h"
 #include "TaskLineDecor.h"
 #include "TaskRichAnno.h"
@@ -122,9 +124,19 @@ void CmdTechDrawLeaderLine::activated(int iMsg)
             return;
     }
 
-    Gui::Control().showDialog(new TechDrawGui::TaskDlgLeaderLine(baseFeat,
-                                                                 page));
-    updateActive();
+    if (baseFeat->getDocument() != page->getDocument()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Wrong selection"),
+            QObject::tr("The leader base view must belong to the selected page.")
+        );
+        return;
+    }
+    TaskInternal::showDocumentDialog(
+        new TechDrawGui::TaskDlgLeaderLine(baseFeat, page),
+        page->getDocument()
+    );
+    updateDocument(page->getDocument());
     Gui::Selection().clearSelection();
 }
 
@@ -174,9 +186,47 @@ void CmdTechDrawRichTextAnnotation::activated(int iMsg)
         baseFeat =  dynamic_cast<TechDraw::DrawView *>(selection[0].getObject());
     }
 
-    Gui::Control().showDialog(new TaskDlgRichAnno(baseFeat,
-                                                  page));
-    updateActive();
+    if (baseFeat
+        && (baseFeat->getDocument() != page->getDocument()
+            || baseFeat->findParentPage() != page)) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Wrong selection"),
+            QObject::tr("The annotation owner must belong to the selected page.")
+        );
+        return;
+    }
+    auto* document = page->getDocument();
+    if (document->getBookedTransactionID()
+        != App::NullTransaction) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Task in progress"),
+            QObject::tr(
+                "Finish the current operation before creating an "
+                "annotation."
+            )
+        );
+        return;
+    }
+    const int transactionId = openCommand(
+        document,
+        QT_TRANSLATE_NOOP("Command", "Create Annotation")
+    );
+    if (transactionId == App::NullTransaction) {
+        return;
+    }
+    try {
+        TaskInternal::showDocumentDialog(
+            new TaskDlgRichAnno(baseFeat, page),
+            document
+        );
+    }
+    catch (...) {
+        Gui::Command::abortCommand(transactionId);
+        throw;
+    }
+    updateDocument(document);
     Gui::Selection().clearSelection();
 }
 
@@ -317,8 +367,18 @@ void execCosmeticVertex(Gui::Command* cmd)
     TechDraw::DrawViewPart* baseFeat = nullptr;
     baseFeat =  dynamic_cast<TechDraw::DrawViewPart*>((*shapes.begin()));
 
-    Gui::Control().showDialog(new TaskDlgCosVertex(baseFeat,
-                                                   page));
+    if (!baseFeat || baseFeat->getDocument() != page->getDocument()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Wrong selection"),
+            QObject::tr("The cosmetic vertex view must belong to the selected page.")
+        );
+        return;
+    }
+    TaskInternal::showDocumentDialog(
+        new TaskDlgCosVertex(baseFeat, page),
+        page->getDocument()
+    );
 }
 
 void execMidpoints(Gui::Command* cmd)
@@ -330,17 +390,34 @@ void execMidpoints(Gui::Command* cmd)
     if (!dvp || selectedEdges.empty())
         return;
 
-    cmd->openCommand(QT_TRANSLATE_NOOP("Command", "Add midpoint vertices"));
-
     const TechDraw::BaseGeomPtrVector edges = dvp->getEdgeGeometry();
+    std::vector<Base::Vector3d> points;
+    points.reserve(selectedEdges.size());
     for (auto& s: selectedEdges) {
-        int GeoId(TechDraw::DrawUtil::getIndexFromName(s));
-        TechDraw::BaseGeomPtr geom = edges.at(GeoId);
+        const int geometryId = TechDraw::DrawUtil::getIndexFromName(s);
+        if (geometryId < 0
+            || static_cast<std::size_t>(geometryId) >= edges.size()
+            || !edges[static_cast<std::size_t>(geometryId)]) {
+            return;
+        }
+        TechDraw::BaseGeomPtr geom =
+            edges[static_cast<std::size_t>(geometryId)];
         Base::Vector3d mid = geom->getMidPoint();
         // invert the point so the math works correctly
         mid = DrawUtil::invertY(mid);
         mid = CosmeticVertex::makeCanonicalPoint(dvp, mid);
-        dvp->addCosmeticVertex(mid);
+        points.push_back(mid);
+    }
+    if (points.empty()) {
+        return;
+    }
+
+    cmd->openCommand(
+        dvp->getDocument(),
+        QT_TRANSLATE_NOOP("Command", "Add midpoint vertices")
+    );
+    for (const auto& point : points) {
+        dvp->addCosmeticVertex(point);
     }
 
     cmd->commitCommand();
@@ -357,21 +434,36 @@ void execQuadrants(Gui::Command* cmd)
     if (!dvp || selectedEdges.empty())
         return;
 
-    cmd->openCommand(QT_TRANSLATE_NOOP("Command", "Add Quadrant vertices"));
-
     const TechDraw::BaseGeomPtrVector edges = dvp->getEdgeGeometry();
+    std::vector<Base::Vector3d> points;
     for (auto& s: selectedEdges) {
-        int GeoId(TechDraw::DrawUtil::getIndexFromName(s));
-        TechDraw::BaseGeomPtr geom = edges.at(GeoId);
+        const int geometryId = TechDraw::DrawUtil::getIndexFromName(s);
+        if (geometryId < 0
+            || static_cast<std::size_t>(geometryId) >= edges.size()
+            || !edges[static_cast<std::size_t>(geometryId)]) {
+            return;
+        }
+        TechDraw::BaseGeomPtr geom =
+            edges[static_cast<std::size_t>(geometryId)];
         std::vector<Base::Vector3d> quads = geom->getQuads();
         for (auto& q: quads) {
             // invert the point so the math works correctly
             Base::Vector3d iq = DrawUtil::invertY(q);
             iq = CosmeticVertex::makeCanonicalPoint(dvp, iq);
-            dvp->addCosmeticVertex(iq);
+            points.push_back(iq);
         }
     }
+    if (points.empty()) {
+        return;
+    }
 
+    cmd->openCommand(
+        dvp->getDocument(),
+        QT_TRANSLATE_NOOP("Command", "Add Quadrant vertices")
+    );
+    for (const auto& point : points) {
+        dvp->addCosmeticVertex(point);
+    }
     cmd->commitCommand();
 
     dvp->recomputeFeature();
@@ -421,9 +513,19 @@ void CmdTechDrawCosmeticVertex::activated(int iMsg)
         return;
     }
 
-    Gui::Control().showDialog(new TaskDlgCosVertex(baseFeat,
-                                                   page));
-    updateActive();
+    if (baseFeat->getDocument() != page->getDocument()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Wrong selection"),
+            QObject::tr("The cosmetic vertex view must belong to the selected page.")
+        );
+        return;
+    }
+    TaskInternal::showDocumentDialog(
+        new TaskDlgCosVertex(baseFeat, page),
+        page->getDocument()
+    );
+    updateDocument(page->getDocument());
     Gui::Selection().clearSelection();
 }
 
@@ -537,23 +639,73 @@ void CmdTechDrawAnnotation::activated(int iMsg)
     if (!page) {
         return;
     }
+    App::Document* document = page->getDocument();
+    const std::string documentName = document->getName();
     std::string PageName = page->getNameInDocument();
 
-    std::string FeatName = getUniqueObjectName("Annotation");
-    openCommand(QT_TRANSLATE_NOOP("Command", "Create Annotation"));
-    doCommand(Doc, "App.activeDocument().addObject('TechDraw::DrawViewAnnotation', '%s')", FeatName.c_str());
-    doCommand(Doc, "App.activeDocument().%s.translateLabel('DrawViewAnnotation', 'Annotation', '%s')",
-              FeatName.c_str(), FeatName.c_str());
+    std::string FeatName = document->getUniqueObjectName("Annotation");
+    openCommand(
+        document,
+        QT_TRANSLATE_NOOP("Command", "Create Annotation")
+    );
+    const QString annotationFactory =
+        QStringLiteral(
+            "App.getDocument('%1').addObject"
+            "('TechDraw::DrawViewAnnotation', '%2')"
+        )
+            .arg(
+                QString::fromStdString(
+                    Base::InterpreterSingleton::strToPython(documentName)
+                ),
+                QString::fromStdString(FeatName)
+            );
+    auto* annotation = dynamic_cast<TechDraw::DrawViewAnnotation*>(
+        Gui::Command::runDocumentObjectCommand(
+            Doc,
+            *document,
+            annotationFactory.toUtf8(),
+            TechDraw::DrawViewAnnotation::getClassTypeId()
+        )
+    );
+    if (!annotation) {
+        throw Base::RuntimeError(
+            "The drawing annotation object could not be created"
+        );
+    }
+    FeatName = annotation->getNameInDocument();
+    doCommand(
+        Doc,
+        "App.getDocument('%s').getObject('%s').translateLabel("
+        "'DrawViewAnnotation', 'Annotation', '%s')",
+        documentName.c_str(),
+        FeatName.c_str(),
+        FeatName.c_str()
+    );
 
     auto baseView = CommandHelpers::firstViewInSelection(this);
     if (baseView) {
         auto baseName = baseView->getNameInDocument();
-        doCommand(Doc, "App.activeDocument().%s.Owner = App.activeDocument().%s",
-                  FeatName.c_str(), baseName);
+        doCommand(
+            Doc,
+            "App.getDocument('%s').getObject('%s').Owner = "
+            "App.getDocument('%s').getObject('%s')",
+            documentName.c_str(),
+            FeatName.c_str(),
+            documentName.c_str(),
+            baseName
+        );
     }
 
-    doCommand(Doc, "App.activeDocument().%s.addView(App.activeDocument().%s)", PageName.c_str(), FeatName.c_str());
-    updateActive();
+    doCommand(
+        Doc,
+        "App.getDocument('%s').getObject('%s').addView("
+        "App.getDocument('%s').getObject('%s'))",
+        documentName.c_str(),
+        PageName.c_str(),
+        documentName.c_str(),
+        FeatName.c_str()
+    );
+    updateDocument(document);
     commitCommand();
 }
 
@@ -747,6 +899,15 @@ void execCenterLine(Gui::Command* cmd)
         }
     }
 
+    if (baseFeat->getDocument() != page->getDocument()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Wrong selection"),
+            QObject::tr("The centerline view must belong to the selected page.")
+        );
+        return;
+    }
+
     if ( (faceNames.empty()) &&
          (edgeNames.empty()) ) {
         QMessageBox::warning(Gui::getMainWindow(), QObject::tr("Wrong selection"),
@@ -754,10 +915,14 @@ void execCenterLine(Gui::Command* cmd)
         return;
     }
     if (!faceNames.empty()) {
-        Gui::Control().showDialog(new TaskDlgCenterLine(baseFeat,
-                                                        page,
-                                                        faceNames,
-                                                        false));
+        cmd->openCommand(
+            page->getDocument(),
+            QT_TRANSLATE_NOOP("Command", "Create Centerline")
+        );
+        TaskInternal::showDocumentDialog(
+            new TaskDlgCenterLine(baseFeat, page, faceNames, false),
+            page->getDocument()
+        );
     } else if (edgeNames.empty()) {
         QMessageBox::warning(Gui::getMainWindow(), QObject::tr("Wrong selection"),
                              QObject::tr("No CenterLine in selection"));
@@ -769,10 +934,19 @@ void execCenterLine(Gui::Command* cmd)
                              QObject::tr("Selection is not a centerline"));
             return;
         }
-        Gui::Control().showDialog(new TaskDlgCenterLine(baseFeat,
-                                                        page,
-                                                        edgeNames.front(),
-                                                        true));
+        cmd->openCommand(
+            page->getDocument(),
+            QT_TRANSLATE_NOOP("Command", "Edit Centerline")
+        );
+        TaskInternal::showDocumentDialog(
+            new TaskDlgCenterLine(
+                baseFeat,
+                page,
+                edgeNames.front(),
+                true
+            ),
+            page->getDocument()
+        );
     }
 }
 
@@ -827,12 +1001,24 @@ void exec2LineCenterLine(Gui::Command* cmd)
     if (!dvp || selectedEdges.empty()) {
         return;
     }
+    if (dvp->getDocument() != page->getDocument()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Wrong selection"),
+            QObject::tr("The centerline view must belong to the selected page.")
+        );
+        return;
+    }
 
     if (selectedEdges.size() == 2) {
-        Gui::Control().showDialog(new TaskDlgCenterLine(dvp,
-                                                        page,
-                                                        selectedEdges,
-                                                        false));
+        cmd->openCommand(
+            page->getDocument(),
+            QT_TRANSLATE_NOOP("Command", "Create Centerline")
+        );
+        TaskInternal::showDocumentDialog(
+            new TaskDlgCenterLine(dvp, page, selectedEdges, false),
+            page->getDocument()
+        );
     } else if (selectedEdges.size() == 1) {
         TechDraw::CenterLine* cl = dvp->getCenterLineBySelection(selectedEdges.front());
         if (!cl) {
@@ -840,10 +1026,19 @@ void exec2LineCenterLine(Gui::Command* cmd)
                              QObject::tr("Selection is not a Centerline"));
             return;
         }
-        Gui::Control().showDialog(new TaskDlgCenterLine(dvp,
-                                                page,
-                                                selectedEdges.front(),
-                                                true));
+        cmd->openCommand(
+            page->getDocument(),
+            QT_TRANSLATE_NOOP("Command", "Edit Centerline")
+        );
+        TaskInternal::showDocumentDialog(
+            new TaskDlgCenterLine(
+                dvp,
+                page,
+                selectedEdges.front(),
+                true
+            ),
+            page->getDocument()
+        );
     } else {  //not create, not edit, what is this???
         QMessageBox::warning(Gui::getMainWindow(), QObject::tr("Wrong selection"),
                              QObject::tr("Selection not understood"));
@@ -934,6 +1129,15 @@ void exec2PointCenterLine(Gui::Command* cmd)
         }
     }
 
+    if (baseFeat->getDocument() != page->getDocument()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Wrong selection"),
+            QObject::tr("The centerline view must belong to the selected page.")
+        );
+        return;
+    }
+
     if (vertexNames.empty() &&
         edgeNames.empty()) {
         QMessageBox::warning(Gui::getMainWindow(), QObject::tr("Wrong selection"),
@@ -941,10 +1145,19 @@ void exec2PointCenterLine(Gui::Command* cmd)
         return;
     }
     if (!vertexNames.empty() && (vertexNames.size() == 2)) {
-        Gui::Control().showDialog(new TaskDlgCenterLine(baseFeat,
-                                                        page,
-                                                        vertexNames,
-                                                        false));
+        cmd->openCommand(
+            page->getDocument(),
+            QT_TRANSLATE_NOOP("Command", "Create Centerline")
+        );
+        TaskInternal::showDocumentDialog(
+            new TaskDlgCenterLine(
+                baseFeat,
+                page,
+                vertexNames,
+                false
+            ),
+            page->getDocument()
+        );
     } else if (!edgeNames.empty() && (edgeNames.size() == 1)) {
         TechDraw::CenterLine* cl = baseFeat->getCenterLineBySelection(edgeNames.front());
         if (!cl) {
@@ -953,10 +1166,19 @@ void exec2PointCenterLine(Gui::Command* cmd)
             return;
         }
 
-        Gui::Control().showDialog(new TaskDlgCenterLine(baseFeat,
-                                                        page,
-                                                        edgeNames.front(),
-                                                        false));
+        cmd->openCommand(
+            page->getDocument(),
+            QT_TRANSLATE_NOOP("Command", "Edit Centerline")
+        );
+        TaskInternal::showDocumentDialog(
+            new TaskDlgCenterLine(
+                baseFeat,
+                page,
+                edgeNames.front(),
+                false
+            ),
+            page->getDocument()
+        );
     } else if (vertexNames.empty()) {
         QMessageBox::warning(Gui::getMainWindow(), QObject::tr("Wrong selection"),
                              QObject::tr("Select 2 vertices or 1 centerline"));
@@ -1045,6 +1267,16 @@ void execLine2Points(Gui::Command* cmd)
                              QObject::tr("You must select a base view for the line"));
         return;
     }
+    if (baseFeat->getDocument() != page->getDocument()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Wrong selection"),
+            QObject::tr(
+                "The cosmetic line view must belong to the selected page"
+            )
+        );
+        return;
+    }
 
     //TODO: should be a smarter check
     if ( (subNames2D.empty()) &&
@@ -1074,8 +1306,10 @@ void execLine2Points(Gui::Command* cmd)
             return;
         }
 
-        Gui::Control().showDialog(new TaskDlgCosmeticLine(baseFeat,
-                                                          edgeNames.front()));
+        TaskInternal::showDocumentDialog(
+            new TaskDlgCosmeticLine(baseFeat, edgeNames.front()),
+            baseFeat->getDocument()
+        );
         return;
     }
 
@@ -1110,9 +1344,10 @@ void execLine2Points(Gui::Command* cmd)
         return;
     }
 
-    Gui::Control().showDialog(new TaskDlgCosmeticLine(baseFeat,
-                                                      points,
-                                                      is3d));
+    TaskInternal::showDocumentDialog(
+        new TaskDlgCosmeticLine(baseFeat, points, is3d),
+        baseFeat->getDocument()
+    );
 }
 
 //===========================================================================
@@ -1293,6 +1528,16 @@ void CmdTechDrawDecorateLine::activated(int iMsg)
                                 QObject::tr("No view in selection"));
         return;
     }
+    if (baseFeat->getDocument() != page->getDocument()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Wrong selection"),
+            QObject::tr(
+                "The selected lines must belong to the selected page"
+            )
+        );
+        return;
+    }
 
     std::vector<std::string> edgeNames;
     for (auto& s: subNames) {
@@ -1302,9 +1547,15 @@ void CmdTechDrawDecorateLine::activated(int iMsg)
         }
     }
 
-    Gui::Control().showDialog(new TaskDlgLineDecor(baseFeat,
-                                                   edgeNames));
-    updateActive();
+    openCommand(
+        baseFeat->getDocument(),
+        QT_TRANSLATE_NOOP("Command", "Edit Line Appearance")
+    );
+    TaskInternal::showDocumentDialog(
+        new TaskDlgLineDecor(baseFeat, edgeNames),
+        baseFeat->getDocument()
+    );
+    updateDocument(baseFeat->getDocument());
     Gui::Selection().clearSelection();
 }
 
@@ -1420,20 +1671,72 @@ void CmdTechDrawWeldSymbol::activated(int iMsg)
                                          getObjectsOfType(TechDraw::DrawWeldSymbol::getClassTypeId());
     TechDraw::DrawLeaderLine* leadFeat = nullptr;
     TechDraw::DrawWeldSymbol* weldFeat = nullptr;
-    if ( (leaders.size() != 1) &&
-         (welds.size() != 1) ) {
+    if (leaders.size() + welds.size() != 1) {
         QMessageBox::warning(Gui::getMainWindow(), QObject::tr("Wrong selection"),
             QObject::tr("Select exactly one leader line or one weld symbol"));
         return;
     }
     if (!leaders.empty()) {
         leadFeat = static_cast<TechDraw::DrawLeaderLine*> (leaders.front());
-        Gui::Control().showDialog(new TaskDlgWeldingSymbol(leadFeat));
+        if (leadFeat->getDocument() != page->getDocument()
+            || leadFeat->findParentPage() != page) {
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                QObject::tr("Wrong selection"),
+                QObject::tr("The leader must belong to the selected page.")
+            );
+            return;
+        }
     } else if (!welds.empty()) {
         weldFeat = static_cast<TechDraw::DrawWeldSymbol*> (welds.front());
-        Gui::Control().showDialog(new TaskDlgWeldingSymbol(weldFeat));
+        if (weldFeat->getDocument() != page->getDocument()
+            || weldFeat->findParentPage() != page) {
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                QObject::tr("Wrong selection"),
+                QObject::tr("The weld symbol must belong to the selected page.")
+            );
+            return;
+        }
     }
-    updateActive();
+    auto* document = page->getDocument();
+    if (document->getBookedTransactionID()
+        != App::NullTransaction) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Task in progress"),
+            QObject::tr(
+                "Finish the current operation before editing a weld symbol."
+            )
+        );
+        return;
+    }
+    const int transactionId = openCommand(
+        document,
+        leadFeat
+            ? QT_TRANSLATE_NOOP("Command", "Create Weld Symbol")
+            : QT_TRANSLATE_NOOP("Command", "Edit Weld Symbol")
+    );
+    if (transactionId == App::NullTransaction) {
+        return;
+    }
+    try {
+        TaskInternal::showDocumentDialog(
+            leadFeat
+                ? static_cast<Gui::TaskView::TaskDialog*>(
+                      new TaskDlgWeldingSymbol(leadFeat)
+                  )
+                : static_cast<Gui::TaskView::TaskDialog*>(
+                      new TaskDlgWeldingSymbol(weldFeat)
+                  ),
+            document
+        );
+    }
+    catch (...) {
+        Gui::Command::abortCommand(transactionId);
+        throw;
+    }
+    updateDocument(document);
     Gui::Selection().clearSelection();
 }
 
@@ -1466,18 +1769,26 @@ void CmdTechDrawSurfaceFinishSymbols::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
 
-    std::string ownerName;
-    std::vector<Gui::SelectionObject> selection = this->getSelection().getSelectionEx();
-    if (selection.empty())
-    {
-        TechDraw::DrawPage *page = DrawGuiUtil::findPage(this);
-        if (!page) {
-            return;
-        }
-
-        ownerName = page->getNameInDocument();
+    Gui::TaskView::TaskDialog* dialog =
+        Gui::Control().activeDialog();
+    if (dialog) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Task in progress"),
+            QObject::tr("Close the active task and try again.")
+        );
+        return;
     }
-    else {
+
+    TechDraw::DrawPage* page = DrawGuiUtil::findPage(this);
+    if (!page) {
+        return;
+    }
+
+    App::DocumentObject* owner = page;
+    std::string subName;
+    std::vector<Gui::SelectionObject> selection = this->getSelection().getSelectionEx();
+    if (!selection.empty()) {
         auto objFeat = dynamic_cast<TechDraw::DrawView *>(selection.front().getObject());
         if ( !objFeat ||
              !(objFeat->isDerivedFrom<TechDraw::DrawViewPart>() ||
@@ -1486,19 +1797,64 @@ void CmdTechDrawSurfaceFinishSymbols::activated(int iMsg)
                                  QObject::tr("Selected object is not a part view, nor a leader line"));
             return;
         }
-
-        ownerName = objFeat->getNameInDocument();
+        if (objFeat->getDocument() != page->getDocument()
+            || objFeat->findParentPage() != page) {
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                QObject::tr("Wrong selection"),
+                QObject::tr(
+                    "The selected view must belong to the active drawing page."
+                )
+            );
+            return;
+        }
+        owner = objFeat;
 
         const std::vector<std::string> &subNames = selection.front().getSubNames();
         if (!subNames.empty()) {
-            ownerName += '.';
-            ownerName += subNames.front();
+            subName = subNames.front();
         }
     }
 
-    Gui::Control().showDialog(new TechDrawGui::TaskDlgSurfaceFinishSymbols(ownerName));
+    App::Document* taskDocument = page->getDocument();
+    if (!taskDocument || taskDocument != getDocument()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Wrong selection"),
+            QObject::tr("The surface-finish owner must belong to the active drawing.")
+        );
+        return;
+    }
+    if (taskDocument->getBookedTransactionID()
+        != App::NullTransaction) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Task in progress"),
+            QObject::tr(
+                "Finish the current operation before adding a surface-finish symbol."
+            )
+        );
+        return;
+    }
+    try {
+        TaskInternal::showDocumentDialog(
+            new TechDrawGui::TaskDlgSurfaceFinishSymbols(
+                owner,
+                std::move(subName)
+            ),
+            taskDocument
+        );
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Surface finish symbol"),
+            QString::fromUtf8(error.what())
+        );
+        return;
+    }
 
-    updateActive();
+    updateDocument(taskDocument);
     Gui::Selection().clearSelection();
 }
 
@@ -1531,4 +1887,3 @@ void CreateTechDrawCommandsAnnotate()
     rcCmdMgr.addCommand(new CmdTechDrawWeldSymbol());
     rcCmdMgr.addCommand(new CmdTechDrawSurfaceFinishSymbols());
 }
-

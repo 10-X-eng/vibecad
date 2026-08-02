@@ -28,6 +28,7 @@
 #include <Mod/TechDraw/TechDrawGlobal.h>
 #include <Mod/TechDraw/App/DrawHatch.h>
 
+#include "TaskDocumentGuard.h"
 #include "ui_TaskHatch.h"
 
 
@@ -74,12 +75,15 @@ protected:
     void saveHatchState();
     void restoreHatchState();
     void getParameters();
+    bool resolveTargets();
 
 private:
     std::unique_ptr<Ui_TaskHatch> ui;
     TechDraw::DrawHatch* m_hatch;
     TechDrawGui::ViewProviderHatch* m_vp;
     TechDraw::DrawViewPart* m_dvp;
+    TaskInternal::ObjectIdentity<TechDraw::DrawHatch> m_hatchIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewPart> m_viewIdentity;
     std::vector<std::string> m_subs;
     std::string m_file;
     double m_scale;

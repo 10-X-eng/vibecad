@@ -30,8 +30,11 @@
 #include <Base/Tools.h>
 
 #include <Mod/TechDraw/App/DrawLeaderLine.h>
+#include <algorithm>
+
 #include <Mod/TechDraw/App/DrawTile.h>
 #include <Mod/TechDraw/App/DrawTileWeld.h>
+#include <Mod/TechDraw/App/DrawUtil.h>
 #include <Mod/TechDraw/App/DrawWeldSymbol.h>
 #include <Mod/TechDraw/App/DrawUtil.h>
 
@@ -367,6 +370,9 @@ void QGIWeldSymbol::drawFieldFlag()
 void QGIWeldSymbol::getTileFeats()
 {
     std::vector<TechDraw::DrawTileWeld*> tiles = getFeature()->getTiles();
+    std::erase_if(tiles, [](const TechDraw::DrawTileWeld* tile) {
+        return !TechDraw::DrawUtil::isActiveInDocumentTimeline(tile);
+    });
     m_arrowFeat = nullptr;
     m_otherFeat = nullptr;
 

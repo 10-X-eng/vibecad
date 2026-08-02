@@ -29,6 +29,7 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
 
 namespace App
 {
@@ -86,6 +87,9 @@ protected:
     void failNoObject();
     bool isBaseValid();
     bool isSectionValid();
+    bool resolveTargets();
+    bool resolveSources();
+    void captureSources();
 
     void updateUi();
 
@@ -118,16 +122,24 @@ private:
     App::Document* m_doc;
     TechDraw::DrawViewPart* m_baseView;
     TechDraw::DrawComplexSection* m_section;
+    TaskInternal::DocumentIdentity m_documentIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage> m_pageIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewPart> m_baseIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawComplexSection>
+        m_sectionIdentity;
+    TaskInternal::ObjectIdentity<App::DocumentObject> m_profileIdentity;
     std::vector<App::DocumentObject*> m_shapes;
     std::vector<App::DocumentObject*> m_xShapes;
+    std::vector<TaskInternal::ObjectIdentity<App::DocumentObject>>
+        m_shapeIdentities;
+    std::vector<TaskInternal::ObjectIdentity<App::DocumentObject>>
+        m_xShapeIdentities;
     App::DocumentObject* m_profileObject;
     std::vector<std::string> m_profileSubs;
     std::string m_dirName;
     std::string m_sectionName;
     Base::Vector3d m_saveNormal;
     Base::Vector3d m_saveXDir;
-    std::string m_saveBaseName;
-    std::string m_savePageName;
     std::string m_saveSymbol;
     std::string m_saveDirName;
     Base::Vector3d m_saveDirection;

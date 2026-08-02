@@ -71,7 +71,6 @@ def read(filename):
     d["Fluidic"] = {}
     d["Thermal"] = {}
     d["Electromagnetic"] = {}
-    d["Architectural"] = {}
     d["Rendering"] = {}
     d["VectorRendering"] = {}
     d["Cost"] = {}
@@ -202,9 +201,6 @@ def yamThermal(card):
 def yamElectromagnetic(card):
     return yamSection(card, 'Electromagnetic', 'b2eb5f48-74b3-4193-9fbb-948674f427f3')
 
-def yamArchitectural(card):
-    return yamSection(card, 'Architectural', '32439c3b-262f-4b7b-99a8-f7f44e5894c8')
-
 def yamCost(card):
     return yamSection(card, 'Costs', '881df808-8726-4c2e-be38-688bb6cce466')
 
@@ -235,7 +231,6 @@ def saveYaml(card, output):
         len(card["Fluidic"]) > 0 or \
         len(card["Thermal"]) > 0 or \
         len(card["Electromagnetic"]) > 0 or \
-        len(card["Architectural"]) > 0 or \
         len(card["Cost"]) > 0 or \
         len(yamModels) > 0:
         yam += "Models:\n"
@@ -248,8 +243,6 @@ def saveYaml(card, output):
             yam += yamThermal(card["Thermal"])
         if "Electromagnetic" in card:
             yam += yamElectromagnetic(card["Electromagnetic"])
-        if "Architectural" in card:
-            yam += yamArchitectural(card["Architectural"])
         if "Cost" in card:
             yam += yamCost(card["Cost"])
     if len(card["Rendering"]) > 0 or len(card["VectorRendering"]) > 0:

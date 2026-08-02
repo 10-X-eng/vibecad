@@ -22,6 +22,8 @@
  ***************************************************************************/
 
 #include <cmath>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <App/Application.h>
@@ -45,6 +47,7 @@
 
 #include "AssemblyObject.h"
 #include "AssemblyLink.h"
+#include "AssemblyUtils.h"
 #include "BomObject.h"
 #include "BomObjectPy.h"
 
@@ -112,7 +115,7 @@ PyObject* BomObject::getPyObject()
 
 App::DocumentObjectExecReturn* BomObject::execute()
 {
-    if (autoGenerate.getValue()) {
+    if (isTimelineOperationActive(this) && autoGenerate.getValue()) {
         generateBOM();
     }
 
@@ -153,6 +156,11 @@ void BomObject::saveCustomColumnData()
 
 void BomObject::generateBOM()
 {
+    auto* assembly = getAssembly();
+    if (assembly && !isTimelineOperationActive(assembly)) {
+        return;
+    }
+
     saveCustomColumnData();
     clearAll();
     obj_list.clear();
@@ -172,7 +180,6 @@ void BomObject::generateBOM()
     }
     ++row;
 
-    auto* assembly = getAssembly();
     if (assembly) {
         addObjectChildrenToBom(assembly->getOutList(), row, "");
     }
@@ -199,7 +206,7 @@ void BomObject::addObjectChildrenToBom(
     size_t sub_i = 1;
 
     for (auto* child : objs) {
-        if (!child) {
+        if (!child || !isTimelineOperationActive(child)) {
             continue;
         }
 
@@ -207,13 +214,13 @@ void BomObject::addObjectChildrenToBom(
 
         if (auto* asmLink = freecad_cast<AssemblyLink*>(child)) {
             child = asmLink->getLinkedAssembly();
-            if (!child) {
+            if (!child || !isTimelineOperationActive(child)) {
                 continue;
             }
         }
         else if (child->isDerivedFrom<App::Link>()) {
             child = static_cast<App::Link*>(child)->getLinkedObject();
-            if (!child) {
+            if (!child || !isTimelineOperationActive(child)) {
                 continue;
             }
         }
@@ -366,9 +373,36 @@ std::string BomObject::getBomPropertyValue(App::DocumentObject* obj, const std::
 
 AssemblyObject* BomObject::getAssembly() const
 {
-    for (auto& obj : getInList()) {
-        if (obj->isDerivedFrom<AssemblyObject>()) {
-            return static_cast<AssemblyObject*>(obj);
+    std::vector<std::pair<App::DocumentObject*, const App::DocumentObject*>>
+        pending;
+    for (auto* parent : getInList()) {
+        pending.emplace_back(parent, this);
+    }
+    std::unordered_set<const App::DocumentObject*> visited = {
+        this,
+    };
+    while (!pending.empty()) {
+        const auto [candidate, child] = pending.back();
+        pending.pop_back();
+        if (!candidate || !child || visited.contains(candidate)) {
+            continue;
+        }
+        const auto* group =
+            candidate->getExtensionByType<App::GroupExtension>(true);
+        if (!group || !group->hasObject(child, false)) {
+            continue;
+        }
+        visited.insert(candidate);
+
+        if (candidate->isDerivedFrom<AssemblyObject>()) {
+            return static_cast<AssemblyObject*>(candidate);
+        }
+
+        // Follow only true group ownership. Spreadsheet dependencies and
+        // arbitrary object links may also appear in InList, but they do not
+        // define which assembly owns this BOM.
+        for (auto* parent : candidate->getInList()) {
+            pending.emplace_back(parent, candidate);
         }
     }
     return nullptr;

@@ -83,11 +83,6 @@
       <translation>Cruthaíonn sé doiciméad Dréachta 2T</translation>
     </message>
     <message>
-      <location filename="../../StartView.cpp" line="235"/>
-      <source>BIM/Architecture</source>
-      <translation>BIM/Ailtireacht</translation>
-    </message>
-    <message>
       <location filename="../../StartView.cpp" line="212"/>
       <source>Empty File</source>
       <translation>Comhad Folamh</translation>
@@ -116,11 +111,6 @@
       <location filename="../../StartView.cpp" line="228"/>
       <source>Creates an assembly project</source>
       <translation>Cruthaíonn tionscadal tionóil</translation>
-    </message>
-    <message>
-      <location filename="../../StartView.cpp" line="236"/>
-      <source>Creates an architectural project</source>
-      <translation>Cruthaíonn tionscadal ailtireachta</translation>
     </message>
     <message>
       <location filename="../../StartView.cpp" line="520"/>

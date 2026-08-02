@@ -53,6 +53,7 @@ public:
     ~Mesh2ShapeGmsh() override;
 
     void process(App::Document* doc, const std::list<App::SubObjectT>&);
+    void reject();
 
 Q_SIGNALS:
     void processed();
@@ -92,10 +93,15 @@ public:
     explicit Tessellation(QWidget* parent = nullptr);
     ~Tessellation() override;
     bool accept();
+    void reject();
 
 protected:
     void changeEvent(QEvent* e) override;
-    void process(int method, App::Document* doc, const std::list<App::SubObjectT>&);
+    void process(
+        int method,
+        App::Document* doc,
+        const std::list<App::SubObjectT>&
+    );
     void saveParameters(int method);
     void setFaceColors(int method, App::Document* doc, App::DocumentObject* obj);
     void addFaceColors(Mesh::Feature* mesh, const std::vector<Base::Color>& colorPerSegm);
@@ -106,6 +112,17 @@ protected:
     std::vector<Base::Color> getUniqueColors(const std::vector<Base::Color>& colors) const;
 
 private:
+    bool processAndCommit(
+        int method,
+        App::Document* doc,
+        const std::list<App::SubObjectT>&
+    );
+    void setFaceColors(
+        int method,
+        App::Document* doc,
+        App::DocumentObject* source,
+        Mesh::Feature* result
+    );
     void setupConnections();
     void meshingMethod(int id);
     void onEstimateMaximumEdgeLengthClicked();
@@ -115,8 +132,10 @@ private:
     void gmshProcessed();
 
 private:
+    class SelectionState;
     QString document;
     QPointer<Mesh2ShapeGmsh> gmsh;
+    std::unique_ptr<SelectionState> selectionState;
     std::unique_ptr<Ui_Tessellation> ui;
 };
 

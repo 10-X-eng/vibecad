@@ -434,6 +434,17 @@ public:
     fastsignals::signal<void (const Document&)> signalStartRestoreDocument;
     /// Signal after the document has restored.
     fastsignals::signal<void (const Document&)> signalFinishRestoreDocument;
+    /**
+     * Signal after one complete object-import batch has restored all links.
+     *
+     * Cross-module persistent-identity systems use this two-pass boundary to
+     * remap defining identities and their string references coherently. The
+     * imported objects still carry ObjImporting while this signal runs.
+     */
+    fastsignals::signal<void(
+        Document&,
+        const std::vector<DocumentObject*>&
+    )> signalFinishImportObjects;
     /// Signal on pending reloading of a partial document.
     fastsignals::signal<void (const Document&)> signalPendingReloadDocument;
     /// Signal on starting to save a document.
@@ -452,8 +463,39 @@ public:
     fastsignals::signal<void (const std::string&)> signalBeforeOpenTransaction;
     /// Signal before closing/aborting an active transaction.
     fastsignals::signal<void (bool)> signalBeforeCloseTransaction;
+    /**
+     * Signal immediately before one exact transaction is committed or
+     * aborted, while its identity is still active.
+     *
+     * Commit observers may atomically join another document to
+     * @p transactionId and complete derived document state before the
+     * transaction journals are closed. The participant list is collected
+     * again after observers return, so newly joined documents are committed
+     * with the same identity. Abort observers must not create model changes.
+     *
+     * Throwing leaves the exact transaction open, allowing its owner to
+     * report the failure or abort it.
+     */
+    fastsignals::signal<void (
+        int transactionId,
+        bool aborted,
+        const std::vector<Document*>& participatingDocuments
+    )> signalBeforeExactTransactionClose;
     /// Signal after closing/aborting an active transaction.
     fastsignals::signal<void (bool)> signalCloseTransaction;
+    /**
+     * Signal after the exact transaction has closed in every participating
+     * document, before legacy close observers are notified.
+     *
+     * Observers must use @p transactionId as the completed identity. A legacy
+     * close observer may synchronously open a successor transaction before
+     * closeActiveTransaction() returns.
+     */
+    fastsignals::signal<void (
+        int transactionId,
+        bool aborted,
+        const std::vector<Document*>& participatingDocuments
+    )> signalExactTransactionClosed;
     /// Signal on show hidden items.
     fastsignals::signal<void (const Document&)> signalShowHidden;
     /// Signal on starting to open document(s).
@@ -539,6 +581,17 @@ public:
     fastsignals::signal<void (const App::ExtensionContainer&, std::string extension)> signalBeforeAddingDynamicExtension;
     /// Signal after the extension was added.
     fastsignals::signal<void (const App::ExtensionContainer&, std::string extension)> signalAddedDynamicExtension;
+    /**
+     * Signal after a close request resolves the exact live document but
+     * before transaction-lock validation.
+     *
+     * Scoped transaction owners may use this boundary to roll back and
+     * release their own locks. Observers must not delete the document.
+     *
+     * This signal is deliberately appended after the established public
+     * signal layout so existing binary clients retain every prior offset.
+     */
+    fastsignals::signal<void (const Document&)> signalBeforeCloseDocument;
     /// @}
     // clang-format off
     // NOLINTEND

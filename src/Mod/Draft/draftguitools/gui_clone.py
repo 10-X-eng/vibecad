@@ -48,11 +48,14 @@ from PySide.QtCore import QT_TRANSLATE_NOOP
 
 import FreeCAD as App
 import FreeCADGui as Gui
+import Draft
 import Draft_rc
 import draftguitools.gui_base_original as gui_base_original
 import draftguitools.gui_tool_utils as gui_tool_utils
 import draftutils.todo as todo
+from draftutils import timeline
 from draftutils.messages import _msg, _wrn
+from draftutils.transaction import run_document_mutation
 from draftutils.translate import translate
 
 # The module is used to prevent complaints from code checkers (flake8)
@@ -104,18 +107,30 @@ class Clone(gui_base_original.Modifier):
         elif len(objs_shape) < len(objs):
             _wrn(translate("draft", "Cannot clone objects without a shape, skipping them"))
 
-        Gui.addModule("Draft")
-        App.ActiveDocument.openTransaction(translate("Draft", "Create Clone"))
-        for idx, obj in enumerate(objs_shape):
-            cmd = "Draft.make_clone(FreeCAD.ActiveDocument." + obj.Name + ")"
-            Gui.doCommand("clone" + str(idx) + " = " + cmd)
-        App.ActiveDocument.commitTransaction()
-        App.ActiveDocument.recompute()
+        def create_clones():
+            outputs = []
+            for obj in objs_shape:
+                clone = Draft.make_clone(obj)
+                if clone is None:
+                    raise RuntimeError("Draft could not create every clone")
+                outputs.append(clone)
+            timeline.accept_outputs(outputs)
+            return outputs
+
+        outputs = run_document_mutation(
+            self.doc,
+            translate("Draft", "Create Clone"),
+            create_clones,
+            objects=objs_shape,
+        )
 
         Gui.Selection.clearSelection()
-        objs = App.ActiveDocument.Objects
-        for i in range(len(objs_shape)):
-            Gui.Selection.addSelection(objs[-(1 + i)])
+        for clone in reversed(outputs):
+            if (
+                clone.Document is self.doc
+                and self.doc.getObject(clone.Name) is clone
+            ):
+                Gui.Selection.addSelection(clone)
         self.finish()
 
     def finish(self):

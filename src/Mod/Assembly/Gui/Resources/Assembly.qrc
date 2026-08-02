@@ -24,6 +24,10 @@
         <file>icons/Assembly_CreateJointScrew.svg</file>
         <file>icons/Assembly_ExportASMT.svg</file>
         <file>icons/Assembly_SelectJointsOfComponent.svg</file>
+        <file alias="icons/Assembly_SelectConflictingConstraints.svg">../../../Sketcher/Gui/Resources/icons/tools/Sketcher_SelectConflictingConstraints.svg</file>
+        <file alias="icons/Assembly_SelectRedundantConstraints.svg">../../../Sketcher/Gui/Resources/icons/tools/Sketcher_SelectRedundantConstraints.svg</file>
+        <file alias="icons/Assembly_SelectPartiallyRedundantConstraints.svg">../../../Sketcher/Gui/Resources/icons/constraints/Sketcher_ToggleConstraint_Driven.svg</file>
+        <file alias="icons/Assembly_SelectMalformedConstraints.svg">../../../Sketcher/Gui/Resources/icons/general/Sketcher_ValidateSketch.svg</file>
         <file>icons/Assembly_SolveAssembly.svg</file>
         <file>icons/Assembly_JointGroup.svg</file>
         <file>icons/Assembly_ExplodedView.svg</file>

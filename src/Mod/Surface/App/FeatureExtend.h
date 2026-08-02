@@ -25,6 +25,7 @@
 #pragma once
 
 #include <App/PropertyLinks.h>
+#include <App/SuppressibleExtension.h>
 #include <Mod/Part/App/FeaturePartSpline.h>
 #include <Mod/Surface/SurfaceGlobal.h>
 
@@ -69,6 +70,7 @@ protected:
 
 private:
     bool lockOnChangeMutex {false};
+    App::SuppressibleExtension suppressibleExtension;
 };
 
 }  // Namespace Surface

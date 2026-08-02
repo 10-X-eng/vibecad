@@ -7,6 +7,7 @@ add_subdirectory(propertyeditor)
 add_executable(Gui_tests_run
         Assistant.cpp
         Camera.cpp
+        ExactTransaction.cpp
         FileDialog.cpp
         StyleParameters/StyleParametersApplicationTest.cpp
         StyleParameters/ParserTest.cpp
@@ -14,10 +15,14 @@ add_executable(Gui_tests_run
         StyleParameters/YamlParameterSourceTest.cpp
         InputHintTest.cpp
         SelectionTest.cpp
+        TimelineImport.cpp
+        ThemeManagerTest.cpp
+        ViewProvider.cpp
 )
 
 # Qt tests
 setup_qt_test(DockLayoutState)
+setup_qt_test(MacroTaskAcceptance)
 setup_qt_test(QuantitySpinBox)
 
 target_link_libraries(Gui_tests_run PRIVATE

@@ -348,9 +348,9 @@ It is a list of strings; each element in the list will be displayed in its own l
     </message>
     <message>
       <location filename="circle.py" line="50"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation type="unfinished">End angle of the arc (for a full circle, 
+      <translation type="unfinished">End angle of the arc (for a full circle,
                 give it same value as First Angle)</translation>
     </message>
     <message>
@@ -485,7 +485,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</transla
 
 If 'Custom' is chosen, the contents of 'Custom Text' will be used.
 For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like Arch objects.
 
 For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
 or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
@@ -493,7 +492,6 @@ or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is sp
 
 If 'Custom' is chosen, the contents of 'Custom Text' will be used.
 For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like Arch objects.
 
 For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
 or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</translation>
@@ -593,11 +591,6 @@ This property is read-only, as the number depends on the points contained within
       <translation>Vis skjulte linjer</translation>
     </message>
     <message>
-      <location filename="shape2dview.py" line="86"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation type="unfinished">Fuse wall and structure objects of same type and material</translation>
-    </message>
-    <message>
       <location filename="shape2dview.py" line="91"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation type="unfinished">Tessellate Ellipses and B-splines into line segments</translation>
@@ -609,10 +602,10 @@ This property is read-only, as the number depends on the points contained within
     </message>
     <message>
       <location filename="ellipse.py" line="49"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation type="unfinished">End angle of the elliptical arc 
+      <translation type="unfinished">End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</translation>
     </message>
@@ -1098,16 +1091,16 @@ Use 'arch' to force US arch notation</translation>
     </message>
     <message>
       <location filename="shape2dview.py" line="98"/>
-      <source>For Cutlines and Cutfaces modes, 
+      <source>For Cutlines and Cutfaces modes,
                     this leaves the faces at the cut location</source>
-      <translation type="unfinished">For Cutlines and Cutfaces modes, 
+      <translation type="unfinished">For Cutlines and Cutfaces modes,
                     this leaves the faces at the cut location</translation>
     </message>
     <message>
       <location filename="shape2dview.py" line="105"/>
-      <source>Length of line segments if tessellating Ellipses or B-splines 
+      <source>Length of line segments if tessellating Ellipses or B-splines
                     into line segments</source>
-      <translation type="unfinished">Length of line segments if tessellating Ellipses or B-splines 
+      <translation type="unfinished">Length of line segments if tessellating Ellipses or B-splines
                     into line segments</translation>
     </message>
     <message>
@@ -2211,11 +2204,6 @@ to polar or circular, and its properties can be modified.</translation>
       <source>Autogroup</source>
       <translation type="unfinished">Autogroup</translation>
     </message>
-    <message>
-      <location filename="gui_groups.py" line="242"/>
-      <source>Select a group to add all Draft and Arch objects to.</source>
-      <translation type="unfinished">Select a group to add all Draft and Arch objects to.</translation>
-    </message>
   </context>
   <context>
     <name>Draft_BSpline</name>
@@ -2863,9 +2851,7 @@ You may also select a three vertices or a Working Plane Proxy.</translation>
       <translation type="unfinished">Sets default styles</translation>
     </message>
   </context>
-  <context>
-    <name>Draft_SetWorkingPlaneProxy</name>
-  </context>
+
   <context>
     <name>Draft_Shape2DView</name>
     <message>

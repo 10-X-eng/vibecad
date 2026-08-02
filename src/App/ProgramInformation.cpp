@@ -284,32 +284,9 @@ void ProgramInformation::getLibraryVersions(std::stringstream& str)
 #endif
     str << "xerces-c " << fcXercescVersion << ", ";
     str << "Clipper2 " << fcClipper2Version << ", ";
-    getIfcInfo(str);
 #if defined(OCC_VERSION_STRING_EXT)
     str << "OCC " << OCC_VERSION_STRING_EXT << '\n';
 #endif
-}
-
-void ProgramInformation::getIfcInfo(std::stringstream& str)
-{
-    try {
-        Base::PyGILStateLocker lock;
-        Py::Module module(PyImport_ImportModule("ifcopenshell"), true);
-        if (!module.isNull() && module.hasAttr("version")) {
-            Py::String version(module.getAttr("version"));
-            auto ver_str = static_cast<std::string>(version);
-            str << "IfcOpenShell " << ver_str << ", ";
-        }
-        else {
-            Base::Console().log("Module 'ifcopenshell' not found (safe to ignore, unless using "
-                                "the BIM workbench and IFC).\n");
-        }
-    }
-    catch (const Py::Exception&) {
-        Base::PyGILStateLocker lock;
-        Base::PyException e;
-        Base::Console().log("%s\n", e.what());
-    }
 }
 
 void ProgramInformation::getLocale(std::stringstream& str)

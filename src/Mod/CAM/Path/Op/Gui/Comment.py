@@ -26,6 +26,13 @@
 import FreeCAD
 import FreeCADGui
 import Path
+import Path.Base.Util as PathUtil
+import PathScripts.PathUtils as PathUtils
+from Path.CommandBoundary import (
+    active_jobs,
+    can_start_document_command,
+)
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 from PySide import QtCore
 
 from PySide.QtCore import QT_TRANSLATE_NOOP
@@ -35,6 +42,7 @@ translate = FreeCAD.Qt.translate
 
 class Comment:
     def __init__(self, obj):
+        PathUtil.markTimelineOperation(obj)
         obj.addProperty(
             "App::PropertyString",
             "Comment",
@@ -55,6 +63,9 @@ class Comment:
         pass
 
     def execute(self, obj):
+        if not PathUtil.activeForOp(obj):
+            obj.Path = Path.Path()
+            return
         output = ""
         output += "(" + str(obj.Comment) + ")\n"
         path = Path.Path(output)
@@ -106,28 +117,46 @@ class CommandPathComment:
         }
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument is not None:
-            for o in FreeCAD.ActiveDocument.Objects:
-                if o.Name[:3] == "Job":
-                    return True
-        return False
+        return can_start_document_command() and bool(active_jobs())
 
     def Activated(self):
-        FreeCAD.ActiveDocument.openTransaction("Create a Comment in the CNC program")
-        FreeCADGui.addModule("Path.Op.Gui.Comment")
-        snippet = """
-import Path
-import PathScripts
-from PathScripts import PathUtils
-obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython","Comment")
-Path.Op.Gui.Comment.Comment(obj)
-Path.Op.Gui.Comment._ViewProviderComment(obj.ViewObject)
+        document = FreeCAD.ActiveDocument
+        if document is None or not can_start_document_command(document):
+            return
+        job = PathUtils.UserInput.chooseJob(active_jobs())
+        if job is None:
+            return
 
-PathUtils.addToJob(obj)
-"""
-        FreeCADGui.doCommand(snippet)
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCAD.ActiveDocument.recompute()
+        transaction = _OwnedDocumentTransaction(
+            document,
+            "Create CAM comment",
+        )
+        try:
+            obj = document.addObject(
+                "Path::FeaturePython",
+                "Comment",
+            )
+            Comment(obj)
+            _ViewProviderComment(obj.ViewObject)
+            job.Proxy.addOperation(obj)
+            document.recompute()
+            if (
+                not obj.isValid()
+                or obj not in job.Operations.Group
+                or not obj.Path.Commands
+            ):
+                raise RuntimeError(
+                    "The CAM comment was not created correctly"
+                )
+            document.publishProvisionalTimelineOperationBlock(
+                obj,
+                [],
+            )
+        except Exception:
+            transaction.abort()
+            raise
+        transaction.commit()
+        return obj
 
 
 if FreeCAD.GuiUp:

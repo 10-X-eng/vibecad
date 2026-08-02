@@ -56,9 +56,10 @@ if FreeCAD.GuiUp:
 
 
 class FilenameGenerator:
-    def __init__(self, job, file_extension=None):
+    def __init__(self, job, file_extension=None, output_file=None):
         self.job = job
         self._file_extension_override = file_extension
+        self._output_file_override = output_file
         self.subpartname = ""
         self.sequencenumber = 0
         path, filename, ext = self.get_path_and_filename_default()
@@ -75,8 +76,13 @@ class FilenameGenerator:
         validPathSubstitutions = ["D", "d", "M", "j"]
         validFilenameSubstitutions = ["j", "d", "T", "t", "W", "O", "S"]
 
-        if self.job.PostProcessorOutputFile:
-            candidateOutputPath, candidateFilename = os.path.split(self.job.PostProcessorOutputFile)
+        configured_output = (
+            self._output_file_override
+            if self._output_file_override is not None
+            else self.job.PostProcessorOutputFile
+        )
+        if configured_output:
+            candidateOutputPath, candidateFilename = os.path.split(configured_output)
 
             if candidateOutputPath:
                 outputpath = candidateOutputPath

@@ -26,6 +26,7 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
 
 class QPushButton;
 class Ui_TaskActiveView;
@@ -82,6 +83,9 @@ private:
     TechDraw::DrawPage*       m_pageFeat;
     TechDraw::DrawViewImage*  m_imageFeat;
     TechDraw::DrawViewImage* m_previewImageFeat;
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage> m_pageIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewImage>
+        m_previewIdentity;
 
     enum class BackgroundType {
         Transparent = 0,
@@ -91,7 +95,6 @@ private:
 
     QPushButton* m_btnOK;
     QPushButton* m_btnCancel;
-    int m_tid;
 };
 
 

@@ -14,6 +14,7 @@ set(PartDesign_Scripts
 if(BUILD_GUI)
     list (APPEND PartDesign_Scripts
           InitGui.py
+          PartDesignTimeline.py
           TestPartDesignGui.py
           InvoluteGearFeature.py
           InvoluteGearFeature.ui
@@ -37,6 +38,9 @@ set(PartDesign_TestScripts
     PartDesignTests/__init__.py
     PartDesignTests/TestActiveObject.py
     PartDesignTests/TestDatum.py
+    PartDesignTests/TestDesignHoleGui.py
+    PartDesignTests/TestDesignModeling.py
+    PartDesignTests/TestDesignProfileRegionsGui.py
     PartDesignTests/TestShapeBinder.py
     PartDesignTests/TestPad.py
     PartDesignTests/TestPocket.py
@@ -53,6 +57,22 @@ set(PartDesign_TestScripts
     PartDesignTests/TestBoolean.py
     PartDesignTests/TestFillet.py
     PartDesignTests/TestChamfer.py
+    PartDesignTests/TestConsolidatedPart.py
+    PartDesignTests/TestConsolidatedPartTools.py
+    PartDesignTests/TestContextMenuTracking.py
+    PartDesignTests/TestExactTransactionContract.py
+    PartDesignTests/TestFeatureBasePlacement.py
+    PartDesignTests/TestFeatureTimeline.py
+    PartDesignTests/TestModelTreeBrowser.py
+    PartDesignTests/TestNativeRibbonTools.py
+    PartDesignTests/TestNativeTaskContract.py
+    PartDesignTests/TestPartMultiInputRibbonTools.py
+    PartDesignTests/TestPartDesignTaskLifecycle.py
+    PartDesignTests/TestPythonFeatureTasks.py
+    PartDesignTests/TestPartSingleInputRibbonTools.py
+    PartDesignTests/TestRetainedPartDialogs.py
+    PartDesignTests/TestRibbonInspectView.py
+    PartDesignTests/TestVibeScriptPresentation.py
     PartDesignTests/TestDraft.py
     PartDesignTests/TestThickness.py
     PartDesignTests/TestTopologicalNamingProblem.py
@@ -105,6 +125,13 @@ add_custom_target(PartDesignScripts ALL SOURCES
     ${PartDesign_GearScripts}
     ${PartDesign_SprocketScripts}
 )
+
+# PartDesignGui imports PartDesignTimeline at runtime through native Python
+# features and VibeScript publication.  A targeted PartDesignGui build must
+# therefore stage the module just as a full ALL build does.
+if(TARGET PartDesignGui)
+    add_dependencies(PartDesignGui PartDesignScripts)
+endif()
 
 fc_target_copy_resource(PartDesignScripts
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -201,6 +228,12 @@ if(BUILD_FEM)
     ADD_CUSTOM_TARGET(WizardShaft ALL
         SOURCES ${all_wizardshaft_files}
     )
+
+    # PartDesignGui depends on PartDesignScripts for every Python module it can
+    # import at runtime.  Keep the nested Shaft Wizard sources in that same
+    # staging closure so a targeted PartDesignGui/PartDesignScripts build
+    # cannot leave an older WizardShaft implementation in the build tree.
+    ADD_DEPENDENCIES(PartDesignScripts WizardShaft)
 
     SET(all_files ${all_wizardshaft_files})
 

@@ -35,12 +35,16 @@ import FreeCADGui
 from PySide import QtGui
 
 from femtaskpanels import task_post_extractor
+from femtaskpanels.base_femtaskpanel import _TaskTargetIdentity
 
 
 class VPPostExtractor:
     """
     A View Provider for extraction of data
     """
+
+    def supportsDocumentTimelineEdit(self):
+        return True
 
     def __init__(self, vobj):
         vobj.Proxy = self
@@ -81,26 +85,32 @@ class VPPostExtractor:
             group.ViewObject.Proxy.childViewPropertyChanged(vobj, prop)
 
     def setEdit(self, vobj, mode):
+        identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document()
 
         # build up the task panel
         taskd = task_post_extractor._ExtractorTaskPanel(vobj.Object)
 
         # show it
-        FreeCADGui.Control.showDialog(taskd)
+        FreeCADGui.Control.showDialog(taskd, gui_document)
+        self._fem_edit_identity = identity
 
         return True
 
     def unsetEdit(self, vobj, mode=0):
-        FreeCADGui.Control.closeDialog()
+        identity = getattr(self, "_fem_edit_identity", None)
+        if identity is None:
+            identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document(
+            require_object=False
+        )
+        FreeCADGui.Control.closeDialog(gui_document)
+        self._fem_edit_identity = None
         return True
 
     def doubleClicked(self, vobj):
-        guidoc = FreeCADGui.getDocument(vobj.Object.Document)
-
-        # check if another VP is in edit mode and close it then
-        if guidoc.getInEdit():
-            FreeCADGui.Control.closeDialog()
-            guidoc.resetEdit()
+        identity = _TaskTargetIdentity(vobj.Object)
+        guidoc = identity.resolve_gui_document()
 
         guidoc.setEdit(vobj.Object.Name)
 

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Focused contracts for the ChatGPT subscription transport."""
+"""Focused contracts for VibeCAD's bundled Codex transport."""
 
 from __future__ import annotations
 
@@ -46,14 +46,15 @@ def _surface_context(*names: str, workbench: str = "PartDesignWorkbench") -> dic
 
 def _scripted_context() -> dict:
     return _surface_context(
-        "core.inspect", "vibescript.partdesign.create_program"
+        "vibescript.read_source",
+        "vibescript.create_program",
     )
 
 
 def _part_vibescript_context() -> dict:
     return _surface_context(
-        "core.inspect",
-        "vibescript.part.create_program",
+        "vibescript.read_source",
+        "vibescript.create_program",
         workbench="PartWorkbench",
     )
 
@@ -73,7 +74,10 @@ def test_turn_start_surface_accepts_one_workbench_vibescript_domain() -> None:
     assert surface["engine"] == "vibescript"
     assert surface["domain"] == "part"
     assert surface["workbench"] == "PartWorkbench"
-    assert surface["tool_names"] == ["core.inspect", "vibescript.part.create_program"]
+    assert surface["tool_names"] == [
+        "vibescript.read_source",
+        "vibescript.create_program",
+    ]
     assert surface["schema_count"] == 2
     assert surface["schema_sha256"] == provider.provider_tool_schema_digest(schemas)
     assert surface["available"] is True
@@ -91,19 +95,12 @@ def test_turn_start_surface_preserves_pure_vibescript_behavior() -> None:
     assert surface["tool_names"] == [schema["name"] for schema in schemas]
 
 
-def test_turn_start_surface_accepts_native_tools_without_a_scripted_engine() -> None:
-    schemas = [_tool_schema("core.inspect"), _tool_schema("bim.create_wall")]
-    surface = session._turn_start_tool_surface("BIMWorkbench", schemas)
-    assert surface["engine"] == "native"
-    assert surface["tool_names"] == ["core.inspect", "bim.create_wall"]
-
-
-def test_turn_start_surface_rejects_multiple_scripted_engines() -> None:
+def test_turn_start_surface_rejects_multiple_vibescript_domains() -> None:
     schemas = [
         _tool_schema("vibescript.partdesign.create_program"),
-        _tool_schema("build123d.create_model"),
+        _tool_schema("vibescript.assembly.create_program"),
     ]
-    with pytest.raises(ValueError, match="multiple modeling engines"):
+    with pytest.raises(ValueError, match="active domain namespace"):
         session._turn_start_tool_surface("AssemblyWorkbench", schemas)
 
 
@@ -123,35 +120,33 @@ def test_turn_start_surface_rejects_malformed_declarations(schemas: list[dict]) 
 def test_codex_dynamic_tools_preserve_vibecad_namespaces_and_schema() -> None:
     tools, names = provider._codex_dynamic_tool_surface(_scripted_context())
     assert names == {
-        ("core", "inspect"): "core.inspect",
-        (
-            "vibescript",
-            "partdesign_create_program",
-        ): "vibescript.partdesign.create_program",
+        ("vibescript", "read_source"): "vibescript.read_source",
+        ("vibescript", "create_program"): "vibescript.create_program",
     }
-    assert [namespace["name"] for namespace in tools] == ["core", "vibescript"]
-    inspect_tool = tools[0]["tools"][0]
-    assert inspect_tool["name"] == "inspect"
-    assert inspect_tool["inputSchema"] == _scripted_context()["provider_tool_schemas"][0][
-        "parameters"
-    ]
+    assert [namespace["name"] for namespace in tools] == ["vibescript"]
+    read_tool = tools[0]["tools"][0]
+    assert read_tool["name"] == "read_source"
+    assert (
+        read_tool["inputSchema"]
+        == _scripted_context()["provider_tool_schemas"][0]["parameters"]
+    )
 
 
-def test_codex_dynamic_tools_accept_one_domain_qualified_namespace() -> None:
+def test_codex_dynamic_tools_use_one_workbench_neutral_namespace() -> None:
     tools, names = provider._codex_dynamic_tool_surface(_part_vibescript_context())
     assert names == {
-        ("core", "inspect"): "core.inspect",
-        ("vibescript", "part_create_program"): "vibescript.part.create_program",
+        ("vibescript", "read_source"): "vibescript.read_source",
+        ("vibescript", "create_program"): "vibescript.create_program",
     }
-    assert [namespace["name"] for namespace in tools] == ["core", "vibescript"]
+    assert [namespace["name"] for namespace in tools] == ["vibescript"]
 
 
-def test_turn_start_surface_rejects_mixed_native_and_vibescript_namespaces() -> None:
+def test_turn_start_surface_rejects_human_mutation_commands() -> None:
     schemas = [
         _tool_schema("part.measure"),
         _tool_schema("vibescript.part.create_program"),
     ]
-    with pytest.raises(ValueError, match="cannot contain native"):
+    with pytest.raises(ValueError, match="mutation or foreign read"):
         session._turn_start_tool_surface("PartWorkbench", schemas)
 
 
@@ -169,7 +164,7 @@ def test_codex_dynamic_tools_reject_surface_name_or_schema_drift() -> None:
 
 def test_codex_dynamic_tools_reject_a_false_scripted_engine_declaration() -> None:
     context = _part_vibescript_context()
-    context["provider_tool_surface"]["engine"] = "openscad"
+    context["provider_tool_surface"]["engine"] = "invalid"
     with pytest.raises(provider.ProviderUnavailable, match="does not match"):
         provider._codex_dynamic_tool_surface(context)
 
@@ -186,7 +181,11 @@ def test_provider_update_keeps_the_turn_surface_frozen_after_workbench_change(
         "domain": "partdesign",
         "surface_id": next_context["provider_tool_surface"]["surface_id"],
     }
-    monkeypatch.setattr(session, "_context_for_provider", lambda *_args: next_context)
+    monkeypatch.setattr(
+        session,
+        "_build_context_for_provider",
+        lambda *_args: next_context,
+    )
 
     initial_surface = dict(initial["provider_tool_surface"])
     initial_schemas = list(initial["provider_tool_schemas"])
@@ -265,7 +264,7 @@ def test_tool_runner_revalidates_each_call_against_the_live_surface(
     monkeypatch.setattr(
         session,
         "_live_provider_surface_state",
-        lambda _service: {
+        lambda _service, _interaction_mode="build": {
             "workbench": "AssemblyWorkbench",
             "runtime_state": {"edit_mode": "none"},
             "tool_names": ["assembly.solve"],
@@ -280,7 +279,7 @@ def test_tool_runner_revalidates_each_call_against_the_live_surface(
         question_callback=None,
     )
 
-    result = runner("vibescript.part.inspect_program", "{}")
+    result = runner("vibescript.part.create_program", "{}")
 
     assert result["ok"] is False
     assert result["failure_code"] == "TOOL_NOT_ON_ACTIVE_SURFACE"
@@ -389,6 +388,11 @@ def test_codex_thread_config_disables_non_vibecad_tool_surfaces() -> None:
     assert config["features.shell_tool"] is False
     assert config["features.plugins"] is False
     assert config["web_search"] == "disabled"
+    assert config["include_collaboration_mode_instructions"] is False
+    assert config["features.code_mode"] == {
+        "enabled": False,
+        "direct_only_tool_namespaces": ["core"],
+    }
 
 
 def test_codex_thread_config_enables_only_web_and_skill_capabilities() -> None:
@@ -404,6 +408,38 @@ def test_codex_thread_config_enables_only_web_and_skill_capabilities() -> None:
     assert config["features.browser_use"] is False
     assert config["features.computer_use"] is False
     assert config["features.plugins"] is False
+
+
+def test_codex_thread_config_enables_plan_and_api_key_provider() -> None:
+    config = codex.vibecad_thread_config(
+        collaboration_mode_enabled=True,
+        openai_base_url="https://api.example.test/v1/",
+    )
+
+    assert config["include_collaboration_mode_instructions"] is True
+    assert config["model_provider"] == codex.CODEX_OPENAI_PROVIDER_ID
+    prefix = f"model_providers.{codex.CODEX_OPENAI_PROVIDER_ID}"
+    assert config[f"{prefix}.base_url"] == "https://api.example.test/v1"
+    assert config[f"{prefix}.env_key"] == codex.CODEX_OPENAI_API_KEY_ENV
+    assert config[f"{prefix}.wire_api"] == "responses"
+    assert config[f"{prefix}.requires_openai_auth"] is False
+
+
+def test_codex_environment_uses_only_the_selected_vibecad_api_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(codex.CODEX_HOME_ENV, str(tmp_path / "codex-home"))
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-openai")
+    monkeypatch.setenv("CODEX_API_KEY", "ambient-codex")
+
+    environment = codex._subprocess_environment(
+        {codex.CODEX_OPENAI_API_KEY_ENV: "selected-key"}
+    )
+
+    assert "OPENAI_API_KEY" not in environment
+    assert "CODEX_API_KEY" not in environment
+    assert environment[codex.CODEX_OPENAI_API_KEY_ENV] == "selected-key"
 
 
 def test_provider_capability_preferences_have_explicit_defaults(
@@ -568,15 +604,34 @@ def test_choose_provider_carries_codex_capability_preferences() -> None:
             return True
 
     selected = session.choose_provider(_Service())
-    assert isinstance(selected, provider.ChatGPTSubscriptionProvider)
+    assert isinstance(selected, provider.CodexProvider)
+    assert selected.auth_mode == "chatgpt"
     assert selected.web_search_enabled is True
     assert selected.skills_enabled is True
+
+
+def test_subscription_provider_identity_is_explicit_and_disables_fallback() -> None:
+    selected = provider.CodexProvider(
+        model="gpt-5.6-sol",
+        auth_mode="chatgpt",
+        reasoning_effort="max",
+    )
+
+    assert session.provider_execution_identity(selected) == {
+        "provider_id": "chatgpt",
+        "provider_label": "ChatGPT subscription via Codex",
+        "adapter": "CodexProvider",
+        "requested_model": "gpt-5.6-sol",
+        "model_selection": "explicit",
+        "reasoning_effort": "max",
+        "model_fallback_allowed": False,
+    }
 
 
 @pytest.mark.parametrize(
     ("provider_name", "provider_type"),
     [
-        ("openai", provider.OpenAIProvider),
+        ("openai", provider.CodexProvider),
         ("anthropic", provider.AnthropicProvider),
     ],
 )
@@ -609,9 +664,144 @@ def test_choose_provider_enables_web_search_for_api_providers(
         def web_search_enabled(self) -> bool:
             return True
 
+        def codex_skills_enabled(self) -> bool:
+            return False
+
     selected = session.choose_provider(_Service())
     assert isinstance(selected, provider_type)
     assert selected.web_search_enabled is True
+    if provider_name == "openai":
+        assert selected.auth_mode == "api_key"
+        assert selected.api_key == "test-key"
+
+
+def test_plan_surface_excludes_document_mutation_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Spec:
+        def supports_edit_mode(self, _edit_mode: str) -> bool:
+            return True
+
+    tools = {
+        "core.read": SimpleNamespace(
+            safety=SafetyLevel.READ,
+            spec=_Spec(),
+            to_schema=lambda **_kwargs: _tool_schema("core.read"),
+        ),
+        "core.view": SimpleNamespace(
+            safety=SafetyLevel.VIEW,
+            spec=_Spec(),
+            to_schema=lambda **_kwargs: _tool_schema("core.view"),
+        ),
+        "partdesign.write": SimpleNamespace(
+            safety=SafetyLevel.SAFE_WRITE,
+            spec=_Spec(),
+            to_schema=lambda **_kwargs: _tool_schema("partdesign.write"),
+        ),
+    }
+    service = SimpleNamespace(registry=SimpleNamespace(get=lambda name: tools[name]))
+    monkeypatch.setattr(session, "_surface_tool_names", lambda *_args: set(tools))
+
+    schemas = session.provider_tool_schemas(
+        service,
+        "PartDesignWorkbench",
+        runtime_state={"edit_mode": False, "active_sketch": None},
+        interaction_mode="plan",
+    )
+
+    assert [schema["name"] for schema in schemas] == ["core.read", "core.view"]
+
+
+def test_openai_api_key_and_plan_mode_run_through_codex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Client:
+        instance = None
+
+        def __init__(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+            environment=None,
+        ) -> None:
+            self.notification_handler = notification_handler
+            self.server_request_handler = server_request_handler
+            self.environment = dict(environment or {})
+            self.requests: list[tuple[str, dict]] = []
+            self.alive = True
+            _Client.instance = self
+
+        @property
+        def stderr_tail(self) -> list[str]:
+            return []
+
+        def start(self) -> None:
+            return None
+
+        def request(self, method: str, params: dict, timeout: float) -> dict:
+            self.requests.append((method, dict(params)))
+            if method == "thread/start":
+                return {"thread": {"id": "thread-1"}, "model": "gpt-test"}
+            if method == "turn/start":
+                self.notification_handler(
+                    "item/completed",
+                    {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "item": {"type": "plan", "text": "Inspect, then revise."},
+                    },
+                )
+                self.notification_handler(
+                    "turn/completed",
+                    {
+                        "threadId": "thread-1",
+                        "turn": {"id": "turn-1", "status": "completed"},
+                    },
+                )
+                return {"turn": {"id": "turn-1"}}
+            if method == "thread/delete":
+                return {}
+            raise AssertionError(method)
+
+        def close(self) -> None:
+            self.alive = False
+
+    monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
+    active_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="secret-test-key",
+        auth_mode="api_key",
+        base_url="https://api.example.test/v1",
+        reasoning_effort="high",
+    )
+    context = _surface_context("core.set_view")
+    context["_vibecad_interaction_mode"] = "plan"
+
+    result = active_provider.run("Plan the change.", context)
+
+    client = _Client.instance
+    assert client is not None
+    assert client.environment == {codex.CODEX_OPENAI_API_KEY_ENV: "secret-test-key"}
+    assert [method for method, _params in client.requests].count("account/read") == 0
+    thread_request = next(
+        params for method, params in client.requests if method == "thread/start"
+    )
+    assert thread_request["modelProvider"] == codex.CODEX_OPENAI_PROVIDER_ID
+    assert thread_request["config"]["include_collaboration_mode_instructions"] is True
+    turn_request = next(
+        params for method, params in client.requests if method == "turn/start"
+    )
+    assert turn_request["collaborationMode"] == {
+        "mode": "plan",
+        "settings": {
+            "model": "gpt-test",
+            "reasoning_effort": "high",
+            "developer_instructions": None,
+        },
+    }
+    assert result.final_output == "Inspect, then revise."
+    assert result.raw["interaction_mode"] == "plan"
 
 
 def test_codex_client_initializes_and_reads_account_from_json_rpc(

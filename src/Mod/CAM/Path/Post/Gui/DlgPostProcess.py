@@ -31,7 +31,6 @@ a config dict on accept.  No functional post-processing logic lives here yet.
 import FreeCAD
 import FreeCADGui
 import Path
-import Path.Preferences as PathPref
 from PySide import QtCore, QtGui
 
 translate = FreeCAD.Qt.translate
@@ -49,6 +48,17 @@ _TAB_OPERATIONS = 1
 _TAB_OPTIONS = 2
 _TAB_GCODE = 3
 _TAB_WARNINGS = 4
+
+
+def _apply_vibe_status(widget, status):
+    """Apply a semantic status property and refresh the active QSS selector."""
+    widget.setProperty("vibeStatus", status)
+    font = widget.font()
+    font.setBold(bool(status))
+    widget.setFont(font)
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
 
 
 def _parse_cycle_time(ct_str):
@@ -100,12 +110,8 @@ class PostProcessDialog:
         self._dynamic_output_groups = []
         self._machine_output_field_widgets = {}  # section_name -> {field_name: widget}
         # Post-processor parameter widgets (from get_property_schema)
-        self._post_param_widgets = (
-            {}
-        )  # runtime params on Overview: {param_name: (widget, schema_entry)}
-        self._post_config_widgets = (
-            {}
-        )  # non-runtime params on Options: {param_name: (widget, schema_entry)}
+        self._post_param_widgets = {}  # runtime params on Overview: {param_name: (widget, schema_entry)}
+        self._post_config_widgets = {}  # non-runtime params on Options: {param_name: (widget, schema_entry)}
         # Stores generated G-code: {full_path_filename: gcode_string}
         self._generated_outputs = {}
         # Original (subpart, gcode) sections — used to regenerate filenames
@@ -133,7 +139,9 @@ class PostProcessDialog:
         dlg.comboBoxMachine.currentIndexChanged.connect(self._on_machine_changed)
         dlg.buttonBrowseOutputLocation.clicked.connect(self._browse_output_location)
         dlg.buttonApplyTemplate.clicked.connect(self._regenerate_filenames)
-        dlg.listWidgetOutputFiles.currentItemChanged.connect(self._on_output_file_selected)
+        dlg.listWidgetOutputFiles.currentItemChanged.connect(
+            self._on_output_file_selected
+        )
         dlg.listWidgetOutputFiles.itemChanged.connect(self._on_output_file_renamed)
         dlg.listWidgetOutputFiles.setContextMenuPolicy(
             QtCore.Qt.ContextMenuPolicy.CustomContextMenu
@@ -238,7 +246,9 @@ class PostProcessDialog:
         container_layout = QtGui.QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
 
-        section_widgets = build_output_options(machine, container_layout, context="CAM_Post")
+        section_widgets = build_output_options(
+            machine, container_layout, context="CAM_Post"
+        )
 
         # Flatten section_widgets into _machine_output_field_widgets
         self._machine_output_field_widgets = dict(section_widgets)
@@ -278,12 +288,16 @@ class PostProcessDialog:
         # Resolve postprocessor class
         post_class = None
         postprocessor_name = getattr(machine, "postprocessor_file_name", None)
-        Path.Log.debug(f"Machine for job <{self.job.Label}> {postprocessor_name}: {__file__}")
+        Path.Log.debug(
+            f"Machine for job <{self.job.Label}> {postprocessor_name}: {__file__}"
+        )
         if postprocessor_name:
             try:
                 from Path.Post.Processor import PostProcessorFactory
 
-                post_obj = PostProcessorFactory.get_post_processor(self.job, postprocessor_name)
+                post_obj = PostProcessorFactory.get_post_processor(
+                    self.job, postprocessor_name
+                )
                 if post_obj is not None:
                     post_class = type(post_obj)
             except Exception as e:
@@ -297,7 +311,9 @@ class PostProcessDialog:
         except Exception:
             return
 
-        non_runtime = [e for e in schema if not e.get("runtime", False)] if schema else []
+        non_runtime = (
+            [e for e in schema if not e.get("runtime", False)] if schema else []
+        )
         if not non_runtime:
             return
 
@@ -307,15 +323,18 @@ class PostProcessDialog:
             bundle = post_obj.build_configuration_bundle()
             Path.Log.debug(f"Post config bundle for dialog: {bundle}")
 
-        pp_props = bundle if bundle else (getattr(machine, "postprocessor_properties", {}) or {})
+        pp_props = (
+            bundle
+            if bundle
+            else (getattr(machine, "postprocessor_properties", {}) or {})
+        )
 
         group = QtGui.QGroupBox(translate("CAM_Post", "Postprocessor Properties"))
-        form = QtGui.QFormLayout(group)
+        QtGui.QFormLayout(group)
 
         for entry in non_runtime:
             name = entry.get("name", "")
             param_type = entry.get("type", "string")
-            label_text = entry.get("label", name)
             default = entry.get("default")
             help_text = entry.get("help", "")
             current = pp_props.get(name, default)
@@ -415,7 +434,9 @@ class PostProcessDialog:
                 try:
                     from Path.Post.Processor import PostProcessorFactory
 
-                    post_obj = PostProcessorFactory.get_post_processor(self.job, postprocessor_name)
+                    post_obj = PostProcessorFactory.get_post_processor(
+                        self.job, postprocessor_name
+                    )
                     if post_obj is not None:
                         post_class = type(post_obj)
                 except Exception as e:
@@ -434,7 +455,9 @@ class PostProcessDialog:
             return
 
         # Only runtime parameters are shown on the Overview tab
-        runtime_schema = [e for e in schema if e.get("runtime", False)] if schema else []
+        runtime_schema = (
+            [e for e in schema if e.get("runtime", False)] if schema else []
+        )
 
         if not runtime_schema:
             placeholder.setVisible(True)
@@ -446,7 +469,6 @@ class PostProcessDialog:
         pp_props = getattr(machine, "postprocessor_properties", {}) or {}
 
         for entry in runtime_schema:
-
             name = entry.get("name", "")
             param_type = entry.get("type", "string")
             label = entry.get("label", name)
@@ -536,7 +558,9 @@ class PostProcessDialog:
 
         fixtures = getattr(self.job, "Fixtures", None) or []
         if not fixtures:
-            placeholder = QtGui.QListWidgetItem(translate("CAM_Post", "(no fixtures defined)"))
+            placeholder = QtGui.QListWidgetItem(
+                translate("CAM_Post", "(no fixtures defined)")
+            )
             placeholder.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
             lw.addItem(placeholder)
             return
@@ -555,7 +579,9 @@ class PostProcessDialog:
     def _populate_job_details(self):
         dlg = self.dialog
         dlg.lineEditJobAuthor.setText(getattr(self.job.Document, "CreatedBy", "") or "")
-        dlg.plainTextEditComment.setPlainText(getattr(self.job, "Description", "") or "")
+        dlg.plainTextEditComment.setPlainText(
+            getattr(self.job, "Description", "") or ""
+        )
 
     def _populate_operations(self):
         dlg = self.dialog
@@ -593,9 +619,8 @@ class PostProcessDialog:
         """Recompute warnings using current dialog values instead of saved job state."""
         # Show temporary feedback
         dlg = self.dialog
-        original_text = dlg.labelWarningsStatus.text()
         dlg.labelWarningsStatus.setText("Recomputing...")
-        dlg.labelWarningsStatus.setStyleSheet("color: blue; font-weight: bold;")
+        _apply_vibe_status(dlg.labelWarningsStatus, "info")
 
         # Process events to update UI
         QtGui.QApplication.processEvents()
@@ -612,7 +637,9 @@ class PostProcessDialog:
             from Path.Main.Sanity.Sanity import CAMSanity
 
             overrides = self._get_dialog_overrides() if use_dialog_values else None
-            all_squawks, critical_squawks = CAMSanity.validate_job(self.job, overrides=overrides)
+            all_squawks, critical_squawks = CAMSanity.validate_job(
+                self.job, overrides=overrides
+            )
         except Exception as e:
             Path.Log.warning(f"Sanity check failed: {e}")
             all_squawks = []
@@ -622,7 +649,7 @@ class PostProcessDialog:
 
         if not all_squawks:
             dlg.labelWarningsStatus.setText(translate("CAM_Post", "No issues found."))
-            dlg.labelWarningsStatus.setStyleSheet("color: green; font-weight: bold;")
+            _apply_vibe_status(dlg.labelWarningsStatus, "success")
             table.setVisible(False)
             self._update_warnings_tab_label(0, 0)
             return
@@ -654,16 +681,16 @@ class PostProcessDialog:
 
         if n_critical:
             dlg.labelWarningsStatus.setText(
-                translate("CAM_Post", "{} critical issue(s) — review before machining.").format(
-                    n_critical
-                )
+                translate(
+                    "CAM_Post", "{} critical issue(s) — review before machining."
+                ).format(n_critical)
             )
-            dlg.labelWarningsStatus.setStyleSheet("color: red; font-weight: bold;")
+            _apply_vibe_status(dlg.labelWarningsStatus, "error")
         else:
             dlg.labelWarningsStatus.setText(
                 translate("CAM_Post", "{} advisory notice(s) found.").format(n_total)
             )
-            dlg.labelWarningsStatus.setStyleSheet("color: darkorange; font-weight: bold;")
+            _apply_vibe_status(dlg.labelWarningsStatus, "warning")
 
         self._update_warnings_tab_label(n_total, n_critical)
 
@@ -687,14 +714,24 @@ class PostProcessDialog:
     def _update_warnings_tab_label(self, n_total, n_critical):
         tab = self.dialog.tabWidget
         if n_critical:
-            tab.setTabText(_TAB_WARNINGS, translate("CAM_Post", "Warnings (!) {}").format(n_total))
-            tab.tabBar().setTabTextColor(_TAB_WARNINGS, QtGui.QColor("red"))
+            tab.setTabText(
+                _TAB_WARNINGS, translate("CAM_Post", "Warnings (!) {}").format(n_total)
+            )
+            tab.tabBar().setTabTextColor(
+                _TAB_WARNINGS, tab.palette().color(QtGui.QPalette.Highlight)
+            )
         elif n_total:
-            tab.setTabText(_TAB_WARNINGS, translate("CAM_Post", "Warnings {}").format(n_total))
-            tab.tabBar().setTabTextColor(_TAB_WARNINGS, QtGui.QColor("darkorange"))
+            tab.setTabText(
+                _TAB_WARNINGS, translate("CAM_Post", "Warnings {}").format(n_total)
+            )
+            tab.tabBar().setTabTextColor(
+                _TAB_WARNINGS, tab.palette().color(QtGui.QPalette.Link)
+            )
         else:
             tab.setTabText(_TAB_WARNINGS, translate("CAM_Post", "Warnings"))
-            tab.tabBar().setTabTextColor(_TAB_WARNINGS, QtGui.QColor("green"))
+            tab.tabBar().setTabTextColor(
+                _TAB_WARNINGS, tab.palette().color(QtGui.QPalette.WindowText)
+            )
 
     # ------------------------------------------------------------------
     # Operations helpers
@@ -708,7 +745,9 @@ class PostProcessDialog:
 
     def _get_active_operations(self):
         """Return only active operations, matching what the tree widget displays."""
-        return [op for op in self._get_operations() if getattr(op, "Active", True)]
+        import Path.Base.Util as PathUtil
+
+        return [op for op in self._get_operations() if PathUtil.activeForOp(op)]
 
     def _on_ops_changed(self, _item, _col=None):
         self._update_ops_tab_label()
@@ -731,8 +770,6 @@ class PostProcessDialog:
 
     def _show_workplan(self):
         """Display the workplan (postable items structure) in a dialog."""
-        from Path.Post.PostList import buildPostList
-        import Path.Base.Util as PathUtil
 
         # Create a minimal processor-like object for building the postlist
         class TempProcessor:
@@ -778,7 +815,9 @@ class PostProcessDialog:
         lines.append("")
         lines.append(f"Job: {processor._job.Label}")
         lines.append(f"SplitOutput: {getattr(processor._job, 'SplitOutput', 'N/A')}")
-        lines.append(f"OrderOutputBy: {getattr(processor._job, 'OrderOutputBy', 'N/A')}")
+        lines.append(
+            f"OrderOutputBy: {getattr(processor._job, 'OrderOutputBy', 'N/A')}"
+        )
         lines.append(f"Fixtures: {getattr(processor._job, 'Fixtures', 'N/A')}")
         lines.append("")
 
@@ -813,12 +852,18 @@ class PostProcessDialog:
                     # Postable object
                     obj_type = obj.item_type.title()
                     if obj.item_type == "fixture":
-                        if hasattr(obj, "path") and obj.path and len(obj.path.Commands) > 0:
+                        if (
+                            hasattr(obj, "path")
+                            and obj.path
+                            and len(obj.path.Commands) > 0
+                        ):
                             fixture_cmd = obj.path.Commands[0]
                             lines.append(f"        Fixture: {fixture_cmd.Name}")
                     elif obj.item_type == "tool_controller":
                         if hasattr(obj, "data") and "tool_number" in obj.data:
-                            lines.append(f"        Tool Number: {obj.data['tool_number']}")
+                            lines.append(
+                                f"        Tool Number: {obj.data['tool_number']}"
+                            )
                         lines.append(f"        Tool: {obj.Label}")
                     elif obj.item_type == "operation":
                         if hasattr(obj, "data") and "tool_controller" in obj.data:
@@ -838,7 +883,11 @@ class PostProcessDialog:
                     # Legacy object
                     if type(obj).__name__ == "_TempObject":
                         obj_type = "Fixture Setup"
-                        if hasattr(obj, "Path") and obj.Path and len(obj.Path.Commands) > 0:
+                        if (
+                            hasattr(obj, "Path")
+                            and obj.Path
+                            and len(obj.Path.Commands) > 0
+                        ):
                             fixture_cmd = obj.Path.Commands[0]
                             lines.append(f"        Fixture: {fixture_cmd.Name}")
                     elif hasattr(obj, "TypeId"):
@@ -933,7 +982,13 @@ class PostProcessDialog:
                     elif hasattr(machine.output, field_name):
                         setattr(machine.output, field_name, value)
 
-            elif section in ("header", "comments", "formatting", "precision", "duplicates"):
+            elif section in (
+                "header",
+                "comments",
+                "formatting",
+                "precision",
+                "duplicates",
+            ):
                 sub = getattr(machine.output, section, None)
                 if sub is None:
                     continue
@@ -1003,43 +1058,54 @@ class PostProcessDialog:
                     loaded_machine = Machine.from_dict(machine_data)
                 else:
                     loaded_machine = machine_data
-                postprocessor_name = getattr(loaded_machine, "postprocessor_file_name", None)
+                postprocessor_name = getattr(
+                    loaded_machine, "postprocessor_file_name", None
+                )
                 if not postprocessor_name:
                     QtGui.QMessageBox.warning(
                         self.dialog,
                         translate("CAM_Post", "Generate Output"),
                         translate(
-                            "CAM_Post", "The selected machine has no post-processor configured."
+                            "CAM_Post",
+                            "The selected machine has no post-processor configured.",
                         ),
                     )
                     return
                 use_new_flow = True
             elif hasattr(job, "Machine") and job.Machine:
                 loaded_machine = MachineFactory.get_machine(job.Machine)
-                postprocessor_name = getattr(loaded_machine, "postprocessor_file_name", None)
+                postprocessor_name = getattr(
+                    loaded_machine, "postprocessor_file_name", None
+                )
                 if not postprocessor_name:
                     QtGui.QMessageBox.warning(
                         self.dialog,
                         translate("CAM_Post", "Generate Output"),
                         translate(
-                            "CAM_Post", "The selected machine has no post-processor configured."
+                            "CAM_Post",
+                            "The selected machine has no post-processor configured.",
                         ),
                     )
                     return
                 use_new_flow = True
             else:
                 postprocessor_name = (
-                    getattr(job, "PostProcessor", None) or Path.Preferences.defaultPostProcessor()
+                    getattr(job, "PostProcessor", None)
+                    or Path.Preferences.defaultPostProcessor()
                 )
                 if not postprocessor_name:
                     QtGui.QMessageBox.warning(
                         self.dialog,
                         translate("CAM_Post", "Generate Output"),
-                        translate("CAM_Post", "No post-processor configured for this job."),
+                        translate(
+                            "CAM_Post", "No post-processor configured for this job."
+                        ),
                     )
                     return
 
-            postprocessor = PostProcessorFactory.get_post_processor(job_arg, postprocessor_name)
+            postprocessor = PostProcessorFactory.get_post_processor(
+                job_arg, postprocessor_name
+            )
 
             if postprocessor is None:
                 QtGui.QMessageBox.warning(
@@ -1047,7 +1113,9 @@ class PostProcessDialog:
                     translate("CAM_Post", "Generate Output"),
                     translate(
                         "CAM_Post",
-                        "Could not load post-processor '{}'.".format(postprocessor_name),
+                        "Could not load post-processor '{}'.".format(
+                            postprocessor_name
+                        ),
                     ),
                 )
                 return
@@ -1079,7 +1147,9 @@ class PostProcessDialog:
             postprocessor._dialog_handled = True
             postprocessor._bundle_applied = True
 
-            post_data = postprocessor.export2() if use_new_flow else postprocessor.export()
+            post_data = (
+                postprocessor.export2() if use_new_flow else postprocessor.export()
+            )
 
             if not post_data:
                 QtGui.QMessageBox.warning(
@@ -1170,7 +1240,9 @@ class PostProcessDialog:
         if previous is not None:
             prev_fname = previous.data(QtCore.Qt.ItemDataRole.UserRole)
             if prev_fname in self._generated_outputs:
-                self._generated_outputs[prev_fname] = dlg.plainTextEditGcode.toPlainText()
+                self._generated_outputs[prev_fname] = (
+                    dlg.plainTextEditGcode.toPlainText()
+                )
 
         if current is not None:
             fname = current.data(QtCore.Qt.ItemDataRole.UserRole)
@@ -1234,33 +1306,26 @@ class PostProcessDialog:
         template = dlg.lineEditFilenameTemplate.text().strip() or None
         output_dir = dlg.lineEditOutputLocation.text().strip() or None
 
-        # Temporarily override the job's output file template
-        old_template = getattr(self.job, "PostProcessorOutputFile", "")
-        try:
-            if template:
-                self.job.PostProcessorOutputFile = template
+        generator = FilenameGenerator(job=self.job, output_file=template)
+        gen_filenames = generator.generate_filenames()
 
-            generator = FilenameGenerator(job=self.job)
-            gen_filenames = generator.generate_filenames()
-
-            new_fnames = []
-            for subpart, gcode in self._output_sections:
-                subpart_clean = "" if subpart == "allitems" else subpart
-                generator.set_subpartname(subpart_clean)
-                fname = next(gen_filenames)
-                if output_dir:
-                    fname = os.path.join(output_dir, os.path.basename(fname))
-                if gcode is not None:
-                    new_fnames.append(fname)
-        finally:
-            if template:
-                self.job.PostProcessorOutputFile = old_template
+        new_fnames = []
+        for subpart, gcode in self._output_sections:
+            subpart_clean = "" if subpart == "allitems" else subpart
+            generator.set_subpartname(subpart_clean)
+            fname = next(gen_filenames)
+            if output_dir:
+                fname = os.path.join(output_dir, os.path.basename(fname))
+            if gcode is not None:
+                new_fnames.append(fname)
 
         # Map new names onto existing gcode (preserving user edits) by position
         old_gcodes = list(self._generated_outputs.values())
         self._generated_outputs = {}
         for i, fname in enumerate(new_fnames):
-            self._generated_outputs[fname] = old_gcodes[i] if i < len(old_gcodes) else ""
+            self._generated_outputs[fname] = (
+                old_gcodes[i] if i < len(old_gcodes) else ""
+            )
 
         self._populate_output_tab()
 
@@ -1291,7 +1356,9 @@ class PostProcessDialog:
         for fname, gcode in self._generated_outputs.items():
             try:
                 save_path = (
-                    os.path.join(output_dir, os.path.basename(fname)) if output_dir else fname
+                    os.path.join(output_dir, os.path.basename(fname))
+                    if output_dir
+                    else fname
                 )
                 os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
                 with open(save_path, "w", encoding="utf-8") as f:
@@ -1308,7 +1375,7 @@ class PostProcessDialog:
                     len(errors), "\n".join(errors)
                 )
             )
-            dlg.labelOutputStatus.setStyleSheet("color: red;")
+            _apply_vibe_status(dlg.labelOutputStatus, "error")
             dlg.labelOutputStatus.setVisible(True)
         else:
             dlg.accept()
@@ -1330,7 +1397,8 @@ class PostProcessDialog:
         selected_ops = [
             ops[i]
             for i in range(tree.topLevelItemCount())
-            if tree.topLevelItem(i).checkState(0) == QtCore.Qt.CheckState.Checked and i < len(ops)
+            if tree.topLevelItem(i).checkState(0) == QtCore.Qt.CheckState.Checked
+            and i < len(ops)
         ]
 
         lw = dlg.listWidgetFixtures
@@ -1338,7 +1406,8 @@ class PostProcessDialog:
         selected_fixtures = [
             fixtures[i]
             for i in range(lw.count())
-            if lw.item(i).checkState() == QtCore.Qt.CheckState.Checked and i < len(fixtures)
+            if lw.item(i).checkState() == QtCore.Qt.CheckState.Checked
+            and i < len(fixtures)
         ]
 
         # Collect dynamic machine output field values

@@ -23,24 +23,29 @@
  ***************************************************************************/
 
 #include <limits>
+#include <memory>
 #include <sstream>
+#include <string>
+#include <vector>
 
 #include <QDialog>
 #include <QDoubleSpinBox>
 #include <QMessageBox>
-#include <QPointer>
 #include <QVBoxLayout>
 
 #include <App/Application.h>
 #include <App/Document.h>
-#include <App/DocumentObjectGroup.h>
-#include <Gui/Command.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Gui/Selection/SelectionObject.h>
 #include <Mod/Mesh/App/Core/Approximation.h>
 #include <Mod/Mesh/App/Core/Segmentation.h>
+#include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 
 #include "SegmentationBestFit.h"
+#include "CommandGuard.h"
+#include "ParametricMeshFilter.h"
 #include "ui_SegmentationBestFit.h"
 
 
@@ -102,37 +107,6 @@ public:
             values.push_back(axis.y);
             values.push_back(axis.z);
             values.push_back(radius);
-
-#if defined(FC_DEBUG)
-            // Only for testing purposes
-            try {
-                float height = Base::Distance(base, top);
-                Gui::Command::doCommand(
-                    Gui::Command::App,
-                    "cyl = App.ActiveDocument.addObject('Part::Cylinder', 'Cylinder')\n"
-                    "cyl.Radius = %f\n"
-                    "cyl.Height = %f\n"
-                    "cyl.Placement = App.Placement(App.Vector(%f,%f,%f), "
-                    "App.Rotation(App.Vector(0,0,1), App.Vector(%f,%f,%f)))\n",
-                    radius,
-                    height,
-                    base.x,
-                    base.y,
-                    base.z,
-                    axis.x,
-                    axis.y,
-                    axis.z
-                );
-
-                Gui::Command::doCommand(
-                    Gui::Command::App,
-                    "axis = cyl.Placement.Rotation.multVec(App.Vector(0,0,1))\n"
-                    "print('Final axis: ({}, {}, {})'.format(axis.x, axis.y, axis.z))\n"
-                );
-            }
-            catch (...) {
-            }
-#endif
         }
         return values;
     }
@@ -282,7 +256,16 @@ void ParametersDialog::onClearClicked()
 
 void ParametersDialog::onComputeClicked()
 {
-    const Mesh::MeshObject& kernel = myMesh->Mesh.getValue();
+    auto* target = myMesh.get<Mesh::Feature>();
+    if (!MeshGui::isNativeMeshInputActive(target)) {
+        QMessageBox::warning(
+            this,
+            tr("Mesh unavailable"),
+            tr("The mesh selected for fitting no longer exists.")
+        );
+        return;
+    }
+    const Mesh::MeshObject& kernel = target->Mesh.getValue();
     if (kernel.hasSelectedFacets()) {
         FitParameter::Points fitpts;
         std::vector<Mesh::ElementIndex> facets, points;
@@ -295,10 +278,10 @@ void ParametersDialog::onComputeClicked()
         fitpts.points.insert(fitpts.points.end(), coords.begin(), coords.end());
         coords.clear();
 
-        values = fitParameter->getParameter(fitpts);
-        if (values.size() == spinBoxes.size()) {
-            for (std::size_t i = 0; i < values.size(); i++) {
-                spinBoxes[i]->setValue(values[i]);
+        const std::vector<float> computed = fitParameter->getParameter(fitpts);
+        if (computed.size() == spinBoxes.size()) {
+            for (std::size_t i = 0; i < computed.size(); ++i) {
+                spinBoxes[i]->setValue(computed[i]);
             }
         }
         meshSel.stopSelection();
@@ -321,7 +304,6 @@ void ParametersDialog::accept()
 
 void ParametersDialog::reject()
 {
-    values.clear();
     QDialog::reject();
 }
 
@@ -344,7 +326,7 @@ SegmentationBestFit::SegmentationBestFit(Mesh::Feature* mesh, QWidget* parent, Q
     ui->numSph->setRange(1, std::numeric_limits<int>::max());
     ui->numSph->setValue(100);
 
-    Gui::SelectionObject obj(myMesh);
+    Gui::SelectionObject obj(mesh);
     std::vector<Gui::SelectionObject> sel;
     sel.push_back(obj);
     meshSel.setObjects(sel);
@@ -385,12 +367,12 @@ void SegmentationBestFit::onPlaneParametersClicked()
     list.push_back(std::make_pair(axis + y, p[4]));
     list.push_back(std::make_pair(axis + z, p[5]));
 
-    static QPointer<QDialog> dialog = nullptr;
-    if (!dialog) {
-        dialog = new ParametersDialog(planeParameter, new PlaneFitParameter, list, myMesh, this);
+    auto* target = myMesh.get<Mesh::Feature>();
+    if (!MeshGui::isNativeMeshInputActive(target)) {
+        return;
     }
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->show();
+    ParametersDialog dialog(planeParameter, new PlaneFitParameter, list, target, this);
+    dialog.exec();
 }
 
 void SegmentationBestFit::onCylinderParametersClicked()
@@ -412,12 +394,12 @@ void SegmentationBestFit::onCylinderParametersClicked()
     list.push_back(std::make_pair(axis + z, p[5]));
     list.push_back(std::make_pair(radius, p[6]));
 
-    static QPointer<QDialog> dialog = nullptr;
-    if (!dialog) {
-        dialog = new ParametersDialog(cylinderParameter, new CylinderFitParameter, list, myMesh, this);
+    auto* target = myMesh.get<Mesh::Feature>();
+    if (!MeshGui::isNativeMeshInputActive(target)) {
+        return;
     }
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->show();
+    ParametersDialog dialog(cylinderParameter, new CylinderFitParameter, list, target, this);
+    dialog.exec();
 }
 
 void SegmentationBestFit::onSphereParametersClicked()
@@ -435,17 +417,24 @@ void SegmentationBestFit::onSphereParametersClicked()
     list.push_back(std::make_pair(base + z, p[2]));
     list.push_back(std::make_pair(radius, p[3]));
 
-    static QPointer<QDialog> dialog = nullptr;
-    if (!dialog) {
-        dialog = new ParametersDialog(sphereParameter, new SphereFitParameter, list, myMesh, this);
+    auto* target = myMesh.get<Mesh::Feature>();
+    if (!MeshGui::isNativeMeshInputActive(target)) {
+        return;
     }
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->show();
+    ParametersDialog dialog(sphereParameter, new SphereFitParameter, list, target, this);
+    dialog.exec();
 }
 
 void SegmentationBestFit::accept()
 {
-    const Mesh::MeshObject* mesh = myMesh->Mesh.getValuePtr();
+    auto* target = myMesh.get<Mesh::Feature>();
+    if (!target || !target->getNameInDocument()
+        || !MeshGui::isNativeMeshInputActive(target)) {
+        throw Base::RuntimeError(
+            "The mesh selected for segmentation is no longer active in History"
+        );
+    }
+    const Mesh::MeshObject* mesh = target->Mesh.getValuePtr();
     const MeshCore::MeshKernel& kernel = mesh->getKernel();
 
     MeshCore::MeshSegmentAlgorithm finder(kernel);
@@ -514,31 +503,80 @@ void SegmentationBestFit::accept()
     }
     finder.FindSegments(segm);
 
-    App::Document* document = App::GetApplication().getActiveDocument();
-    document->openTransaction("Segmentation");
-
-    std::string internalname = "Segments_";
-    internalname += myMesh->getNameInDocument();
-    auto* group = document->addObject<App::DocumentObjectGroup>(internalname.c_str());
-    std::string labelname = "Segments ";
-    labelname += myMesh->Label.getValue();
-    group->Label.setValue(labelname);
-    for (const auto& it : segm) {
-        const std::vector<MeshCore::MeshSegment>& data = it->GetSegments();
-        for (const auto& jt : data) {
-            Mesh::MeshObject* segment = mesh->meshFromSegment(jt);
-            auto* feaSegm = group->addObject<Mesh::Feature>("Segment");
-            Mesh::MeshObject* feaMesh = feaSegm->Mesh.startEditing();
-            feaMesh->swap(*segment);
-            feaSegm->Mesh.finishEditing();
-            delete segment;
-
-            std::stringstream label;
-            label << feaSegm->Label.getValue() << " (" << it->GetType() << ")";
-            feaSegm->Label.setValue(label.str());
+    struct Result
+    {
+        std::vector<long> facets;
+        std::string type;
+    };
+    std::vector<Result> results;
+    for (const auto& segment : segm) {
+        for (const auto& result : segment->GetSegments()) {
+            if (result.empty()) {
+                continue;
+            }
+            results.push_back(
+                {
+                    std::vector<long>(result.begin(), result.end()),
+                    segment->GetType(),
+                }
+            );
         }
     }
-    document->commitTransaction();
+    if (results.empty()) {
+        throw Base::RuntimeError("The current settings did not find any mesh segments");
+    }
+
+    App::Document* document = target->getDocument();
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+        throw Base::RuntimeError("Another document operation is already in progress");
+    }
+    std::vector<std::string> labels;
+    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
+    labels.reserve(results.size());
+    operations.reserve(results.size());
+    for (const auto& result : results) {
+        std::stringstream label;
+        label << "Mesh Segment (" << result.type << ")";
+        labels.push_back(label.str());
+        operations.push_back(
+            MeshGui::ParametricMeshFilterTarget {
+                target,
+                [target,
+                 facets = result.facets,
+                 label = labels.back(),
+                 type = result.type](
+                    App::DocumentObject& object
+                ) {
+                    auto& subset =
+                        static_cast<Mesh::FacetSubset&>(object);
+                    subset.Label.setValue(label);
+                    subset.FacetIndices.setValues(facets);
+                    subset.AcceptedTopology.setValue(
+                        target->Mesh.getValue()
+                    );
+                    subset.SelectionKind.setValue(type);
+                },
+            }
+        );
+    }
+    std::string groupLabel = "Best-Fit Segments ";
+    groupLabel += target->Label.getValue();
+    MeshGui::createParametricMeshFilters(
+        *document,
+        operations,
+        MeshGui::ParametricMeshFilterSpec {
+            "Mesh::FacetSubset",
+            "Segment",
+            "Mesh Segment",
+            "Segmentation",
+            true,
+            true,
+            true,
+            "BestFitSegmentation",
+            groupLabel.c_str(),
+            "Best-fit segmentation",
+        }
+    );
 }
 
 void SegmentationBestFit::changeEvent(QEvent* e)
@@ -555,14 +593,29 @@ void SegmentationBestFit::changeEvent(QEvent* e)
 
 TaskSegmentationBestFit::TaskSegmentationBestFit(Mesh::Feature* mesh)
 {
+    if (mesh && mesh->getDocument()) {
+        setDocumentName(mesh->getDocument()->getName());
+        setAutoCloseOnDeletedDocument(true);
+        associateToObject3dView(mesh);
+    }
     widget = new SegmentationBestFit(mesh);  // NOLINT
     addTaskBox(widget, false);
 }
 
 bool TaskSegmentationBestFit::accept()
 {
-    widget->accept();
-    return true;
+    try {
+        widget->accept();
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        error.reportException();
+        return false;
+    }
+    catch (...) {
+        Base::Console().error("Best-fit mesh segmentation failed because of an unknown error\n");
+        return false;
+    }
 }
 
 #include "moc_SegmentationBestFit.cpp"

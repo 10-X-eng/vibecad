@@ -45,6 +45,11 @@ namespace Data
 struct HistoryItem;
 }
 
+namespace App
+{
+class PropertyLinkBase;
+}
+
 namespace Part
 {
 
@@ -194,6 +199,14 @@ public:
 
     static bool isElementMappingDisabled(App::PropertyContainer* container);
 
+    /** Prepare registered modeling links for insertion into a GeoFeatureGroup.
+     *
+     * Creation-time links can be assigned while the result is still at document root. Call this
+     * immediately before grouping so references that would cross the prospective owner boundary
+     * are promoted without moving their targets.
+     */
+    void prepareCrossContainerLinks(const App::DocumentObject* prospectiveOwner);
+
     bool getCameraAlignmentDirection(
         Base::Vector3d& directionZ,
         Base::Vector3d& directionX,
@@ -221,6 +234,16 @@ protected:
     void onBeforeChange(const App::Property* prop) override;
     void onChanged(const App::Property* prop) override;
     void onDocumentRestored() override;
+
+    /**
+     * Mark a modeling input that may legally reference a different GeoFeatureGroup.
+     *
+     * The property retains its historical local scope for an unowned or same-container graph,
+     * preserving normal App::Part grouping. It is promoted to global scope only after a real
+     * cross-container reference is assigned, so a Body operation never tries to steal an operand
+     * from another Body or App::Part.
+     */
+    void allowCrossContainerLink(App::PropertyLinkBase& link);
 
     void copyMaterial(Feature* feature);
     void copyMaterial(App::DocumentObject* link);
@@ -254,9 +277,15 @@ protected:
     ShapeHistory joinHistory(const ShapeHistory&, const ShapeHistory&);
 
 private:
+    void updateCrossContainerLinkScope(
+        App::PropertyLinkBase& link,
+        const App::DocumentObject* owner
+    );
+
     struct ElementCache;
     std::map<std::string, ElementCache> _elementCache;
     std::vector<std::pair<std::string, PropertyPartShape*>> _elementCachePrefixMap;
+    std::vector<App::PropertyLinkBase*> _crossContainerLinks;
 };
 
 class PartExport FilletBase: public Part::Feature

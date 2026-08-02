@@ -27,7 +27,10 @@
 #include <QAction>
 #include <QMessageBox>
 
+#include <string>
+#include <unordered_map>
 
+#include <App/Application.h>
 #include <App/Document.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -41,11 +44,25 @@
 #include <Mod/PartDesign/App/ShapeBinder.h>
 
 #include "ui_TaskShapeBinder.h"
+#include "ReferenceSelection.h"
+#include "TaskDialogState.h"
 #include "TaskShapeBinder.h"
 
 
 using namespace PartDesignGui;
 using namespace Gui;
+
+namespace
+{
+struct ShapeBinderTaskState
+{
+    std::string documentName;
+    TaskInternal::VisibilitySnapshot visibility;
+};
+
+std::unordered_map<const TaskDlgShapeBinder*, ShapeBinderTaskState>
+    shapeBinderTaskStates;
+}
 
 /* TRANSLATOR PartDesignGui::TaskShapeBinder */
 
@@ -161,12 +178,19 @@ void TaskShapeBinder::onButtonToggled(QAbstractButton* button, bool checked)
 {
     int id = buttonGroup->id(button);
 
+    auto clearTaskSelection = [this]() {
+        if (!vp.expired()) {
+            Gui::Selection().clearSelection(
+                vp->getObject()->getDocument()->getName()
+            );
+        }
+    };
     if (checked) {
-        Gui::Selection().clearSelection();
+        clearTaskSelection();
         selectionMode = static_cast<TaskShapeBinder::selectionModes>(id);
     }
     else {
-        Gui::Selection().clearSelection();
+        clearTaskSelection();
         if (selectionMode == static_cast<TaskShapeBinder::selectionModes>(id)) {
             selectionMode = TaskShapeBinder::none;
         }
@@ -237,8 +261,16 @@ void TaskShapeBinder::removeFromListWidget(QListWidget* widget, QString itemstr)
 
 void TaskShapeBinder::onSelectionChanged(const Gui::SelectionChanges& msg)
 {
-    auto setObjectLabel = [this](const Gui::SelectionChanges& msg) {
-        App::DocumentObject* obj = msg.Object.getObject();
+    auto setObjectLabel = [this]() {
+        App::GeoFeature* obj = nullptr;
+        std::vector<std::string> references;
+        if (!vp.expired()) {
+            PartDesign::ShapeBinder::getFilteredReferences(
+                &vp->getObject<PartDesign::ShapeBinder>()->Support,
+                obj,
+                references
+            );
+        }
         if (obj) {
             ui->baseEdit->setText(QString::fromStdString(obj->Label.getStrValue()));
         }
@@ -256,7 +288,7 @@ void TaskShapeBinder::onSelectionChanged(const Gui::SelectionChanges& msg)
                     ui->listWidgetReferences->addItem(sub);
                 }
 
-                setObjectLabel(msg);
+                setObjectLabel();
             }
             else if (selectionMode == refRemove) {
                 QString sub = QString::fromUtf8(msg.pSubName);
@@ -266,7 +298,7 @@ void TaskShapeBinder::onSelectionChanged(const Gui::SelectionChanges& msg)
             }
             else if (selectionMode == refObjAdd) {
                 ui->listWidgetReferences->clear();
-                setObjectLabel(msg);
+                setObjectLabel();
             }
 
             clearButtons();
@@ -316,13 +348,17 @@ bool TaskShapeBinder::referenceSelected(const SelectionChanges& msg) const
         );
 
         // get selected object
-        auto docObj = vp->getObject()->getDocument()->getObject(msg.pObjectName);
+        auto* binder = vp->getObject<PartDesign::ShapeBinder>();
+        auto* docObj = resolveModelingReference(
+            binder,
+            binder->getDocument()->getObject(msg.pObjectName)
+        );
         if (docObj && docObj->isDerivedFrom<Part::Feature>()) {
             selectedObj = static_cast<Part::Feature*>(docObj);
         }
 
         // ensure we have a valid object
-        if (!selectedObj) {
+        if (!selectedObj || selectedObj == binder) {
             return false;
         }
         if (!obj) {
@@ -332,7 +368,7 @@ bool TaskShapeBinder::referenceSelected(const SelectionChanges& msg) const
 
         if (selectionMode != refObjAdd) {
             // ensure the new selected subref belongs to the same object
-            if (strcmp(msg.pObjectName, obj->getNameInDocument()) != 0) {
+            if (selectedObj != obj) {
                 return false;
             }
 
@@ -381,7 +417,11 @@ void TaskShapeBinder::exitSelectionMode()
 {
 
     selectionMode = none;
-    Gui::Selection().clearSelection();
+    if (!vp.expired()) {
+        Gui::Selection().clearSelection(
+            vp->getObject()->getDocument()->getName()
+        );
+    }
 }
 
 void TaskShapeBinder::accept()
@@ -412,32 +452,58 @@ void TaskShapeBinder::accept()
 
 TaskDlgShapeBinder::TaskDlgShapeBinder(ViewProviderShapeBinder* view, bool newObj)
     : Gui::TaskView::TaskDialog()
+    , parameter(nullptr)
     , vp(view)
 {
     assert(view);
+    // Both the parameter widget and this dialog refer to the edited binder.
+    // Let TaskView detach the task before document teardown invalidates it.
+    setAutoCloseOnDeletedDocument(true);
+    auto* document =
+        view && view->getObject()
+        ? view->getObject()->getDocument()
+        : nullptr;
+    shapeBinderTaskStates.insert_or_assign(
+        this,
+        ShapeBinderTaskState {
+            document ? document->getName() : "",
+            TaskInternal::VisibilitySnapshot(document),
+        }
+    );
     parameter = new TaskShapeBinder(view, newObj);
 
     Content.push_back(parameter);
 }
 
-TaskDlgShapeBinder::~TaskDlgShapeBinder() = default;
+TaskDlgShapeBinder::~TaskDlgShapeBinder()
+{
+    shapeBinderTaskStates.erase(this);
+}
 
 bool TaskDlgShapeBinder::accept()
 {
+    if (vp.expired()) {
+        return true;
+    }
+    TaskInternal::AcceptedMacro acceptedMacro;
     try {
-        if (!vp.expired()) {
-            parameter->accept();
+        parameter->accept();
 
-            Gui::cmdAppDocument(vp->getObject(), "recompute()");
-            if (!vp->getObject()->isValid()) {
-                throw Base::RuntimeError(vp->getObject()->getStatusString());
-            }
-            Gui::cmdGuiDocument(vp->getObject(), "resetEdit()");
-            vp->getDocument()->commitCommand();
+        Gui::cmdAppDocument(vp->getObject(), "recompute()");
+        if (!vp->getObject()->isValid()) {
+            throw Base::RuntimeError(vp->getObject()->getStatusString());
         }
+        if (const auto state = shapeBinderTaskStates.find(this);
+            state != shapeBinderTaskStates.end()) {
+            state->second.visibility.restore(vp->getObject()->getDocument());
+        }
+        Gui::cmdGuiDocument(vp->getObject(), "resetEdit()");
     }
     catch (const Base::Exception& e) {
-        vp->getDocument()->abortCommand();
+        acceptedMacro.discard();
+        // Invalid input is not Cancel. Keep the edited binder and task alive
+        // so the user can correct the references; Cancel remains responsible
+        // for rolling the full command back.
         QMessageBox::warning(
             parameter,
             tr("Input Error"),
@@ -446,18 +512,41 @@ bool TaskDlgShapeBinder::accept()
         return false;
     }
 
+    acceptedMacro.publish();
     return true;
 }
 
 bool TaskDlgShapeBinder::reject()
 {
-    if (!vp.expired()) {
-        // roll back the done things (deletes 'vp')
-        // Gui::Command::abortCommand();
-        vp->getDocument()->abortCommand();
-        App::Document* doc = vp->getObject()->getDocument();
-        Gui::cmdGuiDocument(doc, "resetEdit()");
-        Gui::cmdAppDocument(doc, "recompute()");
+    App::Document* appDocument = nullptr;
+    const auto state = shapeBinderTaskStates.find(this);
+    const bool hasState = state != shapeBinderTaskStates.end();
+    const std::string documentName =
+        hasState
+        ? state->second.documentName
+        : std::string();
+    const TaskInternal::VisibilitySnapshot visibility =
+        hasState
+        ? state->second.visibility
+        : TaskInternal::VisibilitySnapshot();
+    try {
+        appDocument = documentName.empty()
+            ? nullptr
+            : App::GetApplication().getDocument(documentName.c_str());
+    }
+    catch (...) {
+    }
+    auto* guiDocument =
+        appDocument && Gui::Application::Instance
+        ? Gui::Application::Instance->getDocument(appDocument)
+        : nullptr;
+
+    TaskInternal::cancelOwnedEdit(guiDocument);
+    if (appDocument) {
+        if (hasState) {
+            visibility.restore(appDocument);
+        }
+        appDocument->recompute();
     }
     return true;
 }

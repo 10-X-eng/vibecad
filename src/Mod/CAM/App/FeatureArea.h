@@ -25,6 +25,8 @@
 
 #include <App/DocumentObject.h>
 #include <App/FeaturePython.h>
+#include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
 #include <App/PropertyUnits.h>
 #include "Mod/Part/App/PartFeature.h"
 
@@ -57,11 +59,17 @@ public:
 
     App::PropertyLinkList Sources;
     Part::PropertyPartShape WorkPlane;
+    App::PropertyBool WorkPlaneSourceEnabled;
+    App::PropertyLinkSub WorkPlaneSource;
+    App::PropertyString WorkPlaneSourceCollection;
 
     PARAM_PROP_DECLARE(AREA_PARAMS_ALL)
 
     void setWorkPlane(const TopoDS_Shape& shape)
     {
+        WorkPlaneSourceEnabled.setValue(false);
+        WorkPlaneSource.setValue(nullptr);
+        WorkPlaneSourceCollection.setValue("");
         WorkPlane.setValue(shape);
         myArea.setPlane(shape);
     }

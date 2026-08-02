@@ -56,11 +56,21 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         )
 
         # Connect controls to keep step over percent and distance in sync
-        self.form.stepOver.valueChanged.connect(lambda: self.updateStepOverDistance(obj))
-        self.form.stepOverDistance.valueChanged.connect(lambda: self.updateStepOverPercent(obj))
-        self.form.stepOverDistance.editingFinished.connect(lambda: self.updateStepOverDistance(obj))
-        self.form.toolController.currentIndexChanged.connect(
-            lambda: self.updateStepOverDistance(obj)
+        self.connectSignal(
+            self.form.stepOver.valueChanged,
+            lambda: self.updateStepOverDistance(obj),
+        )
+        self.connectSignal(
+            self.form.stepOverDistance.valueChanged,
+            lambda: self.updateStepOverPercent(obj),
+        )
+        self.connectSignal(
+            self.form.stepOverDistance.editingFinished,
+            lambda: self.updateStepOverDistance(obj),
+        )
+        self.connectSignal(
+            self.form.toolController.currentIndexChanged,
+            lambda: self.updateStepOverDistance(obj),
         )
 
     def getSignalsForUpdate(self, obj):

@@ -30,11 +30,15 @@
 # include <QPointer>
 # include <QTextStream>
 
+#include <exception>
+
 #include <fastsignals/signal.h>
 #include <fastsignals/connection.h>
 
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/DocumentObject.h>
+#include <Base/Console.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/CommandT.h>
@@ -58,6 +62,7 @@
 #include "QGITemplate.h"
 #include "QGSPage.h"
 #include "QGVPage.h"
+#include "TaskDocumentGuard.h"
 #include "ViewProviderPageExtension.h"
 #include "ViewProviderTemplate.h"
 #include "ViewProviderViewPart.h"
@@ -124,6 +129,21 @@ void ViewProviderPage::attach(App::DocumentObject* pcFeat)
     auto* feature = dynamic_cast<TechDraw::DrawPage*>(pcFeat);
     if (feature) {
         connectGuiRepaint = feature->signalGuiPaint.connect(bnd);
+        if (auto* document = feature->getDocument()) {
+            connectTimelineChanged = document->signalChangedObject.connect(
+                [this](const App::DocumentObject& object, const App::Property& property) {
+                    const auto* timeline = dynamic_cast<const App::DocumentTimeline*>(&object);
+                    if (!timeline
+                        || (&property != &timeline->Position && &property != &timeline->Operations)
+                        || m_mdiView.isNull()
+                        || !m_graphicsScene) {
+                        return;
+                    }
+                    m_graphicsScene->fixOrphans(true);
+                    m_graphicsScene->redrawAllViews();
+                }
+            );
+        }
         if (feature->isAttachedToDocument()) {
             // it could happen that feature is not completely in the document yet and getNameInDocument returns
             // nullptr, so we only update m_myName if we got a valid string.
@@ -237,10 +257,57 @@ void ViewProviderPage::setupContextMenu(QMenu* menu, QObject* receiver, const ch
 {
     Gui::ViewProviderDocumentObject::setupContextMenu(menu, receiver, member);
     QAction* act = menu->addAction(QObject::tr("Show Drawing"), receiver, member);
+    act->setObjectName(QStringLiteral("TechDrawContextShowDrawing"));
     act->setData(QVariant((int)ShowDrawing));
     QAction* act2 = menu->addAction(QObject::tr("Toggle Keep Updated"), receiver, member);
-
+    act2->setObjectName(QStringLiteral("TechDrawContextToggleKeepUpdated"));
     act2->setData(QVariant((int)ToggleUpdate));
+}
+
+bool ViewProviderPage::toggleKeepUpdated()
+{
+    auto* page = getDrawPage();
+    auto* document = page ? page->getDocument() : nullptr;
+    if (!page || !document || !document->containsObject(page)
+        || document->getBookedTransactionID() != App::NullTransaction) {
+        return false;
+    }
+
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage> pageIdentity(page);
+    const bool keepUpdated = !page->KeepUpdated.getValue();
+    try {
+        TaskInternal::OwnedDocumentTransaction transaction(
+            document,
+            QT_TRANSLATE_NOOP("Command", "Toggle keep updated")
+        );
+        const std::string pageCommand = Gui::Command::getObjectCmd(page);
+        Gui::Command::doCommand(
+            Gui::Command::Doc,
+            "%s.KeepUpdated = %s",
+            pageCommand.c_str(),
+            keepUpdated ? "True" : "False"
+        );
+
+        page = pageIdentity.resolve();
+        if (!page || page->KeepUpdated.getValue() != keepUpdated) {
+            throw Base::RuntimeError("The drawing page changed while toggling its update policy");
+        }
+        page->recomputeFeature();
+        TaskInternal::updateExactDocument(document);
+        page = pageIdentity.resolve();
+        if (!page || page->KeepUpdated.getValue() != keepUpdated) {
+            throw Base::RuntimeError("The drawing page update policy could not be applied");
+        }
+        transaction.commit();
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error("Toggling the drawing page update policy failed: %s\n", error.what());
+    }
+    catch (const std::exception& error) {
+        Base::Console().error("Toggling the drawing page update policy failed: %s\n", error.what());
+    }
+    return false;
 }
 
 bool ViewProviderPage::setEdit(const int ModNum)
@@ -251,11 +318,7 @@ bool ViewProviderPage::setEdit(const int ModNum)
     }
 
     if (ModNum == ToggleUpdate) {
-        auto page = getDrawPage();
-        if (page) {
-            page->KeepUpdated.setValue(!page->KeepUpdated.getValue());
-            page->recomputeFeature();
-        }
+        toggleKeepUpdated();
         return false;
     }
     return Gui::ViewProviderDocumentObject::setEdit(ModNum);
@@ -376,15 +439,20 @@ MDIViewPage* ViewProviderPage::getMDIViewPage() const
 
 DrawTemplate* ViewProviderPage::getTemplate() const
 {
-    return freecad_cast<DrawTemplate*>(getDrawPage()->Template.getValue());
+    auto* page = getDrawPage();
+    return page ? page->getActiveTemplate() : nullptr;
 }
 
 
 QGITemplate* ViewProviderPage::getQTemplate() const
 {
+    auto* activeTemplate = getTemplate();
+    if (!activeTemplate) {
+        return nullptr;
+    }
     Gui::Document* guiDoc = Gui::Application::Instance->getDocument(getDrawPage()->getDocument());
     if (guiDoc) {
-        Gui::ViewProvider* vp = guiDoc->getViewProvider(getTemplate());
+        Gui::ViewProvider* vp = guiDoc->getViewProvider(activeTemplate);
         auto vpTemplate = freecad_cast<ViewProviderTemplate*>(vp);
         if (vpTemplate) {
             return vpTemplate->getQTemplate();
@@ -463,8 +531,10 @@ void ViewProviderPage::toggleFrameState()
 
 void ViewProviderPage::setTemplateMarkers(bool state) const
 {
-    App::DocumentObject* templateFeat = nullptr;
-    templateFeat = getDrawPage()->Template.getValue();
+    App::DocumentObject* templateFeat = getDrawPage()->getActiveTemplate();
+    if (!templateFeat) {
+        return;
+    }
     Gui::Document* guiDoc = Gui::Application::Instance->getDocument(templateFeat->getDocument());
     Gui::ViewProvider* vp = guiDoc->getViewProvider(templateFeat);
     auto* vpt = freecad_cast<ViewProviderTemplate*>(vp);
@@ -549,10 +619,10 @@ void ViewProviderPage::setGrid()
     int pageHeight{A4LandscapeHigh};
     //
     double gridStep = GridSpacing.getValue() > 0 ? GridSpacing.getValue() : 10.0;
-    if (dPage) {
-        pageWidth = floor(dPage->getPageWidth()); // combining these 2 lines
+    if (auto* activeTemplate = dPage->getActiveTemplate()) {
+        pageWidth = floor(activeTemplate->Width.getValue()); // combining these 2 lines
         pageWidth = std::max(1, pageWidth);       // causes 'no matching function' error
-        pageHeight = floor(dPage->getPageHeight());   // and again
+        pageHeight = floor(activeTemplate->Height.getValue());   // and again
         pageHeight = std::max(1, pageHeight);
     }
     QGVPage* widget = getQGVPage();

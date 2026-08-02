@@ -1076,12 +1076,12 @@ void Hole::updateThreadDepthParam()
     }
     else if (HoleDepth == "ThroughAll") {
         if (ThreadMethod != "Dimension") {
-            ThreadDepth.setValue(getThroughAllLength());
+            ThreadDepth.setValue(getHoleThroughAllLength());
         }
         else {
             // the thread cannot be longer than the hole depth
-            if (ThreadDepth.getValue() > getThroughAllLength()) {
-                ThreadDepth.setValue(getThroughAllLength());
+            if (ThreadDepth.getValue() > getHoleThroughAllLength()) {
+                ThreadDepth.setValue(getHoleThroughAllLength());
             }
             else {
                 ThreadDepth.setValue(ThreadDepth.getValue());
@@ -1636,7 +1636,7 @@ void Hole::onChanged(const App::Property* prop)
         if (!isRestoring()) {
             if (isNotDimension) {
                 // if through all, set the depth accordingly
-                Depth.setValue(getThroughAllLength());
+                Depth.setValue(getHoleThroughAllLength());
             }
             updateThreadDepthParam();
         }
@@ -1644,8 +1644,8 @@ void Hole::onChanged(const App::Property* prop)
     else if (prop == &Depth) {
         if (!isRestoring()) {
             // the depth cannot be greater than the through-all length
-            if (Depth.getValue() > getThroughAllLength()) {
-                Depth.setValue(getThroughAllLength());
+            if (Depth.getValue() > getHoleThroughAllLength()) {
+                Depth.setValue(getHoleThroughAllLength());
             }
         }
 
@@ -1803,188 +1803,190 @@ static gp_Pnt toPnt(gp_Vec dir)
     return {dir.X(), dir.Y(), dir.Z()};
 }
 
-App::DocumentObjectExecReturn* Hole::execute()
+double Hole::getHoleThroughAllLength() const
 {
-    TopoShape profileshape = getProfileShape(
-        Part::ShapeOption::NeedSubElement | Part::ShapeOption::ResolveLink
-        | Part::ShapeOption::Transform | Part::ShapeOption::DontSimplifyCompound
-    );
+    return getThroughAllLength();
+}
 
-    // Find the base shape
-    TopoShape base;
-    try {
-        base = getBaseTopoShape();
+App::DocumentObjectExecReturn* Hole::buildHoleCutters(
+    const TopoShape& profileShape,
+    const gp_Vec& direction,
+    double length,
+    TopoShape& compound,
+    std::vector<TopoShape>& holes
+)
+{
+    if (Diameter.getValue() < diameterRange.LowerBound) {
+        return new App::DocumentObjectExecReturn(
+            QT_TRANSLATE_NOOP("Exception", "Hole error: Diameter too small")
+        );
     }
-    catch (const Base::Exception&) {
-        std::string text(QT_TRANSLATE_NOOP(
-            "Exception",
-            "The requested feature cannot be created. The reason may be that:\n"
-            "  - the active Body does not contain a base shape, so there is no\n"
-            "  material to be removed;\n"
-            "  - the selected sketch does not belong to the active Body."
-        ));
-        return new App::DocumentObjectExecReturn(text);
+    if (length <= 0.0) {
+        return new App::DocumentObjectExecReturn(
+            QT_TRANSLATE_NOOP("Exception", "Hole error: Invalid hole depth")
+        );
     }
 
-    try {
-        if (Diameter.getValue() < diameterRange.LowerBound) {
+    gp_Vec zDir = direction;
+    if (zDir.SquareMagnitude() <= Precision::SquareConfusion()) {
+        return new App::DocumentObjectExecReturn(
+            QT_TRANSLATE_NOOP("Exception", "Hole error: Invalid profile direction")
+        );
+    }
+    zDir.Normalize();
+    gp_Vec xDir = computePerpendicular(zDir);
+
+    BRepBuilderAPI_MakeWire mkWire;
+    const std::string holeCutType = HoleCutType.getValueAsString();
+    const std::string threadType = ThreadType.getValueAsString();
+    const bool isCountersink =
+        holeCutType == "Countersink"
+        || isDynamicCountersink(threadType, holeCutType);
+    const bool isCounterbore =
+        holeCutType == "Counterbore"
+        || isDynamicCounterbore(threadType, holeCutType);
+    const bool isCounterdrill = holeCutType == "Counterdrill";
+
+    const double taperedAngle =
+        Tapered.getValue()
+        ? Base::toRadians(TaperedAngle.getValue())
+        : Base::toRadians(90.0);
+    if (taperedAngle <= 0.0
+        || taperedAngle > Base::toRadians(180.0)) {
+        return new App::DocumentObjectExecReturn(
+            QT_TRANSLATE_NOOP("Exception", "Hole error: Invalid taper angle")
+        );
+    }
+
+    const double radius = Diameter.getValue() / 2.0;
+    const double radiusBottom =
+        radius - length / std::tan(taperedAngle);
+    const gp_Pnt firstPoint(0, 0, 0);
+    gp_Pnt lastPoint(0, 0, 0);
+    double lengthCounter = 0.0;
+    double xPosCounter = 0.0;
+    double zPosCounter = 0.0;
+
+    if (isCountersink || isCounterbore || isCounterdrill) {
+        const double holeCutRadius = HoleCutDiameter.getValue() / 2.0;
+        double holeCutDepth = HoleCutDepth.getValue();
+        double countersinkAngle =
+            Base::toRadians(HoleCutCountersinkAngle.getValue() / 2.0);
+
+        if (isCounterbore) {
+            // A counterbore uses the same revolved profile as a countersink,
+            // with a square 90-degree shoulder.
+            countersinkAngle = Base::toRadians(90.0);
+        }
+        if (isCountersink) {
+            holeCutDepth = 0.0;
+        }
+        if (holeCutRadius < radius) {
             return new App::DocumentObjectExecReturn(
-                QT_TRANSLATE_NOOP("Exception", "Hole error: Diameter too small")
+                QT_TRANSLATE_NOOP("Exception", "Hole error: Hole cut diameter too small")
             );
         }
-        std::string method(DepthType.getValueAsString());
-        double length = 0.0;
-
-        this->positionByPrevious();
-        TopLoc_Location invObjLoc = this->getLocation().Inverted();
-
-        base.move(invObjLoc);
-        profileshape.move(invObjLoc);
-
-        /* Build the prototype hole */
-
-        // Get vector normal to profile
-        Base::Vector3d SketchVector = guessNormalDirection(profileshape);
-
-        if (Reversed.getValue()) {
-            SketchVector *= -1.0;
+        if (holeCutDepth > length) {
+            return new App::DocumentObjectExecReturn(QT_TRANSLATE_NOOP(
+                "Exception",
+                "Hole error: Hole cut depth must be less than hole depth"
+            ));
+        }
+        if (holeCutDepth < 0.0) {
+            return new App::DocumentObjectExecReturn(QT_TRANSLATE_NOOP(
+                "Exception",
+                "Hole error: Hole cut depth must be greater or equal to zero"
+            ));
         }
 
-        // Define this as zDir
-        gp_Vec zDir(SketchVector.x, SketchVector.y, SketchVector.z);
-        zDir.Transform(invObjLoc.Transformation());
-        gp_Vec xDir = computePerpendicular(zDir);
+        gp_Pnt newPoint = toPnt(holeCutRadius * xDir);
+        mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
+        lastPoint = newPoint;
 
-        if (method == "Dimension") {
-            length = Depth.getValue();
-        }
-        else if (method == "UpToFirst") {
-            /* TODO */
-        }
-        else if (method == "ThroughAll") {
-            length = getThroughAllLength();
-        }
-        else {
-            return new App::DocumentObjectExecReturn(
-                QT_TRANSLATE_NOOP("Exception", "Hole error: Unsupported length specification")
+        if (holeCutDepth > 0.0) {
+            newPoint = toPnt(
+                holeCutRadius * xDir - holeCutDepth * zDir
             );
-        }
-
-        if (length <= 0.0) {
-            return new App::DocumentObjectExecReturn(
-                QT_TRANSLATE_NOOP("Exception", "Hole error: Invalid hole depth")
-            );
-        }
-
-        BRepBuilderAPI_MakeWire mkWire;
-        const std::string holeCutType = HoleCutType.getValueAsString();
-        const std::string threadType = ThreadType.getValueAsString();
-        bool isCountersink
-            = (holeCutType == "Countersink" || isDynamicCountersink(threadType, holeCutType));
-        bool isCounterbore
-            = (holeCutType == "Counterbore" || isDynamicCounterbore(threadType, holeCutType));
-        bool isCounterdrill = (holeCutType == "Counterdrill");
-
-        double TaperedAngleVal = Tapered.getValue() ? Base::toRadians(TaperedAngle.getValue())
-                                                    : Base::toRadians(90.0);
-        double radiusBottom = Diameter.getValue() / 2.0 - length / tan(TaperedAngleVal);
-
-        double radius = Diameter.getValue() / 2.0;
-        gp_Pnt firstPoint(0, 0, 0);
-        gp_Pnt lastPoint(0, 0, 0);
-        double lengthCounter = 0.0;
-        double xPosCounter = 0.0;
-        double zPosCounter = 0.0;
-
-        if (TaperedAngleVal <= 0.0 || TaperedAngleVal > Base::toRadians(180.0)) {
-            return new App::DocumentObjectExecReturn(
-                QT_TRANSLATE_NOOP("Exception", "Hole error: Invalid taper angle")
-            );
-        }
-
-        if (isCountersink || isCounterbore || isCounterdrill) {
-            double holeCutRadius = HoleCutDiameter.getValue() / 2.0;
-            double holeCutDepth = HoleCutDepth.getValue();
-            double countersinkAngle = Base::toRadians(HoleCutCountersinkAngle.getValue() / 2.0);
-
-            if (isCounterbore) {
-                // Counterbore is rendered the same way as a countersink, but with a hardcoded
-                // angle of 90deg
-                countersinkAngle = Base::toRadians(90.0);
-            }
-
-            if (isCountersink) {
-                holeCutDepth = 0.0;
-                // We cannot recalculate the HoleCutDiameter because the previous HoleCutDepth
-                // is unknown. Therefore we cannot know with what HoleCutDepth the current
-                // HoleCutDiameter was calculated.
-            }
-
-            if (holeCutRadius < radius) {
-                return new App::DocumentObjectExecReturn(
-                    QT_TRANSLATE_NOOP("Exception", "Hole error: Hole cut diameter too small")
-                );
-            }
-
-            if (holeCutDepth > length) {
-                return new App::DocumentObjectExecReturn(QT_TRANSLATE_NOOP(
-                    "Exception",
-                    "Hole error: Hole cut depth must be less than hole depth"
-                ));
-            }
-
-            if (holeCutDepth < 0.0) {
-                return new App::DocumentObjectExecReturn(QT_TRANSLATE_NOOP(
-                    "Exception",
-                    "Hole error: Hole cut depth must be greater or equal to zero"
-                ));
-            }
-
-            // Top point
-            gp_Pnt newPoint = toPnt(holeCutRadius * xDir);
             mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
             lastPoint = newPoint;
+        }
 
-            // Bottom of counterbore
-            if (holeCutDepth > 0.0) {
-                newPoint = toPnt(holeCutRadius * xDir - holeCutDepth * zDir);
-                mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
-                lastPoint = newPoint;
-            }
+        computeIntersection(
+            gp_Pnt(holeCutRadius, -holeCutDepth, 0),
+            gp_Pnt(
+                holeCutRadius - std::sin(countersinkAngle),
+                -std::cos(countersinkAngle) - holeCutDepth,
+                0
+            ),
+            gp_Pnt(radius, 0, 0),
+            gp_Pnt(radiusBottom, -length, 0),
+            xPosCounter,
+            zPosCounter
+        );
+        if (-length > zPosCounter) {
+            return new App::DocumentObjectExecReturn(
+                QT_TRANSLATE_NOOP("Exception", "Hole error: Invalid countersink")
+            );
+        }
 
-            // Compute intersection of tapered edge and line at bottom of counterbore hole
+        lengthCounter = zPosCounter;
+        newPoint =
+            toPnt(xPosCounter * xDir + zPosCounter * zDir);
+        mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
+        lastPoint = newPoint;
+    }
+    else {
+        const gp_Pnt newPoint = toPnt(radius * xDir);
+        mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
+        lastPoint = newPoint;
+    }
+
+    const std::string drillPoint = DrillPoint.getValueAsString();
+    double xPosDrill = 0.0;
+    double zPosDrill = 0.0;
+    if (drillPoint == "Flat") {
+        gp_Pnt newPoint =
+            toPnt(radiusBottom * xDir - length * zDir);
+        mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
+        lastPoint = newPoint;
+
+        newPoint = toPnt(-length * zDir);
+        mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
+        lastPoint = newPoint;
+    }
+    else if (drillPoint == "Angled") {
+        const double drillPointAngle = Base::toRadians(
+            (180.0 - DrillPointAngle.getValue()) / 2.0
+        );
+        if (drillPointAngle <= 0.0
+            || drillPointAngle >= Base::toRadians(180.0)) {
+            return new App::DocumentObjectExecReturn(
+                QT_TRANSLATE_NOOP("Exception", "Hole error: Invalid drill point angle")
+            );
+        }
+
+        gp_Pnt newPoint;
+        if (DrillForDepth.getValue()) {
             computeIntersection(
-                gp_Pnt(holeCutRadius, -holeCutDepth, 0),
-                gp_Pnt(holeCutRadius - sin(countersinkAngle), -cos(countersinkAngle) - holeCutDepth, 0),
+                gp_Pnt(0, -length, 0),
+                gp_Pnt(
+                    radius,
+                    radius * std::tan(drillPointAngle) - length,
+                    0
+                ),
                 gp_Pnt(radius, 0, 0),
                 gp_Pnt(radiusBottom, -length, 0),
-                xPosCounter,
-                zPosCounter
+                xPosDrill,
+                zPosDrill
             );
-
-            if (-length > zPosCounter) {
+            if (zPosDrill > 0 || zPosDrill >= lengthCounter) {
                 return new App::DocumentObjectExecReturn(
-                    QT_TRANSLATE_NOOP("Exception", "Hole error: Invalid countersink")
+                    QT_TRANSLATE_NOOP("Exception", "Hole error: Invalid drill point")
                 );
             }
 
-            lengthCounter = zPosCounter;
-            newPoint = toPnt(xPosCounter * xDir + zPosCounter * zDir);
-            mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
-            lastPoint = newPoint;
-        }
-        else {
-            gp_Pnt newPoint = toPnt(radius * xDir);
-            mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
-            lastPoint = newPoint;
-            lengthCounter = 0.0;
-        }
-
-        std::string drillPoint = DrillPoint.getValueAsString();
-        double xPosDrill = 0.0;
-        double zPosDrill = 0.0;
-        if (drillPoint == "Flat") {
-            gp_Pnt newPoint = toPnt(radiusBottom * xDir + -length * zDir);
+            newPoint =
+                toPnt(xPosDrill * xDir + zPosDrill * zDir);
             mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
             lastPoint = newPoint;
 
@@ -1992,130 +1994,153 @@ App::DocumentObjectExecReturn* Hole::execute()
             mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
             lastPoint = newPoint;
         }
-        else if (drillPoint == "Angled") {
-            double drillPointAngle = Base::toRadians((180.0 - DrillPointAngle.getValue()) / 2.0);
-            gp_Pnt newPoint;
-            bool isDrillForDepth = DrillForDepth.getValue();
+        else {
+            xPosDrill = radiusBottom;
+            zPosDrill = -length;
+            newPoint =
+                toPnt(xPosDrill * xDir + zPosDrill * zDir);
+            mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
+            lastPoint = newPoint;
 
-            // the angle is in any case > 0 and < 90 but nevertheless this safeguard:
-            if (drillPointAngle <= 0.0 || drillPointAngle >= Base::toRadians(180.0)) {
-                return new App::DocumentObjectExecReturn(
-                    QT_TRANSLATE_NOOP("Exception", "Hole error: Invalid drill point angle")
-                );
-            }
-
-            // if option to take drill point size into account
-            // the next wire point is the intersection of the drill edge and the hole edge
-            if (isDrillForDepth) {
-                computeIntersection(
-                    gp_Pnt(0, -length, 0),
-                    gp_Pnt(radius, radius * tan(drillPointAngle) - length, 0),
-                    gp_Pnt(radius, 0, 0),
-                    gp_Pnt(radiusBottom, -length, 0),
-                    xPosDrill,
-                    zPosDrill
-                );
-                if (zPosDrill > 0 || zPosDrill >= lengthCounter) {
-                    return new App::DocumentObjectExecReturn(
-                        QT_TRANSLATE_NOOP("Exception", "Hole error: Invalid drill point")
-                    );
-                }
-
-                newPoint = toPnt(xPosDrill * xDir + zPosDrill * zDir);
-                mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
-                lastPoint = newPoint;
-
-                newPoint = toPnt(-length * zDir);
-                mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
-                lastPoint = newPoint;
-            }
-            else {
-                xPosDrill = radiusBottom;
-                zPosDrill = -length;
-
-                newPoint = toPnt(xPosDrill * xDir + zPosDrill * zDir);
-                mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
-                lastPoint = newPoint;
-
-                // the end point is the size of the drill tip
-                newPoint = toPnt((-length - radius * tan(drillPointAngle)) * zDir);
-                mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
-                lastPoint = newPoint;
-            }
+            newPoint = toPnt(
+                (-length - radius * std::tan(drillPointAngle)) * zDir
+            );
+            mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, newPoint));
+            lastPoint = newPoint;
         }
+    }
 
-        mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, firstPoint));
+    mkWire.Add(BRepBuilderAPI_MakeEdge(lastPoint, firstPoint));
+    const TopoDS_Wire wire = mkWire.Wire();
+    const TopoDS_Face face = BRepBuilderAPI_MakeFace(wire);
 
-        TopoDS_Wire wire = mkWire.Wire();
+    BRepPrimAPI_MakeRevol revolver(
+        face,
+        gp_Ax1(firstPoint, zDir),
+        Base::toRadians<double>(360.0)
+    );
+    if (!revolver.IsDone()) {
+        return new App::DocumentObjectExecReturn(
+            QT_TRANSLATE_NOOP("Exception", "Hole error: Could not revolve sketch")
+        );
+    }
 
-        TopoDS_Face face = BRepBuilderAPI_MakeFace(wire);
+    TopoDS_Shape prototype = revolver.Shape();
+    if (prototype.IsNull()) {
+        return new App::DocumentObjectExecReturn(
+            QT_TRANSLATE_NOOP("Exception", "Hole error: Resulting shape is empty")
+        );
+    }
 
-        double angle = Base::toRadians<double>(360.0);
-        BRepPrimAPI_MakeRevol RevolMaker(face, gp_Ax1(firstPoint, zDir), angle);
-        if (!RevolMaker.IsDone()) {
+    if (Threaded.getValue() && ModelThread.getValue()) {
+        const TopoDS_Shape thread = makeThread(xDir, zDir, length);
+        TopoDS_Compound threadedPrototype;
+        BRep_Builder builder;
+        builder.MakeCompound(threadedPrototype);
+        builder.Add(threadedPrototype, prototype);
+        builder.Add(threadedPrototype, thread);
+        prototype = threadedPrototype;
+    }
+
+    holes.clear();
+    compound = findHoles(holes, profileShape, prototype);
+    if (holes.empty()) {
+        return new App::DocumentObjectExecReturn(
+            QT_TRANSLATE_NOOP("Exception", "Hole error: Finding axis failed")
+        );
+    }
+    return App::DocumentObject::StdReturn;
+}
+
+App::DocumentObjectExecReturn* Hole::execute()
+{
+    TopoShape profileShape = getProfileShape(
+        Part::ShapeOption::NeedSubElement
+        | Part::ShapeOption::ResolveLink
+        | Part::ShapeOption::Transform
+        | Part::ShapeOption::DontSimplifyCompound
+    );
+
+    TopoShape base;
+    try {
+        base = getBaseTopoShape();
+    }
+    catch (const Base::Exception&) {
+        return new App::DocumentObjectExecReturn(QT_TRANSLATE_NOOP(
+            "Exception",
+            "The requested feature cannot be created. The reason may be that:\n"
+            "  - the active Body does not contain a base shape, so there is no\n"
+            "  material to be removed;\n"
+            "  - the selected sketch does not belong to the active Body."
+        ));
+    }
+
+    try {
+        positionByPrevious();
+        const TopLoc_Location featureInverse = getLocation().Inverted();
+        base.move(featureInverse);
+        profileShape.move(featureInverse);
+
+        Base::Vector3d profileDirection =
+            guessNormalDirection(profileShape);
+        if (Reversed.getValue()) {
+            profileDirection *= -1.0;
+        }
+        gp_Vec direction(
+            profileDirection.x,
+            profileDirection.y,
+            profileDirection.z
+        );
+        direction.Transform(featureInverse.Transformation());
+
+        const std::string depthMode = DepthType.getValueAsString();
+        double length = 0.0;
+        if (depthMode == "Dimension") {
+            length = Depth.getValue();
+        }
+        else if (depthMode == "ThroughAll") {
+            length = getHoleThroughAllLength();
+        }
+        else {
             return new App::DocumentObjectExecReturn(
-                QT_TRANSLATE_NOOP("Exception", "Hole error: Could not revolve sketch")
+                QT_TRANSLATE_NOOP(
+                    "Exception",
+                    "Hole error: Unsupported length specification"
+                )
             );
         }
 
-        TopoDS_Shape protoHole = RevolMaker.Shape();
-        if (protoHole.IsNull()) {
-            return new App::DocumentObjectExecReturn(
-                QT_TRANSLATE_NOOP("Exception", "Hole error: Resulting shape is empty")
-            );
-        }
-
-        // Make thread
-        if (Threaded.getValue() && ModelThread.getValue()) {
-            TopoDS_Shape protoThread = makeThread(xDir, zDir, length);
-
-            TopoDS_Compound holeWithThread;
-            holeWithThread.Nullify();
-
-            BRep_Builder builder;
-            builder.MakeCompound(holeWithThread);
-            builder.Add(holeWithThread, protoHole);
-            builder.Add(holeWithThread, protoThread);
-
-            // we reuse the name protoHole (only now it is threaded)
-            protoHole = holeWithThread;
-        }
+        TopoShape compound;
         std::vector<TopoShape> holes;
-        auto compound = findHoles(holes, profileshape, protoHole);
-        if (holes.empty()) {
-            return new App::DocumentObjectExecReturn(
-                QT_TRANSLATE_NOOP("Exception", "Hole error: Finding axis failed")
-            );
+        auto* cutterResult = buildHoleCutters(
+            profileShape,
+            direction,
+            length,
+            compound,
+            holes
+        );
+        if (cutterResult != App::DocumentObject::StdReturn) {
+            return cutterResult;
         }
 
+        AddSubShape.setValue(compound);
         TopoShape result(0);
-
-        // set the subtractive shape property for later usage in e.g. pattern
-        this->AddSubShape.setValue(compound);
-
         if (base.isNull()) {
             Shape.setValue(compound);
             return App::DocumentObject::StdReturn;
         }
 
-        // First try cutting with compound which will be faster as it is done in
-        // parallel
         bool retry = true;
-        const char* maker;
-        switch (getAddSubType()) {
-            case Additive:
-                maker = Part::OpCodes::Fuse;
-                break;
-            default:
-                maker = Part::OpCodes::Cut;
-        }
+        const char* maker = getAddSubType() == Additive
+            ? Part::OpCodes::Fuse
+            : Part::OpCodes::Cut;
         try {
-            if (base.isNull()) {
-                result = compound;
-            }
-            else {
-                result.makeElementBoolean(maker, {base, compound}, nullptr, FuzzyTolerance.getValue());
-            }
+            result.makeElementBoolean(
+                maker,
+                {base, compound},
+                nullptr,
+                FuzzyTolerance.getValue()
+            );
             result = getSolid(result);
             retry = false;
         }
@@ -2136,7 +2161,12 @@ App::DocumentObjectExecReturn* Hole::execute()
             for (auto& hole : holes) {
                 ++i;
                 try {
-                    result.makeElementBoolean(maker, {base, hole}, nullptr, FuzzyTolerance.getValue());
+                    result.makeElementBoolean(
+                        maker,
+                        {base, hole},
+                        nullptr,
+                        FuzzyTolerance.getValue()
+                    );
                 }
                 catch (Standard_Failure&) {
                     std::string msg(
@@ -2178,19 +2208,7 @@ App::DocumentObjectExecReturn* Hole::execute()
         return App::DocumentObject::StdReturn;
     }
     catch (Standard_Failure& e) {
-        if (std::string(e.GetMessageString()) == "TopoDS::Face"
-            && (std::string(DepthType.getValueAsString()) == "UpToFirst"
-                || std::string(DepthType.getValueAsString()) == "UpToFace")) {
-            return new App::DocumentObjectExecReturn(QT_TRANSLATE_NOOP(
-                "Exception",
-                "Could not create face from sketch.\n"
-                "Intersecting sketch entities or multiple faces in a sketch are not allowed "
-                "for making a pocket up to a face."
-            ));
-        }
-        else {
-            return new App::DocumentObjectExecReturn(e.GetMessageString());
-        }
+        return new App::DocumentObjectExecReturn(e.GetMessageString());
     }
     catch (Base::Exception& e) {
         return new App::DocumentObjectExecReturn(e.what());
@@ -2274,79 +2292,110 @@ Base::Vector3d Hole::guessNormalDirection(const TopoShape& profileshape) const
     return getProfileNormal();
 }
 
+namespace
+{
+struct HoleProfileLocation
+{
+    Part::TopoShape source;
+    gp_Pnt point;
+};
+
+std::vector<HoleProfileLocation>
+collectHoleProfileLocations(const Part::TopoShape& profileShape, int baseProfileType)
+{
+    std::vector<HoleProfileLocation> locations;
+
+    if (baseProfileType & Hole::BaseProfileTypeOptions::OnCircles
+        || baseProfileType & Hole::BaseProfileTypeOptions::OnArcs) {
+        for (const auto& profileEdge : profileShape.getSubTopoShapes(TopAbs_EDGE)) {
+            const TopoDS_Edge edge = TopoDS::Edge(profileEdge.getShape());
+            BRepAdaptor_Curve adaptor(edge);
+            if (adaptor.GetType() != GeomAbs_Circle) {
+                continue;
+            }
+            if (!(baseProfileType & Hole::BaseProfileTypeOptions::OnCircles)
+                && adaptor.IsClosed()) {
+                continue;
+            }
+            if (!(baseProfileType & Hole::BaseProfileTypeOptions::OnArcs)
+                && !adaptor.IsClosed()) {
+                continue;
+            }
+            locations.push_back({profileEdge, adaptor.Circle().Axis().Location()});
+        }
+    }
+
+    // Exclude curve handles so point-based holes receive only standalone
+    // profile vertices.
+    if (baseProfileType & Hole::BaseProfileTypeOptions::OnPoints) {
+        for (const auto& profileVertex :
+             profileShape.getSubTopoShapes(TopAbs_VERTEX, TopAbs_EDGE)) {
+            locations.push_back(
+                {profileVertex, BRep_Tool::Pnt(TopoDS::Vertex(profileVertex.getShape()))}
+            );
+        }
+    }
+
+    return locations;
+}
+}  // namespace
+
 TopoShape Hole::findHoles(
     std::vector<TopoShape>& holes,
     const TopoShape& profileshape,
     const TopoDS_Shape& protoHole
 ) const
 {
-    TopoShape result(0);
     _holeLocations.clear();
+    const auto profileLocations =
+        collectHoleProfileLocations(profileshape, BaseProfileType.getValue());
 
-    auto addHole = [&](Part::TopoShape const& baseshape, gp_Pnt loc) {
-        _holeLocations.push_back(loc);
+    for (const auto& location : profileLocations) {
+        _holeLocations.push_back(location.point);
         gp_Trsf localSketchTransformation;
-        localSketchTransformation.SetTranslation(gp_Pnt(0, 0, 0), gp_Pnt(loc.X(), loc.Y(), loc.Z()));
+        localSketchTransformation.SetTranslation(gp_Pnt(0, 0, 0), location.point);
 
         Part::ShapeMapper mapper;
         mapper.populate(
             Part::MappingStatus::Modified,
-            baseshape,
+            location.source,
             TopoShape(protoHole).getSubTopoShapes(TopAbs_FACE)
         );
 
         TopoShape hole(-getID());
-        hole.makeShapeWithElementMap(protoHole, mapper, {baseshape});
+        hole.makeShapeWithElementMap(protoHole, mapper, {location.source});
 
-        // transform and generate element map.
+        // Transform and generate element map.
         hole = hole.makeElementTransform(localSketchTransformation);
         holes.push_back(hole);
-    };
-
-    int baseProfileType = BaseProfileType.getValue();
-
-    // Iterate over edges and filter out non-circle/non-arc types
-    if (baseProfileType & BaseProfileTypeOptions::OnCircles
-        || baseProfileType & BaseProfileTypeOptions::OnArcs) {
-        for (const auto& profileEdge : profileshape.getSubTopoShapes(TopAbs_EDGE)) {
-            TopoDS_Edge edge = TopoDS::Edge(profileEdge.getShape());
-            BRepAdaptor_Curve adaptor(edge);
-
-            // Circle base?
-            if (adaptor.GetType() != GeomAbs_Circle) {
-                continue;
-            }
-            // Filter for circles
-            if (!(baseProfileType & BaseProfileTypeOptions::OnCircles) && adaptor.IsClosed()) {
-                continue;
-            }
-
-            // Filter for arcs
-            if (!(baseProfileType & BaseProfileTypeOptions::OnArcs) && !adaptor.IsClosed()) {
-                continue;
-            }
-
-            gp_Circ circle = adaptor.Circle();
-            addHole(profileEdge, circle.Axis().Location());
-        }
-    }
-
-    // To avoid breaking older files which where not made with
-    // holes on points
-    if (baseProfileType & BaseProfileTypeOptions::OnPoints) {
-        // Iterate over vertices while avoiding edges so that curve handles are ignored
-        for (const auto& profileVertex : profileshape.getSubTopoShapes(TopAbs_VERTEX, TopAbs_EDGE)) {
-            TopoDS_Vertex vertex = TopoDS::Vertex(profileVertex.getShape());
-
-            addHole(profileVertex, BRep_Tool::Pnt(vertex));
-        }
     }
     return TopoShape().makeElementCompound(holes);
 }
 
 std::vector<gp_Pnt> Hole::getHoleLocations() const
 {
-    return _holeLocations;
+    try {
+        TopoShape profile = getProfileShape(
+            Part::ShapeOption::NeedSubElement | Part::ShapeOption::ResolveLink
+            | Part::ShapeOption::Transform | Part::ShapeOption::DontSimplifyCompound
+        );
+        profile.move(getLocation().Inverted());
+
+        const auto profileLocations =
+            collectHoleProfileLocations(profile, BaseProfileType.getValue());
+        std::vector<gp_Pnt> locations;
+        locations.reserve(profileLocations.size());
+        for (const auto& location : profileLocations) {
+            locations.push_back(location.point);
+        }
+        return locations;
+    }
+    catch (const Base::Exception&) {
+        return _holeLocations;
+    }
+    catch (const Standard_Failure&) {
+        return _holeLocations;
+    }
 }
 
 TopoDS_Shape Hole::makeThread(const gp_Vec& xDir, const gp_Vec& zDir, double length)

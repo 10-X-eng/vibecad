@@ -96,8 +96,7 @@ TechDraw::DrawViewAnnotation* ViewProviderAnnotation::getViewObject() const
 
 bool ViewProviderAnnotation::doubleClicked()
 {
-    setEdit(ViewProvider::Default);
-    Gui::Selection().clearSelection();
+    startDefaultEditMode();
     return true;
 }
 

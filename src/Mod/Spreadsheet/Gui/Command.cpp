@@ -22,22 +22,36 @@
  ***************************************************************************/
 
 
+#include <algorithm>
+#include <ranges>
+#include <set>
 #include <sstream>
+#include <vector>
 
 #include <FCConfig.h>
+
+#include <QFileInfo>
+#include <QMessageBox>
 
 #if defined(FC_OS_WIN32)
 # include <sys/timeb.h>
 #endif
 
+#include <App/Application.h>
 #include <App/Document.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/CommandT.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/FileDialog.h>
 #include <Gui/MainWindow.h>
+#include <Gui/Selection/Selection.h>
+#include <Mod/Spreadsheet/App/Cell.h>
 #include <Mod/Spreadsheet/App/Sheet.h>
 
+#include "MutationSupport.h"
 #include "PropertiesDialog.h"
 #include "SpreadsheetView.h"
 #include "ViewProviderSpreadsheet.h"
@@ -49,6 +63,136 @@ using namespace SpreadsheetGui;
 using namespace Spreadsheet;
 using namespace Base;
 using namespace App;
+
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+namespace
+{
+
+struct ActiveSheet
+{
+    SpreadsheetGui::SheetView* view = nullptr;
+    Spreadsheet::Sheet* sheet = nullptr;
+    App::Document* document = nullptr;
+
+    explicit operator bool() const noexcept
+    {
+        return view && sheet && document;
+    }
+};
+
+ActiveSheet activeSheet(const bool requireCleanBoundary)
+{
+    auto* view = freecad_cast<SpreadsheetGui::SheetView*>(Gui::getMainWindow()->activeWindow());
+    auto* sheet = view ? view->getSheet() : nullptr;
+    auto* document = sheet ? sheet->getDocument() : nullptr;
+    if (!view || !sheet || !document || App::GetApplication().getActiveDocument() != document
+        || (requireCleanBoundary && !SpreadsheetGui::MutationSupport::hasCleanBoundary(document))) {
+        return {};
+    }
+    return {view, sheet, document};
+}
+
+App::Document* cleanActiveDocument()
+{
+    auto* document = App::GetApplication().getActiveDocument();
+    return SpreadsheetGui::MutationSupport::hasCleanBoundary(document) ? document : nullptr;
+}
+
+void showSpreadsheetError(const QString& title, const Base::Exception& error)
+{
+    QMessageBox::warning(Gui::getMainWindow(), title, QString::fromUtf8(error.what()));
+}
+
+template<typename Mutation>
+void mutateSelectedRanges(const char* transactionName, Mutation&& mutation)
+{
+    ActiveSheet context = activeSheet(true);
+    if (!context) {
+        return;
+    }
+    const std::vector<Range> ranges = context.view->selectedRanges();
+    if (ranges.empty()) {
+        return;
+    }
+
+    Gui::ExactTransaction transaction(*context.document, transactionName);
+    mutation(*context.sheet, ranges);
+    SpreadsheetGui::MutationSupport::recompute(*context.document);
+    SpreadsheetGui::MutationSupport::commit(transaction);
+    Gui::Command::updateActive();
+}
+
+bool hasSelectedRanges()
+{
+    const ActiveSheet context = activeSheet(true);
+    return context && !context.view->selectedRanges().empty();
+}
+
+void applyAlignment(const char* transactionName, const char* alignment)
+{
+    try {
+        mutateSelectedRanges(
+            transactionName,
+            [alignment](Sheet& sheet, const std::vector<Range>& ranges) {
+                for (const auto& range : ranges) {
+                    Gui::cmdAppObjectArgs(
+                        &sheet,
+                        "setAlignment('%s', '%s', 'keep')",
+                        range.rangeString().c_str(),
+                        alignment
+                    );
+                }
+            }
+        );
+    }
+    catch (const Base::Exception& error) {
+        showSpreadsheetError(QObject::tr("Align Spreadsheet Cells"), error);
+    }
+}
+
+void toggleStyle(const char* transactionName, const char* styleName)
+{
+    try {
+        ActiveSheet context = activeSheet(true);
+        if (!context) {
+            return;
+        }
+        const QModelIndexList selection = context.view->selectedIndexes();
+        const std::vector<Range> ranges = context.view->selectedRanges();
+        if (selection.empty() || ranges.empty()) {
+            return;
+        }
+
+        const bool allStyled = std::ranges::all_of(
+            selection,
+            [sheet = context.sheet, styleName](const QModelIndex& index) {
+                const Cell* cell = sheet->getCell(CellAddress(index.row(), index.column()));
+                std::set<std::string> styles;
+                return cell && cell->getStyle(styles) && styles.contains(styleName);
+            }
+        );
+
+        Gui::ExactTransaction transaction(*context.document, transactionName);
+        for (const auto& range : ranges) {
+            Gui::cmdAppObjectArgs(
+                context.sheet,
+                "setStyle('%s', '%s', '%s')",
+                range.rangeString().c_str(),
+                styleName,
+                allStyled ? "remove" : "add"
+            );
+        }
+        SpreadsheetGui::MutationSupport::recompute(*context.document);
+        SpreadsheetGui::MutationSupport::commit(transaction);
+        Gui::Command::updateActive();
+    }
+    catch (const Base::Exception& error) {
+        showSpreadsheetError(QObject::tr("Format Spreadsheet Cells"), error);
+    }
+}
+
+}  // namespace
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -69,46 +213,45 @@ CmdSpreadsheetMergeCells::CmdSpreadsheetMergeCells()
 void CmdSpreadsheetMergeCells::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            std::vector<Range> ranges = sheetView->selectedRanges();
-
-            // Execute mergeCells commands
-            if (!ranges.empty()) {
-                Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Merge cells"));
-                std::vector<Range>::const_iterator i = ranges.begin();
-                for (; i != ranges.end(); ++i) {
-                    if (i->size() > 1) {
-                        Gui::Command::doCommand(
-                            Gui::Command::Doc,
-                            "App.ActiveDocument.%s.mergeCells('%s')",
-                            sheet->getNameInDocument(),
-                            i->rangeString().c_str()
-                        );
-                    }
-                }
-                Gui::Command::commitCommand();
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    try {
+        ActiveSheet context = activeSheet(true);
+        if (!context) {
+            return;
+        }
+        std::vector<Range> ranges;
+        for (const auto& range : context.view->selectedRanges()) {
+            if (range.size() > 1) {
+                ranges.push_back(range);
             }
         }
+        if (ranges.empty()) {
+            return;
+        }
+
+        Gui::ExactTransaction transaction(
+            *context.document,
+            QT_TRANSLATE_NOOP("Command", "Merge cells")
+        );
+        bool changed = false;
+        for (const auto& range : ranges) {
+            changed = context.sheet->mergeCells(range) || changed;
+        }
+        if (!changed) {
+            return;
+        }
+        SpreadsheetGui::MutationSupport::recompute(*context.document);
+        SpreadsheetGui::MutationSupport::commit(transaction);
+        Gui::Command::updateActive();
+    }
+    catch (const Base::Exception& error) {
+        showSpreadsheetError(QObject::tr("Merge Cells"), error);
     }
 }
 
 bool CmdSpreadsheetMergeCells::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            return (sheetView->selectedIndexesRaw().size() > 1);
-        }
-    }
-    return false;
+    const ActiveSheet context = activeSheet(true);
+    return context && context.view->selectedIndexesRaw().size() > 1;
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -130,49 +273,37 @@ CmdSpreadsheetSplitCell::CmdSpreadsheetSplitCell()
 void CmdSpreadsheetSplitCell::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            QModelIndex current = sheetView->currentIndex();
-
-            if (current.isValid()) {
-                std::string address = CellAddress(current.row(), current.column()).toString();
-                Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Sp&lit cell"));
-                Gui::Command::doCommand(
-                    Gui::Command::Doc,
-                    "App.ActiveDocument.%s.splitCell('%s')",
-                    sheet->getNameInDocument(),
-                    address.c_str()
-                );
-                Gui::Command::commitCommand();
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-            }
+    try {
+        ActiveSheet context = activeSheet(true);
+        if (!context) {
+            return;
         }
+        const QModelIndex current = context.view->currentIndex();
+        const CellAddress address(current.row(), current.column());
+        if (!current.isValid() || !context.sheet->isMergedCell(address)) {
+            return;
+        }
+
+        Gui::ExactTransaction transaction(*context.document, QT_TRANSLATE_NOOP("Command", "Split cell"));
+        context.sheet->splitCell(address);
+        SpreadsheetGui::MutationSupport::recompute(*context.document);
+        SpreadsheetGui::MutationSupport::commit(transaction);
+        Gui::Command::updateActive();
+    }
+    catch (const Base::Exception& error) {
+        showSpreadsheetError(QObject::tr("Split Cell"), error);
     }
 }
 
 bool CmdSpreadsheetSplitCell::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            QModelIndex current = sheetView->currentIndex();
-            Sheet* sheet = sheetView->getSheet();
-
-            if (current.isValid()) {
-                return (
-                    sheetView->selectedIndexesRaw().size() == 1
-                    && sheet->isMergedCell(CellAddress(current.row(), current.column()))
-                );
-            }
-        }
+    const ActiveSheet context = activeSheet(true);
+    if (!context) {
+        return false;
     }
-    return false;
+    const QModelIndex current = context.view->currentIndex();
+    return current.isValid() && context.view->selectedIndexesRaw().size() == 1
+        && context.sheet->isMergedCell(CellAddress(current.row(), current.column()));
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -194,6 +325,10 @@ CmdSpreadsheetImport::CmdSpreadsheetImport()
 void CmdSpreadsheetImport::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
+    auto* document = cleanActiveDocument();
+    if (!document) {
+        return;
+    }
     const Gui::FileDialog::FilterList formatList {
         {QStringLiteral("CSV"), {"*.csv"}},
         Gui::FileDialog::Filter::AllFiles(),
@@ -204,30 +339,45 @@ void CmdSpreadsheetImport::activated(int iMsg)
         QString(),
         formatList
     );
-    if (!fileName.isEmpty()) {
-        std::string FeatName = getUniqueObjectName("Spreadsheet");
-        auto* doc = App::GetApplication().getActiveDocument();
-        Sheet* sheet = doc->addObject<Spreadsheet::Sheet>(FeatName.c_str());
-        if (sheet) {
-            char delim, quote, escape;
-            std::string errMsg = "Import";
-            bool isValid = sheet->getCharsFromPrefs(delim, quote, escape, errMsg);
+    if (fileName.isEmpty() || document != App::GetApplication().getActiveDocument()
+        || !SpreadsheetGui::MutationSupport::hasCleanBoundary(document)) {
+        return;
+    }
 
-            if (isValid) {
-                sheet->importFromFile(fileName.toStdString(), delim, quote, escape);
-                sheet->execute();
-            }
-            else {
-                Base::Console().error(errMsg.c_str());
-                return;
-            }
+    try {
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Import spreadsheet"));
+        const std::string objectName = document->getUniqueObjectName("Spreadsheet");
+        auto* sheet = document->addObject<Spreadsheet::Sheet>(objectName.c_str());
+        if (!sheet) {
+            throw Base::RuntimeError("The imported spreadsheet could not be created");
         }
+
+        char delimiter;
+        char quote;
+        char escape;
+        std::string errorMessage = "Import";
+        if (!sheet->getCharsFromPrefs(delimiter, quote, escape, errorMessage)) {
+            throw Base::ValueError(errorMessage);
+        }
+        if (!sheet->importFromFile(fileName.toStdString(), delimiter, quote, escape)) {
+            throw Base::RuntimeError("The selected CSV file could not be imported");
+        }
+        sheet->Label.setValue(QFileInfo(fileName).completeBaseName().toUtf8().constData());
+        SpreadsheetGui::MutationSupport::publishCreatedSheet(*sheet);
+        SpreadsheetGui::MutationSupport::recompute(*document);
+        SpreadsheetGui::MutationSupport::commit(transaction);
+        Gui::Selection().clearSelection();
+        Gui::Selection().addSelection(document->getName(), sheet->getNameInDocument());
+        Gui::Command::updateActive();
+    }
+    catch (const Base::Exception& error) {
+        showSpreadsheetError(QObject::tr("Import Spreadsheet"), error);
     }
 }
 
 bool CmdSpreadsheetImport::isActive()
 {
-    return getActiveGuiDocument() ? true : false;
+    return cleanActiveDocument() != nullptr;
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -249,30 +399,20 @@ CmdSpreadsheetExport::CmdSpreadsheetExport()
 void CmdSpreadsheetExport::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            Gui::ViewProvider* vp = Gui::Application::Instance->getViewProvider(sheet);
-            auto* vps = freecad_cast<ViewProviderSheet*>(vp);
-            if (vps) {
-                vps->exportAsFile();
-            }
-        }
+    const ActiveSheet context = activeSheet(true);
+    if (!context) {
+        return;
+    }
+    Gui::ViewProvider* provider = Gui::Application::Instance->getViewProvider(context.sheet);
+    auto* sheetProvider = freecad_cast<ViewProviderSheet*>(provider);
+    if (sheetProvider) {
+        sheetProvider->exportAsFile();
     }
 }
 
 bool CmdSpreadsheetExport::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        if (activeWindow && freecad_cast<SpreadsheetGui::SheetView*>(activeWindow)) {
-            return true;
-        }
-    }
-    return false;
+    return static_cast<bool>(activeSheet(true));
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -294,42 +434,12 @@ CmdSpreadsheetAlignLeft::CmdSpreadsheetAlignLeft()
 void CmdSpreadsheetAlignLeft::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            std::vector<Range> ranges = sheetView->selectedRanges();
-
-            if (!ranges.empty()) {
-                std::vector<Range>::const_iterator i = ranges.begin();
-
-                Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Left-align cell"));
-                for (; i != ranges.end(); ++i) {
-                    Gui::Command::doCommand(
-                        Gui::Command::Doc,
-                        "App.ActiveDocument.%s.setAlignment('%s', 'left', 'keep')",
-                        sheet->getNameInDocument(),
-                        i->rangeString().c_str()
-                    );
-                }
-                Gui::Command::commitCommand();
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-            }
-        }
-    }
+    applyAlignment(QT_TRANSLATE_NOOP("Command", "Left-align cells"), "left");
 }
 
 bool CmdSpreadsheetAlignLeft::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        if (activeWindow && freecad_cast<SpreadsheetGui::SheetView*>(activeWindow)) {
-            return true;
-        }
-    }
-    return false;
+    return hasSelectedRanges();
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -351,42 +461,12 @@ CmdSpreadsheetAlignCenter::CmdSpreadsheetAlignCenter()
 void CmdSpreadsheetAlignCenter::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            std::vector<Range> ranges = sheetView->selectedRanges();
-
-            if (!ranges.empty()) {
-                std::vector<Range>::const_iterator i = ranges.begin();
-
-                Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Center cell"));
-                for (; i != ranges.end(); ++i) {
-                    Gui::Command::doCommand(
-                        Gui::Command::Doc,
-                        "App.ActiveDocument.%s.setAlignment('%s', 'center', 'keep')",
-                        sheet->getNameInDocument(),
-                        i->rangeString().c_str()
-                    );
-                }
-                Gui::Command::commitCommand();
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-            }
-        }
-    }
+    applyAlignment(QT_TRANSLATE_NOOP("Command", "Center cells"), "center");
 }
 
 bool CmdSpreadsheetAlignCenter::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        if (activeWindow && freecad_cast<SpreadsheetGui::SheetView*>(activeWindow)) {
-            return true;
-        }
-    }
-    return false;
+    return hasSelectedRanges();
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -408,42 +488,12 @@ CmdSpreadsheetAlignRight::CmdSpreadsheetAlignRight()
 void CmdSpreadsheetAlignRight::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            std::vector<Range> ranges = sheetView->selectedRanges();
-
-            if (!ranges.empty()) {
-                std::vector<Range>::const_iterator i = ranges.begin();
-
-                Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Right-align cell"));
-                for (; i != ranges.end(); ++i) {
-                    Gui::Command::doCommand(
-                        Gui::Command::Doc,
-                        "App.ActiveDocument.%s.setAlignment('%s', 'right', 'keep')",
-                        sheet->getNameInDocument(),
-                        i->rangeString().c_str()
-                    );
-                }
-                Gui::Command::commitCommand();
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-            }
-        }
-    }
+    applyAlignment(QT_TRANSLATE_NOOP("Command", "Right-align cells"), "right");
 }
 
 bool CmdSpreadsheetAlignRight::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        if (activeWindow && freecad_cast<SpreadsheetGui::SheetView*>(activeWindow)) {
-            return true;
-        }
-    }
-    return false;
+    return hasSelectedRanges();
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -465,42 +515,12 @@ CmdSpreadsheetAlignTop::CmdSpreadsheetAlignTop()
 void CmdSpreadsheetAlignTop::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            std::vector<Range> ranges = sheetView->selectedRanges();
-
-            if (!ranges.empty()) {
-                std::vector<Range>::const_iterator i = ranges.begin();
-
-                Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Top-align cell"));
-                for (; i != ranges.end(); ++i) {
-                    Gui::Command::doCommand(
-                        Gui::Command::Doc,
-                        "App.ActiveDocument.%s.setAlignment('%s', 'top', 'keep')",
-                        sheet->getNameInDocument(),
-                        i->rangeString().c_str()
-                    );
-                }
-                Gui::Command::commitCommand();
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-            }
-        }
-    }
+    applyAlignment(QT_TRANSLATE_NOOP("Command", "Top-align cells"), "top");
 }
 
 bool CmdSpreadsheetAlignTop::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        if (activeWindow && freecad_cast<SpreadsheetGui::SheetView*>(activeWindow)) {
-            return true;
-        }
-    }
-    return false;
+    return hasSelectedRanges();
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -522,42 +542,12 @@ CmdSpreadsheetAlignBottom::CmdSpreadsheetAlignBottom()
 void CmdSpreadsheetAlignBottom::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            std::vector<Range> ranges = sheetView->selectedRanges();
-
-            if (!ranges.empty()) {
-                std::vector<Range>::const_iterator i = ranges.begin();
-
-                Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Bottom-align cell"));
-                for (; i != ranges.end(); ++i) {
-                    Gui::Command::doCommand(
-                        Gui::Command::Doc,
-                        "App.ActiveDocument.%s.setAlignment('%s', 'bottom', 'keep')",
-                        sheet->getNameInDocument(),
-                        i->rangeString().c_str()
-                    );
-                }
-                Gui::Command::commitCommand();
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-            }
-        }
-    }
+    applyAlignment(QT_TRANSLATE_NOOP("Command", "Bottom-align cells"), "bottom");
 }
 
 bool CmdSpreadsheetAlignBottom::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        if (activeWindow && freecad_cast<SpreadsheetGui::SheetView*>(activeWindow)) {
-            return true;
-        }
-    }
-    return false;
+    return hasSelectedRanges();
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -579,42 +569,12 @@ CmdSpreadsheetAlignVCenter::CmdSpreadsheetAlignVCenter()
 void CmdSpreadsheetAlignVCenter::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            std::vector<Range> ranges = sheetView->selectedRanges();
-
-            if (!ranges.empty()) {
-                std::vector<Range>::const_iterator i = ranges.begin();
-
-                Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Vertically center cells"));
-                for (; i != ranges.end(); ++i) {
-                    Gui::Command::doCommand(
-                        Gui::Command::Doc,
-                        "App.ActiveDocument.%s.setAlignment('%s', 'vcenter', 'keep')",
-                        sheet->getNameInDocument(),
-                        i->rangeString().c_str()
-                    );
-                }
-                Gui::Command::commitCommand();
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-            }
-        }
-    }
+    applyAlignment(QT_TRANSLATE_NOOP("Command", "Vertically center cells"), "vcenter");
 }
 
 bool CmdSpreadsheetAlignVCenter::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        if (activeWindow && freecad_cast<SpreadsheetGui::SheetView*>(activeWindow)) {
-            return true;
-        }
-    }
-    return false;
+    return hasSelectedRanges();
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -637,69 +597,12 @@ CmdSpreadsheetStyleBold::CmdSpreadsheetStyleBold()
 void CmdSpreadsheetStyleBold::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            QModelIndexList selection = sheetView->selectedIndexes();
-
-            if (!selection.empty()) {
-                bool allBold = true;
-
-                for (const auto& it : selection) {
-                    const Cell* cell = sheet->getCell(CellAddress(it.row(), it.column()));
-
-                    if (cell) {
-                        std::set<std::string> style;
-
-                        cell->getStyle(style);
-                        if (style.find("bold") == style.end()) {
-                            allBold = false;
-                            break;
-                        }
-                    }
-                }
-
-                std::vector<Range> ranges = sheetView->selectedRanges();
-                std::vector<Range>::const_iterator i = ranges.begin();
-
-                Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Set bold text"));
-                for (; i != ranges.end(); ++i) {
-                    if (!allBold) {
-                        Gui::Command::doCommand(
-                            Gui::Command::Doc,
-                            "App.ActiveDocument.%s.setStyle('%s', 'bold', 'add')",
-                            sheet->getNameInDocument(),
-                            i->rangeString().c_str()
-                        );
-                    }
-                    else {
-                        Gui::Command::doCommand(
-                            Gui::Command::Doc,
-                            "App.ActiveDocument.%s.setStyle('%s', 'bold', 'remove')",
-                            sheet->getNameInDocument(),
-                            i->rangeString().c_str()
-                        );
-                    }
-                }
-                Gui::Command::commitCommand();
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-            }
-        }
-    }
+    toggleStyle(QT_TRANSLATE_NOOP("Command", "Toggle bold text"), "bold");
 }
 
 bool CmdSpreadsheetStyleBold::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        if (activeWindow && freecad_cast<SpreadsheetGui::SheetView*>(activeWindow)) {
-            return true;
-        }
-    }
-    return false;
+    return hasSelectedRanges();
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -722,69 +625,12 @@ CmdSpreadsheetStyleItalic::CmdSpreadsheetStyleItalic()
 void CmdSpreadsheetStyleItalic::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            QModelIndexList selection = sheetView->selectedIndexes();
-
-            if (!selection.empty()) {
-                bool allItalic = true;
-
-                for (const auto& it : selection) {
-                    const Cell* cell = sheet->getCell(CellAddress(it.row(), it.column()));
-
-                    if (cell) {
-                        std::set<std::string> style;
-
-                        cell->getStyle(style);
-                        if (style.find("italic") == style.end()) {
-                            allItalic = false;
-                            break;
-                        }
-                    }
-                }
-
-                std::vector<Range> ranges = sheetView->selectedRanges();
-                std::vector<Range>::const_iterator i = ranges.begin();
-
-                Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Set italic text"));
-                for (; i != ranges.end(); ++i) {
-                    if (!allItalic) {
-                        Gui::Command::doCommand(
-                            Gui::Command::Doc,
-                            "App.ActiveDocument.%s.setStyle('%s', 'italic', 'add')",
-                            sheet->getNameInDocument(),
-                            i->rangeString().c_str()
-                        );
-                    }
-                    else {
-                        Gui::Command::doCommand(
-                            Gui::Command::Doc,
-                            "App.ActiveDocument.%s.setStyle('%s', 'italic', 'remove')",
-                            sheet->getNameInDocument(),
-                            i->rangeString().c_str()
-                        );
-                    }
-                }
-                Gui::Command::commitCommand();
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-            }
-        }
-    }
+    toggleStyle(QT_TRANSLATE_NOOP("Command", "Toggle italic text"), "italic");
 }
 
 bool CmdSpreadsheetStyleItalic::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        if (activeWindow && freecad_cast<SpreadsheetGui::SheetView*>(activeWindow)) {
-            return true;
-        }
-    }
-    return false;
+    return hasSelectedRanges();
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -807,69 +653,12 @@ CmdSpreadsheetStyleUnderline::CmdSpreadsheetStyleUnderline()
 void CmdSpreadsheetStyleUnderline::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            QModelIndexList selection = sheetView->selectedIndexes();
-
-            if (!selection.empty()) {
-                bool allUnderline = true;
-
-                for (const auto& it : selection) {
-                    const Cell* cell = sheet->getCell(CellAddress(it.row(), it.column()));
-
-                    if (cell) {
-                        std::set<std::string> style;
-
-                        cell->getStyle(style);
-                        if (style.find("underline") == style.end()) {
-                            allUnderline = false;
-                            break;
-                        }
-                    }
-                }
-
-                std::vector<Range> ranges = sheetView->selectedRanges();
-                std::vector<Range>::const_iterator i = ranges.begin();
-
-                Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Set underline text"));
-                for (; i != ranges.end(); ++i) {
-                    if (!allUnderline) {
-                        Gui::Command::doCommand(
-                            Gui::Command::Doc,
-                            "App.ActiveDocument.%s.setStyle('%s', 'underline', 'add')",
-                            sheet->getNameInDocument(),
-                            i->rangeString().c_str()
-                        );
-                    }
-                    else {
-                        Gui::Command::doCommand(
-                            Gui::Command::Doc,
-                            "App.ActiveDocument.%s.setStyle('%s', 'underline', 'remove')",
-                            sheet->getNameInDocument(),
-                            i->rangeString().c_str()
-                        );
-                    }
-                }
-                Gui::Command::commitCommand();
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-            }
-        }
-    }
+    toggleStyle(QT_TRANSLATE_NOOP("Command", "Toggle underline text"), "underline");
 }
 
 bool CmdSpreadsheetStyleUnderline::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        if (activeWindow && freecad_cast<SpreadsheetGui::SheetView*>(activeWindow)) {
-            return true;
-        }
-    }
-    return false;
+    return hasSelectedRanges();
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -892,56 +681,75 @@ CmdSpreadsheetSetAlias::CmdSpreadsheetSetAlias()
 void CmdSpreadsheetSetAlias::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-        SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
+    ActiveSheet context = activeSheet(true);
+    if (!context) {
+        return;
+    }
+    const QModelIndexList selection = context.view->selectedIndexes();
+    if (selection.size() != 1) {
+        return;
+    }
 
-        if (sheetView) {
-            Sheet* sheet = sheetView->getSheet();
-            QModelIndexList selection = sheetView->selectedIndexes();
+    std::vector<Range> range;
+    range.emplace_back(
+        selection[0].row(),
+        selection[0].column(),
+        selection[0].row(),
+        selection[0].column()
+    );
 
-            if (selection.size() == 1) {
-                std::vector<Range> range;
-
-                range.emplace_back(
-                    selection[0].row(),
-                    selection[0].column(),
-                    selection[0].row(),
-                    selection[0].column()
-                );
-
-                std::unique_ptr<PropertiesDialog> dialog(new PropertiesDialog(sheet, range, sheetView));
-
-                dialog->selectAlias();
-
-                if (dialog->exec() == QDialog::Accepted) {
-                    dialog->apply();
-                }
-            }
-        }
+    PropertiesDialog dialog(context.sheet, range, context.view);
+    dialog.selectAlias();
+    if (dialog.exec() == QDialog::Accepted && context.document
+        && context.sheet->getDocument() == context.document) {
+        dialog.apply();
     }
 }
 
 bool CmdSpreadsheetSetAlias::isActive()
 {
-    if (getActiveGuiDocument()) {
-        Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
+    const ActiveSheet context = activeSheet(true);
+    return context && context.view->selectedIndexes().size() == 1;
+}
 
-        if (activeWindow) {
-            SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(
-                activeWindow
-            );
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-            if (sheetView) {
-                QModelIndexList selection = sheetView->selectedIndexes();
+DEF_STD_CMD_A(CmdSpreadsheetCellProperties)
 
-                if (selection.size() == 1) {
-                    return true;
-                }
-            }
-        }
+CmdSpreadsheetCellProperties::CmdSpreadsheetCellProperties()
+    : Command("Spreadsheet_CellProperties")
+{
+    sAppModule = "Spreadsheet";
+    sGroup = QT_TR_NOOP("Spreadsheet");
+    sMenuText = QT_TR_NOOP("Cell Properties…");
+    sToolTipText = QT_TR_NOOP("Edits formatting, colors, units, and aliases");
+    sWhatsThis = "Spreadsheet_CellProperties";
+    sStatusTip = sToolTipText;
+    sPixmap = "preferences-spreadsheet";
+}
+
+void CmdSpreadsheetCellProperties::activated(int iMsg)
+{
+    Q_UNUSED(iMsg);
+    ActiveSheet context = activeSheet(true);
+    if (!context) {
+        return;
     }
-    return false;
+    const std::vector<Range> ranges = context.view->selectedRanges();
+    if (ranges.empty()) {
+        return;
+    }
+
+    PropertiesDialog dialog(context.sheet, ranges, context.view);
+    if (dialog.exec() == QDialog::Accepted && context.document
+        && context.sheet->getDocument() == context.document) {
+        dialog.apply();
+    }
+}
+
+bool CmdSpreadsheetCellProperties::isActive()
+{
+    return hasSelectedRanges();
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -963,18 +771,32 @@ CmdCreateSpreadsheet::CmdCreateSpreadsheet()
 void CmdCreateSpreadsheet::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    std::string FeatName = getUniqueObjectName("Spreadsheet");
-
-    openCommand(QT_TRANSLATE_NOOP("Command", "Create Spreadsheet"));
-    doCommand(Doc, "App.activeDocument().addObject('Spreadsheet::Sheet','%s\')", FeatName.c_str());
-    doCommand(Gui, "Gui.Selection.clearSelection()\n");
-    doCommand(Gui, "Gui.Selection.addSelection(App.activeDocument().Name,'%s\')", FeatName.c_str());
-    commitCommand();
+    auto* document = cleanActiveDocument();
+    if (!document) {
+        return;
+    }
+    try {
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Create spreadsheet"));
+        const std::string objectName = document->getUniqueObjectName("Spreadsheet");
+        auto* sheet = document->addObject<Spreadsheet::Sheet>(objectName.c_str());
+        if (!sheet) {
+            throw Base::RuntimeError("The spreadsheet could not be created");
+        }
+        SpreadsheetGui::MutationSupport::publishCreatedSheet(*sheet);
+        SpreadsheetGui::MutationSupport::recompute(*document);
+        SpreadsheetGui::MutationSupport::commit(transaction);
+        Gui::Selection().clearSelection();
+        Gui::Selection().addSelection(document->getName(), sheet->getNameInDocument());
+        Gui::Command::updateActive();
+    }
+    catch (const Base::Exception& error) {
+        showSpreadsheetError(QObject::tr("Create Spreadsheet"), error);
+    }
 }
 
 bool CmdCreateSpreadsheet::isActive()
 {
-    return App::GetApplication().getActiveDocument();
+    return cleanActiveDocument() != nullptr;
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1004,4 +826,5 @@ void CreateSpreadsheetCommands()
     rcCmdMgr.addCommand(new CmdSpreadsheetStyleUnderline());
 
     rcCmdMgr.addCommand(new CmdSpreadsheetSetAlias());
+    rcCmdMgr.addCommand(new CmdSpreadsheetCellProperties());
 }

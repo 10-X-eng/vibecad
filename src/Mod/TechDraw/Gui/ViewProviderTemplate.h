@@ -61,6 +61,7 @@ public:
 
     void setMarkers(bool state);
     bool onDelete(const std::vector<std::string> &) override;
+    bool onDeleteOwnedTimelineResource(App::DocumentObject*) override;
 
     const char* whoAmI() const;
 

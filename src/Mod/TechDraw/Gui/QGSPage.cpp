@@ -20,10 +20,14 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <cmath>
+#include <limits>
+
 #include <QApplication>
 #include <QDomDocument>
 #include <QFile>
 #include <QGraphicsSceneEvent>
+#include <QMessageBox>
 #include <QPainter>
 #include <QSvgGenerator>
 #include <QTemporaryFile>
@@ -32,10 +36,12 @@
 
 #include <App/Document.h>
 #include <Base/Console.h>
+#include <Base/Interpreter.h>
 #include <Base/Parameter.h>
 #include <Base/Tools.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
+#include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
 
 #include <Mod/TechDraw/App/DrawHatch.h>
@@ -68,6 +74,7 @@
 #include "QGITemplate.h"
 #include "QGIUserTypes.h"
 #include "QGIViewAnnotation.h"
+#include "TaskDocumentGuard.h"
 #include "QGIViewBalloon.h"
 #include "QGIViewClip.h"
 #include "QGIViewCollection.h"
@@ -176,17 +183,10 @@ Qt::KeyboardModifiers QGSPage::cleanModifierList(Qt::KeyboardModifiers mods)
 
 void QGSPage::addChildrenToPage()
 {
-    // A fresh page is added and we iterate through its collected children and add these to Canvas View  -MLP
-    // if docobj is a featureviewcollection (ex orthogroup), add its child views. if there are ever children that have children,
-    // we'll have to make this recursive. -WF
-    for (auto* view : m_vpPage->getDrawPage()->getViews()) {
+    // Add the complete active page hierarchy. DrawPage performs recursive
+    // collection traversal with cycle detection and returns every object once.
+    for (auto* view : m_vpPage->getDrawPage()->getAllActiveViews()) {
         attachView(view);
-        auto* collect = dynamic_cast<TechDraw::DrawViewCollection*>(view);
-        if (collect) {
-            for (auto* childView : collect->getViews()) {
-                attachView(childView);
-            }
-        }
     }
     // when restoring, it is possible for an item (ex a Dimension) to be loaded before the ViewPart
     // it applies to therefore we need to make sure parentage of the graphics representation is set
@@ -194,8 +194,7 @@ void QGSPage::addChildrenToPage()
     //
     setViewParents();
 
-    App::DocumentObject* obj = m_vpPage->getDrawPage()->Template.getValue();
-    auto pageTemplate(dynamic_cast<TechDraw::DrawTemplate*>(obj));
+    auto* pageTemplate = m_vpPage->getDrawPage()->getActiveTemplate();
     if (pageTemplate) {
         attachTemplate(pageTemplate);
         matchSceneRectToTemplate();
@@ -213,7 +212,7 @@ void QGSPage::attachTemplate(TechDraw::DrawTemplate* obj)
 
 void QGSPage::updateTemplate(bool forceUpdate)
 {
-    App::DocumentObject* templObj = m_vpPage->getDrawPage()->Template.getValue();
+    App::DocumentObject* templObj = m_vpPage->getDrawPage()->getActiveTemplate();
     // TODO: what if template has been deleted? templObj will be NULL. segfault?
     if (!templObj) {
         return;
@@ -240,8 +239,7 @@ void QGSPage::updateTemplate(bool forceUpdate)
 
 QPointF QGSPage::getTemplateCenter()
 {
-    App::DocumentObject* obj = m_vpPage->getDrawPage()->Template.getValue();
-    auto pageTemplate(dynamic_cast<TechDraw::DrawTemplate*>(obj));
+    auto* pageTemplate = m_vpPage->getDrawPage()->getActiveTemplate();
     if (pageTemplate) {
         double cx = Rez::guiX(pageTemplate->Width.getValue()) / 2.0;
         double cy = -Rez::guiX(pageTemplate->Height.getValue()) / 2.0;
@@ -252,8 +250,7 @@ QPointF QGSPage::getTemplateCenter()
 
 void QGSPage::matchSceneRectToTemplate()
 {
-    App::DocumentObject* obj = m_vpPage->getDrawPage()->Template.getValue();
-    auto pageTemplate(dynamic_cast<TechDraw::DrawTemplate*>(obj));
+    auto* pageTemplate = m_vpPage->getDrawPage()->getActiveTemplate();
     if (pageTemplate) {
         //make sceneRect 1 pagesize bigger in every direction
         double width = Rez::guiX(pageTemplate->Width.getValue());
@@ -265,12 +262,22 @@ void QGSPage::matchSceneRectToTemplate()
 void QGSPage::setPageTemplate(TechDraw::DrawTemplate* templateFeat)
 {
     removeTemplate();
+    if (!templateFeat) {
+        return;
+    }
 
     if (templateFeat->isDerivedFrom<TechDraw::DrawParametricTemplate>()) {
         pageTemplate = new QGIDrawingTemplate(this);
     }
     else if (templateFeat->isDerivedFrom<TechDraw::DrawSVGTemplate>()) {
         pageTemplate = new QGISVGTemplate(this);
+    }
+    else {
+        // DrawTemplate is a valid path-free native sheet definition.  Render
+        // it with the generic drawing-template item instead of dereferencing
+        // a null graphics item.  This also gives future non-SVG subclasses a
+        // safe, editable Width/Height/EditableTexts presentation.
+        pageTemplate = new QGIDrawingTemplate(this);
     }
     pageTemplate->setTemplate(templateFeat);
     pageTemplate->updateView();
@@ -357,6 +364,14 @@ bool QGSPage::addView(const App::DocumentObject* obj)
 
 bool QGSPage::attachView(App::DocumentObject* obj)
 {
+    if (!TechDraw::DrawUtil::isActiveInDocumentTimeline(obj)) {
+        return false;
+    }
+    auto* drawingView = freecad_cast<TechDraw::DrawView*>(obj);
+    if (drawingView && !drawingView->isActiveInDocumentTimeline()) {
+        return false;
+    }
+
     if (findQViewForDocObj(obj)) {
         return true;
     }
@@ -579,50 +594,129 @@ void QGSPage::addBalloonToParent(QGIViewBalloon* balloon, QGIView* parent)
 // origin is in scene coordinates from QGVPage widget
 void QGSPage::createBalloon(QPointF origin, DrawView* parent)
 {
-    std::string featName = getDrawPage()->getDocument()->getUniqueObjectName("Balloon");
-    std::string pageName = getDrawPage()->getNameInDocument();
-
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create Balloon"));
-
-    Command::doCommand(Command::Doc,
-                       "App.activeDocument().addObject('TechDraw::DrawViewBalloon', '%s')",
-                       featName.c_str());
-    Command::doCommand(Command::Doc, "App.activeDocument().%s.translateLabel('DrawViewBalloon', 'Balloon', '%s')",
-              featName.c_str(), featName.c_str());
-
-    TechDraw::DrawViewBalloon* balloon = dynamic_cast<TechDraw::DrawViewBalloon*>(
-        getDrawPage()->getDocument()->getObject(featName.c_str()));
-    if (!balloon) {
-        throw Base::TypeError("QGSP::createBalloon - balloon not found\n");
+    auto* page = getDrawPage();
+    auto* document = page ? page->getDocument() : nullptr;
+    if (!page || !document || !parent
+        || parent->getDocument() != document
+        || parent->findParentPage() != page) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Create balloon"),
+            tr("The balloon target is no longer available.")
+        );
+        return;
     }
-    Command::doCommand(Command::Doc,
-                       "App.activeDocument().%s.SourceView = (App.activeDocument().%s)",
-                       featName.c_str(), parent->getNameInDocument());
 
-    // convert from scene coords to parent DrawView's coords, unscaled, unrotated
-    QGIView* qgParent = getQGIVByName(parent->getNameInDocument());
-    auto parentOrigin = DU::toVector3d(qgParent->mapFromScene(origin));     // from scene to view
-    parentOrigin = Rez::appX(parentOrigin) / parent->getScale();            // unrez & unscale
-    parentOrigin = DrawUtil::invertY(parentOrigin);                         // +Y up
-    auto parentRotationDeg = parent->Rotation.getValue();
-    parentOrigin.RotateZ(Base::toRadians(-parentRotationDeg));               // unrotated
+    try {
+        TechDrawGui::TaskInternal::OwnedDocumentTransaction
+            transaction(
+                document,
+                QT_TRANSLATE_NOOP("Command", "Create Balloon")
+            );
+        const std::string featureName =
+            document->getUniqueObjectName("Balloon");
+        const std::string documentName =
+            Base::InterpreterSingleton::strToPython(
+                document->getName()
+            );
+        const QString balloonFactory =
+            QStringLiteral(
+                "App.getDocument('%1').addObject"
+                "('TechDraw::DrawViewBalloon', '%2')"
+            )
+                .arg(
+                    QString::fromStdString(documentName),
+                    QString::fromStdString(featureName)
+                );
+        auto* balloon =
+            dynamic_cast<TechDraw::DrawViewBalloon*>(
+                Gui::Command::runDocumentObjectCommand(
+                    Command::Doc,
+                    *document,
+                    balloonFactory.toUtf8(),
+                    TechDraw::DrawViewBalloon::getClassTypeId()
+                )
+            );
+        if (!balloon) {
+            throw Base::RuntimeError(
+                "The balloon could not be created"
+            );
+        }
+        balloon->translateLabel(
+            "DrawViewBalloon",
+            "Balloon",
+            balloon->getNameInDocument()
+        );
+        const std::string balloonCommand =
+            Gui::Command::getObjectCmd(balloon);
+        const std::string parentCommand =
+            Gui::Command::getObjectCmd(parent);
+        const std::string pageCommand =
+            Gui::Command::getObjectCmd(page);
+        Command::doCommand(
+            Command::Doc,
+            "%s.SourceView = %s",
+            balloonCommand.c_str(),
+            parentCommand.c_str()
+        );
 
-    balloon->setOrigin(parentOrigin);
+        QGIView* qgParent =
+            getQGIVByName(parent->getNameInDocument());
+        const double parentScale = parent->getScale();
+        if (!qgParent
+            || std::fabs(parentScale)
+                <= std::numeric_limits<double>::epsilon()) {
+            throw Base::RuntimeError(
+                "The balloon parent view has no valid page geometry"
+            );
+        }
+        auto parentOrigin =
+            DU::toVector3d(qgParent->mapFromScene(origin));
+        parentOrigin =
+            Rez::appX(parentOrigin) / parentScale;
+        parentOrigin = DrawUtil::invertY(parentOrigin);
+        const auto parentRotationDeg =
+            parent->Rotation.getValue();
+        parentOrigin.RotateZ(
+            Base::toRadians(-parentRotationDeg)
+        );
 
-    double textOffset = 20.0 / parent->getScale();
-    balloon->setPosition(parentOrigin.x + textOffset,
-                         parentOrigin.y + textOffset);
+        balloon->setOrigin(parentOrigin);
 
-    int idx = getDrawPage()->getNextBalloonIndex();
-    balloon->Text.setValue(std::to_string(idx).c_str());
+        const double textOffset = 20.0 / parentScale;
+        balloon->setPosition(
+            parentOrigin.x + textOffset,
+            parentOrigin.y + textOffset
+        );
 
-    Command::doCommand(Command::Doc, "App.activeDocument().%s.addView(App.activeDocument().%s)",
-                       pageName.c_str(), featName.c_str());
+        const int index = page->getNextBalloonIndex();
+        balloon->Text.setValue(std::to_string(index).c_str());
 
-    Gui::Command::commitCommand(tid);
+        Command::doCommand(
+            Command::Doc,
+            "%s.addView(%s)",
+            pageCommand.c_str(),
+            balloonCommand.c_str()
+        );
+        balloon->recomputeFeature();
+        if (balloon->isError()) {
+            throw Base::RuntimeError(
+                "The balloon could not be generated"
+            );
+        }
+        TechDrawGui::TaskInternal::updateExactDocument(document);
+        transaction.commit();
 
-    // Touch the parent feature so the balloon in tree view appears as a child
-    parent->touch(true);
+        // Touch the parent feature so the balloon in tree view appears as a child
+        parent->touch(true);
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Create balloon"),
+            QString::fromUtf8(error.what())
+        );
+    }
 }
 
 QGIView* QGSPage::addViewDimension(TechDraw::DrawViewDimension* dimFeat)
@@ -841,7 +935,8 @@ void QGSPage::refreshViews()
     }
     for (auto q : qgiv) {
         QGIView* itemView = dynamic_cast<QGIView*>(q);
-        if (itemView) {
+        auto* viewObject = itemView ? itemView->getViewObject() : nullptr;
+        if (viewObject && viewObject->isActiveInDocumentTimeline()) {
             itemView->updateView(true);
         }
     }
@@ -885,7 +980,16 @@ void QGSPage::fixOrphans(bool force)
     if (!thisPage->isAttachedToDocument())
         return;
 
-    std::vector<App::DocumentObject*> pChildren = thisPage->getAllViews();
+    std::vector<App::DocumentObject*> pChildren = thisPage->getAllActiveViews();
+
+    auto* activeTemplate = thisPage->getActiveTemplate();
+    if (!activeTemplate) {
+        removeTemplate();
+    }
+    else if (!getTemplate() || getTemplate()->getTemplate() != activeTemplate) {
+        setPageTemplate(activeTemplate);
+        matchSceneRectToTemplate();
+    }
 
     // if dv doesn't have a graphic, make one
     for (auto& dv : pChildren) {
@@ -905,12 +1009,22 @@ void QGSPage::fixOrphans(bool force)
         if (!qv)
             continue;// already deleted?
 
-        App::DocumentObject* obj = doc->getObject(qv->getViewName());
+        App::DocumentObject* obj = qv->getViewObject();
+        if (obj && (!doc->containsObject(obj)
+                    || obj->getDocument() != doc)) {
+            obj = nullptr;
+        }
         if (!obj) {
             //no DrawView anywhere in Document
             removeQView(qv);
         }
         else {
+            if (!TechDraw::DrawUtil::isActiveInDocumentTimeline(obj)
+                || std::find(pChildren.begin(), pChildren.end(), obj) == pChildren.end()) {
+                removeQView(qv);
+                continue;
+            }
+
             //DrawView exists in Document.  Does it belong to this DrawPage?
             TechDraw::DrawView* viewObj = qv->getViewObject();
             int numParentPages = viewObj->countParentPages();
@@ -925,15 +1039,19 @@ void QGSPage::fixOrphans(bool force)
                 if (thisPage != parentPage) {
                     // The view could be a child of a link (ea Dimension).
                     TechDraw::DrawView* parentView = viewObj->claimParent();
-                    for (auto* v : thisPage->getViews()) {
-                        if (v == parentView) {
-                            continue;
-                        }
+                    const bool parentBelongsToPage =
+                        parentView
+                        && std::find(
+                               pChildren.begin(),
+                               pChildren.end(),
+                               parentView
+                           )
+                            != pChildren.end();
+                    if (!parentBelongsToPage) {
+                        //DrawView does not belong to this DrawPage
+                        //remove QGItem from QGScene
+                        removeQView(qv);
                     }
-
-                    //DrawView does not belong to this DrawPage
-                    //remove QGItem from QGScene
-                    removeQView(qv);
                 }
             }
             else if (numParentPages > 1) {
@@ -982,7 +1100,10 @@ void QGSPage::redrawAllViews()
 {
     const std::vector<QGIView*>& upviews = getViews();
     for (std::vector<QGIView*>::const_iterator it = upviews.begin(); it != upviews.end(); ++it) {
-        (*it)->updateView(true);
+        auto* viewObject = (*it)->getViewObject();
+        if (viewObject && viewObject->isActiveInDocumentTimeline()) {
+            (*it)->updateView(true);
+        }
     }
 }
 

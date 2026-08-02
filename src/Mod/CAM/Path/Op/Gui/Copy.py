@@ -23,6 +23,8 @@
 
 import FreeCAD
 import FreeCADGui
+import Path
+import Path.Base.Util as PathUtil
 from PySide import QtCore
 
 from PySide.QtCore import QT_TRANSLATE_NOOP
@@ -35,6 +37,7 @@ translate = FreeCAD.Qt.translate
 
 class ObjectPathCopy:
     def __init__(self, obj):
+        PathUtil.markTimelineOperation(obj)
         obj.addProperty(
             "App::PropertyLink",
             "Base",
@@ -59,13 +62,17 @@ class ObjectPathCopy:
         return None
 
     def execute(self, obj):
-        if obj.Base:
-            if hasattr(obj.Base, "ToolController"):
-                obj.ToolController = obj.Base.ToolController
-            if obj.Base.Path:
-                obj.Path = obj.Base.Path.copy()
-            if obj.Base.Placement:
-                obj.Placement = obj.Base.Placement
+        if not PathUtil.activeForOp(obj) or not obj.Base:
+            obj.Path = Path.Path()
+            return
+        if hasattr(obj.Base, "ToolController"):
+            obj.ToolController = obj.Base.ToolController
+        if obj.Base.Path:
+            obj.Path = obj.Base.Path.copy()
+        else:
+            obj.Path = Path.Path()
+        if obj.Base.Placement:
+            obj.Placement = obj.Base.Placement
 
 
 class ViewProviderPathCopy:

@@ -46,6 +46,7 @@ class TreeParams;
 class ViewProviderDocumentObject;
 class DocumentObjectItem;
 class DocumentObjectData;
+class BrowserFolderItem;
 using DocumentObjectDataPtr = std::shared_ptr<DocumentObjectData>;
 class TreeWidgetItemDelegate;
 
@@ -100,6 +101,7 @@ public:
 
     static const int DocumentType;
     static const int ObjectType;
+    static const int BrowserFolderType;
 
     void markItem(const App::DocumentObject* Obj, bool mark);
     void syncView(ViewProviderDocumentObject* vp);
@@ -137,6 +139,20 @@ public:
 
     static void synchronizeSelectionCheckBoxes();
     static void updateVisibilityIcons();
+    static void refreshModelBrowsers();
+    // Resolve the semantic object controlled by a visibility command. This
+    // mapping is independent of whether the typed model browser is enabled or
+    // currently has a proxy item for the requested object.
+    static App::DocumentObject* resolveModelBrowserVisibilityTarget(
+        App::DocumentObject* object
+    );
+    // Route standard visibility commands through a projected browser object.
+    // requestedVisibility < 0 toggles; zero hides; positive shows.
+    static bool applyModelBrowserVisibility(
+        App::DocumentObject* object,
+        int requestedVisibility,
+        bool& resultingVisibility
+    );
 
     QList<QTreeWidgetItem*> childrenOfItem(const QTreeWidgetItem& item) const;
 
@@ -206,6 +222,12 @@ private:
     void selectAllDocumentLevel();
     void selectAllGroupLevel(const QTreeWidgetItem* targetNode, bool isGroup);
     void clearSelectAllContext();
+    static void setObjectItemVisibility(
+        DocumentObjectItem* item,
+        bool visible,
+        bool updateSelection = true
+    );
+    static bool objectItemVisibility(const DocumentObjectItem* item);
 
 protected Q_SLOTS:
     void onCreateGroup();
@@ -327,6 +349,7 @@ private:
 
     friend class DocumentItem;
     friend class DocumentObjectItem;
+    friend class BrowserFolderItem;
     friend class TreeParams;
     friend class TreeWidgetItemDelegate;
 
@@ -418,6 +441,7 @@ protected:
     void slotScrollToObject(const Gui::ViewProviderDocumentObject&);
     void slotRecomputed(const App::Document& doc, const std::vector<App::DocumentObject*>& objs);
     void slotRecomputedObject(const App::DocumentObject&);
+    void slotDocumentStable(const App::Document& stableDocument);
 
     bool updateObject(const Gui::ViewProviderDocumentObject&, const App::Property& prop);
 
@@ -452,6 +476,30 @@ protected:
     void populateParents(const ViewProvider* vp, ViewParentMap&);
 
     void setReadOnlyIconInfo(int column, QIcon& overlayedIcon);
+    void refreshModelBrowser(bool force = false);
+    void rebuildModelBrowser();
+    void clearModelBrowser();
+    void setLegacyTreeVisible(bool visible);
+    void updateBrowserFolderStatus();
+    DocumentObjectItem* createBrowserObjectItem(
+        App::DocumentObject* object,
+        QTreeWidgetItem* parent,
+        DocumentObjectItem* logicalParent,
+        bool browserDefaultHidden
+    );
+    // Compatibility overload for extensions built against the retired
+    // publication/history visibility presentation. The final two arguments
+    // are deliberately ignored by the native Body/Tip renderer.
+    DocumentObjectItem* createBrowserObjectItem(
+        App::DocumentObject* object,
+        QTreeWidgetItem* parent,
+        DocumentObjectItem* logicalParent,
+        bool browserDefaultHidden,
+        App::DocumentObject* browserVisibilityPeer,
+        const std::vector<App::DocumentObject*>& browserVisibilityDependents
+    );
+    DocumentObjectItem* findBrowserItem(App::DocumentObject* object) const;
+    bool isPresentationItem(const DocumentObjectItem* item) const;
 
 private:
     const char* treeName;  // for debugging purpose
@@ -459,6 +507,9 @@ private:
     std::unordered_map<App::DocumentObject*, DocumentObjectDataPtr> ObjectMap;
     std::unordered_map<App::DocumentObject*, std::set<App::DocumentObject*>> _ParentMap;
     std::vector<App::DocumentObject*> PopulateObjects;
+    bool modelBrowserDirty {true};
+    bool modelBrowserActive {false};
+    bool transactionRefreshPending {false};
 
     ExpandInfoPtr _ExpandInfo;
     void restoreItemExpansion(const ExpandInfoPtr&, DocumentObjectItem*);
@@ -475,10 +526,12 @@ private:
     Connection connectScrObject;
     Connection connectRecomputed;
     Connection connectRecomputedObj;
+    Connection connectDocumentStable;
 
     friend class TreeWidget;
     friend class DocumentObjectData;
     friend class DocumentObjectItem;
+    friend class BrowserFolderItem;
 };
 
 /** The link between the tree and a document object.
@@ -489,7 +542,13 @@ private:
 class DocumentObjectItem: public QTreeWidgetItem
 {
 public:
-    DocumentObjectItem(DocumentItem* ownerDocItem, DocumentObjectDataPtr data);
+    DocumentObjectItem(
+        DocumentItem* ownerDocItem,
+        DocumentObjectDataPtr data,
+        bool browserProxy = false,
+        DocumentObjectItem* browserLogicalParent = nullptr,
+        bool browserDefaultHidden = false
+    );
     ~DocumentObjectItem() override;
 
     Gui::ViewProviderDocumentObject* object() const;
@@ -551,8 +610,25 @@ public:
     DocumentObjectItem* getNextSibling() const;
     DocumentObjectItem* getPreviousSibling() const;
     TreeWidget* getTree() const;
+    bool isBrowserProxy() const
+    {
+        return browserProxy;
+    }
+    bool isBrowserDefaultHidden() const
+    {
+        return browserDefaultHidden;
+    }
 
 private:
+    // Compatibility-only helpers for the retired presentation visibility
+    // gate. They intentionally resolve no peer/dependents and perform no
+    // rendering work.
+    App::DocumentObject* visibilityPeer() const;
+    std::vector<App::DocumentObject*> visibilityDependents() const;
+    void syncVisibilityDependents(
+        App::DocumentObject* preferredPreview = nullptr,
+        bool releaseGate = false
+    ) const;
     void setCheckState(bool checked);
     void getExpandedSnapshot(std::vector<bool>& snapshot) const;
     void applyExpandedSnapshot(
@@ -572,9 +648,23 @@ private:
     int previousStatus;
     int selected;
     bool populated;
+    bool browserProxy;
+    bool browserDefaultHidden;
+    // The logical parent of a browser proxy item is stored by object name and
+    // resolved lazily.  A cached item pointer would dangle between an object
+    // deletion and the next model browser rebuild (see getParentItem()).
+    std::string browserLogicalParentName;
+    // Reuse the former visibility-peer string slot for the logical parent's
+    // immutable object ID. Keeping the type and position preserves the
+    // private layout while preventing a replacement object with the same
+    // internal name from becoming this item's selection-path parent.
+    std::string browserLogicalParentId;
+    // Retain the remaining former private layout for binary compatibility.
+    std::vector<std::string> browserVisibilityDependentNames;
 
     friend class TreeWidget;
     friend class DocumentItem;
+    friend class BrowserFolderItem;
 };
 
 class TreePanel: public QWidget

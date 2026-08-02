@@ -22,7 +22,31 @@
 # ***************************************************************************
 
 # Gui Unit tests for the FEM module
+from femtest.gui.test_erase_elements import (
+    TestEraseElementsTask as FemGuiTest06,
+)
 from femtest.gui.test_open import TestObjectOpen as FemGuiTest01
+from femtest.gui.test_exact_native_creation_source import (
+    TestExactNativeFemCreationSource as FemGuiTest05,
+)
+from femtest.gui.test_python_task_boundary import (
+    TestFemPythonTaskBoundary as FemGuiTest07,
+)
+from femtest.gui.test_vibecad_ribbon_tools import (
+    TestVibeCADFEMRibbonTools as FemGuiTest02,
+)
+from femtest.gui.test_vibecad_ribbon_tools import (
+    TestVibeCADFEMSuppressionContract as FemGuiTest03,
+)
+from femtest.gui.test_vibecad_ribbon_tools import (
+    TestVibeCADFEMTimelineContract as FemGuiTest04,
+)
 
 # dummy usage to get flake8 and lgtm quiet
 False if FemGuiTest01.__name__ else True
+False if FemGuiTest02.__name__ else True
+False if FemGuiTest03.__name__ else True
+False if FemGuiTest04.__name__ else True
+False if FemGuiTest05.__name__ else True
+False if FemGuiTest06.__name__ else True
+False if FemGuiTest07.__name__ else True

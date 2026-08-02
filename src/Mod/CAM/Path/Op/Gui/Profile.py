@@ -168,12 +168,24 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
 
     def registerSignalHandlers(self, obj):
         if hasattr(self.form.useCompensation, "checkStateChanged"):  # Qt version >= 6.7.0
-            self.form.useCompensation.checkStateChanged.connect(self.updateVisibility)
+            self.connectSignal(
+                self.form.useCompensation.checkStateChanged,
+                self.updateVisibility,
+            )
         else:  # Qt version < 6.7.0
-            self.form.useCompensation.stateChanged.connect(self.updateVisibility)
-        self.form.numPasses.editingFinished.connect(self.updateVisibility)
+            self.connectSignal(
+                self.form.useCompensation.stateChanged,
+                self.updateVisibility,
+            )
+        self.connectSignal(
+            self.form.numPasses.editingFinished,
+            self.updateVisibility,
+        )
 
-        self.form.setStartPoint.clicked.connect(self.setStartPoint)
+        self.connectSignal(
+            self.form.setStartPoint.clicked,
+            self.setStartPoint,
+        )
 
     def setStartPoint(self):
         selEx = FreeCADGui.Selection.getSelectionEx()

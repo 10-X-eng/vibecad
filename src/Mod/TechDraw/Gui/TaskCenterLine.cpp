@@ -58,6 +58,8 @@ TaskCenterLine::TaskCenterLine(TechDraw::DrawViewPart* partFeat,
     ui(new Ui_TaskCenterLine),
     m_partFeat(partFeat),
     m_basePage(page),
+    m_partIdentity(partFeat),
+    m_pageIdentity(page),
     m_createMode(false),
     m_btnOK(nullptr),
     m_btnCancel(nullptr),
@@ -66,22 +68,47 @@ TaskCenterLine::TaskCenterLine(TechDraw::DrawViewPart* partFeat,
     m_mode(Mode::VERTICAL),
     m_editMode(editMode)
 {
+    if (!partFeat || !page
+        || partFeat->getDocument() != page->getDocument()) {
+        throw Base::TypeError(
+            "The centerline and drawing page must be live in one document"
+        );
+    }
     ui->setupUi(this);
 
     m_geomIndex = DrawUtil::getIndexFromName(m_edgeName);
     const TechDraw::BaseGeomPtrVector &geoms = partFeat->getEdgeGeometry();
-    BaseGeomPtr bg = geoms.at(m_geomIndex);
+    if (m_geomIndex < 0
+        || static_cast<std::size_t>(m_geomIndex) >= geoms.size()
+        || !geoms[static_cast<std::size_t>(m_geomIndex)]) {
+        throw Base::TypeError(
+            "The selected centerline geometry no longer exists"
+        );
+    }
+    BaseGeomPtr bg = geoms[static_cast<std::size_t>(m_geomIndex)];
     std::string tag = bg->getCosmeticTag();
+    if (partFeat->getDocument()->getBookedTransactionID()
+        == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The centerline editor requires an owning document transaction"
+        );
+    }
+    // CenterLine is mutable data stored behind a pointer property.  Touch the
+    // list before live preview starts so the transaction captures a deep,
+    // pre-edit snapshot that Cancel can restore.
+    partFeat->CenterLines.setValues(partFeat->CenterLines.getValues());
     m_cl = partFeat->getCenterLine(tag);
-    //existence of m_cl is checked in CommandAnnotate
+    if (!m_cl) {
+        throw Base::TypeError(
+            "The selected edge is not an editable centerline"
+        );
+    }
     m_type = m_cl->m_type;
    m_mode = m_cl->m_mode;
 
     setUiEdit();
     // connect the dialog objects
     setUiConnect();
-    // save the existing centerline to restore in case the user rejects the changes
-    orig_cl = *m_cl;
 }
 
 //ctor for creation
@@ -92,6 +119,8 @@ TaskCenterLine::TaskCenterLine(TechDraw::DrawViewPart* partFeat,
     ui(new Ui_TaskCenterLine),
     m_partFeat(partFeat),
     m_basePage(page),
+    m_partIdentity(partFeat),
+    m_pageIdentity(page),
     m_createMode(true),
     m_btnOK(nullptr),
     m_btnCancel(nullptr),
@@ -102,7 +131,12 @@ TaskCenterLine::TaskCenterLine(TechDraw::DrawViewPart* partFeat,
     m_mode(Mode::VERTICAL),
     m_editMode(editMode)
 {
-    //existence of page and feature are checked by isActive method of calling command
+    if (!partFeat || !page || subNames.empty()
+        || partFeat->getDocument() != page->getDocument()) {
+        throw Base::TypeError(
+            "The centerline requires live geometry on one drawing page"
+        );
+    }
 
     ui->setupUi(this);
     std::string check = subNames.front();
@@ -114,8 +148,9 @@ TaskCenterLine::TaskCenterLine(TechDraw::DrawViewPart* partFeat,
     } else if (geomType == "Vertex") {
         m_type = Type::VERTEX;
     } else {
-        Base::Console().error("TaskCenterLine - unknown geometry type: %s.  Cannot proceed.\n", geomType.c_str());
-        return;
+        throw Base::TypeError(
+            "The selected geometry cannot define a centerline"
+        );
     }
 
     // setup the Ui using (user-defined) default values
@@ -398,7 +433,15 @@ Mode TaskCenterLine::checkPathologicalVertices(Mode inMode)
 //******************************************************************************
 void TaskCenterLine::createCenterLine()
 {
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create Centerline"));
+    auto* partFeature = m_partIdentity.resolve();
+    auto* page = m_pageIdentity.resolve();
+    if (!partFeature || !page
+        || partFeature->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The centerline task has no live target or owning transaction"
+        );
+    }
 
     // check for illogical parameters
     if (m_type == Type::EDGE) {
@@ -409,11 +452,17 @@ void TaskCenterLine::createCenterLine()
         m_mode = checkPathologicalVertices(m_mode);
     }
 
-    CenterLine* cl = CenterLine::CenterLineBuilder(m_partFeat, m_subNames, m_mode, false);
+    CenterLine* cl = CenterLine::CenterLineBuilder(
+        partFeature,
+        m_subNames,
+        m_mode,
+        false
+    );
 
     if (!cl) {
-        Gui::Command::abortCommand(tid);
-        return;
+        throw Base::RuntimeError(
+            "The selected geometry cannot produce a centerline"
+        );
     }
 
     double hShift = ui->qsbHorizShift->rawValue();
@@ -430,11 +479,10 @@ void TaskCenterLine::createCenterLine()
     cl->m_format.setWidth(ui->dsbWeight->value().getValue());
     cl->m_format.setLineNumber(ui->cboxStyle->currentIndex() + 1);
     cl->m_format.setVisible(true);
-    m_partFeat->addCenterLine(cl);
+    partFeature->addCenterLine(cl);
 
-    m_partFeat->recomputeFeature();
-    Gui::Command::updateActive();
-    Gui::Command::commitCommand(tid);
+    partFeature->recomputeFeature();
+    Gui::Command::updateDocument(partFeature->getDocument());
 
     // entering the edit mode
     m_editMode = true;
@@ -527,45 +575,33 @@ double TaskCenterLine::getExtendBy()
 
 bool TaskCenterLine::accept()
 {
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    if (!doc)
+    auto* partFeature = m_partIdentity.resolve();
+    auto* page = m_pageIdentity.resolve();
+    if (!partFeature || !page || !m_cl) {
         return false;
+    }
 
-    Gui::Command::updateActive();
-    doc->commitCommand();
-    doc->resetEdit();
+    partFeature->recomputeFeature();
+    if (partFeature->isError()) {
+        return false;
+    }
+    Gui::Command::updateDocument(partFeature->getDocument());
+    TaskInternal::resetExactEdit(page->getDocument());
 
     return true;
 }
 
 bool TaskCenterLine::reject()
 {
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    if (!doc)
+    auto* partFeature = m_partIdentity.resolve();
+    auto* page = m_pageIdentity.resolve();
+    if (!partFeature || !page) {
         return false;
-
-    if (getCreateMode() && m_partFeat)  {
-        // undo the centerline creation
-        doc->undo(1);
-    }
-    else if (!getCreateMode() && m_partFeat) {
-        // restore the initial centerline
-        m_cl->m_format.setColor((&orig_cl)->m_format.getColor());
-        m_cl->m_format.setWidth((&orig_cl)->m_format.getWidth());
-        m_cl->m_format.setLineNumber((&orig_cl)->m_format.getLineNumber());
-        m_cl->m_format.setVisible((&orig_cl)->m_format.getVisible());
-        m_cl->m_mode = (&orig_cl)->m_mode;
-        m_cl->m_rotate = (&orig_cl)->m_rotate;
-        m_cl->m_vShift = (&orig_cl)->m_vShift;
-        m_cl->m_hShift = (&orig_cl)->m_hShift;
-        m_cl->m_extendBy = (&orig_cl)->m_extendBy;
-        m_cl->m_type = (&orig_cl)->m_type;
     }
 
-    if (m_partFeat)
-        m_partFeat->recomputeFeature();
-    Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().recompute()");
-    doc->resetEdit();
+    // TaskView owns the exact transaction for both creation and ribbon edit.
+    // Cancel restores the previous centerline after this panel is gone.
+    TaskInternal::resetExactEdit(page->getDocument());
 
     return true;
 }
@@ -626,14 +662,12 @@ void TaskDlgCenterLine::clicked(int)
 
 bool TaskDlgCenterLine::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgCenterLine::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskCenterLine.cpp>

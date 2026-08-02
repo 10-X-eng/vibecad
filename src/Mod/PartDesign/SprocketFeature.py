@@ -21,9 +21,15 @@
 # *                                                                         *
 # ***************************************************************************
 
-import FreeCAD, Part
+import FreeCAD, Part, PartDesign
 from fcsprocket import fcsprocket
 from fcsprocket import sprocket
+from PartDesign.PartDesignTimeline import (
+    abort_task_command,
+    can_start_task,
+    mark_operation,
+    open_task_command,
+)
 
 if FreeCAD.GuiUp:
     import FreeCADGui
@@ -35,23 +41,34 @@ __author__ = "Adam Spontarelli"
 __url__ = "https://www.freecad.org"
 
 
-def makeSprocket(name):
+def makeSprocket(name, document=None):
     """
     makeSprocket(name): makes a Sprocket
     """
-    obj = FreeCAD.ActiveDocument.addObject("Part::Part2DObjectPython", name)
+    document = document or FreeCAD.ActiveDocument
+    if document is None:
+        raise RuntimeError("An open document is required to create a sprocket")
+    obj = document.addObject("Part::Part2DObjectPython", name)
     Sprocket(obj)
     if FreeCAD.GuiUp:
         ViewProviderSprocket(obj.ViewObject)
-    # FreeCAD.ActiveDocument.recompute()
-    if FreeCAD.GuiUp:
-        body = FreeCADGui.ActiveDocument.ActiveView.getActiveObject("pdbody")
-        part = FreeCADGui.ActiveDocument.ActiveView.getActiveObject("part")
-        if body:
-            body.Group = body.Group + [obj]
-        elif part:
-            part.Group = part.Group + [obj]
+    PartDesign.initializeDesignDefinition(obj)
+    mark_operation(obj)
     return obj
+
+
+def _selected_sprocket(document):
+    selected = list(FreeCADGui.Selection.getSelection())
+    if len(selected) != 1:
+        return None
+    obj = selected[0]
+    proxy = getattr(obj, "Proxy", None)
+    if (
+        obj.Document is document
+        and getattr(proxy, "Type", "") == "Sprocket"
+    ):
+        return obj
+    return None
 
 
 class CommandSprocket:
@@ -70,17 +87,50 @@ class CommandSprocket:
         }
 
     def Activated(self):
-
-        FreeCAD.ActiveDocument.openTransaction("Create Sprocket")
-        FreeCADGui.addModule("SprocketFeature")
-        FreeCADGui.doCommand("SprocketFeature.makeSprocket('Sprocket')")
-        FreeCADGui.doCommand("Gui.activeDocument().setEdit(App.ActiveDocument.ActiveObject.Name,0)")
+        document = FreeCAD.ActiveDocument
+        existing = _selected_sprocket(document)
+        label = (
+            "Edit sprocket"
+            if existing is not None
+            else "Create sprocket"
+        )
+        gui_document, transaction_id = open_task_command(document, label)
+        try:
+            if existing is None:
+                FreeCADGui.addModule("SprocketFeature")
+                FreeCADGui.doCommand(
+                    "_vibecad_sprocket = "
+                    "SprocketFeature.makeSprocket("
+                    f"'Sprocket', App.getDocument({document.Name!r}))"
+                )
+                existing = FreeCADGui.doCommandEval(
+                    "_vibecad_sprocket"
+                )
+                if (
+                    existing is None
+                    or existing.Document is not document
+                    or document.getObject(existing.Name) is not existing
+                    or not document
+                    .isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                        existing
+                    )
+                ):
+                    raise RuntimeError(
+                        "The sprocket factory did not return its exact result"
+                    )
+                mode = 0
+            else:
+                mode = 1
+            if not gui_document.setEdit(existing.Name, mode):
+                raise RuntimeError(
+                    "The sprocket task panel could not be shown"
+                )
+        except Exception:
+            abort_task_command(document, transaction_id)
+            raise
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return can_start_task(FreeCAD.ActiveDocument)
 
 
 class Sprocket:
@@ -146,11 +196,13 @@ class Sprocket:
             locked=True,
         )
         obj.SprocketReference = list(self.sprockRef)
+        mark_operation(obj)
         obj.Proxy = self
 
     def onDocumentRestored(self, obj):
         """hook used to migrate older versions of this object"""
         self._ensure_properties(obj, is_restore=True)
+        mark_operation(obj)
 
     def _ensure_properties(self, obj, is_restore):
         def ensure_property(type_, name, doc, default):
@@ -200,12 +252,23 @@ class ViewProviderSprocket:
         taskd = SprocketTaskPanel(self.Object, mode)
         taskd.obj = vobj.Object
         taskd.update()
-        FreeCADGui.Control.showDialog(taskd)
-        return True
+        gui_document = FreeCADGui.getDocument(vobj.Object.Document.Name)
+        FreeCADGui.Control.showDialog(taskd, gui_document)
+        return bool(FreeCADGui.Control.activeDialog(gui_document))
 
     def unsetEdit(self, vobj, mode):
-        FreeCADGui.Control.closeDialog()
+        gui_document = FreeCADGui.getDocument(vobj.Object.Document.Name)
+        FreeCADGui.Control.closeDialog(gui_document)
         return
+
+    def supportsDocumentTimelineEdit(self):
+        return True
+
+    def doubleClicked(self, vobj):
+        if FreeCADGui.Control.activeDialog():
+            return False
+        gui_document = FreeCADGui.getDocument(vobj.Object.Document.Name)
+        return bool(gui_document.setEdit(vobj.Object.Name, 1))
 
     def dumps(self):
         return None
@@ -221,6 +284,8 @@ class SprocketTaskPanel:
 
     def __init__(self, obj, mode):
         self.obj = obj
+        self.document = obj.Document
+        self.gui_document = FreeCADGui.getDocument(self.document.Name)
 
         self.form = FreeCADGui.PySideUic.loadUi(
             FreeCAD.getHomePath() + "Mod/PartDesign/SprocketFeature.ui"
@@ -323,11 +388,19 @@ class SprocketTaskPanel:
 
     def accept(self):
         self.transferTo()
-        FreeCAD.ActiveDocument.recompute()
-        FreeCADGui.ActiveDocument.resetEdit()
+        if self.document.recompute() is False:
+            raise RuntimeError("The sprocket failed to recompute")
+        if (
+            not self.obj.isValid()
+            or self.obj.Shape.isNull()
+            or not self.obj.Shape.isValid()
+        ):
+            status = self.obj.getStatusString()
+            raise RuntimeError(status or "The sprocket is invalid")
+        PartDesign.finalizeDesignDefinition(self.obj)
+        self.gui_document.resetEdit()
+        return True
 
     def reject(self):
-        FreeCAD.ActiveDocument.removeObject(self.obj.Name)
-        FreeCAD.ActiveDocument.recompute()
-        FreeCADGui.ActiveDocument.resetEdit()
-        FreeCAD.ActiveDocument.abortTransaction()
+        self.gui_document.resetEdit()
+        return True

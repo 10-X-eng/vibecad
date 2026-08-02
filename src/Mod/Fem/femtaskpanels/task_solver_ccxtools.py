@@ -40,6 +40,7 @@ import FreeCAD
 import FreeCADGui
 
 import FemGui
+from femtaskpanels import base_femtaskpanel
 from femtools.femutils import getOutputWinColor
 
 
@@ -47,7 +48,7 @@ def unicode(text, *args):
     return str(text)
 
 
-class _TaskPanel:
+class _TaskPanel(base_femtaskpanel._BaseTaskPanel):
     """
     The TaskPanel for CalculiX ccx tools solver object
     """
@@ -55,6 +56,7 @@ class _TaskPanel:
     PREFS_PATH = "User parameter:BaseApp/Preferences/Mod/Fem"
 
     def __init__(self, solver_object):
+        super().__init__(solver_object)
         self.form = FreeCADGui.PySideUic.loadUi(
             FreeCAD.getHomePath() + "Mod/Fem/Resources/ui/SolverCcxTools.ui"
         )
@@ -146,7 +148,7 @@ class _TaskPanel:
         return QtGui.QDialogButtonBox.Close
 
     def reject(self):
-        FreeCADGui.ActiveDocument.resetEdit()
+        return super().reject()
 
     def update(self):
         "fills the widgets"

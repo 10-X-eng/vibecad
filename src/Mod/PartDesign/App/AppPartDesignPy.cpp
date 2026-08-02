@@ -22,13 +22,66 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <utility>
+#include <vector>
 
+#include <App/DocumentObjectPy.h>
+#include <App/Part.h>
 #include <Base/GeometryPyCXX.h>
 #include <Base/Interpreter.h>
-#include <Base/VectorPy.h>
 #include <Base/Tools.h>
+#include <Base/VectorPy.h>
+#include <Mod/Part/App/TopoShapePy.h>
 
+#include "Body.h"
+#include "DesignFeature.h"
+#include "DesignModel.h"
 #include "FeatureHole.h"
+
+namespace
+{
+
+constexpr const char* designEditCapsuleName = "PartDesign.DesignOperationEdit";
+
+void deleteDesignEditCapsule(PyObject* capsule)
+{
+    auto* edit = static_cast<PartDesign::DesignOperationEdit*>(
+        PyCapsule_GetPointer(capsule, designEditCapsuleName)
+    );
+    if (!edit) {
+        PyErr_Clear();
+        return;
+    }
+    delete edit;
+}
+
+App::DocumentObject* documentObjectFromPython(PyObject* object, const char* argument)
+{
+    if (!object || !PyObject_TypeCheck(object, &App::DocumentObjectPy::Type)) {
+        throw Py::TypeError(std::string(argument) + " must be a document object");
+    }
+    auto* result = static_cast<App::DocumentObjectPy*>(object)->getDocumentObjectPtr();
+    if (!result || !result->getDocument()) {
+        throw Py::RuntimeError(std::string(argument) + " is no longer in a document");
+    }
+    return result;
+}
+
+PartDesign::DesignOperationEdit* designEditFromCapsule(PyObject* capsule)
+{
+    auto* edit = static_cast<PartDesign::DesignOperationEdit*>(
+        PyCapsule_GetPointer(capsule, designEditCapsuleName)
+    );
+    if (!edit) {
+        throw Py::TypeError("edit must be an active Design operation edit");
+    }
+    if (!edit->operation) {
+        throw Py::RuntimeError("This Design operation edit was already finalized");
+    }
+    return edit;
+}
+
+}  // namespace
 
 
 namespace PartDesign
@@ -45,10 +98,691 @@ public:
             &Module::getHoleThreadCatalog,
             "Return the native Hole thread catalog without creating a document feature."
         );
+        add_varargs_method(
+            "beginDesignOperationEdit",
+            &Module::beginDesignOperationEdit,
+            "Capture the exact persisted state of one Design operation before editing."
+        );
+        add_varargs_method(
+            "initializeDesignDefinition",
+            &Module::initializeDesignDefinition,
+            "Assign persistent Design identity to one new global reusable definition."
+        );
+        add_varargs_method(
+            "resolveDesignDefinitionReference",
+            &Module::resolveDesignDefinitionReference,
+            "Resolve a selected object to the exact earlier state consumed by a reusable "
+            "definition."
+        );
+        add_varargs_method(
+            "resolveDesignDefinitionSubelementReference",
+            &Module::resolveDesignDefinitionSubelementReference,
+            "Resolve selected faces, edges, or vertices to canonical names on the exact "
+            "earlier state consumed by a reusable definition."
+        );
+        add_varargs_method(
+            "initializeDesignBodyFromLegacyFeature",
+            &Module::initializeDesignBodyFromLegacyFeature,
+            "Promote one legacy Body tip into an immutable initial Design state."
+        );
+        add_varargs_method(
+            "finalizeDesignDefinition",
+            &Module::finalizeDesignDefinition,
+            "Validate and publish one global reusable definition in History."
+        );
+        add_varargs_method(
+            "setDesignOperationTargets",
+            &Module::setDesignOperationTargets,
+            "Set New Body, Join, Cut, or Intersect targets using the edit's saved frames."
+        );
+        add_varargs_method(
+            "setDesignFeaturePatternTargets",
+            &Module::setDesignFeaturePatternTargets,
+            "Repeat one earlier Design feature on explicit target Bodies."
+        );
+        add_varargs_method(
+            "setDesignBodyPatternSource",
+            &Module::setDesignBodyPatternSource,
+            "Copy one exact Body state into independently identified Pattern outputs."
+        );
+        add_varargs_method(
+            "setDesignCloneSource",
+            &Module::setDesignCloneSource,
+            "Copy one exact Body state into one independently identified Body."
+        );
+        add_varargs_method(
+            "setDesignScriptOutputs",
+            &Module::setDesignScriptOutputs,
+            "Configure stable multi-Body outputs for one accepted VibeScript program."
+        );
+        add_varargs_method(
+            "setDesignCombineBodies",
+            &Module::setDesignCombineBodies,
+            "Set one explicit result Body and the tool Bodies for a Design Combine."
+        );
+        add_varargs_method(
+            "setDesignSplitDefinition",
+            &Module::setDesignSplitDefinition,
+            "Set one explicit source Body and exact splitting definitions; return unassigned "
+            "regions."
+        );
+        add_varargs_method(
+            "assignDesignSplitRegions",
+            &Module::assignDesignSplitRegions,
+            "Choose which Split region keeps the source Body identity."
+        );
+        add_varargs_method(
+            "setDesignSeparateDefinition",
+            &Module::setDesignSeparateDefinition,
+            "Separate one reusable multi-solid definition into stable new Bodies."
+        );
+        add_varargs_method(
+            "finalizeDesignOperationEdit",
+            &Module::finalizeDesignOperationEdit,
+            "Validate and atomically publish one Design operation edit."
+        );
+        add_varargs_method(
+            "finalizeDesignScriptOperationEdit",
+            &Module::finalizeDesignScriptOperationEdit,
+            "Publish one worker-validated VibeScript edit and defer unrelated downstream "
+            "recompute."
+        );
+        add_varargs_method(
+            "removeDesignOperation",
+            &Module::removeDesignOperation,
+            "Remove one global Design operation and reconcile every Body output."
+        );
+        add_varargs_method(
+            "validateDesign",
+            &Module::validateDesign,
+            "Validate the complete Design identity, History, state, and publication graph."
+        );
         initialize("This module is the PartDesign module.");  // register with Python
     }
 
 private:
+    Py::Object beginDesignOperationEdit(const Py::Tuple& args)
+    {
+        PyObject* operationObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &operationObject)) {
+            throw Py::Exception();
+        }
+        auto* operation = documentObjectFromPython(operationObject, "operation");
+        DesignOperationEdit snapshot;
+        try {
+            snapshot = DesignModel::beginOperationEdit(*operation);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        auto* edit = new DesignOperationEdit(std::move(snapshot));
+        PyObject* capsule = PyCapsule_New(edit, designEditCapsuleName, deleteDesignEditCapsule);
+        if (!capsule) {
+            delete edit;
+            throw Py::Exception();
+        }
+        return Py::Object(capsule, true);
+    }
+
+    Py::Object setDesignOperationTargets(const Py::Tuple& args)
+    {
+        PyObject* editObject = nullptr;
+        const char* resultMode = nullptr;
+        PyObject* bodyObjects = nullptr;
+        PyObject* componentObject = Py_None;
+        PyObject* allowIncompleteObject = Py_False;
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "OsO|OO",
+                &editObject,
+                &resultMode,
+                &bodyObjects,
+                &componentObject,
+                &allowIncompleteObject
+            )) {
+            throw Py::Exception();
+        }
+
+        auto* edit = designEditFromCapsule(editObject);
+        Py::Sequence bodySequence(bodyObjects);
+        std::vector<Body*> bodies;
+        bodies.reserve(static_cast<std::size_t>(bodySequence.size()));
+        for (const auto& item : bodySequence) {
+            auto* body = freecad_cast<Body*>(documentObjectFromPython(item.ptr(), "body target"));
+            if (!body) {
+                throw Py::TypeError("Every body target must be a PartDesign Body");
+            }
+            bodies.push_back(body);
+        }
+
+        App::Part* component = nullptr;
+        if (componentObject != Py_None) {
+            component = freecad_cast<App::Part*>(
+                documentObjectFromPython(componentObject, "destination component")
+            );
+            if (!component || component->Type.getStrValue() != "Component") {
+                throw Py::TypeError("destination component must be a Design Component");
+            }
+        }
+
+        try {
+            DesignModel::setOperationTargets(
+                *edit,
+                resultMode,
+                bodies,
+                component,
+                Base::asBoolean(allowIncompleteObject)
+            );
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
+    }
+
+    Py::Object setDesignFeaturePatternTargets(const Py::Tuple& args)
+    {
+        PyObject* editObject = nullptr;
+        PyObject* sourceObject = nullptr;
+        PyObject* bodyObjects = nullptr;
+        PyObject* allowIncompleteObject = Py_False;
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "OOO|O",
+                &editObject,
+                &sourceObject,
+                &bodyObjects,
+                &allowIncompleteObject
+            )) {
+            throw Py::Exception();
+        }
+
+        auto* edit = designEditFromCapsule(editObject);
+        auto* source = documentObjectFromPython(sourceObject, "Feature Pattern source");
+        Py::Sequence bodySequence(bodyObjects);
+        std::vector<Body*> bodies;
+        bodies.reserve(static_cast<std::size_t>(bodySequence.size()));
+        for (const auto& item : bodySequence) {
+            auto* body = freecad_cast<Body*>(
+                documentObjectFromPython(item.ptr(), "Feature Pattern target")
+            );
+            if (!body) {
+                throw Py::TypeError("Every Feature Pattern target must be a PartDesign Body");
+            }
+            bodies.push_back(body);
+        }
+
+        try {
+            DesignModel::setFeaturePatternTargets(
+                *edit,
+                *source,
+                bodies,
+                Base::asBoolean(allowIncompleteObject)
+            );
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
+    }
+
+    Py::Object setDesignBodyPatternSource(const Py::Tuple& args)
+    {
+        PyObject* editObject = nullptr;
+        PyObject* sourceBodyObject = nullptr;
+        unsigned long generatedCopyCount = 0;
+        if (!PyArg_ParseTuple(args.ptr(), "OOk", &editObject, &sourceBodyObject, &generatedCopyCount)) {
+            throw Py::Exception();
+        }
+
+        auto* edit = designEditFromCapsule(editObject);
+        auto* sourceBody = freecad_cast<Body*>(
+            documentObjectFromPython(sourceBodyObject, "Body Pattern source")
+        );
+        if (!sourceBody) {
+            throw Py::TypeError("Body Pattern source must be a PartDesign Body");
+        }
+
+        try {
+            DesignModel::setBodyPatternSource(
+                *edit,
+                *sourceBody,
+                static_cast<std::size_t>(generatedCopyCount)
+            );
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
+    }
+
+    Py::Object setDesignCloneSource(const Py::Tuple& args)
+    {
+        PyObject* editObject = nullptr;
+        PyObject* sourceBodyObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "OO", &editObject, &sourceBodyObject)) {
+            throw Py::Exception();
+        }
+
+        auto* edit = designEditFromCapsule(editObject);
+        auto* sourceBody = freecad_cast<Body*>(
+            documentObjectFromPython(sourceBodyObject, "Clone source")
+        );
+        if (!sourceBody) {
+            throw Py::TypeError("Clone source must be a PartDesign Body");
+        }
+
+        try {
+            DesignModel::setCloneSource(*edit, *sourceBody);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
+    }
+
+    Py::Object setDesignScriptOutputs(const Py::Tuple& args)
+    {
+        PyObject* editObject = nullptr;
+        const char* programObjectName = nullptr;
+        const char* programId = nullptr;
+        const char* revision = nullptr;
+        PyObject* outputKeyObjects = nullptr;
+        PyObject* outputLabelObjects = nullptr;
+        PyObject* outputShapeObjects = nullptr;
+        PyObject* adoptedBodyObjects = nullptr;
+        PyObject* programOutputKeyObjects = nullptr;
+        PyObject* programOutputTypeObjects = nullptr;
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "OsssOOOO|OO",
+                &editObject,
+                &programObjectName,
+                &programId,
+                &revision,
+                &outputKeyObjects,
+                &outputLabelObjects,
+                &outputShapeObjects,
+                &adoptedBodyObjects,
+                &programOutputKeyObjects,
+                &programOutputTypeObjects
+            )) {
+            throw Py::Exception();
+        }
+        if ((programOutputKeyObjects == nullptr) != (programOutputTypeObjects == nullptr)) {
+            throw Py::TypeError("program output keys and types must be supplied together");
+        }
+
+        auto* edit = designEditFromCapsule(editObject);
+        const auto stringsFromSequence = [](PyObject* object, const char* argument) {
+            Py::Sequence sequence(object);
+            std::vector<std::string> values;
+            values.reserve(static_cast<std::size_t>(sequence.size()));
+            for (const auto& item : sequence) {
+                if (!PyUnicode_Check(item.ptr())) {
+                    throw Py::TypeError(std::string("Every ") + argument + " must be a string");
+                }
+                const char* value = PyUnicode_AsUTF8(item.ptr());
+                if (!value) {
+                    throw Py::Exception();
+                }
+                values.emplace_back(value);
+            }
+            return values;
+        };
+        const auto outputKeys = stringsFromSequence(outputKeyObjects, "VibeScript output key");
+        const auto outputLabels = stringsFromSequence(outputLabelObjects, "VibeScript output label");
+        const auto programOutputKeys = programOutputKeyObjects
+            ? stringsFromSequence(programOutputKeyObjects, "published VibeScript output key")
+            : outputKeys;
+        const auto programOutputTypes = programOutputTypeObjects
+            ? stringsFromSequence(programOutputTypeObjects, "published VibeScript output type")
+            : std::vector<std::string>(outputKeys.size(), "solid");
+
+        Py::Sequence shapeSequence(outputShapeObjects);
+        std::vector<Part::TopoShape> outputShapes;
+        outputShapes.reserve(static_cast<std::size_t>(shapeSequence.size()));
+        for (const auto& item : shapeSequence) {
+            if (!PyObject_TypeCheck(item.ptr(), &Part::TopoShapePy::Type)) {
+                throw Py::TypeError("Every VibeScript Body output must be a Part Shape");
+            }
+            outputShapes.push_back(*static_cast<Part::TopoShapePy*>(item.ptr())->getTopoShapePtr());
+        }
+
+        Py::Sequence adoptedSequence(adoptedBodyObjects);
+        std::vector<Body*> adoptedBodies;
+        adoptedBodies.reserve(static_cast<std::size_t>(adoptedSequence.size()));
+        for (const auto& item : adoptedSequence) {
+            if (item.ptr() == Py_None) {
+                adoptedBodies.push_back(nullptr);
+                continue;
+            }
+            auto* body = freecad_cast<Body*>(
+                documentObjectFromPython(item.ptr(), "adopted VibeScript output Body")
+            );
+            if (!body) {
+                throw Py::TypeError(
+                    "Every adopted VibeScript output must be a PartDesign Body or None"
+                );
+            }
+            adoptedBodies.push_back(body);
+        }
+
+        try {
+            DesignModel::setScriptOutputs(
+                *edit,
+                programObjectName,
+                programId,
+                revision,
+                outputKeys,
+                outputLabels,
+                outputShapes,
+                adoptedBodies,
+                programOutputKeys,
+                programOutputTypes
+            );
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        catch (const std::exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
+    }
+
+    Py::Object setDesignCombineBodies(const Py::Tuple& args)
+    {
+        PyObject* editObject = nullptr;
+        const char* resultMode = nullptr;
+        PyObject* resultBodyObject = nullptr;
+        PyObject* toolBodyObjects = nullptr;
+        PyObject* keepToolsObject = nullptr;
+        PyObject* allowIncompleteObject = Py_False;
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "OsOOO|O",
+                &editObject,
+                &resultMode,
+                &resultBodyObject,
+                &toolBodyObjects,
+                &keepToolsObject,
+                &allowIncompleteObject
+            )) {
+            throw Py::Exception();
+        }
+
+        auto* edit = designEditFromCapsule(editObject);
+        auto* resultBody = freecad_cast<Body*>(
+            documentObjectFromPython(resultBodyObject, "Combine result Body")
+        );
+        if (!resultBody) {
+            throw Py::TypeError("Combine result Body must be a PartDesign Body");
+        }
+
+        Py::Sequence toolSequence(toolBodyObjects);
+        std::vector<Body*> toolBodies;
+        toolBodies.reserve(static_cast<std::size_t>(toolSequence.size()));
+        for (const auto& item : toolSequence) {
+            auto* body = freecad_cast<Body*>(documentObjectFromPython(item.ptr(), "Combine tool Body")
+            );
+            if (!body) {
+                throw Py::TypeError("Every Combine tool must be a PartDesign Body");
+            }
+            toolBodies.push_back(body);
+        }
+
+        try {
+            DesignModel::setCombineBodies(
+                *edit,
+                resultMode,
+                *resultBody,
+                toolBodies,
+                Base::asBoolean(keepToolsObject),
+                Base::asBoolean(allowIncompleteObject)
+            );
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
+    }
+
+    Py::Object setDesignSplitDefinition(const Py::Tuple& args)
+    {
+        PyObject* editObject = nullptr;
+        PyObject* sourceBodyObject = nullptr;
+        PyObject* splitterObjects = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "OOO", &editObject, &sourceBodyObject, &splitterObjects)) {
+            throw Py::Exception();
+        }
+
+        auto* edit = designEditFromCapsule(editObject);
+        auto* sourceBody = freecad_cast<Body*>(
+            documentObjectFromPython(sourceBodyObject, "Split source Body")
+        );
+        if (!sourceBody) {
+            throw Py::TypeError("Split source Body must be a PartDesign Body");
+        }
+
+        Py::Sequence splitterSequence(splitterObjects);
+        std::vector<App::PropertyLinkSubList::SubSet> splitters;
+        splitters.reserve(static_cast<std::size_t>(splitterSequence.size()));
+        for (const auto& item : splitterSequence) {
+            if (PyObject_TypeCheck(item.ptr(), &App::DocumentObjectPy::Type)) {
+                splitters.emplace_back(
+                    documentObjectFromPython(item.ptr(), "Split definition"),
+                    std::vector<std::string> {}
+                );
+                continue;
+            }
+
+            if (!PyTuple_Check(item.ptr()) || PyTuple_GET_SIZE(item.ptr()) != 2) {
+                throw Py::TypeError("Every Split definition must be a document object or "
+                                    "(object, subelements) pair");
+            }
+            auto* object
+                = documentObjectFromPython(PyTuple_GET_ITEM(item.ptr(), 0), "Split definition");
+            Py::Sequence subelementSequence(PyTuple_GET_ITEM(item.ptr(), 1));
+            std::vector<std::string> subelements;
+            subelements.reserve(static_cast<std::size_t>(subelementSequence.size()));
+            for (const auto& subelement : subelementSequence) {
+                if (!PyUnicode_Check(subelement.ptr())) {
+                    throw Py::TypeError("Every Split subelement name must be a string");
+                }
+                const char* value = PyUnicode_AsUTF8(subelement.ptr());
+                if (!value) {
+                    throw Py::Exception();
+                }
+                subelements.emplace_back(value);
+            }
+            splitters.emplace_back(object, std::move(subelements));
+        }
+
+        std::vector<Base::Vector3d> witnesses;
+        try {
+            witnesses = DesignModel::setSplitDefinition(*edit, *sourceBody, splitters);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        catch (const std::exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+
+        Py::List result;
+        for (const auto& witness : witnesses) {
+            result.append(Py::Vector(witness));
+        }
+        return result;
+    }
+
+    Py::Object assignDesignSplitRegions(const Py::Tuple& args)
+    {
+        PyObject* editObject = nullptr;
+        PyObject* sourceBodyObject = nullptr;
+        PyObject* witnessObjects = nullptr;
+        Py_ssize_t retainedRegion = -1;
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "OOOn",
+                &editObject,
+                &sourceBodyObject,
+                &witnessObjects,
+                &retainedRegion
+            )) {
+            throw Py::Exception();
+        }
+
+        auto* edit = designEditFromCapsule(editObject);
+        auto* sourceBody = freecad_cast<Body*>(
+            documentObjectFromPython(sourceBodyObject, "Split source Body")
+        );
+        if (!sourceBody) {
+            throw Py::TypeError("Split source Body must be a PartDesign Body");
+        }
+        if (retainedRegion < 0) {
+            throw Py::ValueError("retained region must be a non-negative index");
+        }
+
+        Py::Sequence witnessSequence(witnessObjects);
+        std::vector<Base::Vector3d> witnesses;
+        witnesses.reserve(static_cast<std::size_t>(witnessSequence.size()));
+        for (const auto& item : witnessSequence) {
+            if (!PyObject_TypeCheck(item.ptr(), &Base::VectorPy::Type)) {
+                throw Py::TypeError("Every Split region witness must be an App.Vector");
+            }
+            witnesses.push_back(Py::Vector(item.ptr(), false).toVector());
+        }
+
+        try {
+            DesignModel::assignSplitRegions(
+                *edit,
+                *sourceBody,
+                witnesses,
+                static_cast<std::size_t>(retainedRegion)
+            );
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        catch (const std::exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
+    }
+
+    Py::Object setDesignSeparateDefinition(const Py::Tuple& args)
+    {
+        PyObject* editObject = nullptr;
+        PyObject* sourceObject = nullptr;
+        PyObject* componentObject = Py_None;
+        if (!PyArg_ParseTuple(args.ptr(), "OO|O", &editObject, &sourceObject, &componentObject)) {
+            throw Py::Exception();
+        }
+
+        auto* edit = designEditFromCapsule(editObject);
+        auto* source = documentObjectFromPython(sourceObject, "Separate source definition");
+        App::Part* component = nullptr;
+        if (componentObject != Py_None) {
+            component = freecad_cast<App::Part*>(
+                documentObjectFromPython(componentObject, "Separate destination Component")
+            );
+            if (!component || DesignModel::componentId(*component).empty()) {
+                throw Py::TypeError("Separate destination must be a VibeCAD Component");
+            }
+        }
+
+        try {
+            DesignModel::setSeparateDefinition(*edit, *source, component);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        catch (const std::exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
+    }
+
+    Py::Object finalizeDesignOperationEdit(const Py::Tuple& args)
+    {
+        return finalizeDesignOperationEditImpl(args, false);
+    }
+
+    Py::Object finalizeDesignScriptOperationEdit(const Py::Tuple& args)
+    {
+        return finalizeDesignOperationEditImpl(args, true);
+    }
+
+    Py::Object finalizeDesignOperationEditImpl(const Py::Tuple& args, bool scriptOperation)
+    {
+        PyObject* editObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &editObject)) {
+            throw Py::Exception();
+        }
+        auto* edit = designEditFromCapsule(editObject);
+        std::vector<Body*> bodies;
+        try {
+            bodies = scriptOperation ? DesignModel::finalizeScriptOperation(*edit)
+                                     : DesignModel::finalizeOperation(*edit);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        catch (const std::exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        edit->operation = nullptr;
+
+        Py::List result;
+        for (auto* body : bodies) {
+            result.append(Py::Object(body->getPyObject(), true));
+        }
+        return result;
+    }
+
+    Py::Object removeDesignOperation(const Py::Tuple& args)
+    {
+        PyObject* operationObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &operationObject)) {
+            throw Py::Exception();
+        }
+        auto* operation = documentObjectFromPython(operationObject, "operation");
+        std::vector<std::string> removedBodies;
+        try {
+            removedBodies = DesignModel::removeOperation(*operation);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        catch (const std::exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+
+        Py::List result;
+        for (const auto& name : removedBodies) {
+            result.append(Py::String(name));
+        }
+        return result;
+    }
+
+    Py::Object validateDesign(const Py::Tuple& args)
+    {
+        PyObject* object = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &object)) {
+            throw Py::Exception();
+        }
+        auto* documentObject = documentObjectFromPython(object, "object");
+        try {
+            DesignModel::validateDesign(*documentObject->getDocument());
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
+    }
+
     Py::Object getHoleThreadCatalog()
     {
         Py::List catalog;
@@ -78,6 +812,144 @@ private:
             catalog.append(entry);
         }
         return catalog;
+    }
+
+    Py::Object initializeDesignDefinition(const Py::Tuple& args)
+    {
+        PyObject* definitionObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &definitionObject)) {
+            throw Py::Exception();
+        }
+        auto* definition = documentObjectFromPython(definitionObject, "Design definition");
+        try {
+            DesignModel::initializeDefinition(*definition);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
+    }
+
+    Py::Object resolveDesignDefinitionReference(const Py::Tuple& args)
+    {
+        PyObject* definitionObject = nullptr;
+        PyObject* selectedObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "OO", &definitionObject, &selectedObject)) {
+            throw Py::Exception();
+        }
+        auto* definition = documentObjectFromPython(definitionObject, "Design definition");
+        auto* selected = documentObjectFromPython(selectedObject, "Selected reference");
+        try {
+            auto* resolved = DesignModel::resolveDefinitionReference(*definition, *selected);
+            return Py::Object(resolved->getPyObject(), true);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+    }
+
+    Py::Object resolveDesignDefinitionSubelementReference(const Py::Tuple& args)
+    {
+        PyObject* definitionObject = nullptr;
+        PyObject* selectedObject = nullptr;
+        PyObject* subelementsObject = nullptr;
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "OOO",
+                &definitionObject,
+                &selectedObject,
+                &subelementsObject
+            )) {
+            throw Py::Exception();
+        }
+        auto* definition =
+            documentObjectFromPython(definitionObject, "Design definition");
+        auto* selected =
+            documentObjectFromPython(selectedObject, "Selected reference");
+
+        Py::Sequence subelementSequence(subelementsObject);
+        std::vector<std::string> subelements;
+        subelements.reserve(
+            static_cast<std::size_t>(subelementSequence.size())
+        );
+        for (const auto& subelement : subelementSequence) {
+            if (!PyUnicode_Check(subelement.ptr())) {
+                throw Py::TypeError(
+                    "Every Design reference subelement must be a string"
+                );
+            }
+            const char* value = PyUnicode_AsUTF8(subelement.ptr());
+            if (!value) {
+                throw Py::Exception();
+            }
+            subelements.emplace_back(value);
+        }
+
+        try {
+            auto reference =
+                DesignModel::resolveDefinitionSubelementReference(
+                    *definition,
+                    *selected,
+                    subelements
+                );
+            Py::List exactSubelements;
+            for (const auto& subelement : reference.subelements) {
+                exactSubelements.append(Py::String(subelement));
+            }
+            return Py::TupleN(
+                Py::Object(reference.object->getPyObject(), true),
+                exactSubelements
+            );
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+    }
+
+    Py::Object initializeDesignBodyFromLegacyFeature(const Py::Tuple& args)
+    {
+        PyObject* bodyObject = nullptr;
+        PyObject* featureObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "OO", &bodyObject, &featureObject)) {
+            throw Py::Exception();
+        }
+        auto* body = freecad_cast<Body*>(
+            documentObjectFromPython(bodyObject, "legacy Body")
+        );
+        auto* feature = freecad_cast<Part::Feature*>(
+            documentObjectFromPython(featureObject, "legacy Body feature")
+        );
+        if (!body || !feature) {
+            throw Py::TypeError(
+                "Legacy Design promotion requires one PartDesign Body and one Part feature"
+            );
+        }
+        try {
+            auto* state = DesignModel::initializeLegacyBodyState(*body, *feature);
+            return Py::Object(state->getPyObject(), true);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        catch (const std::exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+    }
+
+    Py::Object finalizeDesignDefinition(const Py::Tuple& args)
+    {
+        PyObject* definitionObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &definitionObject)) {
+            throw Py::Exception();
+        }
+        auto* definition = documentObjectFromPython(definitionObject, "Design definition");
+        try {
+            DesignModel::finalizeDefinition(*definition);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
     }
 
     Py::Object makeFilletArc(const Py::Tuple& args)

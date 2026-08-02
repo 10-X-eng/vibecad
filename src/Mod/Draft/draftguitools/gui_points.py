@@ -94,7 +94,7 @@ class Point(gui_base_original.Creator):
         event = event_cb.getEvent()
         mousepos = event.getPosition().getValue()
         ctrl = event.wasCtrlDown()
-        self.point = Gui.Snapper.snap(mousepos, active=ctrl)
+        self.point = Gui.Snapper.snap(mousepos, active=ctrl, view=self.view)
         if self.ui:
             self.ui.displayPoint(self.point)
 
@@ -137,7 +137,11 @@ class Point(gui_base_original.Creator):
                     "Draft.select(point)",
                     "FreeCAD.ActiveDocument.recompute()",
                 ]
-                self.commit(translate("draft", "Create Point"), _cmd_list)
+                self.commit(
+                    translate("draft", "Create Point"),
+                    _cmd_list,
+                    inputs=(),
+                )
             else:
                 # Insert a Draft point
                 _cmd = "Draft.make_point"
@@ -151,7 +155,11 @@ class Point(gui_base_original.Creator):
                     "Draft.autogroup(point)",
                     "FreeCAD.ActiveDocument.recompute()",
                 ]
-                self.commit(translate("draft", "Create Point"), _cmd_list)
+                self.commit(
+                    translate("draft", "Create Point"),
+                    _cmd_list,
+                    inputs=(),
+                )
             self.finish(cont=None)
 
     def finish(self, cont=False):

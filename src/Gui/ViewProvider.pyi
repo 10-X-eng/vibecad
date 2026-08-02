@@ -85,6 +85,14 @@ class ViewProvider(ExtensionContainer):
         """
         ...
 
+    def setTemporaryVisibility(self, visible: bool, /) -> None:
+        """
+        Set scene-only visibility without changing saved object visibility.
+
+        Task previews must restore the previous scene state explicitly.
+        """
+        ...
+
     def canDragObject(self, obj: Any = None, /) -> bool:
         """
         Check whether the child object can be removed by dragging.

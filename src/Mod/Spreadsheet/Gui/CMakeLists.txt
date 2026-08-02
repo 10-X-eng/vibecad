@@ -52,6 +52,8 @@ SET(SpreadsheetGui_SRCS
     DlgSettingsImp.h
     LineEdit.h
     LineEdit.cpp
+    MutationSupport.cpp
+    MutationSupport.h
     ViewProviderSpreadsheet.cpp
     ViewProviderSpreadsheet.h
     ViewProviderSpreadsheetPyImp.cpp

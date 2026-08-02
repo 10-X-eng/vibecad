@@ -90,8 +90,8 @@ TOOL_SPEC = {
         "Control one asynchronous CalculiX solve lifecycle through one exact "
         "operation object. Start performs structured prerequisite and input-writer "
         "checks and returns immediately; status polls its operation_id and cancel "
-        "stops it. Completion reports exact process output and only result objects "
-        "created or changed by this solve generation."
+        "stops it. Completion reports exact process output and the exact result "
+        "root and resources returned by this solve generation."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
@@ -346,7 +346,13 @@ def _finalize_solve(analysis: Any, solver: Any, tool: Any) -> dict[str, Any]:
     before = _RESULT_SNAPSHOTS.get(operation_id)
 
     def finalize() -> dict[str, Any]:
-        if before is None:
+        process = tool.process_diagnostics()
+        try:
+            exact_generation = _exact_imported_result_generation(
+                solver,
+                process,
+            )
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             solver.VibeCADOperationState = "failed_provenance"
             solver.Document.recompute()
             return {
@@ -355,21 +361,50 @@ def _finalize_solve(analysis: Any, solver: Any, tool: Any) -> dict[str, Any]:
                 "operation_id": operation_id,
                 "failed_stage": {
                     "stage": "result_provenance",
-                    "reason": "start_snapshot_unavailable",
+                    "reason": "invalid_native_result_graph",
+                    "native_error": str(exc),
                 },
-                "process": tool.process_diagnostics(),
+                "process": process,
                 "created_results": [],
                 "changed_results": [],
                 "result_summaries": [],
             }
+
         after = _result_snapshot(analysis, solver)
-        created = sorted(set(after) - set(before))
-        changed = sorted(
-            name for name in set(after) & set(before) if after[name] != before[name]
-        )
-        summaries = [
-            _result_summary(analysis.Document.getObject(name)) for name in created + changed
-        ]
+        if exact_generation is None:
+            if before is None:
+                solver.VibeCADOperationState = "failed_provenance"
+                solver.Document.recompute()
+                return {
+                    "analysis": analysis.Name,
+                    "solver": solver.Name,
+                    "operation_id": operation_id,
+                    "failed_stage": {
+                        "stage": "result_provenance",
+                        "reason": "start_snapshot_unavailable",
+                    },
+                    "process": process,
+                    "created_results": [],
+                    "changed_results": [],
+                    "result_summaries": [],
+                }
+            created = sorted(set(after) - set(before))
+            changed = sorted(
+                name
+                for name in set(after) & set(before)
+                if after[name] != before[name]
+            )
+            result_objects = [
+                analysis.Document.getObject(name)
+                for name in created + changed
+            ]
+            provenance_source = "legacy_result_snapshot"
+        else:
+            created = exact_generation["created_results"]
+            changed = exact_generation["changed_results"]
+            result_objects = exact_generation["result_objects"]
+            provenance_source = "native_result_graph"
+        summaries = [_result_summary(obj) for obj in result_objects]
         completeness = _result_completeness(
             str(solver.AnalysisType), created, changed, summaries
         )
@@ -388,7 +423,8 @@ def _finalize_solve(analysis: Any, solver: Any, tool: Any) -> dict[str, Any]:
             "solve_generation_id": operation_id,
             "operation_state": str(solver.VibeCADOperationState),
             "complete": True,
-            "process": tool.process_diagnostics(),
+            "process": process,
+            "result_provenance_source": provenance_source,
             "result_snapshot_before": before,
             "result_snapshot_after": after,
             "created_results": created,
@@ -443,6 +479,191 @@ def _finalize_solve(analysis: Any, solver: Any, tool: Any) -> dict[str, Any]:
             "check stress/displacement convergence against a refined mesh."
         ),
     )
+
+
+def _exact_imported_result_generation(
+    solver: Any,
+    process_diagnostics: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Resolve the exact result identities returned by the native importer."""
+
+    property_update = process_diagnostics.get("property_update")
+    if not isinstance(property_update, dict) or "result_graph" not in property_update:
+        return None
+    if str(property_update.get("status") or "") != "completed":
+        raise RuntimeError(
+            "Native FEM result_graph requires a completed property update"
+        )
+
+    graph = property_update["result_graph"]
+    if graph is None:
+        return {
+            "created_results": [],
+            "changed_results": [],
+            "result_objects": [],
+        }
+    if not isinstance(graph, dict):
+        raise TypeError("Native FEM result_graph must be an object or null")
+
+    document = solver.Document
+    root_record = graph.get("root")
+    resource_records = graph.get("resources")
+    if not isinstance(root_record, dict) or not isinstance(resource_records, list):
+        raise TypeError(
+            "Native FEM result_graph requires one root object and a resources list"
+        )
+
+    def resolve(record: dict[str, Any], description: str) -> Any:
+        if not isinstance(record, dict):
+            raise TypeError(f"{description} identity must be an object")
+        name = str(record.get("name") or "")
+        object_id = record.get("id")
+        if not name or isinstance(object_id, bool) or not isinstance(object_id, int):
+            raise ValueError(
+                f"{description} identity requires an exact name and integer id"
+            )
+        obj = document.getObject(object_id)
+        if (
+            obj is None
+            or obj.Document is not document
+            or int(obj.ID) != object_id
+            or str(obj.Name) != name
+        ):
+            raise RuntimeError(f"{description} changed exact document identity")
+        return obj
+
+    root = resolve(root_record, "FEM result root")
+    root_lifecycle = str(root_record.get("lifecycle") or "")
+    if root_lifecycle not in {"created", "updated"}:
+        raise ValueError("FEM result root lifecycle must be 'created' or 'updated'")
+    if (
+        "VibeCADTimelineRole" not in root.PropertiesList
+        or root.getTypeIdOfProperty("VibeCADTimelineRole") != "App::PropertyString"
+        or root.VibeCADTimelineRole != "operation"
+        or "VibeCADResultSolver" not in root.PropertiesList
+        or root.getTypeIdOfProperty("VibeCADResultSolver") != "App::PropertyLinkHidden"
+        or root.VibeCADResultSolver is not solver
+    ):
+        raise RuntimeError("FEM result root lacks exact History and solver provenance")
+
+    timeline = document.getObject("VibeCADTimeline")
+    if timeline is None or timeline.TypeId != "App::DocumentTimeline":
+        raise RuntimeError("FEM result root has no document History")
+    timeline_operations = tuple(timeline.Operations)
+    if timeline_operations.count(root) != 1:
+        raise RuntimeError("FEM result root is absent from document History")
+
+    def timeline_root(obj: Any) -> Any:
+        current = obj
+        visited = set()
+        while (
+            "VibeCADTimelineRole" in current.PropertiesList
+            and current.getTypeIdOfProperty("VibeCADTimelineRole")
+            == "App::PropertyString"
+            and current.VibeCADTimelineRole == "resource"
+        ):
+            identity = (str(current.Name), int(current.ID))
+            if identity in visited:
+                raise RuntimeError("FEM result resource ownership is cyclic")
+            visited.add(identity)
+            if (
+                "VibeCADTimelineOwner" not in current.PropertiesList
+                or current.getTypeIdOfProperty("VibeCADTimelineOwner")
+                != "App::PropertyLinkHidden"
+            ):
+                raise RuntimeError("FEM result resource ownership is malformed")
+            owner = current.VibeCADTimelineOwner
+            if (
+                owner is None
+                or owner.Document is not document
+                or document.getObject(int(owner.ID)) is not owner
+            ):
+                raise RuntimeError("FEM result resource owner changed exact identity")
+            current = owner
+        return current
+
+    resources = []
+    resource_lifecycles = []
+    identities = {(str(root.Name), int(root.ID))}
+    for index, record in enumerate(resource_records):
+        resource = resolve(record, f"FEM result resource {index}")
+        identity = (str(resource.Name), int(resource.ID))
+        if identity in identities:
+            raise ValueError("Native FEM result_graph contains a duplicate identity")
+        identities.add(identity)
+        resource_lifecycle = str(record.get("lifecycle") or "")
+        if resource_lifecycle not in {"created", "updated"}:
+            raise ValueError(
+                "A returned FEM result resource lifecycle must be "
+                "'created' or 'updated'"
+            )
+        if (
+            "VibeCADTimelineRole" not in resource.PropertiesList
+            or resource.getTypeIdOfProperty("VibeCADTimelineRole")
+            != "App::PropertyString"
+            or resource.VibeCADTimelineRole != "resource"
+            or "VibeCADTimelineOwner" not in resource.PropertiesList
+            or resource.getTypeIdOfProperty("VibeCADTimelineOwner")
+            != "App::PropertyLinkHidden"
+            or resource not in timeline_operations
+            or timeline_root(resource) is not root
+        ):
+            raise RuntimeError("FEM result resource lacks exact History ownership")
+        resources.append(resource)
+        resource_lifecycles.append(resource_lifecycle)
+
+    if root_lifecycle == "created" and "updated" in resource_lifecycles:
+        raise ValueError(
+            "A newly created FEM result root cannot own an updated "
+            "pre-existing resource"
+        )
+
+    owned_resources = [
+        operation
+        for operation in timeline_operations
+        if operation is not root
+        and "VibeCADTimelineRole" in operation.PropertiesList
+        and operation.getTypeIdOfProperty("VibeCADTimelineRole")
+        == "App::PropertyString"
+        and operation.VibeCADTimelineRole == "resource"
+        and timeline_root(operation) is root
+    ]
+    if owned_resources != resources:
+        raise RuntimeError(
+            "Native FEM result_graph does not exactly match the "
+            "owned History resource block"
+        )
+    root_index = timeline_operations.index(root)
+    if root_index < len(resources) or tuple(
+        timeline_operations[root_index - len(resources) : root_index]
+    ) != tuple(resources):
+        raise RuntimeError(
+            "Native FEM result resources are not the canonical "
+            "resource-first History block"
+        )
+
+    created_objects = []
+    changed_objects = []
+    if root_lifecycle == "created":
+        created_objects.append(root)
+    else:
+        changed_objects.append(root)
+    for resource, lifecycle in zip(
+        resources,
+        resource_lifecycles,
+        strict=True,
+    ):
+        result_group = (
+            created_objects
+            if lifecycle == "created"
+            else changed_objects
+        )
+        result_group.append(resource)
+    return {
+        "created_results": [str(obj.Name) for obj in created_objects],
+        "changed_results": [str(obj.Name) for obj in changed_objects],
+        "result_objects": created_objects + changed_objects,
+    }
 
 
 def _structured_prerequisites(analysis: Any, solver: Any) -> dict[str, Any]:

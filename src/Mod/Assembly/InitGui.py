@@ -64,8 +64,22 @@ class AssemblyWorkbench(Workbench):
         import AssemblyGui
         from PySide import QtCore, QtGui
         from PySide.QtCore import QT_TRANSLATE_NOOP
-        import CommandCreateAssembly, CommandInsertLink, CommandInsertNewPart, CommandCreateJoint, CommandSolveAssembly, CommandExportASMT, CommandCreateView, CommandCreateSimulation, CommandCreateBom
+        import CommandCreateAssembly, CommandInsertLink, CommandInsertNewPart, CommandCreateJoint, CommandSolveAssembly, CommandExportASMT, CommandCreateView, CommandCreateSimulation, CommandCreateBom, CommandEditHistoryOperation
         import Preferences
+        cmdListStandardComponents = []
+        try:
+            import VibeCADFastenersGui
+
+            VibeCADFastenersGui.ensure_commands_registered()
+            cmdListStandardComponents = [
+                "VibeCAD_InsertStandardFastener",
+                "VibeCAD_EditStandardFastener",
+            ]
+        except Exception as exc:
+            FreeCAD.Console.PrintWarning(
+                "Assembly standard-component commands are unavailable: "
+                f"{exc}\n"
+            )
 
         FreeCADGui.addLanguagePath(":/translations")
         FreeCADGui.addIconPath(":/icons")
@@ -77,6 +91,7 @@ class AssemblyWorkbench(Workbench):
         # build commands list
         cmdList = [
             "Assembly_CreateAssembly",
+            "Assembly_ActivateAssembly",
             "Assembly_Insert",
             "Assembly_SolveAssembly",
             "Assembly_CreateView",
@@ -87,6 +102,14 @@ class AssemblyWorkbench(Workbench):
         cmdListMenuOnly = [
             "Assembly_LinkSelectLinked",
             "Assembly_ExportASMT",
+        ]
+
+        cmdListDiagnose = [
+            "Assembly_SelectConflictingConstraints",
+            "Assembly_SelectRedundantConstraints",
+            "Assembly_SelectPartiallyRedundantConstraints",
+            "Assembly_SelectMalformedConstraints",
+            "Separator",
             "Assembly_SelectJointsOfComponent",
         ]
 
@@ -111,11 +134,30 @@ class AssemblyWorkbench(Workbench):
 
         self.appendToolbar(QT_TRANSLATE_NOOP("Workbench", "Assembly"), cmdList)
         self.appendToolbar(QT_TRANSLATE_NOOP("Workbench", "Assembly Joints"), cmdListJoints)
+        self.appendToolbar(QT_TRANSLATE_NOOP("Workbench", "Assembly Diagnose"), cmdListDiagnose)
+        if cmdListStandardComponents:
+            self.appendToolbar(
+                QT_TRANSLATE_NOOP("Workbench", "Standard Components"),
+                cmdListStandardComponents,
+            )
 
         self.appendMenu(
             [QT_TRANSLATE_NOOP("Workbench", "&Assembly")],
-            cmdList + cmdListMenuOnly + ["Separator"] + cmdListJoints,
+            cmdList
+            + cmdListMenuOnly
+            + ["Separator"]
+            + cmdListJoints
+            + ["Separator"]
+            + cmdListDiagnose,
         )
+        if cmdListStandardComponents:
+            self.appendMenu(
+                [
+                    QT_TRANSLATE_NOOP("Workbench", "&Assembly"),
+                    QT_TRANSLATE_NOOP("Workbench", "Standard Components"),
+                ],
+                cmdListStandardComponents,
+            )
 
     def Activated(self):
         # update the translation engine

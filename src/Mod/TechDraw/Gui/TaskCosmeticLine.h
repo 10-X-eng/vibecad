@@ -27,6 +27,7 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
 
 namespace TechDraw
 {
@@ -77,10 +78,10 @@ private:
     std::unique_ptr<Ui_TaskCosmeticLine> ui;
 
     TechDraw::DrawViewPart* m_partFeat;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewPart> m_partIdentity;
 
     std::string m_edgeName;
     TechDraw::CosmeticEdge* m_ce;
-    TechDraw::CosmeticEdge* m_saveCE;
     std::vector<Base::Vector3d> m_points;
     std::vector<bool> m_is3d;
     bool m_createMode;

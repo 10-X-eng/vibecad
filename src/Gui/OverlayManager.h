@@ -126,6 +126,11 @@ public:
 
     /// Initialize a newly created dock widget
     void initDockWidget(QDockWidget*);
+    /** Present or hide a dock without inferring intent from effective QWidget visibility.
+     *
+     * @return true when \a dock is owned by an overlay container.
+     */
+    bool setDockWidgetVisible(QDockWidget* dock, bool visible);
     /// Prepare a dock widget for overlay display
     void setupDockWidget(QDockWidget*, int dockArea = Qt::NoDockWidgetArea);
     /// Switch a dock widget back to normal display
@@ -186,6 +191,17 @@ private:
     void onTaskViewUpdate();
     void onFocusChanged(QWidget*, QWidget*);
     void onAction();
+    /** Reconcile an overlay's splitter presentation with requested visibility.
+     *
+     * Requested visibility (DockWindowManager) is the single source of intent;
+     * splitter sizes are derived presentation state and are never read back as
+     * intent. Docks that are not requested visible are collapsed and hidden.
+     * If every requested-visible dock has been collapsed by a transient
+     * relayout, one of them is re-presented so the overlay cannot vanish.
+     */
+    void applyRequestedPresentation(OverlayTabWidget*);
+    /// Return the explicit requested visibility for a managed or direct overlay dock.
+    bool isDockRequestedVisible(QDockWidget*) const;
 
 private Q_SLOTS:
     void raiseAll();

@@ -12,6 +12,7 @@ endif(BUILD_GUI)
 set(Part_Scripts
     Init.py
     JoinFeatures.py
+    PartLinkScope.py
     MakeBottle.py
     PartEnums.py
     TestPartApp.py
@@ -20,6 +21,7 @@ set(Part_Scripts
 if(BUILD_GUI)
     list (APPEND Part_Scripts
           InitGui.py
+          PartGuiCommands.py
           TestPartGui.py
     )
 endif(BUILD_GUI)

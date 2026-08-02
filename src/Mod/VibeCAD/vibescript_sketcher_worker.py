@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import json
 import math
 from pathlib import Path
 from types import MappingProxyType
@@ -1839,6 +1840,20 @@ def _configure_sketch_support(
             raise SketcherCandidateError("FreeCAD did not create the isolated support object.")
         support_object.Label = str(metadata.get("label") or key[1])
         support_object.Shape = shape
+        for property_name, property_value in (
+            ("VibeCADWorkerReferenceDocumentUid", key[0]),
+            ("VibeCADWorkerReferenceObjectName", key[1]),
+            (
+                "VibeCADWorkerReferenceSelection",
+                json.dumps(selection, ensure_ascii=True, separators=(",", ":")),
+            ),
+        ):
+            support_object.addProperty(
+                "App::PropertyString",
+                property_name,
+                "VibeCAD Isolated Reference",
+            )
+            setattr(support_object, property_name, property_value)
         try:
             sketch.AttachmentSupport = (support_object, subelements)
         except Exception as exc:

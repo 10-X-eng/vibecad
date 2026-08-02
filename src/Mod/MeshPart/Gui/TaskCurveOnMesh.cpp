@@ -23,7 +23,10 @@
  ***************************************************************************/
 
 
+#include <App/Document.h>
+#include <Gui/Document.h>
 #include <Gui/View3DInventor.h>
+#include <Gui/View3DInventorViewer.h>
 
 #include "CurveOnMesh.h"
 #include "TaskCurveOnMesh.h"
@@ -99,6 +102,16 @@ void CurveOnMeshWidget::reject()
 
 TaskCurveOnMesh::TaskCurveOnMesh(Gui::View3DInventor* view)
 {
+    Gui::Document* guiDocument =
+        view ? view->getViewer()->getDocument() : nullptr;
+    if (guiDocument && guiDocument->getDocument()) {
+        setDocumentName(
+            guiDocument->getDocument()->getName()
+        );
+        setAutoCloseOnDeletedDocument(true);
+        setAutoCloseOnClosedView(true);
+        setAssociatedView(view);
+    }
     widget = new CurveOnMeshWidget(view);
     addTaskBox(widget);
 }

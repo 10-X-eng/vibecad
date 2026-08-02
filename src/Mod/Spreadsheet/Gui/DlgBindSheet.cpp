@@ -31,8 +31,10 @@
 #include <App/ExpressionParser.h>
 #include <App/Range.h>
 #include <Gui/CommandT.h>
+#include <Gui/ExactTransaction.h>
 
 #include "DlgBindSheet.h"
+#include "MutationSupport.h"
 #include "ui_DlgBindSheet.h"
 
 
@@ -161,11 +163,9 @@ DlgBindSheet::~DlgBindSheet()
 
 void DlgBindSheet::accept()
 {
-    bool commandActive = false;
     try {
-        const char* ref = ui->comboBox->itemData(ui->comboBox->currentIndex())
-                              .toByteArray()
-                              .constData();  // clazy:exclude=returning-data-from-temporary
+        const QByteArray reference = ui->comboBox->itemData(ui->comboBox->currentIndex()).toByteArray();
+        const char* ref = reference.constData();
         auto obj = sheet;
         if (ref[0]) {
             const char* sep = strchr(ref, '#');
@@ -240,8 +240,9 @@ void DlgBindSheet::accept()
                 }
             }
         }
-        sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Bind cells"));
-        commandActive = true;
+        auto* document = sheet->getDocument();
+        MutationSupport::requireCleanBoundary(*document);
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Bind cells"));
 
         if (ui->checkBoxHREF->isChecked()) {
             Gui::cmdAppObjectArgs(sheet, "setExpression('.cells.Bind.%s.%s', None)", fromStart, fromEnd);
@@ -272,8 +273,8 @@ void DlgBindSheet::accept()
                 toEnd
             );
         }
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        sheet->getDocument()->commitTransaction();
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
         QDialog::accept();
     }
     catch (Base::Exception& e) {
@@ -283,9 +284,6 @@ void DlgBindSheet::accept()
             tr("Bind Spreadsheet Cells"),
             tr("Error:\n") + QString::fromUtf8(e.what())
         );
-        if (commandActive) {
-            sheet->getDocument()->abortTransaction();
-        }
     }
 }
 
@@ -294,7 +292,9 @@ void DlgBindSheet::onDiscard()
     try {
         std::string fromStart(ui->lineEditFromStart->text().trimmed().toLatin1().constData());
         std::string fromEnd(ui->lineEditFromEnd->text().trimmed().toLatin1().constData());
-        sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Unbind cells"));
+        auto* document = sheet->getDocument();
+        MutationSupport::requireCleanBoundary(*document);
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Unbind cells"));
         Gui::cmdAppObjectArgs(sheet, "setExpression('.cells.Bind.%s.%s', None)", fromStart, fromEnd);
         Gui::cmdAppObjectArgs(
             sheet,
@@ -302,14 +302,13 @@ void DlgBindSheet::onDiscard()
             fromStart,
             fromEnd
         );
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        sheet->getDocument()->commitTransaction();
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
         reject();
     }
     catch (Base::Exception& e) {
         e.reportException();
         QMessageBox::critical(this, tr("Unbind Cells"), QString::fromUtf8(e.what()));
-        sheet->getDocument()->abortTransaction();
     }
 }
 

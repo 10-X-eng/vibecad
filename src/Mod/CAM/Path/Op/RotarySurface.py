@@ -720,7 +720,6 @@ def SetupProperties():
 
 def Create(name, obj=None, parentJob=None):
     """Factory used by the Op-Gui SetupOperation."""
-    if obj is None:
-        obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = PathOp.createOperationObject(name, obj, parentJob)
     obj.Proxy = ObjectRotarySurface(obj, name, parentJob)
     return obj

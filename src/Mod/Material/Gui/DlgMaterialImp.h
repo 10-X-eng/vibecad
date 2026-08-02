@@ -27,6 +27,7 @@
 
 #include <QDialog>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <App/Material.h>
@@ -39,7 +40,13 @@
 
 namespace App
 {
+class Document;
 class Property;
+}  // namespace App
+
+namespace Gui
+{
+class ExactTransaction;
 }
 
 namespace MatGui
@@ -47,6 +54,7 @@ namespace MatGui
 
 class ViewProvider;
 class Command;
+struct SelectionPropertyTargetIdentity;
 
 /**
  * The DlgMaterialImp class implements a dialog containing all available document
@@ -58,13 +66,30 @@ class DlgMaterialImp: public QDialog, public Gui::SelectionSingleton::ObserverTy
     Q_OBJECT
 
 public:
-    explicit DlgMaterialImp(bool floating,
-                            QWidget* parent = nullptr,
-                            Qt::WindowFlags fl = Qt::WindowFlags());
+    explicit DlgMaterialImp(
+        bool floating,
+        QWidget* parent = nullptr,
+        Qt::WindowFlags fl = Qt::WindowFlags()
+    );
+    explicit DlgMaterialImp(
+        bool floating,
+        App::Document* document,
+        QWidget* parent = nullptr,
+        Qt::WindowFlags fl = Qt::WindowFlags()
+    );
+    DlgMaterialImp(
+        bool floating,
+        App::Document* document,
+        int transactionId,
+        QWidget* parent = nullptr,
+        Qt::WindowFlags fl = Qt::WindowFlags()
+    );
     ~DlgMaterialImp() override;
     /// Observer message from the Selection
-    void OnChange(Gui::SelectionSingleton::SubjectType& rCaller,
-                  Gui::SelectionSingleton::MessageType Reason) override;
+    void OnChange(
+        Gui::SelectionSingleton::SubjectType& rCaller,
+        Gui::SelectionSingleton::MessageType Reason
+    ) override;
     void showDefaultButtons(bool);
     void reject() override;
 
@@ -75,11 +100,26 @@ protected:
     void changeEvent(QEvent* e) override;
 
 private:
+    friend class TaskMaterial;
+
+    DlgMaterialImp(
+        bool floating,
+        App::Document* document,
+        int transactionId,
+        std::vector<SelectionPropertyTargetIdentity> targets,
+        QWidget* parent,
+        Qt::WindowFlags fl
+    );
+    static std::vector<SelectionPropertyTargetIdentity> captureMaterialTargets(
+        App::Document* document,
+        bool floating
+    );
+
     void setupConnections();
     void slotChangedObject(const Gui::ViewProvider&, const App::Property& Prop);
-    void setMaterial(const std::vector<App::DocumentObject*>&);
+    void setMaterial();
     std::vector<Gui::ViewProvider*> getSelection() const;
-    std::vector<App::DocumentObject*> getSelectionObjects() const;
+    std::vector<App::Property*> getMaterialProperties() const;
 
 private:
     class Private;
@@ -92,6 +132,7 @@ class TaskMaterial: public Gui::TaskView::TaskDialog
 
 public:
     TaskMaterial();
+    explicit TaskMaterial(App::Document& document);
     ~TaskMaterial() override;
 
 public:
@@ -113,9 +154,14 @@ public:
     QDialogButtonBox::StandardButtons getStandardButtons() const override;
 
 private:
+    bool ownsTransaction() const;
     DlgMaterialImp* widget;
     Gui::TaskView::TaskBox* taskbox;
     int tid {App::NullTransaction};
+    std::unique_ptr<Gui::ExactTransaction> transaction;
+    App::Document* targetDocumentAddress {nullptr};
+    std::string targetDocumentName;
+    std::string targetDocumentUid;
 };
 
 }  // namespace MatGui

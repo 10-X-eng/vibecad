@@ -28,6 +28,8 @@
 #include <Mod/TechDraw/TechDrawGlobal.h>
 #include <Mod/TechDraw/App/Cosmetic.h>
 
+#include "TaskDocumentGuard.h"
+
 namespace App
 {
 class DocumentObject;
@@ -77,6 +79,7 @@ protected:
 private:
     std::unique_ptr<Ui_TaskLineDecor> ui;
     TechDraw::DrawViewPart* m_partFeat;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewPart> m_partIdentity;
     std::vector<std::string> m_edges;
 
     std::vector<TechDraw::LineFormat> m_originalFormats;

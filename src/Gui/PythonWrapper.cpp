@@ -26,7 +26,9 @@
 #include <list>
 #include <QAction>
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDir>
+#include <QEvent>
 #include <QIcon>
 #include <QPrinter>
 #include <QWidget>
@@ -392,9 +394,97 @@ qttype* qt_getCppType(PyObject* pyobj)
  * lineedit.show()
  * \endcode
  */
+class WrapperInvalidator: public QObject
+{
+public:
+    WrapperInvalidator(PyObject* pythonWrapper, QObject* parent)
+        : QObject(parent)
+    {
+        retainWrapper(pythonWrapper);
+    }
+
+    ~WrapperInvalidator() override
+    {
+        releaseWrapper();
+    }
+
+    void track(QObject* object, PyObject* pythonWrapper)
+    {
+        // A wrapper address can be reused before a previously queued helper
+        // deletion is delivered. Reusing this helper transfers it to the new
+        // lifetime, so cancel that stale deferred deletion first.
+        QCoreApplication::removePostedEvents(this, QEvent::DeferredDelete);
+        if (wrapper != pythonWrapper) {
+            releaseWrapper();
+            retainWrapper(pythonWrapper);
+        }
+
+        disconnect(objectDestroyed);
+        objectDestroyed = connect(
+            object,
+            &QObject::destroyed,
+            this,
+            [this]() {
+                // QObject storage can be reused before a deferred event is
+                // delivered. Remove the dead pointer from Shiboken's binding
+                // registry and release the Python reference synchronously.
+                // Only deletion of this QObject helper must wait until the
+                // tracked QObject destructor has unwound.
+                releaseWrapper();
+                deleteLater();
+            },
+            Qt::DirectConnection
+        );
+    }
+
+private:
+    void retainWrapper(PyObject* pythonWrapper)
+    {
+        wrapper = pythonWrapper;
+        invalidated = false;
+        Py_INCREF(wrapper);
+    }
+
+    void releaseWrapper()
+    {
+        if (!wrapper) {
+            return;
+        }
+        if (!Py_IsInitialized()) {
+            // Application shutdown has already finalized Python. The
+            // interpreter owns no live reference at this point, so there is
+            // nothing safe or useful left to release.
+            wrapper = nullptr;
+            invalidated = true;
+            return;
+        }
+
+        Base::PyGILStateLocker lock;
+        invalidateWrapper();
+        Py_DECREF(wrapper);
+        wrapper = nullptr;
+    }
+
+    void invalidateWrapper()
+    {
+        if (invalidated) {
+            return;
+        }
+        invalidated = true;
+        if (Shiboken::Object::checkType(wrapper)) {
+            Shiboken::Object::invalidate(reinterpret_cast<SbkObject*>(wrapper));
+            return;
+        }
+        Base::Console().developerError("WrapperManager", "A QObject wrapper is not a Shiboken object.\n");
+    }
+
+    PyObject* wrapper {nullptr};
+    QMetaObject::Connection objectDestroyed;
+    bool invalidated {false};
+};
+
 class WrapperManager: public QObject
 {
-
 public:
     static WrapperManager& instance()
     {
@@ -410,42 +500,15 @@ public:
      */
     void addQObject(QObject* obj, PyObject* pyobj)
     {
-        // static array to contain created connections so they can be safely disconnected later
-        static std::map<QObject*, QMetaObject::Connection> connections = {};
-
-        const auto PyW_uniqueName = QString::number(reinterpret_cast<quintptr>(pyobj));
-        auto PyW_invalidator = findChild<QObject*>(PyW_uniqueName, Qt::FindDirectChildrenOnly);
-
-        if (!PyW_invalidator) {
-            PyW_invalidator = new QObject(this);
-            PyW_invalidator->setObjectName(PyW_uniqueName);
-
-            Py_INCREF(pyobj);
+        const auto wrapperName = QString::number(reinterpret_cast<quintptr>(pyobj));
+        auto* invalidator = static_cast<WrapperInvalidator*>(
+            findChild<QObject*>(wrapperName, Qt::FindDirectChildrenOnly)
+        );
+        if (!invalidator) {
+            invalidator = new WrapperInvalidator(pyobj, this);
+            invalidator->setObjectName(wrapperName);
         }
-        else if (connections.contains(PyW_invalidator)) {
-            disconnect(connections[PyW_invalidator]);
-            connections.erase(PyW_invalidator);
-        }
-
-        auto destroyedFun = [pyobj]() {
-            Base::PyGILStateLocker lock;
-
-            if (auto sbkPtr = reinterpret_cast<SbkObject*>(pyobj); sbkPtr) {
-                Shiboken::Object::setValidCpp(sbkPtr, false);
-            }
-            else {
-                Base::Console().developerError(
-                    "WrapperManager",
-                    "A QObject has just been destroyed after its Pythonic wrapper.\n"
-                );
-            }
-
-            Py_DECREF(pyobj);
-        };
-
-        connections[PyW_invalidator]
-            = connect(PyW_invalidator, &QObject::destroyed, this, destroyedFun);
-        connect(obj, &QObject::destroyed, PyW_invalidator, &QObject::deleteLater);
+        invalidator->track(obj, pyobj);
     }
 
 private:
@@ -974,9 +1037,7 @@ void PythonWrapper::setParent(PyObject* pyWdg, QObject* parent)
             // Leave the widget unparented on the Python side rather than crash.
             return;
         }
-        Shiboken::AutoDecRef pyParent(
-            Shiboken::Conversions::pointerToPython(type, parent)
-        );
+        Shiboken::AutoDecRef pyParent(Shiboken::Conversions::pointerToPython(type, parent));
         Shiboken::Object::setParent(pyParent, pyWdg);
     }
 #else

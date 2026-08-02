@@ -22,6 +22,7 @@
 
 # include <cmath>
 
+#include <QMessageBox>
 
 #include <App/DocumentObject.h>
 #include <Gui/BitmapFactory.h>
@@ -47,10 +48,64 @@ TaskCustomizeFormat::TaskCustomizeFormat(App::DocumentObject * object) :
     dimRawValue(0.0),
     ui(new Ui_TaskCustomizeFormat)
 {
-
+    if (!selectedObject
+        || (!selectedObject->isDerivedFrom<
+                TechDraw::DrawViewDimension>()
+            && !selectedObject->isDerivedFrom<
+                TechDraw::DrawViewBalloon>())) {
+        throw Base::TypeError(
+            "Customize Format requires a dimension or balloon"
+        );
+    }
+    m_documentIdentity =
+        TaskInternal::DocumentIdentity(
+            selectedObject->getDocument()
+        );
+    m_objectIdentity =
+        TaskInternal::ObjectIdentity<App::DocumentObject>(
+            selectedObject
+        );
     ui->setupUi(this);
 
     setUiEdit();
+}
+
+App::DocumentObject*
+TaskCustomizeFormat::resolveObject() const
+{
+    return m_objectIdentity.resolve();
+}
+
+bool TaskCustomizeFormat::validateDimensionFormat(
+    const QString& format,
+    QString* preview
+) const
+{
+    auto* dimension =
+        dynamic_cast<TechDraw::DrawViewDimension*>(
+            resolveObject()
+        );
+    if (!dimension) {
+        return false;
+    }
+    try {
+        const std::string formatted = dimension->formatValue(
+            dimRawValue,
+            format,
+            TechDraw::DimensionFormatter::Format::FORMATTED,
+            true
+        );
+        if (formatted.empty() && !format.isEmpty()) {
+            return false;
+        }
+        if (preview) {
+            *preview = QString::fromStdString(formatted);
+        }
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
 }
 
 TaskCustomizeFormat::~TaskCustomizeFormat()
@@ -171,29 +226,77 @@ void TaskCustomizeFormat::onFormatChanged()
     QString formatPreview = ui->leFormat->text();
     if (isDimension)
     {
-        formatPreview = QString::asprintf(formatPreview.toUtf8(), dimRawValue);
+        if (!validateDimensionFormat(
+                formatPreview,
+                &formatPreview
+            )) {
+            formatPreview = tr("Invalid dimension format");
+        }
     }
     ui->lbShowPreview->setText(formatPreview);
 }
 
 bool TaskCustomizeFormat::accept()
 {
+    selectedObject = resolveObject();
+    if (!selectedObject) {
+        return false;
+    }
     // Slot: the OK button has been pressed
     QString formatPreview = ui->leFormat->text();
     std::string formatString = formatPreview.toUtf8().constData();
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Customize Format"));
-
-    if (isDimension)
-    {
-        auto dim = dynamic_cast<TechDraw::DrawViewDimension*>(selectedObject);
-        dim->FormatSpec.setValue(formatString);
+    if (isDimension
+        && !validateDimensionFormat(formatPreview)) {
+        QMessageBox::warning(
+            this,
+            tr("Invalid Format"),
+            tr(
+                "Use one numeric placeholder such as %f, %.2f, %g, %w, "
+                "or %r."
+            )
+        );
+        return false;
     }
-    else
-    {
-        auto balloon = dynamic_cast<TechDraw::DrawViewBalloon*>(selectedObject);
-        balloon->Text.setValue(formatString);
+    try {
+        TaskInternal::OwnedDocumentTransaction transaction(
+            m_documentIdentity.resolve(),
+            QT_TRANSLATE_NOOP("Command", "Customize Format")
+        );
+        if (isDimension) {
+            auto* dimension =
+                dynamic_cast<TechDraw::DrawViewDimension*>(
+                    selectedObject
+                );
+            if (!dimension) {
+                return false;
+            }
+            dimension->FormatSpec.setValue(formatString);
+            dimension->recomputeFeature();
+        }
+        else {
+            auto* balloon =
+                dynamic_cast<TechDraw::DrawViewBalloon*>(
+                    selectedObject
+                );
+            if (!balloon) {
+                return false;
+            }
+            balloon->Text.setValue(formatString);
+            balloon->recomputeFeature();
+        }
+        transaction.commit();
     }
-    Gui::Command::commitCommand(tid);
+    catch (const Base::Exception& error) {
+        QMessageBox::critical(
+            this,
+            tr("Format Update Failed"),
+            QString::fromUtf8(error.what())
+        );
+        return false;
+    }
+    TaskInternal::updateExactDocument(
+        m_documentIdentity.resolve()
+    );
     return true;
 }
 
@@ -214,6 +317,7 @@ TaskDlgCustomizeFormat::TaskDlgCustomizeFormat(App::DocumentObject * object)
                                              widget->windowTitle(), true, nullptr);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 TaskDlgCustomizeFormat::~TaskDlgCustomizeFormat()
@@ -236,14 +340,12 @@ void TaskDlgCustomizeFormat::clicked(int)
 
 bool TaskDlgCustomizeFormat::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgCustomizeFormat::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskCustomizeFormat.cpp>

@@ -299,57 +299,23 @@ TaskDlgFemConstraintGear::TaskDlgFemConstraintGear(ViewProviderFemConstraintGear
 
 bool TaskDlgFemConstraintGear::accept()
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintGear* parameterGear = static_cast<const TaskFemConstraintGear*>(parameter);
 
     try {
-        // Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "FEM force constraint changed"));
         std::string dirname = parameterGear->getDirectionName().data();
         std::string dirobj = parameterGear->getDirectionObject().data();
 
         if (!dirname.empty()) {
-            QString buf = QStringLiteral("(App.ActiveDocument.%1,[\"%2\"])");
-            buf = buf.arg(QString::fromStdString(dirname));
-            buf = buf.arg(QString::fromStdString(dirobj));
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.Direction = %s",
-                name.c_str(),
-                buf.toStdString().c_str()
-            );
+            runConstraintCommand("Direction = %s", constraintReference(dirname, dirobj));
         }
         else {
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.Direction = None",
-                name.c_str()
-            );
+            runConstraintCommand("Direction = None");
         }
 
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Reversed = %s",
-            name.c_str(),
-            parameterGear->getReverse() ? "True" : "False"
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Diameter = %f",
-            name.c_str(),
-            parameterGear->getDiameter()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Force = %f",
-            name.c_str(),
-            parameterGear->getForce()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.ForceAngle = %f",
-            name.c_str(),
-            parameterGear->getForceAngle()
-        );
+        runConstraintCommand("Reversed = %s", parameterGear->getReverse() ? "True" : "False");
+        runConstraintCommand("Diameter = %f", parameterGear->getDiameter());
+        runConstraintCommand("Force = %f", parameterGear->getForce());
+        runConstraintCommand("ForceAngle = %f", parameterGear->getForceAngle());
     }
     catch (const Base::Exception& e) {
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));

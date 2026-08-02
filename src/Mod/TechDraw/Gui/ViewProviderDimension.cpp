@@ -49,6 +49,7 @@
 #include "PreferencesGui.h"
 #include "ZVALUE.h"
 #include "TaskDimension.h"
+#include "TaskDocumentGuard.h"
 #include "QGIViewDimension.h"
 #include "ViewProviderPage.h"
 #include "ViewProviderDimension.h"
@@ -136,11 +137,11 @@ void ViewProviderDimension::setupContextMenu(QMenu* menu, QObject* receiver, con
 {
     auto* func = new Gui::ActionFunction(menu);
     QAction* act = menu->addAction(
-        QObject::tr("Edit %1").arg(QString::fromUtf8(getObject()->Label.getValue())));
+        QObject::tr("Edit %1").arg(QString::fromUtf8(getObject()->Label.getValue()))
+    );
+    act->setObjectName(QStringLiteral("TechDrawContextEditDimension"));
     act->setData(QVariant((int)ViewProvider::Default));
-    func->trigger(act, [this](){
-        this->startDefaultEditMode();
-    });
+    func->trigger(act, [this]() { this->startDefaultEditMode(); });
 
     ViewProviderDrawingView::setupContextMenu(menu, receiver, member);
 }
@@ -150,15 +151,20 @@ bool ViewProviderDimension::setEdit(int ModNum)
     if (ModNum != ViewProvider::Default) {
         return ViewProviderDrawingView::setEdit(ModNum);
     }
-    if (Gui::Control().activeDialog()) { // if TaskPanel already open
+    auto* dimension = getViewObject();
+    if (!dimension || Gui::Control().activeDialog(dimension->getDocument())) {
         return false;
     }
     // clear the selection (convenience)
     Gui::Selection().clearSelection();
     auto qgivDimension(dynamic_cast<QGIViewDimension*>(getQView()));
-    if (qgivDimension) {
-        Gui::Control().showDialog(new TaskDlgDimension(qgivDimension, this));
+    if (!qgivDimension) {
+        return false;
     }
+    TaskInternal::showDocumentDialog(
+        new TaskDlgDimension(qgivDimension, this),
+        dimension->getDocument()
+    );
     return true;
 }
 

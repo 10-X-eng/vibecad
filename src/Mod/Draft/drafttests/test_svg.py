@@ -47,14 +47,6 @@ from drafttests import auxiliary as aux
 from drafttests import test_base
 from draftutils.messages import _msg
 
-try:
-    import Arch
-except ModuleNotFoundError:
-    have_arch = False
-else:
-    have_arch = True
-
-
 class DraftSVG(test_base.DraftTestCaseDoc):
     """Test reading and writing of SVGs with Draft."""
 
@@ -84,29 +76,6 @@ class DraftSVG(test_base.DraftTestCaseDoc):
 
         obj = aux.fake_function(out_file)
         self.assertTrue(obj, "'{}' failed".format(operation))
-
-    @unittest.skipIf(not have_arch, "BIM module is not installed")
-    def test_get_svg_from_arch_space_with_zero_vector(self):
-        """Try to get a svg string from an Arch Space with a zero-vector as direction."""
-        import Part
-        import Draft
-
-        sb = Part.makeBox(1, 1, 1)
-        b = self.doc.addObject("Part::Feature", "Box")
-        b.Shape = sb
-
-        s = Arch.makeSpace(b)
-        self.doc.recompute()
-
-        try:
-            Draft.get_svg(s, direction=App.Vector(0, 0, 0))
-        except AttributeError as err:
-            self.fail("Cryptic exception thrown: {}".format(err))
-        except ValueError as err:
-            App.Console.PrintLog("Exception thrown, OK: {}".format(err))
-        else:
-            self.fail("no exception thrown")
-
 
 class DraftSVGExportRegression(test_base.DraftTestCaseDoc):
     """Regression tests for SVG export edge cases."""

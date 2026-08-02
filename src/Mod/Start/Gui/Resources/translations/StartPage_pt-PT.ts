@@ -113,16 +113,6 @@
       <translation>Criar um esboço 2D com a bancada de trabalho Esboço</translation>
     </message>
     <message>
-      <location filename="../../StartView.cpp" line="213"/>
-      <source>BIM/Architecture</source>
-      <translation>BIM/Arquitetura</translation>
-    </message>
-    <message>
-      <location filename="../../StartView.cpp" line="214"/>
-      <source>Create an architectural project</source>
-      <translation>Criar um projeto de arquitetura</translation>
-    </message>
-    <message>
       <location filename="../../StartView.cpp" line="442"/>
       <source>New File</source>
       <translation>Novo Ficheiro</translation>

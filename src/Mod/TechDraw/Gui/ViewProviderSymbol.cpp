@@ -87,21 +87,6 @@ PROPERTY_SOURCE(TechDrawGui::ViewProviderDraft, TechDrawGui::ViewProviderSymbol)
 ViewProviderDraft::ViewProviderDraft()
 {
     sPixmap = "actions/TechDraw_DraftView.svg";
-    // svg files from Draft/BIM arrive in old scale
+    // SVG files from Draft arrive in old scale.
     LegacyScaling.setValue(true);
 }
-
-
-//**************************************************************************
-// Arch view
-
-PROPERTY_SOURCE(TechDrawGui::ViewProviderArch, TechDrawGui::ViewProviderSymbol)
-
-
-ViewProviderArch::ViewProviderArch()
-{
-    sPixmap = "actions/TechDraw_ArchView.svg";
-    // svg files from Draft/BIM arrive in old scale
-    LegacyScaling.setValue(true);
-}
-

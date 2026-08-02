@@ -55,6 +55,9 @@ class VPMeshManipulate(view_base_femmeshelement.VPBaseFemMeshElement):
     Can manipulate a single other refinement.
     """
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def setEdit(self, vobj, mode=0):
         return super().setEdit(vobj, mode, task_mesh_manipulate._TaskPanel)
 

@@ -99,21 +99,30 @@ class PathTwistedArray(gui_base_original.Modifier):
             use_link = self.use_link
 
             Gui.addModule("Draft")
+            Gui.addModule("draftutils.timeline")
             _cmd = "Draft.make_path_twisted_array"
             _cmd += "("
             _cmd += "App.ActiveDocument." + base_object.Name + ", "
             _cmd += "App.ActiveDocument." + path_object.Name + ", "
             _cmd += "count=" + str(count) + ", "
             _cmd += "rot_factor=" + str(rot_factor) + ", "
-            _cmd += "use_link=" + str(use_link)
+            _cmd += "use_link=" + str(use_link) + ", "
+            _cmd += "hide_base=False"
             _cmd += ")"
 
             _cmd_list = [
                 "_obj_ = " + _cmd,
                 "Draft.autogroup(_obj_)",
+                "draftutils.timeline.accept_derived_output(_obj_, "
+                "[App.ActiveDocument." + base_object.Name + ", "
+                "App.ActiveDocument." + path_object.Name + "])",
                 "App.ActiveDocument.recompute()",
             ]
-            self.commit(translate("draft", "Create Path Twisted Array"), _cmd_list)
+            self.commit(
+                translate("draft", "Create Path Twisted Array"),
+                _cmd_list,
+                inputs=(base_object, path_object),
+            )
 
         # Commit the transaction and execute the commands
         # through the parent class

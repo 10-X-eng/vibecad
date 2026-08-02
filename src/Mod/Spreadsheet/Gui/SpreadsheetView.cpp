@@ -38,6 +38,7 @@
 #include <Gui/Command.h>
 #include <Gui/CommandT.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/FileDialog.h>
 #include <Gui/MainWindow.h>
 #include <Gui/PreferencePages/DlgSettingsPDF.h>
@@ -46,6 +47,7 @@
 #include <Mod/Spreadsheet/App/SheetPy.h>
 
 #include "LineEdit.h"
+#include "MutationSupport.h"
 #include "SpreadsheetDelegate.h"
 #include "SpreadsheetView.h"
 #include "ZoomableView.h"
@@ -176,13 +178,22 @@ bool SheetView::onMsg(const char* pMsg)
     else if (strcmp("Std_Delete", pMsg) == 0) {
         std::vector<Range> ranges = selectedRanges();
         if (sheet->hasCell(ranges)) {
-            sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Clear Cells"));
-            std::vector<Range>::const_iterator i = ranges.begin();
-            for (; i != ranges.end(); ++i) {
-                FCMD_OBJ_CMD(sheet, "clear('" << i->rangeString() << "')");
+            try {
+                auto* document = sheet->getDocument();
+                MutationSupport::requireCleanBoundary(*document);
+                Gui::ExactTransaction transaction(
+                    *document,
+                    QT_TRANSLATE_NOOP("Command", "Clear cells")
+                );
+                for (const auto& range : ranges) {
+                    Gui::cmdAppObjectArgs(sheet, "clear('%s')", range.rangeString().c_str());
+                }
+                MutationSupport::recompute(*document);
+                MutationSupport::commit(transaction);
             }
-            sheet->getDocument()->commitTransaction();
-            Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+            catch (const Base::Exception& error) {
+                error.reportException();
+            }
         }
         return true;
     }

@@ -24,6 +24,7 @@
 
 #include <list>
 #include <memory>
+#include <set>
 #include <vector>
 
 #include <SMDSAbs_ElementType.hxx>
@@ -171,6 +172,14 @@ public:
     //@{
     /// Applies a transformation on the real geometric data type
     void transformGeometry(const Base::Matrix4D& rclMat) override;
+    /**
+     * Remove the requested mesh elements as one validated operation.
+     *
+     * Every ID is checked before the mesh is changed.  Deleted elements are
+     * removed from their groups by SMESH.  When requested, nodes which are no
+     * longer referenced by any element are removed as well.
+     */
+    void removeElements(const std::set<int>& elementIds, bool removeOrphanNodes = true);
     //@}
 
     /** @name Group management */
@@ -240,6 +249,11 @@ public:
     void writeZ88(const std::string& FileName) const;
 
 private:
+    struct EmbeddedAssignmentTag
+    {
+    };
+
+    explicit FemMesh(EmbeddedAssignmentTag);
     void copyMeshData(const FemMesh&);
     void readNastran(const std::string& Filename);
     void readNastran95(const std::string& Filename);

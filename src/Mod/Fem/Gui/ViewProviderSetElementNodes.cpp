@@ -38,7 +38,7 @@ bool ViewProviderSetElementNodes::doubleClicked()
     Gui::TaskView::TaskDialog* dlg = new TaskDlgCreateElementSet(
         getObject<Fem::FemSetElementNodesObject>()
     );
-    Gui::Control().showDialog(dlg);
+    Gui::Control().showDialog(dlg, getObject()->getDocument());
     return true;
 }
 

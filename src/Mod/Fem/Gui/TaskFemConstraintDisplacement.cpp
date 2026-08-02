@@ -526,123 +526,57 @@ TaskDlgFemConstraintDisplacement::TaskDlgFemConstraintDisplacement(
 
 bool TaskDlgFemConstraintDisplacement::accept()
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintDisplacement* parameterDisplacement
         = static_cast<const TaskFemConstraintDisplacement*>(parameter);
 
     try {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.xDisplacement = \"%s\"",
-            name.c_str(),
+        runConstraintCommand(
+            "xDisplacement = \"%s\"",
             parameterDisplacement->get_spinxDisplacement().c_str()
         );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.xDisplacementFormula = \"%s\"",
-            name.c_str(),
+        runConstraintCommand(
+            "xDisplacementFormula = \"%s\"",
             parameterDisplacement->get_xFormula().c_str()
         );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.yDisplacement = \"%s\"",
-            name.c_str(),
+        runConstraintCommand(
+            "yDisplacement = \"%s\"",
             parameterDisplacement->get_spinyDisplacement().c_str()
         );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.yDisplacementFormula = \"%s\"",
-            name.c_str(),
+        runConstraintCommand(
+            "yDisplacementFormula = \"%s\"",
             parameterDisplacement->get_yFormula().c_str()
         );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.zDisplacement = \"%s\"",
-            name.c_str(),
+        runConstraintCommand(
+            "zDisplacement = \"%s\"",
             parameterDisplacement->get_spinzDisplacement().c_str()
         );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.zDisplacementFormula = \"%s\"",
-            name.c_str(),
+        runConstraintCommand(
+            "zDisplacementFormula = \"%s\"",
             parameterDisplacement->get_zFormula().c_str()
         );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.xRotation = \"%s\"",
-            name.c_str(),
-            parameterDisplacement->get_spinxRotation().c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.yRotation = \"%s\"",
-            name.c_str(),
-            parameterDisplacement->get_spinyRotation().c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.zRotation = \"%s\"",
-            name.c_str(),
-            parameterDisplacement->get_spinzRotation().c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.xFree = %s",
-            name.c_str(),
-            parameterDisplacement->get_dispxfree() ? "True" : "False"
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.hasXFormula = %s",
-            name.c_str(),
+        runConstraintCommand("xRotation = \"%s\"", parameterDisplacement->get_spinxRotation().c_str());
+        runConstraintCommand("yRotation = \"%s\"", parameterDisplacement->get_spinyRotation().c_str());
+        runConstraintCommand("zRotation = \"%s\"", parameterDisplacement->get_spinzRotation().c_str());
+        runConstraintCommand("xFree = %s", parameterDisplacement->get_dispxfree() ? "True" : "False");
+        runConstraintCommand(
+            "hasXFormula = %s",
             parameterDisplacement->get_hasDispXFormula() ? "True" : "False"
         );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.yFree = %s",
-            name.c_str(),
-            parameterDisplacement->get_dispyfree() ? "True" : "False"
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.hasYFormula = %s",
-            name.c_str(),
+        runConstraintCommand("yFree = %s", parameterDisplacement->get_dispyfree() ? "True" : "False");
+        runConstraintCommand(
+            "hasYFormula = %s",
             parameterDisplacement->get_hasDispYFormula() ? "True" : "False"
         );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.zFree = %s",
-            name.c_str(),
-            parameterDisplacement->get_dispzfree() ? "True" : "False"
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.hasZFormula = %s",
-            name.c_str(),
+        runConstraintCommand("zFree = %s", parameterDisplacement->get_dispzfree() ? "True" : "False");
+        runConstraintCommand(
+            "hasZFormula = %s",
             parameterDisplacement->get_hasDispZFormula() ? "True" : "False"
         );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.rotxFree = %s",
-            name.c_str(),
-            parameterDisplacement->get_rotxfree() ? "True" : "False"
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.rotyFree = %s",
-            name.c_str(),
-            parameterDisplacement->get_rotyfree() ? "True" : "False"
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.rotzFree = %s",
-            name.c_str(),
-            parameterDisplacement->get_rotzfree() ? "True" : "False"
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.useFlowSurfaceForce = %s",
-            name.c_str(),
+        runConstraintCommand("rotxFree = %s", parameterDisplacement->get_rotxfree() ? "True" : "False");
+        runConstraintCommand("rotyFree = %s", parameterDisplacement->get_rotyfree() ? "True" : "False");
+        runConstraintCommand("rotzFree = %s", parameterDisplacement->get_rotzfree() ? "True" : "False");
+        runConstraintCommand(
+            "useFlowSurfaceForce = %s",
             parameterDisplacement->get_useFlowSurfaceForce() ? "True" : "False"
         );
     }

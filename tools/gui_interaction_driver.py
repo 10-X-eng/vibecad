@@ -62,7 +62,6 @@ RISKY_WORDS = (
     "homepage",
     "image",
     "import",
-    "ifc",
     "internet",
     "light",
     "load",
@@ -108,7 +107,6 @@ RISKY_WORDS = (
 RISKY_PHRASES = (
     "bill of materials",
     "coordinate system",
-    "bim views manager",
     "close dock window",
     "bottom panel toggle",
     "fit all",
@@ -348,7 +346,7 @@ class GuiInteractor:
     def workflow_switch_workbench(self):
         self.close_documents()
         App.newDocument("GuiWorkflowSwitch")
-        for workbench in ("PartWorkbench", "SketcherWorkbench", "PartDesignWorkbench", "TechDrawWorkbench"):
+        for workbench in ("PartDesignWorkbench", "SketcherWorkbench", "TechDrawWorkbench"):
             if not self.switch_workbench(workbench):
                 raise RuntimeError(f"Could not activate {workbench}")
 

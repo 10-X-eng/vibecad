@@ -407,7 +407,7 @@ class ElasticityWriter:
         # density
         # is needed for self weight constraints and frequency analysis
         density_needed = False
-        for equation in self.solver.Group:
+        for equation in self.write._get_active_equations():
             if femutils.is_of_type(equation, "Fem::EquationElmerElasticity"):
                 if equation.EigenAnalysis is True:
                     density_needed = True

@@ -83,11 +83,6 @@
       <translation>Ustvari 2D osnutek dokumenta</translation>
     </message>
     <message>
-      <location filename="../../StartView.cpp" line="235"/>
-      <source>BIM/Architecture</source>
-      <translation>BIM/Arhitektura</translation>
-    </message>
-    <message>
       <location filename="../../StartView.cpp" line="212"/>
       <source>Empty File</source>
       <translation>Prazna datoteka</translation>
@@ -116,11 +111,6 @@
       <location filename="../../StartView.cpp" line="228"/>
       <source>Creates an assembly project</source>
       <translation>Ustvari montažni projekt</translation>
-    </message>
-    <message>
-      <location filename="../../StartView.cpp" line="236"/>
-      <source>Creates an architectural project</source>
-      <translation>Ustvari arhitekturni projekt</translation>
     </message>
     <message>
       <location filename="../../StartView.cpp" line="520"/>

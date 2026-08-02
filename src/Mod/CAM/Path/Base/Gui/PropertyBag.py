@@ -28,6 +28,13 @@ import Path.Base.Gui.IconViewProvider as PathIconViewProvider
 import Path.Base.Gui.PropertyEditor as PathPropertyEditor
 import Path.Base.PropertyBag as PathPropertyBag
 import Path.Base.Util as PathUtil
+from Path.CommandBoundary import (
+    TaskDocumentTransaction,
+    begin_task_launch,
+    can_start_document_command,
+    ensure_task_transaction,
+    open_timeline_mode_zero_editor,
+)
 import re
 
 __title__ = "Property Bag Editor"
@@ -50,11 +57,12 @@ class ViewProvider(object):
 
     def __init__(self, vobj, name):
         Path.Log.track(name)
-        vobj.Proxy = self
         self.icon = name
-        # mode = 2
         self.obj = None
         self.vobj = None
+        self.taskPanel = None
+        self.attach(vobj)
+        vobj.Proxy = self
 
     def attach(self, vobj):
         Path.Log.track()
@@ -62,7 +70,7 @@ class ViewProvider(object):
         self.obj = vobj.Object
 
     def getIcon(self):
-        return ":/icons/Path-SetupSheet.svg"
+        return ":/icons/CAM_SetupSheet.svg"
 
     def dumps(self):
         return None
@@ -75,21 +83,41 @@ class ViewProvider(object):
 
     def setEdit(self, vobj, mode=0):
         Path.Log.track()
-        taskPanel = TaskPanel(vobj)
-        FreeCADGui.Control.closeDialog()
-        FreeCADGui.Control.showDialog(taskPanel)
-        taskPanel.setupUi()
-        return True
+        if mode != 0:
+            return False
+        transaction = TaskDocumentTransaction(
+            vobj.Object,
+            "Edit PropertyBag",
+        )
+        try:
+            self.taskPanel = TaskPanel(
+                vobj,
+                transaction=transaction,
+            )
+            transaction.close_dialog()
+            transaction.show_dialog(self.taskPanel)
+            self.taskPanel.setupUi()
+            return True
+        except Exception:
+            self.taskPanel = None
+            transaction.close_dialog()
+            if transaction.owns_transaction():
+                transaction.abort()
+            raise
 
     def unsetEdit(self, vobj, mode):
-        FreeCADGui.Control.closeDialog()
+        if self.taskPanel is not None:
+            self.taskPanel.reject()
         return
 
     def claimChildren(self):
         return []
 
-    def doubleClicked(self, vobj):
-        self.setEdit(vobj)
+    def supportsDocumentTimelineEdit(self):
+        return True
+
+    def doubleClicked(self, vobj=None):
+        return open_timeline_mode_zero_editor(self.obj)
 
 
 class Delegate(QtGui.QStyledItemDelegate):
@@ -226,15 +254,27 @@ class TaskPanel(object):
     # TableHeaders = ['Property', 'Type', 'Value']
     TableHeaders = ["Property", "Value"]
 
-    def __init__(self, vobj):
+    def __init__(self, vobj, transaction=None):
+        self.vobj = vobj
+        self.viewProvider = vobj.Proxy
         self.obj = vobj.Object
+        if transaction is None:
+            transaction = TaskDocumentTransaction(
+                self.obj,
+                "Edit PropertyBag",
+            )
+        elif transaction.document is not self.obj.Document:
+            raise RuntimeError(
+                "The PropertyBag task transaction belongs to another document"
+            )
+        self.transaction = transaction
+        self.document = self.transaction.document
         self.props = sorted(self.obj.Proxy.getCustomProperties())
         self.form = FreeCADGui.PySideUic.loadUi(":panels/PropertyBag.ui")
 
         # initialized later
         self.model = None
         self.delegate = None
-        FreeCAD.ActiveDocument.openTransaction("Edit PropertyBag")
 
     def updateData(self, topLeft, bottomRight):
         pass
@@ -290,15 +330,41 @@ class TaskPanel(object):
         self.propertySelected([])
 
     def accept(self):
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCADGui.ActiveDocument.resetEdit()
-        FreeCADGui.Control.closeDialog()
-        FreeCAD.ActiveDocument.recompute()
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
+        self.transaction.recompute((self.obj,))
+        if self.document.isProvisionallyEnrolledInTimelineByCurrentTransaction(
+            self.obj
+        ):
+            self.document.publishProvisionalTimelineOperationBlock(
+                self.obj,
+                [],
+            )
+        self.transaction.commit((self.obj,), recompute=False)
+        self.clearTaskPanel()
+        self.transaction.reset_edit()
+        self.transaction.close_dialog()
+        self.transaction.recompute_after_close()
+        return True
 
     def reject(self):
-        FreeCAD.ActiveDocument.abortTransaction()
-        FreeCADGui.Control.closeDialog()
-        FreeCAD.ActiveDocument.recompute()
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
+        self.transaction.abort()
+        self.clearTaskPanel()
+        self.transaction.close_dialog()
+        self.transaction.recompute_after_close()
+        return True
+
+    def clearTaskPanel(self):
+        if self.viewProvider.taskPanel is self:
+            self.viewProvider.taskPanel = None
+
+    def closeDeletedDocumentTask(self):
+        self.viewProvider.taskPanel = None
+        self.transaction.close_dialog()
 
     def propertySelected(self, selection):
         Path.Log.track()
@@ -408,8 +474,9 @@ class TaskPanel(object):
 
 def Create(name="PropertyBag"):
     """Create(name = 'PropertyBag') ... creates a new setup sheet"""
-    FreeCAD.ActiveDocument.openTransaction("Create PropertyBag")
-    pcont = PathPropertyBag.Create(name)
+    document = FreeCAD.ActiveDocument
+    ensure_task_transaction("Create PropertyBag", document)
+    pcont = PathPropertyBag.Create(name, document=document)
     PathIconViewProvider.Attach(pcont.ViewObject, name)
     return pcont
 
@@ -425,6 +492,7 @@ class PropertyBagCreateCommand(object):
 
     def GetResources(self):
         return {
+            "Pixmap": "CAM_SetupSheet",
             "MenuText": translate("CAM_PropertyBag", "Property Bag"),
             "ToolTip": translate(
                 "CAM_PropertyBag",
@@ -433,22 +501,50 @@ class PropertyBagCreateCommand(object):
         }
 
     def IsActive(self):
-        return not FreeCAD.ActiveDocument is None
+        return can_start_document_command()
 
     def Activated(self):
+        document = FreeCAD.ActiveDocument
+        if document is None or not can_start_document_command(document):
+            return
+
         sel = FreeCADGui.Selection.getSelectionEx()
-        obj = Create()
-        body = None
-        if sel:
-            if "PartDesign::Body" == sel[0].Object.TypeId:
-                body = sel[0].Object
-            elif hasattr(sel[0].Object, "getParentGeoFeatureGroup"):
-                body = sel[0].Object.getParentGeoFeatureGroup()
-        if body:
-            obj.Label = "Attributes"
-            group = body.Group
-            group.append(obj)
-            body.Group = group
+        launch = begin_task_launch("Create PropertyBag", document)
+        try:
+            obj = Create()
+            body = None
+            if sel:
+                selected = sel[0].Object
+                if (
+                    selected is not None
+                    and selected.Document is document
+                ):
+                    if "PartDesign::Body" == selected.TypeId:
+                        body = selected
+                    elif hasattr(
+                        selected,
+                        "getParentGeoFeatureGroup",
+                    ):
+                        body = selected.getParentGeoFeatureGroup()
+            if body:
+                obj.Label = "Attributes"
+                group = list(body.Group)
+                group.append(obj)
+                body.Group = group
+
+            gui_document = FreeCADGui.getDocument(document.Name)
+            if (
+                gui_document is None
+                or not gui_document.setEdit(obj.Name, 0)
+            ):
+                raise RuntimeError(
+                    "The PropertyBag editor could not be opened"
+                )
+            launch.require_claimed()
+            return obj
+        except Exception:
+            launch.abort()
+            raise
 
 
 if FreeCAD.GuiUp:

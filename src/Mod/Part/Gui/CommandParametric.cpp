@@ -26,11 +26,17 @@
 #include <QApplication>
 
 
+#include <App/Document.h>
+#include <App/DocumentObject.h>
 #include <App/Part.h>
+#include <Base/Exception.h>
+#include <Base/Interpreter.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
 #include <Gui/MDIView.h>
+#include <Mod/Part/App/FeaturePartBox.h>
+#include <Mod/Part/App/PrimitiveFeature.h>
 
 
 //===========================================================================
@@ -38,22 +44,56 @@
 //===========================================================================
 namespace
 {
-QString getAutoGroupCommandStr()
-// Helper function to get the python code to add the newly created object to the active Part object
-// if present
+void autoGroupObject(App::DocumentObject* object)
 {
-    App::Part* activePart = Gui::Application::Instance->activeView()->getActiveObject<App::Part*>(
-        "part"
-    );
-    if (activePart) {
-        QString activePartName = QString::fromLatin1(activePart->getNameInDocument());
-        return QStringLiteral(
-                   "App.ActiveDocument.getObject('%1\')."
-                   "addObject(App.ActiveDocument.ActiveObject)\n"
-        )
-            .arg(activePartName);
+    auto* activeView = Gui::Application::Instance->activeView();
+    auto* activePart = activeView ? activeView->getActiveObject<App::Part*>("part") : nullptr;
+    if (object && activePart && activePart->getDocument() == object->getDocument()) {
+        Gui::Command::doCommand(
+            Gui::Command::Doc,
+            "%s.addObject(%s)",
+            Gui::Command::getObjectCmd(activePart).c_str(),
+            Gui::Command::getObjectCmd(object).c_str()
+        );
     }
-    return QStringLiteral("# Object created at document root.");
+    else {
+        Gui::Command::doCommand(Gui::Command::Doc, "# Object created at document root.");
+    }
+}
+
+template<typename Feature>
+Feature* createParametricPrimitive(
+    App::Document& document,
+    const char* typeName,
+    const char* objectName,
+    const QString& label
+)
+{
+    const QString factory = QStringLiteral("App.getDocument('%1').addObject('%2','%3')")
+                                .arg(
+                                    QString::fromLatin1(document.getName()),
+                                    QString::fromLatin1(typeName),
+                                    QString::fromLatin1(objectName)
+                                );
+    auto* result = dynamic_cast<Feature*>(Gui::Command::runDocumentObjectCommand(
+        Gui::Command::Doc,
+        document,
+        factory.toUtf8(),
+        Feature::getClassTypeId()
+    ));
+    if (!result) {
+        throw Base::RuntimeError("Parametric primitive returned an incompatible result");
+    }
+
+    const auto escapedLabel = Base::InterpreterSingleton::strToPython(label.toUtf8().constData());
+    Gui::Command::doCommand(
+        Gui::Command::Doc,
+        "%s.Label = \"%s\"",
+        Gui::Command::getObjectCmd(result).c_str(),
+        escapedLabel.c_str()
+    );
+    autoGroupObject(result);
+    return result;
 }
 }  // namespace
 
@@ -77,17 +117,26 @@ CmdPartCylinder::CmdPartCylinder()
 void CmdPartCylinder::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    QString cmd;
-    cmd = qApp->translate("CmdPartCylinder", "Cylinder");
-    openCommand((const char*)cmd.toUtf8());
-
-    runCommand(Doc, "App.ActiveDocument.addObject(\"Part::Cylinder\",\"Cylinder\")");
-    cmd = QStringLiteral("App.ActiveDocument.ActiveObject.Label = \"%1\"")
-              .arg(qApp->translate("CmdPartCylinder", "Cylinder"));
-    runCommand(Doc, cmd.toUtf8());
-    runCommand(Doc, getAutoGroupCommandStr().toUtf8());
-    commitCommand();
-    updateActive();
+    auto* document = getDocument();
+    if (!document) {
+        return;
+    }
+    const QString label = qApp->translate("CmdPartCylinder", "Cylinder");
+    openCommand(label.toUtf8().constData());
+    try {
+        createParametricPrimitive<Part::Cylinder>(*document, "Part::Cylinder", "Cylinder", label);
+        commitCommand();
+    }
+    catch (Base::Exception& error) {
+        abortCommand();
+        error.reportException();
+        return;
+    }
+    catch (...) {
+        abortCommand();
+        throw;
+    }
+    updateDocument(document);
     runCommand(Gui, "Gui.SendMsgToActiveView(\"ViewFit\")");
 }
 
@@ -121,17 +170,26 @@ CmdPartBox::CmdPartBox()
 void CmdPartBox::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    QString cmd;
-    cmd = qApp->translate("CmdPartBox", "Cube");
-    openCommand((const char*)cmd.toUtf8());
-
-    runCommand(Doc, "App.ActiveDocument.addObject(\"Part::Box\",\"Box\")");
-    cmd = QStringLiteral("App.ActiveDocument.ActiveObject.Label = \"%1\"")
-              .arg(qApp->translate("CmdPartBox", "Cube"));
-    runCommand(Doc, cmd.toUtf8());
-    runCommand(Doc, getAutoGroupCommandStr().toUtf8());
-    commitCommand();
-    updateActive();
+    auto* document = getDocument();
+    if (!document) {
+        return;
+    }
+    const QString label = qApp->translate("CmdPartBox", "Cube");
+    openCommand(label.toUtf8().constData());
+    try {
+        createParametricPrimitive<Part::Box>(*document, "Part::Box", "Box", label);
+        commitCommand();
+    }
+    catch (Base::Exception& error) {
+        abortCommand();
+        error.reportException();
+        return;
+    }
+    catch (...) {
+        abortCommand();
+        throw;
+    }
+    updateDocument(document);
     runCommand(Gui, "Gui.SendMsgToActiveView(\"ViewFit\")");
 }
 
@@ -165,17 +223,26 @@ CmdPartSphere::CmdPartSphere()
 void CmdPartSphere::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    QString cmd;
-    cmd = qApp->translate("CmdPartSphere", "Sphere");
-    openCommand((const char*)cmd.toUtf8());
-
-    runCommand(Doc, "App.ActiveDocument.addObject(\"Part::Sphere\",\"Sphere\")");
-    cmd = QStringLiteral("App.ActiveDocument.ActiveObject.Label = \"%1\"")
-              .arg(qApp->translate("CmdPartSphere", "Sphere"));
-    runCommand(Doc, cmd.toUtf8());
-    runCommand(Doc, getAutoGroupCommandStr().toUtf8());
-    commitCommand();
-    updateActive();
+    auto* document = getDocument();
+    if (!document) {
+        return;
+    }
+    const QString label = qApp->translate("CmdPartSphere", "Sphere");
+    openCommand(label.toUtf8().constData());
+    try {
+        createParametricPrimitive<Part::Sphere>(*document, "Part::Sphere", "Sphere", label);
+        commitCommand();
+    }
+    catch (Base::Exception& error) {
+        abortCommand();
+        error.reportException();
+        return;
+    }
+    catch (...) {
+        abortCommand();
+        throw;
+    }
+    updateDocument(document);
     runCommand(Gui, "Gui.SendMsgToActiveView(\"ViewFit\")");
 }
 
@@ -209,17 +276,26 @@ CmdPartCone::CmdPartCone()
 void CmdPartCone::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    QString cmd;
-    cmd = qApp->translate("CmdPartCone", "Cone");
-    openCommand((const char*)cmd.toUtf8());
-
-    runCommand(Doc, "App.ActiveDocument.addObject(\"Part::Cone\",\"Cone\")");
-    cmd = QStringLiteral("App.ActiveDocument.ActiveObject.Label = \"%1\"")
-              .arg(qApp->translate("CmdPartCone", "Cone"));
-    runCommand(Doc, cmd.toUtf8());
-    runCommand(Doc, getAutoGroupCommandStr().toUtf8());
-    commitCommand();
-    updateActive();
+    auto* document = getDocument();
+    if (!document) {
+        return;
+    }
+    const QString label = qApp->translate("CmdPartCone", "Cone");
+    openCommand(label.toUtf8().constData());
+    try {
+        createParametricPrimitive<Part::Cone>(*document, "Part::Cone", "Cone", label);
+        commitCommand();
+    }
+    catch (Base::Exception& error) {
+        abortCommand();
+        error.reportException();
+        return;
+    }
+    catch (...) {
+        abortCommand();
+        throw;
+    }
+    updateDocument(document);
     runCommand(Gui, "Gui.SendMsgToActiveView(\"ViewFit\")");
 }
 
@@ -253,17 +329,26 @@ CmdPartTorus::CmdPartTorus()
 void CmdPartTorus::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    QString cmd;
-    cmd = qApp->translate("CmdPartTorus", "Torus");
-    openCommand((const char*)cmd.toUtf8());
-
-    runCommand(Doc, "App.ActiveDocument.addObject(\"Part::Torus\",\"Torus\")");
-    cmd = QStringLiteral("App.ActiveDocument.ActiveObject.Label = \"%1\"")
-              .arg(qApp->translate("CmdPartTorus", "Torus"));
-    runCommand(Doc, cmd.toUtf8());
-    runCommand(Doc, getAutoGroupCommandStr().toUtf8());
-    commitCommand();
-    updateActive();
+    auto* document = getDocument();
+    if (!document) {
+        return;
+    }
+    const QString label = qApp->translate("CmdPartTorus", "Torus");
+    openCommand(label.toUtf8().constData());
+    try {
+        createParametricPrimitive<Part::Torus>(*document, "Part::Torus", "Torus", label);
+        commitCommand();
+    }
+    catch (Base::Exception& error) {
+        abortCommand();
+        error.reportException();
+        return;
+    }
+    catch (...) {
+        abortCommand();
+        throw;
+    }
+    updateDocument(document);
     runCommand(Gui, "Gui.SendMsgToActiveView(\"ViewFit\")");
 }
 

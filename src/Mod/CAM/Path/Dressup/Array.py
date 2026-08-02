@@ -24,8 +24,8 @@
 
 import FreeCAD
 import Path
+import Path.Base.Util as PathUtil
 import PathScripts.PathUtils as PathUtils
-import Path.Dressup.Utils as PathDressup
 import random
 from PySide.QtCore import QT_TRANSLATE_NOOP
 
@@ -203,25 +203,33 @@ class DressupArray:
 
     def onDelete(self, obj, args):
         if obj.Base:
-            job = PathUtils.findParentJob(obj)
+            job = (
+                PathUtils.findParentJob(obj)
+                or PathUtil.timelineParentJob(obj)
+                or PathUtil.timelineParentJob(obj.Base)
+            )
             if job:
                 job.Proxy.addOperation(obj.Base, obj)
-            if obj.Base.ViewObject:
+            if (
+                obj.Base.ViewObject
+                and PathUtil.shouldRestoreTimelineReplacedInput(
+                    obj,
+                    obj.Base,
+                )
+            ):
                 obj.Base.ViewObject.Visibility = True
             obj.Base = None
         return True
 
     def execute(self, obj):
+        if not PathUtil.activeForOp(obj):
+            obj.Path = Path.Path()
+            return
 
         if not obj.Base or not obj.Base.isDerivedFrom("Path::Feature") or not obj.Base.Path:
             Path.Log.error(translate("PathArray", "Base is empty or an invalid object."))
+            obj.Path = Path.Path()
             return None
-
-        # Do not generate paths and clear current Path data if operation not active
-        if not PathDressup.baseOp(obj.Base).Active:
-            if obj.Path:
-                obj.Path = Path.Path()
-            return
 
         # use seed if specified, otherwise default to object name for consistency during recomputes
         seed = obj.JitterSeed or obj.Name
@@ -403,7 +411,7 @@ def Create(base, name="DressupArray"):
         Path.Log.error(translate("CAM_DressupArray", "The selected object is not a path") + "\n")
         return None
 
-    obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = base.Document.addObject("Path::FeaturePython", name)
     job = PathUtils.findParentJob(base)
     obj.Proxy = DressupArray(obj, base, job)
     job.Proxy.addOperation(obj, base, True)

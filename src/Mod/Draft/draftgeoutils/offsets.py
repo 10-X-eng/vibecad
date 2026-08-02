@@ -219,13 +219,10 @@ def offsetWire(
     each value will be used to offset each corresponding edge
     in the wire with corresponding index.
 
-    'basewireOffset' corresponds to 'offset' in ArchWall which offset
-    the basewire before creating the wall outline; or
-    it can be a list, e.g. corresponds to 'overrideOffset' in ArchWall, so
-    offset can be 'per segment' of wire, or 'per wall segment' in ArchWall
+    `basewireOffset` shifts the base wire before creating the outline. It can
+    be a list so that each wire segment has an independent offset.
 
-    OffsetWire() is now aware of width and align per edge
-    Primarily for use with ArchWall based on Sketch object
+    OffsetWire() supports width and alignment per edge.
 
     To Do
     -----
@@ -258,8 +255,8 @@ def offsetWire(
 
     # For sketch with a number of wires, getNormal() may result
     # in different direction for each wire.
-    # The 'normal' parameter, if provided e.g. by ArchWall,
-    # allows normal over different wires e.g. in a Sketch be consistent
+    # The 'normal' parameter allows normals over different wires in a Sketch
+    # to be consistent
     # (over different calls of this function)
     if normal:
         norm = normal
@@ -309,8 +306,7 @@ def offsetWire(
             firstDir = 1
             firstAlign = "Center"
     except IndexError:
-        # Should no longer happen for ArchWall
-        # as aligns are 'filled in' by ArchWall
+        # Missing alignment input falls back to the offset direction below.
         pass
 
     # If not provided by alignListC checked above, check the direction
@@ -348,8 +344,7 @@ def offsetWire(
         basewireOffset = [basewireOffset]
 
     for i in range(len(edges)):
-        # make a copy so it do not reverse the self.baseWires edges
-        # pointed to by _Wall.getExtrusionData()?
+        # Make a copy so the input wire's edges are not reversed.
         curredge = Part.Shape(edges[i]).Edges[0]  # saved memory?
 
         # record first edge's Orientation, Dir, Align and set Delta
@@ -375,22 +370,20 @@ def offsetWire(
             curOrientation = curredge.Vertexes[0].Orientation
 
         # Consider individual edge width
-        if widthList:  # ArchWall should now always provide widthList
+        if widthList:
             try:
                 if widthList[i] > 0:
                     delta = DraftVecUtils.scaleTo(delta, widthList[i])
                 elif dvec:
                     delta = DraftVecUtils.scaleTo(delta, dvec.Length)
                 else:
-                    # just hardcoded default value as ArchWall would provide
-                    # if dvec is not provided either
+                    # use the historical default when dvec is not provided
                     delta = DraftVecUtils.scaleTo(delta, 200)
             except Part.OCCError:
                 if dvec:
                     delta = DraftVecUtils.scaleTo(delta, dvec.Length)
                 else:
-                    # just hardcoded default value as ArchWall would provide
-                    # if dvec is not provided either
+                    # use the historical default when dvec is not provided
                     delta = DraftVecUtils.scaleTo(delta, 200)
         else:
             delta = DraftVecUtils.scaleTo(delta, dvec.Length)
@@ -402,7 +395,7 @@ def offsetWire(
             currOffset = basewireOffset[0]  # use first value
 
         # Consider individual edge Align direction
-        # - ArchWall should now always provide alignList
+        # The first alignment establishes the direction for later edges.
         if i == 0:
             if alignListC[0] == "Center":
                 delta = DraftVecUtils.scaleTo(delta, delta.Length / 2)
@@ -439,9 +432,8 @@ def offsetWire(
             # This is a xor
             if (curOrientation == firstOrientation) != (curDir == firstDir):
                 if curAlign in ["Left", "Right"]:
-                    # ArchWall has an Offset properties for user to offset
-                    # the basewire before creating the base profile of wall
-                    # (not applicable to 'Center' align)
+                    # Apply the optional base-wire offset for left/right
+                    # alignment (not applicable to center alignment).
                     if currOffset:
                         delta = DraftVecUtils.scaleTo(delta, currOffset)
                         nedge = offset(curredge, delta, trim=True)
@@ -453,9 +445,8 @@ def offsetWire(
             else:
                 # if curAlign in ['Left', 'Right']:
                 # elif curAlign == 'Center': # Both conditions same result.
-                # ArchWall has an Offset properties for user to offset
-                # the basewire before creating the base profile of wall
-                # (not applicable to 'Center' align)
+                # Apply the optional base-wire offset for left/right
+                # alignment (not applicable to center alignment).
                 if currOffset:
                     if curAlign in ["Left", "Right"]:
                         delta = DraftVecUtils.scaleTo(delta, delta.Length + currOffset)
@@ -483,9 +474,8 @@ def offsetWire(
         elif offsetMode in ["BasewireMode"]:
             if not (curOrientation == firstOrientation) != (curDir == firstDir):
                 if curAlign in ["Left", "Right"]:
-                    # ArchWall has an Offset properties for user to offset
-                    # the basewire before creating the base profile of wall
-                    # (not applicable to 'Center' align)
+                    # Apply the optional base-wire offset for left/right
+                    # alignment (not applicable to center alignment).
                     if currOffset:
                         delta = DraftVecUtils.scaleTo(delta, currOffset)
                         nedge = offset(curredge, delta, trim=True)
@@ -496,9 +486,8 @@ def offsetWire(
                     nedge = offset(curredge, delta, trim=True)
             else:
                 if curAlign in ["Left", "Right"]:
-                    # ArchWall has an Offset properties for user to offset
-                    # the basewire before creating the base profile of wall
-                    # (not applicable to 'Center' align)
+                    # Apply the optional base-wire offset for left/right
+                    # alignment (not applicable to center alignment).
                     if currOffset:
                         delta = DraftVecUtils.scaleTo(delta, delta.Length + currOffset)
                     nedge = offset(curredge, delta, trim=True)

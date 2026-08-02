@@ -46,6 +46,7 @@
 #include "ViewProviderDocumentObject.h"
 #include "ViewProviderExtension.h"
 #include "TaskView/TaskAppearance.h"
+#include "TaskView/TaskDialog.h"
 
 
 FC_LOG_LEVEL_INIT("Gui", true, true)
@@ -141,17 +142,21 @@ const char* ViewProviderDocumentObject::detachFromDocument()
 bool ViewProviderDocumentObject::removeDynamicProperty(const char* name)
 {
     App::Property* prop = getDynamicPropertyByName(name);
-    if (!prop || prop->testStatus(App::Property::LockDynamic)) {
-        return false;
-    }
-
     // transactions of view providers are also managed in App::Document.
     App::DocumentObject* docobject = getObject();
     App::Document* document = docobject ? docobject->getDocument() : nullptr;
+    const bool bypassLock = document && document->isPerformingTransaction();
+    if (!prop || (!bypassLock && prop->testStatus(App::Property::LockDynamic))) {
+        return false;
+    }
+
     if (document) {
         document->addOrRemovePropertyOfObject(this, prop, false);
     }
 
+    if (bypassLock) {
+        return ViewProvider::removeDynamicPropertyForTransaction(name);
+    }
     return ViewProvider::removeDynamicProperty(name);
 }
 
@@ -283,14 +288,72 @@ void ViewProviderDocumentObject::setShowable(bool enable)
     }
 }
 
+void ViewProviderDocumentObject::setVisibilityGate(bool /*enable*/)
+{
+    // Compatibility no-op. The parent/child presentation gate was retired;
+    // persistent native Visibility and the owning view provider now determine
+    // what is rendered.
+}
+
+bool ViewProviderDocumentObject::isVisibilityGateOpen() const
+{
+    // Compatibility callers must observe the retired gate as permanently open
+    // so stale state cannot suppress native rendering.
+    return true;
+}
+
 void ViewProviderDocumentObject::startDefaultEditMode()
 {
     Gui::Document* document = this->getDocument();
     if (document) {
-        QString text = QObject::tr("Edit %1").arg(QString::fromUtf8(getObject()->Label.getValue()));
-        document->openCommand(text.toUtf8());  // Command is opened here and individual dialogs have
-                                               // to close it
-        document->setEdit(this, ViewProvider::Default);
+        auto* appDocument = document->getDocument();
+        if (appDocument
+            && appDocument->getBookedTransactionID()
+                != App::NullTransaction
+            && !Gui::TaskView::TaskDialog::
+                hasOwnedEnclosingTransaction(appDocument)) {
+            // Context-menu edit is a direct GUI entry point. It must not
+            // replace a transaction which existed before this interaction.
+            return;
+        }
+        Gui::TaskView::TaskDialog::beginCommandInvocation();
+        try {
+            QString text =
+                QObject::tr("Edit %1").arg(
+                    QString::fromUtf8(getObject()->Label.getValue())
+                );
+            // The command is opened here and the individual dialog closes it.
+            const int transactionId =
+                document->openCommand(text.toUtf8());
+            const bool editing =
+                document->setEdit(this, ViewProvider::Default);
+            bool editOwned = true;
+            if (editing
+                && transactionId != App::NullTransaction) {
+                editOwned = document->adoptOwnedEditTransaction(
+                    transactionId
+                );
+            }
+            if (editing && !editOwned) {
+                document->resetEdit();
+                if (App::GetApplication().abortTransaction(
+                        transactionId
+                    )) {
+                    Gui::TaskView::TaskDialog::
+                        recordCommandTransactionCompletion(
+                            appDocument,
+                            transactionId
+                        );
+                }
+            }
+            Gui::TaskView::TaskDialog::endCommandInvocation(
+                editing && editOwned
+            );
+        }
+        catch (...) {
+            Gui::TaskView::TaskDialog::endCommandInvocation(false);
+            throw;
+        }
     }
 }
 

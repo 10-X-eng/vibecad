@@ -25,6 +25,7 @@
 #include <QDir>
 #include <QPrinter>
 #include <QFileInfo>
+#include <algorithm>
 #include <map>
 #include <Inventor/SoInput.h>
 #include <Inventor/SoPath.h>
@@ -37,6 +38,7 @@
 
 #include <App/DocumentObjectPy.h>
 #include <App/DocumentPy.h>
+#include <App/DocumentTimeline.h>
 #include <App/PropertyFile.h>
 #include <Base/Exception.h>
 #include <Base/Interpreter.h>
@@ -470,6 +472,16 @@ PyMethodDef ApplicationPy::Methods[] = {
      "Show the view provider of the given object.\n"
      "\n"
      "obj : App.DocumentObject"},
+    {"timelineOperationDeletionPlan",
+     (PyCFunction)ApplicationPy::sTimelineOperationDeletionPlan,
+     METH_VARARGS,
+     "timelineOperationDeletionPlan(obj) -> dict\n"
+     "\n"
+     "Return the validated native cleanup plan for deleting a document-history "
+     "operation. This function is read-only; the caller owns transaction and "
+     "mutation boundaries.\n"
+     "\n"
+     "obj : App.DocumentObject"},
     {"open",
      (PyCFunction)ApplicationPy::sOpen,
      METH_VARARGS,
@@ -572,6 +584,17 @@ PyMethodDef ApplicationPy::Methods[] = {
      "macros, and returns the result.\n"
      "\n"
      "cmd : str"},
+    {"runDocumentObjectCommand",
+     (PyCFunction)ApplicationPy::sRunDocumentObjectCommand,
+     METH_VARARGS,
+     "runDocumentObjectCommand(document, expression, expectedType=None) -> App.DocumentObject\n"
+     "\n"
+     "Record and evaluate one Python factory expression exactly once, returning its exact\n"
+     "live document object after validating the document, object identity, and optional type.\n"
+     "\n"
+     "document : App.Document\n    Exact document which must own the result.\n"
+     "expression : str\n    Python expression returning one App.DocumentObject.\n"
+     "expectedType : str, None\n    Optional required App type name."},
     {"doCommandSkip",
      (PyCFunction)ApplicationPy::sDoCommandSkip,
      METH_VARARGS,
@@ -977,6 +1000,39 @@ PyObject* ApplicationPy::sShowObject(PyObject* /*self*/, PyObject* args)
     Application::Instance->showViewProvider(obj);
 
     Py_Return;
+}
+
+PyObject* ApplicationPy::sTimelineOperationDeletionPlan(
+    PyObject* /*self*/,
+    PyObject* args
+)
+{
+    PyObject* object = nullptr;
+    if (!PyArg_ParseTuple(args, "O!", &(App::DocumentObjectPy::Type), &object)) {
+        return nullptr;
+    }
+
+    requirePythonMainThread("FreeCADGui.timelineOperationDeletionPlan");
+
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast)
+    auto* operation =
+        static_cast<App::DocumentObjectPy*>(object)->getDocumentObjectPtr();
+    const auto plan = App::DocumentTimeline::timelineDeletionPlan(operation);
+    const auto objectList = [](const std::vector<App::DocumentObject*>& objects) {
+        Py::List result;
+        for (auto* candidate : objects) {
+            result.append(Py::asObject(candidate->getPyObject()));
+        }
+        return result;
+    };
+
+    Py::Dict result;
+    result.setItem("applicable", Py::Boolean(plan.applicable));
+    result.setItem("valid", Py::Boolean(plan.valid));
+    result.setItem("replaced_inputs", objectList(plan.replacedInputs));
+    result.setItem("objects_to_reveal", objectList(plan.objectsToReveal));
+    result.setItem("owned_resources", objectList(plan.ownedResources));
+    return Py::new_reference_to(result);
 }
 
 PyObject* ApplicationPy::sOpen(PyObject* /*self*/, PyObject* args)
@@ -1829,6 +1885,62 @@ PyObject* ApplicationPy::sDoCommandEval(PyObject* /*self*/, PyObject* args)
     }
 
     return PyRun_String(sCmd, Py_eval_input, dict, dict);
+}
+
+PyObject* ApplicationPy::sRunDocumentObjectCommand(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* documentObject = nullptr;
+    const char* expression = nullptr;
+    const char* expectedTypeName = nullptr;
+    if (!PyArg_ParseTuple(
+            args,
+            "O!s|z:runDocumentObjectCommand",
+            &App::DocumentPy::Type,
+            &documentObject,
+            &expression,
+            &expectedTypeName)) {
+        return nullptr;
+    }
+
+    requirePythonMainThread("FreeCADGui.runDocumentObjectCommand");
+
+    PY_TRY
+    {
+        auto* document =
+            static_cast<App::DocumentPy*>(documentObject)->getDocumentPtr();
+        const std::vector<App::Document*> liveDocuments =
+            App::GetApplication().getDocuments();
+        if (!document
+            || std::find(liveDocuments.begin(), liveDocuments.end(), document)
+                == liveDocuments.end()) {
+            throw Base::RuntimeError(
+                "runDocumentObjectCommand requires an exact live App.Document"
+            );
+        }
+        Base::Type expectedType;
+        if (expectedTypeName) {
+            expectedType = Base::Type::fromName(expectedTypeName);
+            if (expectedType.isBad()
+                || !expectedType.isDerivedFrom(
+                    App::DocumentObject::getClassTypeId())) {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "Invalid App.DocumentObject type '%s'",
+                    expectedTypeName
+                );
+                return nullptr;
+            }
+        }
+
+        App::DocumentObject* result = Gui::Command::runDocumentObjectCommand(
+            Gui::Command::Doc,
+            *document,
+            QByteArray(expression),
+            expectedType
+        );
+        return result->getPyObject();
+    }
+    PY_CATCH
 }
 
 PyObject* ApplicationPy::sDoCommandSkip(PyObject* /*self*/, PyObject* args)

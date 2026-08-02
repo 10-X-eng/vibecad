@@ -39,6 +39,11 @@ namespace App
 class Property;
 }
 
+namespace Sketcher
+{
+class SketchObject;
+}
+
 namespace SketcherGui
 {
 
@@ -67,6 +72,7 @@ public:
     explicit ElementView(QWidget* parent = nullptr);
     ~ElementView() override;
     ElementItem* itemFromIndex(const QModelIndex& index);
+    void setSketchView(ViewProviderSketch* view);
 
 protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
@@ -113,8 +119,11 @@ Q_SIGNALS:
     void onItemHovered(QListWidgetItem*);
 
 private:
+    Sketcher::SketchObject* getSketchObject() const;
     void changeLayer(int layer);
     void changeLayer(ElementItem* item, int layer);
+
+    ViewProviderSketch* sketchView {nullptr};
 };
 
 class ElementFilterList;

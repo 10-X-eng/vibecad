@@ -50,6 +50,20 @@
 
 using namespace SurfaceGui;
 
+namespace
+{
+void resetSurfaceEdit(App::Document* document)
+{
+    if (!document || !Gui::Application::Instance) {
+        return;
+    }
+    if (auto* guiDocument = Gui::Application::Instance->getDocument(document)) {
+        guiDocument->resetEdit();
+    }
+    Gui::Command::updateDocument(document);
+}
+}  // namespace
+
 PROPERTY_SOURCE(SurfaceGui::ViewProviderGeomFillSurface, PartGui::ViewProviderSpline)
 
 namespace SurfaceGui
@@ -80,10 +94,10 @@ bool ViewProviderGeomFillSurface::setEdit(int ModNum)
             if (tDlg) {
                 tDlg->setEditedObject(obj);
             }
-            Gui::Control().showDialog(dlg);
+            Gui::Control().showDialog(dlg, obj->getDocument());
         }
         else {
-            Gui::Control().showDialog(new TaskGeomFillSurface(this, obj));
+            Gui::Control().showDialog(new TaskGeomFillSurface(this, obj), obj->getDocument());
         }
         return true;
     }
@@ -409,9 +423,9 @@ bool GeomFillSurface::accept()
 
     this->vp->highlightReferences(false);
 
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-    editedObject->getDocument()->commitTransaction();
-    Gui::Command::updateActive();
+    App::Document* document = editedObject->getDocument();
+    document->commitTransaction();
+    resetSurfaceEdit(document);
     return true;
 }
 
@@ -421,9 +435,9 @@ bool GeomFillSurface::reject()
     selectionMode = None;
     Gui::Selection().rmvSelectionGate();
 
-    editedObject->getDocument()->abortTransaction();
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-    Gui::Command::updateActive();
+    App::Document* document = editedObject->getDocument();
+    document->abortTransaction();
+    resetSurfaceEdit(document);
     return true;
 }
 
@@ -663,6 +677,9 @@ void GeomFillSurface::exitSelectionMode()
 
 TaskGeomFillSurface::TaskGeomFillSurface(ViewProviderGeomFillSurface* vp, Surface::GeomFillSurface* obj)
 {
+    setDocumentName(obj->getDocument()->getName());
+    setAutoCloseOnDeletedDocument(true);
+
     widget = new GeomFillSurface(vp, obj);
     widget->setWindowTitle(QObject::tr("Surface"));
     addTaskBox(Gui::BitmapFactory().pixmap("Surface_BSplineSurface"), widget);

@@ -168,8 +168,8 @@ def bind(w1, w2, per_segment=False):
     If per_segment is True and the wires have the same number of edges, the
     wires are processed per segment: a separate face is created for each pair
     of edges (one from w1 and one from w2), and the faces are then fused. This
-    avoids problems with walls based on wires that selfintersect, or that have
-    a loop that ends in a T-connection (f.e. a wire shaped like a number 6).
+    avoids problems with self-intersecting profiles or profiles that have a
+    loop ending in a T-connection (for example, a wire shaped like a number 6).
     """
 
     if not w1 or not w2:
@@ -180,8 +180,8 @@ def bind(w1, w2, per_segment=False):
         faces = []
         faces_list = []
         for edge1, edge2 in zip(w1.Edges, w2.Edges):
-            # Find touching edges due to ArchWall Align in opposite
-            # directions, and/or opposite edge orientations.
+            # Find touching edges caused by opposite offset directions and/or
+            # opposite edge orientations.
             #
             # w1 o-----o            w1 o-----o            w1 o-----o
             #          | w1                  |                     |

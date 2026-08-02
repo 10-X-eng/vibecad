@@ -33,6 +33,7 @@
 #include "FacetPy.h"
 #include "FeatureMeshCurvature.h"
 #include "FeatureMeshDefects.h"
+#include "FeatureMeshOperations.h"
 #include "FeatureMeshExport.h"
 #include "FeatureMeshImport.h"
 #include "FeatureMeshSegmentByMesh.h"
@@ -101,6 +102,7 @@ PyMOD_INIT_FUNC(Mesh)
     Mesh::SegmentByMesh         ::init();
     Mesh::SetOperations         ::init();
     Mesh::FixDefects            ::init();
+    Mesh::Repair                ::init();
     Mesh::HarmonizeNormals      ::init();
     Mesh::FlipNormals           ::init();
     Mesh::FixNonManifolds       ::init();
@@ -111,6 +113,17 @@ PyMOD_INIT_FUNC(Mesh)
     Mesh::FixIndices            ::init();
     Mesh::FillHoles             ::init();
     Mesh::RemoveComponents      ::init();
+    Mesh::MeshFromGeometry      ::init();
+    Mesh::Merge                 ::init();
+    Mesh::OutputGroup           ::init();
+    Mesh::Smoothing             ::init();
+    Mesh::Decimation            ::init();
+    Mesh::Scale                 ::init();
+    Mesh::TrimByPlane           ::init();
+    Mesh::FacetEdit             ::init();
+    Mesh::FacetSubset           ::init();
+    Mesh::StoredEdit            ::init();
+    Mesh::GmshRemesh            ::init();
 
     Mesh::Sphere                ::init();
     Mesh::Ellipsoid             ::init();

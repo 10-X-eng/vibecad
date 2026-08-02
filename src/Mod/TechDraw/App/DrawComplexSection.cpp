@@ -288,9 +288,14 @@ void DrawComplexSection::onSectionCutFinished()
         return;
     }
 
+    const auto completedAlignConnection = connectAlignWatcher;
+    waitingForAlign(false);
     DrawViewSection::onSectionCutFinished();
 
-    QObject::disconnect(connectAlignWatcher);
+    // The base callback can immediately restart a stale timeline projection.
+    // Disconnect only the completed watcher, not a replacement connection
+    // installed by that restart.
+    QObject::disconnect(completedAlignConnection);
 }
 
 //! for Aligned strategy, cut the rawShape by each segment of the tool profile and arrange the
@@ -552,6 +557,9 @@ TopoDS_Compound DrawComplexSection::alignSectionFaces(const TopoDS_Shape& faceIn
 
 TopoDS_Shape DrawComplexSection::getShapeToIntersect()
 {
+    if (!sectionIntermediateStateIsCurrent()) {
+        return {};
+    }
     if (ProjectionStrategy.getValue() == 0) {//Offset
         return DrawViewSection::getShapeToIntersect();
     }
@@ -561,6 +569,9 @@ TopoDS_Shape DrawComplexSection::getShapeToIntersect()
 
 TopoDS_Shape DrawComplexSection::getShapeForDetail() const
 {
+    if (!sectionIntermediateStateIsCurrent()) {
+        return {};
+    }
     if (ProjectionStrategy.getValue() == 0) {//Offset
         return DrawViewSection::getShapeForDetail();
     }
@@ -871,6 +882,30 @@ gp_Pln DrawComplexSection::getSectionPlane() const
     gp_Ax3 gPlaneCS(gOrigin, gSectionNormal);
 
     return {gPlaneCS};
+}
+
+bool DrawComplexSection::timelineDependenciesActive(
+    TimelineDependencyStack& stack) const
+{
+    if (!DrawViewPart::timelineDependenciesActive(stack)) {
+        return false;
+    }
+    if (auto* base = BaseView.getValue();
+        base && !timelineDependencyIsActive(base, stack)) {
+        return false;
+    }
+    auto* cuttingTool = CuttingToolWireObject.getValue();
+    return !cuttingTool || timelineDependencyIsActive(cuttingTool, stack);
+}
+
+std::string DrawComplexSection::geometrySourceStateSignature() const
+{
+    std::vector<App::DocumentObject*> cuttingTool;
+    if (auto* object = CuttingToolWireObject.getValue()) {
+        cuttingTool.push_back(object);
+    }
+    return DrawViewSection::geometrySourceStateSignature()
+        + "|cutting-tool=" + sourceStateSignature(cuttingTool);
 }
 
 bool DrawComplexSection::isBaseValid() const

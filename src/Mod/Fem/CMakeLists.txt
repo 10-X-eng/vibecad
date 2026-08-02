@@ -738,7 +738,11 @@ endif(BUILD_FEM_VTK_PYTHON)
 
 SET(FemGuiTests_SRCS
     femtest/gui/__init__.py
+    femtest/gui/test_erase_elements.py
+    femtest/gui/test_exact_native_creation_source.py
     femtest/gui/test_open.py
+    femtest/gui/test_python_task_boundary.py
+    femtest/gui/test_vibecad_ribbon_tools.py
 )
 
 SET(FemGuiUtils_SRCS
@@ -846,4 +850,15 @@ if(BUILD_GUI)
     INSTALL(FILES ${FemGuiUtils_SRCS} DESTINATION Mod/Fem/femguiutils/)
     INSTALL(FILES ${FemGuiViewProvider_SRCS} DESTINATION Mod/Fem/femviewprovider/)
     INSTALL(FILES ${FemGuiPreferencePages_SRCS} DESTINATION Mod/Fem/fempreferencepages/)
+
+    # A targeted FemGui build must stage the Python implementation it loads
+    # at runtime.  ALL custom targets are not dependencies of a named Ninja
+    # target, so relying on them leaves an incremental release with stale FEM
+    # commands, task panels, or generated Python UI files.
+    add_dependencies(
+        FemGui
+        FemScriptsTarget
+        FemGuiScriptsTarget
+        FemPythonUi
+    )
 endif(BUILD_GUI)

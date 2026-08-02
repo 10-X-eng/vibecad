@@ -22,10 +22,16 @@
 # ***************************************************************************
 
 import pathlib
-import FreeCAD, Part
+import FreeCAD, Part, PartDesign
 from PySide import QtCore
 from fcgear import involute
 from fcgear import fcgear
+from PartDesign.PartDesignTimeline import (
+    abort_task_command,
+    can_start_task,
+    mark_operation,
+    open_task_command,
+)
 
 if FreeCAD.GuiUp:
     import FreeCADGui
@@ -36,21 +42,32 @@ __author__ = "Juergen Riegel"
 __url__ = "https://www.freecad.org"
 
 
-def makeInvoluteGear(name):
+def makeInvoluteGear(name, document=None):
     """makeInvoluteGear(name): makes an InvoluteGear"""
-    obj = FreeCAD.ActiveDocument.addObject("Part::Part2DObjectPython", name)
+    document = document or FreeCAD.ActiveDocument
+    if document is None:
+        raise RuntimeError("An open document is required to create a gear")
+    obj = document.addObject("Part::Part2DObjectPython", name)
     _InvoluteGear(obj)
     if FreeCAD.GuiUp:
         _ViewProviderInvoluteGear(obj.ViewObject)
-    # FreeCAD.ActiveDocument.recompute()
-    if FreeCAD.GuiUp:
-        body = FreeCADGui.ActiveDocument.ActiveView.getActiveObject("pdbody")
-        part = FreeCADGui.ActiveDocument.ActiveView.getActiveObject("part")
-        if body:
-            body.Group = body.Group + [obj]
-        elif part:
-            part.Group = part.Group + [obj]
+    PartDesign.initializeDesignDefinition(obj)
+    mark_operation(obj)
     return obj
+
+
+def _selected_involute_gear(document):
+    selected = list(FreeCADGui.Selection.getSelection())
+    if len(selected) != 1:
+        return None
+    obj = selected[0]
+    proxy = getattr(obj, "Proxy", None)
+    if (
+        obj.Document is document
+        and getattr(proxy, "Type", "") == "InvoluteGear"
+    ):
+        return obj
+    return None
 
 
 class CommandInvoluteGear:
@@ -67,16 +84,50 @@ class CommandInvoluteGear:
         }
 
     def Activated(self):
-        FreeCAD.ActiveDocument.openTransaction("Create involute gear")
-        FreeCADGui.addModule("InvoluteGearFeature")
-        FreeCADGui.doCommand("InvoluteGearFeature.makeInvoluteGear('InvoluteGear')")
-        FreeCADGui.doCommand("Gui.activeDocument().setEdit(App.ActiveDocument.ActiveObject.Name,0)")
+        document = FreeCAD.ActiveDocument
+        existing = _selected_involute_gear(document)
+        label = (
+            "Edit involute gear"
+            if existing is not None
+            else "Create involute gear"
+        )
+        gui_document, transaction_id = open_task_command(document, label)
+        try:
+            if existing is None:
+                FreeCADGui.addModule("InvoluteGearFeature")
+                FreeCADGui.doCommand(
+                    "_vibecad_involute_gear = "
+                    "InvoluteGearFeature.makeInvoluteGear("
+                    f"'InvoluteGear', App.getDocument({document.Name!r}))"
+                )
+                existing = FreeCADGui.doCommandEval(
+                    "_vibecad_involute_gear"
+                )
+                if (
+                    existing is None
+                    or existing.Document is not document
+                    or document.getObject(existing.Name) is not existing
+                    or not document
+                    .isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                        existing
+                    )
+                ):
+                    raise RuntimeError(
+                        "The involute gear factory did not return its exact result"
+                    )
+                mode = 0
+            else:
+                mode = 1
+            if not gui_document.setEdit(existing.Name, mode):
+                raise RuntimeError(
+                    "The involute gear task panel could not be shown"
+                )
+        except Exception:
+            abort_task_command(document, transaction_id)
+            raise
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return can_start_task(FreeCAD.ActiveDocument)
 
 
 class _InvoluteGear:
@@ -85,11 +136,13 @@ class _InvoluteGear:
     def __init__(self, obj):
         self.Type = "InvoluteGear"
         self._ensure_properties(obj, is_restore=False)
+        mark_operation(obj)
         obj.Proxy = self
 
     def onDocumentRestored(self, obj):
         """hook used to migrate older versions of this object"""
         self._ensure_properties(obj, is_restore=True)
+        mark_operation(obj)
 
     def _ensure_properties(self, obj, is_restore):
         def ensure_property(type_, name, doc, default):
@@ -213,12 +266,23 @@ class _ViewProviderInvoluteGear:
         taskd = _InvoluteGearTaskPanel(self.Object, mode)
         taskd.obj = vobj.Object
         taskd.update()
-        FreeCADGui.Control.showDialog(taskd)
-        return True
+        gui_document = FreeCADGui.getDocument(vobj.Object.Document.Name)
+        FreeCADGui.Control.showDialog(taskd, gui_document)
+        return bool(FreeCADGui.Control.activeDialog(gui_document))
 
     def unsetEdit(self, vobj, mode):
-        FreeCADGui.Control.closeDialog()
+        gui_document = FreeCADGui.getDocument(vobj.Object.Document.Name)
+        FreeCADGui.Control.closeDialog(gui_document)
         return
+
+    def supportsDocumentTimelineEdit(self):
+        return True
+
+    def doubleClicked(self, vobj):
+        if FreeCADGui.Control.activeDialog():
+            return False
+        gui_document = FreeCADGui.getDocument(vobj.Object.Document.Name)
+        return bool(gui_document.setEdit(vobj.Object.Name, 1))
 
     def dumps(self):
         return None
@@ -232,6 +296,8 @@ class _InvoluteGearTaskPanel:
 
     def __init__(self, obj, mode):
         self.obj = obj
+        self.document = obj.Document
+        self.gui_document = FreeCADGui.getDocument(self.document.Name)
 
         self.form = FreeCADGui.PySideUic.loadUi(str(pathlib.Path(__file__).with_suffix(".ui")))
         self.form.setWindowIcon(QtGui.QIcon(":/icons/PartDesign_InternalExternalGear.svg"))
@@ -355,9 +421,19 @@ class _InvoluteGearTaskPanel:
 
     def accept(self):
         self.transferTo()
-        FreeCAD.ActiveDocument.recompute()
-        FreeCADGui.ActiveDocument.resetEdit()
+        if self.document.recompute() is False:
+            raise RuntimeError("The involute gear failed to recompute")
+        if (
+            not self.obj.isValid()
+            or self.obj.Shape.isNull()
+            or not self.obj.Shape.isValid()
+        ):
+            status = self.obj.getStatusString()
+            raise RuntimeError(status or "The involute gear is invalid")
+        PartDesign.finalizeDesignDefinition(self.obj)
+        self.gui_document.resetEdit()
+        return True
 
     def reject(self):
-        FreeCADGui.ActiveDocument.resetEdit()
-        FreeCAD.ActiveDocument.abortTransaction()
+        self.gui_document.resetEdit()
+        return True

@@ -27,6 +27,12 @@ import Path.Base.Util as PathUtil
 import Path.Dressup.Utils as PathDressup
 import PathScripts.PathUtils as PathUtils
 import Path.Main.Job as PathJob
+from Path.CommandBoundary import (
+    TaskDocumentTransaction,
+    active_jobs,
+    begin_task_launch,
+    can_start_document_command,
+)
 import PathGui
 import PathSimulator
 import math
@@ -54,12 +60,10 @@ class CAMSimTaskUi:
         self.parent = parent
 
     def accept(self):
-        self.parent.accept()
-        FreeCADGui.Control.closeDialog()
+        return self.parent.accept()
 
     def reject(self):
-        self.parent.cancel()
-        FreeCADGui.Control.closeDialog()
+        return self.parent.cancel()
 
 
 def TSError(msg):
@@ -78,6 +82,12 @@ class PathSimulation:
         self.accuracy = 0.1
         self.resetSimulation = False
         self.jobs = []
+        self.document = None
+        self.transaction = None
+        self.cutTool = None
+        self.cutMaterial = None
+        self.cutMaterialIn = None
+        self.cutSolid = None
 
     def Connect(self, but, sig):
         QtCore.QObject.connect(but, QtCore.SIGNAL("clicked()"), sig)
@@ -86,29 +96,50 @@ class PathSimulation:
         if self.numCommands > 0:
             self.taskForm.form.progressBar.setValue(self.iprogress * 100 / self.numCommands)
 
-    def Activate(self):
+    def Activate(self, task_launch=None):
+        self.document = FreeCAD.ActiveDocument
+        if self.document is None:
+            raise RuntimeError("Path Simulation requires an active document")
+        self.transaction = TaskDocumentTransaction(
+            self.document,
+            "Create CAM simulation result",
+            launch=task_launch,
+        )
         self.initdone = False
-        self.taskForm = CAMSimTaskUi(self)
-        form = self.taskForm.form
-        self.Connect(form.toolButtonStop, self.SimStop)
-        self.Connect(form.toolButtonPlay, self.SimPlay)
-        self.Connect(form.toolButtonPause, self.SimPause)
-        self.Connect(form.toolButtonStep, self.SimStep)
-        self.Connect(form.toolButtonFF, self.SimFF)
-        form.sliderSpeed.valueChanged.connect(self.onSpeedBarChange)
-        self.onSpeedBarChange()
-        form.sliderAccuracy.valueChanged.connect(self.onAccuracyBarChange)
-        self.onAccuracyBarChange()
-        self._populateJobSelection(form)
-        form.comboJobs.currentIndexChanged.connect(self.onJobChange)
-        self.onJobChange()
-        FreeCADGui.Control.showDialog(self.taskForm)
-        self.disableAnim = False
-        self.isVoxel = True
-        self.firstDrill = True
-        self.voxSim = PathSimulator.PathSim()
-        self.SimulateMill()
-        self.initdone = True
+        try:
+            self.taskForm = CAMSimTaskUi(self)
+            form = self.taskForm.form
+            self.Connect(form.toolButtonStop, self.SimStop)
+            self.Connect(form.toolButtonPlay, self.SimPlay)
+            self.Connect(form.toolButtonPause, self.SimPause)
+            self.Connect(form.toolButtonStep, self.SimStep)
+            self.Connect(form.toolButtonFF, self.SimFF)
+            form.sliderSpeed.valueChanged.connect(self.onSpeedBarChange)
+            self.onSpeedBarChange()
+            form.sliderAccuracy.valueChanged.connect(self.onAccuracyBarChange)
+            self.onAccuracyBarChange()
+            self._populateJobSelection(form)
+            if not self.jobs:
+                raise RuntimeError("Path Simulation requires a real Job in the active document")
+            form.comboJobs.currentIndexChanged.connect(self.onJobChange)
+            self.onJobChange()
+            self.transaction.show_dialog(self.taskForm)
+            self.disableAnim = False
+            self.isVoxel = True
+            self.firstDrill = True
+            self.voxSim = PathSimulator.PathSim()
+            self.SimulateMill()
+            self.initdone = True
+        except Exception:
+            self.timer.stop()
+            transaction = self.transaction
+            self.transaction = None
+            if transaction is not None:
+                transaction.close_dialog()
+                if transaction.owns_transaction():
+                    transaction.abort()
+                transaction.recompute_after_close()
+            raise
 
     def _populateJobSelection(self, form):
         # Make Job selection combobox
@@ -116,14 +147,18 @@ class PathSimulation:
         jobName = ""
         jIdx = 0
         # Get list of Job objects in active document
-        jobList = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")
+        jobList = active_jobs()
         jCnt = len(jobList)
 
         # Check if user has selected a specific job for simulation
         guiSelection = FreeCADGui.Selection.getSelectionEx()
         if guiSelection:  #  Identify job selected by user
             sel = guiSelection[0]
-            if hasattr(sel.Object, "Proxy") and isinstance(sel.Object.Proxy, PathJob.ObjectJob):
+            if (
+                sel.Object in jobList
+                and hasattr(sel.Object, "Proxy")
+                and isinstance(sel.Object.Proxy, PathJob.ObjectJob)
+            ):
                 jobName = sel.Object.Name
                 FreeCADGui.Selection.clearSelection()
 
@@ -207,25 +242,19 @@ class PathSimulation:
         self.skipStep = False
         self.initialPos = Vector(0, 0, self.job.Stock.Shape.BoundBox.ZMax)
         # Add cut tool
-        self.cutTool = FreeCAD.ActiveDocument.addObject("Part::FeaturePython", "CutTool")
+        self.cutTool = self.document.addObject("Part::FeaturePython", "CutTool")
         self.cutTool.ViewObject.Proxy = 0
         self.cutTool.ViewObject.hide()
 
         # Add cut material
         if self.isVoxel:
-            self.cutMaterial = FreeCAD.ActiveDocument.addObject(
-                "Mesh::FeaturePython", "CutMaterial"
-            )
-            self.cutMaterialIn = FreeCAD.ActiveDocument.addObject(
-                "Mesh::FeaturePython", "CutMaterialIn"
-            )
+            self.cutMaterial = self.document.addObject("Mesh::FeaturePython", "CutMaterial")
+            self.cutMaterialIn = self.document.addObject("Mesh::FeaturePython", "CutMaterialIn")
             self.cutMaterialIn.ViewObject.Proxy = 0
             self.cutMaterialIn.ViewObject.show()
             self.cutMaterialIn.ViewObject.ShapeColor = (1.0, 0.85, 0.45, 0.0)
         else:
-            self.cutMaterial = FreeCAD.ActiveDocument.addObject(
-                "Part::FeaturePython", "CutMaterial"
-            )
+            self.cutMaterial = self.document.addObject("Part::FeaturePython", "CutMaterial")
             self.cutMaterial.Shape = self.job.Stock.Shape
         self.cutMaterial.ViewObject.Proxy = 0
         self.cutMaterial.ViewObject.show()
@@ -233,13 +262,13 @@ class PathSimulation:
 
         # Add cut path solid for debug
         if self.debug:
-            self.cutSolid = FreeCAD.ActiveDocument.addObject("Part::FeaturePython", "CutDebug")
+            self.cutSolid = self.document.addObject("Part::FeaturePython", "CutDebug")
             self.cutSolid.ViewObject.Proxy = 0
             self.cutSolid.ViewObject.hide()
 
         self.SetupSimulation()
         self.resetSimulation = True
-        FreeCAD.ActiveDocument.recompute()
+        self.document.recompute()
 
     def PerformCutBoolean(self):
         if self.resetSimulation:
@@ -586,7 +615,7 @@ class PathSimulation:
     def RemoveTool(self):
         if self.cutTool is None:
             return
-        FreeCAD.ActiveDocument.removeObject(self.cutTool.Name)
+        self.document.removeObject(self.cutTool.Name)
         self.cutTool = None
 
     def RemoveInnerMaterial(self):
@@ -596,24 +625,128 @@ class PathSimulation:
                 mesh.addMesh(self.cutMaterial.Mesh)
                 mesh.addMesh(self.cutMaterialIn.Mesh)
                 self.cutMaterial.Mesh = mesh
-            FreeCAD.ActiveDocument.removeObject(self.cutMaterialIn.Name)
+            self.document.removeObject(self.cutMaterialIn.Name)
             self.cutMaterialIn = None
 
     def RemoveMaterial(self):
         if self.cutMaterial is not None:
-            FreeCAD.ActiveDocument.removeObject(self.cutMaterial.Name)
+            self.document.removeObject(self.cutMaterial.Name)
             self.cutMaterial = None
         self.RemoveInnerMaterial()
 
+    def RemoveDebugSolid(self):
+        if self.cutSolid is not None:
+            self.document.removeObject(self.cutSolid.Name)
+            self.cutSolid = None
+
+    def _validate_retained_result(self):
+        if self.document is None:
+            raise RuntimeError("The simulation document is no longer available")
+        try:
+            open_document = FreeCAD.getDocument(self.document.Name)
+        except (NameError, RuntimeError):
+            open_document = None
+        if open_document != self.document:
+            raise RuntimeError("The simulation document is no longer available")
+        if self.cutMaterial is None:
+            raise RuntimeError("Path Simulation produced no retained material")
+        if (
+            getattr(self.cutMaterial, "Document", None) is not self.document
+            or self.document.getObject(self.cutMaterial.Name) is not self.cutMaterial
+            or not self.cutMaterial.isValid()
+        ):
+            raise RuntimeError("Path Simulation produced an invalid result object")
+
+        self.document.recompute()
+        if not self.cutMaterial.isValid():
+            raise RuntimeError("Path Simulation result failed recompute")
+        if self.isVoxel:
+            if self.cutMaterial.Mesh.CountFacets <= 0:
+                raise RuntimeError("Path Simulation produced an empty result mesh")
+        elif self.cutMaterial.Shape.isNull() or not self.cutMaterial.Shape.isValid():
+            raise RuntimeError("Path Simulation produced an invalid result shape")
+
+    def _capture_result_geometry(self):
+        """Copy the validated preview into transaction-independent geometry."""
+
+        preview = self.cutMaterial
+        if preview is None:
+            raise RuntimeError("Path Simulation produced no result preview")
+        result_name = str(preview.Name)
+        result_label = str(preview.Label)
+        shape_color = tuple(preview.ViewObject.ShapeColor)
+        if self.isVoxel:
+            geometry = Mesh.Mesh()
+            geometry.addMesh(preview.Mesh)
+            if geometry.CountFacets <= 0:
+                raise RuntimeError("Path Simulation produced an empty result mesh")
+            type_id = "Mesh::FeaturePython"
+        else:
+            geometry = preview.Shape.copy()
+            if geometry.isNull() or not geometry.isValid():
+                raise RuntimeError("Path Simulation produced an invalid result shape")
+            type_id = "Part::FeaturePython"
+        return (
+            type_id,
+            result_name,
+            result_label,
+            shape_color,
+            geometry,
+        )
+
+    def _create_retained_result(self, captured):
+        """Create the sole durable result after all preview objects are gone."""
+
+        type_id, name, label, shape_color, geometry = captured
+        result = self.document.addObject(type_id, name)
+        result.Label = label
+        result.ViewObject.Proxy = 0
+        result.ViewObject.ShapeColor = shape_color
+        if self.isVoxel:
+            result.Mesh = geometry
+        else:
+            result.Shape = geometry
+        result.ViewObject.show()
+        PathUtil.markTimelineOperation(result)
+        self.cutMaterial = result
+        return result
+
     def accept(self):
+        transaction = self.transaction
+        if transaction is None:
+            return True
         self.EndSimulation()
         self.RemoveInnerMaterial()
+        self._validate_retained_result()
+        captured = self._capture_result_geometry()
         self.RemoveTool()
+        self.RemoveDebugSolid()
+        self.RemoveMaterial()
+        result = self._create_retained_result(captured)
+        self._validate_retained_result()
+        self.document.publishProvisionalTimelineOperationBlock(
+            result,
+            [],
+        )
+        transaction.commit((result,), recompute=False)
+        self.transaction = None
+        return True
 
     def cancel(self):
-        self.EndSimulation()
-        self.RemoveTool()
-        self.RemoveMaterial()
+        self.timer.stop()
+        self.GuiBusy(False)
+        transaction = self.transaction
+        if transaction is None:
+            return True
+        try:
+            transaction.abort()
+        finally:
+            self.transaction = None
+            self.cutTool = None
+            self.cutMaterial = None
+            self.cutMaterialIn = None
+            self.cutSolid = None
+        return True
 
 
 class CommandPathSimulate:
@@ -626,15 +759,25 @@ class CommandPathSimulate:
         }
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument is not None:
-            for o in FreeCAD.ActiveDocument.Objects:
-                if o.Name[:3] == "Job":
-                    return True
-        return False
+        return can_start_document_command() and bool(active_jobs())
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
+        document = FreeCAD.ActiveDocument
+        launch = begin_task_launch(
+            "Create CAM simulation result",
+            document,
+        )
         pathSimulation = PathSimulation()
-        pathSimulation.Activate()
+        try:
+            pathSimulation.Activate(task_launch=launch)
+            launch.require_claimed()
+            return pathSimulation
+        except Exception:
+            launch.abort()
+            raise
 
 
 if FreeCAD.GuiUp:

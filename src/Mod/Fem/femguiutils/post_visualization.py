@@ -112,12 +112,21 @@ class _VisualizationGroupCommand:
         }
 
     def IsActive(self):
-        if not FreeCAD.ActiveDocument:
-            return False
-
         import FemGui
+        from femcommands.manager import (
+            _active_document,
+            _is_live_in_document,
+            can_start_command,
+        )
 
-        return bool(FemGui.getActiveAnalysis())
+        document = _active_document()
+        return (
+            can_start_command()
+            and _is_live_in_document(
+                FemGui.getActiveAnalysis(),
+                document,
+            )
+        )
 
 
 class _VisualizationCommand:
@@ -140,28 +149,83 @@ class _VisualizationCommand:
         }
 
     def IsActive(self):
-        # active analysis available
-        if not FreeCAD.ActiveDocument:
-            return False
-
         import FemGui
+        from femcommands.manager import (
+            _active_document,
+            _is_live_in_document,
+            can_start_command,
+        )
 
-        return bool(FemGui.getActiveAnalysis())
+        document = _active_document()
+        return (
+            can_start_command()
+            and _is_live_in_document(
+                FemGui.getActiveAnalysis(),
+                document,
+            )
+        )
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         import FreeCADGui
+        import FemGui
+        from femcommands.manager import (
+            _active_document,
+            _close_exact_transaction,
+            _document_expression,
+            _is_live_in_document,
+            _object_expression,
+            _open_exact_transaction,
+            _require_provisional_timeline_identity,
+        )
 
         vis = _registry[self._visualization_type]
-        FreeCAD.ActiveDocument.openTransaction(f"Create {vis.name}")
-
-        FreeCADGui.addModule(vis.module)
-        FreeCADGui.addModule("FemGui")
-
-        FreeCADGui.doCommand(f"obj = {vis.module}.{vis.factory}(FreeCAD.ActiveDocument)")
-        FreeCADGui.doCommand(f"FemGui.getActiveAnalysis().addObject(obj)")
-
-        FreeCADGui.Selection.clearSelection()
-        FreeCADGui.doCommand("FreeCADGui.ActiveDocument.setEdit(obj)")
+        document = _active_document()
+        analysis = FemGui.getActiveAnalysis()
+        transaction_id = _open_exact_transaction(
+            document,
+            f"Create {vis.name}",
+        )
+        try:
+            FreeCADGui.addModule(vis.module)
+            FreeCADGui.addModule("FemGui")
+            obj = FreeCADGui.runDocumentObjectCommand(
+                document,
+                f"{vis.module}.{vis.factory}("
+                f"{_document_expression(document)})",
+            )
+            _require_provisional_timeline_identity(
+                obj,
+                document,
+                "The FEM visualization factory",
+            )
+            if not _is_live_in_document(analysis, document):
+                raise RuntimeError(
+                    "The active FEM analysis is no longer available"
+                )
+            FreeCADGui.doCommand(
+                f"{_object_expression(analysis)}"
+                f".addObject({_object_expression(obj)})"
+            )
+            if obj not in analysis.Group:
+                raise RuntimeError(
+                    "The visualization was not added to its analysis"
+                )
+            FreeCADGui.Selection.clearSelection()
+            gui_document = FreeCADGui.getDocument(document.Name)
+            if gui_document is None or gui_document.setEdit(obj) is False:
+                raise RuntimeError(
+                    "The visualization editor could not be opened"
+                )
+        except Exception:
+            _close_exact_transaction(
+                document,
+                transaction_id,
+                True,
+            )
+            raise
 
 
 def setup_commands(toplevel_name):

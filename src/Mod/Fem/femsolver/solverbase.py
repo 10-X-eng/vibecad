@@ -40,6 +40,7 @@ if App.GuiUp:
     from PySide import QtGui
     import FreeCADGui as Gui
     from . import solver_taskpanel
+    from femtaskpanels.base_femtaskpanel import _TaskTargetIdentity
 
 
 class Proxy:
@@ -49,6 +50,13 @@ class Proxy:
     def __init__(self, obj):
         obj.Proxy = self
         obj.addExtension("App::GroupExtensionPython")
+        obj.addExtension("App::SuppressibleExtensionPython")
+
+    def onDocumentRestored(self, obj):
+        if not obj.hasExtension("App::GroupExtensionPython"):
+            obj.addExtension("App::GroupExtensionPython")
+        if not obj.hasExtension("App::SuppressibleExtensionPython"):
+            obj.addExtension("App::SuppressibleExtensionPython")
 
     def createMachine(self, obj, directory, testmode):
         raise NotImplementedError()
@@ -75,11 +83,17 @@ class Proxy:
 class ViewProxy:
     """Proxy for FemSolverElmers View Provider."""
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def __init__(self, vobj):
         vobj.Proxy = self
         vobj.addExtension("Gui::ViewProviderGroupExtensionPython")
+        vobj.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
 
     def setEdit(self, vobj, mode=0):
+        identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document()
         try:
             machine = run.getMachine(vobj.Object)
         except MustSaveError:
@@ -97,16 +111,24 @@ class ViewProxy:
             QtGui.QMessageBox.critical(Gui.getMainWindow(), "Can't open Task Panel", error_message)
             return False
         task = solver_taskpanel.ControlTaskPanel(machine)
-        Gui.Control.showDialog(task)
+        Gui.Control.showDialog(task, gui_document)
+        self._fem_edit_identity = identity
         return True
 
     def unsetEdit(self, vobj, mode=0):
-        Gui.Control.closeDialog()
+        identity = getattr(self, "_fem_edit_identity", None)
+        if identity is None:
+            identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document(
+            require_object=False
+        )
+        Gui.Control.closeDialog(gui_document)
+        self._fem_edit_identity = None
 
     def doubleClicked(self, vobj):
-        if Gui.Control.activeDialog():
-            Gui.Control.closeDialog()
-        vobj.Document.setEdit(vobj.Object.Name)
+        identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document()
+        gui_document.setEdit(vobj.Object.Name)
         return True
 
     def attach(self, vobj):

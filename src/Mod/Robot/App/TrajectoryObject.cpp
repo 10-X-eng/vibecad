@@ -37,6 +37,7 @@ PROPERTY_SOURCE(Robot::TrajectoryObject, App::GeoFeature)
 
 TrajectoryObject::TrajectoryObject()
 {
+    suppressibleExtension.initExtension(this);
 
     ADD_PROPERTY_TYPE(Base, (Base::Placement()), "Trajectory", Prop_None, "Base frame of the trajectory");
     ADD_PROPERTY_TYPE(Trajectory, (Robot::Trajectory()), "Trajectory", Prop_None, "Trajectory object");
@@ -44,7 +45,7 @@ TrajectoryObject::TrajectoryObject()
 
 short TrajectoryObject::mustExecute() const
 {
-    return 0;
+    return suppressibleExtension.Suppressed.isTouched() ? 1 : 0;
 }
 
 PyObject* TrajectoryObject::getPyObject()

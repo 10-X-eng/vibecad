@@ -9,16 +9,23 @@ import hashlib
 import inspect
 import json
 from pathlib import Path
+import sys
+import zipfile
 
 import pytest
 
 from VibeCADModelingSurface import (
+    ASSEMBLY_PLAYBACK_TOOL,
+    COMPONENT_CATALOG_TOOL,
+    COMPONENT_INTERFACE_TOOL,
     CORE_CONVERSATION_VIEW_TOOLS,
-    HIDDEN_PROVIDER_INSPECTION_TOOLS,
+    FASTENER_CATALOG_TOOL,
+    MATERIAL_CATALOG_TOOL,
+    PROVIDER_READ_TOOL_OWNERS,
     resolve_modeling_surface,
     validate_surface_names,
 )
-from VibeCADTools import ToolSpec
+from VibeCADTools import SafetyLevel, ToolSpec
 import VibeCADVibeScriptDomains as domains
 from VibeCADWorkbenchTools import WORKBENCH_TOOL_PACKS
 
@@ -31,13 +38,11 @@ PRODUCTION_READY_VIBESCRIPT_WORKBENCHES = frozenset(
     {
         "PartDesignWorkbench",
         "SketcherWorkbench",
-        "PartWorkbench",
         "DraftWorkbench",
         "SurfaceWorkbench",
         "AssemblyWorkbench",
         "SpreadsheetWorkbench",
         "MaterialWorkbench",
-        "BIMWorkbench",
         "MeshWorkbench",
         "MeshPartWorkbench",
         "PointsWorkbench",
@@ -51,59 +56,58 @@ PRODUCTION_READY_VIBESCRIPT_WORKBENCHES = frozenset(
 )
 
 
-def test_complete_native_and_vibescript_surface_matrix() -> None:
-    assert len(USER_WORKBENCHES) == 18
+def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
+    assert len(USER_WORKBENCHES) == 16
     observed_ready = set()
     for workbench in USER_WORKBENCHES:
-        native_pack = WORKBENCH_TOOL_PACKS[workbench]
-        visible_native_tools = tuple(
-            name
-            for name in native_pack.tool_names
-            if name not in HIDDEN_PROVIDER_INSPECTION_TOOLS
-            and not name.endswith(".describe_api")
-            and not name.endswith(".inspect_program")
-        )
-        native = resolve_modeling_surface(workbench, "native")
-        assert not any(name.startswith("vibescript.") for name in native.tool_names)
-        if visible_native_tools:
-            assert native.available is True
-            assert native.cad_tool_names == visible_native_tools
-            assert "core.inspect" in native.tool_names
-            assert not set(native.tool_names) & set(HIDDEN_PROVIDER_INSPECTION_TOOLS)
-        else:
-            assert native.available is False
-            assert native.cad_tool_names == ()
-            assert native.unavailable_reason
-
         scripted = resolve_modeling_surface(workbench, "vibescript")
         domain_pack = domains.get_vibescript_pack(workbench)
         assert domain_pack is not None
         assert scripted.domain == domain_pack.domain
-        assert set(scripted.core_tool_names) == set(CORE_CONVERSATION_VIEW_TOOLS)
+        expected_core = set(CORE_CONVERSATION_VIEW_TOOLS)
+        if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}:
+            expected_core.add(FASTENER_CATALOG_TOOL)
+        if workbench == "AssemblyWorkbench":
+            expected_core.add(COMPONENT_CATALOG_TOOL)
+            expected_core.add(ASSEMBLY_PLAYBACK_TOOL)
+        if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}:
+            expected_core.add(COMPONENT_INTERFACE_TOOL)
+        if workbench in {"PartDesignWorkbench", "MaterialWorkbench"}:
+            expected_core.add(MATERIAL_CATALOG_TOOL)
+        assert set(scripted.core_tool_names) == expected_core
         if domain_pack.production_ready:
             observed_ready.add(workbench)
+            focused_reads = tuple(
+                name
+                for name, owner in PROVIDER_READ_TOOL_OWNERS.items()
+                if owner == (workbench, "vibescript")
+            )
             assert scripted.available is True
             assert scripted.unavailable_reason == ""
-            assert scripted.cad_tool_names == tuple(
-                name
-                for name in domain_pack.tool_names
-                if name not in HIDDEN_PROVIDER_INSPECTION_TOOLS
-                and not name.endswith(".describe_api")
-                and not name.endswith(".inspect_program")
+            assert scripted.cad_tool_names == (
+                *domain_pack.provider_tool_names,
+                *focused_reads,
             )
-            assert len(scripted.cad_tool_names) == 5
-            assert len(scripted.tool_names) <= 11
-            assert "core.inspect" in scripted.tool_names
-            assert not set(scripted.tool_names) & set(HIDDEN_PROVIDER_INSPECTION_TOOLS)
-            assert set(native_pack.tool_names).isdisjoint(
-                scripted.cad_tool_names
+            assert len(scripted.cad_tool_names) == len(
+                domain_pack.provider_tool_names
+            ) + len(focused_reads)
+            # Assembly adds exact cross-workbench source/interface playback controls;
+            # every other focused surface retains the original tighter ceiling.
+            assert len(scripted.tool_names) <= (
+                18 if workbench == "AssemblyWorkbench" else 16
             )
+            assert "core.inspect" not in scripted.tool_names
+            unrelated_human_commands = set(
+                WORKBENCH_TOOL_PACKS[workbench].tool_names
+            ) - set(focused_reads)
+            assert unrelated_human_commands.isdisjoint(scripted.cad_tool_names)
             namespaces = {
                 name.split(".")[1]
                 for name in scripted.cad_tool_names
-                if name.count(".") == 2
+                if name.startswith("vibescript.") and name.count(".") == 2
             }
-            assert namespaces == {domain_pack.domain}
+            assert namespaces == set()
+            assert set(domain_pack.provider_tool_names) <= set(scripted.cad_tool_names)
         else:
             assert scripted.available is False
             assert scripted.cad_tool_names == ()
@@ -119,46 +123,33 @@ def test_complete_native_and_vibescript_surface_matrix() -> None:
     "workbench",
     (None, "NoneWorkbench", "TestWorkbench", "UnregisteredWorkbench"),
 )
-@pytest.mark.parametrize("engine", ("native", "vibescript", "build123d", "openscad"))
 def test_unsupported_surfaces_are_precise_and_core_only(
-    workbench: str | None, engine: str
+    workbench: str | None,
 ) -> None:
-    surface = resolve_modeling_surface(workbench, engine)
+    surface = resolve_modeling_surface(workbench, "vibescript")
     assert surface.available is False
     assert surface.cad_tool_names == ()
     assert surface.unavailable_reason
     assert set(surface.tool_names) == set(CORE_CONVERSATION_VIEW_TOOLS)
 
 
-@pytest.mark.parametrize("engine", ("build123d", "openscad"))
-def test_external_script_engines_are_partdesign_only(engine: str) -> None:
-    assert resolve_modeling_surface("PartDesignWorkbench", engine).available is True
-    for workbench in USER_WORKBENCHES:
-        if workbench == "PartDesignWorkbench":
-            continue
-        surface = resolve_modeling_surface(workbench, engine)
-        assert surface.available is False
-        assert surface.cad_tool_names == ()
-        assert "Part Design" in surface.unavailable_reason
-
-
 def test_mixed_and_cross_domain_surfaces_are_rejected() -> None:
     part = resolve_modeling_surface("PartWorkbench", "vibescript")
-    native_part_tool = WORKBENCH_TOOL_PACKS["PartWorkbench"].tool_names[0]
-    with pytest.raises(ValueError, match="cannot contain native"):
+    foreign_workbench_tool = WORKBENCH_TOOL_PACKS["PartDesignWorkbench"].tool_names[-1]
+    with pytest.raises(ValueError, match="foreign read"):
         validate_surface_names(
             workbench="PartWorkbench",
             engine="vibescript",
-            names=[*part.tool_names, native_part_tool],
-            allowed_names=[*part.tool_names, native_part_tool],
+            names=[*part.tool_names, foreign_workbench_tool],
+            allowed_names=[*part.tool_names, foreign_workbench_tool],
         )
-    with pytest.raises(ValueError, match="exactly one domain"):
+    with pytest.raises(ValueError, match="active domain namespace"):
         validate_surface_names(
             workbench="PartWorkbench",
             engine="vibescript",
             names=[
-                "vibescript.part.inspect_program",
-                "vibescript.assembly.inspect_program",
+                "vibescript.part.create_program",
+                "vibescript.assembly.create_program",
             ],
         )
 
@@ -168,8 +159,10 @@ def test_domain_lifecycle_schemas_are_stable_and_domain_specific() -> None:
         pack = domains.get_vibescript_pack(workbench)
         assert pack is not None
         specs = domains.domain_tool_specs(pack)
-        assert tuple(spec["name"] for spec in specs) == pack.tool_names
-        assert len(specs) == 7
+        assert tuple(spec["name"] for spec in specs) == tuple(
+            name for name in pack.tool_names if name.count(".") == 2
+        )
+        assert len(specs) == 4
         for raw in specs:
             spec = ToolSpec.from_mapping(raw)
             assert spec.workbench == workbench
@@ -182,36 +175,64 @@ def test_domain_lifecycle_schemas_are_stable_and_domain_specific() -> None:
 
 
 def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() -> None:
+    universal = {spec["name"]: spec for spec in domains.universal_tool_specs()}
+    assert set(universal) == {
+        "vibescript.read_source",
+        "vibescript.read_api",
+        "vibescript.create_program",
+        "vibescript.build_program",
+        "vibescript.edit_source",
+        "vibescript.set_inputs",
+        "vibescript.reconfigure_program",
+        "vibescript.delete_output",
+        "vibescript.delete_program",
+    }
+    build = universal["vibescript.build_program"]
+    assert build["parameters"]["required"] == [
+        "source_id",
+        "expected_revision",
+    ]
+    edit = universal["vibescript.edit_source"]
+    assert edit["parameters"]["required"] == [
+        "source_id",
+        "expected_revision",
+        "source",
+    ]
+    assert "replacements" not in edit["parameters"]["properties"]
+    delete_output = universal["vibescript.delete_output"]
+    assert delete_output["parameters"]["required"] == [
+        "source_id",
+        "expected_revision",
+        "output_name",
+        "source",
+        "reason",
+    ]
+    for write_name in (
+        "vibescript.create_program",
+        "vibescript.set_inputs",
+        "vibescript.reconfigure_program",
+        "vibescript.delete_output",
+        "vibescript.delete_program",
+    ):
+        assert universal[write_name]["safety"] == "SAFE_WRITE"
     for workbench in USER_WORKBENCHES:
         pack = domains.get_vibescript_pack(workbench)
         assert pack is not None
+        assert set(pack.provider_tool_names) == set(universal)
         specs = {
             spec["name"].rsplit(".", 1)[-1]: spec
             for spec in domains.domain_tool_specs(pack)
         }
-        program_id_description = specs["inspect_program"]["parameters"]["properties"][
-            "program_id"
-        ]["description"]
-        assert "create_program" in program_id_description
-        assert "core.inspect" in program_id_description
-        assert "source-only" in specs["edit_source"]["description"]
-        assert "value-only" in specs["set_inputs"]["description"]
-        assert (
-            "prefer edit_source or set_inputs"
-            in specs["reconfigure_program"]["description"]
-        )
+        assert "Change only input values" in specs["set_inputs"]["description"]
+        assert "contracts must change" in specs["reconfigure_program"]["description"]
 
         adapter = domains.get_domain_adapter(pack.domain)
         assert adapter is not None
         description = adapter.describe_api()
         operating = description["model_operating_contract"]
-        assert [item["action"] for item in operating["authoring_sequence"]] == [
-            "discover",
-            "learn_api",
-            "author",
-            "repair",
-            "verify",
-        ]
+        assert "authoring_sequence" not in operating
+        assert "vibescript.read_source" in operating["context_first"]
+        assert "vibescript.read_api" in operating["context_first"]
         assert set(operating["mutation_selection"]) == {
             "edit_source",
             "set_inputs",
@@ -244,16 +265,29 @@ def test_every_domain_description_is_copy_ready_for_the_operating_model() -> Non
         )
         assert description["accepted_output_types"] == list(pack.output_types)
         assert "exactly match expected_outputs" in description["result_contract"]
+        assert description["source_value_contract"]["type"] == "DomainValue"
+        assert description["source_global_contracts"]["doc"]["members"] == [
+            "doc.Name",
+            "doc.Objects",
+            "doc.getObject(exact_name)",
+            "object.Name",
+            "object.Label",
+            "object.TypeId",
+        ]
+        groups = description["api_groups"]
+        grouped_names = [name for names in groups.values() for name in names]
+        assert grouped_names == list(dict.fromkeys(grouped_names))
+        assert set(grouped_names) == set(pack.api_exports)
         assert "redundan" in json.dumps(description).lower()
         assert len(json.dumps(description, separators=(",", ":")).encode()) < 48_000
 
         handoffs = json.dumps(description["workbench_handoffs"]).lower()
-        assert "human" in handoffs and "switch" in handoffs
+        assert "active workbench determines the available api" in handoffs
+        assert "modeling engine" not in handoffs
         error_contract = json.dumps(description["error_contract"]).lower()
         assert "correct" in error_contract
 
-        patterns = description["recommended_patterns"]
-        assert patterns
+        patterns = description.get("recommended_patterns", [])
         for pattern in patterns:
             source = pattern["source"]
             expected_outputs = pattern["expected_outputs"]
@@ -314,7 +348,7 @@ def test_inspect_program_returns_machine_readable_model_state() -> None:
         "accepted_live_state_preserved": True,
         "next_write_expected_revision": accepted_revision,
         "mutation_selection": {
-            "source_only": "vibescript.assembly.edit_source",
+            "source_only": "vibescript.edit_source",
             "input_values_only": "vibescript.assembly.set_inputs",
             "contract_or_outputs": "vibescript.assembly.reconfigure_program",
         },
@@ -341,13 +375,1579 @@ def test_inspect_program_returns_machine_readable_model_state() -> None:
     assert failed["program"]["latest_candidate"]["failure"]["error"] == "bad"
 
 
+def test_universal_read_source_returns_complete_code_and_every_affected_output() -> (
+    None
+):
+    import VibeCADSession as session
+
+    source = "feature = api.box(10, 20, 30)\nresult = {'Body': feature}\n"
+    payload = session._read_source_payload(
+        {
+            "ok": True,
+            "program": {
+                "program_id": "a" * 32,
+                "domain": "partdesign",
+                "workbench": "PartDesignWorkbench",
+                "label": "Bracket",
+                "source": source,
+                "input_schema": {"type": "object"},
+                "inputs": {},
+                "expected_outputs": [{"name": "Body", "type": "solid"}],
+                "working_revision": "b" * 64,
+                "accepted_revision": "b" * 64,
+                "live_outputs": {
+                    "Body": {
+                        "object_name": "VibePartdesign_Body",
+                        "label": "Bracket",
+                        "type_id": "PartDesign::Body",
+                    },
+                    "Guide": {
+                        "object_name": "VibePartdesign_Guide",
+                        "label": "Guide",
+                        "type_id": "PartDesign::Feature",
+                    },
+                },
+            },
+        }
+    )
+
+    assert payload["source_id"] == "a" * 32
+    assert payload["current_revision"] == "b" * 64
+    assert payload["source"] == source
+    assert [item["name"] for item in payload["affected_outputs"]] == [
+        "Body",
+        "Guide",
+    ]
+    assert payload["edit_source"]["target_arguments"] == {
+        "source_id": "a" * 32,
+        "expected_revision": "b" * 64,
+    }
+    assert payload["build_program"]["arguments"] == {
+        "source_id": "a" * 32,
+        "expected_revision": "b" * 64,
+    }
+    assert payload["source_range"] == {
+        "line_start": 1,
+        "line_end": 2,
+        "total_lines": 2,
+        "complete": True,
+    }
+    assert payload["_vibecad_complete_source_result"] is True
+
+
+def test_universal_source_and_api_focused_reads_are_small_and_explicit() -> None:
+    import VibeCADSession as session
+
+    source = "first = 1\nsecond = 2\nthird = 3\n"
+    focused_source = session._read_source_payload(
+        {
+            "ok": True,
+            "program": {
+                "program_id": "a" * 32,
+                "domain": "partdesign",
+                "workbench": "PartDesignWorkbench",
+                "source": source,
+                "working_revision": "b" * 64,
+                "latest_candidate": {
+                    "status": "failed",
+                    "failure": {"stderr": "one\ntwo\nthree\n", "error": "bad"},
+                },
+            },
+        },
+        line_start=2,
+        line_end=2,
+        include_logs=False,
+    )
+    assert focused_source["source"] == "second = 2\n"
+    assert focused_source["source_range"] == {
+        "line_start": 2,
+        "line_end": 2,
+        "total_lines": 3,
+        "complete": False,
+    }
+    assert focused_source["_vibecad_complete_source_result"] is False
+    failure = focused_source["latest_candidate"]["failure"]
+    assert failure["error"] == "bad"
+    assert failure["logs_omitted"] == ["stderr"]
+
+    pack = domains.get_vibescript_pack("PartDesignWorkbench")
+    assert pack is not None
+    description = domains.get_domain_adapter(pack.domain).describe_api()
+    focused_api = session._filtered_api_payload(
+        "vibescript.read_api",
+        description,
+        names=["sketch"],
+        groups=["verification"],
+    )
+    selected = [item["name"] for item in focused_api["runtime_exports"]]
+    assert selected == ["sketch", "find_subelements", "measure"]
+    assert set(focused_api["api_details"]) == set(selected)
+    assert focused_api["_vibecad_complete_api_result"] is False
+
+
+def test_universal_build_program_replays_exact_saved_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+    import VibeCADVibeScriptDomainRuntime as runtime
+
+    source_id = "a" * 32
+    revision = "b" * 64
+    monkeypatch.setattr(runtime, "capture_inspection_state", lambda *_args: {})
+    monkeypatch.setattr(
+        runtime,
+        "complete_inspection",
+        lambda _captured: {
+            "ok": True,
+            "program": {
+                "program_id": source_id,
+                "working_revision": revision,
+                "source": "result = {'Part': api.box(1, 2, 3)}",
+            },
+        },
+    )
+    observed = {}
+
+    def run_internal(_service, tool_name, arguments, **kwargs):
+        observed.update(
+            tool_name=tool_name,
+            arguments=arguments,
+            allow_unchanged_revision=kwargs["allow_unchanged_revision"],
+        )
+        return {"ok": True, "tool": tool_name, "program_id": source_id}
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    document = type(
+        "Document",
+        (),
+        {"Uid": "active-document", "Name": "Active", "FileName": "", "Objects": []},
+    )()
+    service = type("Service", (), {"_active_document": lambda self: document})()
+    result = session._run_universal_vibescript_tool(
+        service,
+        "PartDesignWorkbench",
+        "vibescript.build_program",
+        {"source_id": source_id, "expected_revision": revision},
+        editable_sources={
+            "sources": [
+                {
+                    "source_id": source_id,
+                    "domain": "partdesign",
+                    "current_revision": revision,
+                    "affected_outputs": [],
+                }
+            ]
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed == {
+        "tool_name": "vibescript.partdesign.edit_source",
+        "arguments": {
+            "program_id": source_id,
+            "expected_revision": revision,
+            "source": "result = {'Part': api.box(1, 2, 3)}",
+        },
+        "allow_unchanged_revision": True,
+    }
+    assert result["tool"] == "vibescript.build_program"
+    assert result["source_id"] == source_id
+    assert result["requested_action"] == "build_program"
+
+
+def test_deferred_publication_recompute_uses_exact_worker_safe_targets() -> None:
+    import VibeCADSession as session
+
+    class DocumentObject:
+        State: list[str] = []
+
+        def __init__(self, name: str) -> None:
+            self.Name = name
+
+    class Document:
+        Name = "Engine"
+        Recomputing = False
+        RecomputePending = False
+
+        def __init__(self) -> None:
+            self.objects = {
+                name: DocumentObject(name) for name in ("RotorLink", "HousingLink")
+            }
+            self.requests: list[tuple[list[DocumentObject], bool]] = []
+
+        def getObject(self, name: str) -> DocumentObject | None:
+            return self.objects.get(name)
+
+        def recomputeAsync(
+            self, targets: list[DocumentObject], recursive: bool
+        ) -> int:
+            self.requests.append((targets, recursive))
+            return 1
+
+    document = Document()
+    service = type(
+        "Service", (), {"_active_document": lambda _self: document}
+    )()
+    events: list[dict[str, object]] = []
+
+    result = session._deferred_publication_recompute(
+        service,
+        {
+            "recompute_deferred": True,
+            "downstream_references": {
+                "part_recompute_objects": [
+                    "RotorLink",
+                    "HousingLink",
+                    "RotorLink",
+                ]
+            },
+        },
+        dispatch=lambda operation: operation(),
+        cancellation_check=lambda: True,
+        progress_callback=events.append,
+    )
+
+    assert result["mode"] == "worker"
+    assert result["completed"] is True
+    assert result["target_count"] == 2
+    assert len(document.requests) == 1
+    targets, recursive = document.requests[0]
+    assert [target.Name for target in targets] == ["RotorLink", "HousingLink"]
+    assert recursive is True
+    assert events[-1]["event"] == "vibescript_domain_deferred_recompute_completed"
+
+
+def test_deferred_publication_recompute_has_exact_document_thread_fallback() -> (
+    None
+):
+    import VibeCADSession as session
+
+    class DocumentObject:
+        State: list[str] = []
+
+        def __init__(self, name: str) -> None:
+            self.Name = name
+
+    class Document:
+        Name = "Engine"
+        Recomputing = False
+        RecomputePending = False
+
+        def __init__(self) -> None:
+            self.target = DocumentObject("ThreadAffineLink")
+            self.fallback_requests: list[
+                tuple[list[DocumentObject], bool, bool]
+            ] = []
+
+        def getObject(self, name: str) -> DocumentObject | None:
+            return self.target if name == self.target.Name else None
+
+        def recomputeAsync(
+            self, _targets: list[DocumentObject], _recursive: bool
+        ) -> int:
+            raise RuntimeError("dependency requires the document thread")
+
+        def recompute(
+            self,
+            targets: list[DocumentObject],
+            recursive: bool,
+            raise_on_error: bool,
+        ) -> int:
+            self.fallback_requests.append((targets, recursive, raise_on_error))
+            return 1
+
+    document = Document()
+    service = type(
+        "Service", (), {"_active_document": lambda _self: document}
+    )()
+
+    result = session._deferred_publication_recompute(
+        service,
+        {
+            "recompute_deferred": True,
+            "downstream_references": {
+                "part_recompute_objects": ["ThreadAffineLink"]
+            },
+        },
+        dispatch=lambda operation: operation(),
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert result["mode"] == "document_thread_fallback"
+    assert result["completed"] is True
+    assert "document thread" in result["async_rejection"]
+    assert len(document.fallback_requests) == 1
+    targets, recursive, raise_on_error = document.fallback_requests[0]
+    assert [target.Name for target in targets] == ["ThreadAffineLink"]
+    assert recursive is True
+    assert raise_on_error is True
+
+
+def test_native_tool_runner_reports_document_thread_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    class Spec:
+        requires_document = False
+
+        @staticmethod
+        def validate_arguments(_arguments: dict[str, object]) -> None:
+            return None
+
+        @staticmethod
+        def supports_edit_mode(_edit_mode: str) -> bool:
+            return True
+
+    tool = type(
+        "Tool",
+        (),
+        {
+            "safety": SafetyLevel.READ,
+            "workbench": "PartDesignWorkbench",
+            "spec": Spec(),
+        },
+    )()
+
+    class Registry:
+        @staticmethod
+        def get(_name: str) -> object:
+            return tool
+
+        @staticmethod
+        def call(_name: str, **_arguments: object) -> dict[str, object]:
+            return {"ok": True, "value": 42}
+
+    class Service:
+        registry = Registry()
+
+        @staticmethod
+        def note_provider_tool_targets(
+            _arguments: dict[str, object], _payload: dict[str, object]
+        ) -> None:
+            return None
+
+    monkeypatch.setattr(
+        session,
+        "_live_provider_surface_state",
+        lambda _service, _mode: {
+            "workbench": "PartDesignWorkbench",
+            "engine": "native",
+            "surface_id": "native-test",
+            "runtime_state": {"edit_mode": "none"},
+            "tool_names": ["model.read_test"],
+        },
+    )
+    monkeypatch.setattr(
+        session,
+        "_minimal_runtime_state",
+        lambda _service: {"edit_mode": "none"},
+    )
+    events: list[dict[str, object]] = []
+    trace: list[dict[str, object]] = []
+    runner = session.make_provider_tool_runner(
+        Service(),
+        tool_trace=trace,
+        progress_callback=events.append,
+        cancellation_check=None,
+        steering_check=None,
+        question_callback=None,
+        document_thread_dispatch=lambda operation: operation(),
+    )
+
+    result = runner("model.read_test", "{}")
+
+    assert result["ok"] is True
+    assert result["document_thread_elapsed_seconds"] >= 0.0
+    assert [
+        event["event"]
+        for event in events
+        if str(event["event"]).startswith("native_tool_document_phase_")
+    ] == [
+        "native_tool_document_phase_started",
+        "native_tool_document_phase_completed",
+    ]
+    assert trace[0]["result"]["document_thread_elapsed_seconds"] >= 0.0
+
+
+def test_universal_edit_source_maps_to_the_active_domain_with_complete_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    observed = {}
+
+    def run_internal(_service, tool_name, arguments, **_kwargs):
+        observed["tool_name"] = tool_name
+        observed["arguments"] = arguments
+        return {"ok": True, "program_id": arguments["program_id"]}
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    document = type(
+        "Document",
+        (),
+        {"Uid": "active-document", "Name": "Active", "FileName": "", "Objects": []},
+    )()
+    service = type("Service", (), {"_active_document": lambda self: document})()
+    result = session._run_universal_vibescript_tool(
+        service,
+        "PartDesignWorkbench",
+        "vibescript.edit_source",
+        {
+            "source_id": "a" * 32,
+            "expected_revision": "b" * 64,
+            "source": "result = {'Body': api.box(1, 2, 3)}",
+        },
+        editable_sources={
+            "sources": [
+                {
+                    "source_id": "a" * 32,
+                    "domain": "partdesign",
+                    "current_revision": "b" * 64,
+                    "affected_outputs": [],
+                }
+            ]
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed == {
+        "tool_name": "vibescript.partdesign.edit_source",
+        "arguments": {
+            "program_id": "a" * 32,
+            "expected_revision": "b" * 64,
+            "source": "result = {'Body': api.box(1, 2, 3)}",
+        },
+    }
+    assert result["source_id"] == "a" * 32
+
+
+def test_universal_delete_output_reconfigures_the_remaining_exact_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+    import VibeCADVibeScriptDomainRuntime as runtime
+
+    source_id = "a" * 32
+    revision = "b" * 64
+    revised_source = "result = {'Kept': api.box(4, 5, 6)}"
+    monkeypatch.setattr(runtime, "capture_inspection_state", lambda *_args: {})
+    monkeypatch.setattr(
+        runtime,
+        "complete_inspection",
+        lambda _captured: {
+            "ok": True,
+            "program": {
+                "program_id": source_id,
+                "working_revision": revision,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                "inputs": {},
+                "expected_outputs": [
+                    {"name": "Obsolete", "type": "solid"},
+                    {"name": "Kept", "type": "solid"},
+                ],
+            },
+        },
+    )
+    observed = {}
+
+    def run_internal(_service, tool_name, arguments, **_kwargs):
+        observed.update(tool_name=tool_name, arguments=arguments)
+        return {
+            "ok": True,
+            "tool": tool_name,
+            "program_id": source_id,
+            "working_revision": "c" * 64,
+        }
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    document = type(
+        "Document",
+        (),
+        {"Uid": "active-document", "Name": "Active", "FileName": "", "Objects": []},
+    )()
+    service = type("Service", (), {"_active_document": lambda self: document})()
+    result = session._run_universal_vibescript_tool(
+        service,
+        "PartDesignWorkbench",
+        "vibescript.delete_output",
+        {
+            "source_id": source_id,
+            "expected_revision": revision,
+            "output_name": "Obsolete",
+            "source": revised_source,
+            "reason": "Superseded by the retained body.",
+        },
+        editable_sources={
+            "sources": [
+                {
+                    "source_id": source_id,
+                    "domain": "partdesign",
+                    "current_revision": revision,
+                    "affected_outputs": ["Obsolete", "Kept"],
+                }
+            ]
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed == {
+        "tool_name": "vibescript.partdesign.reconfigure_program",
+        "arguments": {
+            "program_id": source_id,
+            "expected_revision": revision,
+            "source": revised_source,
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            "inputs": {},
+            "expected_outputs": [{"name": "Kept", "type": "solid"}],
+        },
+    }
+    assert result["tool"] == "vibescript.delete_output"
+    assert result["source_id"] == source_id
+    assert result["deleted_output"] == "Obsolete"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "operation", "arguments"),
+    (
+        (
+            "vibescript.create_program",
+            "create_program",
+            {
+                "program_name": "Assembly",
+                "source": "result = {'Assembly': api.assembly([], [])}",
+                "input_schema": {"type": "object"},
+                "inputs": {},
+                "expected_outputs": [{"name": "Assembly", "type": "assembly"}],
+            },
+        ),
+        (
+            "vibescript.set_inputs",
+            "set_inputs",
+            {
+                "source_id": "a" * 32,
+                "expected_revision": "b" * 64,
+                "patch": {"spacing_mm": 12.0},
+            },
+        ),
+        (
+            "vibescript.reconfigure_program",
+            "reconfigure_program",
+            {
+                "source_id": "a" * 32,
+                "expected_revision": "b" * 64,
+                "source": "result = {'Assembly': api.assembly([], [])}",
+                "input_schema": {"type": "object"},
+                "inputs": {},
+                "expected_outputs": [{"name": "Assembly", "type": "assembly"}],
+            },
+        ),
+        (
+            "vibescript.delete_program",
+            "delete_program",
+            {
+                "source_id": "a" * 32,
+                "expected_revision": "b" * 64,
+                "reason": "Remove obsolete mechanism",
+            },
+        ),
+    ),
+)
+def test_universal_lifecycle_maps_to_the_active_domain(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    operation: str,
+    arguments: dict,
+) -> None:
+    import VibeCADSession as session
+
+    observed = {}
+
+    def run_internal(_service, qualified_name, domain_arguments, **_kwargs):
+        observed["tool_name"] = qualified_name
+        observed["arguments"] = domain_arguments
+        return {
+            "ok": True,
+            "tool": qualified_name,
+            "program_id": domain_arguments.get("program_id", "c" * 32),
+        }
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    document = type(
+        "Document",
+        (),
+        {"Uid": "active-document", "Name": "Active", "FileName": "", "Objects": []},
+    )()
+    service = type("Service", (), {"_active_document": lambda self: document})()
+    result = session._run_universal_vibescript_tool(
+        service,
+        "AssemblyWorkbench",
+        tool_name,
+        arguments,
+        editable_sources=(
+            {
+                "sources": [
+                    {
+                        "source_id": "a" * 32,
+                        "domain": "assembly",
+                        "current_revision": "b" * 64,
+                        "affected_outputs": [],
+                    }
+                ]
+            }
+            if "source_id" in arguments
+            else None
+        ),
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed["tool_name"] == f"vibescript.assembly.{operation}"
+    expected_arguments = dict(arguments)
+    if "source_id" in expected_arguments:
+        expected_arguments["program_id"] = expected_arguments.pop("source_id")
+    assert observed["arguments"] == expected_arguments
+    assert result["tool"] == tool_name
+    assert result["source_id"] == result["program_id"]
+
+
+def test_universal_source_tools_route_to_the_exact_open_authoring_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    source_id = "9" * 32
+    revision = "8" * 64
+
+    class SourceOutput:
+        VibeCADVibeScriptProgramId = source_id
+        VibeCADVibeScriptDomain = "partdesign"
+        VibeCADVibeScriptRevision = revision
+        VibeCADVibeScriptOutputName = "Gear"
+
+    assembly_document = type(
+        "Document",
+        (),
+        {
+            "Uid": "assembly-document",
+            "Name": "Assembly",
+            "FileName": "/project/assembly.FCStd",
+            "Objects": [],
+        },
+    )()
+    source_document = type(
+        "Document",
+        (),
+        {
+            "Uid": "source-document",
+            "Name": "GearSource",
+            "FileName": "/project/gear.FCStd",
+            "Objects": [SourceOutput()],
+        },
+    )()
+    fake_freecad = type(
+        "FreeCAD",
+        (),
+        {
+            "listDocuments": staticmethod(
+                lambda: {"Assembly": assembly_document, "GearSource": source_document}
+            )
+        },
+    )()
+    monkeypatch.setitem(sys.modules, "FreeCAD", fake_freecad)
+    service = type(
+        "Service",
+        (),
+        {"_active_document": lambda self: assembly_document},
+    )()
+    catalog = {
+        "candidates": [
+            {
+                "reference": {
+                    "document_uid": "source-document",
+                    "object_name": "PublishedGear",
+                    "document_path": "gear.FCStd",
+                },
+                "authoring_source": {
+                    "source_id": source_id,
+                    "domain": "partdesign",
+                    "output_name": "Gear",
+                },
+            }
+        ]
+    }
+
+    result = session._run_universal_vibescript_tool(
+        service,
+        "AssemblyWorkbench",
+        "vibescript.read_api",
+        {"source_id": source_id, "names": ["body"]},
+        component_catalog=catalog,
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert result["ok"] is True
+    assert result["domain"] == "partdesign"
+    assert result["source_target"] == {
+        "source_id": source_id,
+        "domain": "partdesign",
+        "workbench": "PartDesignWorkbench",
+        "document_uid": "source-document",
+        "document_name": "GearSource",
+        "document_path": "/project/gear.FCStd",
+        "current_revision": revision,
+        "affected_outputs": ["Gear"],
+    }
+    assert service._active_document() is assembly_document
+
+
+def test_universal_source_write_binds_the_authoring_document_without_switching_ui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    source_id = "5" * 32
+    revision = "4" * 64
+
+    class SourceOutput:
+        VibeCADVibeScriptProgramId = source_id
+        VibeCADVibeScriptDomain = "partdesign"
+        VibeCADVibeScriptRevision = revision
+        VibeCADVibeScriptOutputName = "Shaft"
+
+    class Document:
+        def __init__(self, uid, name, path, objects):
+            self.Uid = uid
+            self.Name = name
+            self.FileName = path
+            self.Objects = objects
+            self.recompute_count = 0
+
+        def recompute(self):
+            self.recompute_count += 1
+
+    assembly_document = Document(
+        "assembly-document",
+        "Assembly",
+        "/project/assembly.FCStd",
+        [],
+    )
+    source_document = Document(
+        "source-document",
+        "ShaftSource",
+        "/project/shaft.FCStd",
+        [SourceOutput()],
+    )
+    fake_freecad = type(
+        "FreeCAD",
+        (),
+        {
+            "listDocuments": staticmethod(
+                lambda: {"Assembly": assembly_document, "ShaftSource": source_document}
+            )
+        },
+    )()
+    monkeypatch.setitem(sys.modules, "FreeCAD", fake_freecad)
+
+    class Service:
+        def _active_document(self):
+            return assembly_document
+
+        @staticmethod
+        def provider_document_revision_for(document, **_kwargs):
+            return f"revision:{document.Uid}"
+
+    observed = {}
+
+    def run_internal(bound_service, tool_name, arguments, **_kwargs):
+        observed.update(
+            document=bound_service._active_document(),
+            workbench=bound_service.active_workbench_name(),
+            revision=bound_service.provider_document_revision(),
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+        return {
+            "ok": True,
+            "program_id": source_id,
+            "working_revision": "3" * 64,
+        }
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    result = session._run_universal_vibescript_tool(
+        Service(),
+        "AssemblyWorkbench",
+        "vibescript.edit_source",
+        {
+            "source_id": source_id,
+            "expected_revision": revision,
+            "source": "result = {'Shaft': api.body(api.box(1, 2, 3))}",
+        },
+        component_catalog={
+            "candidates": [
+                {
+                    "reference": {
+                        "document_uid": "source-document",
+                        "object_name": "PublishedShaft",
+                        "document_path": "shaft.FCStd",
+                    },
+                    "authoring_source": {
+                        "source_id": source_id,
+                        "domain": "partdesign",
+                        "output_name": "Shaft",
+                    },
+                }
+            ]
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed == {
+        "document": source_document,
+        "workbench": "PartDesignWorkbench",
+        "revision": "revision:source-document",
+        "tool_name": "vibescript.partdesign.edit_source",
+        "arguments": {
+            "program_id": source_id,
+            "expected_revision": revision,
+            "source": "result = {'Shaft': api.body(api.box(1, 2, 3))}",
+        },
+    }
+    assert result["source_target"]["document_uid"] == "source-document"
+    assert result["source_target"]["current_revision"] == "3" * 64
+    assert result["referencing_document_refreshed"] is True
+    assert assembly_document.recompute_count == 1
+    assert source_document.recompute_count == 0
+
+
+def test_universal_source_routing_rejects_closed_and_unknown_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    source_id = "7" * 32
+    assembly_document = type(
+        "Document",
+        (),
+        {
+            "Uid": "assembly-document",
+            "Name": "Assembly",
+            "FileName": "/project/assembly.FCStd",
+            "Objects": [],
+        },
+    )()
+    fake_freecad = type(
+        "FreeCAD",
+        (),
+        {"listDocuments": staticmethod(lambda: {"Assembly": assembly_document})},
+    )()
+    monkeypatch.setitem(sys.modules, "FreeCAD", fake_freecad)
+    service = type(
+        "Service",
+        (),
+        {"_active_document": lambda self: assembly_document},
+    )()
+    catalog = {
+        "candidates": [
+            {
+                "reference": {
+                    "document_uid": "closed-source",
+                    "object_name": "PublishedGear",
+                    "document_path": "gear.FCStd",
+                },
+                "authoring_source": {
+                    "source_id": source_id,
+                    "domain": "partdesign",
+                    "output_name": "Gear",
+                },
+            }
+        ]
+    }
+
+    closed = session._run_universal_vibescript_tool(
+        service,
+        "AssemblyWorkbench",
+        "vibescript.read_api",
+        {"source_id": source_id},
+        component_catalog=catalog,
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+    unknown = session._run_universal_vibescript_tool(
+        service,
+        "AssemblyWorkbench",
+        "vibescript.read_api",
+        {"source_id": "6" * 32},
+        component_catalog=catalog,
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert closed["failure_code"] == "SOURCE_DOCUMENT_NOT_OPEN"
+    assert closed["observed"]["documents"][0]["document_uid"] == "closed-source"
+    assert unknown["failure_code"] == "SOURCE_NOT_FOUND"
+
+
+def test_assembly_connector_compatibility_uses_only_explicit_contracts() -> None:
+    from vibescript_assembly_api import explicit_connector_compatibility
+
+    legacy = explicit_connector_compatibility("revolute", [None, None])
+    assert legacy == {
+        "ok": True,
+        "joint_type": "revolute",
+        "validation": "native_joint_connector_validation",
+        "contracts": [None, None],
+    }
+    allowed = explicit_connector_compatibility(
+        "revolute",
+        [
+            {
+                "kind": "axis",
+                "allowed_joints": ["revolute"],
+                "compatibility": "shaft-v1",
+            },
+            {
+                "kind": "axis",
+                "allowed_joints": ["revolute", "fixed"],
+                "compatibility": "shaft-v1",
+            },
+        ],
+    )
+    assert allowed["ok"] is True
+    assert allowed["validation"] == "explicit_connector_contract"
+    disallowed = explicit_connector_compatibility(
+        "fixed",
+        [{"kind": "axis", "allowed_joints": ["revolute"]}, None],
+    )
+    assert disallowed["ok"] is False
+    assert "explicitly disallows" in disallowed["reason"]
+    mismatch = explicit_connector_compatibility(
+        "revolute",
+        [
+            {"kind": "axis", "compatibility": "shaft-v1"},
+            {"kind": "axis", "compatibility": "shaft-v2"},
+        ],
+    )
+    assert mismatch["ok"] is False
+    assert mismatch["compatibility"] == ["shaft-v1", "shaft-v2"]
+
+
+def test_editable_sources_indexes_hidden_outputs_and_sources_without_outputs() -> None:
+    class View:
+        Visibility = False
+
+    class Output:
+        PropertiesList = [
+            domains.PROP_PROGRAM_ID,
+            domains.PROP_PROGRAM_DOMAIN,
+            domains.PROP_PROGRAM_WORKBENCH,
+            domains.PROP_PROGRAM_REVISION,
+            domains.PROP_PROGRAM_OUTPUT,
+            domains.PROP_PROGRAM_LABEL,
+            domains.PROP_PROGRAM_CONTRACT,
+            domains.PROP_PROGRAM_EDITOR_DRAFT,
+        ]
+        Name = "HiddenBody"
+        Label = "Hidden Body"
+        TypeId = "PartDesign::Body"
+        ViewObject = View()
+        VibeCADVibeScriptProgramId = "a" * 32
+        VibeCADVibeScriptDomain = "partdesign"
+        VibeCADVibeScriptWorkbench = "PartDesignWorkbench"
+        VibeCADVibeScriptRevision = "b" * 64
+        VibeCADVibeScriptOutputName = "Body"
+        VibeCADVibeScriptProgramLabel = "Body Source"
+        VibeCADVibeScriptProgramContract = "{}"
+        VibeCADVibeScriptEditorDraft = ""
+
+    class DraftOnly:
+        PropertiesList = list(Output.PropertiesList)
+        Name = "SourceDraft"
+        Label = "Source Draft"
+        TypeId = "App::FeaturePython"
+        ViewObject = View()
+        VibeCADVibeScriptProgramId = "c" * 32
+        VibeCADVibeScriptDomain = "partdesign"
+        VibeCADVibeScriptWorkbench = "PartDesignWorkbench"
+        VibeCADVibeScriptRevision = "d" * 64
+        VibeCADVibeScriptOutputName = ""
+        VibeCADVibeScriptProgramLabel = "Draft Source"
+        VibeCADVibeScriptProgramContract = "{}"
+        VibeCADVibeScriptEditorDraft = "{}"
+
+    class ForeignMeshSource:
+        PropertiesList = list(Output.PropertiesList)
+        Name = "ForeignMesh"
+        Label = "Foreign Mesh"
+        TypeId = "Mesh::Feature"
+        ViewObject = View()
+        VibeCADVibeScriptProgramId = "e" * 32
+        VibeCADVibeScriptDomain = "mesh"
+        VibeCADVibeScriptWorkbench = "MeshWorkbench"
+        VibeCADVibeScriptRevision = "f" * 64
+        VibeCADVibeScriptOutputName = "Mesh"
+        VibeCADVibeScriptProgramLabel = "Foreign Mesh Source"
+        VibeCADVibeScriptProgramContract = "{}"
+        VibeCADVibeScriptEditorDraft = ""
+
+    class Service:
+        def active_workbench_name(self):
+            return "PartDesignWorkbench"
+
+        def _active_document(self):
+            return type(
+                "Document",
+                (),
+                {"Objects": [Output(), DraftOnly(), ForeignMeshSource()]},
+            )()
+
+    index = domains.editable_sources_snapshot(Service(), "partdesign")
+
+    assert index["tools"]["read_source"] == "vibescript.read_source"
+    assert index["tools"]["read_api"] == "vibescript.read_api"
+    assert index["tools"]["create_program"] == "vibescript.create_program"
+    assert index["tools"]["edit_source"] == "vibescript.edit_source"
+    assert index["tools"]["set_inputs"] == "vibescript.set_inputs"
+    assert index["tools"]["reconfigure_program"] == ("vibescript.reconfigure_program")
+    assert index["tools"]["delete_output"] == "vibescript.delete_output"
+    assert index["tools"]["delete_program"] == "vibescript.delete_program"
+    assert index["workbench"] == "PartDesignWorkbench"
+    assert index["domain"] == "partdesign"
+    assert [item["source_id"] for item in index["sources"]] == [
+        "a" * 32,
+        "c" * 32,
+    ]
+    hidden, draft = index["sources"]
+    assert hidden["source_kind"] == "vibescript_program"
+    assert hidden["read_tool"] == "vibescript.read_source"
+    assert hidden["edit_tool"] == "vibescript.edit_source"
+    assert hidden["affected_outputs"] == [
+        {
+            "name": "Body",
+            "object_name": "HiddenBody",
+            "label": "Hidden Body",
+            "type_id": "PartDesign::Body",
+            "visible": False,
+        }
+    ]
+    assert hidden["read_arguments"] == {
+        "source_id": "a" * 32,
+        "include_logs": False,
+    }
+    assert hidden["build_tool"] == "vibescript.build_program"
+    assert hidden["build_arguments"] == {
+        "source_id": "a" * 32,
+        "expected_revision": "b" * 64,
+    }
+    assert hidden["edit_target_arguments"] == {
+        "source_id": "a" * 32,
+        "expected_revision": "b" * 64,
+    }
+    assert draft["affected_outputs"] == []
+    assert draft["status"] == "editor_draft"
+    assert all("source" not in item for item in index["sources"])
+
+
+def test_editable_sources_include_failed_and_unpublished_persisted_programs(
+    tmp_path: Path,
+) -> None:
+    failed_id = "1" * 32
+    validated_id = "2" * 32
+    failed_revision = "a" * 64
+    validated_revision = "b" * 64
+    program_root = tmp_path / "vibescript" / "partdesign"
+
+    def write_program(program_id: str, manifest: dict[str, object]) -> None:
+        directory = program_root / program_id
+        directory.mkdir(parents=True)
+        (directory / "program.json").write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+
+    common = {
+        "schema": domains.PROGRAM_SCHEMA,
+        "version": domains.PROGRAM_VERSION,
+        "domain": "partdesign",
+        "workbench": "PartDesignWorkbench",
+        "source": "result = {'Body': api.box(1, 2, 3)}",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "inputs": {},
+        "expected_outputs": [{"name": "Body", "type": "solid"}],
+        "accepted_revision": "",
+        "live_outputs": {},
+    }
+    write_program(
+        failed_id,
+        {
+            **common,
+            "program_id": failed_id,
+            "label": "Failed source",
+            "working_revision": failed_revision,
+            "latest_candidate": {
+                "status": "failed",
+                "revision": failed_revision,
+                "attempt_id": "failed-attempt",
+                "failure": {
+                    "failure_code": "RUN_FAILED",
+                    "failure_stage": "external_process",
+                    "error": "Candidate did not build.",
+                    "observed": {"stdout": "must not enter provider context"},
+                },
+            },
+        },
+    )
+    write_program(
+        validated_id,
+        {
+            **common,
+            "program_id": validated_id,
+            "label": "Validated source",
+            "working_revision": validated_revision,
+            "latest_candidate": {
+                "status": "validated",
+                "revision": validated_revision,
+                "attempt_id": "validated-attempt",
+            },
+        },
+    )
+
+    class Service:
+        def active_workbench_name(self):
+            return "PartDesignWorkbench"
+
+        def project_scope_snapshot(self):
+            return {"root": str(tmp_path)}
+
+        def _active_document(self):
+            return None
+
+    captured = domains.capture_editable_sources_snapshot(
+        Service(),
+        "partdesign",
+    )
+    assert captured["native_program_count"] == 0
+
+    index = domains.complete_editable_sources_snapshot(captured)
+
+    assert index["source_count"] == 2
+    by_id = {item["source_id"]: item for item in index["sources"]}
+    failed = by_id[failed_id]
+    validated = by_id[validated_id]
+    assert failed["status"] == "build_failed"
+    assert failed["current_revision"] == failed_revision
+    assert failed["affected_outputs"] == []
+    assert failed["latest_candidate"] == {
+        "status": "failed",
+        "revision": failed_revision,
+        "attempt_id": "failed-attempt",
+        "failure": {
+            "failure_code": "RUN_FAILED",
+            "failure_stage": "external_process",
+            "error": "Candidate did not build.",
+        },
+    }
+    assert validated["status"] == "validated_unpublished"
+    assert validated["current_revision"] == validated_revision
+    assert validated["affected_outputs"] == []
+    assert "result = {'Body'" not in json.dumps(index)
+    assert "observed" not in json.dumps(index)
+
+
+def test_component_catalog_finds_literal_substrings_in_saved_project_files(
+    tmp_path: Path,
+) -> None:
+    from VibeCADComponentCatalog import search_captured_component_catalog
+
+    owner = tmp_path / "assembly.FCStd"
+    owner.write_bytes(b"owner")
+    component = tmp_path / "components" / "drive-bracket.FCStd"
+    component.parent.mkdir()
+    document_xml = """<?xml version="1.0" encoding="utf-8"?>
+<Document>
+  <Properties>
+    <Property name="Label" type="App::PropertyString"><String value="Drive Module"/></Property>
+    <Property name="Uid" type="App::PropertyUUID"><Uuid value="component-uid"/></Property>
+  </Properties>
+  <Objects>
+    <Object type="PartDesign::Body" name="BracketBody" id="1"/>
+    <Object type="PartDesign::Pad" name="Pad" id="2"/>
+  </Objects>
+  <ObjectData>
+    <Object name="BracketBody">
+      <Properties>
+        <Property name="Label" type="App::PropertyString"><String value="M3 Motor Bracket"/></Property>
+        <Property name="PartNumber" type="App::PropertyString"><String value="DRV-BRK-003"/></Property>
+        <Property name="VibeCADVibeScriptProgramId" type="App::PropertyString"><String value="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/></Property>
+        <Property name="VibeCADVibeScriptDomain" type="App::PropertyString"><String value="partdesign"/></Property>
+        <Property name="VibeCADVibeScriptOutputName" type="App::PropertyString"><String value="Bracket"/></Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>
+"""
+    with zipfile.ZipFile(component, "w") as archive:
+        archive.writestr("Document.xml", document_xml)
+    captured = {
+        "project_directory": str(tmp_path),
+        "owner_file": str(owner),
+        "open_document_files": [str(owner)],
+        "open_candidates": [],
+    }
+    result = search_captured_component_catalog(captured, "m3 brk", limit=10)
+    assert result["match_count"] == 1
+    match = result["matches"][0]
+    assert match["object_name"] == "BracketBody"
+    assert match["live_validated"] is False
+    assert match["reference"] == {
+        "document_uid": "component-uid",
+        "object_name": "BracketBody",
+        "document_path": "components/drive-bracket.FCStd",
+    }
+    assert all(item["object_name"] != "Pad" for item in result["matches"])
+
+
+def test_saved_catalog_uses_publication_not_private_implementation(
+    tmp_path: Path,
+) -> None:
+    from html import escape
+
+    from VibeCADComponentCatalog import search_captured_component_catalog
+
+    owner = tmp_path / "assembly.FCStd"
+    owner.write_bytes(b"owner")
+    component = tmp_path / "gearbox.FCStd"
+    frame = {
+        "schema": "vibecad-connector-frame-v1",
+        "origin_mm": [0, 0, 0],
+        "x_direction": [1, 0, 0],
+        "axis_direction": [0, 0, 1],
+        "matrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    }
+    interface_table = escape(
+        json.dumps(
+            {
+                "RotationAxis": {
+                    "output": "PlanetMaster",
+                    "selection": {"type": "origin"},
+                    "resolved": {
+                        "object": "PublishedPlanet",
+                        "subelements": [],
+                        "geometry": [],
+                        "connector_frame": frame,
+                    },
+                }
+            },
+            separators=(",", ":"),
+        ),
+        quote=True,
+    )
+    document_xml = f"""<?xml version="1.0" encoding="utf-8"?>
+<Document>
+  <Properties>
+    <Property name="Label" type="App::PropertyString"><String value="Gearbox"/></Property>
+    <Property name="Uid" type="App::PropertyUUID"><Uuid value="gearbox-uid"/></Property>
+  </Properties>
+  <Objects>
+    <Object type="App::Part" name="ProgramRoot" id="1"/>
+    <Object type="PartDesign::Body" name="InternalPlanetBody" id="2"/>
+    <Object type="App::Link" name="PublishedPlanet" id="3"/>
+  </Objects>
+  <ObjectData>
+    <Object name="ProgramRoot"><Properties>
+      <Property name="VibeCADScriptedRole" type="App::PropertyString"><String value="model"/></Property>
+      <Property name="VibeCADPublishedInterfaces" type="App::PropertyString"><String value="{interface_table}"/></Property>
+    </Properties></Object>
+    <Object name="InternalPlanetBody"><Properties>
+      <Property name="Label" type="App::PropertyString"><String value="Planet Master Body"/></Property>
+      <Property name="VibeCADScriptedRole" type="App::PropertyString"><String value="implementation"/></Property>
+    </Properties></Object>
+    <Object name="PublishedPlanet"><Properties>
+      <Property name="Label" type="App::PropertyString"><String value="Planet Master"/></Property>
+      <Property name="VibeCADScriptedRole" type="App::PropertyString"><String value="publication"/></Property>
+      <Property name="VibeCADVibeScriptProgramId" type="App::PropertyString"><String value="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/></Property>
+      <Property name="VibeCADVibeScriptDomain" type="App::PropertyString"><String value="partdesign"/></Property>
+      <Property name="VibeCADVibeScriptOutputName" type="App::PropertyString"><String value="PlanetMaster"/></Property>
+      <Property name="VibeCADVibeScriptOutputType" type="App::PropertyString"><String value="solid"/></Property>
+    </Properties></Object>
+  </ObjectData>
+</Document>
+"""
+    with zipfile.ZipFile(component, "w") as archive:
+        archive.writestr("Document.xml", document_xml)
+    result = search_captured_component_catalog(
+        {
+            "project_directory": str(tmp_path),
+            "owner_file": str(owner),
+            "open_document_files": [str(owner)],
+            "open_candidates": [],
+        },
+        "planet master",
+    )
+    assert [item["object_name"] for item in result["matches"]] == [
+        "PublishedPlanet"
+    ]
+    match = result["matches"][0]
+    assert match["assembly_contract"]["vibescript_output_type"] == "solid"
+    assert match["published_interfaces"] == ["RotationAxis"]
+    assert match["interfaces"][0]["frame"] == frame
+
+
+def test_component_inventory_is_copy_ready_and_prepared_search_does_not_rescan(
+    tmp_path: Path,
+) -> None:
+    from VibeCADComponentCatalog import (
+        component_inventory,
+        prepare_captured_component_catalog,
+        search_prepared_component_catalog,
+    )
+
+    candidate = {
+        "document_label": "Drive Module",
+        "object_name": "BracketBody",
+        "label": "Motor Bracket",
+        "type_id": "PartDesign::Body",
+        "source": "open_document",
+        "live_validated": True,
+        "portable": True,
+        "reference": {
+            "document_uid": "component-uid",
+            "object_name": "BracketBody",
+        },
+        "authoring_source": {
+            "source_id": "a" * 32,
+            "domain": "partdesign",
+            "output_name": "Bracket",
+        },
+        "published_interfaces": ["MountAxis", "MountFace"],
+    }
+    prepared = prepare_captured_component_catalog(
+        {
+            "owner_document_uid": "assembly-uid",
+            "project_directory": "",
+            "owner_file": "",
+            "open_document_files": [],
+            "open_candidates": [candidate],
+        }
+    )
+    inventory = component_inventory(prepared)
+
+    assert inventory == {
+        "schema": "vibecad-available-components-v1",
+        "component_count": 1,
+        "components_included": 1,
+        "components_truncated": False,
+        "project_file_search_available": False,
+        "components": [candidate],
+        "usage": (
+            "Use a component's reference directly with api.component or api.instances. "
+            "Call component_catalog.search only when the needed component is not listed "
+            "or when additional catalog metadata is required. To enumerate a truncated "
+            "catalog, use detail='references', limit=200, offset=0, then repeat with "
+            "offset=next_offset until next_offset is null. A page may return fewer "
+            "than limit so its complete matches array remains provider-safe."
+        ),
+    }
+    assert search_prepared_component_catalog(prepared, "mount")["match_count"] == 1
+    assert search_prepared_component_catalog(prepared, "motor bracket")["matches"] == [
+        candidate
+    ]
+
+
+def test_component_catalog_states_exact_mechanism_boundaries() -> None:
+    from VibeCADComponentCatalog import _assembly_component_contract
+
+    rigid = _assembly_component_contract(
+        "Part::Feature",
+        solid_count=4,
+        output_type="compound",
+    )
+    assert rigid["default_behavior"] == "rigid_occurrence"
+    assert rigid["solid_count"] == 4
+    assert rigid["movable_unit_count"] == 1
+    assert rigid["child_solids_independently_movable"] is False
+    assert rigid["flexible_occurrence_supported"] is False
+    assert "api.instances" in rigid["authoring_correction"]
+
+    subassembly = _assembly_component_contract(
+        "Assembly::AssemblyObject",
+        solid_count=9,
+    )
+    assert subassembly["default_behavior"] == "rigid_occurrence"
+    assert subassembly["flexible_occurrence_supported"] is True
+    assert subassembly["internal_occurrences_independently_movable"] is True
+    assert "flexible=True" in subassembly["flexible_behavior"]
+
+
+def test_component_catalog_large_inventory_has_explicit_bounded_pagination() -> None:
+    import VibeCADSession as session
+
+    from VibeCADComponentCatalog import (
+        MAX_COMPONENT_SEARCH_RESULTS,
+        ComponentCatalogError,
+        prepare_captured_component_catalog,
+        search_prepared_component_catalog,
+    )
+    from tool_impl.service.component_catalog_search import TOOL_SPEC
+
+    candidates = [
+        {
+            "document_label": "Engine Parts",
+            "object_name": f"Body{index:03d}",
+            "label": f"Engine Component {index:03d}",
+            "type_id": "PartDesign::Body",
+            "source": "open_document",
+            "live_validated": True,
+            "portable": True,
+            "reference": {
+                "document_uid": "engine-parts-uid",
+                "object_name": f"Body{index:03d}",
+            },
+            "description": f"Full metadata for engine component {index:03d}",
+        }
+        for index in range(344)
+    ]
+    prepared = prepare_captured_component_catalog(
+        {
+            "owner_document_uid": "assembly-uid",
+            "project_directory": "",
+            "owner_file": "",
+            "open_document_files": [],
+            "open_candidates": candidates,
+        }
+    )
+
+    first = search_prepared_component_catalog(
+        prepared,
+        "Body",
+        limit=200,
+        detail="references",
+    )
+    second = search_prepared_component_catalog(
+        prepared,
+        "Body",
+        limit=200,
+        offset=first["next_offset"],
+        detail="references",
+    )
+
+    assert MAX_COMPONENT_SEARCH_RESULTS == 200
+    assert first["match_count"] == 344
+    assert first["returned_count"] == 200
+    assert first["next_offset"] == 200
+    assert first["matches_truncated"] is True
+    assert set(first["matches"][0]) == {"label", "reference"}
+    assert second["offset"] == 200
+    assert second["returned_count"] == 144
+    assert second["next_offset"] is None
+    assert second["matches_truncated"] is False
+    assert [
+        item["reference"]["object_name"]
+        for item in [*first["matches"], *second["matches"]]
+    ] == [f"Body{index:03d}" for index in range(344)]
+
+    properties = TOOL_SPEC["parameters"]["properties"]
+    assert properties["limit"]["maximum"] == 200
+    assert properties["offset"]["minimum"] == 0
+    assert properties["detail"]["enum"] == ["references", "full"]
+    visible_properties = session._provider_schema_copy(TOOL_SPEC)["parameters"][
+        "properties"
+    ]
+    assert visible_properties["limit"]["maximum"] == 200
+    assert "1 to 200" in visible_properties["limit"]["description"]
+    assert "next_offset" in visible_properties["offset"]["description"]
+    tool_spec = ToolSpec.from_mapping(TOOL_SPEC)
+    tool_spec.validate_arguments(
+        {"query": "Body", "limit": 200, "offset": 0, "detail": "references"}
+    )
+    with pytest.raises(ComponentCatalogError, match="between 1 and 200"):
+        search_prepared_component_catalog(prepared, limit=201)
+
+
+def test_component_catalog_never_loses_matches_to_provider_byte_boundary() -> None:
+    import VibeCADProvider as provider
+
+    from VibeCADComponentCatalog import (
+        MAX_COMPONENT_SEARCH_RESPONSE_BYTES,
+        prepare_captured_component_catalog,
+        search_prepared_component_catalog,
+    )
+
+    candidates = [
+        {
+            "document_label": "Large Engine Catalog",
+            "object_name": f"EngineBody{index:03d}",
+            "label": f"Engine Component {index:03d}",
+            "type_id": "PartDesign::Body",
+            "source": "open_document",
+            "live_validated": True,
+            "portable": True,
+            "reference": {
+                "document_uid": "large-engine-catalog-uid",
+                "object_name": f"EngineBody{index:03d}",
+            },
+            "description": f"Component {index:03d} " + ("x" * 2000),
+        }
+        for index in range(200)
+    ]
+    prepared = prepare_captured_component_catalog(
+        {
+            "owner_document_uid": "assembly-uid",
+            "project_directory": "",
+            "owner_file": "",
+            "open_document_files": [],
+            "open_candidates": candidates,
+        }
+    )
+
+    result = search_prepared_component_catalog(prepared, limit=200, detail="full")
+    visible = provider._provider_visible_tool_result({"ok": True, **result})
+
+    assert result["returned_count"] < 200
+    assert result["returned_count"] > 0
+    assert result["page_byte_limited"] is True
+    assert result["next_offset"] == result["returned_count"]
+    assert provider._provider_json_bytes({"ok": True, **result}) <= (
+        MAX_COMPONENT_SEARCH_RESPONSE_BYTES
+    )
+    assert isinstance(visible["matches"], list)
+    assert len(visible["matches"]) == result["returned_count"]
+    assert "vibecad_result_boundary" not in visible
+
+
 def test_partdesign_vibescript_schema_golden_fixture() -> None:
     fixture_path = Path(__file__).with_name("partdesign_vibescript_schema_sha256.json")
     expected = json.loads(fixture_path.read_text(encoding="utf-8"))
     pack = domains.get_vibescript_pack("PartDesignWorkbench")
     assert pack is not None
     observed: dict[str, str] = {}
-    for raw in domains.domain_tool_specs(pack):
+    for raw in (*domains.universal_tool_specs(), *domains.domain_tool_specs(pack)):
         schema = ToolSpec.from_mapping(raw).to_schema(
             active_workbench="PartDesignWorkbench"
         )
@@ -415,6 +2015,30 @@ def test_source_and_input_policy_blocks_escape_hatches() -> None:
     assert domains.validate_inputs(
         {"source": {"document_uid": "uid", "object_name": "Cloud"}}
     )
+    assert domains.validate_inputs(
+        {
+            "source": {
+                "document_uid": "uid",
+                "object_name": "Bracket",
+                "document_path": "parts/bracket.FCStd",
+            }
+        }
+    )
+    for invalid_path in (
+        "../bracket.FCStd",
+        "./bracket.FCStd",
+        "parts//bracket.FCStd",
+    ):
+        with pytest.raises(ValueError, match="segments"):
+            domains.validate_inputs(
+                {
+                    "source": {
+                        "document_uid": "uid",
+                        "object_name": "Bracket",
+                        "document_path": invalid_path,
+                    }
+                }
+            )
     with pytest.raises(ValueError, match="must require"):
         domains.validate_input_schema(
             {
@@ -431,6 +2055,32 @@ def test_source_and_input_policy_blocks_escape_hatches() -> None:
                     }
                 },
                 "additionalProperties": False,
+            }
+        )
+
+
+def test_input_reference_deduplication_preserves_one_unambiguous_locator() -> None:
+    from VibeCADVibeScriptDomainRuntime import _input_references
+
+    legacy = {
+        "document_uid": "component-document",
+        "object_name": "Bracket",
+    }
+    portable = {
+        **legacy,
+        "document_path": "parts/bracket.FCStd",
+    }
+    assert _input_references({"first": legacy, "second": portable}) == [portable]
+    assert _input_references({"first": portable, "second": legacy}) == [portable]
+
+    with pytest.raises(ValueError, match="conflicting document_path locators"):
+        _input_references(
+            {
+                "first": portable,
+                "second": {
+                    **legacy,
+                    "document_path": "alternate/bracket.FCStd",
+                },
             }
         )
 
@@ -503,9 +2153,7 @@ def test_part_api_is_explicit_documented_and_generated_from_the_runtime() -> Non
         "never cycle through guessed indexes"
         in description["model_verification_contract"]["selection_repair"]
     )
-    assert (
-        "cannot switch workbench or engine" in description["workbench_handoffs"]["rule"]
-    )
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -628,7 +2276,7 @@ def test_surface_api_is_explicit_typed_and_generated_from_runtime() -> None:
         "never retry by guessing"
         in description["model_verification_contract"]["reference"].lower()
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -796,7 +2444,7 @@ def test_spreadsheet_api_is_explicit_atomic_and_generated_from_runtime() -> None
         "domain_failure_stage"
         in description["model_verification_contract"]["failure_repair"]
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert len(json.dumps(description, sort_keys=True)) < 32_768
     assert len(set(api.exported_names)) == len(api.exported_names)
     for pattern in description["recommended_patterns"]:
@@ -948,7 +2596,7 @@ def test_material_api_is_explicit_separated_and_generated_from_runtime() -> None
         "next_write_expected_revision"
         in description["model_verification_contract"]["failure_repair"]
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -1046,7 +2694,10 @@ def test_material_catalog_context_is_comparison_ready_but_path_free(
     import sys
     from types import SimpleNamespace
 
-    from vibescript_material_worker import material_catalog_index
+    from vibescript_material_worker import (
+        material_catalog_index,
+        search_material_catalog,
+    )
 
     card = SimpleNamespace(
         UUID="0051bddf-6f62-4406-b8c9-569322880564",
@@ -1093,6 +2744,62 @@ def test_material_catalog_context_is_comparison_ready_but_path_free(
     assert "CustomFatigueModel" in record["physical_property_names"]
     assert "TexturePath" in record["appearance_property_names"]
     assert "/private/catalog" not in json.dumps(catalog)
+
+    search = search_material_catalog(
+        "prod 2700 struct",
+        require_physical_properties=["Density"],
+        limit=5,
+    )
+    assert search["match_count"] == 1
+    assert search["materials"][0]["constructor"] == {
+        "material_uuid": "0051bddf-6f62-4406-b8c9-569322880564",
+        "require_physical_properties": ["Density"],
+        "require_appearance_properties": [],
+    }
+    assert "/private/catalog" not in json.dumps(search)
+
+    from tool_impl.service import material_catalog_search
+
+    tool_result = material_catalog_search.run(
+        None,
+        query="alloy",
+        require_physical_properties=["Density"],
+    )
+    assert tool_result["ok"] is True
+    assert tool_result["returned_count"] == 1
+
+
+def test_nickel_alloy_718_card_is_packaged_for_hot_section_design() -> None:
+    module_root = Path(__file__).resolve().parents[2]
+    card_path = (
+        module_root
+        / "Material"
+        / "Resources"
+        / "Materials"
+        / "Standard"
+        / "Metal"
+        / "Alloys"
+        / "Nickel-Alloy-718.FCMat"
+    )
+    card = card_path.read_text(encoding="utf-8")
+    assert 'UUID: "db767dc3-7a48-4fbe-a284-78181f5f05df"' in card
+    assert 'SourceURL: "https://www.specialmetals.com/' in card
+    assert '"UNS N07718"' in card
+    for property_name in (
+        "Density",
+        "YoungsModulus",
+        "PoissonRatio",
+        "SpecificHeat",
+        "ThermalConductivity",
+        "ThermalExpansionCoefficient",
+    ):
+        assert f"{property_name}:" in card
+
+    material_cmake = (module_root / "Material" / "CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
+    relative_card = "Resources/Materials/Standard/Metal/Alloys/Nickel-Alloy-718.FCMat"
+    assert relative_card in material_cmake
 
 
 def test_material_worker_errors_always_provide_one_model_repair() -> None:
@@ -1141,6 +2848,35 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
         "gears",
         "belt",
     }
+    joint_details = description["api_details"]["joint"]
+    assert joint_details["kinds"] == [
+        "fixed",
+        "revolute",
+        "cylindrical",
+        "slider",
+        "ball",
+        "distance",
+        "parallel",
+        "perpendicular",
+        "angle",
+        "rack_pinion",
+        "screw",
+        "gears",
+        "belt",
+    ]
+    assert joint_details["required_parameters"]["fixed"] == []
+    assert joint_details["required_parameters"]["distance"] == ["distance_mm"]
+    assert joint_details["required_parameters"]["gears"] == [
+        "radius1_mm",
+        "radius2_mm",
+    ]
+    assert joint_details["limit_parameters"]["angle_limits_degrees"] == [
+        "revolute",
+        "cylindrical",
+    ]
+    assert "one rigid mechanism body" in description["api_details"]["component"][
+        "definition_rule"
+    ]
     assert description["solver_codes"]["-6"] == "no_grounded_component"
     assert description["capability_inventory"]["joint_graph"]["status"] == "supported"
     assert any(
@@ -1165,6 +2901,20 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     assert description["operation_selection"]["named_parts_table"] == (
         "api.bill_of_materials"
     )
+    assert description["operation_selection"]["standard_hardware_occurrence"] == (
+        "api.fastener"
+    )
+    assert description["operation_selection"]["repeated_source_occurrences"] == (
+        "api.instances"
+    )
+    assert (
+        "component_catalog.search" in description["input_reference_contract"]["purpose"]
+    )
+    assert (
+        "document_path"
+        in description["input_reference_contract"]["schema"]["properties"]
+    )
+    assert "fastener_catalog.search" in description["standard_hardware"]["selection"]
     assert "no aliases" in description["operation_selection"]["redundancy_contract"]
     assert "failed_segment_index" in description["nested_subassemblies"]["repair"]
     assert any(
@@ -1218,10 +2968,28 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
         return {"document_uid": "document", "object_name": name}
 
     base = api.component(reference("BaseSource"), grounded=True, label="Base")
+    bolt = api.fastener(
+        "ISO4762",
+        "M6",
+        length_mm=20,
+        model_thread=True,
+        placement=[0, 0, 5],
+        label="Mounting Bolt",
+    )
     arm = api.component(
         reference("ArmSource"),
         placement={"position": [0, 0, 20], "rotation": [0, 0, 0, 2]},
         label="Arm",
+    )
+    repeated = api.instances(
+        {
+            "document_uid": "component-document",
+            "object_name": "Bracket",
+            "document_path": "parts/bracket.FCStd",
+        },
+        [[0, 0, 0], [25, 0, 0], [50, 0, 0]],
+        grounded_index=0,
+        labels=["Bracket 1", "Bracket 2", "Bracket 3"],
     )
     hinge = api.joint(
         "revolute",
@@ -1232,6 +3000,32 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     )
     model = api.assembly([base, arm], [hinge], label="Robot Arm")
     diagnostics = api.solve(model)
+    verification = api.mechanism_check(
+        model,
+        requirements=[
+            {
+                "type": "minimum_clearance",
+                "first": base,
+                "second": arm,
+                "minimum_mm": 0.25,
+                "tolerance_mm": 0.01,
+            }
+        ],
+        label="Static clearance",
+    )
+    allowed_contact = api.mechanism_check(
+        model,
+        contacts=[
+            {
+                "first": base,
+                "second": arm,
+                "policy": "allowed",
+                "first_interface": "MatingFace",
+                "second_interface": "SeatFace",
+                "tolerance_mm": 0.01,
+            }
+        ],
+    )
     drive = api.motion(hinge, "initialValue + pi/2*time")
     simulation = api.simulation(
         model,
@@ -1266,10 +3060,33 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     )
 
     assert base.properties["grounded"] is True
+    assert bolt.operation == "fastener"
+    assert bolt.output_type == "component_link"
+    assert bolt.arguments == ("ISO4762", "M6")
+    assert bolt.properties["length_mm"] == 20.0
+    assert bolt.properties["model_thread"] is True
+    assert bolt.properties["placement"]["position"] == (0.0, 0.0, 5.0)
     assert arm.properties["placement"]["rotation"] == (0.0, 0.0, 0.0, 1.0)
+    assert len(repeated) == 3
+    assert all(item.operation == "component" for item in repeated)
+    assert all(item.output_type == "component_link" for item in repeated)
+    assert repeated[0].properties["grounded"] is True
+    assert repeated[1].properties["grounded"] is False
+    assert repeated[2].properties["placement"]["position"] == (50.0, 0.0, 0.0)
+    assert repeated[1].arguments[0] == {
+        "document_uid": "component-document",
+        "object_name": "Bracket",
+        "document_path": "parts/bracket.FCStd",
+    }
     assert model.properties["components"] == (base, arm)
     assert model.properties["joints"] == (hinge,)
     assert diagnostics.arguments == (model,)
+    assert verification.arguments == (model,)
+    assert verification.output_type == "mechanism_verification"
+    assert verification.properties["requirements"][0]["first"] is base
+    assert verification.properties["requirements"][0]["minimum_mm"] == 0.25
+    assert allowed_contact.properties["contacts"][0]["policy"] == "allowed"
+    assert allowed_contact.properties["contacts"][0]["first_interface"] == "MatingFace"
     assert drive.arguments == (hinge,)
     assert drive.properties["motion_type"] == "angular"
     assert simulation.arguments == (model,)
@@ -1418,6 +3235,16 @@ def test_assembly_api_rejects_ambiguous_graphs_and_wrong_joint_parameters() -> N
 
     with pytest.raises(ValueError, match=r"api\.component.*source"):
         api.component({"object_name": "First"})
+    with pytest.raises(ValueError, match=r"api\.instances.*placements"):
+        api.instances(reference("First"), [])
+    with pytest.raises(ValueError, match=r"api\.instances.*grounded_index"):
+        api.instances(reference("First"), [[0, 0, 0]], grounded_index=1)
+    with pytest.raises(ValueError, match=r"api\.instances.*labels"):
+        api.instances(
+            reference("First"),
+            [[0, 0, 0], [1, 0, 0]],
+            labels=["Only one"],
+        )
     with pytest.raises(ValueError, match=r"api\.connector.*selection"):
         api.connector(first, "Face0")
     with pytest.raises(ValueError, match=r"api\.connector.*anchor.*exact"):
@@ -1489,6 +3316,16 @@ def test_assembly_api_rejects_ambiguous_graphs_and_wrong_joint_parameters() -> N
     fixed = api.joint("fixed", api.connector(first), api.connector(second))
     cylindrical = api.joint("cylindrical", api.connector(first), api.connector(second))
     mechanism = api.assembly([first, second], [revolute])
+    scoped_mechanism = api.assembly(
+        {"Base": first, "Arm": second},
+        {"Hinge": revolute},
+    )
+    assert scoped_mechanism.properties["component_names"] == ("Base", "Arm")
+    assert scoped_mechanism.properties["joint_names"] == ("Hinge",)
+    with pytest.raises(ValueError, match=r"api\.assembly.*stable-key mapping"):
+        api.assembly({"Base": first, "Arm": second}, [revolute])
+    with pytest.raises(ValueError, match=r"api\.assembly.*unique across the graph"):
+        api.assembly({"Member": first, "Arm": second}, {"Member": revolute})
     drive = api.motion(revolute, "initialValue + pi/2*time")
     assert drive.properties["formula"] == "initialValue + pi/2*time"
     assert (
@@ -1511,11 +3348,13 @@ def test_assembly_api_rejects_ambiguous_graphs_and_wrong_joint_parameters() -> N
             api.motion(revolute, formula)
     with pytest.raises(ValueError, match=r"api\.simulation.*same graph value"):
         api.simulation(mechanism, [drive, drive])
+    scoped_simulation = api.simulation(scoped_mechanism, {"HingeDrive": drive})
+    assert scoped_simulation.properties["motion_names"] == ("HingeDrive",)
     with pytest.raises(ValueError, match=r"api\.simulation.*greater than"):
         api.simulation(mechanism, [drive], start_time_s=1, end_time_s=1)
     with pytest.raises(ValueError, match=r"api\.simulation.*10000 native frames"):
         api.simulation(mechanism, [drive], end_time_s=100, time_step_s=0.001)
-    with pytest.raises(ValueError, match=r"api\.exploded_view.*1 through 64"):
+    with pytest.raises(ValueError, match=r"api\.exploded_view.*1 through 4096"):
         api.exploded_view(mechanism, [])
     with pytest.raises(ValueError, match=r"api\.exploded_view.*exactly one"):
         api.exploded_view(mechanism, [{"components": [first]}])
@@ -1589,6 +3428,63 @@ def test_assembly_api_rejects_ambiguous_graphs_and_wrong_joint_parameters() -> N
         )
     with pytest.raises(ValueError, match=r"api\.bill_of_materials.*assembly"):
         api.bill_of_materials(first)
+    with pytest.raises(
+        ValueError,
+        match=r"api\.mechanism_check.*at least one explicit pair",
+    ):
+        api.mechanism_check(mechanism)
+    with pytest.raises(
+        ValueError,
+        match=r"api\.mechanism_check.*tolerance_mm",
+    ):
+        api.mechanism_check(
+            mechanism,
+            requirements=[
+                {
+                    "type": "collision_free",
+                    "first": first,
+                    "second": second,
+                }
+            ],
+        )
+    with pytest.raises(
+        ValueError,
+        match=r"api\.mechanism_check.*duplicates the unordered pair",
+    ):
+        api.mechanism_check(
+            mechanism,
+            requirements=[
+                {
+                    "type": "collision_free",
+                    "first": first,
+                    "second": second,
+                    "tolerance_mm": 0.01,
+                }
+            ],
+            contacts=[
+                {
+                    "first": second,
+                    "second": first,
+                    "policy": "prohibited",
+                    "tolerance_mm": 0.01,
+                }
+            ],
+        )
+    with pytest.raises(
+        ValueError,
+        match=r"api\.mechanism_check.*evaluated requirement",
+    ):
+        api.mechanism_check(
+            mechanism,
+            contacts=[
+                {
+                    "first": first,
+                    "second": second,
+                    "policy": "ignored",
+                    "reason": "Reference envelope",
+                }
+            ],
+        )
 
 
 def test_assembly_bom_planner_keeps_model_paths_exact_and_actionable() -> None:
@@ -1897,185 +3793,9 @@ def test_assembly_occurrence_global_placement_failure_is_never_silently_local() 
     assert "same stable occurrence_path" in failure.value.details["correction"]
 
 
-def test_bim_api_is_explicit_hierarchical_and_generated_from_runtime() -> None:
-    from vibescript_domain_api import create_domain_api
-
-    pack = domains.get_vibescript_pack("BIMWorkbench")
-    assert pack is not None
-    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
-    adapter = domains.get_domain_adapter(pack.domain)
-    assert adapter is not None
-    description = adapter.describe_api()
-
-    assert description["api_contract"] == "vibecad-vibescript-bim-api-v1"
-    assert tuple(api.exported_names) == pack.api_exports
-    assert [item["name"] for item in description["runtime_exports"]] == list(
-        pack.api_exports
-    )
-    assert all(item["description"] for item in description["runtime_exports"])
-    assert all(
-        "*args" not in item["signature"] and "**properties" not in item["signature"]
-        for item in description["runtime_exports"]
-    )
-    assert set(description["native_object_contracts"]) == set(pack.output_types)
-    selection = description["operation_selection"]
-    assert selection["continuous_wall_run"].startswith("api.wall")
-    assert selection["rectangular_structural_member"].startswith("api.structure")
-    assert "single canonical selector" in selection["rectangular_structural_member"]
-    assert "not a visible door" in selection["hosted_wall_void"]
-    assert "seven exports are distinct" in selection["redundancy_contract"]
-    assert description["composition_contract"]["construction_order"][-1].startswith(
-        "Return every graph node once"
-    )
-    assert "read-only" in description["domain_context"]["document_bim_objects"]
-    assert (
-        "next_write_expected_revision"
-        in description["model_verification_contract"]["failure_repair"]
-    )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
-    assert "door/window fills" in description["capability_boundary"]["not_yet_exposed"]
-    assert (
-        len(
-            json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        )
-        < 32_000
-    )
-    for pattern in description["recommended_patterns"]:
-        domains.validate_program_source(pattern["source"])
-
-    site = api.site(city="Chicago", latitude=41.8781, longitude=-87.6298)
-    building = api.building(site)
-    level = api.level(building, 0, height=3200)
-    wall = api.wall(level, [[0, 0], [6000, 0]], width=250, height=3000)
-    slab = api.slab(
-        level,
-        [[0, 0], [6000, 0], [6000, 4000], [0, 4000]],
-        thickness=250,
-    )
-    column = api.structure(level, 350, 350, 3000, role="column")
-    opening = api.opening(wall, 1200, 1500, offset=1200, sill=900)
-
-    values = (site, building, level, wall, slab, column, opening)
-    assert [value.output_type for value in values] == list(pack.output_types)
-    assert [value.properties["graph_id"] for value in values] == [
-        f"bim{index}" for index in range(1, 8)
-    ]
-    assert opening.arguments[0] is wall
-    assert wall.arguments[0] is level
-    with pytest.raises(TypeError):
-        wall.properties["width"] = 1
-
-
-def test_bim_api_rejects_invalid_hierarchy_geometry_and_opening_fit() -> None:
-    from vibescript_domain_api import create_domain_api
-    from vibescript_bim_worker import BIMCandidateError, validate_bim_graph
-
-    pack = domains.get_vibescript_pack("BIMWorkbench")
-    assert pack is not None
-    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
-    site = api.site()
-    building = api.building(site)
-    level = api.level(building, 0, height=3000)
-    wall = api.wall(level, [[0, 0], [4000, 0]], width=200, height=2800)
-
-    with pytest.raises(ValueError, match=r"api\.building.*BIM site") as source_failure:
-        api.building(level)
-    assert source_failure.value.details["stage"] == "source_validation"
-    assert source_failure.value.details["operation"] == "building"
-    assert source_failure.value.details["parameter"] == "site"
-    assert (
-        "Change only the failing source expression"
-        in source_failure.value.details["correction"]
-    )
-    with pytest.raises(ValueError, match=r"api\.wall.*segments 0 and 2 intersect"):
-        api.wall(level, [[0, 0], [4, 4], [0, 4], [4, 0]], closed=True)
-    with pytest.raises(ValueError, match=r"api\.slab.*non-zero planar area"):
-        api.slab(level, [[0, 0], [1, 0], [2, 0]])
-    with pytest.raises(ValueError, match=r"api\.structure.*greater than 0"):
-        api.structure(level, 0, 1, 1)
-    with pytest.raises(ValueError, match=r"api\.opening.*segment.*inclusive range"):
-        api.opening(wall, 1, 1, segment=-1)
-
-    expected_outputs = [
-        {"name": "Site", "type": "site"},
-        {"name": "Building", "type": "building"},
-        {"name": "Level", "type": "level"},
-        {"name": "Wall", "type": "wall"},
-        {"name": "Opening", "type": "opening"},
-    ]
-
-    def validate_opening(opening) -> None:
-        validate_bim_graph(
-            {
-                "Site": site,
-                "Building": building,
-                "Level": level,
-                "Wall": wall,
-                "Opening": opening,
-            },
-            expected_outputs,
-            require_domain_values=True,
-        )
-
-    with pytest.raises(
-        BIMCandidateError, match=r"extends beyond wall segment"
-    ) as fit_failure:
-        validate_opening(api.opening(wall, 3900, 100, offset=200))
-    assert fit_failure.value.details["stage"] == "opening_fit"
-    assert "adjust offset/width" in fit_failure.value.details["correction"]
-    with pytest.raises(BIMCandidateError, match=r"extends above wall"):
-        validate_opening(api.opening(wall, 100, 2500, sill=500))
-
-    first = api.opening(wall, 100, 100, offset=100)
-    touching = api.opening(wall, 100, 100, offset=200)
-    pair_outputs = [
-        *expected_outputs[:-1],
-        {"name": "First", "type": "opening"},
-        {"name": "Second", "type": "opening"},
-    ]
-    pair_result = {
-        "Site": site,
-        "Building": building,
-        "Level": level,
-        "Wall": wall,
-        "First": first,
-        "Second": touching,
-    }
-    assert validate_bim_graph(
-        pair_result,
-        pair_outputs,
-        require_domain_values=True,
-    )["ordered_names"][-2:] == ["First", "Second"]
-    overlapping = api.opening(wall, 100, 100, offset=199.5)
-    with pytest.raises(BIMCandidateError, match=r"overlap on wall segment"):
-        validate_bim_graph(
-            {**pair_result, "Second": overlapping},
-            pair_outputs,
-            require_domain_values=True,
-        )
-
-
-def test_bim_worker_errors_always_provide_one_model_repair() -> None:
-    from vibescript_bim_worker import BIMCandidateError
-
-    failure = BIMCandidateError(
-        "Malformed graph.",
-        details={"stage": "graph_contract", "path": "result['Wall']"},
-    )
-    assert "result['Wall']" in failure.details["correction"]
-    assert "never construct, copy, or mutate" in failure.details["correction"]
-
-    explicit = BIMCandidateError(
-        "Worker storage unavailable.",
-        details={"stage": "artifact_export", "correction": "Repair fixture storage."},
-    )
-    assert explicit.details["correction"] == "Repair fixture storage."
-
-
 def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
     from vibescript_domain_api import create_domain_api
+    from vibescript_meshpart_worker import validate_meshpart_definition
     from vibescript_mesh_worker import validate_mesh_definition
 
     pack = domains.get_vibescript_pack("MeshWorkbench")
@@ -2086,6 +3806,15 @@ def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
     description = adapter.describe_api()
 
     assert description["api_contract"] == "vibecad-vibescript-mesh-api-v1"
+    assert pack.output_types == (
+        "mesh",
+        "solid",
+        "shell",
+        "face",
+        "wire",
+        "compound",
+    )
+    assert pack.api_exports[-2:] == ("mesh_from_shape", "shape_from_mesh")
     assert tuple(api.exported_names) == pack.api_exports
     assert [item["name"] for item in description["runtime_exports"]] == list(
         pack.api_exports
@@ -2104,7 +3833,7 @@ def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
         "next_write_expected_revision"
         in description["model_verification_contract"]["failure_repair"]
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -2141,6 +3870,28 @@ def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
         scale=[2, 3, 4],
         label="Moved",
     )
+    union = api.union(
+        raw,
+        transformed,
+        linear_deflection=0.05,
+        angular_deflection_degrees=20,
+        relative=True,
+        label="Combined",
+    )
+    difference = api.difference(raw, transformed, label="Subtracted")
+    intersection = api.intersection(raw, transformed, label="Shared")
+    for boolean in (union, difference, intersection):
+        assert (
+            validate_mesh_definition(
+                boolean,
+                require_domain_value=True,
+            )
+            == boolean.to_payload()
+        )
+        assert len(boolean.arguments) == 2
+    assert union.properties["linear_deflection"] == 0.05
+    assert union.properties["angular_deflection_degrees"] == 20.0
+    assert union.properties["relative"] is True
     repaired = api.repair(
         transformed,
         remove_non_manifolds=True,
@@ -2179,12 +3930,62 @@ def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
         )
         == payload
     )
+    conversion_reference = {
+        "document_uid": "document",
+        "object_name": "ConversionSource",
+    }
+    meshed = api.mesh_from_shape(conversion_reference, label="Converted Mesh")
+    recovered = api.shape_from_mesh(
+        conversion_reference,
+        output_type="solid",
+        label="Recovered Solid",
+    )
+    for conversion in (meshed, recovered):
+        assert conversion.domain == "mesh"
+        assert (
+            validate_meshpart_definition(
+                conversion,
+                definition_domain="mesh",
+            )
+            == conversion.to_payload()
+        )
+    with pytest.raises(
+        ValueError,
+        match=r"api\.transform.*publish.*api\.from_object",
+    ):
+        api.transform(meshed)
     with pytest.raises(TypeError):
         raw.arguments[0][0][0] = (9.0, 9.0, 9.0)
 
 
+def test_meshpart_compatibility_context_remains_exactly_unchanged() -> None:
+    from vibescript_domain_api import create_domain_api
+    from vibescript_meshpart_worker import validate_meshpart_definition
+
+    pack = domains.get_vibescript_pack("MeshPartWorkbench")
+    assert pack is not None
+    assert pack.domain == "meshpart"
+    assert pack.api_exports == ("mesh_from_shape", "shape_from_mesh")
+    assert pack.output_types == (
+        "mesh",
+        "solid",
+        "shell",
+        "face",
+        "wire",
+        "compound",
+    )
+    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+    reference = {"document_uid": "document", "object_name": "LegacySource"}
+    meshed = api.mesh_from_shape(reference)
+    recovered = api.shape_from_mesh(reference, output_type="solid")
+    assert meshed.domain == recovered.domain == "meshpart"
+    assert validate_meshpart_definition(meshed) == meshed.to_payload()
+    assert validate_meshpart_definition(recovered) == recovered.to_payload()
+
+
 def test_mesh_api_rejects_malformed_or_unbounded_operations() -> None:
     from vibescript_domain_api import create_domain_api
+    from vibescript_mesh_worker import validate_mesh_definition
 
     pack = domains.get_vibescript_pack("MeshWorkbench")
     assert pack is not None
@@ -2215,6 +4016,31 @@ def test_mesh_api_rejects_malformed_or_unbounded_operations() -> None:
         api.transform(raw, scale=[1, 0, 1])
     with pytest.raises(ValueError, match=r"rotation.*non-zero"):
         api.transform(raw, rotation=[0, 0, 0, 0])
+    for operation in ("union", "difference", "intersection"):
+        identical = getattr(api, operation)(raw, raw)
+        assert (
+            validate_mesh_definition(
+                identical,
+                require_domain_value=True,
+            )
+            == identical.to_payload()
+        )
+    with pytest.raises(ValueError, match=r"linear_deflection.*greater than 0"):
+        api.difference(
+            raw, api.transform(raw, translation=[1, 0, 0]), linear_deflection=0
+        )
+    with pytest.raises(ValueError, match=r"angular_deflection_degrees.*at most 180"):
+        api.intersection(
+            raw,
+            api.transform(raw, translation=[1, 0, 0]),
+            angular_deflection_degrees=181,
+        )
+    with pytest.raises(ValueError, match=r"relative.*true or false"):
+        api.union(
+            raw,
+            api.transform(raw, translation=[1, 0, 0]),
+            relative=1,
+        )
     with pytest.raises(ValueError, match=r"fill_holes_max_edges.*integer"):
         api.repair(raw, fill_holes_max_edges=True)
     with pytest.raises(ValueError, match=r"must both be zero"):
@@ -2249,6 +4075,147 @@ def test_mesh_worker_failures_always_give_the_model_one_exact_correction() -> No
         details={"stage": "artifact_export", "correction": "Repair fixture storage."},
     )
     assert explicit.details["correction"] == "Repair fixture storage."
+
+
+def test_mesh_boolean_traces_bind_both_graph_branches_and_native_backend() -> None:
+    from VibeCADVibeScriptDomainRuntime import _validate_mesh_trace
+    from vibescript_domain_api import create_domain_api
+    from vibescript_mesh_worker import _native_boolean
+
+    pack = domains.get_vibescript_pack("MeshWorkbench")
+    assert pack is not None
+    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+    tetrahedron = [
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+        [[0, 0, 0], [0, 0, 1], [1, 0, 0]],
+        [[0, 0, 0], [0, 1, 0], [0, 0, 1]],
+        [[1, 0, 0], [0, 0, 1], [0, 1, 0]],
+    ]
+    first = api.mesh(tetrahedron, label="First")
+    second_local = api.mesh(tetrahedron, label="Second")
+    second = api.transform(second_local, translation=[0.25, 0, 0])
+    quick = {
+        "points": 4,
+        "facets": 4,
+        "open_edges": 0,
+        "degenerated_facets": 0,
+        "duplicated_facets": 0,
+        "duplicated_points": 0,
+        "components": 1,
+    }
+    operand_facts = {
+        "points": 4,
+        "facets": 4,
+        "open_edges": 0,
+        "components": 1,
+        "is_solid": True,
+        "volume_mm3": 1.0 / 6.0,
+        "bounds": {
+            "minimum": [0.0, 0.0, 0.0],
+            "maximum": [1.0, 1.0, 1.0],
+        },
+    }
+    second_facts = {
+        **operand_facts,
+        "bounds": {
+            "minimum": [0.25, 0.0, 0.0],
+            "maximum": [1.25, 1.0, 1.0],
+        },
+    }
+    result_facts = {
+        **operand_facts,
+        "points": 8,
+        "facets": 8,
+        "volume_mm3": 0.25,
+        "bounds": {
+            "minimum": [0.0, 0.0, 0.0],
+            "maximum": [1.25, 1.0, 1.0],
+        },
+    }
+    observed_result = {
+        **result_facts,
+        "degenerated_facets": 0,
+        "duplicated_facets": 0,
+        "duplicated_points": 0,
+    }
+
+    def sha256(definition: dict) -> str:
+        encoded = json.dumps(
+            definition,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    for operation in ("union", "difference", "intersection"):
+        definition = getattr(api, operation)(
+            first,
+            second,
+            linear_deflection=0.05,
+            angular_deflection_degrees=20,
+            relative=False,
+        ).to_payload()
+        first_definition, second_definition = definition["arguments"]
+        trace = [
+            {
+                "operation": "mesh",
+                "input_facets": 4,
+                "result": dict(quick),
+            },
+            {
+                "operation": "mesh",
+                "input_facets": 4,
+                "result": dict(quick),
+            },
+            {
+                "operation": "transform",
+                "translation": [0.25, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+                "scale": [1.0, 1.0, 1.0],
+                "before": dict(quick),
+                "after": dict(quick),
+            },
+            {
+                "operation": operation,
+                "first_definition_sha256": sha256(first_definition),
+                "second_definition_sha256": sha256(second_definition),
+                "first": dict(operand_facts),
+                "second": dict(second_facts),
+                "tessellation": {
+                    "linear_deflection": 0.05,
+                    "angular_deflection_degrees": 20.0,
+                    "relative": False,
+                },
+                "backend": "MeshPart::Boolean/OpenCASCADE",
+                "result": dict(result_facts),
+            },
+        ]
+        _validate_mesh_trace(
+            trace,
+            definition,
+            output_name="Mesh",
+            observed=observed_result,
+            source_references={},
+        )
+        forged = json.loads(json.dumps(trace))
+        forged[-1]["second_definition_sha256"] = "0" * 64
+        with pytest.raises(ValueError, match="changed an operand"):
+            _validate_mesh_trace(
+                forged,
+                definition,
+                output_name="Mesh",
+                observed=observed_result,
+                source_references={},
+            )
+
+    native_source = inspect.getsource(_native_boolean)
+    assert 'addObject("MeshPart::Boolean"' in native_source
+    assert "tempfile" not in native_source
+    assert "OpenSCAD" not in native_source
+    assert not hasattr(api, "boolean")
+    assert not hasattr(api, "csg")
 
 
 def test_meshpart_api_is_canonical_typed_and_generated_from_runtime() -> None:
@@ -2295,7 +4262,7 @@ def test_meshpart_api_is_canonical_typed_and_generated_from_runtime() -> None:
         "next_write_expected_revision"
         in description["model_verification_contract"]["failure_repair"]
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -2459,7 +4426,7 @@ def test_sketcher_api_is_explicit_complete_and_generated_from_runtime() -> None:
     assert description["model_verification_contract"]["underconstrained"].endswith(
         "Never apply every suggestion in one edit."
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert set(description["geometry"]) >= {
         "point",
         "line",
@@ -2594,6 +4561,207 @@ def test_sketcher_live_publication_boundary_never_solves_or_recomputes() -> None
     assert populate_source.count("addConstraint(") == 1
 
 
+def test_generic_publication_accepts_non_assembly_and_cleans_failed_creations(
+    monkeypatch,
+) -> None:
+    import VibeCADVibeScriptDomainPublication as publication
+
+    class Object:
+        next_id = 1
+
+        def __init__(self, name: str, type_id: str):
+            self.Name = name
+            self.Label = name
+            self.TypeId = type_id
+            self.InList = []
+            self.PropertiesList = []
+            self.property_types = {}
+            self.ID = Object.next_id
+            Object.next_id += 1
+
+        def addProperty(self, property_type, name, _group, _description):
+            self.PropertiesList.append(str(name))
+            self.property_types[str(name)] = str(property_type)
+
+        def getTypeIdOfProperty(self, name):
+            return self.property_types.get(str(name), "")
+
+        def setPropertyStatus(self, _name, _status):
+            pass
+
+    class Document:
+        Name = "PublicationDocument"
+        Uid = "publication-document-uid"
+
+        def __init__(self):
+            self.objects = {}
+            self.removed = []
+            self.commits = 0
+            self.aborts = 0
+
+        def addObject(self, type_id, name):
+            obj = Object(str(name), str(type_id))
+            self.objects[obj.Name] = obj
+            return obj
+
+        def getObject(self, name):
+            return self.objects.get(str(name))
+
+        def removeObject(self, name):
+            self.removed.append(str(name))
+            self.objects.pop(str(name), None)
+
+        def openTransaction(self, _label):
+            pass
+
+        def commitTransaction(self):
+            self.commits += 1
+
+        def abortTransaction(self):
+            self.aborts += 1
+
+        def isProvisionallyEnrolledInTimelineByCurrentTransaction(self, _obj):
+            return False
+
+    class Service:
+        def __init__(self, document):
+            self.document = document
+
+        def _active_document(self):
+            return self.document
+
+        def provider_document_revision(self):
+            return "document-revision"
+
+    pack = type("Pack", (), {"domain": "mesh", "title": "Mesh"})()
+    prepared = {
+        "document_name": Document.Name,
+        "document_uid": Document.Uid,
+        "document_revision": "document-revision",
+        "pack": pack,
+        "program_id": "a" * 32,
+        "program_name": "Mesh source",
+        "revision": "b" * 64,
+    }
+    validated = {
+        "outputs": [
+            {
+                "name": "Mesh",
+                "type": "mesh",
+                "definition": {
+                    "operation": "mesh",
+                    "properties": {"label": "Mesh output"},
+                },
+            }
+        ],
+        "stdout": "",
+        "budget": {},
+    }
+
+    monkeypatch.setattr(publication, "_surface_still_matches", lambda *_args: None)
+    monkeypatch.setattr(publication, "_objects_by_output", lambda *_args: {})
+    monkeypatch.setattr(publication, "_retired_program_objects", lambda *_args: [])
+    monkeypatch.setattr(publication, "_program_objects", lambda *_args: [])
+    monkeypatch.setattr(publication, "_preflight_output_updates", lambda *_args: [])
+    monkeypatch.setattr(
+        publication, "_refresh_external_consumers", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(publication, "_set_metadata", lambda *_args: None)
+    assembly_arguments = []
+
+    def create_object(
+        document,
+        _prepared,
+        _output_name,
+        _output_type,
+        _definition,
+        _assembly,
+        assembly_fastener_sources,
+    ):
+        assembly_arguments.append(assembly_fastener_sources)
+        return document.addObject("Mesh::Feature", "CandidateMesh")
+
+    monkeypatch.setattr(publication, "_create_object", create_object)
+    monkeypatch.setattr(publication, "_configure_object", lambda *_args: None)
+
+    successful_document = Document()
+    result = publication.publish_candidate(
+        Service(successful_document),
+        prepared,
+        validated,
+    )
+
+    assert result["ok"] is True
+    assert result["created_objects"] == ["CandidateMesh"]
+    assert successful_document.getObject("CandidateMesh") is not None
+    assert successful_document.commits == 1
+    assert assembly_arguments == [None]
+
+    failed_document = Document()
+
+    def fail_configuration(*_args):
+        raise RuntimeError("injected non-Assembly publication failure")
+
+    monkeypatch.setattr(publication, "_configure_object", fail_configuration)
+    with pytest.raises(
+        RuntimeError,
+        match="injected non-Assembly publication failure",
+    ):
+        publication.publish_candidate(
+            Service(failed_document),
+            prepared,
+            validated,
+        )
+
+    assert failed_document.aborts == 1
+    assert failed_document.getObject("CandidateMesh") is None
+    assert failed_document.removed == ["CandidateMesh"]
+    assert assembly_arguments == [None, None]
+
+
+def test_failed_publication_cleanup_is_dependency_safe_and_exact() -> None:
+    import VibeCADVibeScriptDomainPublication as publication
+
+    class Object:
+        def __init__(self, name):
+            self.Name = name
+            self.InList = []
+
+    class Document:
+        def __init__(self):
+            self.source = Object("CreatedSource")
+            self.consumer = Object("CreatedConsumer")
+            self.source.InList = [self.consumer]
+            self.objects = {
+                self.source.Name: self.source,
+                self.consumer.Name: self.consumer,
+                "AcceptedObject": Object("AcceptedObject"),
+            }
+            self.removed = []
+
+        def getObject(self, name):
+            return self.objects.get(str(name))
+
+        def removeObject(self, name):
+            self.removed.append(str(name))
+            self.objects.pop(str(name), None)
+
+    document = Document()
+    removed = publication._remove_failed_domain_creations(
+        document,
+        [
+            "CreatedSource",
+            "AlreadyRemovedByTransaction",
+            "CreatedConsumer",
+            "CreatedSource",
+        ],
+    )
+
+    assert removed == ["CreatedConsumer", "CreatedSource"]
+    assert document.removed == ["CreatedConsumer", "CreatedSource"]
+    assert document.getObject("AcceptedObject") is not None
+
+
 def test_draft_api_is_canonical_model_guided_and_generated_from_runtime() -> None:
     from vibescript_domain_api import create_domain_api
 
@@ -2638,7 +4806,7 @@ def test_draft_api_is_canonical_model_guided_and_generated_from_runtime() -> Non
         "next_write_expected_revision"
         in description["model_verification_contract"]["failure_repair"]
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -2768,45 +4936,6 @@ def test_material_document_thread_boundary_never_opens_catalog_or_recomputes() -
     assert "MaterialManager" in validation_source
     assert "MATERIAL_CATALOG_LOCK" in validation_source
     assert "native_material" in validation_source
-
-
-def test_bim_document_thread_boundary_only_applies_validated_native_state() -> None:
-    import VibeCADVibeScriptDomainPublication as publication
-    import VibeCADVibeScriptDomainRuntime as runtime
-
-    document_thread_sources = (
-        inspect.getsource(publication._create_bim_object),
-        inspect.getsource(publication._create_bim_base_named),
-        inspect.getsource(publication._configure_bim_base),
-        inspect.getsource(publication._configure_bim),
-        inspect.getsource(publication._restore_bim_rollback_states),
-    )
-    for source in document_thread_sources:
-        for forbidden in (
-            ".execute(",
-            ".recompute(",
-            "subprocess",
-            ".wait(",
-            "read_text(",
-            "write_text(",
-            "exportBrep(",
-            "importBrep(",
-            "makeBox(",
-            "makePolygon(",
-            "makeCompound(",
-            ".cut(",
-            ".fuse(",
-            ".solve(",
-        ):
-            assert forbidden not in source
-    assert "detached_shape" in document_thread_sources[3]
-    assert "detached_bim_base_shape" in inspect.getsource(
-        publication._configure_bim_base
-    )
-
-    worker_validation_source = inspect.getsource(runtime._validate_bim_execution)
-    assert "detached_shape" in worker_validation_source
-    assert "_bim_import_base_artifact" in worker_validation_source
 
 
 def test_mesh_document_thread_boundary_only_assigns_detached_native_state() -> None:
@@ -3229,7 +5358,7 @@ def test_domain_context_is_aggregate_bounded_and_points_to_exact_inspection(
     assert "face_details" not in output_facts
     assert "edge_details" not in output_facts
     assert output_facts["subelement_details_context_omitted"] is True
-    assert "core.inspect" in output_facts["subelement_details_guidance"]
+    assert "vibescript.read_source" in output_facts["subelement_details_guidance"]
 
 
 def test_generic_prototype_adapters_cannot_surface_unfinished_domains() -> None:
@@ -3320,6 +5449,11 @@ def test_part_reference_capture_only_detaches_live_shapes() -> None:
             "assembly",
             {
                 "VibeCADAssemblyBOM.py",
+                "VibeCADDocumentReferences.py",
+                "VibeCADFasteners.py",
+                "VibeCADMechanismEngine.py",
+                "VibeCADMechanismGeometry.py",
+                "fasteners-provenance.json",
                 "vibescript_assembly_api.py",
                 "vibescript_assembly_worker.py",
                 "vibescript_part_worker.py",
@@ -3364,14 +5498,15 @@ def test_part_reference_capture_only_detaches_live_shapes() -> None:
             },
         ),
         (
-            "bim",
+            "mesh",
             {
-                "vibescript_bim_api.py",
-                "vibescript_bim_worker.py",
+                "vibescript_mesh_api.py",
+                "vibescript_mesh_worker.py",
+                "vibescript_meshpart_api.py",
+                "vibescript_meshpart_worker.py",
                 "vibescript_part_worker.py",
             },
         ),
-        ("mesh", {"vibescript_mesh_api.py", "vibescript_mesh_worker.py"}),
         (
             "meshpart",
             {
@@ -3437,7 +5572,12 @@ def test_worker_staging_contains_only_the_active_domain_bundle(
         staging,
         domain,
     )
-    expected = {"worker.py", "vibescript_domain_api.py", *domain_files}
+    expected = {
+        "worker.py",
+        "vibescript_domain_api.py",
+        "vibescript_worker_progress.py",
+        *domain_files,
+    }
     assert set(copied) == expected
     assert {path.name for path in staging.iterdir()} == expected
     assert not any(
@@ -3446,6 +5586,24 @@ def test_worker_staging_contains_only_the_active_domain_bundle(
         and path.name not in expected
         for path in staging.iterdir()
     )
+
+
+def test_every_isolated_worker_dependency_is_packaged() -> None:
+    import VibeCADVibeScriptDomainRuntime as runtime
+
+    module_root = Path(runtime.__file__).resolve().parent
+    cmake = (module_root / "CMakeLists.txt").read_text(encoding="utf-8")
+    required = {
+        "vibescript_domain_api.py",
+        "vibescript_domain_worker.py",
+        "vibescript_worker_progress.py",
+    }
+    for domain_files in runtime._DOMAIN_WORKER_BUNDLES.values():
+        required.update(domain_files)
+
+    for filename in sorted(required):
+        assert (module_root / filename).is_file(), filename
+        assert f"    {filename}\n" in cmake, filename
 
 
 def test_worker_staging_rejects_an_undeclared_domain(tmp_path: Path) -> None:
@@ -3767,6 +5925,19 @@ def test_gui_document_observer_marks_vibescript_dependencies_stale(monkeypatch) 
     gui._VibeCADDocumentObserver().slotChangedObject(source, "Shape")
     assert observed == [(source, "Shape")]
     assert refreshed == [True]
+
+
+def test_dependency_invalidation_ignores_group_recompute_notification() -> None:
+    import VibeCADVibeScriptDomainPublication as publication
+
+    class Source:
+        @property
+        def InList(self):
+            raise AssertionError(
+                "A derived group recompute must not inspect dependents"
+            )
+
+    assert publication.mark_programs_stale_from_source(Source(), "_GroupTouched") == []
 
 
 def test_gui_document_observer_ignores_properties_restored_from_file(

@@ -193,7 +193,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         return signals
 
     def registerSignalHandlers(self, obj):
-        self.form.setStartPoint.clicked.connect(self.setStartPoint)
+        self.connectSignal(
+            self.form.setStartPoint.clicked,
+            self.setStartPoint,
+        )
 
     def setStartPoint(self):
         selEx = FreeCADGui.Selection.getSelectionEx()

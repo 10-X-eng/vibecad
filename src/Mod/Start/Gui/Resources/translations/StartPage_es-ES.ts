@@ -83,11 +83,6 @@
       <translation>Crea un documento borrador en 2D</translation>
     </message>
     <message>
-      <location filename="../../StartView.cpp" line="235"/>
-      <source>BIM/Architecture</source>
-      <translation>BIM/Arquitectura</translation>
-    </message>
-    <message>
       <location filename="../../StartView.cpp" line="212"/>
       <source>Empty File</source>
       <translation>Archivo vacío</translation>
@@ -116,11 +111,6 @@
       <location filename="../../StartView.cpp" line="228"/>
       <source>Creates an assembly project</source>
       <translation>Crear un proyecto de ensamblaje</translation>
-    </message>
-    <message>
-      <location filename="../../StartView.cpp" line="236"/>
-      <source>Creates an architectural project</source>
-      <translation>Crea un proyecto arquitectónico</translation>
     </message>
     <message>
       <location filename="../../StartView.cpp" line="520"/>

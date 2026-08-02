@@ -731,6 +731,7 @@ class ObjectSurface(PathOp.ObjectOp):
         """opExecute(obj) ... process surface operation"""
         Path.Log.track()
 
+        self.document = obj.Document
         self.modelSTLs = []
         self.safeSTLs = []
         self.modelTypes = []
@@ -747,7 +748,12 @@ class ObjectSurface(PathOp.ObjectOp):
         self.cancelOperation = False
         CMDS = []
         modelVisibility = []
-        FCAD = FreeCAD.ActiveDocument
+        FCAD = self.document
+        gui_document = (
+            FreeCADGui.getDocument(FCAD.Name)
+            if FreeCAD.GuiUp
+            else None
+        )
 
         try:
             dotIdx = __name__.index(".") + 1
@@ -873,7 +879,9 @@ class ObjectSurface(PathOp.ObjectOp):
         if FreeCAD.GuiUp:
             for model in JOB.Model.Group:
                 mNm = model.Name
-                modelVisibility.append(FreeCADGui.ActiveDocument.getObject(mNm).Visibility)
+                modelVisibility.append(
+                    gui_document.getObject(mNm).Visibility
+                )
 
         # Setup STL, model type, and bound box containers for each model in Job
         for model in JOB.Model.Group:
@@ -943,7 +951,7 @@ class ObjectSurface(PathOp.ObjectOp):
         # Delete temporary objects
         # Restore model visibilities for restoration
         if FreeCAD.GuiUp:
-            FreeCADGui.ActiveDocument.getObject(tempGroupName).Visibility = False
+            gui_document.getObject(tempGroupName).Visibility = False
             for m in range(0, len(JOB.Model.Group)):
                 M = JOB.Model.Group[m]
                 M.Visibility = modelVisibility[m]
@@ -1010,11 +1018,14 @@ class ObjectSurface(PathOp.ObjectOp):
         FreeCAD.Console.PrintMessage("3D Surface " + msg + " {}\n".format(exTime))
 
         if self.cancelOperation:
-            FreeCAD.ActiveDocument.openTransaction(
-                translate("PathSurface", "Canceled 3D Surface operation.")
-            )
-            FreeCAD.ActiveDocument.removeObject(obj.Name)
-            FreeCAD.ActiveDocument.commitTransaction()
+            opened_transaction = not bool(FCAD.getBookedTransactionID())
+            if opened_transaction:
+                FCAD.openTransaction(
+                    translate("PathSurface", "Canceled 3D Surface operation.")
+                )
+            FCAD.removeObject(obj.Name)
+            if opened_transaction:
+                FCAD.commitTransaction()
 
         return True
 
@@ -1970,7 +1981,7 @@ class ObjectSurface(PathOp.ObjectOp):
         # Rotate model to initial index
         initIdx = obj.CutterTilt + obj.StartIndex
         if initIdx != 0.0:
-            self.basePlacement = FreeCAD.ActiveDocument.getObject(base.Name).Placement
+            self.basePlacement = base.Placement
             if obj.RotationAxis == "X":
                 base.Placement = FreeCAD.Placement(
                     FreeCAD.Vector(0.0, 0.0, 0.0),
@@ -2549,7 +2560,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
     def showDebugObject(self, objShape, objName):
         if self.showDebugObjects:
-            do = FreeCAD.ActiveDocument.addObject("Part::Feature", "tmp_" + objName)
+            do = self.document.addObject("Part::Feature", "tmp_" + objName)
             do.Shape = objShape
             do.purgeTouched()
             self.tempGroup.addObject(do)
@@ -2565,7 +2576,6 @@ def SetupProperties():
 
 def Create(name, obj=None, parentJob=None):
     """Create(name) ... Creates and returns a Surface operation."""
-    if obj is None:
-        obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = PathOp.createOperationObject(name, obj, parentJob)
     obj.Proxy = ObjectSurface(obj, name, parentJob)
     return obj

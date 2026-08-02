@@ -348,13 +348,58 @@ bool isCreateConstraintActive(Gui::Document* doc)
         auto vp = dynamic_cast<SketcherGui::ViewProviderSketch*>(doc->getInEdit());
         if (vp && vp->isInEditMode()) {
             if (vp->getSketchMode() == ViewProviderSketch::STATUS_NONE) {
-                if (Gui::Selection().countObjectsOfType<Sketcher::SketchObject>() > 0) {
-                    return true;
-                }
+                const auto selection =
+                    Gui::Selection().getSelectionEx(
+                        nullptr,
+                        App::DocumentObject::getClassTypeId(),
+                        Gui::ResolveMode::NoResolve
+                    );
+                return selection.size() == 1
+                    && selection.front().getObject()
+                        == vp->getSketchObject();
             }
         }
     }
     return false;
+}
+
+bool hasSelectedSketchGeometry(Gui::Document* doc, std::size_t minimum)
+{
+    if (!isCreateConstraintActive(doc)) {
+        return false;
+    }
+
+    const auto selection = Gui::Selection().getSelectionEx(
+        doc->getDocument()->getName()
+    );
+    if (selection.size() != 1
+        || !selection.front().isObjectTypeOf(
+            Sketcher::SketchObject::getClassTypeId()
+        )) {
+        return false;
+    }
+
+    const auto* sketch =
+        static_cast<const Sketcher::SketchObject*>(selection.front().getObject());
+    auto* editingView =
+        dynamic_cast<SketcherGui::ViewProviderSketch*>(
+            doc->getInEdit()
+        );
+    if (!sketch || !editingView
+        || editingView->getSketchObject() != sketch) {
+        return false;
+    }
+    std::set<int> geometryIds;
+    for (const auto& subName : selection.front().getSubNames()) {
+        int geometryId = Sketcher::GeoEnum::GeoUndef;
+        Sketcher::PointPos point = Sketcher::PointPos::none;
+        getIdsFromName(subName, sketch, geometryId, point);
+        if (geometryId >= 0
+            && !sketch->getGeometryFacade(geometryId)->isInternalAligned()) {
+            geometryIds.insert(geometryId);
+        }
+    }
+    return geometryIds.size() >= minimum;
 }
 
 // Utility method to avoid repeating the same code over and over again
@@ -1962,7 +2007,7 @@ public:
     }
     bool isActive() override
     {
-        return isCommandActive(getActiveGuiDocument());
+        return isCommandNeedingConstraintActive(getActiveGuiDocument());
     }
 };
 
@@ -10813,6 +10858,7 @@ void CmdSketcherConstrainSnellsLaw::activated(int iMsg)
         Gui::TranslatedUserWarning(getActiveGuiDocument()->getDocument(),
                                    QObject::tr("Wrong selection"),
                                    std::move(strError));
+        return;
     }
 
     // get the needed lists and objects
@@ -11004,6 +11050,7 @@ void CmdSketcherConstrainGroup::activated(int iMsg)
         Gui::TranslatedUserWarning(getActiveGuiDocument()->getDocument(),
                                    QObject::tr("Wrong selection"),
                                    std::move(strError));
+        return;
     }
 
     // get the needed lists and objects
@@ -11202,7 +11249,7 @@ bool SketcherGui::addListConstraint(Sketcher::SketchObject* Obj,
 
 bool CmdSketcherConstrainGroup::isActive()
 {
-    return isCreateConstraintActive(getActiveGuiDocument());
+    return hasSelectedSketchGeometry(getActiveGuiDocument(), 2);
 }
 
 // ======================================================================================
@@ -11412,7 +11459,7 @@ void CmdSketcherToggleDrivingConstraint::activated(int iMsg)
 
 bool CmdSketcherToggleDrivingConstraint::isActive()
 {
-    return isCommandActive(getActiveGuiDocument());
+    return isCommandNeedingConstraintActive(getActiveGuiDocument());
 }
 
 DEF_STD_CMD_A(CmdSketcherToggleActiveConstraint)
@@ -11499,7 +11546,7 @@ void CmdSketcherToggleActiveConstraint::activated(int iMsg)
 
 bool CmdSketcherToggleActiveConstraint::isActive()
 {
-    return isCreateConstraintActive(getActiveGuiDocument());
+    return isCommandNeedingConstraintActive(getActiveGuiDocument());
 }
 
 void CreateSketcherCommandsConstraints()

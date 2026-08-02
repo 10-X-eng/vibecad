@@ -41,7 +41,7 @@ TOOL_SPEC = {
             "page_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the drawing page from core.inspect scope='domain'."
+                    "Exact internal name of the drawing page from techdraw.list_pages."
                 ),
             },
             "source_object_names": {
@@ -136,7 +136,7 @@ def run(
     if page is None or getattr(page, "TypeId", "") != "TechDraw::DrawPage":
         return _invalid(
             f"Drawing page not found by exact internal name: {page_name}. "
-            "Call core.inspect with scope='domain' for exact names."
+            "Call techdraw.list_pages for exact names."
         )
     if not isinstance(source_object_names, list) or not source_object_names:
         return _invalid("source_object_names must be a non-empty array.")

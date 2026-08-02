@@ -15,6 +15,10 @@ request may run on a worker thread when the request target is explicitly marked
 as worker-safe. Worker-safety is determined through
 App::DocumentObject::canRecomputeOnWorker().
 
+A recursive object request is worker-safe only when both its target and every
+object in the target's dependency closure are worker-safe. A batch containing
+any unsafe request is rejected atomically before work is queued.
+
 Objects that are not known to be worker-safe are expected to return false. In
 that case the recompute request falls back to the main thread instead of being
 queued to the worker.

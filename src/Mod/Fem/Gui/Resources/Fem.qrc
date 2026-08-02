@@ -1,7 +1,7 @@
 <RCC>
     <qresource>
         <!-- copy from other workbenches -->
-        <file>icons/Arch_Material_Group.svg</file>
+        <file>icons/FEM_Material_Group.svg</file>
 
         <!-- gui command icons -->
         <file>icons/FEM_Analysis.svg</file>

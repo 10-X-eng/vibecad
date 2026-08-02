@@ -86,6 +86,29 @@ class TestCore(unittest.TestCase):
         """
         App.closeDocument(self.doc.Name)
 
+    def _disable_solve_on_recompute(self):
+        preferences = App.ParamGet(
+            "User parameter:BaseApp/Preferences/Mod/Assembly"
+        )
+        previous = preferences.GetBool("SolveOnRecompute", True)
+        preferences.SetBool("SolveOnRecompute", False)
+        self.addCleanup(
+            preferences.SetBool,
+            "SolveOnRecompute",
+            previous,
+        )
+
+    def _timeline(self):
+        timeline = self.doc.getObject("VibeCADTimeline")
+        self.assertIsNotNone(timeline)
+        self.assertEqual(timeline.TypeId, "App::DocumentTimeline")
+        return timeline
+
+    def _timeline_index(self, obj):
+        operations = list(self._timeline().Operations)
+        self.assertIn(obj, operations)
+        return operations.index(obj)
+
     def test_create_assembly(self):
         """Create an assembly."""
         operation = "Create Assembly Object"
@@ -214,6 +237,950 @@ class TestCore(unittest.TestCase):
                     box,
                     "'{}' failed: part still grounded after toggle".format(operation),
                 )
+
+    def test_timeline_filters_components_and_joints_not_visibility(self):
+        """Assembly membership follows history, while ordinary hiding does not."""
+        self._disable_solve_on_recompute()
+
+        grounded_part = self.assembly.newObject("Part::Box", "TimelineGround")
+        moving_part = self.assembly.newObject("Part::Box", "TimelineMoving")
+        self.doc.recompute()
+
+        ground = self.jointgroup.newObject("App::FeaturePython", "TimelineGroundedJoint")
+        JointObject.GroundedJoint(ground, grounded_part)
+        joint = self.jointgroup.newObject("App::FeaturePython", "TimelineFixedJoint")
+        JointObject.Joint(joint, 0)
+        joint.Proxy.setJointConnectors(
+            joint,
+            [
+                [grounded_part, ["Face6", "Vertex7"]],
+                [moving_part, ["Face6", "Vertex7"]],
+            ],
+        )
+        self.doc.recompute()
+
+        timeline = self._timeline()
+        end_position = len(timeline.Operations)
+        moving_index = self._timeline_index(moving_part)
+        joint_index = self._timeline_index(joint)
+
+        self.assertEqual(UtilsAssembly.number_of_components_in(self.assembly), 2)
+        self.assertTrue(self.assembly.isPartConnected(moving_part))
+
+        moving_part.Visibility = False
+        joint.Visibility = False
+        self.assertEqual(UtilsAssembly.number_of_components_in(self.assembly), 2)
+        self.assertTrue(self.assembly.isPartConnected(moving_part))
+
+        timeline.Position = joint_index
+        self.doc.recompute()
+        self.assertFalse(self.assembly.isPartConnected(moving_part))
+
+        timeline.Position = moving_index
+        self.doc.recompute()
+        self.assertEqual(UtilsAssembly.number_of_components_in(self.assembly), 1)
+
+        timeline.Position = end_position
+        self.doc.recompute()
+        self.assertEqual(UtilsAssembly.number_of_components_in(self.assembly), 2)
+        self.assertTrue(self.assembly.isPartConnected(moving_part))
+
+    def test_timeline_grounding_survives_undo_redo_and_reopen(self):
+        """A future GroundedJoint is retained, unlocked, and restored exactly."""
+        self._disable_solve_on_recompute()
+        self.doc.UndoMode = True
+
+        component = self.assembly.newObject("Part::Box", "TimelineGroundedComponent")
+        ground = self.jointgroup.newObject("App::FeaturePython", "TimelineGroundedJoint")
+        JointObject.GroundedJoint(ground, component)
+        self.doc.recompute()
+
+        timeline = self._timeline()
+        ground_index = self._timeline_index(ground)
+        end_position = len(timeline.Operations)
+
+        def grounded_joints():
+            return [
+                obj
+                for obj in self.jointgroup.Group
+                if hasattr(obj, "ObjectToGround")
+                and obj.ObjectToGround == component
+            ]
+
+        self.assertIn("ReadOnly", component.getPropertyStatus("Placement"))
+        self.assertTrue(self.assembly.isPartGrounded(component))
+        self.assertEqual(len(grounded_joints()), 1)
+
+        self.doc.openTransaction("Move before grounded joint")
+        timeline.Position = ground_index
+        self.doc.commitTransaction()
+        self.doc.recompute()
+        self.assertNotIn("ReadOnly", component.getPropertyStatus("Placement"))
+        self.assertFalse(self.assembly.isPartGrounded(component))
+        self.assertEqual(len(grounded_joints()), 1)
+
+        self.doc.undo()
+        self.doc.recompute()
+        self.assertEqual(timeline.Position, end_position)
+        self.assertIn("ReadOnly", component.getPropertyStatus("Placement"))
+        self.assertTrue(self.assembly.isPartGrounded(component))
+        self.assertEqual(len(grounded_joints()), 1)
+
+        self.doc.redo()
+        self.doc.recompute()
+        self.assertEqual(timeline.Position, ground_index)
+        self.assertNotIn("ReadOnly", component.getPropertyStatus("Placement"))
+        self.assertFalse(self.assembly.isPartGrounded(component))
+        self.assertEqual(len(grounded_joints()), 1)
+
+        temporary = tempfile.TemporaryDirectory(prefix="assembly-timeline-")
+        self.addCleanup(temporary.cleanup)
+        path = temporary.name + "/rolled-back-assembly.FCStd"
+        assembly_name = self.assembly.Name
+        component_name = component.Name
+        joint_group_name = self.jointgroup.Name
+        self.doc.saveAs(path)
+        App.closeDocument(self.doc.Name)
+
+        self.doc = App.openDocument(path)
+        self.assembly = self.doc.getObject(assembly_name)
+        self.jointgroup = self.doc.getObject(joint_group_name)
+        component = self.doc.getObject(component_name)
+        timeline = self._timeline()
+        self.doc.recompute()
+
+        self.assertEqual(timeline.Position, ground_index)
+        self.assertNotIn("ReadOnly", component.getPropertyStatus("Placement"))
+        self.assertFalse(self.assembly.isPartGrounded(component))
+        self.assertEqual(
+            len(
+                [
+                    obj
+                    for obj in self.jointgroup.Group
+                    if hasattr(obj, "ObjectToGround")
+                    and obj.ObjectToGround == component
+                ]
+            ),
+            1,
+        )
+
+        timeline.Position = len(timeline.Operations)
+        self.doc.recompute()
+        self.assertIn("ReadOnly", component.getPropertyStatus("Placement"))
+        self.assertTrue(self.assembly.isPartGrounded(component))
+
+    def test_exploded_steps_follow_timeline_not_visibility(self):
+        """Only active exploded steps move components."""
+        import CommandCreateView
+
+        self._disable_solve_on_recompute()
+        component = self.assembly.newObject("Part::Box", "ExplodedTimelineComponent")
+        self.doc.recompute()
+
+        view_group = UtilsAssembly.getViewGroup(self.assembly)
+        exploded = view_group.newObject("App::FeaturePython", "TimelineExplodedView")
+        CommandCreateView.ExplodedView(exploded)
+        move = self.assembly.newObject("App::FeaturePython", "TimelineExplodedMove")
+        CommandCreateView.ExplodedViewStep(move)
+        move.References = [self.assembly, [component.Name + "."]]
+        move.MovementTransform = App.Placement(
+            App.Vector(10, 0, 0),
+            App.Rotation(),
+        )
+        exploded.Group = [move]
+        self.doc.recompute()
+
+        timeline = self._timeline()
+        exploded_index = self._timeline_index(exploded)
+        end_position = len(timeline.Operations)
+        self.assertNotIn(view_group, timeline.Operations)
+        self.assertEqual(exploded.VibeCADTimelineRole, "operation")
+        self.assertEqual(move.VibeCADTimelineRole, "resource")
+        self.assertIs(move.VibeCADTimelineOwner, exploded)
+        self.assertEqual(
+            move.getTypeIdOfProperty("VibeCADTimelineOwner"),
+            "App::PropertyLinkHidden",
+        )
+        self.assertNotIn(exploded, move.OutList)
+
+        component.Placement = App.Placement()
+        exploded.Proxy.applyMoves(exploded)
+        self.assertAlmostEqual(component.Placement.Base.x, 10.0)
+
+        component.Placement = App.Placement()
+        timeline.Position = exploded_index
+        self.doc.recompute()
+        exploded.Proxy.applyMoves(exploded)
+        self.assertAlmostEqual(component.Placement.Base.x, 0.0)
+
+        timeline.Position = exploded_index + 1
+        self.doc.recompute()
+        exploded.Proxy.applyMoves(exploded)
+        self.assertAlmostEqual(component.Placement.Base.x, 10.0)
+
+        timeline.Position = end_position
+        self.doc.recompute()
+        move.Visibility = False
+        exploded.Proxy.applyMoves(exploded)
+        self.assertAlmostEqual(component.Placement.Base.x, 10.0)
+
+    def test_simulation_motions_are_one_timeline_operation_and_reopen(self):
+        """Simulation parameters own their motions as one durable history step."""
+        import CommandCreateSimulation
+
+        simulation_group = UtilsAssembly.getSimulationGroup(self.assembly)
+        simulation = simulation_group.newObject(
+            "App::FeaturePython",
+            "TimelineSimulation",
+        )
+        CommandCreateSimulation.Simulation(simulation)
+        motion = self.assembly.newObject(
+            "App::FeaturePython",
+            "TimelineMotion",
+        )
+        CommandCreateSimulation.Motion(motion)
+        simulation.Group = [motion]
+        self.doc.recompute()
+
+        timeline = self._timeline()
+        simulation_index = self._timeline_index(simulation)
+        self.assertNotIn(simulation_group, timeline.Operations)
+        self.assertEqual(simulation.VibeCADTimelineRole, "operation")
+        self.assertEqual(motion.VibeCADTimelineRole, "resource")
+        self.assertIs(motion.VibeCADTimelineOwner, simulation)
+        self.assertEqual(
+            motion.getTypeIdOfProperty("VibeCADTimelineOwner"),
+            "App::PropertyLinkHidden",
+        )
+        self.assertNotIn(simulation, motion.OutList)
+
+        timeline.Position = simulation_index
+        self.assertFalse(UtilsAssembly.isTimelineOperationActive(simulation))
+        self.assertFalse(UtilsAssembly.isTimelineOperationActive(motion))
+        timeline.Position = simulation_index + 1
+        self.assertTrue(UtilsAssembly.isTimelineOperationActive(simulation))
+        self.assertTrue(UtilsAssembly.isTimelineOperationActive(motion))
+
+        temporary = tempfile.TemporaryDirectory(prefix="assembly-simulation-timeline-")
+        self.addCleanup(temporary.cleanup)
+        path = temporary.name + "/simulation.FCStd"
+        assembly_name = self.assembly.Name
+        simulation_name = simulation.Name
+        motion_name = motion.Name
+        saved_position = timeline.Position
+        self.doc.saveAs(path)
+        App.closeDocument(self.doc.Name)
+        self.doc = App.openDocument(path)
+        self.assembly = self.doc.getObject(assembly_name)
+
+        restored_simulation = self.doc.getObject(simulation_name)
+        restored_motion = self.doc.getObject(motion_name)
+        restored_timeline = self._timeline()
+        self.assertEqual(
+            restored_simulation.VibeCADTimelineRole,
+            "operation",
+        )
+        self.assertEqual(restored_motion.VibeCADTimelineRole, "resource")
+        self.assertIs(
+            restored_motion.VibeCADTimelineOwner,
+            restored_simulation,
+        )
+        self.assertEqual(restored_timeline.Position, saved_position)
+        self.assertTrue(
+            UtilsAssembly.isTimelineOperationActive(restored_motion)
+        )
+
+    def test_assembly_and_bom_group_containers_are_not_history_steps(self):
+        """Structural groups stay in the tree without becoming user actions."""
+
+        bom_group = UtilsAssembly.getBomGroup(self.assembly)
+        bom = bom_group.newObject(
+            "Assembly::BomObject",
+            "TimelineBillOfMaterials",
+        )
+        self.doc.recompute()
+
+        timeline = self._timeline()
+        self.assertIn(self.assembly, timeline.Operations)
+        self.assertIn(bom, timeline.Operations)
+        self.assertNotIn(self.jointgroup, timeline.Operations)
+        self.assertNotIn(bom_group, timeline.Operations)
+
+    def test_tracked_occurrence_synchronizes_source_membership_on_commit(self):
+        """Source structure and its occurrence close as one History change."""
+
+        self.doc.UndoMode = False
+        source_assembly = self.doc.addObject(
+            "Assembly::AssemblyObject",
+            "AutomaticSourceAssembly",
+        )
+        source_assembly.Type = "Assembly"
+        source_shape = self.doc.addObject(
+            "Part::Feature",
+            "AutomaticSourceShape",
+        )
+        source_shape.Shape = Part.makeBox(8, 6, 4)
+        first_source = source_assembly.newObject(
+            "App::Link",
+            "AutomaticFirstSource",
+        )
+        first_source.LinkedObject = source_shape
+        self.doc.recompute()
+        self.doc.UndoMode = True
+
+        self.doc.openTransaction("Insert automatic occurrence")
+        try:
+            occurrence = self.assembly.newObject(
+                "Assembly::AssemblyLink",
+                "AutomaticOccurrence",
+            )
+            occurrence.LinkedObject = source_assembly
+            UtilsAssembly.finalizeInsertedComponentTimeline(
+                occurrence
+            )
+            self.doc.commitTransaction()
+        except Exception:
+            self.doc.abortTransaction()
+            raise
+
+        old_resource_names = tuple(
+            resource.Name
+            for resource
+            in UtilsAssembly._assemblyOccurrenceResources(
+                occurrence
+            )
+        )
+        self.doc.openTransaction("Create occurrence consumer")
+        try:
+            consumer = self.doc.addObject(
+                "App::FeaturePython",
+                "AutomaticOccurrenceConsumer",
+            )
+            consumer.addProperty(
+                "App::PropertyXLink",
+                "Occurrence",
+            )
+            consumer.Occurrence = occurrence
+            self.doc.publishProvisionalTimelineOperationBlock(
+                consumer,
+                [],
+            )
+            self.doc.commitTransaction()
+        except Exception:
+            self.doc.abortTransaction()
+            raise
+
+        self.doc.openTransaction("Add automatic source member")
+        try:
+            added_source = source_assembly.newObject(
+                "App::Link",
+                "AutomaticAddedSource",
+            )
+            added_source.LinkedObject = source_shape
+            self.doc.publishProvisionalTimelineOperationBlock(
+                added_source,
+                [],
+            )
+            self.doc.commitTransaction()
+        except Exception:
+            self.doc.abortTransaction()
+            raise
+
+        occurrence_name = occurrence.Name
+        local_added = next(
+            resource
+            for resource
+            in UtilsAssembly._assemblyOccurrenceResources(
+                occurrence
+            )
+            if getattr(
+                resource,
+                "VibeCADAssemblySourceObjectId",
+                -1,
+            )
+            == int(added_source.ID)
+        )
+        local_added_name = local_added.Name
+        operations = list(self._timeline().Operations)
+        self.assertLess(
+            operations.index(added_source),
+            operations.index(local_added),
+        )
+        self.assertLess(
+            operations.index(local_added),
+            operations.index(occurrence),
+        )
+        self.assertLess(
+            operations.index(occurrence),
+            operations.index(consumer),
+        )
+
+        self.doc.undo()
+        occurrence = self.doc.getObject(occurrence_name)
+        self.assertIsNone(
+            self.doc.getObject("AutomaticAddedSource")
+        )
+        self.assertEqual(
+            tuple(
+                resource.Name
+                for resource
+                in UtilsAssembly._assemblyOccurrenceResources(
+                    occurrence
+                )
+            ),
+            old_resource_names,
+        )
+
+        self.doc.redo()
+        occurrence = self.doc.getObject(occurrence_name)
+        added_source = self.doc.getObject(
+            "AutomaticAddedSource"
+        )
+        self.assertIsNotNone(added_source)
+        self.assertTrue(
+            any(
+                getattr(
+                    resource,
+                    "VibeCADAssemblySourceObjectId",
+                    -1,
+                )
+                == int(added_source.ID)
+                for resource
+                in UtilsAssembly._assemblyOccurrenceResources(
+                    occurrence
+                )
+            )
+        )
+
+        self.doc.openTransaction(
+            "Delete automatic source member"
+        )
+        try:
+            self.doc.removeObject(added_source.Name)
+            self.doc.commitTransaction()
+        except Exception:
+            self.doc.abortTransaction()
+            raise
+
+        occurrence = self.doc.getObject(occurrence_name)
+        self.assertIsNone(
+            self.doc.getObject("AutomaticAddedSource")
+        )
+        self.assertIsNone(
+            self.doc.getObject(local_added_name)
+        )
+        self.assertEqual(
+            tuple(
+                resource.Name
+                for resource
+                in UtilsAssembly._assemblyOccurrenceResources(
+                    occurrence
+                )
+            ),
+            old_resource_names,
+        )
+
+        self.doc.undo()
+        occurrence = self.doc.getObject(occurrence_name)
+        self.assertIsNotNone(
+            self.doc.getObject("AutomaticAddedSource")
+        )
+        self.assertIsNotNone(
+            self.doc.getObject(local_added_name)
+        )
+        self.assertTrue(
+            any(
+                resource.Name == local_added_name
+                for resource
+                in UtilsAssembly._assemblyOccurrenceResources(
+                    occurrence
+                )
+            )
+        )
+
+        self.doc.redo()
+        occurrence = self.doc.getObject(occurrence_name)
+        self.assertIsNone(
+            self.doc.getObject("AutomaticAddedSource")
+        )
+        self.assertIsNone(
+            self.doc.getObject(local_added_name)
+        )
+        self.assertEqual(
+            tuple(
+                resource.Name
+                for resource
+                in UtilsAssembly._assemblyOccurrenceResources(
+                    occurrence
+                )
+            ),
+            old_resource_names,
+        )
+
+    def test_external_source_membership_synchronizes_atomically_on_commit(self):
+        """An external source edit updates and persists its occurrence."""
+
+        self._disable_solve_on_recompute()
+        source_document = App.newDocument(
+            "AutomaticExternalAssemblySource",
+        )
+        try:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                source_path = (
+                    temporary_directory
+                    + "/automatic-external-source.FCStd"
+                )
+                target_path = (
+                    temporary_directory
+                    + "/automatic-external-target.FCStd"
+                )
+
+                source_document.UndoMode = False
+                source_assembly = source_document.addObject(
+                    "Assembly::AssemblyObject",
+                    "ExternalSourceAssembly",
+                )
+                source_assembly.Type = "Assembly"
+                source_shape = source_document.addObject(
+                    "Part::Feature",
+                    "ExternalSourceShape",
+                )
+                source_shape.Shape = Part.makeBox(9, 7, 5)
+                first_source = source_assembly.newObject(
+                    "App::Link",
+                    "ExternalFirstSource",
+                )
+                first_source.LinkedObject = source_shape
+                source_document.recompute()
+                source_document.UndoMode = True
+                source_document.saveAs(source_path)
+
+                App.setActiveDocument(self.doc.Name)
+                self.doc.UndoMode = True
+                self.doc.recompute()
+                self.doc.saveAs(target_path)
+                self.doc.openTransaction(
+                    "Insert external automatic occurrence"
+                )
+                try:
+                    occurrence = self.assembly.newObject(
+                        "Assembly::AssemblyLink",
+                        "ExternalAutomaticOccurrence",
+                    )
+                    occurrence.LinkedObject = source_assembly
+                    UtilsAssembly.finalizeInsertedComponentTimeline(
+                        occurrence
+                    )
+                    self.doc.commitTransaction()
+                except Exception:
+                    self.doc.abortTransaction()
+                    raise
+
+                occurrence_name = occurrence.Name
+                old_resource_names = tuple(
+                    resource.Name
+                    for resource
+                    in UtilsAssembly._assemblyOccurrenceResources(
+                        occurrence
+                    )
+                )
+                source_undo_before = int(source_document.UndoCount)
+                target_undo_before = int(self.doc.UndoCount)
+
+                source_document.openTransaction(
+                    "Add external automatic source member"
+                )
+                try:
+                    added_source = source_assembly.newObject(
+                        "App::Link",
+                        "ExternalAutomaticallyAddedSource",
+                    )
+                    added_source.LinkedObject = source_shape
+                    source_document.publishProvisionalTimelineOperationBlock(
+                        added_source,
+                        [],
+                    )
+                    # Closing only the source edit must join and update the
+                    # occurrence document under this same exact transaction.
+                    source_document.commitTransaction()
+                except Exception:
+                    source_document.abortTransaction()
+                    raise
+
+                self.assertFalse(source_document.HasPendingTransaction)
+                self.assertFalse(self.doc.HasPendingTransaction)
+                self.assertEqual(
+                    int(source_document.getBookedTransactionID()),
+                    0,
+                )
+                self.assertEqual(
+                    int(self.doc.getBookedTransactionID()),
+                    0,
+                )
+                self.assertEqual(
+                    int(source_document.UndoCount),
+                    source_undo_before + 1,
+                )
+                self.assertEqual(
+                    int(self.doc.UndoCount),
+                    target_undo_before + 1,
+                )
+
+                local_added = next(
+                    resource
+                    for resource
+                    in UtilsAssembly._assemblyOccurrenceResources(
+                        occurrence
+                    )
+                    if getattr(
+                        resource,
+                        "VibeCADAssemblySourceObjectId",
+                        -1,
+                    )
+                    == int(added_source.ID)
+                )
+                target_operations = list(
+                    self._timeline().Operations
+                )
+                self.assertLess(
+                    target_operations.index(local_added),
+                    target_operations.index(occurrence),
+                )
+
+                synchronized_resource_names = tuple(
+                    resource.Name
+                    for resource
+                    in UtilsAssembly._assemblyOccurrenceResources(
+                        occurrence
+                    )
+                )
+                synchronized_target_undo = int(self.doc.UndoCount)
+                synchronized_source_undo = int(
+                    source_document.UndoCount
+                )
+                source_document.openTransaction(
+                    "Cancel external source member"
+                )
+                try:
+                    canceled_source = source_assembly.newObject(
+                        "App::Link",
+                        "CanceledExternalSource",
+                    )
+                    canceled_source.LinkedObject = source_shape
+                    source_document.publishProvisionalTimelineOperationBlock(
+                        canceled_source,
+                        [],
+                    )
+                finally:
+                    source_document.abortTransaction()
+
+                self.assertIsNone(
+                    source_document.getObject(
+                        "CanceledExternalSource"
+                    )
+                )
+                self.assertEqual(
+                    tuple(
+                        resource.Name
+                        for resource
+                        in UtilsAssembly._assemblyOccurrenceResources(
+                            occurrence
+                        )
+                    ),
+                    synchronized_resource_names,
+                )
+                self.assertEqual(
+                    int(source_document.UndoCount),
+                    synchronized_source_undo,
+                )
+                self.assertEqual(
+                    int(self.doc.UndoCount),
+                    synchronized_target_undo,
+                )
+
+                source_document.save()
+                self.doc.save()
+                App.closeDocument(self.doc.Name)
+                App.closeDocument(source_document.Name)
+                source_document = App.openDocument(source_path)
+                self.doc = App.openDocument(target_path)
+
+                restored_source = source_document.getObject(
+                    "ExternalAutomaticallyAddedSource"
+                )
+                restored_occurrence = self.doc.getObject(
+                    occurrence_name
+                )
+                self.assertIsNotNone(restored_source)
+                self.assertIsNotNone(restored_occurrence)
+                self.assertEqual(
+                    tuple(
+                        resource.Name
+                        for resource
+                        in UtilsAssembly._assemblyOccurrenceResources(
+                            restored_occurrence
+                        )
+                    ),
+                    synchronized_resource_names,
+                )
+                self.assertTrue(
+                    any(
+                        getattr(
+                            resource,
+                            "VibeCADAssemblySourceObjectId",
+                            -1,
+                        )
+                        == int(restored_source.ID)
+                        for resource
+                        in UtilsAssembly._assemblyOccurrenceResources(
+                            restored_occurrence
+                        )
+                    )
+                )
+                self.assertNotEqual(
+                    synchronized_resource_names,
+                    old_resource_names,
+                )
+        finally:
+            if source_document.Name in App.listDocuments():
+                App.closeDocument(source_document.Name)
+
+    def test_flexible_occurrence_synchronizes_source_joint_lifecycle(self):
+        """Source joint creation and deletion update one flexible occurrence."""
+
+        self._disable_solve_on_recompute()
+        self.doc.UndoMode = False
+        source_assembly = self.doc.addObject(
+            "Assembly::AssemblyObject",
+            "AutomaticJointSourceAssembly",
+        )
+        source_assembly.Type = "Assembly"
+        source_joint_group = source_assembly.newObject(
+            "Assembly::JointGroup",
+            "AutomaticSourceJoints",
+        )
+        source_shape = self.doc.addObject(
+            "Part::Feature",
+            "AutomaticJointSourceShape",
+        )
+        source_shape.Shape = Part.makeBox(10, 8, 6)
+        source_components = []
+        for index in range(2):
+            component = source_assembly.newObject(
+                "App::Link",
+                f"AutomaticJointSourceComponent{index + 1}",
+            )
+            component.LinkedObject = source_shape
+            component.LinkPlacement.Base.x = index * 20
+            source_components.append(component)
+        self.doc.recompute()
+        self.doc.UndoMode = True
+
+        self.doc.openTransaction(
+            "Insert flexible automatic occurrence"
+        )
+        try:
+            occurrence = self.assembly.newObject(
+                "Assembly::AssemblyLink",
+                "FlexibleAutomaticOccurrence",
+            )
+            occurrence.LinkedObject = source_assembly
+            occurrence.Rigid = False
+            UtilsAssembly.finalizeInsertedComponentTimeline(
+                occurrence
+            )
+            self.doc.commitTransaction()
+        except Exception:
+            self.doc.abortTransaction()
+            raise
+
+        occurrence_name = occurrence.Name
+        initial_resource_names = tuple(
+            resource.Name
+            for resource
+            in UtilsAssembly._assemblyOccurrenceResources(
+                occurrence
+            )
+        )
+        self.doc.openTransaction(
+            "Create automatically synchronized source joint"
+        )
+        try:
+            source_joint = source_joint_group.newObject(
+                "App::FeaturePython",
+                "AutomaticallySynchronizedJoint",
+            )
+            JointObject.Joint(source_joint, 1)
+            source_joint.Proxy.setJointConnectors(
+                source_joint,
+                [
+                    [
+                        source_components[0],
+                        ["Face1", "Vertex1"],
+                    ],
+                    [
+                        source_components[1],
+                        ["Face1", "Vertex1"],
+                    ],
+                ],
+            )
+            self.doc.publishProvisionalTimelineOperationBlock(
+                source_joint,
+                [],
+            )
+            self.doc.commitTransaction()
+        except Exception:
+            self.doc.abortTransaction()
+            raise
+
+        local_joint = next(
+            resource
+            for resource
+            in UtilsAssembly._assemblyOccurrenceResources(
+                occurrence
+            )
+            if getattr(
+                resource,
+                "VibeCADAssemblySourceObjectId",
+                -1,
+            )
+            == int(source_joint.ID)
+        )
+        local_components = {
+            int(
+                resource.VibeCADAssemblySourceObjectId
+            ): resource
+            for resource
+            in UtilsAssembly._assemblyOccurrenceResources(
+                occurrence
+            )
+            if resource.TypeId == "App::Link"
+        }
+        self.assertIs(
+            local_joint.Reference1[0],
+            local_components[int(source_components[0].ID)],
+        )
+        self.assertIs(
+            local_joint.Reference2[0],
+            local_components[int(source_components[1].ID)],
+        )
+        self.assertEqual(
+            list(local_joint.Reference1[1]),
+            ["Face1", "Vertex1"],
+        )
+        self.assertEqual(
+            list(local_joint.Reference2[1]),
+            ["Face1", "Vertex1"],
+        )
+
+        operations = list(self._timeline().Operations)
+        self.assertLess(
+            operations.index(source_joint),
+            operations.index(local_joint),
+        )
+        self.assertLess(
+            operations.index(local_joint),
+            operations.index(occurrence),
+        )
+        synchronized_resource_names = tuple(
+            resource.Name
+            for resource
+            in UtilsAssembly._assemblyOccurrenceResources(
+                occurrence
+            )
+        )
+        source_joint_name = source_joint.Name
+        local_joint_name = local_joint.Name
+
+        self.doc.undo()
+        occurrence = self.doc.getObject(occurrence_name)
+        self.assertIsNone(self.doc.getObject(source_joint_name))
+        self.assertIsNone(self.doc.getObject(local_joint_name))
+        self.assertEqual(
+            tuple(
+                resource.Name
+                for resource
+                in UtilsAssembly._assemblyOccurrenceResources(
+                    occurrence
+                )
+            ),
+            initial_resource_names,
+        )
+
+        self.doc.redo()
+        occurrence = self.doc.getObject(occurrence_name)
+        source_joint = self.doc.getObject(source_joint_name)
+        self.assertIsNotNone(source_joint)
+        self.assertEqual(
+            tuple(
+                resource.Name
+                for resource
+                in UtilsAssembly._assemblyOccurrenceResources(
+                    occurrence
+                )
+            ),
+            synchronized_resource_names,
+        )
+
+        self.doc.openTransaction(
+            "Delete automatically synchronized source joint"
+        )
+        try:
+            self.doc.removeObject(source_joint_name)
+            self.doc.commitTransaction()
+        except Exception:
+            self.doc.abortTransaction()
+            raise
+
+        occurrence = self.doc.getObject(occurrence_name)
+        self.assertIsNone(self.doc.getObject(source_joint_name))
+        self.assertIsNone(self.doc.getObject(local_joint_name))
+        self.assertEqual(
+            tuple(
+                resource.Name
+                for resource
+                in UtilsAssembly._assemblyOccurrenceResources(
+                    occurrence
+                )
+            ),
+            initial_resource_names,
+        )
+
+        self.doc.undo()
+        occurrence = self.doc.getObject(occurrence_name)
+        restored_source_joint = self.doc.getObject(
+            source_joint_name
+        )
+        restored_local_joint = self.doc.getObject(
+            local_joint_name
+        )
+        self.assertIsNotNone(restored_source_joint)
+        self.assertIsNotNone(restored_local_joint)
+        self.assertEqual(
+            tuple(
+                resource.Name
+                for resource
+                in UtilsAssembly._assemblyOccurrenceResources(
+                    occurrence
+                )
+            ),
+            synchronized_resource_names,
+        )
+
+        self.doc.redo()
+        occurrence = self.doc.getObject(occurrence_name)
+        self.assertIsNone(self.doc.getObject(source_joint_name))
+        self.assertIsNone(self.doc.getObject(local_joint_name))
+        self.assertEqual(
+            tuple(
+                resource.Name
+                for resource
+                in UtilsAssembly._assemblyOccurrenceResources(
+                    occurrence
+                )
+            ),
+            initial_resource_names,
+        )
 
     def test_find_placement(self):
         """Test find placement of joint."""

@@ -31,6 +31,7 @@
 #include <BRepBuilderAPI_MakeVertex.hxx>
 
 
+#include <iterator>
 #include <unordered_map>
 #include <unordered_set>
 #include <boost/algorithm/string/predicate.hpp>
@@ -43,6 +44,7 @@
 #include <App/ElementNamingUtils.h>
 #include <Mod/Part/App/TopoShape.h>
 
+#include "DesignModel.h"
 #include "ShapeBinder.h"
 #include "Mod/Part/App/TopoShapeOpCode.h"
 #include "Base/Tools.h"
@@ -1181,6 +1183,31 @@ void SubShapeBinder::setLinks(
             Shape.setValue(Part::TopoShape());
         }
         return;
+    }
+    if (!isRestoring()
+        && PropertyContainer::getPropertyByName(
+            "VibeCADDefinitionId"
+        )) {
+        std::map<App::DocumentObject*, std::vector<std::string>>
+            exactValues;
+        for (auto& [object, subElements] : values) {
+            if (!object) {
+                FC_THROWM(Base::ValueError, "Invalid document object");
+            }
+            auto exact =
+                DesignModel::resolveDefinitionSubelementReference(
+                    *this,
+                    *object,
+                    subElements
+                );
+            auto& exactSubElements = exactValues[exact.object];
+            exactSubElements.insert(
+                exactSubElements.end(),
+                std::make_move_iterator(exact.subelements.begin()),
+                std::make_move_iterator(exact.subelements.end())
+            );
+        }
+        values = std::move(exactValues);
     }
     auto inSet = getInListEx(true);
     inSet.insert(this);

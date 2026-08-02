@@ -199,6 +199,14 @@ public:
     void setShowable(bool enable);
     bool isShowable() const;
 
+    /** Compatibility no-op for the retired presentation visibility gate.
+     *
+     * Rendering is now owned by each native view provider. These methods
+     * remain exported so existing source and binary callers keep loading.
+     */
+    void setVisibilityGate(bool enable);
+    bool isVisibilityGateOpen() const;
+
     /** Start the edit mode with ViewProvider::Default */
     void startDefaultEditMode();
 

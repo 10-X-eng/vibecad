@@ -613,18 +613,45 @@ class TaskPanelExtensionPage(PathOpGui.TaskPanelPage):
         return signals
 
     def registerSignalHandlers(self, obj):
-        self.form.showExtensions.clicked.connect(self.showHideExtension)
-        self.form.extendCorners.clicked.connect(self.toggleExtensionCorners)
-        self.form.buttonClear.clicked.connect(self.extensionsClear)
-        self.form.buttonDisable.clicked.connect(self.extensionsDisable)
-        self.form.buttonEnable.clicked.connect(self.extensionsEnable)
-        self.form.enableExtensions.toggled.connect(self._enableExtensions)
-        self.form.defaultLength.editingFinished.connect(self._applyDefaultLengthChange)
+        self.connectSignal(
+            self.form.showExtensions.clicked,
+            self.showHideExtension,
+        )
+        self.connectSignal(
+            self.form.extendCorners.clicked,
+            self.toggleExtensionCorners,
+        )
+        self.connectSignal(
+            self.form.buttonClear.clicked,
+            self.extensionsClear,
+        )
+        self.connectSignal(
+            self.form.buttonDisable.clicked,
+            self.extensionsDisable,
+        )
+        self.connectSignal(
+            self.form.buttonEnable.clicked,
+            self.extensionsEnable,
+        )
+        self.connectSignal(
+            self.form.enableExtensions.toggled,
+            self._enableExtensions,
+        )
+        self.connectSignal(
+            self.form.defaultLength.editingFinished,
+            self._applyDefaultLengthChange,
+        )
 
-        self.model.itemChanged.connect(self.updateItemEnabled)
+        self.connectSignal(
+            self.model.itemChanged,
+            self.updateItemEnabled,
+        )
 
         self.selectionModel = self.form.extensionTree.selectionModel()
-        self.selectionModel.selectionChanged.connect(self.selectionChanged)
+        self.connectSignal(
+            self.selectionModel.selectionChanged,
+            self.selectionChanged,
+        )
         self.selectionChanged()
 
     # Support methods

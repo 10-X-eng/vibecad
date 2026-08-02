@@ -27,6 +27,7 @@
 #include <App/Link.h>
 #include <Base/Console.h>
 #include <Base/Converter.h>
+#include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
@@ -53,6 +54,36 @@ using namespace TechDraw;
 using namespace TechDrawGui;
 using DU = DrawUtil;
 
+namespace
+{
+gp_Ax2 makeWorldSectionCS(
+    const Base::Vector3d& viewDirection,
+    const Base::Vector3d& preferredXDirection
+)
+{
+    const Base::Vector3d sectionNormal = viewDirection * -1.0;
+    gp_Ax2 coordinateSystem(
+        gp_Pnt(0.0, 0.0, 0.0),
+        Base::convertTo<gp_Dir>(sectionNormal)
+    );
+    if (!preferredXDirection.IsNull()) {
+        try {
+            coordinateSystem = gp_Ax2(
+                gp_Pnt(0.0, 0.0, 0.0),
+                Base::convertTo<gp_Dir>(sectionNormal),
+                Base::convertTo<gp_Dir>(preferredXDirection)
+            );
+        }
+        catch (...) {
+            // A preferred direction parallel to the section normal cannot
+            // define the X axis.  The gp_Ax2 constructor above supplies a
+            // deterministic perpendicular axis in that case.
+        }
+    }
+    return coordinateSystem;
+}
+}
+
 //ctor for creation
 TaskComplexSection::TaskComplexSection(TechDraw::DrawPage* page, TechDraw::DrawViewPart* baseView,
                                        std::vector<App::DocumentObject*> shapes,
@@ -76,16 +107,32 @@ TaskComplexSection::TaskComplexSection(TechDraw::DrawPage* page, TechDraw::DrawV
     m_scaleEdited(false)
 {
     m_sectionName = std::string();
-    if (m_page) {
-        m_doc = m_page->getDocument();
-        m_savePageName = m_page->getNameInDocument();
+    if (!m_page || !m_profileObject
+        || m_page->getDocument()->getBookedTransactionID()
+            == App::NullTransaction
+        || (m_baseView
+            && m_baseView->getDocument()
+                != m_page->getDocument())
+        || (!m_baseView && m_shapes.empty() && m_xShapes.empty())) {
+        throw Base::RuntimeError(
+            "The complex section requires a live page, profile, source "
+            "geometry, and owning transaction"
+        );
     }
-    if (m_baseView) {
-        m_saveBaseName = m_baseView->getNameInDocument();
-    }
+    m_doc = m_page->getDocument();
+    m_documentIdentity = TaskInternal::DocumentIdentity(m_doc);
+    m_pageIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawPage>(m_page);
+    m_baseIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewPart>(m_baseView);
+    m_profileIdentity =
+        TaskInternal::ObjectIdentity<App::DocumentObject>(
+            m_profileObject
+        );
     ui->setupUi(this);
 
     saveSectionState();
+    captureSources();
     setUiPrimary();
 
     m_applyDeferred = 0;//setting the direction widgets causes an increment of the deferred count,
@@ -100,8 +147,7 @@ TaskComplexSection::TaskComplexSection(TechDraw::DrawComplexSection* complexSect
     m_section(complexSection),
     m_profileObject(nullptr),
     m_dirName("Aligned"),
-    m_sectionName(m_section->getNameInDocument()),
-    m_savePageName(m_section->findParentPage()->getNameInDocument()),
+    m_sectionName(),
     m_createMode(false),
     m_applyDeferred(0),
     m_angle(0.0),
@@ -109,17 +155,49 @@ TaskComplexSection::TaskComplexSection(TechDraw::DrawComplexSection* complexSect
     m_modelIsDirty(false),
     m_scaleEdited(false)
 {
+    if (!m_section) {
+        throw Base::TypeError(
+            "The complex-section editor requires a live section"
+        );
+    }
     m_doc = m_section->getDocument();
     m_page = m_section->findParentPage();
+    m_profileObject =
+        m_section->CuttingToolWireObject.getValue();
+    if (!m_page || !m_profileObject
+        || m_page->getDocument() != m_doc
+        || m_doc->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The complex section has no live page, profile, or owning "
+            "transaction"
+        );
+    }
+    m_sectionName = m_section->getNameInDocument();
 
     m_baseView = dynamic_cast<TechDraw::DrawViewPart*>(m_section->BaseView.getValue());
-    if (m_baseView) {
-        m_saveBaseName = m_baseView->getNameInDocument();
+    if (m_baseView && m_baseView->getDocument() != m_doc) {
+        throw Base::RuntimeError(
+            "The complex section base view belongs to another document"
+        );
     }
 
     m_shapes = m_section->Source.getValues();
     m_xShapes = m_section->XSource.getValues();
-    m_profileObject = m_section->CuttingToolWireObject.getValue();
+    m_documentIdentity = TaskInternal::DocumentIdentity(m_doc);
+    m_pageIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawPage>(m_page);
+    m_baseIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewPart>(m_baseView);
+    m_sectionIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawComplexSection>(
+            m_section
+        );
+    m_profileIdentity =
+        TaskInternal::ObjectIdentity<App::DocumentObject>(
+            m_profileObject
+        );
+    captureSources();
 
     ui->setupUi(this);
 
@@ -129,6 +207,85 @@ TaskComplexSection::TaskComplexSection(TechDraw::DrawComplexSection* complexSect
     m_applyDeferred = 0;//setting the direction widgets causes an increment of the deferred count,
                         //so we reset the counter and the message.
     ui->lPendingUpdates->setText(QString());
+}
+
+void TaskComplexSection::captureSources()
+{
+    m_shapeIdentities.clear();
+    m_shapeIdentities.reserve(m_shapes.size());
+    for (auto* shape : m_shapes) {
+        if (shape) {
+            m_shapeIdentities.emplace_back(shape);
+        }
+    }
+    m_xShapeIdentities.clear();
+    m_xShapeIdentities.reserve(m_xShapes.size());
+    for (auto* shape : m_xShapes) {
+        if (shape) {
+            m_xShapeIdentities.emplace_back(shape);
+        }
+    }
+}
+
+bool TaskComplexSection::resolveTargets()
+{
+    auto* document = m_documentIdentity.resolve();
+    auto* page = m_pageIdentity.resolve();
+    auto* profile = m_profileIdentity.resolve();
+    if (!document || !page || !profile
+        || page->getDocument() != document) {
+        return false;
+    }
+
+    auto* base = m_baseIdentity.resolve();
+    if (m_baseView && !base) {
+        return false;
+    }
+    auto* section = m_sectionIdentity.resolve();
+    if (m_section && !section) {
+        return false;
+    }
+
+    m_doc = document;
+    m_page = page;
+    m_profileObject = profile;
+    m_baseView = base;
+    m_section = section;
+    return resolveSources();
+}
+
+bool TaskComplexSection::resolveSources()
+{
+    if (m_baseView) {
+        m_shapes = m_baseView->Source.getValues();
+        m_xShapes = m_baseView->XSource.getValues();
+        return !m_shapes.empty() || !m_xShapes.empty();
+    }
+
+    std::vector<App::DocumentObject*> shapes;
+    shapes.reserve(m_shapeIdentities.size());
+    for (const auto& identity : m_shapeIdentities) {
+        auto* shape = identity.resolve();
+        if (!shape) {
+            return false;
+        }
+        shapes.push_back(shape);
+    }
+    std::vector<App::DocumentObject*> xShapes;
+    xShapes.reserve(m_xShapeIdentities.size());
+    for (const auto& identity : m_xShapeIdentities) {
+        auto* shape = identity.resolve();
+        if (!shape) {
+            return false;
+        }
+        xShapes.push_back(shape);
+    }
+    if (shapes.empty() && xShapes.empty()) {
+        return false;
+    }
+    m_shapes = std::move(shapes);
+    m_xShapes = std::move(xShapes);
+    return true;
 }
 
 void TaskComplexSection::setUiPrimary()
@@ -280,17 +437,37 @@ void TaskComplexSection::onSectionObjectsUseSelectionClicked()
     std::vector<App::DocumentObject*> newSelection;
     std::vector<App::DocumentObject*> newXSelection;
     for (auto& sel : selection) {
-        if (sel.getObject()->isDerivedFrom<App::LinkElement>()
-            || sel.getObject()->isDerivedFrom<App::LinkGroup>()
-            || sel.getObject()->isDerivedFrom<App::Link>()) {
-            newXSelection.push_back(sel.getObject());
+        auto* object = sel.getObject();
+        if (!object || object == m_page || object == m_section
+            || object == m_profileObject) {
+            continue;
+        }
+        if (object->isDerivedFrom<App::LinkElement>()
+            || object->isDerivedFrom<App::LinkGroup>()
+            || object->isDerivedFrom<App::Link>()) {
+            newXSelection.push_back(object);
         }
         else {
-            newSelection.push_back(sel.getObject());
+            newSelection.push_back(object);
         }
     }
+    if (newSelection.empty() && newXSelection.empty()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("No Section Objects"),
+            tr("Select at least one model object or link.")
+        );
+        return;
+    }
+    // Choosing explicit section objects switches from base-view inheritance
+    // to direct source mode; otherwise this button would visibly accept a
+    // selection which the section calculation then ignores.
+    m_baseView = nullptr;
+    m_baseIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewPart>();
     m_shapes = newSelection;
     m_xShapes = newXSelection;
+    captureSources();
     ui->leSectionObjects->setText(sourcesToString());
 }
 
@@ -370,21 +547,32 @@ void TaskComplexSection::onProfileObjectsUseSelectionClicked()
 {
     std::vector<Gui::SelectionObject> selection = Gui::Selection().getSelectionEx();
     //check for single selection and ability to make profile from selected object
-    if (!selection.empty()) {
-        m_profileObject = selection.front().getObject();
-        ui->leProfileObject->setText(
-            QString::fromStdString(m_profileObject->getNameInDocument())
-            + QStringLiteral(" / ")
-            + QString::fromStdString(m_profileObject->Label.getValue()));
+    if (selection.size() != 1 || !selection.front().getObject()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("No Section Profile"),
+            tr("Select exactly one profile object.")
+        );
+        return;
     }
+    m_profileObject = selection.front().getObject();
+    m_profileSubs = selection.front().getSubNames();
+    m_profileIdentity =
+        TaskInternal::ObjectIdentity<App::DocumentObject>(
+            m_profileObject
+        );
+    ui->leProfileObject->setText(
+        QString::fromStdString(m_profileObject->getNameInDocument())
+        + QStringLiteral(" / ")
+        + QString::fromStdString(m_profileObject->Label.getValue()));
 }
 void TaskComplexSection::scaleTypeChanged(int index)
 {
     if (index == 0) {
         // Page Scale Type
         ui->sbScale->setEnabled(false);
-        if (m_baseView->findParentPage()) {
-            ui->sbScale->setValue(m_baseView->findParentPage()->Scale.getValue());
+        if (auto* page = m_pageIdentity.resolve()) {
+            ui->sbScale->setValue(page->Scale.getValue());
             ui->sbScale->setEnabled(false);
         }
     }
@@ -437,30 +625,46 @@ void TaskComplexSection::updateNowClicked() { apply(true); }
 
 QString TaskComplexSection::sourcesToString()
 {
+    if (!resolveSources()) {
+        return tr("Source geometry is unavailable");
+    }
     QString result;
     QString separator(QStringLiteral(", "));
     QString currentSeparator;
     if (m_baseView) {
         for (auto& obj : m_baseView->Source.getValues()) {
+            if (!obj) {
+                continue;
+            }
             result += currentSeparator + QString::fromStdString(obj->getNameInDocument())
                 + QStringLiteral(" / ") + QString::fromStdString(obj->Label.getValue());
             currentSeparator = separator;
         }
-        currentSeparator = QString();
         for (auto& obj : m_baseView->XSource.getValues()) {
+            if (!obj) {
+                continue;
+            }
             result += currentSeparator + QString::fromStdString(obj->getNameInDocument())
                 + QStringLiteral(" / ") + QString::fromStdString(obj->Label.getValue());
+            currentSeparator = separator;
         }
     }
     else {
         for (auto& obj : m_shapes) {
+            if (!obj) {
+                continue;
+            }
             result += currentSeparator + QString::fromStdString(obj->getNameInDocument())
                 + QStringLiteral(" / ") + QString::fromStdString(obj->Label.getValue());
+            currentSeparator = separator;
         }
-        currentSeparator = QString();
         for (auto& obj : m_xShapes) {
+            if (!obj) {
+                continue;
+            }
             result += currentSeparator + QString::fromStdString(obj->getNameInDocument())
                 + QStringLiteral(" / ") + QString::fromStdString(obj->Label.getValue());
+            currentSeparator = separator;
         }
     }
     return result;
@@ -479,9 +683,23 @@ bool TaskComplexSection::apply(bool forceUpdate)
         return false;
     }
 
+    if (!resolveTargets()) {
+        Base::Console().error(
+            "The complex section target or source geometry is no longer "
+            "available.\n"
+        );
+        return false;
+    }
     Base::Vector3d localUnit = m_viewDirectionWidget->value();
+    if (localUnit.IsNull()) {
+        Base::Console().error(
+            "The complex section direction cannot be zero.\n"
+        );
+        return false;
+    }
+    localUnit.Normalize();
     if (m_baseView) {
-        if (!DrawComplexSection::canBuild(m_baseView->localVectorToCS(localUnit),
+        if (!DrawComplexSection::canBuild(m_baseView->localVectorToCS(localUnit * -1.0),
                                           m_profileObject)) {
             Base::Console().error(
                 "Cannot build complex section with this profile and direction (1)\n");
@@ -489,9 +707,8 @@ bool TaskComplexSection::apply(bool forceUpdate)
         }
     }
     else {
-        gp_Pnt stdOrigin(0.0, 0.0, 0.0);
-        gp_Ax2 sectionCS(stdOrigin, Base::convertTo<gp_Dir>(m_saveNormal),
-                         Base::convertTo<gp_Dir>(m_saveXDir));
+        const gp_Ax2 sectionCS =
+            makeWorldSectionCS(localUnit, m_saveXDir);
         if (!DrawComplexSection::canBuild(sectionCS, m_profileObject)) {
             Base::Console().error(
                 "Cannot build complex section with this profile and direction (2)\n");
@@ -514,6 +731,7 @@ bool TaskComplexSection::apply(bool forceUpdate)
     }
     else {
         failNoObject();
+        return false;
     }
 
     m_section->recomputeFeature();
@@ -550,92 +768,167 @@ void TaskComplexSection::applyAligned()
 //pointer to created view is not returned, but stored in m_section
 void TaskComplexSection::createComplexSection()
 {
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create Complex Section"));
     if (!m_section) {
+        auto* document = m_documentIdentity.resolve();
+        auto* page = m_pageIdentity.resolve();
+        if (!document || !page || !resolveSources()) {
+            throw Base::RuntimeError(
+                "The complex section target is no longer available"
+            );
+        }
         const std::string objectName{QT_TR_NOOP("ComplexSection")};
-        m_sectionName = m_page->getDocument()->getUniqueObjectName(objectName.c_str());
-        Command::doCommand(Command::Doc, "App.ActiveDocument.addObject('TechDraw::DrawComplexSection', '%s')",
-                           m_sectionName.c_str());
+        m_sectionName =
+            document->getUniqueObjectName(objectName.c_str());
+        const std::string documentName =
+            Base::InterpreterSingleton::strToPython(
+                document->getName()
+            );
+        const QString sectionFactory =
+            QStringLiteral(
+                "App.getDocument('%1').addObject"
+                "('TechDraw::DrawComplexSection', '%2')"
+            )
+                .arg(
+                    QString::fromStdString(documentName),
+                    QString::fromStdString(m_sectionName)
+                );
+        m_section = dynamic_cast<TechDraw::DrawComplexSection*>(
+            Gui::Command::runDocumentObjectCommand(
+                Command::Doc,
+                *document,
+                sectionFactory.toUtf8(),
+                TechDraw::DrawComplexSection::getClassTypeId()
+            )
+        );
+        if (!m_section) {
+            throw Base::RuntimeError(
+                "The complex section object could not be created"
+            );
+        }
+        m_sectionName = m_section->getNameInDocument();
+        m_sectionIdentity =
+            TaskInternal::ObjectIdentity<
+                TechDraw::DrawComplexSection
+            >(m_section);
+        const std::string sectionCommand =
+            Gui::Command::getObjectCmd(m_section);
+        const std::string pageCommand =
+            Gui::Command::getObjectCmd(page);
 
         // section labels (Section A-A) are not unique, and are not the same as the object name (SectionView)
         // we pluck the generated suffix from the object name and append it to "Section" to generate
         // unique Labels
         QString qTemp = ui->leSymbol->text();
         std::string temp = qTemp.toStdString();
-        //NOLINTBEGIN
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.SectionSymbol = '%s'",
-                           m_sectionName.c_str(), temp.c_str());
-
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Label = '%s'",
-                           m_sectionName.c_str(),
-                           makeSectionLabel(qTemp).c_str());
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.addView(App.ActiveDocument.%s)",
-                           m_page->getNameInDocument(), m_sectionName.c_str());
-
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Scale = %0.6f",
-                           m_sectionName.c_str(), ui->sbScale->value());
-
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Scale = %0.7f",
-                           m_sectionName.c_str(), ui->sbScale->value());
+        const std::string symbol =
+            Base::InterpreterSingleton::strToPython(temp.c_str());
+        const std::string labelText = makeSectionLabel(qTemp);
+        const std::string label =
+            Base::InterpreterSingleton::strToPython(
+                labelText.c_str()
+            );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionSymbol = '%s'",
+            sectionCommand.c_str(),
+            symbol.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.Label = '%s'",
+            sectionCommand.c_str(),
+            label.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.translateLabel('DrawViewSection', 'Section', '%s')",
+            sectionCommand.c_str(),
+            label.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.addView(%s)",
+            pageCommand.c_str(),
+            sectionCommand.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.Scale = %0.7f",
+            sectionCommand.c_str(),
+            ui->sbScale->value()
+        );
 
         int scaleType = ui->cmbScaleType->currentIndex();
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.ScaleType = %d",
-                           m_sectionName.c_str(), scaleType);
+        Command::doCommand(
+            Command::Doc,
+            "%s.ScaleType = %d",
+            sectionCommand.c_str(),
+            scaleType
+        );
         int projectionStrategy = ui->cmbStrategy->currentIndex();
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.ProjectionStrategy = %d",
-                           m_sectionName.c_str(), projectionStrategy);
+        Command::doCommand(
+            Command::Doc,
+            "%s.ProjectionStrategy = %d",
+            sectionCommand.c_str(),
+            projectionStrategy
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionOrigin = FreeCAD.Vector(0.0, 0.0, 0.0)",
+            sectionCommand.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionDirection = 'Aligned'",
+            sectionCommand.c_str()
+        );
 
-        Command::doCommand(Command::Doc,
-                           "App.activeDocument().%s.SectionOrigin = FreeCAD.Vector(0.0, 0.0, 0.0)",
-                           m_sectionName.c_str());
-        Command::doCommand(Command::Doc, "App.activeDocument().%s.SectionDirection = 'Aligned'",
-                           m_sectionName.c_str());
-        //NOLINTEND
-
-        App::DocumentObject* newObj = m_page->getDocument()->getObject(m_sectionName.c_str());
-        m_section = dynamic_cast<TechDraw::DrawComplexSection*>(newObj);
-        if (!newObj || !m_section) {
-            throw Base::RuntimeError("TaskComplexSection - new section object not found");
-        }
         Base::Vector3d localUnit = m_viewDirectionWidget->value();
+        localUnit.Normalize();
         if (m_baseView) {
-            //NOLINTNEXTLINE
-            Command::doCommand(Command::Doc,
-                               "App.ActiveDocument.%s.BaseView = App.ActiveDocument.%s",
-                               m_sectionName.c_str(), m_baseView->getNameInDocument());
+            const std::string baseCommand =
+                Gui::Command::getObjectCmd(m_baseView);
+            Command::doCommand(
+                Command::Doc,
+                "%s.BaseView = %s",
+                sectionCommand.c_str(),
+                baseCommand.c_str()
+            );
             m_section->setCSFromBase(localUnit * -1.0);
             m_section->Source.setValues(m_baseView->Source.getValues());
             m_section->XSource.setValues(m_baseView->XSource.getValues());
         }
         else {
-            if (m_directionIsSet) {
-                //if we have changed the direction, use the local unit to create a CS
-                m_section->setCSFromLocalUnit(localUnit * -1.0);
-            }
-            else {
-                //if we have not changed the direction, we should use the 3d directions saved in the
-                //constructor
-                m_section->SectionNormal.setValue(m_saveNormal);
-                m_section->Direction.setValue(m_saveNormal);
-                m_section->XDirection.setValue(m_saveXDir);
-            }
+            const gp_Ax2 sectionCS =
+                makeWorldSectionCS(localUnit, m_saveXDir);
+            const Base::Vector3d sectionNormal =
+                Base::convertTo<Base::Vector3d>(
+                    sectionCS.Direction()
+                );
+            m_section->SectionNormal.setValue(sectionNormal);
+            m_section->Direction.setValue(sectionNormal);
+            m_section->XDirection.setValue(
+                Base::convertTo<Base::Vector3d>(
+                    sectionCS.XDirection()
+                )
+            );
             m_section->Source.setValues(m_shapes);
             m_section->XSource.setValues(m_xShapes);
         }
         m_section->CuttingToolWireObject.setValue(m_profileObject);
         m_section->SectionDirection.setValue("Aligned");
-        m_section->Source.setValues(m_shapes);
-        m_section->XSource.setValues(m_xShapes);
 
         //auto orientation of view relative to base view
         double viewDirectionAngle = m_compass->positiveValue();
         double rotation = requiredRotation(viewDirectionAngle);
-        //NOLINTNEXTLINE
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Rotation = %.6f",
-                           m_sectionName.c_str(), rotation);
+        Command::doCommand(
+            Command::Doc,
+            "%s.Rotation = %.6f",
+            sectionCommand.c_str(),
+            rotation
+        );
 
     }
-    Gui::Command::commitCommand(tid);
 }
 
 void TaskComplexSection::updateComplexSection()
@@ -645,43 +938,99 @@ void TaskComplexSection::updateComplexSection()
         return;
     }
 
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Edit Section View"));
     if (m_section) {
+        const std::string sectionCommand =
+            Gui::Command::getObjectCmd(m_section);
         QString qTemp = ui->leSymbol->text();
         std::string temp = qTemp.toStdString();
-        //NOLINTBEGIN
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.SectionSymbol = '%s'",
-                           m_sectionName.c_str(), temp.c_str());
-
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Label = '%s'",
-                           m_sectionName.c_str(),
-                           makeSectionLabel(qTemp).c_str());
-        Command::doCommand(Command::Doc, "App.activeDocument().%s.translateLabel('DrawViewSection', 'Section', '%s')",
-              m_sectionName.c_str(), makeSectionLabel(qTemp).c_str());
-
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Scale = %0.7f",
-                           m_sectionName.c_str(), ui->sbScale->value());
+        const std::string symbol =
+            Base::InterpreterSingleton::strToPython(temp.c_str());
+        const std::string labelText = makeSectionLabel(qTemp);
+        const std::string label =
+            Base::InterpreterSingleton::strToPython(
+                labelText.c_str()
+            );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionSymbol = '%s'",
+            sectionCommand.c_str(),
+            symbol.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.Label = '%s'",
+            sectionCommand.c_str(),
+            label.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.translateLabel('DrawViewSection', 'Section', '%s')",
+            sectionCommand.c_str(),
+            label.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.Scale = %0.7f",
+            sectionCommand.c_str(),
+            ui->sbScale->value()
+        );
 
         int scaleType = ui->cmbScaleType->currentIndex();
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.ScaleType = %d",
-                           m_sectionName.c_str(), scaleType);
+        Command::doCommand(
+            Command::Doc,
+            "%s.ScaleType = %d",
+            sectionCommand.c_str(),
+            scaleType
+        );
         int projectionStrategy = ui->cmbStrategy->currentIndex();
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.ProjectionStrategy = %d",
-                           m_sectionName.c_str(), projectionStrategy);
-        Command::doCommand(Command::Doc, "App.activeDocument().%s.SectionDirection = 'Aligned'",
-                           m_sectionName.c_str());
-        //NOLINTEND
+        Command::doCommand(
+            Command::Doc,
+            "%s.ProjectionStrategy = %d",
+            sectionCommand.c_str(),
+            projectionStrategy
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionDirection = 'Aligned'",
+            sectionCommand.c_str()
+        );
 
         m_section->CuttingToolWireObject.setValue(m_profileObject);
         m_section->SectionDirection.setValue("Aligned");
         Base::Vector3d localUnit = m_viewDirectionWidget->value();
-        m_section->setCSFromBase(localUnit * -1.0);
+        localUnit.Normalize();
         if (m_baseView) {
+            const std::string baseCommand =
+                Gui::Command::getObjectCmd(m_baseView);
+            Command::doCommand(
+                Command::Doc,
+                "%s.BaseView = %s",
+                sectionCommand.c_str(),
+                baseCommand.c_str()
+            );
+            m_section->setCSFromBase(localUnit * -1.0);
             m_section->Source.setValues(m_baseView->Source.getValues());
             m_section->XSource.setValues(m_baseView->XSource.getValues());
         }
         else {
-            //without a baseView, our choice of SectionNormal and XDirection may well be wrong
+            Command::doCommand(
+                Command::Doc,
+                "%s.BaseView = None",
+                sectionCommand.c_str()
+            );
+            const gp_Ax2 sectionCS =
+                makeWorldSectionCS(localUnit, m_saveXDir);
+            const Base::Vector3d sectionNormal =
+                Base::convertTo<Base::Vector3d>(
+                    sectionCS.Direction()
+                );
+            m_section->SectionNormal.setValue(sectionNormal);
+            m_section->Direction.setValue(sectionNormal);
+            m_section->XDirection.setValue(
+                Base::convertTo<Base::Vector3d>(
+                    sectionCS.XDirection()
+                )
+            );
             m_section->Source.setValues(m_shapes);
             m_section->XSource.setValues(m_xShapes);
         }
@@ -690,17 +1039,22 @@ void TaskComplexSection::updateComplexSection()
         double viewDirectionAngle = m_compass->positiveValue();
         double rotation = requiredRotation(viewDirectionAngle);
 
-        //NOLINTNEXTLINE
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Rotation = %.6f",
-                           m_sectionName.c_str(), rotation);
+        Command::doCommand(
+            Command::Doc,
+            "%s.Rotation = %.6f",
+            sectionCommand.c_str(),
+            rotation
+        );
     }
-    Gui::Command::commitCommand(tid);
 }
 
 std::string TaskComplexSection::makeSectionLabel(const QString& symbol)
 {
     const std::string objectName{QT_TR_NOOP("ComplexSection")};
-    std::string uniqueSuffix{m_sectionName.substr(objectName.length(), std::string::npos)};
+    const std::string uniqueSuffix =
+        m_sectionName.rfind(objectName, 0) == 0
+        ? m_sectionName.substr(objectName.length())
+        : m_sectionName;
     std::string uniqueLabel = "Section" + uniqueSuffix;
     std::string temp = symbol.toStdString();
     return ( uniqueLabel + " " + temp + " - " + temp );
@@ -709,30 +1063,32 @@ std::string TaskComplexSection::makeSectionLabel(const QString& symbol)
 void TaskComplexSection::failNoObject()
 {
     QString qsectionName = QString::fromStdString(m_sectionName);
-    QString qbaseName = QString::fromStdString(m_saveBaseName);
+    QString qbaseName = m_baseIdentity.name().empty()
+        ? tr("source geometry")
+        : QString::fromStdString(m_baseIdentity.name());
     QString msg = tr("Can not continue. Object * %1 or %2 not found.").arg(qsectionName, qbaseName);
     QMessageBox::critical(Gui::getMainWindow(), QObject::tr("Operation Failed"), msg);
-    Gui::Control().closeDialog();
+    Gui::Control().closeDialog(m_documentIdentity.resolve());
 }
 
 bool TaskComplexSection::isBaseValid()
 {
-    if (!m_baseView) {
+    auto* base = m_baseIdentity.resolve();
+    if (!base) {
         return false;
     }
-
-    App::DocumentObject* baseObj = m_doc->getObject(m_saveBaseName.c_str());
-    return baseObj != nullptr;
+    m_baseView = base;
+    return true;
 }
 
 bool TaskComplexSection::isSectionValid()
 {
-    if (!m_section) {
+    auto* section = m_sectionIdentity.resolve();
+    if (!section) {
         return false;
     }
-
-    App::DocumentObject* sectionObj = m_doc->getObject(m_sectionName.c_str());
-    return sectionObj != nullptr;
+    m_section = section;
+    return true;
 }
 
 //get required rotation from input angle in [0, 360]
@@ -753,50 +1109,24 @@ double TaskComplexSection::requiredRotation(double inputAngleDeg)
 //******************************************************************************
 bool TaskComplexSection::accept()
 {
-    apply(true);
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");   //NOLINT
+    if (!apply(true) || !isSectionValid() || m_section->isError()) {
+        return false;
+    }
+    TaskInternal::updateExactDocument(m_section->getDocument());
+    TaskInternal::resetExactEdit(m_section->getDocument());
     return true;
 }
 
 bool TaskComplexSection::reject()
 {
-    if (!m_section) {//no section created, nothing to undo
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");   //NOLINT
-        return false;
-    }
-
-    if (!isSectionValid()) {//section !exist. nothing to undo
-        if (isBaseValid()) {
-            m_baseView->requestPaint();
-        }
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");   //NOLINT
-        return false;
-    }
-
-    if (m_createMode) {
-        std::string SectionName = m_section->getNameInDocument();
-        //NOLINTBEGIN
-        Gui::Command::doCommand(Gui::Command::Gui,
-                                "App.ActiveDocument.%s.removeView(App.ActiveDocument.%s)",
-                                m_savePageName.c_str(), SectionName.c_str());
-        Gui::Command::doCommand(Gui::Command::Gui, "App.ActiveDocument.removeObject('%s')",
-                                SectionName.c_str());
-        //NOLINTEND
-    } else {
-        if (m_modelIsDirty) {
-            restoreSectionState();
-            m_section->recomputeFeature();
-            m_section->requestPaint();
-        }
-    }
-
     if (isBaseValid()) {
         m_baseView->requestPaint();
     }
-    Gui::Command::updateActive();
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");   //NOLINT
+    // TaskView owns the exact creation/edit transaction. Cancel rolls every
+    // provisional object and live parameter change back as one operation.
+    TaskInternal::resetExactEdit(m_documentIdentity.resolve());
 
-    return false;
+    return true;
 }
 
 void TaskComplexSection::changeEvent(QEvent* event)
@@ -820,6 +1150,7 @@ TaskDlgComplexSection::TaskDlgComplexSection(TechDraw::DrawPage* page,
                                    widget->windowTitle(), true, nullptr);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 TaskDlgComplexSection::TaskDlgComplexSection(TechDraw::DrawComplexSection* complexSection)
@@ -830,6 +1161,7 @@ TaskDlgComplexSection::TaskDlgComplexSection(TechDraw::DrawComplexSection* compl
                                    widget->windowTitle(), true, nullptr);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 void TaskDlgComplexSection::update()
@@ -842,14 +1174,12 @@ void TaskDlgComplexSection::open() {}
 
 bool TaskDlgComplexSection::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgComplexSection::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 //NOLINTNEXTLINE

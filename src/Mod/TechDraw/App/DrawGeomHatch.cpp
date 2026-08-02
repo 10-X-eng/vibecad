@@ -125,8 +125,11 @@ App::DocumentObjectExecReturn *DrawGeomHatch::execute()
 {
 //    Base::Console().message("DGH::execute()\n");
     //does execute even need to exist? Its all about the property value changes
+    if (!DrawUtil::isActiveInDocumentTimeline(this)) {
+        return App::DocumentObject::StdReturn;
+    }
     DrawViewPart* parent = getSourceView();
-    if (parent) {
+    if (parent && parent->isActiveInDocumentTimeline()) {
         parent->requestPaint();
     }
     return App::DocumentObject::StdReturn;
@@ -240,6 +243,8 @@ std::vector<LineSet>  DrawGeomHatch::getTrimmedLines(int iFace)   //get the trim
 
     DrawViewPart* source = getSourceView();
     if (!source ||
+        !DrawUtil::isActiveInDocumentTimeline(this) ||
+        !source->isActiveInDocumentTimeline() ||
         !source->hasGeometry()) {
         return std::vector<LineSet>();
     }

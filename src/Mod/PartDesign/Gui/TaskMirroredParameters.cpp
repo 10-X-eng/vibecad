@@ -174,7 +174,9 @@ void TaskMirroredParameters::onPlaneChanged(int /*num*/)
             hideObject();
             showBase();
             selectionMode = SelectionMode::Reference;
-            Gui::Selection().clearSelection();
+            Gui::Selection().clearSelection(
+                pcMirrored->getDocument()->getName()
+            );
             addReferenceSelectionGate(AllowSelection::FACE | AllowSelection::PLANAR);
         }
         else {

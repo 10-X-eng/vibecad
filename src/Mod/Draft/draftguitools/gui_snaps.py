@@ -215,7 +215,7 @@ class Draft_Snap_Center(Draft_Snap_Base):
             "MenuText": QT_TRANSLATE_NOOP("Draft_Snap_Center", "Snap Center"),
             "ToolTip": QT_TRANSLATE_NOOP(
                 "Draft_Snap_Center",
-                "Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts",
+                "Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies",
             ),
             "CmdType": "NoTransaction",
             "Checkable": self.isChecked(),

@@ -29,6 +29,8 @@
 #include <Inventor/nodes/SoPickStyle.h>
 #include <BRep_Builder.hxx>
 
+#include <string_view>
+
 #include <Base/Exception.h>
 #include <Base/ServiceProvider.h>
 #include <App/Document.h>
@@ -42,6 +44,8 @@
 #include <Gui/MainWindow.h>
 #include <Gui/Utilities.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
+#include <Mod/PartDesign/App/DesignModel.h>
 #include <Mod/PartDesign/App/FeatureAddSub.h>
 #include <Mod/Part/Gui/ViewProvider.h>
 #include <Mod/Part/Gui/ViewProviderExt.h>
@@ -55,6 +59,51 @@
 
 
 using namespace PartDesignGui;
+
+namespace
+{
+
+void updateOperationPreviewColor(PartDesignGui::ViewProvider& viewProvider)
+{
+    auto* object = viewProvider.getObject();
+    auto* styleParameterManager =
+        Base::provideService<Gui::StyleParameters::ParameterManager>();
+
+    if (auto* operation = dynamic_cast<PartDesign::DesignOperationProperties*>(object)) {
+        const std::string_view resultOperation = operation->ResultOperation.getValueAsString();
+        if (resultOperation == "Cut") {
+            viewProvider.PreviewColor.setValue(
+                styleParameterManager->resolve(StyleParameters::PreviewSubtractiveColor)
+            );
+            return;
+        }
+        if (resultOperation == "Intersect") {
+            viewProvider.PreviewColor.setValue(
+                styleParameterManager->resolve(StyleParameters::PreviewCommonColor)
+            );
+            return;
+        }
+        if (resultOperation == "Join" || resultOperation == "New Body"
+            || resultOperation == "New Bodies") {
+            viewProvider.PreviewColor.setValue(
+                styleParameterManager->resolve(StyleParameters::PreviewAdditiveColor)
+            );
+            return;
+        }
+    }
+
+    if (auto* addSubFeature = freecad_cast<PartDesign::FeatureAddSub*>(object)) {
+        const bool isAdditive =
+            addSubFeature->getAddSubType() == PartDesign::FeatureAddSub::Additive;
+        viewProvider.PreviewColor.setValue(
+            isAdditive
+                ? styleParameterManager->resolve(StyleParameters::PreviewAdditiveColor)
+                : styleParameterManager->resolve(StyleParameters::PreviewSubtractiveColor)
+        );
+    }
+}
+
+}  // namespace
 
 PROPERTY_SOURCE_WITH_EXTENSIONS(PartDesignGui::ViewProvider, PartGui::ViewProviderPart)
 
@@ -75,29 +124,35 @@ void ViewProvider::beforeDelete()
 void ViewProvider::attach(App::DocumentObject* pcObject)
 {
     ViewProviderPart::attach(pcObject);
-
-    auto* styleParameterManager = Base::provideService<Gui::StyleParameters::ParameterManager>();
-
-    if (auto addSubFeature = getObject<PartDesign::FeatureAddSub>()) {
-        bool isAdditive = addSubFeature->getAddSubType() == PartDesign::FeatureAddSub::Additive;
-
-        PreviewColor.setValue(
-            isAdditive ? styleParameterManager->resolve(StyleParameters::PreviewAdditiveColor)
-                       : styleParameterManager->resolve(StyleParameters::PreviewSubtractiveColor)
-        );
-    }
+    updateOperationPreviewColor(*this);
 }
 
 bool ViewProvider::doubleClicked()
 {
-    try {
-        QString text = QObject::tr("Edit %1").arg(QString::fromUtf8(getObject()->Label.getValue()));
-        getDocument()->openCommand(text.toUtf8());
-        Gui::cmdSetEdit(pcObject, Gui::Application::Instance->getUserEditMode());
+    // Route every edit entry point—including direct Python/macro replay—
+    // through the common exact-transaction owner. Tree and History gestures
+    // already establish an enclosing command invocation; this method safely
+    // adopts that same transaction instead of opening a nested one.
+    startDefaultEditMode();
+    return getDocument() && getDocument()->getEditViewProvider() == this;
+}
+
+bool ViewProvider::supportsDocumentTimelineOperationDelete() const noexcept
+{
+    return dynamic_cast<const PartDesign::DesignOperationProperties*>(getObject()) != nullptr;
+}
+
+bool ViewProvider::prepareDocumentTimelineOperationDelete()
+{
+    auto* operation = getObject();
+    if (!dynamic_cast<PartDesign::DesignOperationProperties*>(operation)) {
+        return false;
     }
-    catch (const Base::Exception&) {
-        getDocument()->abortCommand();
+    if (freecad_cast<PartDesign::DesignScriptOperation*>(operation)) {
+        throw Base::RuntimeError("This source-owned History operation must be deleted through "
+                                 "its VibeScript lifecycle command");
     }
+    PartDesign::DesignModel::removeOperationResources(*operation);
     return true;
 }
 
@@ -127,10 +182,17 @@ bool ViewProvider::setEdit(int ModNum)
         return forwardedViewProvider->startEditing(ModNum);
     }
     else if (ModNum == ViewProvider::Default) {
+        auto* feature = getObject();
+        auto* document =
+            feature ? feature->getDocument() : nullptr;
+        if (!document) {
+            return false;
+        }
         // When double-clicking on the item for this feature the
         // object unsets and sets its edit mode without closing
         // the task panel
-        Gui::TaskView::TaskDialog* dlg = Gui::Control().activeDialog();
+        Gui::TaskView::TaskDialog* dlg =
+            Gui::Control().activeDialog(document);
         TaskDlgFeatureParameters* featureDlg = qobject_cast<TaskDlgFeatureParameters*>(dlg);
         // NOTE: if the dialog is not partDesigan dialog the featureDlg will be NULL
         if (featureDlg && featureDlg->getViewObject() != this) {
@@ -144,7 +206,7 @@ bool ViewProvider::setEdit(int ModNum)
             msgBox.setDefaultButton(QMessageBox::Yes);
 
             if (msgBox.exec() == QMessageBox::Yes) {
-                Gui::Control().reject();
+                Gui::Control().reject(document);
             }
             else {
                 return false;
@@ -155,15 +217,11 @@ bool ViewProvider::setEdit(int ModNum)
         // the body container. That should never happen, but in some cases we find models with a
         // problem like that.
         if (ViewProviderBody* bodyViewProvider = getBodyViewProvider()) {
-            PartDesign::Feature* shownFeature = bodyViewProvider->getShownFeature();
-
-            previouslyShownViewProvider = freecad_cast<ViewProvider*>(
-                Gui::Application::Instance->getViewProvider(shownFeature)
-            );
+            previouslyShownViewProvider = bodyViewProvider->getShownViewProvider();
         }
 
         // clear the selection (convenience)
-        Gui::Selection().clearSelection();
+        Gui::Selection().clearSelection(document->getName());
 
         // always change to PartDesign WB, remember where we come from
         oldWb = Gui::Command::assureWorkbench("PartDesignWorkbench");
@@ -176,7 +234,7 @@ bool ViewProvider::setEdit(int ModNum)
             }
         }
 
-        Gui::Control().showDialog(featureDlg);
+        Gui::Control().showDialog(featureDlg, document);
         return true;
     }
     else {
@@ -205,17 +263,21 @@ void ViewProvider::unsetEdit(int ModNum)
         previouslyShownViewProvider->show();
     }
 
-    if (ModNum == ViewProvider::Default) {
-        // when pressing ESC make sure to close the dialog
-        Gui::Control().closeDialog();
-    }
-    else {
+    if (ModNum != ViewProvider::Default) {
         PartGui::ViewProviderPart::unsetEdit(ModNum);
     }
+    // Default feature dialogs auto-close from TaskView only after the exact
+    // edit transaction has committed or rolled back.  Closing the global
+    // dialog here destroys its command checkpoint while _resetEdit() still
+    // holds the transaction lock and can turn a normal reset into a rollback.
 }
 
 void ViewProvider::updateData(const App::Property* prop)
 {
+    if (auto* operation = dynamic_cast<PartDesign::DesignOperationProperties*>(getObject());
+        operation && prop == &operation->ResultOperation) {
+        updateOperationPreviewColor(*this);
+    }
     if (strcmp(prop->getName(), "PreviewShape") == 0) {
         updatePreview();
     }
@@ -491,7 +553,7 @@ ViewProviderBody* ViewProvider::getBodyViewProvider()
 
 void ViewProvider::toggleVisibility()
 {
-    if (!PartDesign::Body::isSolidFeature(getObject())) {
+    if (!PartDesign::Body::isResultFeature(getObject())) {
         Gui::ViewProvider::toggleVisibility();
         return;
     }

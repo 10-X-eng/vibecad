@@ -46,7 +46,8 @@ public:
         Ellipsoid,
         Torus,
         Prism,
-        Wedge
+        Wedge,
+        Tube
     };
 
     FeaturePrimitive();
@@ -91,6 +92,8 @@ public:
     short mustExecute() const override;
 
 protected:
+    App::DocumentObjectExecReturn*
+    buildPrimitiveShape(TopoDS_Shape& primitive) const;
 };
 
 class PartDesignExport AdditiveBox: public Box
@@ -131,6 +134,10 @@ public:
     /// recalculate the Feature
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
+
+protected:
+    App::DocumentObjectExecReturn*
+    buildPrimitiveShape(TopoDS_Shape& primitive) const;
 };
 
 class PartDesignExport AdditiveCylinder: public Cylinder
@@ -174,6 +181,8 @@ public:
     short mustExecute() const override;
 
 protected:
+    App::DocumentObjectExecReturn*
+    buildPrimitiveShape(TopoDS_Shape& primitive) const;
 };
 
 class PartDesignExport AdditiveSphere: public Sphere
@@ -216,6 +225,8 @@ public:
     short mustExecute() const override;
 
 protected:
+    App::DocumentObjectExecReturn*
+    buildPrimitiveShape(TopoDS_Shape& primitive) const;
 };
 
 class PartDesignExport AdditiveCone: public Cone
@@ -261,6 +272,8 @@ public:
     short mustExecute() const override;
 
 protected:
+    App::DocumentObjectExecReturn*
+    buildPrimitiveShape(TopoDS_Shape& primitive) const;
 };
 
 class PartDesignExport AdditiveEllipsoid: public Ellipsoid
@@ -305,6 +318,8 @@ public:
     short mustExecute() const override;
 
 protected:
+    App::DocumentObjectExecReturn*
+    buildPrimitiveShape(TopoDS_Shape& primitive) const;
 };
 
 class PartDesignExport AdditiveTorus: public Torus
@@ -345,6 +360,10 @@ public:
     /// recalculate the Feature
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
+
+protected:
+    App::DocumentObjectExecReturn*
+    buildPrimitiveShape(TopoDS_Shape& primitive) const;
 };
 
 class PartDesignExport AdditivePrism: public Prism
@@ -394,6 +413,8 @@ public:
     short mustExecute() const override;
 
 protected:
+    App::DocumentObjectExecReturn*
+    buildPrimitiveShape(TopoDS_Shape& primitive) const;
 };
 
 class PartDesignExport AdditiveWedge: public Wedge
@@ -414,6 +435,26 @@ class PartDesignExport SubtractiveWedge: public Wedge
     {
         addSubType = FeatureAddSub::Subtractive;
     }
+};
+
+
+class PartDesignExport Tube: public PartDesign::FeaturePrimitive
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(PartDesign::Tube);
+
+public:
+    Tube();
+
+    App::PropertyLength OuterRadius;
+    App::PropertyLength InnerRadius;
+    App::PropertyLength Height;
+
+    App::DocumentObjectExecReturn* execute() override;
+    short mustExecute() const override;
+
+protected:
+    App::DocumentObjectExecReturn*
+    buildPrimitiveShape(TopoDS_Shape& primitive) const;
 };
 
 }  // namespace PartDesign

@@ -23,16 +23,16 @@
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout_2" stretch="0,0">
      <item>
-      <widget class="QToolButton" name="toolButton_Poly">
+      <widget class="QToolButton" name="toolButton_Select">
        <property name="text">
-        <string>Poly</string>
+        <string>Select</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QLabel" name="label_3">
        <property name="text">
-        <string>Erase elements by polygon</string>
+        <string>Erase mesh elements with a polygon</string>
        </property>
       </widget>
      </item>
@@ -53,7 +53,7 @@
      <item>
       <widget class="QLabel" name="label_2">
        <property name="text">
-        <string>Delete new meshes</string>
+        <string>Restore the source mesh</string>
        </property>
       </widget>
      </item>
@@ -62,7 +62,7 @@
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout_3">
      <item>
-      <widget class="QToolButton" name="toolButton_Rename">
+      <widget class="QToolButton" name="toolButton_Copy">
        <property name="enabled">
         <bool>true</bool>
        </property>
@@ -74,7 +74,7 @@
      <item>
       <widget class="QLabel" name="label">
        <property name="text">
-        <string>Copy result mesh</string>
+        <string>Use the selected FEM mesh</string>
        </property>
       </widget>
      </item>

@@ -59,8 +59,12 @@ SET(MeshPart_SRCS
     AppMeshPartPy.cpp
     CurveProjector.cpp
     CurveProjector.h
+    FeatureMeshPartOperations.cpp
+    FeatureMeshPartOperations.h
     MeshAlgos.cpp
     MeshAlgos.h
+    MeshBoolean.cpp
+    MeshBoolean.h
     Mesher.cpp
     Mesher.h
     PreCompiled.h

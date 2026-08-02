@@ -25,10 +25,17 @@ from pivy import coin
 import FreeCAD
 import FreeCADGui
 import Path
+import Path.Base.Util as PathUtil
 import Path.Base.Gui.GetPoint as PathGetPoint
 import Path.Dressup.Tags as PathDressupTag
+import Path.Main.Job as PathJob
 import PathScripts.PathUtils as PathUtils
 import Path.Dressup.Utils as PathDressup
+from Path.CommandBoundary import (
+    can_start_document_command,
+    ensure_task_transaction,
+    open_timeline_mode_zero_editor,
+)
 
 if False:
     Path.Log.setLevel(Path.Log.Level.DEBUG, Path.Log.thisModule())
@@ -37,6 +44,93 @@ else:
     Path.Log.setLevel(Path.Log.Level.INFO, Path.Log.thisModule())
 
 translate = FreeCAD.Qt.translate
+
+
+def _request_exact_transaction_close(document, transaction_id, *, abort):
+    transaction_id = int(transaction_id)
+    if transaction_id == 0:
+        raise RuntimeError("The holding-tag task has no owned transaction")
+    try:
+        document_is_open = FreeCAD.getDocument(document.Name) is document
+    except (NameError, RuntimeError):
+        document_is_open = False
+    if not document_is_open:
+        raise RuntimeError("The holding-tag document is no longer open")
+    if int(document.getBookedTransactionID()) != transaction_id:
+        raise RuntimeError(
+            "The holding-tag task no longer owns its document transaction"
+        )
+
+    FreeCAD.closeActiveTransaction(abort, transaction_id)
+    return int(document.getBookedTransactionID()) != transaction_id
+
+
+def _close_exact_transaction(document, transaction_id, *, abort):
+    if not _request_exact_transaction_close(
+        document,
+        transaction_id,
+        abort=abort,
+    ):
+        action = "abort" if abort else "commit"
+        raise RuntimeError(
+            f"Could not {action} the holding-tag transaction "
+            f"{transaction_id}"
+        )
+
+
+def _validated_base(base, document):
+    if (
+        base is None
+        or getattr(base, "Document", None) is not document
+        or not base.isDerivedFrom("Path::Feature")
+        or base.isDerivedFrom("Path::FeatureCompoundPython")
+        or not PathDressup.isOp(base)
+        or not base.isValid()
+        or not getattr(base, "Path", None)
+        or not base.Path.Commands
+    ):
+        return None
+
+    job = PathUtils.findParentJob(base)
+    if (
+        job is None
+        or job.Document is not document
+        or not isinstance(getattr(job, "Proxy", None), PathJob.ObjectJob)
+        or getattr(job, "Operations", None) is None
+    ):
+        return None
+    return job
+
+
+def _validate_result(document, result, base, job):
+    has_active_source_path = (
+        PathUtil.activeForOp(base)
+        and getattr(base, "Path", None)
+        and bool(base.Path.Commands)
+    )
+    if (
+        result is None
+        or result.Document is not document
+        or not result.isDerivedFrom("Path::Feature")
+        or not isinstance(
+            getattr(result, "Proxy", None),
+            PathDressupTag.ObjectTagDressup,
+        )
+        or result.Base is not base
+        or result.Proxy.pathData is None
+        or not result.isValid()
+        or PathUtils.findParentJob(result) is not job
+        or result not in job.Operations.Group
+        or base in job.Operations.Group
+        or (
+            has_active_source_path
+            and (
+                not getattr(result, "Path", None)
+                or not result.Path.Commands
+            )
+        )
+    ):
+        raise RuntimeError("The holding-tag CAM toolpath is invalid")
 
 
 def addDebugDisplay():
@@ -50,14 +144,21 @@ class PathDressupTagTaskPanel:
     DataID = QtCore.Qt.ItemDataRole.UserRole + 3
 
     def __init__(self, obj, viewProvider, jvoVisibility=None):
+        self.document = obj.Document
+        job = _validated_base(obj.Base, self.document)
+        if job is None:
+            raise RuntimeError("The holding-tag task has an invalid base operation")
+        self.transactionId = ensure_task_transaction(
+            "Edit HoldingTags Dress-up",
+            self.document,
+        )
         self.obj = obj
         self.obj.Proxy.obj = obj
         self.viewProvider = viewProvider
         self.form = FreeCADGui.PySideUic.loadUi(":/panels/HoldingTagsEdit.ui")
         self.getPoint = PathGetPoint.TaskPanel(self.form.cbTagGeneration, True)
-        self.jvo = PathUtils.findParentJob(obj).ViewObject
+        self.jvo = job.ViewObject
         if jvoVisibility is None:
-            FreeCAD.ActiveDocument.openTransaction("Edit HoldingTags Dress-up")
             self.jvoVisible = self.jvo.isVisible()
             if self.jvoVisible:
                 self.jvo.hide()
@@ -89,26 +190,92 @@ class PathDressupTagTaskPanel:
         self.getPoint.buttonBox = buttonBox
 
     def abort(self):
-        FreeCAD.ActiveDocument.abortTransaction()
+        # Called from ViewProvider.unsetEdit() while Gui::Document is already
+        # closing the exact adopted transaction.
         self.cleanup(False)
 
     def reject(self):
-        FreeCAD.ActiveDocument.abortTransaction()
+        # TaskView marks this exact edit transaction for rollback before
+        # entering the Python reject callback. resetEdit() performs that
+        # rollback only after ViewProvider teardown releases the edit lock.
+        transaction_id = self.transactionId
+        transaction_closed = _request_exact_transaction_close(
+            self.document,
+            transaction_id,
+            abort=True,
+        )
         self.cleanup(True)
+        if (
+            not transaction_closed
+            and int(self.document.getBookedTransactionID())
+            == transaction_id
+        ):
+            raise RuntimeError(
+                "The holding-tag transaction did not roll back"
+            )
+        self.transactionId = 0
+        return True
 
     def accept(self):
-        FreeCAD.ActiveDocument.commitTransaction()
-        self.cleanup(True)
-        if self.isDirty:
+        try:
             self.getFields()
-            FreeCAD.ActiveDocument.recompute()
+            self.document.recompute()
+            job = _validated_base(self.obj.Base, self.document)
+            if job is None:
+                raise RuntimeError(
+                    "The holding-tag task lost its base operation"
+                )
+            _validate_result(
+                self.document,
+                self.obj,
+                self.obj.Base,
+                job,
+            )
+        except Exception as error:
+            FreeCAD.Console.PrintError(
+                translate(
+                    "CAM_DressupTag",
+                    "Holding tags could not be accepted: %s",
+                )
+                % error
+                + "\n"
+            )
+            # A rejected Accept attempt remains provisional in its original
+            # transaction. The panel stays open for correction; a later
+            # Cancel rolls the complete gesture back through TaskView.
+            return False
+
+        # Gui::Document owns the transaction while an editor is active.
+        # An editor launched directly from Python may not have adopted the
+        # transaction, so first request an exact close. If the edit lock
+        # defers it, resetEdit() releases the lock and performs the same exact
+        # commit.
+        transaction_id = self.transactionId
+        transaction_closed = _request_exact_transaction_close(
+            self.document,
+            transaction_id,
+            abort=False,
+        )
+        self.cleanup(True)
+        if (
+            not transaction_closed
+            and int(self.document.getBookedTransactionID())
+            == transaction_id
+        ):
+            raise RuntimeError(
+                "The holding-tag edit transaction did not finish"
+            )
+        self.transactionId = 0
+        return True
 
     def cleanup(self, gui):
         self.viewProvider.clearTaskPanel()
         if gui:
-            FreeCADGui.ActiveDocument.resetEdit()
+            gui_document = FreeCADGui.getDocument(self.document.Name)
+            if gui_document is not None:
+                gui_document.resetEdit()
             FreeCADGui.Control.closeDialog()
-            FreeCAD.ActiveDocument.recompute()
+            self.document.recompute()
             if self.jvoVisible:
                 self.jvo.show()
 
@@ -206,7 +373,7 @@ class PathDressupTagTaskPanel:
         self.updateTagsView()
 
     def copyNewTags(self):
-        objs = FreeCAD.ActiveDocument.Objects
+        objs = self.document.Objects
         tags = [o for o in objs if "DressupTag" in o.Name and self.obj.Name != o.Name]
         tagsLabels = [t.Label for t in tags]
         form = FreeCADGui.PySideUic.loadUi(":/panels/DlgTCChooser.ui")
@@ -320,7 +487,7 @@ class PathDressupTagTaskPanel:
         if self.obj.Proxy.supportsTagGeneration(self.obj):
             self.form.pbGenerate.clicked.connect(self.generateNewTags)
 
-        objs = FreeCAD.ActiveDocument.Objects
+        objs = self.document.Objects
         if any(o for o in objs if "DressupTag" in o.Name and self.obj.Name != o.Name):
             self.form.pbCopy.clicked.connect(self.copyNewTags)
         else:
@@ -431,15 +598,6 @@ class PathDressupTagViewProvider:
         vobj.RootNode.addChild(self.switch)
         self.turnMarkerDisplayOn(False)
 
-        if self.obj and self.obj.Base:
-            for i in self.obj.Base.InList:
-                if hasattr(i, "Group") and self.obj.Base.Name in [o.Name for o in i.Group]:
-                    i.Group = [o for o in i.Group if o.Name != self.obj.Base.Name]
-            if self.obj.Base.ViewObject:
-                self.obj.Base.ViewObject.Visibility = False
-            # if self.debugDisplay() and self.vobj.Debug.ViewObject:
-            #    self.vobj.Debug.ViewObject.Visibility = False
-
     def turnMarkerDisplayOn(self, display):
         sw = coin.SO_SWITCH_ALL if display else coin.SO_SWITCH_NONE
         self.switch.whichChild = sw
@@ -453,7 +611,14 @@ class PathDressupTagViewProvider:
     def onDelete(self, arg1=None, arg2=None):
         """this makes sure that the base operation is added back to the job and visible"""
         Path.Log.track()
-        if self.obj.Base and self.obj.Base.ViewObject:
+        if (
+            self.obj.Base
+            and self.obj.Base.ViewObject
+            and PathUtil.shouldRestoreTimelineReplacedInput(
+                self.obj,
+                self.obj.Base,
+            )
+        ):
             self.obj.Base.ViewObject.Visibility = True
         job = PathUtils.findParentJob(self.obj)
         if arg1.Object and arg1.Object.Base and job:
@@ -493,6 +658,12 @@ class PathDressupTagViewProvider:
         #            tag.ViewObject.Transparency = 80
         #        self.vobj.Debug.addObject(tag)
         #    tag.purgeTouched()
+
+    def supportsDocumentTimelineEdit(self):
+        return True
+
+    def doubleClicked(self, vobj=None):
+        return open_timeline_mode_zero_editor(self.obj)
 
     def setEdit(self, vobj, mode=0):
         panel = PathDressupTagTaskPanel(vobj.Object, self)
@@ -549,7 +720,7 @@ class PathDressupTagViewProvider:
         FreeCADGui.updateGui()
 
     def getIcon(self):
-        if getattr(PathDressup.baseOp(self.obj), "Active", True):
+        if PathUtil.activeForOp(self.obj):
             return ":/icons/CAM_Dressup.svg"
         else:
             return ":/icons/CAM_OpActive.svg"
@@ -560,12 +731,61 @@ def Create(baseObject, name="DressupTag"):
     Create(basePath, name = 'DressupTag') ... create tag dressup object for the given base path.
     Use this command only iff the UI is up - for batch processing see PathDressupTag.Create
     """
-    FreeCAD.ActiveDocument.openTransaction("Create a Tag dressup")
-    obj = PathDressupTag.Create(baseObject, name)
-    obj.ViewObject.Proxy = PathDressupTagViewProvider(obj.ViewObject)
-    FreeCAD.ActiveDocument.commitTransaction()
-    obj.ViewObject.Document.setEdit(obj.ViewObject, 0)
-    return obj
+    document = FreeCAD.ActiveDocument
+    if document is None or not can_start_document_command(document):
+        raise RuntimeError("Holding tags require an idle active document")
+
+    job = _validated_base(baseObject, document)
+    if job is None:
+        raise RuntimeError(
+            "Holding tags require one valid profile toolpath"
+        )
+
+    transaction_id = ensure_task_transaction(
+        "Create a Tag dressup",
+        document,
+    )
+    view_provider = None
+    try:
+        base_was_visible = bool(
+            baseObject.ViewObject
+            and baseObject.ViewObject.Visibility
+        )
+        obj = PathDressupTag.Create(baseObject, name)
+        if obj is None:
+            raise RuntimeError("Could not create the holding-tag dress-up")
+        PathUtil.markTimelineReplacedInputs(
+            obj,
+            [baseObject] if base_was_visible else [],
+        )
+        if baseObject.ViewObject:
+            baseObject.ViewObject.Visibility = False
+        view_provider = PathDressupTagViewProvider(obj.ViewObject)
+        obj.ViewObject.Proxy = view_provider
+        document.recompute()
+        _validate_result(document, obj, baseObject, job)
+
+        if not obj.ViewObject.Document.setEdit(obj.ViewObject, 0):
+            raise RuntimeError("Could not open the holding-tag editor")
+        if (
+            not FreeCADGui.Control.activeDialog()
+            or getattr(view_provider, "panel", None) is None
+            or view_provider.panel.transactionId != transaction_id
+        ):
+            raise RuntimeError("The holding-tag editor did not start correctly")
+        return obj
+    except Exception:
+        if view_provider is not None:
+            view_provider.clearTaskPanel()
+        if FreeCADGui.Control.activeDialog():
+            FreeCADGui.Control.closeDialog()
+        if int(document.getBookedTransactionID()) == transaction_id:
+            _close_exact_transaction(
+                document,
+                transaction_id,
+                abort=True,
+            )
+        raise
 
 
 class CommandPathDressupTag:
@@ -579,20 +799,31 @@ class CommandPathDressupTag:
         }
 
     def IsActive(self):
-        return bool(PathDressup.selection())
+        if not can_start_document_command():
+            return False
+        return (
+            _validated_base(
+                PathDressup.selection(),
+                FreeCAD.ActiveDocument,
+            )
+            is not None
+        )
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         # check that the selection contains exactly what we want
         op = PathDressup.selection(verbose=True)
         if not op:
             return
 
-        # everything ok!
-        FreeCAD.ActiveDocument.openTransaction("Create Tag Dress-up")
         FreeCADGui.addModule("Path.Dressup.Gui.Tags")
-        FreeCADGui.doCommand("Path.Dressup.Gui.Tags.Create(App.ActiveDocument.%s)" % op.Name)
-        # FreeCAD.ActiveDocument.commitTransaction()  # Final `commitTransaction()` called via TaskPanel.accept()
-        FreeCAD.ActiveDocument.recompute()
+        FreeCADGui.doCommand(
+            "Path.Dressup.Gui.Tags.Create("
+            "App.getDocument(%r).getObject(%r))"
+            % (op.Document.Name, op.Name)
+        )
 
 
 if FreeCAD.GuiUp:

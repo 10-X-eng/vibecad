@@ -44,6 +44,10 @@ from draftutils import params
 from draftutils import utils
 from draftutils.messages import _toolmsg
 from draftutils.todo import todo
+from draftutils.transaction import close_task_dialog
+from draftutils.transaction import document_is_available_for_mutation
+from draftutils.transaction import DocumentReference
+from draftutils.transaction import selection_is_usable_for_document
 from draftutils.translate import translate
 
 __title__ = "FreeCAD Draft Workbench GUI Tools - Working plane-related tools"
@@ -68,14 +72,26 @@ class Draft_SelectPlane:
 
     def IsActive(self):
         """Return True when this command should be available."""
-        return bool(gui_utils.get_3d_view())
+        return bool(
+            gui_utils.get_3d_view()
+            and document_is_available_for_mutation(App.activeDocument())
+        )
 
     def Activated(self):
         """Execute when the command is called."""
 
         def _show_dialog():
-            dia = Gui.Control.showDialog(self.taskd)
-            dia.setDocumentName(Gui.ActiveDocument.Document.Name)
+            document = self.document_reference.resolve()
+            if document is None:
+                return
+            gui_document = Gui.getDocument(document.Name)
+            if (
+                gui_document is None
+                or gui_document.Document is not document
+            ):
+                return
+            dia = Gui.Control.showDialog(self.taskd, gui_document)
+            dia.setDocumentName(document.Name)
             dia.setAutoCloseOnDeletedDocument(True)
 
         # Finish active Draft command if any
@@ -84,13 +100,18 @@ class Draft_SelectPlane:
 
         App.activeDraftCommand = self
         self.call = None
+        document = App.activeDocument()
+        if not document_is_available_for_mutation(document):
+            App.activeDraftCommand = None
+            return
+        self.document_reference = DocumentReference.capture(document)
 
         # Set variables
         self.wp = WorkingPlane.get_working_plane()
         self.view = self.wp._view
         self.grid = None
         if hasattr(Gui, "Snapper"):
-            Gui.Snapper.setTrackers()
+            Gui.Snapper.setTrackers(view=self.view)
             self.grid = Gui.Snapper.grid
         self.offset = 0
         self.center = params.get_param("CenterPlaneOnView")
@@ -154,7 +175,7 @@ class Draft_SelectPlane:
         form.buttonNext.setEnabled(self.wp._has_next())
 
         # Try to find a WP from the current selection
-        if Gui.Selection.hasSelection():
+        if selection_is_usable_for_document(document):
             if self.wp.align_to_selection(self.offset):
                 Gui.Selection.clearSelection()
             self.finish()
@@ -174,9 +195,9 @@ class Draft_SelectPlane:
     def finish(self):
         """Execute when the command is terminated."""
         App.activeDraftCommand = None
-        Gui.Control.closeDialog()
+        close_task_dialog(self.document_reference)
         if hasattr(Gui, "Snapper"):
-            Gui.Snapper.off()
+            Gui.Snapper.off(view=self.view)
         # Terminate coin callbacks
         if self.call:
             try:
@@ -203,7 +224,13 @@ class Draft_SelectPlane:
 
     def check_selection(self):
         """Check the selection, if it is usable, finish the command."""
-        if self.wp.align_to_selection(self.offset):
+        document = self.document_reference.resolve()
+        if (
+            document is not None
+            and App.activeDocument() is document
+            and selection_is_usable_for_document(document)
+            and self.wp.align_to_selection(self.offset)
+        ):
             Gui.Selection.clearSelection()
             self.finish()
 
@@ -228,7 +255,10 @@ class Draft_SelectPlane:
         self.finish()
 
     def on_click_move(self):
-        sels = Gui.Selection.getSelectionEx("", 0)
+        document = self.document_reference.resolve()
+        if document is None or App.activeDocument() is not document:
+            return
+        sels = Gui.Selection.getSelectionEx(document.Name, 0)
         if (
             len(sels) == 1
             and len(sels[0].SubObjects) == 1

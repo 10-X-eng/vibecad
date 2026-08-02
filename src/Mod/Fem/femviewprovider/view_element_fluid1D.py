@@ -40,5 +40,8 @@ class VPElementFluid1D(view_base_femelement.VPBaseFemElement):
     A View Provider for the ElementFluid1D object
     """
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def setEdit(self, vobj, mode=0):
         return super().setEdit(vobj, mode, task_element_fluid1D._TaskPanel)

@@ -27,12 +27,17 @@
 #include <QString>
 #include <algorithm>
 #include <fastsignals/signal.h>
+#include <ranges>
+#include <utility>
 
 #include <Base/Console.h>
+#include <Base/Exception.h>
+#include <App/Application.h>
+#include <App/Document.h>
 #include <Gui/Application.h>
-#include <Gui/Command.h>
 #include <Gui/DockWindowManager.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/ViewProvider.h>
 #include <Gui/WaitCursor.h>
@@ -43,6 +48,7 @@
 #include <Mod/Material/App/PropertyMaterial.h>
 
 #include "DlgMaterialImp.h"
+#include "SelectionTargetIdentity.h"
 #include "ui_DlgMaterial.h"
 
 
@@ -50,6 +56,38 @@ using namespace MatGui;
 using namespace std;
 namespace sp = std::placeholders;
 
+namespace
+{
+App::Document& activeAppDocument()
+{
+    auto* guiDocument = Gui::Application::Instance ? Gui::Application::Instance->activeDocument()
+                                                   : nullptr;
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    if (!document) {
+        throw Base::RuntimeError("The material editor requires an active document");
+    }
+    return *document;
+}
+
+std::vector<App::Document*> materialMutationDocuments(
+    App::Document& occurrenceDocument,
+    const std::vector<SelectionPropertyTargetIdentity>& targets
+)
+{
+    std::vector<App::Document*> documents {&occurrenceDocument};
+    for (const auto& target : targets) {
+        auto* selectedDocument = target.occurrence.resolveDocument();
+        auto* ownerDocument = target.owner.resolveDocument();
+        if (selectedDocument != &occurrenceDocument || !ownerDocument || !target.resolveProperty()) {
+            throw Base::RuntimeError("A selected material target changed before editing began");
+        }
+        if (std::ranges::find(documents, ownerDocument) == documents.end()) {
+            documents.push_back(ownerDocument);
+        }
+    }
+    return documents;
+}
+}  // namespace
 
 /* TRANSLATOR Gui::Dialog::DlgMaterialImp */
 
@@ -64,7 +102,51 @@ class DlgMaterialImp::Private
 public:
     Ui::DlgMaterial ui;
     bool floating;
+    std::vector<SelectionPropertyTargetIdentity> targets;
     DlgMaterialImp_Connection connectChangedObject;
+    App::Document* targetDocumentAddress {nullptr};
+    std::string targetDocumentName;
+    std::string targetDocumentUid;
+    int transactionId {App::NullTransaction};
+
+    void addTarget(const App::DocumentObject* object)
+    {
+        auto target = SelectionPropertyTargetIdentity::capture(object, "ShapeMaterial");
+        if (target && std::ranges::find(targets, *target) == targets.end()) {
+            targets.push_back(std::move(*target));
+        }
+    }
+
+    bool mutationAllowed() const noexcept
+    {
+        if (transactionId == App::NullTransaction) {
+            return true;
+        }
+        try {
+            auto* document = targetDocumentName.empty()
+                ? nullptr
+                : App::GetApplication().getDocument(targetDocumentName.c_str());
+            if (!document || document != targetDocumentAddress
+                || document->Uid.getValueStr() != targetDocumentUid
+                || document->getBookedTransactionID() != transactionId
+                || !App::GetApplication().transactionIsActive(transactionId)) {
+                return false;
+            }
+            return std::ranges::all_of(
+                targets,
+                [document, this](const SelectionPropertyTargetIdentity& target) {
+                    auto* occurrenceDocument = target.occurrence.resolveDocument();
+                    auto* ownerDocument = target.owner.resolveDocument();
+                    return occurrenceDocument == document && ownerDocument
+                        && ownerDocument->getBookedTransactionID() == transactionId
+                        && target.resolveProperty();
+                }
+            );
+        }
+        catch (...) {
+            return false;
+        }
+    }
 };
 
 /**
@@ -75,6 +157,45 @@ public:
  *  true to construct a modal dialog.
  */
 DlgMaterialImp::DlgMaterialImp(bool floating, QWidget* parent, Qt::WindowFlags fl)
+    : DlgMaterialImp(
+          floating,
+          Gui::Application::Instance && Gui::Application::Instance->activeDocument()
+              ? Gui::Application::Instance->activeDocument()->getDocument()
+              : nullptr,
+          parent,
+          fl
+      )
+{}
+
+DlgMaterialImp::DlgMaterialImp(bool floating, App::Document* document, QWidget* parent, Qt::WindowFlags fl)
+    : DlgMaterialImp(floating, document, App::NullTransaction, parent, fl)
+{}
+
+DlgMaterialImp::DlgMaterialImp(
+    bool floating,
+    App::Document* document,
+    int transactionId,
+    QWidget* parent,
+    Qt::WindowFlags fl
+)
+    : DlgMaterialImp(
+          floating,
+          document,
+          transactionId,
+          captureMaterialTargets(document, floating),
+          parent,
+          fl
+      )
+{}
+
+DlgMaterialImp::DlgMaterialImp(
+    bool floating,
+    App::Document* document,
+    int transactionId,
+    std::vector<SelectionPropertyTargetIdentity> targets,
+    QWidget* parent,
+    Qt::WindowFlags fl
+)
     : QDialog(parent, fl)
     , d(new Private)
 {
@@ -82,6 +203,11 @@ DlgMaterialImp::DlgMaterialImp(bool floating, QWidget* parent, Qt::WindowFlags f
     setupConnections();
 
     d->floating = floating;
+    d->targetDocumentAddress = document;
+    d->targetDocumentName = document ? document->getName() : "";
+    d->targetDocumentUid = document ? document->Uid.getValueStr() : "";
+    d->transactionId = transactionId;
+    d->targets = std::move(targets);
 
     // Create a filter to only include current format materials
     // that contain physical properties.
@@ -89,14 +215,12 @@ DlgMaterialImp::DlgMaterialImp(bool floating, QWidget* parent, Qt::WindowFlags f
     filter.requirePhysical(true);
     d->ui.widgetMaterial->setFilter(filter);
 
-    std::vector<App::DocumentObject*> objects = getSelectionObjects();
-    setMaterial(objects);
+    setMaterial();
 
     // embed this dialog into a dockable widget container
     if (floating) {
         Gui::DockWindowManager* pDockMgr = Gui::DockWindowManager::instance();
-        QDockWidget* dw =
-            pDockMgr->addDockWindow("Display Properties", this, Qt::AllDockWidgetAreas);
+        QDockWidget* dw = pDockMgr->addDockWindow("Display Properties", this, Qt::AllDockWidgetAreas);
         dw->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
         dw->setFloating(true);
         dw->show();
@@ -106,8 +230,27 @@ DlgMaterialImp::DlgMaterialImp(bool floating, QWidget* parent, Qt::WindowFlags f
 
     // NOLINTBEGIN
     d->connectChangedObject = Gui::Application::Instance->signalChangedObject.connect(
-        std::bind(&DlgMaterialImp::slotChangedObject, this, sp::_1, sp::_2));
+        std::bind(&DlgMaterialImp::slotChangedObject, this, sp::_1, sp::_2)
+    );
     // NOLINTEND
+}
+
+std::vector<SelectionPropertyTargetIdentity> DlgMaterialImp::captureMaterialTargets(
+    App::Document* document,
+    bool floating
+)
+{
+    std::vector<SelectionPropertyTargetIdentity> targets;
+    for (const auto& selected : Gui::Selection().getCompleteSelection()) {
+        if (!floating && selected.pDoc != document) {
+            continue;
+        }
+        auto target = SelectionPropertyTargetIdentity::capture(selected.pObject, "ShapeMaterial");
+        if (target && std::ranges::find(targets, *target) == targets.end()) {
+            targets.push_back(std::move(*target));
+        }
+    }
+    return targets;
 }
 
 /**
@@ -122,10 +265,12 @@ DlgMaterialImp::~DlgMaterialImp()
 
 void DlgMaterialImp::setupConnections()
 {
-    connect(d->ui.widgetMaterial,
-            &MaterialTreeWidget::materialSelected,
-            this,
-            &DlgMaterialImp::onMaterialSelected);
+    connect(
+        d->ui.widgetMaterial,
+        &MaterialTreeWidget::materialSelected,
+        this,
+        &DlgMaterialImp::onMaterialSelected
+    );
 }
 
 void DlgMaterialImp::changeEvent(QEvent* e)
@@ -137,16 +282,22 @@ void DlgMaterialImp::changeEvent(QEvent* e)
 }
 
 /// @cond DOXERR
-void DlgMaterialImp::OnChange(Gui::SelectionSingleton::SubjectType& rCaller,
-                              Gui::SelectionSingleton::MessageType Reason)
+void DlgMaterialImp::OnChange(
+    Gui::SelectionSingleton::SubjectType& rCaller,
+    Gui::SelectionSingleton::MessageType Reason
+)
 {
     Q_UNUSED(rCaller);
-    if (Reason.Type == Gui::SelectionChanges::AddSelection
-        || Reason.Type == Gui::SelectionChanges::RmvSelection
-        || Reason.Type == Gui::SelectionChanges::SetSelection
-        || Reason.Type == Gui::SelectionChanges::ClrSelection) {
-        std::vector<App::DocumentObject*> objects = getSelectionObjects();
-        setMaterial(objects);
+    if (d->floating
+        && (Reason.Type == Gui::SelectionChanges::AddSelection
+            || Reason.Type == Gui::SelectionChanges::RmvSelection
+            || Reason.Type == Gui::SelectionChanges::SetSelection
+            || Reason.Type == Gui::SelectionChanges::ClrSelection)) {
+        d->targets.clear();
+        for (const auto& selected : Gui::Selection().getCompleteSelection()) {
+            d->addTarget(selected.pObject);
+        }
+        setMaterial();
     }
 }
 /// @endcond
@@ -168,7 +319,7 @@ void DlgMaterialImp::slotChangedObject(const Gui::ViewProvider& obj, const App::
         }
         std::string prop_name = name;
         if (prop.isDerivedFrom<App::PropertyMaterial>()) {
-            //auto& value = static_cast<const App::PropertyMaterial&>(prop).getValue();
+            // auto& value = static_cast<const App::PropertyMaterial&>(prop).getValue();
             if (prop_name == "ShapeMaterial") {
                 // bool blocked = d->ui.buttonColor->blockSignals(true);
                 // auto color = value.diffuseColor;
@@ -194,17 +345,19 @@ void DlgMaterialImp::reject()
     QDialog::reject();
 }
 
-void DlgMaterialImp::setMaterial(const std::vector<App::DocumentObject*>& objects)
+void DlgMaterialImp::setMaterial()
 {
-    for (auto it : objects) {
-        if (auto prop = dynamic_cast<Materials::PropertyMaterial*>(it->getPropertyByName("ShapeMaterial"))) {
-            try {
-                const auto& material = prop->getValue();
-                d->ui.widgetMaterial->setMaterial(material.getUUID());
-                return;
-            }
-            catch (const Materials::MaterialNotFound&) {
-            }
+    for (auto* property : getMaterialProperties()) {
+        auto* materialProperty = dynamic_cast<Materials::PropertyMaterial*>(property);
+        if (!materialProperty) {
+            continue;
+        }
+        try {
+            const auto& material = materialProperty->getValue();
+            d->ui.widgetMaterial->setMaterial(material.getUUID());
+            return;
+        }
+        catch (const Materials::MaterialNotFound&) {
         }
     }
     d->ui.widgetMaterial->setMaterial(Materials::MaterialManager::defaultMaterialUUID());
@@ -213,37 +366,40 @@ void DlgMaterialImp::setMaterial(const std::vector<App::DocumentObject*>& object
 std::vector<Gui::ViewProvider*> DlgMaterialImp::getSelection() const
 {
     std::vector<Gui::ViewProvider*> views;
-
-    // get the complete selection
-    std::vector<Gui::SelectionSingleton::SelObj> sel = Gui::Selection().getCompleteSelection();
-    for (const auto& it : sel) {
-        Gui::ViewProvider* view =
-            Gui::Application::Instance->getDocument(it.pDoc)->getViewProvider(it.pObject);
-        views.push_back(view);
+    if (!d->mutationAllowed()) {
+        return views;
     }
-
+    views.reserve(d->targets.size());
+    for (const auto& target : d->targets) {
+        if (auto* view = target.occurrence.resolveViewProvider()) {
+            views.push_back(view);
+        }
+    }
     return views;
 }
 
-std::vector<App::DocumentObject*> DlgMaterialImp::getSelectionObjects() const
+std::vector<App::Property*> DlgMaterialImp::getMaterialProperties() const
 {
-    std::vector<App::DocumentObject*> objects;
-
-    // get the complete selection
-    std::vector<Gui::SelectionSingleton::SelObj> sel = Gui::Selection().getCompleteSelection();
-    for (const auto& it : sel) {
-        objects.push_back(it.pObject);
+    std::vector<App::Property*> properties;
+    if (!d->mutationAllowed()) {
+        return properties;
     }
-
-    return objects;
+    properties.reserve(d->targets.size());
+    for (const auto& target : d->targets) {
+        if (auto* property = target.resolveProperty()) {
+            if (std::ranges::find(properties, property) == properties.end()) {
+                properties.push_back(property);
+            }
+        }
+    }
+    return properties;
 }
 
 void DlgMaterialImp::onMaterialSelected(const std::shared_ptr<Materials::Material>& material)
 {
-    std::vector<App::DocumentObject*> objects = getSelectionObjects();
-    for (auto it : objects) {
-        if (auto prop = dynamic_cast<Materials::PropertyMaterial*>(it->getPropertyByName("ShapeMaterial"))) {
-            prop->setValue(*material);
+    for (auto* property : getMaterialProperties()) {
+        if (auto* materialProperty = dynamic_cast<Materials::PropertyMaterial*>(property)) {
+            materialProperty->setValue(*material);
         }
     }
 }
@@ -253,17 +409,51 @@ void DlgMaterialImp::onMaterialSelected(const std::shared_ptr<Materials::Materia
 /* TRANSLATOR Gui::Dialog::TaskMaterial */
 
 TaskMaterial::TaskMaterial()
-{
-    this->setButtonPosition(TaskMaterial::North);
-    widget = new DlgMaterialImp(false);
-    taskbox = new Gui::TaskView::TaskBox(QPixmap(), widget->windowTitle(), true, nullptr);
-    taskbox->groupLayout()->addWidget(widget);
-    Content.push_back(taskbox);
+    : TaskMaterial(activeAppDocument())
+{}
 
-    tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Set Material"));
+TaskMaterial::TaskMaterial(App::Document& document)
+{
+    targetDocumentAddress = &document;
+    targetDocumentName = document.getName();
+    targetDocumentUid = document.Uid.getValueStr();
+    auto targets = DlgMaterialImp::captureMaterialTargets(&document, false);
+    auto documents = materialMutationDocuments(document, targets);
+    transaction = std::make_unique<Gui::ExactTransaction>(
+        document,
+        documents,
+        QT_TRANSLATE_NOOP("Command", "Set Material")
+    );
+    tid = transaction->id();
+    if (tid == App::NullTransaction || !transaction->ownsCurrentTransaction()) {
+        throw Base::RuntimeError("Could not establish the material transaction");
+    }
+
+    this->setButtonPosition(TaskMaterial::North);
+    setAutoCloseOnDeletedDocument(true);
+    try {
+        widget
+            = new DlgMaterialImp(false, &document, tid, std::move(targets), nullptr, Qt::WindowFlags());
+        taskbox = new Gui::TaskView::TaskBox(QPixmap(), widget->windowTitle(), true, nullptr);
+        taskbox->groupLayout()->addWidget(widget);
+        Content.push_back(taskbox);
+    }
+    catch (...) {
+        if (transaction) {
+            (void)transaction->abort();
+            transaction.reset();
+        }
+        tid = App::NullTransaction;
+        throw;
+    }
 }
 
-TaskMaterial::~TaskMaterial() = default;
+TaskMaterial::~TaskMaterial()
+{
+    if (transaction) {
+        (void)transaction->abort();
+    }
+}
 
 QDialogButtonBox::StandardButtons TaskMaterial::getStandardButtons() const
 {
@@ -272,15 +462,57 @@ QDialogButtonBox::StandardButtons TaskMaterial::getStandardButtons() const
 
 bool TaskMaterial::accept()
 {
-    Gui::Command::commitCommand(tid);
+    if (!ownsTransaction()) {
+        if (transaction && transaction->isClosed()) {
+            transaction.reset();
+            tid = App::NullTransaction;
+            return true;
+        }
+        return false;
+    }
+    if (!transaction->commit()) {
+        return false;
+    }
+    transaction.reset();
+    tid = App::NullTransaction;
     return true;
 }
 
 bool TaskMaterial::reject()
 {
-    Gui::Command::abortCommand(tid);
+    if (!ownsTransaction()) {
+        if (transaction && transaction->isClosed()) {
+            transaction.reset();
+            tid = App::NullTransaction;
+            widget->reject();
+            return (widget->result() == QDialog::Rejected);
+        }
+        return false;
+    }
+    if (!transaction->abort()) {
+        return false;
+    }
+    transaction.reset();
+    tid = App::NullTransaction;
     widget->reject();
     return (widget->result() == QDialog::Rejected);
+}
+
+bool TaskMaterial::ownsTransaction() const
+{
+    if (!transaction || tid == App::NullTransaction || !targetDocumentAddress
+        || targetDocumentName.empty() || targetDocumentUid.empty()) {
+        return false;
+    }
+    try {
+        auto* document = App::GetApplication().getDocument(targetDocumentName.c_str());
+        return document && document == targetDocumentAddress
+            && document->Uid.getValueStr() == targetDocumentUid
+            && document->getBookedTransactionID() == tid && transaction->ownsCurrentTransaction();
+    }
+    catch (...) {
+        return false;
+    }
 }
 
 #include "moc_DlgMaterialImp.cpp"

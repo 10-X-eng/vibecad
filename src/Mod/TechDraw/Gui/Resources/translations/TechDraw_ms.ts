@@ -122,24 +122,7 @@
       <translation type="unfinished">Inserts an editable text block annotation to the current page</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1661"/>
-      <source>TechDraw</source>
-      <translation type="unfinished">TechDraw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1662"/>
-      <source>BIM View</source>
-      <translation type="unfinished">BIM View</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1663"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation type="unfinished">Inserts a view of a BIM section plane</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2160,12 +2143,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation type="unfinished">Drawing create page</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="360"/>
-      <location filename="../../Command.cpp" line="1708"/>
-      <source>Create BIM view</source>
-      <translation type="unfinished">Create BIM view</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="480"/>
       <source>Create image</source>
       <translation type="unfinished">Create image</translation>
@@ -3335,11 +3312,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation type="unfinished">Select one clip group and one view</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1871"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation type="unfinished">Page contains a BIM view which will not be exported. Continue?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1411"/>
       <source>Select exactly one clip group</source>
       <translation type="unfinished">Select exactly one clip group</translation>
@@ -3368,16 +3340,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="1615"/>
       <source>Select at least one object</source>
       <translation type="unfinished">Select at least one object</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1690"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation type="unfinished">Select only 1 BIM section plane</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1696"/>
-      <source>No BIM section plane in selection</source>
-      <translation type="unfinished">No BIM section plane in selection</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1755"/>
@@ -9976,14 +9938,7 @@ there is an open task dialog.</translation>
       <translation type="unfinished">Line</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation type="unfinished">BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

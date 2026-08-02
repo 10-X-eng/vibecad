@@ -244,7 +244,11 @@ class Polygon(gui_base_original.Creator):
                 "Draft.select(pol)",
                 "FreeCAD.ActiveDocument.recompute()",
             ]
-            self.commit(translate("draft", "Create Polygon (Part)"), _cmd_list)
+            self.commit(
+                translate("draft", "Create Polygon (Part)"),
+                _cmd_list,
+                inputs=(),
+            )
         else:
             # Insert a Draft polygon
             _cmd = "Draft.make_polygon"
@@ -264,7 +268,11 @@ class Polygon(gui_base_original.Creator):
                 "Draft.autogroup(pol)",
                 "FreeCAD.ActiveDocument.recompute()",
             ]
-            self.commit(translate("draft", "Create Polygon"), _cmd_list)
+            self.commit(
+                translate("draft", "Create Polygon"),
+                _cmd_list,
+                inputs=self.getSupportInputs(),
+            )
         self.finish(cont=None)
 
     def numericInput(self, numx, numy, numz):

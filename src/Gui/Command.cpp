@@ -23,19 +23,26 @@
 #include <Inventor/SbSphere.h>
 #include <Inventor/actions/SoGetBoundingBoxAction.h>
 #include <Inventor/nodes/SoOrthographicCamera.h>
+#include <algorithm>
+#include <ranges>
 #include <sstream>
 #include <QApplication>
 #include <QByteArray>
 #include <QDir>
 #include <QKeySequence>
+#include <QMetaType>
 #include <QMessageBox>
+#include <QVariant>
 
 #include <boost/algorithm/string/replace.hpp>
 
 #include <FCConfig.h>
 
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentObjectPy.h>
+#include <App/PropertyStandard.h>
 #include <App/Transactions.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -65,6 +72,7 @@
 #include "WorkbenchManager.h"
 #include "Workbench.h"
 #include "ShortcutManager.h"
+#include "TaskView/TaskDialog.h"
 
 
 FC_LOG_LEVEL_INIT("Command", true, true)
@@ -73,6 +81,64 @@ using Base::Interpreter;
 using namespace Gui;
 using namespace Gui::Dialog;
 using namespace Gui::DockWnd;
+
+ApprovedDocumentTimelineCommand Gui::approvedDocumentTimelineCommand(
+    App::DocumentObject* operation,
+    const char* commandProperty,
+    const char* actionCapability,
+    bool requireActive
+)
+{
+    if (!operation || !commandProperty || !commandProperty[0]
+        || !actionCapability || !actionCapability[0]
+        || !operation->isAttachedToDocument()
+        || !operation->getDocument()
+        || !operation->getDocument()->containsObject(operation)
+        || !App::DocumentTimeline::hasTimelineOperationRole(operation)
+        || !Gui::Application::Instance) {
+        return {};
+    }
+
+    const auto* property = dynamic_cast<const App::PropertyString*>(
+        operation->getPropertyByName(commandProperty)
+    );
+    const std::string commandName = property ? property->getValue() : "";
+    const auto asciiLetter = [](char character) {
+        return (character >= 'A' && character <= 'Z')
+            || (character >= 'a' && character <= 'z');
+    };
+    if (commandName.empty() || commandName.size() > 128
+        || !asciiLetter(commandName.front())
+        || !std::ranges::all_of(
+            commandName,
+            [asciiLetter](char character) {
+                return asciiLetter(character)
+                    || (character >= '0' && character <= '9')
+                    || character == '_';
+            }
+        )) {
+        return {};
+    }
+
+    auto* command =
+        Gui::Application::Instance->commandManager().getCommandByName(
+            commandName.c_str()
+        );
+    if (!command) {
+        return {};
+    }
+    command->initAction();
+    auto* action = command->getAction();
+    auto* qtAction = action ? action->action() : nullptr;
+    const QVariant capability =
+        qtAction ? qtAction->property(actionCapability) : QVariant {};
+    if (!qtAction || capability.userType() != QMetaType::Bool
+        || !capability.toBool()
+        || (requireActive && !command->canInvoke())) {
+        return {};
+    }
+    return {commandName, command};
+}
 
 /** \defgroup commands Command Framework
     \ingroup GUI
@@ -385,6 +451,24 @@ private:
     Command::TriggerSource saved;
 };
 
+class TaskDialogCommandInvocationScope
+{
+public:
+    TaskDialogCommandInvocationScope()
+        : exceptionCount(std::uncaught_exceptions())
+    {
+        Gui::TaskView::TaskDialog::beginCommandInvocation();
+    }
+
+    ~TaskDialogCommandInvocationScope()
+    {
+        Gui::TaskView::TaskDialog::endCommandInvocation(std::uncaught_exceptions() == exceptionCount);
+    }
+
+private:
+    int exceptionCount;
+};
+
 void Command::setupCheckable(int iMsg)
 {
     QAction* action = nullptr;
@@ -457,7 +541,8 @@ void Command::_invoke(int id, bool disablelog)
         }
 
         // check if it really works NOW (could be a delay between click deactivation of the button)
-        if (isActive()) {
+        if (canInvoke()) {
+            TaskDialogCommandInvocationScope taskInteractionScope;
             auto manager = getGuiApplication()->macroManager();
 
             if (!logdisabler) {
@@ -465,7 +550,7 @@ void Command::_invoke(int id, bool disablelog)
             }
             else {
                 Gui::SelectionLogDisabler seldisabler;
-                auto lines = manager->getLines();
+                const auto submittedLines = manager->getSubmittedCommandLines();
                 std::ostringstream ss;
                 ss << "### Begin command " << sName;
                 // Add a pending line to mark the start of a command
@@ -474,7 +559,7 @@ void Command::_invoke(int id, bool disablelog)
 
                 activated(id);
 
-                if (manager->getLines() == lines) {
+                if (manager->getSubmittedCommandLines() == submittedLines) {
                     // This command does not record any lines, lets do it for
                     // it. The above LogDisabler is to prevent nested command
                     // logging, i.e. we only auto log the first invoking
@@ -536,24 +621,15 @@ void Command::testActive()
         return;
     }
 
-    if (_blockCmd || !bEnabled) {
-        _pcAction->setEnabled(false);
-        return;
-    }
-
-    if (!(eType & ForEdit)) {  // special case for commands which are only in some edit modes active
-
-        App::Document* doc = getDocument();
-        if ((!Gui::Control().isAllowedAlterDocument(doc) && eType & AlterDoc)
-            || (!Gui::Control().isAllowedAlterView(doc) && eType & Alter3DView)
-            || (!Gui::Control().isAllowedAlterSelection(doc) && eType & AlterSelection)) {
-            _pcAction->setEnabled(false);
-            return;
-        }
-    }
+    const bool bActive = canInvoke();
+    _pcAction->setEnabled(bActive);
 
     auto pcAction = qobject_cast<Gui::ActionGroup*>(_pcAction);
-    if (pcAction) {
+    if (pcAction && bActive) {
+        // Enabling a QActionGroup can change the effective enabled state of
+        // every child. Establish the parent gate first, then apply each
+        // command child's own geometric/task-state gate so ribbon drop-downs
+        // never present an unavailable operation as usable (or vice versa).
         Gui::CommandManager& rcCmdMgr = Gui::Application::Instance->commandManager();
         const auto actions = pcAction->actions();
         for (auto action : actions) {
@@ -563,13 +639,45 @@ void Command::testActive()
             }
             Command* cmd = rcCmdMgr.getCommandByName(name);
             if (cmd) {
-                action->setEnabled(cmd->isActive());
+                action->setEnabled(cmd->canInvoke());
+            }
+        }
+    }
+}
+
+bool Command::canInvoke()
+{
+    if (_blockCmd || !bEnabled) {
+        return false;
+    }
+
+    if (!(eType & ForEdit)) {
+        App::Document* document = getDocument();
+        if ((!Gui::Control().isAllowedAlterDocument(document) && eType & AlterDoc)
+            || (!Gui::Control().isAllowedAlterView(document) && eType & Alter3DView)
+            || (!Gui::Control().isAllowedAlterSelection(document) && eType & AlterSelection)) {
+            return false;
+        }
+
+        if (document && (eType & AlterDoc)) {
+            const int booked = document->getBookedTransactionID();
+            const bool hasTransaction = booked != App::NullTransaction
+                || document->hasPendingTransaction();
+            if (hasTransaction) {
+                // Only a synchronously nested child command may continue the
+                // exact transaction established by its outer command. At a
+                // new user-action boundary there is no enclosing owner, so a
+                // caller-owned T is always refused. A pending journal with no
+                // booked ID is inconsistent and cannot be adopted.
+                const int owned = TaskView::TaskDialog::ownedEnclosingTransactionId(document);
+                if (booked == App::NullTransaction || owned != booked) {
+                    return false;
+                }
             }
         }
     }
 
-    bool bActive = isActive();
-    _pcAction->setEnabled(bActive);
+    return isActive();
 }
 
 void Command::setEnabled(bool on)
@@ -684,16 +792,52 @@ int Command::openCommand(std::string name)
 {
     return openCommand(App::TransactionName {.name = name, .temporary = false});
 }
+int Command::openCommand(App::Document* document, App::TransactionName name)
+{
+    currentTransactionID = openDocumentCommand(document, std::move(name));
+    return currentTransactionID;
+}
+int Command::openCommand(App::Document* document, std::string name)
+{
+    return openCommand(
+        document,
+        App::TransactionName {
+            .name = std::move(name),
+            .temporary = false,
+        }
+    );
+}
 int Command::openActiveDocumentCommand(App::TransactionName name, int tid)
 {
     if (Gui::Document* guidoc = getGuiApplication()->activeDocument()) {
-        return guidoc->getDocument()->setActiveTransaction(name, tid);
+        return openDocumentCommand(guidoc->getDocument(), std::move(name), tid);
     }
-    return 0;
+    return App::NullTransaction;
 }
 int Command::openActiveDocumentCommand(std::string name, int tid)
 {
-    return openActiveDocumentCommand(App::TransactionName {.name = name, .temporary = false}, tid);
+    return openActiveDocumentCommand(
+        App::TransactionName {
+            .name = std::move(name),
+            .temporary = false,
+        },
+        tid
+    );
+}
+int Command::openDocumentCommand(App::Document* document, App::TransactionName name, int tid)
+{
+    return document ? document->setActiveTransaction(std::move(name), tid) : App::NullTransaction;
+}
+int Command::openDocumentCommand(App::Document* document, std::string name, int tid)
+{
+    return openDocumentCommand(
+        document,
+        App::TransactionName {
+            .name = std::move(name),
+            .temporary = false,
+        },
+        tid
+    );
 }
 void Command::rename(const std::string& name)
 {
@@ -711,7 +855,17 @@ void Command::commitCommand()
 void Command::commitCommand(int tid)
 {
     if (tid != App::NullTransaction) {
-        App::GetApplication().commitTransaction(tid);
+        std::vector<App::Document*> documents;
+        for (auto* document : App::GetApplication().getDocuments()) {
+            if (document && document->getBookedTransactionID() == tid) {
+                documents.push_back(document);
+            }
+        }
+        if (App::GetApplication().commitTransaction(tid)) {
+            for (auto* document : documents) {
+                Gui::TaskView::TaskDialog::recordCommandTransactionCompletion(document, tid);
+            }
+        }
     }
 }
 void Command::abortCommand()
@@ -722,7 +876,17 @@ void Command::abortCommand()
 void Command::abortCommand(int tid)
 {
     if (tid != App::NullTransaction) {
-        App::GetApplication().abortTransaction(tid);
+        std::vector<App::Document*> documents;
+        for (auto* document : App::GetApplication().getDocuments()) {
+            if (document && document->getBookedTransactionID() == tid) {
+                documents.push_back(document);
+            }
+        }
+        if (App::GetApplication().abortTransaction(tid)) {
+            for (auto* document : documents) {
+                Gui::TaskView::TaskDialog::recordCommandTransactionCompletion(document, tid);
+            }
+        }
     }
 }
 int Command::transactionID() const
@@ -828,6 +992,65 @@ void Command::_runCommand(const char* file, int line, DoCmd_Type eType, const ch
 void Command::_runCommand(const char* file, int line, DoCmd_Type eType, const QByteArray& sCmd)
 {
     _runCommand(file, line, eType, sCmd.constData());
+}
+
+App::DocumentObject* Command::_runDocumentObjectCommand(
+    const char* file,
+    int line,
+    DoCmd_Type eType,
+    App::Document& document,
+    const QByteArray& expression,
+    Base::Type expectedType
+)
+{
+    if (expression.trimmed().isEmpty()) {
+        throw Base::ValueError("A document-object command requires a Python factory expression");
+    }
+
+    const std::string documentName = document.getName();
+    const std::string documentUid = document.Uid.getValueStr();
+    const App::Document* expectedDocumentAddress = &document;
+    if (documentName.empty() || documentUid.empty()
+        || App::GetApplication().getDocument(documentName.c_str()) != expectedDocumentAddress) {
+        throw Base::RuntimeError("A document-object command requires an exact live document identity");
+    }
+
+    LogDisabler d1;
+    SelectionLogDisabler d2;
+    Base::PyGILStateLocker locker;
+    printCaller(file, line);
+    if (eType == Gui) {
+        Gui::Application::Instance->macroManager()->addLine(MacroManager::Gui, expression.constData());
+    }
+    else {
+        Gui::Application::Instance->macroManager()->addLine(MacroManager::App, expression.constData());
+    }
+
+    Py::Object pythonResult = Base::Interpreter().runStringObject(expression.constData());
+    App::Document* resolvedDocument = App::GetApplication().getDocument(documentName.c_str());
+    if (resolvedDocument != expectedDocumentAddress || !resolvedDocument
+        || resolvedDocument->Uid.getValueStr() != documentUid) {
+        throw Base::RuntimeError(
+            "The expected document identity changed while the Python factory was running"
+        );
+    }
+    if (!pythonResult.ptr() || !PyObject_TypeCheck(pythonResult.ptr(), &App::DocumentObjectPy::Type)) {
+        throw Base::TypeError("The Python factory did not return a document object");
+    }
+
+    auto* result = static_cast<App::DocumentObjectPy*>(pythonResult.ptr())->getDocumentObjectPtr();
+    const std::string resultName = result && result->getNameInDocument()
+        ? result->getNameInDocument()
+        : std::string {};
+    const long resultId = result ? result->getID() : -1;
+    if (!result || result->getDocument() != resolvedDocument || !result->isAttachedToDocument()
+        || !resolvedDocument->containsObject(result) || resultName.empty() || resultId <= 0
+        || resolvedDocument->getObject(resultName.c_str()) != result
+        || resolvedDocument->getObjectByID(resultId) != result
+        || (!expectedType.isBad() && !result->isDerivedFrom(expectedType))) {
+        throw Base::RuntimeError("The Python factory returned an invalid document-object identity");
+    }
+    return result;
 }
 
 void Command::addModule(DoCmd_Type eType, const char* sModuleName)
@@ -986,6 +1209,14 @@ void Command::updateActive()
 {
     WaitCursor wc;
     doCommand(App, "App.ActiveDocument.recompute()");
+}
+void Command::updateDocument(const App::Document* document)
+{
+    if (!document) {
+        return;
+    }
+    WaitCursor wc;
+    FCMD_DOC_CMD(document, "recompute()");
 }
 
 bool Command::isActiveObjectValid()
@@ -1974,6 +2205,7 @@ const char* PythonGroupCommand::getAccel() const
 
 bool PythonGroupCommand::isExclusive() const
 {
+    Base::PyGILStateLocker lock;
     PyObject* item = PyDict_GetItemString(_pcPyResource, "Exclusive");
     if (!item) {
         return false;
@@ -1992,6 +2224,7 @@ bool PythonGroupCommand::isExclusive() const
 
 bool PythonGroupCommand::hasDropDownMenu() const
 {
+    Base::PyGILStateLocker lock;
     PyObject* item = PyDict_GetItemString(_pcPyResource, "DropDownMenu");
     if (!item) {
         return true;

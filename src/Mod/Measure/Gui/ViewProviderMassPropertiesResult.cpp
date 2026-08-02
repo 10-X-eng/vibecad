@@ -41,6 +41,8 @@
 #include <Base/Tools.h>
 
 #include <App/Application.h>
+#include <App/PropertyGeo.h>
+#include <App/PropertyStandard.h>
 
 #include <Gui/BitmapFactory.h>
 #include <Gui/Inventor/SoAxisCrossKit.h>
@@ -175,6 +177,65 @@ void ViewProviderMassPropertiesResult::attach(App::DocumentObject* obj)
     addMarker("COG-Icon", cogTranslation);
     addMarker("COV-Icon", covTranslation);
 
+    updateCenterMarkers();
+    updatePrincipalAxesMarker();
+    updateFromObject();
+}
+
+void ViewProviderMassPropertiesResult::updateData(
+    const App::Property* property
+)
+{
+    ViewProviderDocumentObject::updateData(property);
+    updateFromObject();
+}
+
+void ViewProviderMassPropertiesResult::updateFromObject()
+{
+    auto* object = getObject();
+    if (!object) {
+        return;
+    }
+
+    const auto vectorValue = [object](
+                                 const char* name,
+                                 const Base::Vector3d& fallback
+                             ) {
+        const auto* property =
+            dynamic_cast<const App::PropertyVector*>(
+                object->getPropertyByName(name)
+            );
+        return property ? property->getValue() : fallback;
+    };
+    centerOfGravity = vectorValue(
+        "MassPropertyCenterOfGravity",
+        centerOfGravity
+    );
+    centerOfVolume = vectorValue(
+        "MassPropertyCenterOfVolume",
+        centerOfVolume
+    );
+    principalOrigin = centerOfGravity;
+    principalAxis1 = vectorValue(
+        "MassPropertyPrincipalAxis1",
+        principalAxis1
+    );
+    principalAxis2 = vectorValue(
+        "MassPropertyPrincipalAxis2",
+        principalAxis2
+    );
+    principalAxis3 = vectorValue(
+        "MassPropertyPrincipalAxis3",
+        principalAxis3
+    );
+    if (const auto* visible =
+            dynamic_cast<const App::PropertyBool*>(
+                object->getPropertyByName(
+                    "MassPropertyShowPrincipalAxes"
+                )
+            )) {
+        showPrincipalAxes = visible->getValue();
+    }
     updateCenterMarkers();
     updatePrincipalAxesMarker();
 }

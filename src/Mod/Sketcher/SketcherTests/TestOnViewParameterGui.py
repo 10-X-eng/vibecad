@@ -26,7 +26,7 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
         super().setUp()
 
         FreeCADGui.activateWorkbench("SketcherWorkbench")
-        self.doc = FreeCAD.newDocument("TestOnViewParameterGui")
+        self.doc = self.new_document("TestOnViewParameterGui")
         self.sketch = self.doc.addObject("Sketcher::SketchObject", "Sketch")
         self.doc.recompute()
 

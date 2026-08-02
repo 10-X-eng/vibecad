@@ -26,6 +26,7 @@
 
 #include <App/GeoFeature.h>
 #include <App/PropertyFile.h>
+#include <App/SuppressibleExtension.h>
 
 #include <Mod/Robot/RobotGlobal.h>
 
@@ -88,6 +89,9 @@ protected:
     Robot6Axis robot;
 
     bool block {false};
+
+private:
+    App::SuppressibleExtension suppressibleExtension;
 };
 
 }  // namespace Robot

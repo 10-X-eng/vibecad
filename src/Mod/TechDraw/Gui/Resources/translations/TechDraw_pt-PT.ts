@@ -124,24 +124,7 @@
       <translation>Inserir anotação</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1658"/>
-      <source>TechDraw</source>
-      <translation>TechDraw (Desenhos Técnicos)</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1659"/>
-      <source>Insert BIM Workbench Object</source>
-      <translation type="unfinished">Insert BIM Workbench Object</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1660"/>
-      <source>Insert a View of a BIM Workbench section plane</source>
-      <translation type="unfinished">Insert a View of a BIM Workbench section plane</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -1927,15 +1910,6 @@ Left clicking on empty space will validate the current Dimension. Right clicking
       <source>Insert View</source>
       <translation>Inserir vista</translation>
     </message>
-    <message>
-      <location filename="../../Command.cpp" line="301"/>
-      <source>Insert a View in current page.
-Selected objects, spreadsheets or BIM section planes will be added.
-Without a selection, a file browser lets you select a SVG or image file.</source>
-      <translation type="unfinished">Insert a View in current page.
-Selected objects, spreadsheets or BIM section planes will be added.
-Without a selection, a file browser lets you select a SVG or image file.</translation>
-    </message>
   </context>
   <context>
     <name>CmdTechDrawWeldSymbol</name>
@@ -1957,12 +1931,6 @@ Without a selection, a file browser lets you select a SVG or image file.</transl
       <location filename="../../Command.cpp" line="194"/>
       <source>Drawing create page</source>
       <translation>Criar folha de desenho</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="361"/>
-      <location filename="../../Command.cpp" line="1705"/>
-      <source>Create BIM view</source>
-      <translation type="unfinished">Create BIM view</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="497"/>
@@ -3070,16 +3038,6 @@ Without a selection, a file browser lets you select a SVG or image file.</transl
       <translation>Selecione pelo menos um objeto.</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1687"/>
-      <source>Please select only 1 BIM section plane.</source>
-      <translation type="unfinished">Please select only 1 BIM section plane.</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1693"/>
-      <source>No BIM section plane in selection.</source>
-      <translation type="unfinished">No BIM section plane in selection.</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1752"/>
       <source>Select exactly one Spreadsheet object.</source>
       <translation>Selecione apenas um objeto folha de cálculo.</translation>
@@ -3088,11 +3046,6 @@ Without a selection, a file browser lets you select a SVG or image file.</transl
       <location filename="../../Command.cpp" line="1867"/>
       <source>Can not export selection</source>
       <translation>Não é possível exportar a seleção</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1868"/>
-      <source>Page contains DrawViewArch which will not be exported. Continue?</source>
-      <translation>A página contém vistas de arquitetura que não serão exportados. Continuar?</translation>
     </message>
     <message>
       <location filename="../../CommandCreateDims.cpp" line="2431"/>
@@ -9842,14 +9795,7 @@ there is an open task dialog.</translation>
       <translation>Linha</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="69"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

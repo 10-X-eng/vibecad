@@ -60,6 +60,25 @@ DrawViewDimExtent::DrawViewDimExtent(void)
 
 }
 
+bool DrawViewDimExtent::timelineDependenciesActive(
+    TimelineDependencyStack& stack) const
+{
+    if (!DrawViewDimension::timelineDependenciesActive(stack)) {
+        return false;
+    }
+    for (const auto* source : Source.getValues()) {
+        if (!timelineDependencyIsActive(source, stack)) {
+            return false;
+        }
+    }
+    for (const auto* source : Source3d.getValues()) {
+        if (!timelineDependencyIsActive(source, stack)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 App::DocumentObjectExecReturn *DrawViewDimExtent::execute(void)
 {
 //    Base::Console().message("DVDE::execute() - %s\n", getNameInDocument());

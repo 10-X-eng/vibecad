@@ -2337,7 +2337,7 @@ objects, maintaining the block structure. Good for referencing and measuring.</s
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for importing and viewing very large files with maximum performance.</source>
-      <translation>Аб'ядноўвае ўсю геаметрыю пласта ў адзіную, нязменную фігуру. 
+      <translation>Аб'ядноўвае ўсю геаметрыю пласта ў адзіную, нязменную фігуру.
 Структуры блокаў не захоўваюцца; іх геаметрыя становіцца часткай фігуры пласта.
 Лепш за ўсё падыходзіць для імпартавання і прагляду вельмі вялікіх файлаў з найбольшай эфектыўнасцю.</translation>
     </message>
@@ -7035,7 +7035,7 @@ set True for fusion or False for compound</source>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
       <translation>Канцавы вугал дугі (для поўнай акружнасці задайце яму тое ж значэнне, што і першаму вуглу)</translation>
     </message>
@@ -7212,24 +7212,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 
 Уласцівасць даступная толькі для чытання, бо канчатковы тэкст залежыць ад 'Тыпу меткі' і аб'екту, які вызначаны ў 'Мэце'.
 'Карыстальніцкі тэкст' адлюстроўваецца толькі ў тым выпадку, калі для налады 'Тып меткі' зададзена значэнне 'Карыстальніцкі'.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>Тып інфармацыі, якая адлюстроўваецца меткай.
-
-Калі абрана 'Карыстальніцкі', будзе ўжывацца змест 'Карыстальніцкага тэксту'.
-Для іншых тыпаў радок будзе вылічаны аўтаматычна з аб'екту, які вызначаны ў 'Мэце'.
-'Метка' і 'Матэрыял' працуюць толькі для аб'ектаў, якія валодаюць гэтымі ўласцівасцямі, такіх як аб'екты BIM.
-
-Для 'Становішча', 'Даўжыня' і 'Плошча' гэтыя ўласцівасці будуць вынятыя з асноўнага аб'екту ў 'Мэце', альбо з укладзенага элементу 'ВяршыняN', 'РаброN' ці 'ГраньN' адпаведна, калі яны паказаныя.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7512,11 +7494,6 @@ This property is read-only, as the number depends on the points in 'Point Object
       <translation>Паказаць схаваныя лініі</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Аб'яднаць сцены і канструкцыйныя аб'екты аднаго тыпу і матэрыялу</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Мазаічныя эліпсы і B-сплайны на адрэзкі лініі</translation>
@@ -7618,7 +7595,7 @@ This property is read-only, as the number depends on the points in 'Point Object
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
       <translation>Канцавы вугал эліптычнай дугі
@@ -8341,11 +8318,6 @@ However, a single sketch with disconnected traces is converted into several indi
       <source>Auto-Group</source>
       <translation>Аўтаматычная суполка</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Дадае новыя чарнавікі і аб'екты BIM да абранага пласта ці суполкі</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8704,11 +8676,6 @@ The initial projection direction is the opposite of the current active view dire
       <source>Snap Center</source>
       <translation>Прывязаць да цэнтру</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Прывязвае да цэнтральнай кропцы граняў і круглых рэбраў, а таксама да кропкі размяшчэння працоўнай плоскасці і будаўнічых дэталяў</translation>
-    </message>
   </context>
   <context>
     <name>Draft_Snap_Extension</name>
@@ -8940,7 +8907,7 @@ objects, maintaining the block structure. Good for referencing and measuring.</s
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for viewing very large files with maximum performance.</source>
-      <translation>Аб'ядноўвае ўсю геаметрыю пласта ў адзіную, нязменную фігуру. 
+      <translation>Аб'ядноўвае ўсю геаметрыю пласта ў адзіную, нязменную фігуру.
 Структуры блокаў не захоўваюцца; іх геаметрыя становіцца часткай фігуры пласта.
 Лепш за ўсё падыходзіць для прагляду вельмі вялікіх файлаў з найбольшай эфектыўнасцю.</translation>
     </message>

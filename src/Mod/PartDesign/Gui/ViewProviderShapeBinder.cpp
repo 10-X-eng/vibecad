@@ -26,18 +26,27 @@
 #include <QApplication>
 #include <QMenu>
 #include <QMessageBox>
+#include <sstream>
+#include <string>
 #include <TopExp.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
-
-
+#include <tuple>
+#include <utility>
+#include <vector>
 #include <boost/algorithm/string/predicate.hpp>
+#include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Gui/ActionFunction.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Control.h>
 #include <Gui/Document.h>
+#include <Gui/Macro.h>
 #include <Gui/MainWindow.h>
+#include <Gui/TaskView/TaskDialog.h>
 #include <Gui/ViewParams.h>
 #include <Mod/PartDesign/App/ShapeBinder.h>
 
@@ -47,6 +56,72 @@
 FC_LOG_LEVEL_INIT("ShapeBinder", true, true)
 
 using namespace PartDesignGui;
+
+namespace
+{
+struct BinderIdentity
+{
+    std::string documentName;
+    std::string documentUid;
+    std::string objectName;
+    long objectId {-1};
+};
+
+BinderIdentity binderIdentityOf(const App::DocumentObject* binder)
+{
+    if (!binder || !binder->isAttachedToDocument()) {
+        return {};
+    }
+    return {
+        binder->getDocument()->getName(),
+        binder->getDocument()->Uid.getValueStr(),
+        binder->getNameInDocument(),
+        binder->getID(),
+    };
+}
+
+App::Document* resolveBinderDocument(
+    const BinderIdentity& identity
+) noexcept
+{
+    try {
+        auto* document = identity.documentName.empty()
+            ? nullptr
+            : App::GetApplication().getDocument(
+                  identity.documentName.c_str()
+              );
+        return document
+                && document->Uid.getValueStr()
+                    == identity.documentUid
+            ? document
+            : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+template<typename BinderT>
+std::pair<App::Document*, BinderT*> resolveBinder(const BinderIdentity& identity) noexcept
+{
+    try {
+        auto* document = resolveBinderDocument(identity);
+        if (!document) {
+            return {};
+        }
+        auto* binder = freecad_cast<BinderT*>(
+            document->getObject(identity.objectName.c_str())
+        );
+        if (!binder || binder->getID() != identity.objectId) {
+            return {};
+        }
+        return {document, binder};
+    }
+    catch (...) {
+        return {};
+    }
+}
+}  // namespace
 
 PROPERTY_SOURCE(PartDesignGui::ViewProviderShapeBinder, PartGui::ViewProviderPart)
 
@@ -82,15 +157,29 @@ ViewProviderShapeBinder::ViewProviderShapeBinder()
 
 ViewProviderShapeBinder::~ViewProviderShapeBinder() = default;
 
+bool ViewProviderShapeBinder::doubleClicked()
+{
+    auto* document = getDocument();
+    return document
+        && document->setEdit(this, ViewProvider::Default);
+}
+
 bool ViewProviderShapeBinder::setEdit(int ModNum)
 {
     // TODO Share code with other view providers (2015-09-11, Fat-Zer)
 
     if (ModNum == ViewProvider::Default || ModNum == 1) {
+        auto* binder = getObject();
+        auto* document =
+            binder ? binder->getDocument() : nullptr;
+        if (!document) {
+            return false;
+        }
         // When double-clicking on the item for this pad the
         // object unsets and sets its edit mode without closing
         // the task panel
-        Gui::TaskView::TaskDialog* dlg = Gui::Control().activeDialog();
+        Gui::TaskView::TaskDialog* dlg =
+            Gui::Control().activeDialog(document);
         TaskDlgShapeBinder* sbDlg = qobject_cast<TaskDlgShapeBinder*>(dlg);
         if (dlg && !sbDlg) {
             QMessageBox msgBox(Gui::getMainWindow());
@@ -100,7 +189,7 @@ bool ViewProviderShapeBinder::setEdit(int ModNum)
             msgBox.setDefaultButton(QMessageBox::Yes);
             int ret = msgBox.exec();
             if (ret == QMessageBox::Yes) {
-                Gui::Control().reject();
+                Gui::Control().reject(document);
             }
             else {
                 return false;
@@ -108,15 +197,18 @@ bool ViewProviderShapeBinder::setEdit(int ModNum)
         }
 
         // clear the selection (convenience)
-        Gui::Selection().clearSelection();
+        Gui::Selection().clearSelection(document->getName());
 
         // start the edit dialog
         // another pad left open its task panel
         if (sbDlg) {
-            Gui::Control().showDialog(sbDlg);
+            Gui::Control().showDialog(sbDlg, document);
         }
         else {
-            Gui::Control().showDialog(new TaskDlgShapeBinder(this, ModNum == 1));
+            Gui::Control().showDialog(
+                new TaskDlgShapeBinder(this, ModNum == 1),
+                document
+            );
         }
 
         return true;
@@ -218,18 +310,205 @@ void ViewProviderShapeBinder::setupContextMenu(QMenu* menu, QObject* receiver, c
     Q_UNUSED(receiver)
     Q_UNUSED(member)
 
-    QAction* act;
-    act = menu->addAction(QObject::tr("Edit Shape Binder"));
+    auto* binder = getObject<PartDesign::ShapeBinder>();
+    if (!binder) {
+        return;
+    }
+    const auto identity = binderIdentityOf(binder);
+    const std::string transactionText =
+        QObject::tr("Edit %1")
+            .arg(QString::fromUtf8(binder->Label.getValue()))
+            .toStdString();
+
+    QAction* act = menu->addAction(QObject::tr("Edit Shape Binder"));
     act->setData(QVariant((int)ViewProvider::Default));
 
     Gui::ActionFunction* func = new Gui::ActionFunction(menu);
-    func->trigger(act, [this]() {
-        QString text = QObject::tr("Edit %1").arg(QString::fromUtf8(getObject()->Label.getValue()));
-        getDocument()->openCommand(text.toUtf8());
+    func->trigger(act, [identity, transactionText]() {
+        if (!Gui::Application::Instance) {
+            return;
+        }
 
-        Gui::Document* document = this->getDocument();
-        if (document) {
-            document->setEdit(this, ViewProvider::Default);
+        auto [appDocument, liveBinder] =
+            resolveBinder<PartDesign::ShapeBinder>(identity);
+        auto* guiDocument = appDocument
+            ? Gui::Application::Instance->getDocument(appDocument)
+            : nullptr;
+        auto* viewProvider = liveBinder
+            ? dynamic_cast<ViewProviderShapeBinder*>(
+                  Gui::Application::Instance->getViewProvider(liveBinder)
+              )
+            : nullptr;
+        if (!appDocument || !guiDocument || !viewProvider
+            || Gui::Application::Instance->activeDocument() != guiDocument
+            || appDocument->getBookedTransactionID()
+                != App::NullTransaction
+            || appDocument->hasPendingTransaction()
+            || appDocument->isPerformingTransaction()
+            || appDocument->isTransactionLocked()
+            || appDocument->testStatus(App::Document::Recomputing)
+            || App::GetApplication().hasPendingRecomputeRequest(
+                appDocument->getName()
+            )
+            || App::GetApplication().isRestoring()
+            || Gui::Control().activeDialog(appDocument)) {
+            return;
+        }
+
+        Gui::TaskView::TaskDialog::beginCommandInvocation();
+        bool invocationFinished = false;
+        int transactionId = App::NullTransaction;
+        bool transactionAdopted = false;
+        const auto finishInvocation = [&](bool success) {
+            if (!invocationFinished) {
+                invocationFinished = true;
+                Gui::TaskView::TaskDialog::endCommandInvocation(
+                    success
+                );
+            }
+        };
+        const auto abortTransaction = [&]() {
+            if (transactionAdopted
+                || transactionId == App::NullTransaction
+                || !App::GetApplication().abortTransaction(
+                    transactionId
+                )) {
+                return;
+            }
+            if (auto* document =
+                    resolveBinderDocument(identity)) {
+                Gui::TaskView::TaskDialog::
+                    recordCommandTransactionCompletion(
+                        document,
+                        transactionId
+                    );
+            }
+        };
+        const auto resetEditor = [&]() {
+            auto* document = resolveBinderDocument(identity);
+            auto* currentGuiDocument =
+                document && Gui::Application::Instance
+                ? Gui::Application::Instance->getDocument(document)
+                : nullptr;
+            if (!currentGuiDocument
+                || !currentGuiDocument->getEditViewProvider()) {
+                return true;
+            }
+            try {
+                currentGuiDocument->resetEdit();
+                return true;
+            }
+            catch (Base::Exception& error) {
+                error.reportException();
+            }
+            catch (...) {
+                Base::Console().error(
+                    "Closing the rejected Shape Binder editor failed\n"
+                );
+            }
+            return false;
+        };
+        const auto rejectEdit = [&]() {
+            const bool editorClosed = resetEditor();
+            if (editorClosed) {
+                abortTransaction();
+            }
+            finishInvocation(false);
+        };
+
+        try {
+            auto* macroManager =
+                Gui::Application::Instance->macroManager();
+            const auto submittedMacroLines =
+                macroManager
+                ? macroManager->getSubmittedCommandLines()
+                : 0;
+            transactionId = Gui::Command::openDocumentCommand(
+                appDocument,
+                transactionText
+            );
+            std::tie(appDocument, liveBinder) =
+                resolveBinder<PartDesign::ShapeBinder>(identity);
+            guiDocument = appDocument
+                ? Gui::Application::Instance->getDocument(appDocument)
+                : nullptr;
+            viewProvider = liveBinder
+                ? dynamic_cast<ViewProviderShapeBinder*>(
+                      Gui::Application::Instance->getViewProvider(
+                          liveBinder
+                      )
+                  )
+                : nullptr;
+            if (transactionId == App::NullTransaction
+                || !appDocument || !guiDocument || !viewProvider
+                || appDocument->getBookedTransactionID()
+                    != transactionId
+                || !App::GetApplication().transactionIsActive(
+                    transactionId
+                )) {
+                rejectEdit();
+                return;
+            }
+
+            const bool launched = viewProvider->doubleClicked();
+            std::tie(appDocument, liveBinder) =
+                resolveBinder<PartDesign::ShapeBinder>(identity);
+            guiDocument = appDocument
+                ? Gui::Application::Instance->getDocument(appDocument)
+                : nullptr;
+            auto* liveViewProvider = liveBinder
+                ? dynamic_cast<ViewProviderShapeBinder*>(
+                      Gui::Application::Instance->getViewProvider(
+                          liveBinder
+                      )
+                  )
+                : nullptr;
+            if (!launched || !appDocument || !guiDocument
+                || liveViewProvider != viewProvider
+                || guiDocument->getEditViewProvider() != viewProvider
+                || Gui::Application::Instance->activeDocument()
+                    != guiDocument
+                || !Gui::Application::Instance->isInEdit(
+                    guiDocument
+                )
+                || !guiDocument->adoptOwnedEditTransaction(
+                    transactionId
+                )) {
+                rejectEdit();
+                return;
+            }
+            transactionAdopted = true;
+
+            try {
+                if (macroManager
+                    && submittedMacroLines
+                        == macroManager->getSubmittedCommandLines()) {
+                    std::ostringstream command;
+                    command
+                        << Gui::Command::getObjectCmd(liveBinder)
+                        << ".ViewObject.doubleClicked()";
+                    macroManager->addLine(
+                        Gui::MacroManager::Gui,
+                        command.str().c_str()
+                    );
+                }
+            }
+            catch (...) {
+                Base::Console().warning(
+                    "Recording the accepted Shape Binder edit failed\n"
+                );
+            }
+            finishInvocation(true);
+        }
+        catch (Base::Exception& error) {
+            rejectEdit();
+            error.reportException();
+        }
+        catch (...) {
+            rejectEdit();
+            Base::Console().error(
+                "Opening the Shape Binder editor failed\n"
+            );
         }
     });
 }
@@ -436,14 +715,99 @@ void ViewProviderSubShapeBinder::updatePlacement(bool transaction)
         return;
     }
 
-
-    getDocument()->openCommand("Sync binder");
+    auto* document = self->getDocument();
+    if (!document
+        || document->getBookedTransactionID() != App::NullTransaction
+        || document->hasPendingTransaction()
+        || Gui::Control().activeDialog(document)) {
+        return;
+    }
+    const auto identity = binderIdentityOf(self);
+    const auto* timeline = App::DocumentTimeline::get(document);
+    if (timeline
+        && timeline->Position.getValue()
+            != static_cast<long>(
+                timeline->Operations.getSize()
+            )) {
+        return;
+    }
+    const auto timelineOperations =
+        timeline ? timeline->Operations.getValues()
+                 : std::vector<App::DocumentObject*> {};
+    const long timelinePosition =
+        timeline ? timeline->Position.getValue() : 0;
+    auto* macroManager =
+        Gui::Application::Instance
+        ? Gui::Application::Instance->macroManager()
+        : nullptr;
+    const auto submittedMacroLines =
+        macroManager
+        ? macroManager->getSubmittedCommandLines()
+        : 0;
+    const int transactionId =
+        Gui::Command::openDocumentCommand(
+            document,
+            "Sync binder"
+        );
+    if (transactionId == App::NullTransaction) {
+        return;
+    }
     try {
         if (relative) {
             self->Context.setValue(parent, parentSub.c_str());
         }
+        std::tie(document, self) =
+            resolveBinder<PartDesign::SubShapeBinder>(identity);
+        if (!document || !self) {
+            throw Base::RuntimeError(
+                "The binder changed while synchronizing its context"
+            );
+        }
         self->update(PartDesign::SubShapeBinder::UpdateForced);
-        getDocument()->commitCommand();
+        std::tie(document, self) =
+            resolveBinder<PartDesign::SubShapeBinder>(identity);
+        if (!document || !self) {
+            throw Base::RuntimeError(
+                "The binder changed while synchronizing its shape"
+            );
+        }
+        Gui::Command::updateDocument(document);
+        std::tie(document, self) =
+            resolveBinder<PartDesign::SubShapeBinder>(identity);
+        timeline = App::DocumentTimeline::get(document);
+        if (!document || !self || !self->isValid()
+            || (timeline
+                && (timeline->Operations.getValues()
+                        != timelineOperations
+                    || timeline->Position.getValue()
+                        != timelinePosition))
+            || (!timeline && !timelineOperations.empty())) {
+            throw Base::RuntimeError(
+                "Synchronizing the binder produced an invalid tracked state"
+            );
+        }
+        Gui::Command::commitCommand(transactionId);
+        try {
+            std::tie(document, self) =
+                resolveBinder<PartDesign::SubShapeBinder>(identity);
+            if (macroManager && document && self
+                && submittedMacroLines
+                    == macroManager->getSubmittedCommandLines()) {
+                std::ostringstream command;
+                command
+                    << Gui::Command::getObjectCmd(self)
+                    << ".ViewObject.doubleClicked()";
+                macroManager->addLine(
+                    Gui::MacroManager::Gui,
+                    command.str().c_str()
+                );
+            }
+        }
+        catch (...) {
+            Base::Console().warning(
+                "Recording the accepted binder synchronization failed\n"
+            );
+        }
         return;
     }
     catch (Base::Exception& e) {
@@ -461,7 +825,12 @@ void ViewProviderSubShapeBinder::updatePlacement(bool transaction)
         }
         FC_ERR(str.str());
     }
-    getDocument()->abortCommand();
+    catch (...) {
+        Gui::Command::abortCommand(transactionId);
+        FC_ERR("Unknown exception while synchronizing binder");
+        return;
+    }
+    Gui::Command::abortCommand(transactionId);
 }
 
 std::vector<App::DocumentObject*> ViewProviderSubShapeBinder::claimChildren() const

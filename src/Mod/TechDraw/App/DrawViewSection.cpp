@@ -394,7 +394,21 @@ TopoDS_Shape DrawViewSection::getShapeToCut()
 
 TopoDS_Shape DrawViewSection::getShapeForDetail() const
 {
-    return ShapeUtils::rotateShape(getCutShape(), getProjectionCS(), Rotation.getValue());
+    TopoDS_Shape cutShape = getCutShape();
+    if (cutShape.IsNull()) {
+        return {};
+    }
+    return ShapeUtils::rotateShape(cutShape, getProjectionCS(), Rotation.getValue());
+}
+
+TopoDS_Shape DrawViewSection::getCutShape() const
+{
+    return sectionIntermediateStateIsCurrent() ? m_cutShape : TopoDS_Shape();
+}
+
+TopoDS_Shape DrawViewSection::getCutShapeRaw() const
+{
+    return sectionIntermediateStateIsCurrent() ? m_cutShapeRaw : TopoDS_Shape();
 }
 
 App::DocumentObjectExecReturn* DrawViewSection::execute()
@@ -446,6 +460,37 @@ App::DocumentObjectExecReturn* DrawViewSection::execute()
     return DrawView::execute();     //NOLINT
 }
 
+bool DrawViewSection::timelineDependenciesActive(
+    TimelineDependencyStack& stack) const
+{
+    if (!DrawViewPart::timelineDependenciesActive(stack)) {
+        return false;
+    }
+    return timelineDependencyIsActive(BaseView.getValue(), stack);
+}
+
+std::string DrawViewSection::geometrySourceStateSignature() const
+{
+    std::string state = DrawViewPart::geometrySourceStateSignature();
+    auto* base = BaseView.getValue();
+    std::vector<App::DocumentObject*> baseIdentity;
+    if (base) {
+        baseIdentity.push_back(base);
+    }
+    state += "|section-base=" + sourceStateSignature(baseIdentity);
+    if (auto* baseView = freecad_cast<DrawViewPart*>(base)) {
+        state += "|section-base-sources="
+            + sourceStateSignature(baseView->getActiveSources());
+    }
+    return state;
+}
+
+bool DrawViewSection::sectionIntermediateStateIsCurrent() const
+{
+    return isActiveInDocumentTimeline()
+        && m_cutAcceptedState == geometrySourceStateSignature();
+}
+
 bool DrawViewSection::isBaseValid() const
 {
     App::DocumentObject* base = BaseView.getValue();
@@ -462,6 +507,8 @@ void DrawViewSection::sectionExec(TopoDS_Shape& baseShape)
         // should be caught before this
         return;
     }
+    m_cutDependencyState = geometrySourceStateSignature();
+    m_cutAcceptedState.clear();
 
     m_cuttingTool = makeCuttingTool(m_shapeSize);
 
@@ -624,8 +671,20 @@ void DrawViewSection::onSectionCutFinished()
         QObject::disconnect(connectCutWatcher);
         showProgressMessage(getNameInDocument(), "has finished making section cut");
     }
+    auto* base = BaseView.getValue();
+    if (!isActiveInDocumentTimeline()
+        || m_cutDependencyState != geometrySourceStateSignature()
+        || !base) {
+        waitingForCut(false);
+        if (isActiveInDocumentTimeline()) {
+            recomputeForCurrentTimelineState();
+        }
+        requestPaint();
+        return;
+    }
 
     m_preparedShape = prepareShape(getShapeToPrepare(), m_shapeSize);
+    m_cutAcceptedState = m_cutDependencyState;
     if (debugSection()) {
         BRepTools::Write(m_preparedShape, "DVSPreparedShape.brep");// debug
     }
@@ -1156,6 +1215,9 @@ gp_Ax2 DrawViewSection::getSectionCS() const
 //! return the center of the shape resulting from the cut operation
 Base::Vector3d DrawViewSection::getCutCentroid() const
 {
+    if (!sectionIntermediateStateIsCurrent()) {
+        return Base::Vector3d();
+    }
     gp_Pnt inputCenter = ShapeUtils::findCentroid(m_cutPieces, getProjectionCS());
     return Base::Vector3d(inputCenter.X(), inputCenter.Y(), inputCenter.Z());
 }
@@ -1163,6 +1225,9 @@ Base::Vector3d DrawViewSection::getCutCentroid() const
 
 std::vector<LineSet> DrawViewSection::getDrawableLines(int i)
 {
+    if (!sectionIntermediateStateIsCurrent()) {
+        return {};
+    }
     if (m_lineSets.empty()) {
         makeLineSets();
     }
@@ -1177,6 +1242,9 @@ std::vector<LineSet> DrawViewSection::getDrawableLines(int i)
 
 TopoDS_Face DrawViewSection::getSectionTopoDSFace(int i)
 {
+    if (!sectionIntermediateStateIsCurrent()) {
+        return {};
+    }
     TopExp_Explorer expl(m_sectionTopoDSFaces, TopAbs_FACE);
     int count = 1;
     for (; expl.More(); expl.Next(), count++) {

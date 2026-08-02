@@ -24,6 +24,8 @@
 
 #pragma once
 
+#include <vector>
+
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
 
@@ -48,6 +50,14 @@ public:
     explicit DlgBooleanOperation(QWidget* parent = nullptr);
     ~DlgBooleanOperation() override;
     void accept();
+    bool wasLastApplySuccessful() const
+    {
+        return applySucceeded;
+    }
+    const std::vector<App::DocumentObject*>& lastAppliedResults() const
+    {
+        return appliedResults;
+    }
 
 private:
     void findShapes();
@@ -68,6 +78,8 @@ private:
     Connection connectNewObject;
     Connection connectModObject;
     std::list<const App::DocumentObject*> observe;
+    bool applySucceeded {false};
+    std::vector<App::DocumentObject*> appliedResults;
 };
 
 class TaskBooleanOperation: public Gui::TaskView::TaskDialog

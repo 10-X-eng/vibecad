@@ -29,6 +29,7 @@
 
 #include <Inventor/events/SoKeyboardEvent.h>
 
+#include <App/Transactions.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Gui/Application.h>
@@ -352,6 +353,13 @@ void DrawSketchHandler::setSketchGui(ViewProviderSketch* vp)
 
 void DrawSketchHandler::deactivate()
 {
+    // A handler owns any transaction it opened for provisional geometry.
+    // Switching tools, pressing Stop, or leaving edit mode must roll that
+    // transaction back before the handler and its geometry IDs disappear.
+    // Completed operations have already closed their exact transaction, so
+    // aborting the retained ID is intentionally a no-op in that case.
+    abortCommand();
+
     Gui::ToolHandler::deactivate();
     ViewProviderSketchDrawSketchHandlerAttorney::setConstraintSelectability(*sketchgui, true);
 
@@ -1051,11 +1059,15 @@ void DrawSketchHandler::openCommand(const std::string& name)
 }
 void DrawSketchHandler::commitCommand()
 {
-    Gui::Command::commitCommand(currentTransactionID);
+    const int transactionId = currentTransactionID;
+    currentTransactionID = App::NullTransaction;
+    Gui::Command::commitCommand(transactionId);
 }
 void DrawSketchHandler::abortCommand()
 {
-    Gui::Command::abortCommand(currentTransactionID);
+    const int transactionId = currentTransactionID;
+    currentTransactionID = App::NullTransaction;
+    Gui::Command::abortCommand(transactionId);
 }
 
 int DrawSketchHandler::seekAutoConstraint(

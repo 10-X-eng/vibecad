@@ -193,37 +193,15 @@ TaskDlgFemConstraintPulley::TaskDlgFemConstraintPulley(ViewProviderFemConstraint
 
 bool TaskDlgFemConstraintPulley::accept()
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintPulley* parameterPulley = static_cast<const TaskFemConstraintPulley*>(
         parameter
     );
 
     try {
-        // Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "FEM pulley constraint changed"));
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.OtherDiameter = %f",
-            name.c_str(),
-            parameterPulley->getOtherDiameter()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.CenterDistance = %f",
-            name.c_str(),
-            parameterPulley->getCenterDistance()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.IsDriven = %s",
-            name.c_str(),
-            parameterPulley->getIsDriven() ? "True" : "False"
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.TensionForce = %f",
-            name.c_str(),
-            parameterPulley->getTensionForce()
-        );
+        runConstraintCommand("OtherDiameter = %f", parameterPulley->getOtherDiameter());
+        runConstraintCommand("CenterDistance = %f", parameterPulley->getCenterDistance());
+        runConstraintCommand("IsDriven = %s", parameterPulley->getIsDriven() ? "True" : "False");
+        runConstraintCommand("TensionForce = %f", parameterPulley->getTensionForce());
     }
     catch (const Base::Exception& e) {
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));

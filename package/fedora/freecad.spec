@@ -14,9 +14,9 @@
 %bcond_without debug_info
 
 
-Name:           freecad
+Name:           vibecad
 Epoch:          1
-Version:        26.3.2~RC1
+Version:        26.3.1~RC3
 Release:        1%{?dist}
 
 Summary:        A general purpose 3D CAD modeler
@@ -51,7 +51,7 @@ BuildRequires: gtest-devel gmock-devel
 %endif
 
 # Development Libraries
-BuildRequires:boost-devel Coin4-devel eigen3-devel freeimage-devel fmt-devel libglvnd-devel libicu-devel libspnav-devel libXmu-devel med-devel mesa-libEGL-devel mesa-libGLU-devel netgen-mesher-devel netgen-mesher-devel-private opencascade-devel openmpi-devel python3 python3-devel python3-lark python3-matplotlib python3-pivy python3-pybind11 python3-pyside6-devel python3-shiboken6-devel pyside6-tools qt6-qttools-static qt6-qtsvg-devel vtk-devel xerces-c-devel yaml-cpp-devel
+BuildRequires:boost-devel Coin4-devel eigen3-devel freeimage-devel fmt-devel libglvnd-devel libicu-devel libspnav-devel libXmu-devel med-devel mesa-libEGL-devel mesa-libGLU-devel netgen-mesher-devel netgen-mesher-devel-private opencascade-devel openmpi-devel python3 python3-devel python3-matplotlib python3-pivy python3-pybind11 python3-pyside6-devel python3-shiboken6-devel pyside6-tools qt6-qttools-static qt6-qtsvg-devel vtk-devel xerces-c-devel yaml-cpp-devel
 #pcl-devel
 %if %{without bundled_smesh}
 BuildRequires:  smesh-devel
@@ -83,7 +83,7 @@ Provides:       bundled(python-pycxx) = %{bundled_pycxx_version}
 %endif
 Provides:       bundled(libondselsolver) = %{bundled_ondsel_solver_version}
 
-Recommends:     python3-pysolar IfcOpenShell-python3
+Recommends:     python3-pysolar
 
 
 
@@ -102,8 +102,8 @@ Recommends:     python3-pysolar IfcOpenShell-python3
 %description
 FreeCAD is a general purpose Open Source 3D CAD/MCAD/CAx/CAE/PLM modeler, aimed
 directly at mechanical engineering and product design but also fits a wider
-range of uses in engineering, such as architecture or other engineering
-specialities. It is a feature-based parametric modeler with a modular software
+range of uses in engineering and manufacturing specialities. It is a
+feature-based parametric modeler with a modular software
 architecture which makes it easy to provide additional functionality without
 modifying the core system.
 

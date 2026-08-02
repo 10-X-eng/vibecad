@@ -49,3 +49,5 @@ class InspectionWorkbench(Workbench):
 
 
 Gui.addWorkbench(InspectionWorkbench())
+
+FreeCAD.__unit_test__ += ["TestInspectionGui"]

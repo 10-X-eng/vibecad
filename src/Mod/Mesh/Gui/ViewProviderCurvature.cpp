@@ -44,11 +44,14 @@
 
 #include <App/Annotation.h>
 #include <App/Document.h>
+#include <App/DocumentObserver.h>
 #include <App/DocumentObjectGroup.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/MainWindow.h>
 #include <Gui/SoFCColorBar.h>
 #include <Gui/SoFCColorBarNotifier.h>
@@ -60,6 +63,7 @@
 #include <Mod/Mesh/App/FeatureMeshCurvature.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 
+#include "CommandGuard.h"
 #include "ViewProviderCurvature.h"
 
 
@@ -322,14 +326,18 @@ void ViewProviderMeshCurvature::updateData(const App::Property* prop)
             pcColorMat->transparency.setNum((int)kernel.countPoints());
 
             // get the view provider of the associated mesh feature
-            App::Document* rDoc = pcObject->getDocument();
-            Gui::Document* pDoc = Gui::Application::Instance->getDocument(rDoc);
-            if (auto view = freecad_cast<ViewProviderMesh*>(pDoc->getViewProvider(object))) {
-                this->pcLinkRoot->addChild(view->getHighlightNode());
+            App::Document* rDoc = object->getDocument();
+            Gui::Document* pDoc = rDoc && Gui::Application::Instance
+                ? Gui::Application::Instance->getDocument(rDoc)
+                : nullptr;
+            if (pDoc) {
+                if (auto view = freecad_cast<ViewProviderMesh*>(pDoc->getViewProvider(object))) {
+                    this->pcLinkRoot->addChild(view->getHighlightNode());
 
-                auto mesh = view->getObject<Mesh::Feature>();
-                Base::Placement plm = mesh->Placement.getValue();
-                ViewProviderMesh::updateTransform(plm, pcTransform);
+                    auto mesh = view->getObject<Mesh::Feature>();
+                    Base::Placement plm = mesh->Placement.getValue();
+                    ViewProviderMesh::updateTransform(plm, pcTransform);
+                }
             }
         }
     }
@@ -460,8 +468,8 @@ namespace MeshGui
 class Annotation
 {
 public:
-    Annotation(Gui::ViewProviderDocumentObject* vp, const QString& s, const SbVec3f& p, const SbVec3f& n)
-        : vp(vp)
+    Annotation(App::DocumentObject* object, const QString& s, const SbVec3f& p, const SbVec3f& n)
+        : object(object)
         , s(s)
         , p(p)
         , n(n)
@@ -477,37 +485,55 @@ public:
 
     void show()
     {
-        App::Document* doc = vp->getObject()->getDocument();
+        auto* target = object.get<App::DocumentObject>();
+        App::Document* doc = target ? target->getDocument() : nullptr;
+        if (!MeshGui::isNativeMeshInputActive(target)
+            || !MeshGui::hasCleanNativeMutationBoundary(doc)) {
+            return;
+        }
 
-        auto groups = doc->getObjectsOfType<App::DocumentObjectGroup>();
-        App::DocumentObjectGroup* group = nullptr;
-        std::string internalname = "CurvatureGroup";
-        for (const auto& it : groups) {
-            if (internalname == it->getNameInDocument()) {
-                group = it;
-                break;
+        try {
+            Gui::ExactTransaction transaction(*doc, "Add curvature annotation");
+            auto groups = doc->getObjectsOfType<App::DocumentObjectGroup>();
+            App::DocumentObjectGroup* group = nullptr;
+            const std::string internalname = "CurvatureGroup";
+            for (const auto& it : groups) {
+                if (internalname == it->getNameInDocument()) {
+                    group = it;
+                    break;
+                }
+            }
+            if (!group) {
+                group = doc->addObject<App::DocumentObjectGroup>(internalname.c_str());
+            }
+
+            auto* anno = group->addObject<App::AnnotationLabel>(internalname.c_str());
+            if (!anno) {
+                throw Base::RuntimeError("Could not create the curvature annotation");
+            }
+            QStringList lines = s.split(QLatin1String("\n"));
+            std::vector<std::string> text;
+            for (const auto& line : lines) {
+                text.emplace_back((const char*)line.toLatin1());
+            }
+            anno->LabelText.setValues(text);
+            std::stringstream str;
+            str << "Curvature info (" << group->Group.getSize() << ")";
+            anno->Label.setValue(str.str());
+            anno->BasePosition.setValue(p[0], p[1], p[2]);
+            anno->TextPosition.setValue(n[0], n[1], n[2]);
+            doc->recompute();
+            if (!transaction.commit()) {
+                Base::Console().error("The curvature annotation could not be committed\n");
             }
         }
-        if (!group) {
-            group = doc->addObject<App::DocumentObjectGroup>(internalname.c_str());
+        catch (const Base::Exception& error) {
+            Base::Console().error("The curvature annotation was not created: %s\n", error.what());
         }
-
-        auto anno = group->addObject<App::AnnotationLabel>(internalname.c_str());
-        QStringList lines = s.split(QLatin1String("\n"));
-        std::vector<std::string> text;
-        for (const auto& line : lines) {
-            text.emplace_back((const char*)line.toLatin1());
-        }
-        anno->LabelText.setValues(text);
-        std::stringstream str;
-        str << "Curvature info (" << group->Group.getSize() << ")";
-        anno->Label.setValue(str.str());
-        anno->BasePosition.setValue(p[0], p[1], p[2]);
-        anno->TextPosition.setValue(n[0], n[1], n[2]);
     }
 
 private:
-    Gui::ViewProviderDocumentObject* vp;
+    App::DocumentObjectWeakPtrT object;
     QString s;
     SbVec3f p;
     SbVec3f n;
@@ -572,7 +598,7 @@ void ViewProviderMeshCurvature::curvatureInfoCallback(void* ud, SoEventCallback*
                     if (addflag) {
                         SbVec3f pt = point->getPoint();
                         SbVec3f nl = point->getNormal();
-                        auto anno = new Annotation(self, text, pt, nl);
+                        auto anno = new Annotation(self->getObject(), text, pt, nl);
                         auto sensor = new SoIdleSensor(Annotation::run, anno);
                         sensor->schedule();
                     }

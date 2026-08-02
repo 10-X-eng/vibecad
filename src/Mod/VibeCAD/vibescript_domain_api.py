@@ -76,7 +76,12 @@ _OPERATION_OUTPUT_TYPES: dict[str, str] = {
 }
 
 _DOMAIN_OPERATION_OUTPUT_TYPES: dict[str, dict[str, str]] = {
-    "mesh": {"from_object": "mesh"},
+    "mesh": {
+        "from_object": "mesh",
+        "union": "mesh",
+        "difference": "mesh",
+        "intersection": "mesh",
+    },
     "surface": {
         # Boundary builders are intermediate domain values; only the pack's
         # declared output types may appear at the top-level result contract.
@@ -86,9 +91,11 @@ _DOMAIN_OPERATION_OUTPUT_TYPES: dict[str, dict[str, str]] = {
     "assembly": {
         "assembly": "assembly",
         "component": "component_link",
+        "fastener": "component_link",
         "connector": "joint",
         "joint": "joint",
         "solve": "solver_diagnostics",
+        "mechanism_check": "mechanism_verification",
         "motion": "motion",
         "simulation": "simulation",
         "exploded_view": "exploded_view",
@@ -277,6 +284,8 @@ def create_domain_api(
     domain: str,
     exports: Iterable[str],
     output_types: Iterable[str],
+    *,
+    compatibility_methods: Iterable[str] = (),
 ) -> Any:
     """Construct the exact runtime API registered for one domain.
 
@@ -287,10 +296,19 @@ def create_domain_api(
     """
 
     clean_domain = str(domain or "").strip().lower()
+    compatibility = tuple(dict.fromkeys(str(item) for item in compatibility_methods))
     if clean_domain == "partdesign":
-        from vibescript_partdesign_api import PartDesignDomainAPI
+        from vibescript_partdesign_api import create_partdesign_domain_api
 
-        return PartDesignDomainAPI(exports, output_types)
+        return create_partdesign_domain_api(
+            exports,
+            output_types,
+            compatibility_methods=compatibility,
+        )
+    if compatibility:
+        raise ValueError(
+            "Compatibility methods are supported only for saved Part Design programs."
+        )
     if clean_domain == "part":
         from vibescript_part_api import PartDomainAPI
 
@@ -319,10 +337,6 @@ def create_domain_api(
         from vibescript_material_api import MaterialDomainAPI
 
         return MaterialDomainAPI(exports, output_types)
-    if clean_domain == "bim":
-        from vibescript_bim_api import BIMDomainAPI
-
-        return BIMDomainAPI(exports, output_types)
     if clean_domain == "mesh":
         from vibescript_mesh_api import MeshDomainAPI
 

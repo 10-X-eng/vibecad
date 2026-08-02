@@ -219,7 +219,6 @@ def read2(filename):
     d["Fluidic"] = {}
     d["Thermal"] = {}
     d["Electromagnetic"] = {}
-    d["Architectural"] = {}
     d["Rendering"] = {}
     d["VectorRendering"] = {}
     d["Cost"] = {}

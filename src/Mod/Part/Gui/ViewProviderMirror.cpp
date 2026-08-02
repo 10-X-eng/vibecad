@@ -24,7 +24,6 @@
 
 #include <QAction>
 #include <QMenu>
-#include <QTimer>
 
 #include <TopExp.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
@@ -590,10 +589,7 @@ bool ViewProviderOffset::setEdit(int ModNum)
         Gui::Selection().clearSelection();
 
         // start the edit dialog
-        if (offsetDlg) {
-            Gui::Control().showDialog(offsetDlg, getDocument()->getDocument());
-        }
-        else {
+        if (!offsetDlg) {
             Gui::Control().showDialog(
                 new TaskOffset(getObject<Part::Offset>()),
                 getDocument()->getDocument()
@@ -610,8 +606,9 @@ bool ViewProviderOffset::setEdit(int ModNum)
 void ViewProviderOffset::unsetEdit(int ModNum)
 {
     if (ModNum == ViewProvider::Default) {
-        // when pressing ESC make sure to close the dialog
-        Gui::Control().closeDialog(nullptr);
+        // Close the task belonging to this exact document. TaskView defers
+        // deletion while accept/reject is on the stack.
+        Gui::Control().closeDialog(getDocument()->getDocument());
     }
     else {
         PartGui::ViewProviderPart::unsetEdit(ModNum);
@@ -699,19 +696,9 @@ bool ViewProviderThickness::setEdit(int ModNum)
 void ViewProviderThickness::unsetEdit(int ModNum)
 {
     if (ModNum == ViewProvider::Default) {
-        // when pressing ESC make sure to close the dialog
-        std::string docName;
-        if (auto* guiDoc = getDocument()) {
-            if (auto* appDoc = guiDoc->getDocument()) {
-                docName = appDoc->getName();
-            }
-        }
-        QTimer::singleShot(100, [docName]() {
-            auto* doc = App::GetApplication().getDocument(docName.c_str());
-            if (doc) {
-                Gui::Control().closeDialog(doc);
-            }
-        });
+        // Close the task belonging to this exact document. TaskView defers
+        // deletion while accept/reject is on the stack.
+        Gui::Control().closeDialog(getDocument()->getDocument());
     }
     else {
         PartGui::ViewProviderPart::unsetEdit(ModNum);

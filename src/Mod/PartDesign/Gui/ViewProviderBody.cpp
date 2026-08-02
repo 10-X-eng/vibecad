@@ -23,21 +23,32 @@
  ***************************************************************************/
 
 
+#include <algorithm>
+#include <map>
+#include <set>
+#include <string>
+#include <string_view>
+
 #include <Inventor/actions/SoGetBoundingBoxAction.h>
 #include <QMenu>
 
+#include <App/Application.h>
 #include <App/Document.h>
 #include <App/Origin.h>
 #include <App/Part.h>
 #include <App/VarSet.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
+#include <Base/Tools.h>
 #include <Gui/ActionFunction.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
 #include <Gui/MDIView.h>
 #include <Gui/ViewProviderDatum.h>
+#include <Gui/ViewProviderDocumentObject.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/FeatureSketchBased.h>
 #include <Mod/PartDesign/App/FeatureBase.h>
 #include <Mod/PartDesign/App/ShapeBinder.h>
@@ -48,7 +59,27 @@
 
 
 using namespace PartDesignGui;
-namespace sp = std::placeholders;
+
+namespace
+{
+struct BodyPresentationState
+{
+    fastsignals::scoped_connection finishEditConnection;
+    fastsignals::scoped_connection documentStableConnection;
+    fastsignals::scoped_connection documentRestoredConnection;
+    bool adjustingResultVisibility {false};
+};
+
+std::map<const ViewProviderBody*, BodyPresentationState>&
+bodyPresentationStates()
+{
+    // ViewProviderBody is an exported class used by external modules. Keep
+    // VibeCAD-only connection and recursion state out of its instance layout.
+    static auto* states =
+        new std::map<const ViewProviderBody*, BodyPresentationState>;
+    return *states;
+}
+}  // namespace
 
 const char* PartDesignGui::ViewProviderBody::BodyModeEnum[] = {"Through", "Tip", nullptr};
 
@@ -64,7 +95,10 @@ ViewProviderBody::ViewProviderBody()
     Gui::ViewProviderOriginGroupExtension::initExtension(this);
 }
 
-ViewProviderBody::~ViewProviderBody() = default;
+ViewProviderBody::~ViewProviderBody()
+{
+    bodyPresentationStates().erase(this);
+}
 
 void ViewProviderBody::attach(App::DocumentObject* pcFeat)
 {
@@ -80,6 +114,39 @@ void ViewProviderBody::attach(App::DocumentObject* pcFeat)
                 this->afterRecompute(doc, recomputedObjs);
             }
         );
+        auto& presentationState = bodyPresentationStates()[this];
+        presentationState.documentStableConnection =
+            doc->signalBecameStable.connect(
+                [this](const App::Document& document) {
+                    this->normalizeResultPresentation(document, false);
+                }
+            );
+        presentationState.documentRestoredConnection =
+            App::GetApplication().signalFinishRestoreDocument.connect(
+                [this](const App::Document& document) {
+                    this->normalizeResultPresentation(document, true);
+                }
+            );
+    }
+    if (Gui::Application::Instance) {
+        bodyPresentationStates()[this].finishEditConnection =
+            Gui::Application::Instance->signalFinishEdit.connect(
+                [this](const Gui::Document& guiDocument,
+                       bool /*cancelled*/,
+                       bool transactionFinished) {
+                    auto* body = this->getObject<PartDesign::Body>();
+                    if (!transactionFinished || !body
+                        || !body->isAttachedToDocument()
+                        || !body->getDocument()
+                        || this->getDocument() != &guiDocument) {
+                        return;
+                    }
+                    this->normalizeResultPresentation(
+                        *body->getDocument(),
+                        false
+                    );
+                }
+            );
     }
     m_ChangedConn = Gui::Application::Instance->signalChangedObject.connect(
         [this](const Gui::ViewProvider& vp, const App::Property& prop) {
@@ -90,8 +157,8 @@ void ViewProviderBody::attach(App::DocumentObject* pcFeat)
 
 void ViewProviderBody::onChangedObject(const Gui::ViewProvider& vp, const App::Property& prop)
 {
-    static const std::unordered_set<std::string> watchedProps {"Visibility"};
-    if (!watchedProps.contains(prop.getName())) {
+    const char* propertyName = prop.getName();
+    if (!propertyName || std::string_view(propertyName) != "Visibility") {
         return;
     }
     auto* vpd = dynamic_cast<const Gui::ViewProviderDocumentObject*>(&vp);
@@ -104,16 +171,78 @@ void ViewProviderBody::onChangedObject(const Gui::ViewProvider& vp, const App::P
     }
 
     auto* body = this->getObject<PartDesign::Body>();
-    if (!body) {
+    if (!body || !body->isAttachedToDocument()) {
         return;
     }
     const auto& features = body->Group.getValues();
-    bool isRelevantChange = (changedObj == body)
+    const bool isRelevantChange = (changedObj == body)
         || (std::ranges::find(features, changedObj) != features.end());
 
     if (isRelevantChange) {
+        // Outside a native task preview, history results are never independent
+        // viewport objects. If a generic command or script tries to show an
+        // older result, restore the Body contract immediately: its logical eye
+        // controls exactly the current Tip.
+        const bool isResult = changedObj != body
+            && PartDesign::Body::isResultFeature(changedObj);
+        if (isResult
+            && !bodyPresentationStates()[this].adjustingResultVisibility
+            && body->getDocument()) {
+            normalizeResultPresentation(*body->getDocument(), false);
+        }
         refreshOverlays();
     }
+}
+
+void ViewProviderBody::normalizeResultPresentation(
+    const App::Document& document,
+    bool documentRestoreFinished
+)
+{
+    auto* body = getObject<PartDesign::Body>();
+    if (!body || body->getDocument() != &document || isRestoring()) {
+        return;
+    }
+
+    // signalFinishRestoreDocument is emitted after every object and view
+    // provider has finished restoring, but immediately before the document's
+    // Restoring bit is cleared. Other stability signals received while that
+    // bit is set are too early: a later child restore could overwrite the
+    // normalized state.
+    if (document.isPerformingTransaction()
+        || document.testStatus(App::Document::Recomputing)
+        || (!documentRestoreFinished
+            && (document.hasPendingTransaction()
+                || document.isTransactionLocked()))
+        || (!documentRestoreFinished
+            && document.testStatus(App::Document::Restoring))) {
+        return;
+    }
+
+    auto* guiDocument = getDocument();
+    auto* editingView =
+        guiDocument
+        ? dynamic_cast<Gui::ViewProviderDocumentObject*>(
+              guiDocument->getEditViewProvider()
+          )
+        : nullptr;
+    auto* editingObject = editingView ? editingView->getObject() : nullptr;
+    if (editingObject
+        && (editingObject == body
+            || PartDesign::Body::findBodyOf(editingObject) == body)) {
+        // Sketcher TempoVis and feature task panels own their preview until
+        // resetEdit. Normalizing here would make a consumed sketch or base
+        // result reappear in the middle of an edit.
+        return;
+    }
+
+    // The Body's physical Coin branch is a permanent container. Its persisted
+    // Visibility is instead the logical visibility of the final result.
+    // Re-mount the child branch first so an independently visible sketch or
+    // datum remains drawable even when the result is hidden.
+    useChildSceneMode();
+    Gui::ViewProvider::show();
+    setResultVisibility(Visibility.getValue());
 }
 
 void ViewProviderBody::afterRecompute(const App::Document& /* doc */, const std::vector<App::DocumentObject*>& /* recomputedObjs */)
@@ -142,48 +271,39 @@ void ViewProviderBody::refreshOverlays()
 
 void ViewProviderBody::setDisplayMode(const char* ModeName)
 {
-
-    // if we show "Through" we must avoid to set the display mask modes, as this would result
-    // in going into "tip" mode. When through is chosen the child features are displayed, and all
-    // we need to ensure is that the display mode change is propagated to them from within the
-    // onChanged() method.
-    if (DisplayModeBody.getValue() == 1) {
-        PartGui::ViewProviderPartExt::setDisplayMode(ModeName);
-    }
+    // DisplayMode is propagated to result children by onChanged(). Record the
+    // requested mode without selecting the Body's copied Shape branch: the
+    // current Tip child is VibeCAD's one and only viewport result.
+    Gui::ViewProvider::setDisplayMode(ModeName);
+    useChildSceneMode();
 }
 
 void ViewProviderBody::setOverrideMode(const std::string& mode)
 {
+    // The Body container must never select its own geometry mask, including
+    // for DrawStyle overrides. Clear the base override switch, retain the
+    // logical override value, and apply it to the actual result children.
+    Gui::ViewProvider::setOverrideMode("As Is");
+    overrideMode = mode;
+    useChildSceneMode();
 
-    // if we are in through mode, we need to ensure that the override mode is not set for the body
-    //(as this would result in "tip" mode), it is enough when the children are set to the correct
-    // override mode.
-
-    if (DisplayModeBody.getValue() != 0) {
-        Gui::ViewProvider::setOverrideMode(mode);
-    }
-    else {
-        overrideMode = mode;
-
-        // Propagate the override mode to child features.
-        // When the Body is an external link, the global viewport loop
-        // won't reach these children automatically.
-        if (pcObject && !isRestoring()) {
-            Gui::Document* gdoc = Gui::Application::Instance->getDocument(pcObject->getDocument());
-            if (gdoc) {
-                PartDesign::Body* body = static_cast<PartDesign::Body*>(getObject());
-                auto features = body->Group.getValues();
-                for (auto feature : features) {
-                    if (feature && feature->isDerivedFrom<PartDesign::Feature>()) {
-                        if (Gui::ViewProvider* vp = gdoc->getViewProvider(feature)) {
-                            vp->setOverrideMode(mode);
-                        }
-                    }
-                }
-                if (App::DocumentObject* base = body->BaseFeature.getValue()) {
-                    if (Gui::ViewProvider* vp = gdoc->getViewProvider(base)) {
+    // Propagate the override mode to child features. When the Body is an
+    // external link, the global viewport loop won't reach these children.
+    if (pcObject && !isRestoring()) {
+        Gui::Document* gdoc = Gui::Application::Instance->getDocument(pcObject->getDocument());
+        if (gdoc) {
+            PartDesign::Body* body = static_cast<PartDesign::Body*>(getObject());
+            auto features = body->Group.getValues();
+            for (auto feature : features) {
+                if (feature && PartDesign::Body::isResultFeature(feature)) {
+                    if (Gui::ViewProvider* vp = gdoc->getViewProvider(feature)) {
                         vp->setOverrideMode(mode);
                     }
+                }
+            }
+            if (App::DocumentObject* base = body->BaseFeature.getValue()) {
+                if (Gui::ViewProvider* vp = gdoc->getViewProvider(base)) {
+                    vp->setOverrideMode(mode);
                 }
             }
         }
@@ -271,6 +391,58 @@ bool ViewProviderBody::doubleClicked()
     return true;
 }
 
+App::DocumentObject* ViewProviderBody::documentTimelineOperationDeleteTarget() const
+{
+    auto* body = getObject<PartDesign::Body>();
+    auto* publication = PartDesign::findDesignBodyPublication(body);
+    if (!body || !publication) {
+        return nullptr;
+    }
+
+    auto* state = freecad_cast<PartDesign::DesignBodyState*>(
+        publication->CurrentState.getValue()
+    );
+    if (!state) {
+        // A purely legacy/imported Body has no Design operation lifecycle yet.
+        return nullptr;
+    }
+
+    std::set<PartDesign::DesignBodyState*> visited;
+    while (auto* previous = freecad_cast<PartDesign::DesignBodyState*>(
+               state->PreviousState.getValue()
+           )) {
+        if (!visited.insert(state).second) {
+            throw Base::RuntimeError(
+                "This Design Body has a cyclic state chain and cannot be deleted"
+            );
+        }
+        state = previous;
+    }
+    if (state->PreviousState.getValue()) {
+        throw Base::RuntimeError(
+            "This imported Body participates in global History and cannot be "
+            "deleted as a legacy container. Remove its History operations first."
+        );
+    }
+
+    auto* operation = state->Operation.getValue();
+    auto* properties =
+        dynamic_cast<PartDesign::DesignOperationProperties*>(operation);
+    const auto outputBodyIds =
+        properties ? properties->OutputBodyIds.getValues()
+                   : std::vector<std::string> {};
+    if (!operation || operation->getDocument() != body->getDocument()
+        || !properties || state->BodyId.getValueStr() != body->VibeCADBodyId.getValueStr()
+        || outputBodyIds.size() != 1
+        || outputBodyIds.front() != body->VibeCADBodyId.getValueStr()) {
+        throw Base::RuntimeError(
+            "This Body is not the sole output of one valid creating History "
+            "operation. Delete the complete operation from History instead."
+        );
+    }
+    return operation;
+}
+
 // TODO To be deleted (2015-09-08, Fat-Zer)
 // void ViewProviderBody::updateTree()
 //{
@@ -312,6 +484,13 @@ void ViewProviderBody::updateData(const App::Property* prop)
         // ensure all model features are in visual body mode
         setVisualBodyMode(true);
     }
+    if (prop == &body->Group && body->getDocument()) {
+        // Adoption, deletion, and direct insertion can change the set of
+        // result children without changing Tip. Apply the same stable-state
+        // invariant as a Tip change so a newly grouped result cannot remain
+        // drawn beside the Body's current result.
+        normalizeResultPresentation(*body->getDocument(), false);
+    }
 
     if (prop == &body->Tip) {
         // We changed Tip
@@ -326,42 +505,39 @@ void ViewProviderBody::updateData(const App::Property* prop)
                 static_cast<PartDesignGui::ViewProvider*>(vp)->setTipIcon(feature == tip);
             }
         }
+
+        // Moving the end-of-part marker changes which native result represents
+        // the Body. Visibility is part of that atomic state change: the new Tip
+        // replaces the old Tip instead of being drawn on top of it. During
+        // undo/redo, Cancel rollback, restore, and recompute, property replay
+        // owns the object graph; signalBecameStable/finishRestore performs the
+        // same normalization once replay is complete.
+        if (const auto* document = body->getDocument()) {
+            normalizeResultPresentation(*document, false);
+        }
     }
 
     PartGui::ViewProviderPart::updateData(prop);
+
+    // ViewProviderDocumentObject::updateView() temporarily removes a visible
+    // scene node while updating all properties. A logically hidden Body keeps
+    // its container mounted so independently enabled sketches and references
+    // can draw, so restore that container after every Body update.
+    if (!Visibility.getValue()) {
+        useChildSceneMode();
+        Gui::ViewProvider::show();
+    }
 }
 
 void ViewProviderBody::onChanged(const App::Property* prop)
 {
 
     if (prop == &DisplayModeBody) {
-        auto body = getObject<PartDesign::Body>();
-
-        if (DisplayModeBody.getValue() == 0) {
-            // if we are in an override mode we need to make sure to come out, because
-            // otherwise the maskmode is blocked and won't go into "through"
-            if (getOverrideMode() != "As Is") {
-                auto mode = getOverrideMode();
-                ViewProvider::setOverrideMode("As Is");
-                overrideMode = mode;
-            }
-            setDisplayMaskMode("Group");
-            if (body) {
-                body->setShowTip(false);
-            }
-        }
-        else {
-            if (body) {
-                body->setShowTip(true);
-            }
-            if (getOverrideMode() == "As Is") {
-                setDisplayMaskMode(DisplayMode.getValueAsString());
-            }
-            else {
-                Base::Console().message("Set override mode: %s\n", getOverrideMode().c_str());
-                setDisplayMaskMode(getOverrideMode().c_str());
-            }
-        }
+        // Keep the legacy property readable for document compatibility, but
+        // both values use the child scene in VibeCAD. Rendering the Body's
+        // copied Shape would duplicate the Tip and would gate sketches when
+        // the Body result is hidden.
+        useChildSceneMode();
 
         // #0002559: Body becomes visible upon changing DisplayModeBody
         Visibility.touch();
@@ -411,7 +587,7 @@ void ViewProviderBody::unifyVisualProperty(const App::Property* prop)
     auto features = body->Group.getValues();
     for (auto feature : features) {
 
-        if (!feature->isDerivedFrom<PartDesign::Feature>()) {
+        if (!PartDesign::Body::isResultFeature(feature)) {
             continue;
         }
 
@@ -459,6 +635,23 @@ void ViewProviderBody::setVisualBodyMode(bool bodymode)
     }
 }
 
+void ViewProviderBody::useChildSceneMode()
+{
+    // A stale base override selects one of the Body's own shape masks even
+    // after "Group" is requested. Clear only that physical switch while
+    // preserving the logical override that result children consume.
+    const std::string mode = getOverrideMode();
+    if (mode != "As Is") {
+        Gui::ViewProvider::setOverrideMode("As Is");
+        overrideMode = mode;
+    }
+
+    setDisplayMaskMode("Group");
+    if (auto* body = getObject<PartDesign::Body>()) {
+        body->setShowTip(false);
+    }
+}
+
 std::vector<std::string> ViewProviderBody::getDisplayModes() const
 {
 
@@ -489,8 +682,12 @@ PartDesign::Feature* ViewProviderBody::getShownFeature() const
 
 Gui::ViewProvider* ViewProviderBody::getShownViewProvider() const
 {
-    if (const auto* feature = getShownFeature()) {
-        return Gui::Application::Instance->getViewProvider(feature);
+    auto body = static_cast<PartDesign::Body*>(getObject());
+    for (auto* feature : body->Group.getValues()) {
+        if (feature && feature->Visibility.getValue()
+            && PartDesign::Body::isResultFeature(feature)) {
+            return Gui::Application::Instance->getViewProvider(feature);
+        }
     }
 
     return nullptr;
@@ -592,7 +789,7 @@ void ViewProviderBody::dropObject(App::DocumentObject* obj)
 
 bool ViewProviderBody::canDragObjectToTarget(App::DocumentObject* obj, App::DocumentObject* target) const
 {
-    if (obj->isDerivedFrom<PartDesign::Feature>()) {
+    if (PartDesign::Body::isAllowed(obj)) {
         return target && target->is<PartDesign::Body>();
     }
 
@@ -601,41 +798,90 @@ bool ViewProviderBody::canDragObjectToTarget(App::DocumentObject* obj, App::Docu
 
 void ViewProviderBody::show()
 {
-    // Call the base version first to ensure normal behavior
+    // The Body's scene container owns sketches, datums, and result features.
+    // Keep it mounted, then expose exactly the current Tip as the one solid
+    // represented by the Body row.
+    useChildSceneMode();
     PartGui::ViewProviderPart::show();
 
-    auto* body = static_cast<PartDesign::Body*>(getObject());
+    // The regular show path may reject a child whose enclosing component is
+    // hidden. The physical container must nevertheless remain mounted so an
+    // independently visible sketch or datum can still draw. Normalize the
+    // result only at the same stable boundary used by undo/redo and native
+    // task completion; show() is also reached synchronously while those
+    // owners replay Visibility properties.
+    if (!Visibility.getValue()) {
+        Gui::ViewProvider::show();
+    }
+    if (auto* body = getObject<PartDesign::Body>();
+        body && body->getDocument()) {
+        normalizeResultPresentation(*body->getDocument(), false);
+    }
+}
 
-    auto tip = body->Tip.getValue();
-    if (!tip || tip->Visibility.getValue()) {
+void ViewProviderBody::hide()
+{
+    // Let the regular implementation synchronize the persisted Visibility
+    // property, then remount only the scene container. Its result children
+    // remain independently addressable. Stable-state normalization hides the
+    // result Tip; if this call is part of task teardown or transaction replay,
+    // it deliberately waits for that owner to finish before changing any
+    // child Visibility property.
+    PartGui::ViewProviderPart::hide();
+    useChildSceneMode();
+    Gui::ViewProvider::show();
+    if (auto* body = getObject<PartDesign::Body>();
+        body && body->getDocument()) {
+        normalizeResultPresentation(*body->getDocument(), false);
+    }
+}
+
+bool ViewProviderBody::isShow() const
+{
+    // The physical scene container may be mounted while the solid is hidden.
+    // Report the logical state used by the Body eye and visibility commands.
+    return Visibility.getValue();
+}
+
+void ViewProviderBody::setResultVisibility(bool visible)
+{
+    auto& presentationState = bodyPresentationStates()[this];
+    if (presentationState.adjustingResultVisibility) {
+        return;
+    }
+    Base::FlagToggler<> guard(
+        presentationState.adjustingResultVisibility
+    );
+
+    auto* body = getObject<PartDesign::Body>();
+    if (!body) {
         return;
     }
 
-    auto features = body->Group.getValues();
-    if (features.empty()) {
-        return;
-    }
-
-    bool foundVisible = false;
-    for (const auto feature : features) {
-        if (!feature) {
+    App::DocumentObject* tip = body->Tip.getValue();
+    for (auto* feature : body->Group.getValues()) {
+        if (!feature || !PartDesign::Body::isResultFeature(feature)) {
             continue;
         }
-
-        auto vp = Gui::Application::Instance->getViewProvider(feature);
-        if (!vp) {
-            continue;
-        }
-
-        if (vp->isDerivedFrom(PartDesignGui::ViewProvider::getClassTypeId())) {
-            if (feature->Visibility.getValue()) {
-                foundVisible = true;
-                break;
+        const bool shouldShow = visible && feature == tip;
+        auto* viewProvider = Gui::Application::Instance
+            ? Gui::Application::Instance->getViewProvider(feature)
+            : nullptr;
+        if (viewProvider) {
+            // Visibility properties can already have the requested value while
+            // the corresponding Coin branch is stale (for example after
+            // adoption, restore, or transaction rollback). Reapply the
+            // imperative view-provider state every time so normalization is
+            // idempotent in both the document and the scene graph.
+            if (shouldShow) {
+                viewProvider->show();
+            }
+            else {
+                viewProvider->hide();
             }
         }
-    }
-
-    if (!foundVisible) {
-        tip->Visibility.setValue(true);
+        else if (feature->Visibility.getValue() != shouldShow) {
+            feature->Visibility.setValue(shouldShow);
+        }
     }
 }

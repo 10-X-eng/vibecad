@@ -50,6 +50,8 @@ public:
     int addView(App::DocumentObject* obj);
     int removeView(App::DocumentObject* obj);
     std::vector<App::DocumentObject*> getViews() const;
+    /// Collection views which are active at the current document timeline marker.
+    std::vector<App::DocumentObject*> getActiveViews() const;
     void rebuildViewList();
     bool isUnsetting() { return nowUnsetting; }
 

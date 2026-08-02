@@ -214,6 +214,18 @@ public:
 
     // Auto generated code (Tools/params_utils.py:138)
     //@{
+    /// Presents model objects in virtual type folders such as Bodies, Sketches,
+    /// References, and Geometry without changing document ownership.
+    static const bool& getOrganizeModelByType();
+    static const bool& defaultOrganizeModelByType();
+    static void removeOrganizeModelByType();
+    static void setOrganizeModelByType(const bool& v);
+    static const char* docOrganizeModelByType();
+    static void onOrganizeModelByTypeChanged();
+    //@}
+
+    // Auto generated code (Tools/params_utils.py:138)
+    //@{
     /// Accessor for parameter TreeActiveAutoExpand
     static const bool& getTreeActiveAutoExpand();
     static const bool& defaultTreeActiveAutoExpand();

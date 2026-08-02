@@ -122,24 +122,7 @@
       <translation>Cuirtear nóta bloic téacs in-eagarthóireachta isteach sa leathanach reatha</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>TechDraw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>BIM View</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Cuireann sé radharc de phlána alt BIM isteach</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ Mura roghnaítear aon réad, osclaítear brabhsálaí comhad chun comhad SVG nó
       <translation>Leathanach cruthaithe líníochta</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>Cruthaigh radharc BIM</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Cruthaigh íomhá</translation>
@@ -3293,11 +3270,6 @@ Mura roghnaítear aon réad, osclaítear brabhsálaí comhad chun comhad SVG nó
       <translation>Roghnaigh grúpa gearrthóg amháin agus radharc amháin</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Tá radharc BIM ar an leathanach nach ndéanfar a onnmhairiú. Ar aghaidh?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>Sábháil comhad DXF</translation>
@@ -3331,16 +3303,6 @@ Mura roghnaítear aon réad, osclaítear brabhsálaí comhad chun comhad SVG nó
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Roghnaigh réad amháin ar a laghad</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Roghnaigh plána rannóige BIM amháin</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Gan aon eitleán alt BIM sa roghnú</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -10075,14 +10037,7 @@ go bhfuil dialóg tascanna oscailte ann.</translation>
       <translation>Líne</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

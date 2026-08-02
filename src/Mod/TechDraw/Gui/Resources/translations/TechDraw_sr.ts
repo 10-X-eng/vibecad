@@ -122,24 +122,7 @@
       <translation>Umetni napomenu u formi tekstualnog bloka koji je moguće uređivati</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>Технички цртежи</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>Уметни БИМ објекат</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Уметни пресек из БИМ радног окружења</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>Направи цртеж</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>Направи BIM поглед</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Направи слику</translation>
@@ -3293,11 +3270,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>Изабери једну групу погледа и један поглед</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Цртеж садржи BIM поглед који неће бити извезен. Настави?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>Сачувај DXF датотеку</translation>
@@ -3331,16 +3303,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Изабери бар један објекат</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Изабери један BIM пресек</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Није изабран ниједан BIM пресек</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -4366,7 +4328,7 @@ following referencing objects might be lost:</source>
       <location filename="../../ViewProviderProjGroup.cpp" line="139"/>
       <source>The group cannot be deleted because its items have the following
 section or detail views, or leader lines that would get broken:</source>
-      <translation>Група се не може избрисати јер њене ставке имају пресеке, 
+      <translation>Група се не може избрисати јер њене ставке имају пресеке,
 детаљне погледе или показне линије које могу бити оштећене:</translation>
     </message>
     <message>
@@ -4697,7 +4659,7 @@ Faces must be detected in order to use hatching, but there
 can be a performance penalty in complex models.</source>
       <translation>Ако је потврђено, окружење Технички цртежи ће покушати да направи странице користећи
 сегменте линија које је послао алгоритам за уклањање скривених линија.
-Странице морају бити откривена да би се користило шрафирање, ово 
+Странице морају бити откривена да би се користило шрафирање, ово
 може утицати на перформансе рачунара ако се обрађују сложни модели.</translation>
     </message>
     <message>
@@ -5063,7 +5025,7 @@ always be the right choice.  Flat or square caps are useful
 for using drawings as a 1:1 cutting guide.
 </source>
       <translation>Облик крајева линија. Унапред подешен (Заобљени) би требало скоро увек
-да буде прави избор. Равни или квадратни крајеви су корисни 
+да буде прави избор. Равни или квадратни крајеви су корисни
 ако планирате да користите цртеж као шаблон за сечење 1:1.
 </translation>
     </message>
@@ -5816,7 +5778,7 @@ for ProjectionGroups</source>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="74"/>
       <source>Controls whether or not a page&apos;s &apos;Keep Updated&apos; property
 can override the global &apos;Update with 3D&apos; parameter</source>
-      <translation>Да ли параметар цртежа &apos;Keep Updated&apos; може надјачати општи 
+      <translation>Да ли параметар цртежа &apos;Keep Updated&apos; може надјачати општи
 параметар &apos;Ажурирај са 3Д&apos;</translation>
     </message>
     <message>
@@ -10063,14 +10025,7 @@ there is an open task dialog.</source>
       <translation>Дуж</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

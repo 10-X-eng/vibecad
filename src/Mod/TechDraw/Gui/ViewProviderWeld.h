@@ -52,6 +52,10 @@ public:
     std::vector<App::DocumentObject*> claimChildren() const override;
     bool setEdit(int ModNum) override;
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
 
     TechDraw::DrawWeldSymbol* getViewObject() const override;
     virtual TechDraw::DrawWeldSymbol* getFeature() const;

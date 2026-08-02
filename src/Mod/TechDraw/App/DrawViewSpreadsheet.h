@@ -62,6 +62,9 @@ public:
     }
 
 protected:
+    bool timelineDependenciesActive(
+        TimelineDependencyStack& stack) const override;
+
     void onChanged(const App::Property* prop) override;
     std::vector<std::string> getAvailColumns();
     std::string getSVGHead();

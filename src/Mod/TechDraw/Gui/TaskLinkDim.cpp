@@ -21,10 +21,12 @@
  ***************************************************************************/
 
 # include <cmath>
+# include <QMessageBox>
 # include <QTreeWidget>
 
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <Base/Exception.h>
 #include <Base/Console.h>
 
 #include <Gui/Application.h>
@@ -49,8 +51,26 @@ TaskLinkDim::TaskLinkDim(std::vector<App::DocumentObject*> parts, std::vector<st
     ui(new Ui_TaskLinkDim),
     m_parts(parts),
     m_subs(subs),
-    m_page(page)
+    m_page(page),
+    m_documentIdentity(page ? page->getDocument() : nullptr),
+    m_pageIdentity(page)
 {
+    if (!page || !page->getDocument() || parts.empty()
+        || parts.size() != subs.size()) {
+        throw Base::ValueError(
+            "Dimension linking requires a page and matching references"
+        );
+    }
+    m_partIdentities.reserve(parts.size());
+    for (auto* part : parts) {
+        if (!part || part->getDocument() != page->getDocument()) {
+            throw Base::ValueError(
+                "Dimension references must belong to the drawing document"
+            );
+        }
+        m_partIdentities.emplace_back(part);
+    }
+
     ui->setupUi(this);
     ui->selector->setAvailableLabel(tr("Available"));
     ui->selector->setSelectedLabel(tr("Selected"));
@@ -75,12 +95,41 @@ TaskLinkDim::TaskLinkDim(std::vector<App::DocumentObject*> parts, std::vector<st
     }
 }
 
+bool TaskLinkDim::resolveInputs()
+{
+    auto* page = m_pageIdentity.resolve();
+    if (!page || page->getDocument() != m_documentIdentity.resolve()
+        || m_partIdentities.size() != m_subs.size()) {
+        m_page = nullptr;
+        m_parts.clear();
+        return false;
+    }
+
+    std::vector<App::DocumentObject*> parts;
+    parts.reserve(m_partIdentities.size());
+    for (const auto& identity : m_partIdentities) {
+        auto* part = identity.resolve();
+        if (!part || part->getDocument() != page->getDocument()) {
+            m_page = nullptr;
+            m_parts.clear();
+            return false;
+        }
+        parts.push_back(part);
+    }
+    m_page = page;
+    m_parts = std::move(parts);
+    return true;
+}
+
 TaskLinkDim::~TaskLinkDim()
 {
 }
 
 void TaskLinkDim::loadAvailDims()
 {
+    if (!resolveInputs()) {
+        return;
+    }
     App::Document* doc = m_page->getDocument();
     Gui::Document* guiDoc = Gui::Application::Instance->getDocument(doc);
     if (!guiDoc)
@@ -89,7 +138,7 @@ void TaskLinkDim::loadAvailDims()
     std::string result;
     TechDraw::DrawViewDimension::RefType selRefType = TechDraw::DrawViewDimension::getRefTypeSubElements(m_subs);
     //int found = 0;
-    for (auto* view : m_page->getViews()) {
+    for (auto* view : m_page->getAllActiveViews()) {
         if (view->isDerivedFrom<TechDraw::DrawViewDimension>()) {
             auto* dim = static_cast<TechDraw::DrawViewDimension*>(view);
             TechDraw::DrawViewDimension::RefType dimRefType = dim->getRefType();
@@ -122,6 +171,11 @@ void TaskLinkDim::loadToTree(const TechDraw::DrawViewDimension* dim, const bool 
     child->setText(0, label);
     child->setToolTip(0, tooltip);
     child->setData(0, Qt::UserRole, name);
+    child->setData(
+        0,
+        Qt::UserRole + 1,
+        QVariant::fromValue<qlonglong>(dim->getID())
+    );
     Gui::ViewProvider* vp = guiDoc->getViewProvider(dim);
     if (vp) child->setIcon(0, vp->getIcon());
     if (selected) {
@@ -170,39 +224,65 @@ bool TaskLinkDim::dimReferencesSelection(const TechDraw::DrawViewDimension* dim)
 
 void TaskLinkDim::updateDims()
 {
+    if (!resolveInputs()) {
+        throw Base::RuntimeError(
+            "The dimension-linking target is no longer available"
+        );
+    }
+    App::Document* document = m_documentIdentity.resolve();
     int iDim;
     int count = ui->selector->selectedTreeWidget()->topLevelItemCount();
     for (iDim=0; iDim<count; iDim++) {
         QTreeWidgetItem* child = ui->selector->selectedTreeWidget()->topLevelItem(iDim);
         QString name = child->data(0, Qt::UserRole).toString();
-        App::DocumentObject* obj = m_page->getDocument()->getObject(name.toStdString().c_str());
+        const long objectId =
+            child->data(0, Qt::UserRole + 1).toLongLong();
+        App::DocumentObject* obj = document->getObjectByID(objectId);
+        if (!obj || !obj->getNameInDocument()
+            || name.toStdString() != obj->getNameInDocument()) {
+            throw Base::RuntimeError(
+                "A selected dimension is no longer available"
+            );
+        }
         TechDraw::DrawViewDimension* dim = dynamic_cast<TechDraw::DrawViewDimension*>(obj);
-        if (!dim)
-            continue;
-//        std::vector<App::DocumentObject*> parts;
-//        for (unsigned int iPart = 0; iPart < m_subs.size(); iPart++) {
-//            parts.push_back(m_part);
-//        }
+        if (!dim || dim->findParentPage() != m_page) {
+            throw Base::RuntimeError(
+                "A selected dimension no longer belongs to this page"
+            );
+        }
         dim->References3D.setValues(m_parts, m_subs);
-        std::string DimName = dim->getNameInDocument();
-        std::string measureType = "True";
-        Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().%s.MeasureType = \'%s\'",
-                            DimName.c_str(), measureType.c_str());
-        //dim->MeasureType.setValue("True");
+        dim->MeasureType.setValue("True");
+        dim->recomputeFeature();
+        if (dim->isError()) {
+            throw Base::RuntimeError(
+                "A selected dimension could not be linked"
+            );
+        }
     }
     count = ui->selector->availableTreeWidget()->topLevelItemCount();
     for (iDim=0; iDim < count; iDim++) {
         QTreeWidgetItem* child = ui->selector->availableTreeWidget()->topLevelItem(iDim);
         QString name = child->data(0, Qt::UserRole).toString();
-        App::DocumentObject* obj = m_page->getDocument()->getObject(name.toStdString().c_str());
+        const long objectId =
+            child->data(0, Qt::UserRole + 1).toLongLong();
+        App::DocumentObject* obj = document->getObjectByID(objectId);
+        if (!obj || !obj->getNameInDocument()
+            || name.toStdString() != obj->getNameInDocument()) {
+            throw Base::RuntimeError(
+                "An available dimension is no longer available"
+            );
+        }
         TechDraw::DrawViewDimension* dim = dynamic_cast<TechDraw::DrawViewDimension*>(obj);
         if (dim && dimReferencesSelection(dim))  {
-           std::string measureType = "Projected";
-           std::string DimName = dim->getNameInDocument();
-           Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().%s.MeasureType = \'%s\'",
-                            DimName.c_str(), measureType.c_str());
+           dim->MeasureType.setValue("Projected");
            dim->References3D.setValue(nullptr, "");            //DVD.References3D
            dim->clear3DMeasurements();                  //DVD.measurement.References3D
+           dim->recomputeFeature();
+           if (dim->isError()) {
+               throw Base::RuntimeError(
+                   "A dimension could not be unlinked"
+               );
+           }
         }
     }
 }
@@ -235,8 +315,33 @@ void TaskLinkDim::onCurrentItemChanged(QTreeWidgetItem* current, QTreeWidgetItem
 
 bool TaskLinkDim::accept()
 {
-    updateDims();
-    return true;
+    try {
+        TaskInternal::OwnedDocumentTransaction transaction(
+            m_documentIdentity.resolve(),
+            QT_TRANSLATE_NOOP("Command", "Link dimensions")
+        );
+        updateDims();
+        TaskInternal::updateExactDocument(
+            m_documentIdentity.resolve()
+        );
+        transaction.commit();
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            this,
+            tr("Link dimensions"),
+            QString::fromUtf8(error.what())
+        );
+    }
+    catch (const std::exception& error) {
+        QMessageBox::warning(
+            this,
+            tr("Link dimensions"),
+            QString::fromUtf8(error.what())
+        );
+    }
+    return false;
 }
 
 bool TaskLinkDim::reject()
@@ -284,14 +389,12 @@ void TaskDlgLinkDim::clicked(int i)
 
 bool TaskDlgLinkDim::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgLinkDim::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskLinkDim.cpp>

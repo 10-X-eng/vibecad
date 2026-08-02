@@ -32,6 +32,8 @@ __url__ = "https://www.freecad.org"
 import FreeCAD
 import FreeCADGui
 
+from femtaskpanels.base_femtaskpanel import _TaskTargetIdentity
+
 
 class VPPostVisualization:
     """
@@ -64,13 +66,8 @@ class VPPostVisualization:
         return ["Dialog"]
 
     def doubleClicked(self, vobj):
-
-        guidoc = FreeCADGui.getDocument(vobj.Object.Document)
-
-        # check if another VP is in edit mode and close it then
-        if guidoc.getInEdit():
-            FreeCADGui.Control.closeDialog()
-            guidoc.resetEdit()
+        identity = _TaskTargetIdentity(vobj.Object)
+        guidoc = identity.resolve_gui_document()
 
         # open task dialog
         guidoc.setEdit(vobj.Object.Name)
@@ -80,22 +77,43 @@ class VPPostVisualization:
 
         return True
 
+    def _show_task_dialog(self, vobj, task):
+        identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document()
+        FreeCADGui.Control.showDialog(task, gui_document)
+        self._fem_edit_identity = identity
+        return True
+
     def unsetEdit(self, vobj, mode=0):
-        FreeCADGui.Control.closeDialog()
+        identity = getattr(self, "_fem_edit_identity", None)
+        if identity is None:
+            identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document(
+            require_object=False
+        )
+        FreeCADGui.Control.closeDialog(gui_document)
+        self._fem_edit_identity = None
         return True
 
     def updateData(self, obj, prop):
         # If the data changed we need to update the visualization
         if prop == "Table":
-            self.update_visualization()
+            self._update_visualization_if_implemented()
 
     def onChanged(self, vobj, prop):
         # for all property changes we need to update the visualization
-        self.update_visualization()
+        self._update_visualization_if_implemented()
 
     def childViewPropertyChanged(self, vobj, prop):
         # One of the extractors view properties has changed, we need to
         # update the visualization
+        self._update_visualization_if_implemented()
+
+    def _update_visualization_if_implemented(self):
+        """Dispatch property notifications only to concrete visualizations."""
+        implementation = type(self).update_visualization
+        if implementation is VPPostVisualization.update_visualization:
+            return
         self.update_visualization()
 
     def dumps(self):

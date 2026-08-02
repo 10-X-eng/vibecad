@@ -59,7 +59,7 @@ bool ViewProviderBlendCurve::setEdit(int ModNum)
             return false;
         }
         auto dlg = new TaskBlendCurve(this);
-        Gui::Control().showDialog(dlg);
+        Gui::Control().showDialog(dlg, getObject()->getDocument());
         return true;
     }
 

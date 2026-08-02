@@ -24,15 +24,17 @@
 
 #include <QMessageBox>
 
-
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/CommandT.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
 #include <Mod/Robot/App/RobotObject.h>
 
-#include "TrajectorySimulate.h"
+#include "OperationSupport.h"
 
 
 using namespace std;
@@ -48,23 +50,16 @@ CmdRobotAddToolShape::CmdRobotAddToolShape()
     sToolTipText = QT_TR_NOOP("Adds a tool shape to the robot");
     sWhatsThis = "Robot_AddToolShape";
     sStatusTip = sToolTipText;
-    sPixmap = "Robot_CreateRobot";
+    sPixmap = "Link";
 }
 
 
 void CmdRobotAddToolShape::activated(int)
 {
-    std::vector<App::DocumentObject*> robots = getSelection().getObjectsOfType(
-        Robot::RobotObject::getClassTypeId()
-    );
-    std::vector<App::DocumentObject*> shapes = getSelection().getObjectsOfType(
-        Base::Type::fromName("Part::Feature")
-    );
-    std::vector<App::DocumentObject*> VRMLs = getSelection().getObjectsOfType(
-        Base::Type::fromName("App::VRMLObject")
-    );
-
-    if (robots.size() != 1 || (shapes.size() != 1 && VRMLs.size() != 1)) {
+    auto* activeDocument = RobotGui::OperationSupport::cleanActiveDocument();
+    auto* robot = RobotGui::OperationSupport::selectedRobot();
+    auto* shape = robot ? RobotGui::OperationSupport::selectedToolShape(*robot) : nullptr;
+    if (!activeDocument || !robot || !shape) {
         QMessageBox::warning(
             Gui::getMainWindow(),
             QObject::tr("Wrong selection"),
@@ -72,32 +67,36 @@ void CmdRobotAddToolShape::activated(int)
         );
         return;
     }
-
-    std::string RoboName = robots.front()->getNameInDocument();
-    std::string ShapeName;
-    if (shapes.size() == 1) {
-        ShapeName = shapes.front()->getNameInDocument();
+    try {
+        const auto documents = RobotGui::OperationSupport::mutationDocuments(*activeDocument, {robot});
+        RobotGui::OperationSupport::requireCleanDocuments(*activeDocument, documents);
+        Gui::ExactTransaction transaction(
+            *activeDocument,
+            documents,
+            QT_TRANSLATE_NOOP("Command", "Attach robot tool")
+        );
+        Gui::cmdAppObjectArgs(robot, "ToolShape = %s", Gui::Command::getObjectCmd(shape));
+        if (robot->ToolShape.getValue() != shape) {
+            throw Base::RuntimeError("The selected tool shape could not be attached to the robot");
+        }
+        RobotGui::OperationSupport::recompute(documents);
+        RobotGui::OperationSupport::commit(transaction);
+        Gui::Command::updateActive();
     }
-    else {
-        ShapeName = VRMLs.front()->getNameInDocument();
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Attach Robot Tool"),
+            QString::fromUtf8(error.what())
+        );
     }
-
-    openCommand("Add tool to robot");
-    doCommand(
-        Doc,
-        "App.activeDocument().%s.ToolShape = App.activeDocument().%s",
-        RoboName.c_str(),
-        ShapeName.c_str()
-    );
-    // doCommand(Gui,"Gui.activeDocument().hide(\"%s\")",ShapeName.c_str());
-    updateActive();
-    commitCommand();
 }
 
 bool CmdRobotAddToolShape::isActive()
 {
-    // return false; // not yet implemented and thus not active
-    return hasActiveDocument();
+    auto* robot = RobotGui::OperationSupport::selectedRobot();
+    return RobotGui::OperationSupport::cleanActiveDocument() && robot
+        && RobotGui::OperationSupport::selectedToolShape(*robot);
 }
 
 void CreateRobotCommandsInsertRobots()

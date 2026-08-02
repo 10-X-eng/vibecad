@@ -39,6 +39,7 @@ import FreeCAD as App
 import FreeCADGui as Gui
 from draftutils import gui_utils
 from draftutils import params
+from draftutils.transaction import run_document_mutation
 
 
 class ViewProviderWorkingPlaneProxy:
@@ -102,7 +103,12 @@ class ViewProviderWorkingPlaneProxy:
 
     def writeCamera(self):
         if hasattr(self, "Object"):
-            n = Gui.ActiveDocument.ActiveView.getCameraNode()
+            obj = self.Object
+            document = obj.Document
+            gui_document = Gui.getDocument(document.Name)
+            if gui_document is None or gui_document.Document is not document:
+                return
+            n = gui_document.activeView().getCameraNode()
             App.Console.PrintMessage(QT_TRANSLATE_NOOP("Draft", "Writing camera position") + "\n")
             cdata = list(n.position.getValue().getValue())
             cdata.extend(list(n.orientation.getValue().getValue()))
@@ -116,18 +122,30 @@ class ViewProviderWorkingPlaneProxy:
             elif isinstance(n, coin.SoPerspectiveCamera):
                 cdata.append(n.heightAngle.getValue())
                 cdata.append(1.0)  # perspective camera
-            self.Object.ViewObject.ViewData = cdata
+            run_document_mutation(
+                document,
+                QT_TRANSLATE_NOOP("Draft", "Save Camera Position"),
+                lambda: setattr(obj.ViewObject, "ViewData", cdata),
+                objects=(obj,),
+            )
 
     def writeState(self):
         if hasattr(self, "Object"):
+            obj = self.Object
+            document = obj.Document
             App.Console.PrintMessage(
                 QT_TRANSLATE_NOOP("Draft", "Writing objects shown/hidden state") + "\n"
             )
             vis = {}
-            for o in App.ActiveDocument.Objects:
+            for o in document.Objects:
                 if o.ViewObject:
                     vis[o.Name] = str(o.ViewObject.Visibility)
-            self.Object.ViewObject.VisibilityMap = vis
+            run_document_mutation(
+                document,
+                QT_TRANSLATE_NOOP("Draft", "Save Visibility of Objects"),
+                lambda: setattr(obj.ViewObject, "VisibilityMap", vis),
+                objects=(obj,),
+            )
 
     def attach(self, vobj):
         self.clip = None

@@ -308,16 +308,20 @@ def run_single_transform(
     distribution: dict[str, Any] | None = None,
     reversed: bool = False,
 ) -> dict[str, Any]:
-    sources_state = _resolve_sources(service, feature_names)
+    native_transform_mode = _transform_mode(transform_mode)
+    if native_transform_mode is None:
+        return _invalid("transform_mode must be features or whole_shape.")
+    sources_state = _resolve_sources(
+        service,
+        feature_names,
+        whole_shape=native_transform_mode == "Whole shape",
+    )
     if not sources_state.get("ok"):
         return sources_state
     body = sources_state["body"]
     clean_label = str(label or "").strip()
     if not clean_label:
         return _invalid("label is required.")
-    native_transform_mode = _transform_mode(transform_mode)
-    if native_transform_mode is None:
-        return _invalid("transform_mode must be features or whole_shape.")
     if operation == "linear_pattern":
         reference_state = _resolve_axis(service, body, reference)
         distribution_state = _validate_distribution(distribution, "length", 1e300)
@@ -454,16 +458,20 @@ def run_multi_transform(
     refine: bool,
     transformations: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    sources_state = _resolve_sources(service, feature_names)
+    native_transform_mode = _transform_mode(transform_mode)
+    if native_transform_mode is None:
+        return _invalid("transform_mode must be features or whole_shape.")
+    sources_state = _resolve_sources(
+        service,
+        feature_names,
+        whole_shape=native_transform_mode == "Whole shape",
+    )
     if not sources_state.get("ok"):
         return sources_state
     body = sources_state["body"]
     clean_label = str(label or "").strip()
     if not clean_label:
         return _invalid("label is required.")
-    native_transform_mode = _transform_mode(transform_mode)
-    if native_transform_mode is None:
-        return _invalid("transform_mode must be features or whole_shape.")
     if not isinstance(transformations, list) or len(transformations) < 2:
         return _invalid("transformations must contain at least two ordered transformations.")
     validated = []
@@ -495,7 +503,12 @@ def run_multi_transform(
         multi.Refine = bool(refine)
         children = []
         for state in validated:
-            child = _create_transform_child(target_body, doc, state)
+            child = _create_transform_child(
+                target_body,
+                doc,
+                state,
+                timeline_owner=multi,
+            )
             children.append(child)
         multi.Transformations = children
         target_body.Tip = multi
@@ -571,7 +584,12 @@ def run_multi_transform(
     )
 
 
-def _resolve_sources(service: Any, feature_names: Any) -> dict[str, Any]:
+def _resolve_sources(
+    service: Any,
+    feature_names: Any,
+    *,
+    whole_shape: bool,
+) -> dict[str, Any]:
     if not isinstance(feature_names, list) or not feature_names:
         return _invalid("feature_names must contain at least one exact internal feature name.")
     names = [str(name or "").strip() for name in feature_names]
@@ -600,14 +618,21 @@ def _resolve_sources(service: Any, feature_names: Any) -> dict[str, Any]:
                 feature_body=owner.Name,
                 expected_body=body.Name,
             )
-        type_id = str(getattr(feature, "TypeId", ""))
-        if not type_id.startswith("PartDesign::") or type_id in {
-            "PartDesign::Body",
-            "PartDesign::Plane",
-            "PartDesign::Line",
-            "PartDesign::Point",
-        }:
-            return _invalid(f"Object {name} is not a transformable PartDesign feature.")
+        is_part_shape = bool(
+            callable(getattr(feature, "isDerivedFrom", None))
+            and feature.isDerivedFrom("Part::Feature")
+        )
+        is_add_sub_feature = bool(
+            callable(getattr(feature, "isDerivedFrom", None))
+            and feature.isDerivedFrom("PartDesign::FeatureAddSub")
+        )
+        if not is_part_shape:
+            return _invalid(f"Object {name} is not a transformable shape result.")
+        if not whole_shape and not is_add_sub_feature:
+            return _invalid(
+                f"Object {name} does not expose additive/subtractive feature intent. "
+                "Use transform_mode='whole_shape' for an ordinary Part or full-result node."
+            )
         state = domain_runtime.feature_state_summary(feature)
         if (
             state.get("inspection_complete") is not True
@@ -892,10 +917,25 @@ def _validate_transformation(service: Any, body: Any, definition: Any) -> dict[s
     return _invalid("Transformation type must be linear, polar, mirror, or scale.")
 
 
-def _create_transform_child(body: Any, doc: Any, state: dict[str, Any]) -> Any:
+def _create_transform_child(
+    body: Any,
+    doc: Any,
+    state: dict[str, Any],
+    *,
+    timeline_owner: Any | None = None,
+) -> Any:
     kind = state["type"]
     if kind == "linear":
         child = body.newObject("PartDesign::LinearPattern", "LinearPatternTransform")
+    elif kind == "polar":
+        child = body.newObject("PartDesign::PolarPattern", "PolarPatternTransform")
+    elif kind == "mirror":
+        child = body.newObject("PartDesign::Mirrored", "MirrorTransform")
+    else:
+        child = body.newObject("PartDesign::Scaled", "ScaleTransform")
+
+    _adopt_multi_transform_child(timeline_owner, child)
+    if kind == "linear":
         reference = doc.getObject(state["reference"]["object_name"])
         if reference is None:
             raise RuntimeError("MultiTransform linear reference no longer exists.")
@@ -903,7 +943,6 @@ def _create_transform_child(body: Any, doc: Any, state: dict[str, Any]) -> Any:
         _apply_distribution(child, state["distribution"], extent_property="Length")
         child.Reversed = state["reversed"]
     elif kind == "polar":
-        child = body.newObject("PartDesign::PolarPattern", "PolarPatternTransform")
         reference = doc.getObject(state["reference"]["object_name"])
         if reference is None:
             raise RuntimeError("MultiTransform polar reference no longer exists.")
@@ -911,16 +950,41 @@ def _create_transform_child(body: Any, doc: Any, state: dict[str, Any]) -> Any:
         _apply_distribution(child, state["distribution"], extent_property="Angle")
         child.Reversed = state["reversed"]
     elif kind == "mirror":
-        child = body.newObject("PartDesign::Mirrored", "MirrorTransform")
         reference = doc.getObject(state["reference"]["object_name"])
         if reference is None:
             raise RuntimeError("MultiTransform mirror reference no longer exists.")
         child.MirrorPlane = (reference, [state["reference"]["subelement"]])
     else:
-        child = body.newObject("PartDesign::Scaled", "ScaleTransform")
         child.Factor = state["factor"]
         child.Occurrences = state["occurrences"]
     return child
+
+
+def _adopt_multi_transform_child(owner: Any | None, child: Any) -> None:
+    """Publish each exact child before configuring fallible transform properties."""
+    if owner is None:
+        return
+    document = getattr(owner, "Document", None)
+    if (
+        child is owner
+        or document is None
+        or getattr(child, "Document", None) is not document
+        or document.getObject(owner.Name) is not owner
+        or document.getObject(child.Name) is not child
+    ):
+        raise ValueError(
+            "A MultiTransform child and its owner must be distinct exact "
+            "live objects in one document."
+        )
+    existing = list(getattr(owner, "Transformations", ()) or ())
+    if child in existing:
+        raise ValueError("A MultiTransform child cannot be adopted twice.")
+    expected = [*existing, child]
+    owner.Transformations = expected
+    if list(getattr(owner, "Transformations", ()) or ()) != expected:
+        raise RuntimeError(
+            "FreeCAD did not retain the exact ordered MultiTransform resources."
+        )
 
 
 def _multi_transform_occurrence_count(states: list[dict[str, Any]]) -> int:

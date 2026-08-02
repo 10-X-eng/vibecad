@@ -24,6 +24,7 @@
 
 
 #include "TrajectoryCompound.h"
+#include "TimelineSupport.h"
 #include "Waypoint.h"
 
 
@@ -37,6 +38,7 @@ TrajectoryCompound::TrajectoryCompound()
 {
 
     ADD_PROPERTY_TYPE(Source, (nullptr), "Compound", Prop_None, "list of trajectories to combine");
+    Source.setScope(App::LinkScope::Global);
 }
 
 App::DocumentObjectExecReturn* TrajectoryCompound::execute()
@@ -44,7 +46,16 @@ App::DocumentObjectExecReturn* TrajectoryCompound::execute()
     const std::vector<DocumentObject*>& Tracs = Source.getValues();
     Robot::Trajectory result;
 
+    if (TimelineSupport::isSuppressedOrInactive(*this)) {
+        Trajectory.setValue(result);
+        return App::DocumentObject::StdReturn;
+    }
     for (auto it : Tracs) {
+        if (!TimelineSupport::isUsableInput(*this, it)) {
+            return new App::DocumentObjectExecReturn(
+                "A source trajectory is suppressed or outside the current History position"
+            );
+        }
         if (it->isDerivedFrom<Robot::TrajectoryObject>()) {
             const std::vector<Waypoint*>& wps
                 = static_cast<Robot::TrajectoryObject*>(it)->Trajectory.getValue().getWaypoints();

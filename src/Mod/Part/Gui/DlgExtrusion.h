@@ -26,6 +26,7 @@
 
 #include <QDialog>
 #include <string>
+#include <vector>
 
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
@@ -47,6 +48,14 @@ public:
     ~DlgExtrusion() override;
     void accept() override;
     void apply();
+    bool wasLastApplySuccessful() const
+    {
+        return applySucceeded;
+    }
+    const std::vector<App::DocumentObject*>& lastAppliedResults() const
+    {
+        return appliedResults;
+    }
     void reject() override;
 
     Base::Vector3d getDir() const;
@@ -101,9 +110,13 @@ private:
 private:
     std::unique_ptr<Ui_DlgExtrusion> ui;
     std::string document, label;
+    App::Document* documentAddress {nullptr};
+    std::string documentUid;
     class EdgeSelection;
     EdgeSelection* filter;
     bool filterSelection;
+    bool applySucceeded {false};
+    std::vector<App::DocumentObject*> appliedResults;
 };
 
 class TaskExtrusion: public Gui::TaskView::TaskDialog

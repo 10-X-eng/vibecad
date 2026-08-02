@@ -157,6 +157,72 @@ PyObject* DrawPagePy::getAllViews(PyObject* args)
     return Py::new_reference_to(ret);
 }
 
+PyObject* DrawPagePy::getActiveViews(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+
+    DrawPage* page = getDrawPagePtr();
+    std::vector<App::DocumentObject*> allViews = page->getActiveViews();
+
+    Py::List ret;
+    for (auto v: allViews) {
+        auto dvp = freecad_cast<DrawViewPart*>(v);
+        if (dvp && DrawView::isProjGroupItem(dvp)) {
+            auto* dpgi = static_cast<TechDraw::DrawProjGroupItem*>(v);
+            ret.append(Py::asObject(new TechDraw::DrawProjGroupItemPy(dpgi)));
+        }
+        else if (v->isDerivedFrom<TechDraw::DrawViewPart>()) {
+            auto* viewPart = static_cast<TechDraw::DrawViewPart*>(v);
+            ret.append(Py::asObject(new TechDraw::DrawViewPartPy(viewPart)));
+        }
+        else if (v->isDerivedFrom<TechDraw::DrawViewAnnotation>()) {
+            auto* annotation = static_cast<TechDraw::DrawViewAnnotation*>(v);
+            ret.append(Py::asObject(new TechDraw::DrawViewAnnotationPy(annotation)));
+        }
+        else {
+            auto* view = static_cast<TechDraw::DrawView*>(v);
+            ret.append(Py::asObject(new TechDraw::DrawViewPy(view)));
+        }
+    }
+
+    return Py::new_reference_to(ret);
+}
+
+PyObject* DrawPagePy::getAllActiveViews(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+
+    DrawPage* page = getDrawPagePtr();
+    std::vector<App::DocumentObject*> allViews = page->getAllActiveViews();
+
+    Py::List ret;
+    for (auto v: allViews) {
+        auto dvp = freecad_cast<DrawViewPart*>(v);
+        if (dvp && DrawView::isProjGroupItem(dvp)) {
+            auto* dpgi = static_cast<TechDraw::DrawProjGroupItem*>(v);
+            ret.append(Py::asObject(new TechDraw::DrawProjGroupItemPy(dpgi)));
+        }
+        else if (v->isDerivedFrom<TechDraw::DrawViewPart>()) {
+            auto* viewPart = static_cast<TechDraw::DrawViewPart*>(v);
+            ret.append(Py::asObject(new TechDraw::DrawViewPartPy(viewPart)));
+        }
+        else if (v->isDerivedFrom<TechDraw::DrawViewAnnotation>()) {
+            auto* annotation = static_cast<TechDraw::DrawViewAnnotation*>(v);
+            ret.append(Py::asObject(new TechDraw::DrawViewAnnotationPy(annotation)));
+        }
+        else {
+            auto* view = static_cast<TechDraw::DrawView*>(v);
+            ret.append(Py::asObject(new TechDraw::DrawViewPy(view)));
+        }
+    }
+
+    return Py::new_reference_to(ret);
+}
+
 PyObject* DrawPagePy::requestPaint(PyObject* args)
 {
     if (!PyArg_ParseTuple(args, "")) {

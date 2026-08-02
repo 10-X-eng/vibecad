@@ -217,13 +217,7 @@ void TaskFemConstraintHeatflux::onHeatFluxChanged(double val)
 void TaskFemConstraintHeatflux::Conv()
 {
     Fem::ConstraintHeatflux* pcConstraint = ConstraintView->getObject<Fem::ConstraintHeatflux>();
-    std::string name = ConstraintView->getObject()->getNameInDocument();
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "App.ActiveDocument.%s.ConstraintType = \"%s\"",
-        name.c_str(),
-        getConstraintType().c_str()
-    );
+    runConstraintCommand("ConstraintType = \"%s\"", getConstraintType().c_str());
     ui->qsb_ambienttemp_conv->setValue(pcConstraint->AmbientTemp.getQuantityValue());
     ui->qsb_film_coef->setValue(pcConstraint->FilmCoef.getQuantityValue());
     ui->sw_heatflux->setCurrentIndex(1);
@@ -232,13 +226,7 @@ void TaskFemConstraintHeatflux::Conv()
 void TaskFemConstraintHeatflux::Rad()
 {
     Fem::ConstraintHeatflux* pcConstraint = ConstraintView->getObject<Fem::ConstraintHeatflux>();
-    std::string name = ConstraintView->getObject()->getNameInDocument();
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "App.ActiveDocument.%s.ConstraintType = \"%s\"",
-        name.c_str(),
-        getConstraintType().c_str()
-    );
+    runConstraintCommand("ConstraintType = \"%s\"", getConstraintType().c_str());
     ui->qsb_ambienttemp_rad->setValue(pcConstraint->AmbientTemp.getQuantityValue());
     ui->dsb_emissivity->setValue(pcConstraint->Emissivity.getValue());
     ui->sw_heatflux->setCurrentIndex(2);
@@ -247,13 +235,7 @@ void TaskFemConstraintHeatflux::Rad()
 void TaskFemConstraintHeatflux::Flux()
 {
     Fem::ConstraintHeatflux* pcConstraint = ConstraintView->getObject<Fem::ConstraintHeatflux>();
-    std::string name = ConstraintView->getObject()->getNameInDocument();
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "App.ActiveDocument.%s.ConstraintType = \"%s\"",
-        name.c_str(),
-        getConstraintType().c_str()
-    );
+    runConstraintCommand("ConstraintType = \"%s\"", getConstraintType().c_str());
     ui->qsb_heat_flux->setValue(pcConstraint->DistributedHeatFlux.getQuantityValue());
     ui->sw_heatflux->setCurrentIndex(0);
 }
@@ -522,35 +504,14 @@ TaskDlgFemConstraintHeatflux::TaskDlgFemConstraintHeatflux(
 
 bool TaskDlgFemConstraintHeatflux::accept()
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintHeatflux* parameterHeatflux
         = static_cast<const TaskFemConstraintHeatflux*>(parameter);
 
     try {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.AmbientTemp = \"%s\"",
-            name.c_str(),
-            parameterHeatflux->getAmbientTemp().c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.FilmCoef = \"%s\"",
-            name.c_str(),
-            parameterHeatflux->getFilmCoef().c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Emissivity = %f",
-            name.c_str(),
-            parameterHeatflux->getEmissivity()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.DistributedHeatFlux = \"%s\"",
-            name.c_str(),
-            parameterHeatflux->getDFlux().c_str()
-        );
+        runConstraintCommand("AmbientTemp = \"%s\"", parameterHeatflux->getAmbientTemp().c_str());
+        runConstraintCommand("FilmCoef = \"%s\"", parameterHeatflux->getFilmCoef().c_str());
+        runConstraintCommand("Emissivity = %f", parameterHeatflux->getEmissivity());
+        runConstraintCommand("DistributedHeatFlux = \"%s\"", parameterHeatflux->getDFlux().c_str());
     }
     catch (const Base::Exception& e) {
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));

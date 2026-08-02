@@ -30,7 +30,7 @@ __doc__ = "Compound Filter: remove some children from a compound (features)."
 import FreeCAD
 import Part
 import math
-import sys
+from PartLinkScope import migrate_many_to_global
 
 
 def makeCompoundFilter(name, into_group=None):
@@ -52,7 +52,11 @@ class _CompoundFilter:
 
     def __init__(self, obj):
         obj.addProperty(
-            "App::PropertyLink", "Base", "CompoundFilter", "Compound to be filtered", locked=True
+            "App::PropertyLinkGlobal",
+            "Base",
+            "CompoundFilter",
+            "Compound to be filtered",
+            locked=True,
         )
 
         obj.addProperty(
@@ -86,7 +90,7 @@ class _CompoundFilter:
         )
 
         obj.addProperty(
-            "App::PropertyLink",
+            "App::PropertyLinkGlobal",
             "Stencil",
             "CompoundFilter",
             "Object that defines filtering",
@@ -130,6 +134,9 @@ class _CompoundFilter:
 
         self.Type = "CompoundFilter"
         obj.Proxy = self
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Base", "Stencil")
 
     def execute(self, obj):
         # When operating on the object, it is to be treated as a lattice object.
@@ -187,9 +194,10 @@ class _CompoundFilter:
                     ifrom = None if len(r_v[0].strip()) == 0 else int(r_v[0])
                     ito = None if len(r_v[1].strip()) == 0 else int(r_v[1])
                     istep = None if len(r_v[2].strip()) == 0 else int(r_v[2])
-                    rst = rst + shps[ifrom:ito:istep]
-                    for b in flags[ifrom:ito:istep]:
-                        b = True
+                    selected_indices = range(len(shps))[slice(ifrom, ito, istep)]
+                    rst = rst + [shps[index] for index in selected_indices]
+                    for index in selected_indices:
+                        flags[index] = True
                 else:
                     raise ValueError("index range cannot be parsed: '{}'".format(r))
             if obj.Invert:

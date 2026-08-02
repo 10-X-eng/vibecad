@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include <vector>
+
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
 #include "QGITemplate.h"
@@ -30,6 +32,8 @@
 QT_BEGIN_NAMESPACE
 class QGraphicsScene;
 class QGraphicsPathItem;
+class QGraphicsRectItem;
+class QGraphicsSimpleTextItem;
 QT_END_NAMESPACE
 
 namespace TechDraw {
@@ -56,10 +60,14 @@ public:
     void updateView(bool update = false) override;
 
 protected:
-  TechDraw::DrawParametricTemplate * getParametricTemplate();
+    TechDraw::DrawParametricTemplate* getParametricTemplate();
+    void drawPlainTemplate();
 
 protected:
-  QGraphicsPathItem *pathItem;
+    QGraphicsRectItem* pageItem;
+    QGraphicsPathItem* pathItem;
+    QGraphicsPathItem* plainPathItem;
+    std::vector<QGraphicsSimpleTextItem*> plainTextItems;
 };
 
 } // namespace MDIViewPageGui

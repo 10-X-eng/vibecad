@@ -57,7 +57,7 @@ def synthetic_summary() -> dict[str, Any]:
     return {
         "ctest": {"log": "ctest.log", "run": 1, "inventory_total": 1, "failed": 0},
         "ctest_inventory_regression": {"approved_not_run_count": 0, "newly_runnable_count": 0},
-        "freecad_startup_smoke": {"report": "startup.json", "ifcopenshell_version": "selftest"},
+        "freecad_startup_smoke": {"report": "startup.json", "freecad_version": "selftest"},
         "freecad_registered_tests": {"log": "freecad-t0.log", "completed": True, "traceback_count": 0},
         "freecad_registered_split": {"summary": "split.json", "discovered_suite_count": 1, "selected_suite_count": 1},
         "freecad_registered_issue_classification": {"report": "classification.json", "unclassified_issue_count": 0, "hard_blocker_count": 0},

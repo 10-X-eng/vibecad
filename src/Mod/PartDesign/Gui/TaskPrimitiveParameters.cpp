@@ -22,6 +22,8 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include <QMessageBox>
@@ -33,6 +35,7 @@
 #include <Base/UnitsApi.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/CommandT.h>
 #include <Gui/Document.h>
 #include <Gui/InputHint.h>
 #include <Gui/MainWindow.h>
@@ -249,6 +252,54 @@ TaskBoxPrimitives::TaskBoxPrimitives(ViewProviderPrimitive* vp, QWidget* parent)
             ui->wedgeZ2max->setMinimum(ui->wedgeZ2min->rawValue());
             ui->wedgeZ2max->setMaximum(std::numeric_limits<int>::max());
             break;
+        case PartDesign::FeaturePrimitive::Tube:
+            index = ui->widgetStack->indexOf(ui->pageTube);
+            ui->tubeOuterRadius->setValue(
+                getObject<PartDesign::Tube>()->OuterRadius.getValue()
+            );
+            ui->tubeOuterRadius->bind(
+                getObject<PartDesign::Tube>()->OuterRadius
+            );
+            ui->tubeInnerRadius->setValue(
+                getObject<PartDesign::Tube>()->InnerRadius.getValue()
+            );
+            ui->tubeInnerRadius->bind(
+                getObject<PartDesign::Tube>()->InnerRadius
+            );
+            ui->tubeHeight->setValue(
+                getObject<PartDesign::Tube>()->Height.getValue()
+            );
+            ui->tubeHeight->bind(
+                getObject<PartDesign::Tube>()->Height
+            );
+            ui->tubeOuterRadius->setMinimum(
+                std::max(
+                    getObject<PartDesign::Tube>()->OuterRadius.getMinimum(),
+                    std::nextafter(
+                        ui->tubeInnerRadius->rawValue(),
+                        std::numeric_limits<double>::max()
+                    )
+                )
+            );
+            ui->tubeOuterRadius->setMaximum(
+                getObject<PartDesign::Tube>()->OuterRadius.getMaximum()
+            );
+            ui->tubeInnerRadius->setMinimum(
+                getObject<PartDesign::Tube>()->InnerRadius.getMinimum()
+            );
+            ui->tubeInnerRadius->setMaximum(
+                std::nextafter(
+                    ui->tubeOuterRadius->rawValue(),
+                    0.0
+                )
+            );
+            ui->tubeHeight->setMinimum(
+                getObject<PartDesign::Tube>()->Height.getMinimum()
+            );
+            ui->tubeHeight->setMaximum(
+                getObject<PartDesign::Tube>()->Height.getMaximum()
+            );
+            break;
     }
 
     ui->widgetStack->setCurrentIndex(index);
@@ -373,6 +424,25 @@ TaskBoxPrimitives::TaskBoxPrimitives(ViewProviderPrimitive* vp, QWidget* parent)
             this, &TaskBoxPrimitives::onWedgeZ2maxChanged);
     connect(ui->wedgeZ2min, qOverload<double>(&Gui::QuantitySpinBox::valueChanged),
             this, &TaskBoxPrimitives::onWedgeZ2minChanged);
+
+    connect(
+        ui->tubeOuterRadius,
+        qOverload<double>(&Gui::QuantitySpinBox::valueChanged),
+        this,
+        &TaskBoxPrimitives::onTubeOuterRadiusChanged
+    );
+    connect(
+        ui->tubeInnerRadius,
+        qOverload<double>(&Gui::QuantitySpinBox::valueChanged),
+        this,
+        &TaskBoxPrimitives::onTubeInnerRadiusChanged
+    );
+    connect(
+        ui->tubeHeight,
+        qOverload<double>(&Gui::QuantitySpinBox::valueChanged),
+        this,
+        &TaskBoxPrimitives::onTubeHeightChanged
+    );
 
     setupGizmos();
 }
@@ -818,6 +888,42 @@ void TaskBoxPrimitives::onWedgeZmaxChanged(double v)
     }
 }
 
+void TaskBoxPrimitives::onTubeOuterRadiusChanged(double v)
+{
+    if (auto* tube = getObject<PartDesign::Tube>()) {
+        ui->tubeInnerRadius->setMaximum(
+            std::nextafter(v, 0.0)
+        );
+        tube->OuterRadius.setValue(v);
+        tube->recomputeFeature();
+    }
+}
+
+void TaskBoxPrimitives::onTubeInnerRadiusChanged(double v)
+{
+    if (auto* tube = getObject<PartDesign::Tube>()) {
+        ui->tubeOuterRadius->setMinimum(
+            std::max(
+                tube->OuterRadius.getMinimum(),
+                std::nextafter(
+                    v,
+                    std::numeric_limits<double>::max()
+                )
+            )
+        );
+        tube->InnerRadius.setValue(v);
+        tube->recomputeFeature();
+    }
+}
+
+void TaskBoxPrimitives::onTubeHeightChanged(double v)
+{
+    if (auto* tube = getObject<PartDesign::Tube>()) {
+        tube->Height.setValue(v);
+        tube->recomputeFeature();
+    }
+}
+
 void TaskBoxPrimitives::onPlacementChanged()
 {
     setGizmoPositions();
@@ -827,15 +933,37 @@ void TaskBoxPrimitives::onPlacementChanged()
 bool TaskBoxPrimitives::setPrimitive(App::DocumentObject* obj)
 {
     try {
-        App::Document* doc = App::GetApplication().getActiveDocument();
-        if (!doc) {
+        if (!obj || !obj->isAttachedToDocument()) {
             return false;
         }
 
         std::string cmd;
         std::string name(Gui::Command::getObjectCmd(obj));
         Base::QuantityFormat format(Base::QuantityFormat::Fixed, Base::UnitsApi::getDecimals());
-        switch (ui->widgetStack->currentIndex()) {
+        if (ui->widgetStack->currentWidget() == ui->pageTube) {
+            if (ui->tubeInnerRadius->rawValue()
+                >= ui->tubeOuterRadius->rawValue()) {
+                QMessageBox::warning(
+                    Gui::getMainWindow(),
+                    tr("Invalid tube parameters"),
+                    tr(
+                        "Inside radius must be smaller than outside radius."
+                    )
+                );
+                return false;
+            }
+            cmd = fmt::format(
+                "{0}.OuterRadius='{1}'\n"
+                "{0}.InnerRadius='{2}'\n"
+                "{0}.Height='{3}'\n",
+                name,
+                ui->tubeOuterRadius->value().getSafeUserString(),
+                ui->tubeInnerRadius->value().getSafeUserString(),
+                ui->tubeHeight->value().getSafeUserString()
+            );
+        }
+        else {
+            switch (ui->widgetStack->currentIndex()) {
             case 1:  // box
                 cmd = fmt::format(
                     "{0}.Length='{1}'\n"
@@ -992,13 +1120,14 @@ bool TaskBoxPrimitives::setPrimitive(App::DocumentObject* obj)
 
             default:
                 break;
+            }
         }
 
         // Execute the Python block
         // No need to open a transaction because this is already done in the command
         // class or when starting to edit a primitive.
         Gui::Command::runCommand(Gui::Command::Doc, cmd.c_str());
-        Gui::Command::runCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+        Gui::cmdAppDocument(obj, "recompute()");
     }
     catch (const Base::PyException& e) {
         QMessageBox::warning(
@@ -1035,6 +1164,16 @@ void TaskBoxPrimitives::setupGizmos()
             radiusGizmo = new Gui::LinearGizmo(ui->sphereRadius);
 
             gizmoContainer = Gui::GizmoContainer::create({radiusGizmo}, vp);
+            break;
+        case PartDesign::FeaturePrimitive::Tube:
+            heightGizmo = new Gui::LinearGizmo(ui->tubeHeight);
+            radiusGizmo = new Gui::LinearGizmo(
+                ui->tubeOuterRadius
+            );
+            gizmoContainer = Gui::GizmoContainer::create(
+                {heightGizmo, radiusGizmo},
+                vp
+            );
             break;
         default:
             return;
@@ -1087,6 +1226,16 @@ void TaskBoxPrimitives::setGizmoPositions()
         case PartDesign::FeaturePrimitive::Sphere:
             radiusGizmo->setDraggerPlacement(pos, getVec({1, 1, 0}));
             break;
+        case PartDesign::FeaturePrimitive::Tube:
+            heightGizmo->setDraggerPlacement(
+                pos,
+                getVec({0, 0, 1})
+            );
+            radiusGizmo->setDraggerPlacement(
+                pos,
+                getVec({1, 1, 0})
+            );
+            break;
         default:
             return;
     }
@@ -1116,24 +1265,16 @@ TaskDlgPrimitiveParameters::~TaskDlgPrimitiveParameters() = default;
 
 bool TaskDlgPrimitiveParameters::accept()
 {
-    bool primitiveOK = primitive->setPrimitive(vp_prm->getObject());
-    if (!primitiveOK) {
-        return primitiveOK;
+    if (!vp_prm || !vp_prm->getObject()
+        || !primitive->setPrimitive(vp_prm->getObject())) {
+        return false;
     }
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
-
-    return true;
+    return TaskDlgFeatureParameters::accept();
 }
 
 bool TaskDlgPrimitiveParameters::reject()
 {
-    // roll back the done things
-    // Gui::Command::abortCommand();
-    vp_prm->getDocument()->abortCommand();
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
-
-    return true;
+    return TaskDlgFeatureParameters::reject();
 }
 
 QDialogButtonBox::StandardButtons TaskDlgPrimitiveParameters::getStandardButtons() const

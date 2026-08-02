@@ -8,11 +8,13 @@ endif(BUILD_GUI)
 set(Surface_Scripts
     Init.py
     TestSurfaceApp.py
+    TestSurfaceGui.py
 )
 
 set(Surface_TestScripts
     SurfaceTests/__init__.py
     SurfaceTests/TestBlendCurve.py
+    SurfaceTests/TestVibeCADRibbonTools.py
 )
 
 if(BUILD_GUI)

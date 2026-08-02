@@ -224,6 +224,9 @@ void QGISVGTemplate::draw()
     drawPageRectangle();
 
     QString templateSvg = tmplte->processTemplate();
+    if (templateSvg.isEmpty()) {
+        return;
+    }
     load(templateSvg.toUtf8());
 }
 
@@ -295,6 +298,9 @@ void QGISVGTemplate::createClickHandles()
     }
 
     QByteArray svgCode = svgTemplate->processTemplate().toUtf8();
+    if (svgCode.isEmpty()) {
+        return;
+    }
     applyWorkaround(svgCode);
     QDomDocument templateDocument;
     if (!templateDocument.setContent(svgCode)) {

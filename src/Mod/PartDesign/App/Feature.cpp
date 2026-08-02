@@ -46,6 +46,7 @@
 #include "Feature.h"
 #include "FeaturePy.h"
 #include "Body.h"
+#include "DesignFeature.h"
 #include "ShapeBinder.h"
 
 #include <BRep_Builder.hxx>
@@ -337,7 +338,17 @@ Feature::SingleSolidRuleMode Feature::singleSolidRuleMode() const
 {
     auto body = getFeatureBody();
 
-    // When the feature is not part of an body (which should not happen) let's stay with the default
+    // A Design operation is a document-level controller whose unsigned tool
+    // may contain several disconnected solids (for example, several selected
+    // master-sketch areas cutting different Bodies). computeOutputShapes()
+    // enforces exactly one solid on every resulting Body after applying that
+    // tool, so applying the legacy Body-local rule here would reject valid
+    // multi-Body operations before their result semantics can run.
+    if (!body && dynamic_cast<const DesignOperationProperties*>(this)) {
+        return SingleSolidRuleMode::Disabled;
+    }
+
+    // A legacy feature outside a Body keeps the conservative default.
     if (!body) {
         return SingleSolidRuleMode::Enforced;
     }

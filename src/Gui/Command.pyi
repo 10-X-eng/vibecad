@@ -101,6 +101,12 @@ class Command(PyObjectBase):
         """
         ...
 
+    def ensureAction(self) -> List[Any]:
+        """
+        Create the associated QAction when needed and return it.
+        """
+        ...
+
     @staticmethod
     def createCustomCommand(
         *,

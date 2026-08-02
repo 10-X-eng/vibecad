@@ -896,8 +896,8 @@ view each time a command is started</source>
       <source>An optional offset to give to the working plane
 above its base position. Use this together with one
 of the buttons above</source>
-      <translation>საბაზისო მდებარეობის ზემოთ სამუშაო სიბრტყისთვის 
-მისანიჭებელი არასავალდებულო წანაცვლება. 
+      <translation>საბაზისო მდებარეობის ზემოთ სამუშაო სიბრტყისთვის
+მისანიჭებელი არასავალდებულო წანაცვლება.
 გამოიყენეთ ზემოთ არსებულ ღილაკებთან ერთად</translation>
     </message>
     <message>
@@ -905,7 +905,7 @@ of the buttons above</source>
       <source>If this is selected, the working plane will be
 centered on the current view when pressing one
 of the buttons above</source>
-      <translation>თუ ჩართულია, სამუშაო სიბრტყე ცენტრირებული 
+      <translation>თუ ჩართულია, სამუშაო სიბრტყე ცენტრირებული
 იქნება მიმდინარე ხედზე, როცა ზემოთ მდებარე
 ერთერთ ღილაკს დააწვებით</translation>
     </message>
@@ -924,7 +924,7 @@ of the buttons above</translation>
     <message>
       <location filename="../ui/TaskSelectPlane.ui" line="133"/>
       <source>Or select a single vertex to move the current working plane without changing its orientation. Then press the button below.</source>
-      <translation>ან აირჩიეთ ერთი წვერო მიმდინარე სამუშაო სიბრტყის 
+      <translation>ან აირჩიეთ ერთი წვერო მიმდინარე სამუშაო სიბრტყის
 მისი ორიენტაციის შეცვლის გარეშე გადასაადგილებლად.
 შემდეგ დააწექით ერთერთ ღილაკს ქვემოთ.</translation>
     </message>
@@ -933,8 +933,8 @@ of the buttons above</translation>
       <source>Moves the working plane without changing its
 orientation. If no point is selected, the plane
 will be moved to the center of the view.</source>
-      <translation>სამუშაო სიბრტყის მისი ორიენტაციის გარეშე 
-გადაადგილება. თუ წერტილი მონიშნული არაა, 
+      <translation>სამუშაო სიბრტყის მისი ორიენტაციის გარეშე
+გადაადგილება. თუ წერტილი მონიშნული არაა,
 სიბრტყე ხედის ცენტრში მოთავსდება.</translation>
     </message>
     <message>
@@ -1223,7 +1223,7 @@ will be moved to the center of the view.</source>
       <location filename="../ui/TaskPanel_SetStyle.ui" line="298"/>
       <source>The annotation scale multiplier is the inverse of the scale set in the
 Annotation scale widget. If the scale is 1:100 the multiplier is 100.</source>
-      <translation>ანოტაციის მასშტაბის მამრავლი ანოტაციის მასშტაბის ვიჯეტში დაყენებული 
+      <translation>ანოტაციის მასშტაბის მამრავლი ანოტაციის მასშტაბის ვიჯეტში დაყენებული
 მნიშვნელობის ინვერსიაა. თუ მასშტაბი 1:100-ია, მამრავლი 100-ის ტოლი იქნება.</translation>
     </message>
     <message>
@@ -1498,7 +1498,7 @@ faces are picked during commands.</source>
       <location filename="../ui/preferences-draft.ui" line="112"/>
       <source>If checked, a widget indicating the current working
 plane orientation appears when picking points</source>
-      <translation>თუ ჩართულია, წერტილების არჩევისას გამოჩნდება ვიჯეტი, 
+      <translation>თუ ჩართულია, წერტილების არჩევისას გამოჩნდება ვიჯეტი,
 რომელიც მიმდინარე სამუშაო სიბრტყის ორიენტაციას აჩვენებს</translation>
     </message>
     <message>
@@ -3266,7 +3266,7 @@ if they match the X, Y or Z axis of the global coordinate system</source>
       <location filename="../../DraftGui.py" line="721"/>
       <source>Coordinates relative to last point or to coordinate system origin
 if is the first point to set</source>
-      <translation>კოორდინატები ბოლო წერტილთან ან კოორდინატების სისტემის საწყისთან მიმართებაში, 
+      <translation>კოორდინატები ბოლო წერტილთან ან კოორდინატების სისტემის საწყისთან მიმართებაში,
 თუ თუ ის პირველი დასაყენებელი წერტილია</translation>
     </message>
     <message>
@@ -7034,9 +7034,9 @@ set True for fusion or False for compound</source>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>რკალის საბოლოო კუთხე (სრული წრეწირისთვის 
+      <translation>რკალის საბოლოო კუთხე (სრული წრეწირისთვის
           დააყენეთ იგივე რიცხვი, რასაც საწყისი კუთხე უდრიდა)</translation>
     </message>
     <message>
@@ -7218,31 +7218,12 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 "მომხმარებლის ტექსტი" ნაჩვენებია მხოლოდ იმ შემთხვევაში, თუ "ჭდის ტიპი" დაყენებულია "მომხმარებლის ტექსტი“-ზე.</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation type="unfinished">The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</translation>
-    </message>
-    <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
       <source>General scaling factor that affects the annotation consistently
 because it scales the text, and the line decorations, if any,
 in the same proportion.</source>
-      <translation>ზოგადი გადიდების კოეფიციენტი, რომელიც ვრცელდება 
-ანოტაციებზე, იმიტომ, რომ ის ერთი და იგივე პროპორციით 
+      <translation>ზოგადი გადიდების კოეფიციენტი, რომელიც ვრცელდება
+ანოტაციებზე, იმიტომ, რომ ის ერთი და იგივე პროპორციით
 ადიდებს ტექსტს და არსებობის შემთხვევაში ხაზის დეკორაციებსაც.</translation>
     </message>
     <message>
@@ -7519,11 +7500,6 @@ This property is read-only, as the number depends on the points in 'Point Object
       <translation>დამალული ხაზების ჩვენება</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>ერთი ტიპისა და მასალის მქონე სტრუქტურული ობიექტებისა კედლების გაერთიანება</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>ოვალის და B-სპლაინების ხაზის სეგმენტებად ტესელაცია</translation>
@@ -7625,7 +7601,7 @@ This property is read-only, as the number depends on the points in 'Point Object
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
       <translation>ოვალური რკალის ბოლო კუთხე
@@ -7794,7 +7770,7 @@ This property is read-only because the value is calculated from
 the 'First Angle' and 'Last Angle' properties.</source>
       <translation>გაზომვის მნიშვნელობა.
 
-ეს თვისება მხოლოდ წაკითხვადია, რადგან მნიშვნელობა 
+ეს თვისება მხოლოდ წაკითხვადია, რადგან მნიშვნელობა
 გამოითვლება "პირველი კუთხის" და "ბოლო კუთხის" თვისებებიდან.</translation>
     </message>
     <message>
@@ -8352,11 +8328,6 @@ However, a single sketch with disconnected traces is converted into several indi
       <source>Auto-Group</source>
       <translation>ავტოდაჯგუფება</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation type="unfinished">Adds new Draft and BIM objects to the selected layer or group</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8716,11 +8687,6 @@ The initial projection direction is the opposite of the current active view dire
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>მიბმის ცენტრი</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation type="unfinished">Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</translation>
     </message>
   </context>
   <context>

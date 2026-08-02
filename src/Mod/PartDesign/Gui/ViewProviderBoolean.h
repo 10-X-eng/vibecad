@@ -46,6 +46,11 @@ public:
     /// destructor
     ~ViewProviderBoolean() override;
 
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
+
     App::PropertyEnumeration Display;
 
     /// grouping handling

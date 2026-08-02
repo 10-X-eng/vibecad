@@ -112,20 +112,29 @@ class PointArray(gui_base_original.Modifier):
             extra = None
 
             Gui.addModule("Draft")
+            Gui.addModule("draftutils.timeline")
             _cmd = "Draft.make_point_array"
             _cmd += "("
             _cmd += "App.ActiveDocument." + base_object.Name + ", "
             _cmd += "App.ActiveDocument." + point_object.Name + ", "
             _cmd += "extra=" + str(extra) + ", "
-            _cmd += "use_link=" + str(self.use_link)
+            _cmd += "use_link=" + str(self.use_link) + ", "
+            _cmd += "hide_base=False"
             _cmd += ")"
 
             _cmd_list = [
                 "_obj_ = " + _cmd,
                 "Draft.autogroup(_obj_)",
+                "draftutils.timeline.accept_derived_output(_obj_, "
+                "[App.ActiveDocument." + base_object.Name + ", "
+                "App.ActiveDocument." + point_object.Name + "])",
                 "App.ActiveDocument.recompute()",
             ]
-            self.commit(translate("draft", "Create Point Array"), _cmd_list)
+            self.commit(
+                translate("draft", "Create Point Array"),
+                _cmd_list,
+                inputs=(base_object, point_object),
+            )
 
         # Commit the transaction and execute the commands
         # through the parent class

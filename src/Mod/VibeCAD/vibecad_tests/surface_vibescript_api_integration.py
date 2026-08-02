@@ -875,9 +875,10 @@ def _exercise_lifecycle(root: Path) -> None:
         "arguments": {
             "program_id": prepared["program_id"],
             "expected_revision": prepared["revision"],
-            "replacements": [
-                {"old": "inputs['thickness']", "new": "0"},
-            ],
+            "source": create_capture["arguments"]["source"].replace(
+                "inputs['thickness']",
+                "0",
+            ),
         },
     }
     failed_prepared = _finalize_prepared(prepare_candidate(failed_capture), service)
@@ -914,15 +915,7 @@ def _exercise_lifecycle(root: Path) -> None:
         "arguments": {
             "program_id": prepared["program_id"],
             "expected_revision": failed_prepared["revision"],
-            "replacements": [
-                {
-                    "old": "api.thicken(source_face, 0, tolerance=1e-6",
-                    "new": (
-                        "api.thicken(source_face, inputs['thickness'], "
-                        "tolerance=1e-6"
-                    ),
-                }
-            ],
+            "source": create_capture["arguments"]["source"],
         },
     }
     (

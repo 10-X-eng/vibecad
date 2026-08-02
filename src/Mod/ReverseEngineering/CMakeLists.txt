@@ -7,6 +7,12 @@ endif(BUILD_GUI)
 
 set(Reen_Scripts
     Init.py
+    TestReverseEngineeringGui.py
+)
+
+set(Reen_TestScripts
+    ReverseEngineeringTests/__init__.py
+    ReverseEngineeringTests/TestVibeCADRibbonTools.py
 )
 
 if(BUILD_GUI)
@@ -14,13 +20,16 @@ if(BUILD_GUI)
 endif(BUILD_GUI)
 
 add_custom_target(ReverseEngineeringScripts ALL
-    SOURCES ${Reen_Scripts}
+    SOURCES
+        ${Reen_Scripts}
+        ${Reen_TestScripts}
 )
 
 fc_target_copy_resource(ReverseEngineeringScripts
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}/Mod/ReverseEngineering
     ${Reen_Scripts}
+    ${Reen_TestScripts}
 )
 
 install(
@@ -28,4 +37,11 @@ install(
         ${Reen_Scripts}
     DESTINATION
         Mod/ReverseEngineering
+)
+
+install(
+    FILES
+        ${Reen_TestScripts}
+    DESTINATION
+        Mod/ReverseEngineering/ReverseEngineeringTests
 )

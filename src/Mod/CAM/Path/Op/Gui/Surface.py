@@ -264,7 +264,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             self.form.dropCutterDirSelect_label.show()
 
     def registerSignalHandlers(self, obj):
-        self.form.scanType.currentIndexChanged.connect(self.updateVisibility)
+        self.connectSignal(
+            self.form.scanType.currentIndexChanged,
+            self.updateVisibility,
+        )
 
 
 Command = PathOpGui.SetupOperation(

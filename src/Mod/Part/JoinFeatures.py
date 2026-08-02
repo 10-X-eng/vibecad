@@ -21,7 +21,9 @@
 # *                                                                         *
 # ***************************************************************************
 
-import FreeCAD, Part
+import FreeCAD
+import Part
+from PartLinkScope import migrate_many_to_global
 
 __title__ = "JoinFeatures module (legacy)"
 __author__ = "DeepSOIC"
@@ -69,8 +71,8 @@ class _PartJoinFeature:
             locked=True,
         )
         obj.Mode = ["bypass", "Connect", "Embed", "Cutout"]
-        obj.addProperty("App::PropertyLink", "Base", "Join", "First object", locked=True)
-        obj.addProperty("App::PropertyLink", "Tool", "Join", "Second object", locked=True)
+        obj.addProperty("App::PropertyLinkGlobal", "Base", "Join", "First object", locked=True)
+        obj.addProperty("App::PropertyLinkGlobal", "Tool", "Join", "Second object", locked=True)
         obj.addProperty(
             "App::PropertyBool",
             "Refine",
@@ -80,6 +82,9 @@ class _PartJoinFeature:
         )
 
         obj.Proxy = self
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Base", "Tool")
 
     def execute(self, obj):
         rst = None

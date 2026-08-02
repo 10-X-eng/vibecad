@@ -26,14 +26,18 @@
 #include <Base/Console.h>
 #include <Base/Interpreter.h>
 #include <Base/PyObjectBase.h>
+#include <App/Application.h>
 
 #include "Body.h"
+#include "Component.h"
 #include "DatumCS.h"
 #include "DatumLine.h"
 #include "DatumPlane.h"
 #include "DatumPoint.h"
 #include "Measure.h"
 #include "FeatureBase.h"
+#include "DesignFeature.h"
+#include "DesignModel.h"
 #include "FeatureBoolean.h"
 #include "FeatureChamfer.h"
 #include "FeatureDraft.h"
@@ -158,10 +162,54 @@ PyMOD_INIT_FUNC(_PartDesign)
     PartDesign::Wedge                       ::init();
     PartDesign::AdditiveWedge               ::init();
     PartDesign::SubtractiveWedge            ::init();
+    PartDesign::Tube                        ::init();
+    PartDesign::Component                   ::init();
     PartDesign::FeatureBase                 ::init();
+    PartDesign::DesignExtrude               ::init();
+    PartDesign::DesignRevolve               ::init();
+    PartDesign::DesignLoft                  ::init();
+    PartDesign::DesignSweep                 ::init();
+    PartDesign::DesignHelix                 ::init();
+    PartDesign::DesignBox                   ::init();
+    PartDesign::DesignCylinder              ::init();
+    PartDesign::DesignSphere                ::init();
+    PartDesign::DesignCone                  ::init();
+    PartDesign::DesignEllipsoid             ::init();
+    PartDesign::DesignTorus                 ::init();
+    PartDesign::DesignPrism                 ::init();
+    PartDesign::DesignWedge                 ::init();
+    PartDesign::DesignTube                  ::init();
+    PartDesign::DesignClone                 ::init();
+    PartDesign::DesignScale                 ::init();
+    PartDesign::DesignMirror                ::init();
+    PartDesign::DesignLinearPattern         ::init();
+    PartDesign::DesignCircularPattern       ::init();
+    PartDesign::DesignHole                  ::init();
+    PartDesign::DesignFillet                ::init();
+    PartDesign::DesignChamfer               ::init();
+    PartDesign::DesignThickness             ::init();
+    PartDesign::DesignDraft                 ::init();
+    PartDesign::DesignCombine               ::init();
+    PartDesign::DesignSplit                 ::init();
+    PartDesign::DesignSeparate              ::init();
+    PartDesign::DesignScriptOperation       ::init();
+    PartDesign::DesignGeneratedOperation    ::init();
+    PartDesign::DesignBodyState             ::init();
+    PartDesign::DesignBodyPublication       ::init();
 
     PartDesign::Measure ::initialize();
     // clang-format on
+
+    // Selected-object copy and document merge restore every link before this
+    // batch boundary. Remap the complete Design identity graph there so no
+    // copied Component can retain source Body, Sketch, operation, or state
+    // UUIDs.
+    [[maybe_unused]] static const auto designImportConnection
+        = App::GetApplication().signalFinishImportObjects.connect(
+            [](App::Document& document, const std::vector<App::DocumentObject*>& objects) {
+                PartDesign::DesignModel::remapImportedGraph(document, objects);
+            }
+        );
 
     PyMOD_Return(mod);
 }

@@ -122,24 +122,7 @@
       <translation>Umetni napomenu u formi tekstualnog bloka koji je moguće uređivati</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>Tehnički crteži</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>Umetni BIM objekat</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Umetni presek iz BIM radnog okruženja</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ Ako nijedan objekat nije izabran, otvoriće se prozor pomoću kojeg možeš izab
       <translation>Napravi crtež</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>Napravi BIM pogled</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Napravi sliku</translation>
@@ -3293,11 +3270,6 @@ Ako nijedan objekat nije izabran, otvoriće se prozor pomoću kojeg možeš izab
       <translation>Izaberi jednu grupu pogleda i jedan pogled</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Crtež sadrži BIM pogled koji neće biti izvezen. Nastavi?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>Sačuvaj DXF datoteku</translation>
@@ -3331,16 +3303,6 @@ Ako nijedan objekat nije izabran, otvoriće se prozor pomoću kojeg možeš izab
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Izaberi bar jedan objekat</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Izaberi jedan BIM presek</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Nije izabran nijedan BIM presek</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -4366,7 +4328,7 @@ sledeći referentni objekti mogu biti izgubljeni:</translation>
       <location filename="../../ViewProviderProjGroup.cpp" line="139"/>
       <source>The group cannot be deleted because its items have the following
 section or detail views, or leader lines that would get broken:</source>
-      <translation>Grupa se ne može izbrisati jer njene stavke imaju preseke, 
+      <translation>Grupa se ne može izbrisati jer njene stavke imaju preseke,
 detaljne poglede ili pokazne linije koje mogu biti oštećene:</translation>
     </message>
     <message>
@@ -5063,7 +5025,7 @@ always be the right choice.  Flat or square caps are useful
 for using drawings as a 1:1 cutting guide.
 </source>
       <translation>Oblik krajeva linija. Unapred podešen (Zaobljeni) bi trebalo skoro uvek
-da bude pravi izbor. Ravni ili kvadratni krajevi su korisni 
+da bude pravi izbor. Ravni ili kvadratni krajevi su korisni
 ako planirate da koristite crtež kao šablon za sečenje 1:1.
 </translation>
     </message>
@@ -7305,7 +7267,7 @@ Automatic: if the detail view is larger than the page,
 Custom: custom scale factor is used</source>
       <translation>Crtež: koristi se razmera crteža
 Automatski: ako je pogled detalja veći od crteža,
-                   biće smanjen kako bi se uklopio u crtež 
+                   biće smanjen kako bi se uklopio u crtež
 Sopstveno: koristi se razmera zadata od korisnika</translation>
     </message>
     <message>
@@ -10063,14 +10025,7 @@ there is an open task dialog.</source>
       <translation>Duž</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

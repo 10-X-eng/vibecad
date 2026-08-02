@@ -134,6 +134,40 @@ static void displayCritical(const QString& msg, bool preformatted = true)
     }
 }
 
+static bool hasBoolParameter(const ParameterGrp::handle& group, const char* name)
+{
+    for (const auto& [parameterName, value] : group->GetBoolMap()) {
+        (void)value;
+        if (parameterName == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void initializeVibeCADDockDefaults()
+{
+    const auto dockWindows = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/DockWindows"
+    );
+    const auto treeView = dockWindows->GetGroup("TreeView");
+    const auto propertyView = dockWindows->GetGroup("PropertyView");
+    const auto comboView = dockWindows->GetGroup("ComboView");
+
+    // These three switches describe one mutually exclusive model-browser
+    // layout. Only initialize an entirely unspecified layout: a saved setting
+    // in any member means the user or an earlier version owns the whole choice.
+    if (hasBoolParameter(treeView, "Enabled")
+        || hasBoolParameter(propertyView, "Enabled")
+        || hasBoolParameter(comboView, "Enabled")) {
+        return;
+    }
+
+    treeView->SetBool("Enabled", true);
+    propertyView->SetBool("Enabled", false);
+    comboView->SetBool("Enabled", false);
+}
+
 int main(int argc, char** argv)
 {
 #if defined(FC_OS_LINUX) || defined(FC_OS_BSD)
@@ -252,6 +286,13 @@ int main(int argc, char** argv)
             // if not already defined do it now (for the very first start)
             std::string style = hGrp->GetASCII("NavigationStyle", it->second.c_str());
             hGrp->SetASCII("NavigationStyle", style.c_str());
+        }
+
+        if (inGuiMode()) {
+            // MainWindow constructs native docks before InitGui.py runs. Apply
+            // VibeCAD's fresh-profile browser layout at the only startup point
+            // where preferences are loaded but no dock widgets exist yet.
+            initializeVibeCADDockDefaults();
         }
 
         Gui::Application::initApplication();

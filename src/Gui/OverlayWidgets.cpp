@@ -900,8 +900,10 @@ void OverlayTabWidget::saveTabs()
         return;
     }
 
+    OverlayManager::instance()->applyRequestedPresentation(this);
+
     std::ostringstream os, os2;
-    _sizemap.clear();
+    std::map<QDockWidget*, int> savedPositiveSizes;
     auto sizes = splitter->sizes();
     bool first = true;
     for (int i = 0, c = splitter->count(); i < c; ++i) {
@@ -917,10 +919,21 @@ void OverlayTabWidget::saveTabs()
             else {
                 os2 << ",";
             }
-            os2 << sizes[i];
         }
-        _sizemap[dock] = sizes[i];
+        int rememberedSize = sizes.value(i, 0);
+        const auto previousSize = _sizemap.find(dock);
+        if (rememberedSize <= 0 && previousSize != _sizemap.end() && previousSize->second > 0) {
+            rememberedSize = previousSize->second;
+        }
+        const int persistedSize = OverlayManager::instance()->isDockRequestedVisible(dock)
+            ? rememberedSize
+            : sizes.value(i, 0);
+        if (dock->objectName().size()) {
+            os2 << persistedSize;
+        }
+        savedPositiveSizes[dock] = rememberedSize;
     }
+    _sizemap.swap(savedPositiveSizes);
     Base::StateLocker lock(_saving);
     hGrp->SetASCII("Widgets", os.str().c_str());
     hGrp->SetASCII("Sizes", os2.str().c_str());
@@ -1598,6 +1611,18 @@ const QRect& OverlayTabWidget::getRect()
     return rectOverlay;
 }
 
+QPoint OverlayTabWidget::mdiAreaOffset() const
+{
+    auto* mainWindow = getMainWindow();
+    auto* mdiArea = mainWindow ? mainWindow->getMdiArea() : nullptr;
+    auto* coordinateParent = parentWidget();
+    if (!mdiArea || !coordinateParent) {
+        return {};
+    }
+
+    return mdiArea->mapTo(coordinateParent, QPoint(0, 0));
+}
+
 bool OverlayTabWidget::getAutoHideRect(QRect& rect) const
 {
     rect = rectOverlay;
@@ -1626,7 +1651,7 @@ bool OverlayTabWidget::getAutoHideRect(QRect& rect) const
             else {
                 rect.setTop(rect.top() + std::max(rect.height() - hintWidth, 0));
                 if (_RightOverlay->isVisible() && _RightOverlay->_state <= State::Normal) {
-                    QPoint offset = getMainWindow()->getMdiArea()->pos();
+                    QPoint offset = mdiAreaOffset();
                     rect.setRight(std::min(rect.right(), _RightOverlay->x() - offset.x()));
                 }
             }
@@ -1707,7 +1732,30 @@ void OverlayTabWidget::setRect(QRect rect)
     }
     rectOverlay = rect;
 
-    QPoint offset = getMainWindow()->getMdiArea()->pos();
+    QPoint offset = mdiAreaOffset();
+    // Keep the full overlay and splitter geometry valid even when every dock
+    // is explicitly collapsed. QSplitter normalizes requested sizes to zero
+    // while its own extent is zero, which otherwise makes a later explicit
+    // show impossible without rebuilding the overlay.
+    setGeometry(rectOverlay.translated(offset));
+    proxyWidget->setGeometry(rectOverlay.translated(offset));
+    setupLayout();
+    OverlayManager::instance()->applyRequestedPresentation(this);
+
+    const QList<int> sizes = splitter->sizes();
+    bool hasPresentedWidget = false;
+    for (int i = 0, count = splitter->count(); i < count; ++i) {
+        const bool presented = i < sizes.size() && sizes[i] > 0;
+        if (!presented) {
+            splitter->widget(i)->hide();
+        }
+        hasPresentedWidget = hasPresentedWidget || presented;
+    }
+    if (count() && !hasPresentedWidget) {
+        proxyWidget->hide();
+        hide();
+        return;
+    }
 
     if (getAutoHideRect(rect) || _state == State::Hint || _state == State::Hidden) {
         QRect rectHint = rect;
@@ -1759,7 +1807,8 @@ void OverlayTabWidget::setRect(QRect rect)
         setGeometry(rectOverlay.translated(offset));
 
         for (int i = 0, count = splitter->count(); i < count; ++i) {
-            splitter->widget(i)->show();
+            const bool presented = i < sizes.size() && sizes[i] > 0;
+            splitter->widget(i)->setVisible(presented);
         }
 
         if (!isVisible() && count()) {
@@ -2023,7 +2072,7 @@ void OverlayTabWidget::onSizeGripMove(const QPoint& p)
     }
 
     QPoint pos = mapFromGlobal(p) + this->pos();
-    QPoint offset = getMainWindow()->getMdiArea()->pos();
+    QPoint offset = mdiAreaOffset();
     QRect rect = this->rectOverlay.translated(offset);
 
     switch (dockArea) {

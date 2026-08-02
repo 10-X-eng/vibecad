@@ -29,6 +29,7 @@
 #include <QStyleOptionGraphicsItem>
 
 #include "QGIView.h"
+#include "TaskDocumentGuard.h"
 #include "QGIUserTypes.h"
 
 
@@ -66,7 +67,7 @@ public:
     };
 
     explicit QGIRichAnno();
-    ~QGIRichAnno() override = default;
+    ~QGIRichAnno() override;
 
     int type() const override
     {
@@ -126,6 +127,7 @@ protected:
     QFont prefFont(void);
 
     void mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event) override;
+    bool closeResizeTransaction(bool commit) noexcept;
 
     QVariant itemChange(GraphicsItemChange change, const QVariant& value) override;
 
@@ -150,7 +152,8 @@ protected:
     double m_textScaleFactor;
     double m_lastGoodWidthScene;
 
-    int m_tid { 0 };
+    TaskInternal::DocumentIdentity m_transactionDocument;
+    int m_tid {App::NullTransaction};
 
 private Q_SLOTS:
     void onContentsChanged();

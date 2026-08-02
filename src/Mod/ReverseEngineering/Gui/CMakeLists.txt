@@ -26,6 +26,8 @@ SET(Dialogs_SRCS
     FitBSplineCurve.h
     FitBSplineSurface.cpp
     FitBSplineSurface.h
+    OperationSupport.cpp
+    OperationSupport.h
     Poisson.cpp
     Poisson.h
     Segmentation.cpp

@@ -23,6 +23,10 @@
 
 #pragma once
 
+#include <utility>
+
+#include <Base/Exception.h>
+#include <Gui/CommandT.h>
 #include <Gui/DocumentObserver.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/TaskView/TaskDialog.h>
@@ -67,6 +71,17 @@ protected Q_SLOTS:
     bool event(QEvent* event) override;
 
 protected:
+    template<typename... Args>
+    void runConstraintCommand(const std::string& command, Args&&... args) const
+    {
+        auto* view = ConstraintView.get();
+        auto* object = view ? view->getObject() : nullptr;
+        if (!object) {
+            throw Base::RuntimeError("The FEM constraint is no longer available");
+        }
+        Gui::cmdAppObjectArgs(object, command, std::forward<Args>(args)...);
+    }
+
     void changeEvent(QEvent* e) override
     {
         TaskBox::changeEvent(e);
@@ -129,6 +144,18 @@ public:
     }
 
 protected:
+    template<typename... Args>
+    void runConstraintCommand(const std::string& command, Args&&... args) const
+    {
+        auto* object = ConstraintView ? ConstraintView->getObject() : nullptr;
+        if (!object) {
+            throw Base::RuntimeError("The FEM constraint is no longer available");
+        }
+        Gui::cmdAppObjectArgs(object, command, std::forward<Args>(args)...);
+    }
+
+    std::string constraintReference(const std::string& objectName, const std::string& subElement) const;
+
     ViewProviderFemConstraint* ConstraintView;
     TaskFemConstraint* parameter;
 };

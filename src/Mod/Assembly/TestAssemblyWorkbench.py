@@ -25,7 +25,9 @@ import TestApp
 
 from AssemblyTests.TestCore import TestCore
 from AssemblyTests.TestCommandInsertLink import TestCommandInsertLink
+from AssemblyTests.TestVibeCADRibbonTools import TestVibeCADAssemblyRibbonTools
 
 # Use the modules so that code checkers don't complain (flake8)
 True if TestCore else False
 True if TestCommandInsertLink else False
+True if TestVibeCADAssemblyRibbonTools else False

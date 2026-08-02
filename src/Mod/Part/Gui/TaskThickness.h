@@ -50,7 +50,7 @@ public:
     ~ThicknessWidget() override;
 
     bool accept();
-    bool reject();
+    void prepareForClose();
     Part::Thickness* getObject() const;
 
 private:
@@ -97,6 +97,7 @@ public:
 
 private:
     ThicknessWidget* widget;
+    int launchTransactionId {0};
 };
 
 }  // namespace PartGui

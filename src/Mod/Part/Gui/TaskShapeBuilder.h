@@ -24,6 +24,8 @@
 
 #pragma once
 
+#include <vector>
+
 #include <Gui/Selection/Selection.h>
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
@@ -43,6 +45,13 @@ public:
     bool accept();
     bool reject();
     void setSelectionGate();
+    const std::vector<App::DocumentObject*>& lastCreatedResults() const
+    {
+        return createdResults;
+    }
+
+Q_SIGNALS:
+    void durableResultCreated();
 
 private:
     void onCreateButtonClicked();
@@ -53,17 +62,18 @@ private:
     void onSelectionChanged(const Gui::SelectionChanges& msg) override;
 
 private:
-    void createEdgeFromVertex();
-    void createWireFromEdge();
-    void createFaceFromVertex();
-    void createFaceFromEdge();
-    void createShellFromFace();
-    void createSolidFromShell();
+    bool createEdgeFromVertex();
+    bool createWireFromEdge();
+    bool createFaceFromVertex();
+    bool createFaceFromEdge();
+    bool createShellFromFace();
+    bool createSolidFromShell();
     void changeEvent(QEvent* e) override;
 
 private:
     class Private;
     Private* d;
+    std::vector<App::DocumentObject*> createdResults;
 };
 
 class TaskShapeBuilder: public Gui::TaskView::TaskDialog

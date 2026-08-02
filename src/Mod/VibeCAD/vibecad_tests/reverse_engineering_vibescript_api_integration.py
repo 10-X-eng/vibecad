@@ -561,15 +561,15 @@ def _exercise_lifecycle() -> dict[str, object]:
             "ReverseEngineeringWorkbench", "vibescript"
         )
         assert surface.available is True, surface.unavailable_reason
-        assert surface.cad_tool_names == tuple(
-            f"vibescript.reverse_engineering.{name}"
-            for name in (
-                "create_program",
-                "edit_source",
-                "set_inputs",
-                "reconfigure_program",
-                "delete_program",
-            )
+        assert surface.cad_tool_names == (
+            "vibescript.read_source",
+            "vibescript.read_api",
+            "vibescript.build_program",
+            "vibescript.edit_source",
+            "vibescript.reverse_engineering.create_program",
+            "vibescript.reverse_engineering.set_inputs",
+            "vibescript.reverse_engineering.reconfigure_program",
+            "vibescript.reverse_engineering.delete_program",
         )
 
         source = document.addObject("Points::Feature", "HumanStructuredCloud")
@@ -897,15 +897,14 @@ def _exercise_lifecycle() -> dict[str, object]:
             },
         )
         prepared_delete = prepare_delete(delete_capture)
-        original_remove = publication_module._remove_owned_objects
+        original_remove = publication_module._remove_timeline_deletion
 
-        def fail_after_committed_removal(active_document, managed_objects):
-            for managed in list(managed_objects):
-                active_document.removeObject(managed.Name)
+        def fail_after_committed_removal(active_document, deletion):
+            original_remove(active_document, deletion)
             active_document.commitTransaction()
             raise RuntimeError("injected Reverse Engineering deletion failure")
 
-        publication_module._remove_owned_objects = fail_after_committed_removal
+        publication_module._remove_timeline_deletion = fail_after_committed_removal
         try:
             try:
                 delete_live_program(service, prepared_delete)
@@ -916,7 +915,7 @@ def _exercise_lifecycle() -> dict[str, object]:
                 raise AssertionError("Expected injected deletion failure.")
             restore_prepared_delete(prepared_delete)
         finally:
-            publication_module._remove_owned_objects = original_remove
+            publication_module._remove_timeline_deletion = original_remove
         outputs = {
             name: reopened.getObject(object_name)
             for name, object_name in stable_names.items()
@@ -994,7 +993,7 @@ def main() -> int:
     assert "One-way" in description["canonical_operations"]["fit_metrics"][
         "meaning"
     ]
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert len(json.dumps(description, allow_nan=False).encode("utf-8")) < 32 * 1024
 
     document = App.newDocument(

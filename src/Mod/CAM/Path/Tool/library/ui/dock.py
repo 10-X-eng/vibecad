@@ -28,8 +28,11 @@
 import FreeCAD
 import FreeCADGui
 import Path
+import Path.Base.Util as PathUtil
 import Path.Tool.Gui.Controller as PathToolControllerGui
 import PathScripts.PathUtilsGui as PathUtilsGui
+from Path.CommandBoundary import active_jobs, is_job
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 from PySide import QtGui, QtCore, QtWidgets
 from functools import partial
 from typing import List, Tuple
@@ -119,9 +122,7 @@ class ToolBitLibraryDock(object):
         self._update_state()
 
     def _count_jobs(self):
-        if not FreeCAD.ActiveDocument:
-            return 0
-        return len([1 for j in FreeCAD.ActiveDocument.Objects if j.Name[:3] == "Job"]) >= 1
+        return bool(active_jobs())
 
     def _update_state(self):
         """Enable button to add tool controller when a tool is selected"""
@@ -140,27 +141,114 @@ class ToolBitLibraryDock(object):
         # Assuming _populate_libraries is the correct method to call
         self.browser_widget.refresh()
 
-    def _add_tool_to_doc(self) -> List[Tuple[int, ToolBit]]:
+    def _add_tool_to_doc(
+        self,
+        document=None,
+        job=None,
+        created=None,
+    ) -> List[Tuple[int, ToolBit]]:
         """
         Get the selected toolbit assets from the browser widget.
         """
         Path.Log.track()
-        tools = []
-        selected_toolbits = self.browser_widget.get_selected_bits()
+        document = document or FreeCAD.ActiveDocument
+        if document is None:
+            return []
 
-        for toolbit in selected_toolbits:
+        tools = []
+        selected_assets = self.browser_widget.get_selected_bits()
+        allocated_numbers = (
+            {
+                int(controller.ToolNumber)
+                for controller in job.Tools.Group
+            }
+            if job is not None
+            else set()
+        )
+        next_number = int(job.Proxy.nextToolNumber()) if job is not None else None
+
+        for selected_asset in selected_assets:
+            # AssetManager caches library assets.  Never attach that cached
+            # instance to a document: an aborted insertion would leave the
+            # library entry pointing at a deleted DocumentObject and make the
+            # next Add attempt unusable.  Each inserted tool is an independent
+            # document instance of the selected asset definition.
+            toolbit = ToolBit.from_dict(selected_asset.to_dict())
             # Need to get the tool number for this toolbit from the currently
             # selected library in the browser widget.
-            toolNr = self.browser_widget.get_tool_no_from_current_library(toolbit)
+            toolNr = self.browser_widget.get_tool_no_from_current_library(
+                selected_asset
+            )
             if toolNr is not None:
-                toolbit.attach_to_doc(FreeCAD.ActiveDocument)
-                tools.append((toolNr, toolbit))
-            else:
-                Path.Log.warning(
-                    f"Could not get tool number for toolbit {toolbit.get_uri()} in selected library."
+                toolNr = int(toolNr)
+            if job is not None and (
+                toolNr is None or toolNr in allocated_numbers
+            ):
+                while next_number in allocated_numbers:
+                    next_number += 1
+                toolNr = next_number
+                next_number += 1
+            if toolNr is None:
+                raise RuntimeError(
+                    "The selected toolbit has no tool number and no Job "
+                    "was supplied to allocate one"
+                )
+            allocated_numbers.add(toolNr)
+
+            toolbit.attach_to_doc(
+                document,
+                timeline_owner=job,
+            )
+            if getattr(toolbit.obj, "Document", None) is not document:
+                raise RuntimeError(
+                    f"Toolbit {toolbit.label} was not added to the intended document"
+                )
+            tools.append((toolNr, toolbit))
+            if created is not None:
+                created.append(
+                    (
+                        str(toolbit.obj.Name),
+                        int(toolbit.obj.ID),
+                        toolbit,
+                    )
                 )
 
         return tools
+
+    @staticmethod
+    def _validate_tool_controller_addition(document, job, additions):
+        """Validate the complete selected-tool gesture before it is committed."""
+
+        if not is_job(job, document):
+            raise RuntimeError("The selected CAM Job is no longer available")
+        if FreeCAD.ActiveDocument is not document:
+            raise RuntimeError("The active document changed while adding toolbits")
+
+        document.recompute()
+        controllers = tuple(job.Tools.Group)
+        controller_numbers = [int(controller.ToolNumber) for controller in controllers]
+        if len(controller_numbers) != len(set(controller_numbers)):
+            raise RuntimeError("CAM Job tool numbers must be unique")
+        for toolbit, controller in additions:
+            tool = toolbit.obj
+            if (
+                getattr(tool, "Document", None) is not document
+                or document.getObject(tool.Name) != tool
+                or not tool.isValid()
+            ):
+                raise RuntimeError(
+                    f"Toolbit {toolbit.label} is not a valid object in the intended document"
+                )
+            if (
+                getattr(controller, "Document", None) is not document
+                or document.getObject(controller.Name) != controller
+                or not controller.isValid()
+                or controller.Tool != tool
+                or controller not in controllers
+            ):
+                raise RuntimeError(
+                    f"Tool controller for {toolbit.label} was not added completely"
+                )
 
     def _add_tool_controller_to_doc(self):
         """
@@ -168,7 +256,15 @@ class ToolBitLibraryDock(object):
         selected toolbit assets
         """
         Path.Log.track()
-        jobs = PathUtilsGui.PathUtils.GetJobs()
+        document = FreeCAD.ActiveDocument
+        if document is None:
+            return
+
+        jobs = [
+            job
+            for job in PathUtilsGui.PathUtils.GetJobs()
+            if is_job(job, document)
+        ]
         if len(jobs) == 0:
             QtGui.QMessageBox.information(
                 self.form,
@@ -185,14 +281,121 @@ class ToolBitLibraryDock(object):
 
         if job is None:  # user may have canceled
             return
+        if not is_job(job, document):
+            raise RuntimeError(
+                "Toolbits can only be added to a real Job in the active document"
+            )
+        selected_uris = self.browser_widget.get_selected_bit_uris()
+        if not selected_uris:
+            return
 
-        # Get the selected toolbit assets
-        selected_tools = self._add_tool_to_doc()
+        # The standalone library owns one exact transaction per Add or
+        # double-click gesture.  The embedded picker used by an operation task
+        # already runs inside that task's exact transaction, so its additions
+        # remain part of the operation's all-or-nothing edit.
+        transaction = None
+        existing_transaction = int(document.getBookedTransactionID())
+        if existing_transaction == 0 and not document.HasPendingTransaction:
+            transaction = _OwnedDocumentTransaction(
+                document,
+                "Add CAM toolbits",
+            )
+        elif not (
+            self.autoClose
+            and self.defaultJob is job
+            and FreeCADGui.Control.activeDialog()
+        ):
+            return
 
-        for toolNr, toolbit in selected_tools:
-            tc = PathToolControllerGui.Create(f"TC: {toolbit.label}", toolbit.obj, toolNr)
-            job.Proxy.addToolController(tc)
-            FreeCAD.ActiveDocument.recompute()
+        reconciliation = None
+        created_toolbits = []
+        created_controllers = []
+        try:
+            reconciliation = PathUtil.stageTimelineResourceGraphExtension(
+                job
+            )
+            selected_tools = self._add_tool_to_doc(
+                document,
+                job,
+                created_toolbits,
+            )
+            if len(selected_tools) != len(selected_uris):
+                raise RuntimeError("Not every selected toolbit could be loaded")
+            additions = []
+            for toolNr, toolbit in selected_tools:
+                if FreeCAD.ActiveDocument is not document:
+                    raise RuntimeError(
+                        "The active document changed while adding toolbits"
+                    )
+                controller = PathToolControllerGui.Create(
+                    f"TC: {toolbit.label}",
+                    toolbit.obj,
+                    toolNr,
+                    document=document,
+                    timelineOwner=job,
+                )
+                if getattr(controller, "Document", None) is not document:
+                    raise RuntimeError(
+                        f"Tool controller for {toolbit.label} was created "
+                        "in the wrong document"
+                    )
+                job.Proxy.addToolController(controller)
+                created_controllers.append(
+                    (str(controller.Name), int(controller.ID))
+                )
+                additions.append((toolbit, controller))
+
+            if len(additions) != len(selected_tools):
+                raise RuntimeError("Not every selected toolbit was added")
+            self._validate_tool_controller_addition(
+                document,
+                job,
+                additions,
+            )
+            PathUtil.finalizeTimelineResourceGraphExtension(
+                job,
+                reconciliation,
+                [
+                    resource
+                    for _toolbit, controller in additions
+                    for resource in PathUtil.toolControllerResourceGraph(
+                        controller
+                    )
+                ],
+            )
+            if transaction is not None:
+                transaction.commit()
+        except Exception:
+            if transaction is not None:
+                transaction.abort()
+            elif reconciliation is not None:
+                for name, object_id in reversed(created_controllers):
+                    controller = document.getObject(name)
+                    if (
+                        controller is not None
+                        and int(controller.ID) == object_id
+                    ):
+                        document.removeObject(name)
+                for name, object_id, toolbit in reversed(
+                    created_toolbits
+                ):
+                    tool = document.getObject(name)
+                    if (
+                        tool is not None
+                        and int(tool.ID) == object_id
+                    ):
+                        proxy = getattr(tool, "Proxy", None)
+                        on_delete = getattr(proxy, "onDelete", None)
+                        if callable(on_delete):
+                            on_delete(tool)
+                        elif document.getObject(name) is tool:
+                            document.removeObject(name)
+                PathUtil.cancelTimelineResourceGraphExtension(
+                    job,
+                    reconciliation,
+                )
+                document.recompute()
+            raise
 
         if self.autoClose:
             self.form.accept()

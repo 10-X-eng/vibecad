@@ -43,10 +43,12 @@ typedef std::map<SMDS_MeshGroup*, int> TGroupIdMap;
 class MESHDRIVERUNV_EXPORT DriverUNV_R_SMDS_Mesh: public Driver_SMDS_Mesh
 {
  public:
-  DriverUNV_R_SMDS_Mesh():Driver_SMDS_Mesh(),myGroup(0) {};
+  DriverUNV_R_SMDS_Mesh():Driver_SMDS_Mesh(),myGroup(0),myCompactAfterRead(true) {};
   ~DriverUNV_R_SMDS_Mesh();
  
   virtual Status Perform();
+
+  void SetCompactAfterRead(bool compact) { myCompactAfterRead = compact; }
 
   const SMDS_MeshGroup* GetGroup()         const { return myGroup;}
   const TGroupNamesMap& GetGroupNamesMap() const { return myGroupNames; }
@@ -54,6 +56,7 @@ class MESHDRIVERUNV_EXPORT DriverUNV_R_SMDS_Mesh: public Driver_SMDS_Mesh
 
  private:
   SMDS_MeshGroup* myGroup;
+  bool myCompactAfterRead;
   TGroupNamesMap myGroupNames;
   TGroupIdMap    myGroupId;
 };

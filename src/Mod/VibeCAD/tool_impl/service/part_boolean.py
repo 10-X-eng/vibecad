@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Create one native Part boolean between standalone shaped objects."""
+"""Create one native Part boolean in the consolidated modeling surface."""
 
 from __future__ import annotations
 
@@ -17,11 +17,12 @@ TOOL_SPEC = {
         "Create one native Part boolean (union, cut, or intersection) from exact "
         "named shaped objects. The inputs become children of the result and are "
         "hidden, not deleted; the boolean stays parametric. Do not use this on "
-        "features inside a PartDesign Body; those belong to their own workbench."
+        "features in the active Part Design Body; the result remains an editable "
+        "Part boolean in that Body."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
-    "workbench": "PartWorkbench",
+    "workbench": "PartDesignWorkbench",
     "edit_modes": ["none"],
     "parameters": {
         "type": "object",
@@ -151,8 +152,16 @@ def run(
             boolean.Shapes = [base, *tools]
         if hasattr(boolean, "Refine"):
             boolean.Refine = bool(refine)
-        doc.recompute()
         operands = [base, *tools]
+        domain_runtime.adopt_part_result(
+            boolean,
+            replaced_inputs=[
+                operand
+                for operand in operands
+                if visibility_before[operand.Name].get("visible") is True
+            ],
+        )
+        doc.recompute()
         for operand in operands:
             view = getattr(operand, "ViewObject", None)
             if view is not None and hasattr(view, "Visibility"):

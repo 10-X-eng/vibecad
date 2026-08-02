@@ -70,6 +70,10 @@ public:
     App::PropertyFloat AutoScaleFactorZ;
 
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     std::vector<std::string> getDisplayModes() const override;
 
     virtual ShapeWidget* createControlWidget();

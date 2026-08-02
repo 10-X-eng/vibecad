@@ -29,6 +29,7 @@
 #include <Base/Console.h>
 #include <Base/Tools.h>
 
+#include "AssemblyUtils.h"
 #include "JointGroup.h"
 #include "JointGroupPy.h"
 
@@ -58,7 +59,7 @@ std::vector<App::DocumentObject*> JointGroup::getJoints()
 
     Base::PyGILStateLocker lock;
     for (auto joint : getObjects()) {
-        if (!joint) {
+        if (!joint || !isTimelineOperationActive(joint)) {
             continue;
         }
 

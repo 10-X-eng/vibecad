@@ -52,6 +52,129 @@ tooltip = QT_TRANSLATE_NOOP(
 )
 
 
+def buildInsertedComponentReplayTrace(
+    document,
+    assembly,
+    insertion_stack,
+    grounded_object=None,
+):
+    """Return the exact durable replay for accepted component insertions."""
+
+    if (
+        not UtilsAssembly._document_is_open(document)
+        or assembly is None
+        or assembly.Document is not document
+        or document.getObject(assembly.Name) is not assembly
+        or not UtilsAssembly.isTimelineOperationActive(assembly)
+    ):
+        raise ValueError("The insertion replay requires one live Assembly")
+
+    commands = (
+        f"document = App.getDocument({str(document.Name)!r})\n"
+        f"assembly = document.getObject({str(assembly.Name)!r})\n"
+    )
+    for insertion_item in insertion_stack:
+        occurrence = insertion_item["addedObject"]
+        translation = insertion_item["translation"]
+        linked_object = getattr(occurrence, "LinkedObject", None)
+        linked_document = getattr(linked_object, "Document", None)
+        occurrence_name = getattr(occurrence, "Name", None)
+        linked_name = getattr(linked_object, "Name", None)
+        occurrence_type = str(getattr(occurrence, "TypeId", ""))
+        occurrence_identity = insertion_item.get(
+            "occurrence_identity"
+        )
+        source_identity = insertion_item.get("source_identity")
+        if occurrence_type not in {
+            "App::Link",
+            "Assembly::AssemblyLink",
+        }:
+            raise ValueError(
+                "An inserted component replay requires App::Link or "
+                "Assembly::AssemblyLink"
+            )
+        if (
+            not occurrence_name
+            or not linked_name
+            or occurrence.Document is not document
+            or document.getObject(occurrence_name) is not occurrence
+            or not UtilsAssembly._document_is_open(linked_document)
+            or linked_document.getObject(linked_name) is not linked_object
+            or not UtilsAssembly.isTimelineOperationActive(occurrence)
+            or not UtilsAssembly.isTimelineOperationActive(linked_object)
+        ):
+            raise ValueError(
+                "An inserted component replay contains a stale occurrence"
+            )
+        if (
+            occurrence_identity is not None
+            and (
+                len(occurrence_identity) != 3
+                or occurrence_identity[0] != occurrence_name
+                or int(occurrence_identity[1]) != int(occurrence.ID)
+                or occurrence_identity[2] is not occurrence
+            )
+        ):
+            raise ValueError(
+                "An inserted component replay contains a replaced occurrence"
+            )
+        if (
+            source_identity is not None
+            and (
+                len(source_identity) != 5
+                or source_identity[0] is not linked_document
+                or source_identity[1]
+                != str(getattr(linked_document, "Uid", "") or "")
+                or source_identity[2] != linked_name
+                or int(source_identity[3]) != int(linked_object.ID)
+                or source_identity[4] is not linked_object
+            )
+        ):
+            raise ValueError(
+                "An inserted component replay contains a replaced source"
+            )
+
+        commands += (
+            f"item = assembly.newObject("
+            f"{occurrence_type!r}, {str(occurrence_name)!r})\n"
+            f"item.LinkedObject = App.getDocument("
+            f"{str(linked_document.Name)!r}).getObject("
+            f"{str(linked_name)!r})\n"
+            f"item.Label = {str(occurrence.Label)!r}\n"
+        )
+        if translation != App.Vector():
+            commands += (
+                f"item.Placement.Base = App.Vector("
+                f"{translation.x}, {translation.y}, {translation.z})\n"
+            )
+        if occurrence_type == "Assembly::AssemblyLink":
+            commands += f"item.Rigid = {bool(occurrence.Rigid)!r}\n"
+        commands += (
+            "UtilsAssembly.finalizeInsertedComponentTimeline(item)\n"
+        )
+
+    if grounded_object is not None:
+        if (
+            grounded_object.Document is not document
+            or document.getObject(grounded_object.Name)
+            is not grounded_object
+            or not assembly.hasObject(grounded_object, True)
+            or not UtilsAssembly.isTimelineOperationActive(
+                grounded_object
+            )
+        ):
+            raise ValueError(
+                "The insertion replay contains a stale grounded component"
+            )
+        commands += (
+            "CommandCreateJoint.createGroundedJoint("
+            f"document.getObject({str(grounded_object.Name)!r}), "
+            "assembly)\n"
+        )
+
+    return commands
+
+
 class CommandGroupInsert:
     def GetCommands(self):
         return ("Assembly_InsertLink", "Assembly_InsertNewPart")
@@ -87,12 +210,20 @@ class CommandInsertLink:
         return UtilsAssembly.isAssemblyCommandActive()
 
     def Activated(self):
+        if not self.IsActive():
+            return
         assembly = UtilsAssembly.activeAssembly()
         if not assembly:
             return
-        view = Gui.activeDocument().activeView()
+        gui_document = Gui.getDocument(assembly.Document.Name)
+        if gui_document is None:
+            return
+        view = gui_document.activeView()
         self.panel = TaskAssemblyInsertLink(assembly, view)
-        Gui.Control.showDialog(self.panel)
+        dialog = Gui.Control.showDialog(self.panel, self.panel.gui_doc)
+        if dialog is not None:
+            dialog.setAutoCloseOnDeletedDocument(True)
+            dialog.setDocumentName(assembly.Document.Name)
 
 
 class InsertLinkObserver:
@@ -109,7 +240,28 @@ class TaskAssemblyInsertLink(QtCore.QObject):
 
         self.assembly = assembly
         self.view = view
-        self.doc = App.ActiveDocument
+        self.doc = getattr(assembly, "Document", None)
+        if (
+            not UtilsAssembly._document_is_open(self.doc)
+            or self.doc.getObject(assembly.Name) is not assembly
+            or not UtilsAssembly.isTimelineOperationActive(assembly)
+        ):
+            raise RuntimeError(
+                "Insert Component requires one exact active assembly"
+            )
+        self.document_uid = str(
+            getattr(self.doc, "Uid", "") or ""
+        )
+        self.assembly_identity = (
+            str(assembly.Name),
+            int(assembly.ID),
+            assembly,
+        )
+        self.gui_doc = Gui.getDocument(self.doc.Name)
+        if self.gui_doc is None or view is None:
+            raise RuntimeError(
+                "Insert Component requires the assembly's live 3D view"
+            )
         self.showHidden = False
 
         self.form = Gui.PySideUic.loadUi(":/panels/TaskAssemblyInsertLink.ui")
@@ -139,58 +291,83 @@ class TaskAssemblyInsertLink(QtCore.QObject):
 
         self.buildPartList()
 
-        Gui.ActiveDocument.openCommand("Insert Component")
+        self.transaction = UtilsAssembly._TaskTransactionOwner(
+            self.doc,
+            "Insert Component",
+        )
 
         # Listen for external deletions to keep the list in sync
         self.docObserver = InsertLinkObserver(self.onObjectDeleted)
         App.addDocumentObserver(self.docObserver)
 
+    def _ownsLiveTaskContext(self):
+        assembly_name, assembly_id, exact_assembly = (
+            self.assembly_identity
+        )
+        return (
+            self.transaction.owns_current()
+            and UtilsAssembly._document_is_open(self.doc)
+            and str(getattr(self.doc, "Uid", "") or "")
+            == self.document_uid
+            and self.assembly is exact_assembly
+            and self.doc.getObject(assembly_name) is exact_assembly
+            and int(exact_assembly.ID) == assembly_id
+            and UtilsAssembly.isTimelineOperationActive(self.assembly)
+            and Gui.getDocument(self.doc.Name) is self.gui_doc
+        )
+
+    def _discardFailedOccurrence(self, occurrence):
+        if (
+            not self._ownsLiveTaskContext()
+            or occurrence is None
+            or self.doc.getObject(occurrence.Name) is not occurrence
+        ):
+            return
+        try:
+            UtilsAssembly.removeObjAndChilds(occurrence)
+        except Exception as error:
+            App.Console.PrintError(
+                "Could not discard the failed component insertion: "
+                f"{error}\n"
+            )
+
     def accept(self):
+        if not self._ownsLiveTaskContext():
+            App.Console.PrintError(
+                "Could not finalize inserted components: "
+                "the Assembly task no longer owns its exact document state\n"
+            )
+            return False
+        if not self.insertionStack:
+            self.deactivated()
+            return True
+
+        try:
+            Gui.addModule("UtilsAssembly")
+            commands = buildInsertedComponentReplayTrace(
+                self.doc,
+                self.assembly,
+                self.insertionStack,
+                self.groundedObj,
+            )
+            Gui.doCommandSkip(commands.rstrip("\n"))
+        except Exception as error:
+            App.Console.PrintError(
+                "Could not finalize the inserted components: "
+                f"{error}\n"
+            )
+            return False
+
         self.deactivated()
-
-        Gui.addModule("UtilsAssembly")
-        commands = "assembly = UtilsAssembly.activeAssembly()\n"
-        for insertionItem in self.insertionStack:
-            object = insertionItem["addedObject"]
-            translation = insertionItem["translation"]
-
-            # Check if object.Name & object.LinkedObject.Name exists
-            if (
-                not hasattr(object, "Name")
-                or not hasattr(object, "LinkedObject")
-                or not hasattr(object.LinkedObject, "Name")
-            ):
-                continue
-
-            commands = commands + (
-                f'item = assembly.newObject("App::Link", "{object.Name}")\n'
-                f'item.LinkedObject = App.ActiveDocument.getObject("{object.LinkedObject.Name}")\n'
-                f'item.Label = "{object.Label}"\n'
-            )
-
-            if translation != App.Vector():
-                commands = commands + (
-                    f"item.Placement.base = App.Vector({translation.x},"
-                    f"{translation.y},"
-                    f"{translation.z})\n"
-                )
-
-        # Ground the first item if that happened
-        if self.groundedObj:
-            commands = (
-                commands
-                + f'CommandCreateJoint.createGroundedJoint(App.ActiveDocument.getObject("{self.groundedObj.Name}"))\n'
-            )
-
-        Gui.doCommandSkip(commands[:-1])  # Get rid of last \n
-        Gui.ActiveDocument.commitCommand()
         return True
 
     def reject(self):
         self.deactivated()
-
-        Gui.ActiveDocument.abortCommand()
         return True
+
+    def autoClosedOnDeletedDocument(self):
+        self.deactivated()
+        self.transaction.document_deleted()
 
     def deactivated(self):
         if hasattr(self, "docObserver") and self.docObserver:
@@ -200,7 +377,7 @@ class TaskAssemblyInsertLink(QtCore.QObject):
         pref = Preferences.preferences()
         pref.SetBool("InsertShowOnlyParts", self.form.CheckBox_ShowOnlyParts.isChecked())
         pref.SetBool("InsertRigidSubAssemblies", self.form.CheckBox_RigidSubAsm.isChecked())
-        Gui.Selection.clearSelection()
+        Gui.Selection.clearSelection(self.doc.Name)
 
     def buildPartList(self):
         self.form.partList.clear()
@@ -227,7 +404,13 @@ class TaskAssemblyInsertLink(QtCore.QObject):
             self.doc_item_map[docItem] = doc
 
             if not any(
-                (child.isDerivedFrom("Part::Feature") or child.isDerivedFrom("App::Part"))
+                (
+                    UtilsAssembly.isTimelineOperationActive(child)
+                    and (
+                        child.isDerivedFrom("Part::Feature")
+                        or child.isDerivedFrom("App::Part")
+                    )
+                )
                 for child in doc.Objects
             ):
                 continue  # Skip this doc if no relevant objects
@@ -237,6 +420,8 @@ class TaskAssemblyInsertLink(QtCore.QObject):
             def process_objects(objs, item):
                 onlyParts = self.form.CheckBox_ShowOnlyParts.isChecked()
                 for obj in objs:
+                    if not UtilsAssembly.isTimelineOperationActive(obj):
+                        continue
                     if obj == self.assembly:
                         continue  # Skip current assembly
 
@@ -244,7 +429,13 @@ class TaskAssemblyInsertLink(QtCore.QObject):
                         continue  # Prevent dependency loop.
                         # For instance if asm1/asm2 with asm2 active, we don't want to have asm1 in the list
 
-                    if not obj.ViewObject.ShowInTree and not self.showHidden:
+                    view_object = getattr(obj, "ViewObject", None)
+                    if view_object is None:
+                        # Application-only objects have no tree presentation,
+                        # icon, or children to offer in this GUI picker.
+                        continue
+
+                    if not view_object.ShowInTree and not self.showHidden:
                         continue
 
                     if (
@@ -259,7 +450,7 @@ class TaskAssemblyInsertLink(QtCore.QObject):
                                     (not onlyParts and child.isDerivedFrom("Part::Feature"))
                                     or child.isDerivedFrom("App::Part")
                                 )
-                                for child in obj.ViewObject.claimChildrenRecursive()
+                                for child in view_object.claimChildrenRecursive()
                             ):
                                 continue  # Skip this object if no relevant children
 
@@ -270,9 +461,7 @@ class TaskAssemblyInsertLink(QtCore.QObject):
                         # Now add the object under the document item
                         objItem = QtGui.QTreeWidgetItem(item)
                         objItem.setText(0, obj.Label)
-                        objItem.setIcon(
-                            0, obj.ViewObject.Icon if hasattr(obj, "ViewObject") else QtGui.QIcon()
-                        )  # Use object's icon if available
+                        objItem.setIcon(0, view_object.Icon)
 
                         if not obj.isDerivedFrom("App::DocumentObjectGroup"):
                             objItem.setData(0, QtCore.Qt.UserRole, obj)
@@ -280,10 +469,11 @@ class TaskAssemblyInsertLink(QtCore.QObject):
                         if obj.isDerivedFrom("App::Part") or obj.isDerivedFrom(
                             "App::DocumentObjectGroup"
                         ):
-                            process_objects(obj.ViewObject.claimChildren(), objItem)
+                            process_objects(view_object.claimChildren(), objItem)
 
             guiDoc = Gui.getDocument(doc.Name)
-            process_objects(guiDoc.TreeRootObjects, docItem)
+            if guiDoc is not None:
+                process_objects(guiDoc.TreeRootObjects, docItem)
             if collapse:
                 self.form.partList.collapseAll()
             else:
@@ -356,10 +546,23 @@ class TaskAssemblyInsertLink(QtCore.QObject):
                     self.buildPartList()
 
     def onItemClicked(self, item):
+        if not self._ownsLiveTaskContext():
+            return
+
         selectedPart = item.data(0, QtCore.Qt.UserRole)
         if not selectedPart:
             # If there's no part associated, toggle the expanded state
             item.setExpanded(not item.isExpanded())
+            return
+
+        selected_document = getattr(selectedPart, "Document", None)
+        if (
+            not UtilsAssembly._document_is_open(selected_document)
+            or selected_document.getObject(selectedPart.Name)
+            is not selectedPart
+            or not UtilsAssembly.isTimelineOperationActive(selectedPart)
+        ):
+            self.buildPartList()
             return
 
         # check that the current document had been saved or that it's the same document as that of the selected part
@@ -376,7 +579,7 @@ class TaskAssemblyInsertLink(QtCore.QObject):
 
                 msgBox.exec_()
 
-                if not (msgBox.clickedButton() == saveButton and Gui.ActiveDocument.saveAs()):
+                if not (msgBox.clickedButton() == saveButton and self.gui_doc.saveAs()):
                     return
 
             # check that the selectedPart document is saved.
@@ -412,7 +615,7 @@ class TaskAssemblyInsertLink(QtCore.QObject):
         addedObject = self.assembly.newObject(objType, selectedPart.Label)
 
         # set placement of the added object to the center of the screen.
-        view = Gui.activeView()
+        view = self.view
         x, y = view.getSize()
         screenCenter = view.getPointOnFocalPlane(x // 2, y // 2)
         screenCorner = view.getPointOnFocalPlane(x, y)
@@ -424,6 +627,18 @@ class TaskAssemblyInsertLink(QtCore.QObject):
         insertionDict = {}
         insertionDict["item"] = item
         insertionDict["addedObject"] = addedObject
+        insertionDict["occurrence_identity"] = (
+            str(addedObject.Name),
+            int(addedObject.ID),
+            addedObject,
+        )
+        insertionDict["source_identity"] = (
+            selected_document,
+            str(getattr(selected_document, "Uid", "") or ""),
+            str(selectedPart.Name),
+            int(selectedPart.ID),
+            selectedPart,
+        )
         self.insertionStack.append(insertionDict)
         self.increment_counter(item)
 
@@ -456,8 +671,45 @@ class TaskAssemblyInsertLink(QtCore.QObject):
         if selectedPart.isDerivedFrom("Assembly::AssemblyObject"):
             addedObject.Rigid = self.form.CheckBox_RigidSubAsm.isChecked()
 
+        owns_task_context = self._ownsLiveTaskContext()
+        if (
+            not owns_task_context
+            or self.doc.getObject(addedObject.Name) is not addedObject
+            or not self.assembly.hasObject(addedObject)
+            or selected_document.getObject(selectedPart.Name)
+            is not selectedPart
+            or not UtilsAssembly.isTimelineOperationActive(selectedPart)
+        ):
+            App.Console.PrintError(
+                "Could not insert the component: its exact Assembly "
+                "context changed during creation\n"
+            )
+            if (
+                owns_task_context
+                and self.doc.getObject(addedObject.Name)
+                is addedObject
+            ):
+                self._discardFailedOccurrence(addedObject)
+            return
+
+        # One list click is one public component-insertion operation.  A
+        # subassembly occurrence may materialize a native same-document clone
+        # graph; publish only that exact occurrence-owned graph as resources
+        # before the optional, independently meaningful grounding operation.
+        try:
+            UtilsAssembly.finalizeInsertedComponentTimeline(
+                addedObject
+            )
+        except Exception as error:
+            self._discardFailedOccurrence(addedObject)
+            App.Console.PrintError(
+                "Could not insert the component: "
+                f"{error}\n"
+            )
+            return
+
         # highlight the link
-        Gui.Selection.clearSelection()
+        Gui.Selection.clearSelection(self.doc.Name)
         Gui.Selection.addSelection(self.doc.Name, addedObject.Name, "")
 
         item.setSelected(False)
@@ -538,7 +790,11 @@ class TaskAssemblyInsertLink(QtCore.QObject):
                     targetObj = candidate
 
             self.groundedObj = targetObj
-            self.groundedJoint = CommandCreateJoint.createGroundedJoint(self.groundedObj)
+            self.groundedJoint = CommandCreateJoint.createGroundedJoint(
+                self.groundedObj,
+                assembly=self.assembly,
+                record=False,
+            )
 
     def increment_counter(self, item):
         text = item.text(0)

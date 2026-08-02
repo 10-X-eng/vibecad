@@ -89,6 +89,18 @@ class FemMesh(ComplexGeoData):
         """Add list of volumes by list of node indices and list of nodes per volume."""
         ...
 
+    def removeElements(
+        self, element_ids: list[int], remove_orphan_nodes: bool = True, /
+    ) -> None:
+        """
+        Remove mesh elements by ID after validating the complete request.
+
+        Deleted elements are also removed from mesh groups. When
+        remove_orphan_nodes is true, nodes left without any element references
+        are removed as well. If any ID is invalid, the mesh is unchanged.
+        """
+        ...
+
     def read(self, file_name: str, vtk_cell_group_array: str) -> None:
         """
         Read in a various FEM mesh file formats.

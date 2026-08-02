@@ -1,28 +1,25 @@
-# Workbench-specific native and VibeScript architecture
+# Workbench-shaped VibeScript architecture
 
 ## Scope
 
-VibeCAD has one human-selected global modeling engine per saved project. The
-engine and active FreeCAD workbench resolve to exactly one CAD authoring
-surface. The resolver is shared by ChatGPT subscription, OpenAI-compatible,
-Anthropic, offline/debug, and editor paths.
+The VibeCAD assistant always authors through VibeScript. The active FreeCAD
+workbench resolves to exactly one VibeScript CAD authoring surface. The
+resolver is shared by Codex (using either ChatGPT subscription or
+OpenAI-compatible API-key authentication), Anthropic, offline/debug, and editor
+paths. Native FreeCAD commands remain available to humans through the ribbon;
+they are not a second AI authoring surface.
 
 The core invariant is:
 
 ```text
-(active workbench, modeling engine) -> one exact CAD pack
+(active workbench) -> one exact VibeScript pack + owned focused reads
 ```
 
-There is no union, fallback, adjacent-pack injection, or cross-workbench tool
-discovery. Conversation and view tools remain common, but CAD authoring tools
-come from exactly one of these sources:
-
-- `native`: the active `WorkbenchToolPack`;
-- `vibescript`: the active `VibeScriptWorkbenchPack`;
-- `build123d`: its existing Part Design-only surface; or
-- `openscad`: its existing Part Design-only surface.
-
-The AI cannot select a workbench or modeling engine.
+There is no fallback, adjacent-pack injection, cross-workbench authoring, or
+alternate AI engine. Conversation and view tools remain common. Each turn gets
+the active `VibeScriptWorkbenchPack` plus only the focused native read tools
+owned by that workbench. The AI cannot select a workbench or expose human
+ribbon mutation commands.
 
 ## Current production status
 
@@ -32,54 +29,44 @@ exposed only after its real native worker, validator, publisher, persistence
 lifecycle, save/reopen behavior, diagnostics, and integration tests pass the
 production-readiness gate.
 
-All 18 supported user-workbench domains currently pass that gate: Part Design,
-Sketcher, Part, Draft, Surface, Assembly, Spreadsheet, Material, BIM, Mesh,
+All 17 supported user-workbench domains currently pass that gate: Part Design,
+Sketcher, Part, Draft, Surface, Assembly, Spreadsheet, Material, Mesh,
 MeshPart, Points, Reverse Engineering, Inspection, Robot, FEM, CAM, and
 TechDraw. `NoneWorkbench`, `TestWorkbench`, unknown workbenches, and any future
 domain without a complete implementation still resolve to a precise core-only
 unavailable surface.
 
-## Global engine behavior
+## Single authoring behavior
 
-Project manifests persist `modeling_engine` with one of `native`, `vibescript`,
-`build123d`, or `openscad`. New projects default to VibeScript. Version-1
-manifests that stored `partdesign_engine` are read once and rewritten with
-`modeling_engine`; there is no second engine accessor or forwarding API.
+New projects and assistant turns use VibeScript unconditionally. Persisted
+selections from former engine selectors migrate one way to VibeScript when an
+older project manifest is normalized. There is no selector, second service
+accessor, or provider compatibility path.
 
-The selector is visible in every supported user workbench. Native and
-VibeScript are global choices. build123d and OpenSCAD are listed only in Part
-Design and only when their preference and runtime are ready. If the human
-leaves Part Design with either selected, VibeCAD visibly persists VibeScript
-before the next provider turn. Returning to Part Design does not restore the
-old engine.
-
-Engine changes are rejected while a FreeCAD edit session is open. The GUI also
-locks the selector during an AI run. If a workbench changes during a run, the
-turn snapshot becomes invalid immediately and the required Part Design-only
-transition is deferred until the run ends.
+If a workbench changes during a run, the frozen turn snapshot becomes invalid
+immediately and the new workbench-shaped surface is used on the next turn.
 
 ## Exact surface resolution
 
 Each turn records:
 
 - workbench;
-- engine;
+- VibeScript authoring identity;
 - VibeScript domain, when present;
 - deterministic surface ID;
 - exact ordered tool names;
 - schema count; and
 - SHA-256 schema digest.
 
-Every attempted call is checked against the live workbench, engine, and
-surface ID. A change rejects the old call with `TURN_SURFACE_INVALIDATED`; the
-new surface is used on the next turn. Duplicate names, malformed schemas,
-multiple scripted engines, native-plus-VibeScript declarations, foreign native
-packs, multiple VibeScript domains, and undeclared calls fail closed.
+Every attempted call is checked against the live workbench and surface ID. A
+change rejects the old call with `TURN_SURFACE_INVALIDATED`; the new surface is
+used on the next turn. Duplicate names, malformed schemas, foreign human
+mutation commands, foreign focused reads, multiple VibeScript domains, and
+undeclared calls fail closed.
 
-`NoneWorkbench`, `TestWorkbench`, an unknown workbench, a native pack with no
-authoring implementation, and a VibeScript domain that has not passed its
-production gate receive only core conversation/view capabilities and a precise
-unavailable reason.
+`NoneWorkbench`, `TestWorkbench`, an unknown workbench, and a VibeScript domain
+that has not passed its production gate receive only core conversation/view
+capabilities and a precise unavailable reason.
 
 ## Provider and context boundary
 
@@ -89,28 +76,27 @@ Memory, inferred working sets, object inventories, shape summaries, domain
 snapshots, and recompute diagnostics are not injected. Saved conversations are
 a human UI record, not a second model-context channel.
 
-The deterministic CAD packet contains only:
+The deterministic CAD packet contains:
 
-- active workbench, global engine, domain, surface ID, and availability;
+- active workbench, VibeScript domain, surface ID, and availability;
 - document name, stable UID, object count, and current edit object; and
 - the exact explicit selection, or exact size/count omission metadata when that
-  selection exceeds its fixed limit.
+  selection exceeds its fixed limit;
+- the stable ID, label, revision, affected outputs, and exact read/edit tool
+  targets of every editable part or program owned by the active workbench.
 
 Exact active tool schemas are sent through the provider's tool-declaration
-channel and have a hard aggregate byte limit. Native mode declares only the
-active native authoring pack. VibeScript mode declares only five mutation tools
-for its active domain. Both use `core.inspect` as the single model-facing read
-interface. Domain-qualified `describe_api` and `inspect_program` are internal
-lifecycle operations reached through `core.inspect`; no unqualified VibeScript
-entry points or forwarding aliases remain registered.
-
-`core.inspect` reads only an explicitly requested document page, selection,
-object, active domain, program, runtime API, or project reference image. Results
-are deterministic, JSON-Pointer addressable, and capped at 32 KiB. Domain API
-inspection is generated from the actual exported runtime API. Newly attached
-reference images and **Attach View** are delivered once; persisted images are
-not resent merely because another turn starts. Context-debug captures show the
-exact outbound request, resolved surface, and declarations.
+channel and have a hard aggregate byte limit. Every workbench declares three
+universal source operations:
+`vibescript.read_source`, `vibescript.read_api`, and
+`vibescript.edit_source`, plus four qualified lifecycle operations for program
+creation, value-only input changes, contract reconfiguration, and deletion.
+The source read and edit are per program, addressed by an exact source ID from
+the turn packet. API inspection is generated from the active workbench's
+exported runtime API. A workbench may also expose its owned focused read tools
+for human-created native state; no human mutation command is provider-callable.
+Newly attached reference images and **Attach View** are delivered once;
+persisted images are not resent merely because another turn starts.
 
 ## Part Design domain contract
 
@@ -119,9 +105,9 @@ isolated worker, revision guards, failed-candidate retention, inspection path,
 and stable publication boundary as every other VibeScript domain. Its only
 domain-specific behavior is its explicit source-parametric Body/sketch/feature
 API and the requirement that every published output validate as exactly one OCC
-Solid. The model sees the same five mutation tools plus `core.inspect` that it
-sees in every other VibeScript workbench. There is no separate Part Design
-runner, unqualified tool namespace, or alternate editor path.
+Solid. The model sees the same universal source operations and qualified
+lifecycle shape as every other workbench. There is no separate Part Design
+runner, provider namespace, or alternate editor path.
 
 Saved schema-v1 Part Design data is discovered in its existing artifact
 directory and presented as a non-executable migration record. Its accepted live
@@ -157,43 +143,38 @@ API.
 
 ## Common lifecycle
 
-Every domain exposes exactly five qualified mutation tools to the model:
+Every VibeScript workbench exposes the same three universal source tools:
+
+```text
+vibescript.read_source
+vibescript.read_api
+vibescript.edit_source
+```
+
+At turn start the model receives the active workbench's saved editable program
+list, including failed and not-yet-published programs with zero live outputs.
+Each entry includes the exact source ID, current revision, build state, and
+read/edit tool names. `read_source` returns the complete source and complete
+editable contract for one program. `read_api` returns only the active workbench API.
+`edit_source` replaces the complete source for one program under the exact
+current revision guard. A successful edit returns the next revision and the
+source ID to use for the next read or edit. A failed candidate retains its
+editable source and diagnostics while the previous accepted live geometry
+remains authoritative.
+
+Each workbench also exposes four domain-qualified lifecycle tools:
 
 ```text
 vibescript.<domain>.create_program
-vibescript.<domain>.edit_source
 vibescript.<domain>.set_inputs
 vibescript.<domain>.reconfigure_program
 vibescript.<domain>.delete_program
 ```
 
-The complete VibeScript provider surface contains at most eleven tools: bounded
-shared conversation/view/inspection capabilities and five domain mutation
-tools. Domain-qualified `describe_api` and `inspect_program` complete the common
-seven-operation internal lifecycle but are reached through `core.inspect`, not
-declared redundantly to the model.
-
-The lifecycle is designed around the model's operating loop, not a human-only
-editor workflow. At turn start the model receives only the sparse surface and
-document packet described above. It calls `core.inspect` with `scope='domain'`
-to discover existing programs and exact document references, `scope='api'` for
-actual runtime exports, and `scope='program'` for source, revisions, and stable
-live identities. This avoids paying for unrelated domain data and prevents an
-absent turn-start inventory from being mistaken for an empty document.
-
-The three mutation tools are intentionally non-overlapping: `edit_source` is an
-exact source-only edit, `set_inputs` is an RFC 7396 value-only patch, and
-`reconfigure_program` replaces source, schema, inputs, and output declarations
-together when the contract really changes. Tool descriptions and inspection
-results tell the model which one to choose. A successful write returns the exact
-next revision guard and a `core.inspect` program verification call. A failed
-candidate returns the failed working revision, whether an accepted live state
-was preserved, and the exact inspection/repair loop. `core.inspect` program scope reports
-the same machine-readable state, preventing the model from accidentally using
-the older accepted revision as its next write guard.
-
-Updates use a working-revision guard. `edit_source` performs ordered exact
-replacements and rejects any old string that does not occur exactly once.
+These exist only for operations that cannot be expressed as an edit to an
+existing source: establishing a new program/output contract, changing only
+input values, changing the schema/output contract, or explicitly destroying a
+program. Ordinary code changes use the three universal names.
 Candidates are persisted before execution. Execution, validation, and
 publication failures retain the attempt and its diagnostics while the previous
 accepted revision and live objects remain authoritative.
@@ -334,12 +315,11 @@ reads artifacts on the document thread.
 | Part | `part` | `solid`, `shell`, `face`, `wire`, `compound` | Production-ready |
 | Draft | `draft` | `wire`, `circle`, `rectangle`, `bspline`, `array`, `text` | Production-ready |
 | Surface | `surface` | `surface`, `face`, `shell`, `fill`, `blend`, `extension`, `loft`, `solid` | Production-ready |
-| Assembly | `assembly` | `assembly`, `component_link`, `joint`, `solver_diagnostics`, `motion`, `simulation`, `exploded_view`, `bom` | Production-ready for rigid and authenticated flexible hierarchies, worker-generated kinematics, native exploded views, and native frozen BOMs |
+| Assembly | `assembly` | `assembly`, `component_link`, `joint`, `solver_diagnostics`, `mechanism_verification`, `motion`, `simulation`, `exploded_view`, `bom` | Production-ready for rigid and authenticated flexible hierarchies, worker-generated kinematics, exact static rigid-component verification, native exploded views, and native frozen BOMs |
 | Spreadsheet | `spreadsheet` | `sheet` | Production-ready |
 | Material | `material` | `material_assignment`, `appearance` | Production-ready |
-| BIM | `bim` | `site`, `building`, `level`, `wall`, `slab`, `structure`, `opening` | Production-ready |
-| Mesh | `mesh` | `mesh` | Production-ready |
-| MeshPart | `meshpart` | `mesh`, `solid`, `shell`, `face`, `wire`, `compound` | Production-ready |
+| Mesh | `mesh` | `mesh`, `solid`, `shell`, `face`, `wire`, `compound` | Production-ready; includes the useful MeshPart conversion surface |
+| MeshPart | `meshpart` | `mesh`, `solid`, `shell`, `face`, `wire`, `compound` | Compatibility alias retained for existing programs |
 | Points | `points` | `points` | Production-ready |
 | Reverse Engineering | `reverse_engineering` | `curve`, `surface`, `brep`, `mesh`, `fit_metrics` | Production-ready |
 | Inspection | `inspection` | `inspection_group`, `inspection_feature`, `measurement`, `report` | Production-ready |
@@ -347,9 +327,6 @@ reads artifacts on the document thread.
 | FEM | `fem` | `analysis`, `solver`, `material`, `constraint`, `load_case`, `mesh`, `result` | Production-ready |
 | CAM | `cam` | `job`, `stock`, `tool`, `operation`, `toolpath` | Production-ready |
 | TechDraw | `techdraw` | `page`, `template`, `view`, `projection`, `dimension`, `annotation` | Production-ready |
-
-BIM follows the same production gate as every other domain and has no special
-opt-in preference. No domain pack is selected on startup surfaces.
 
 Every domain publisher must use the corresponding native FreeCAD object types
 rather than generic stand-ins: `Sketcher::SketchObject`,
@@ -559,52 +536,14 @@ restores its original target state without opening the catalog. The provider
 context contains a bounded path-free catalog index and bounded target capability,
 current-card, display-state, and exact-display-mode records.
 
-### BIM production contract
-
-The BIM domain exports exactly `site`, `building`, `level`, `wall`, `slab`,
-`structure`, and `opening`. Calls create immutable graph values with explicit
-parent identities: Site contains Building, Building contains Building Storey,
-the Storey contains walls, slabs, and structures, and every opening names one
-host wall. Every referenced graph node must also be returned as a declared
-stable output. Wall and slab profiles reject duplicate or self-intersecting
-segments, structure dimensions are strictly positive, and hosted openings must
-fit one wall segment and cannot overlap another opening on that segment.
-
-The isolated `FreeCADCmd` worker reconstructs the graph through the exported
-API and creates real `ArchSite._Site`, `ArchBuildingPart.BuildingPart`,
-`ArchWall._Wall`, `ArchStructure._Structure`, and `ArchWindow._Window` proxies.
-Wall and slab profiles are real Draft Wires. The worker recomputes the hierarchy,
-cuts openings, checks native TypeId, proxy, Draft type and IFC type, verifies
-solid and opening-cut volumes, and exports detached primary and profile BREPs.
-The host independently canonicalizes the graph and validates every artifact,
-placement, topology fact, volume, hierarchy link, and bounded global diagnostic
-before document-thread publication.
-
-Publication creates the same native proxy classes without recompute, transfers
-only detached validated Shapes, and updates stable program/output identities in
-place. Wall, slab, and opening profiles have stable hidden managed identities.
-Managed `Group`, `Base`, and `Hosts` links are exact while human-created members
-inside a managed spatial group are retained. Compatible whole-object consumers
-survive regeneration; foreign transient subelement consumers block mutation.
-Because FreeCAD transaction abort does not reliably restore assigned Shapes or
-deleted Python proxies, BIM captures the complete accepted assigned state before
-mutation. Failed publication explicitly restores and verifies Shapes,
-placements, dimensions, profiles, hierarchy links, hosts, metadata, and accepted
-revision. Failed deletion recreates any already removed native proxy under its
-stable name and restores the same verified state before returning the error.
-
-`core.inspect` domain scope returns a bounded native BIM inventory with exact
-native, proxy, Draft and IFC types; placements and editable dimensions; Base, Group,
-parent-group and Hosts links; and managed-program identities. It never recomputes
-or generates topology. BIM has no separate preference or opt-in: selecting the
-global VibeScript engine in BIM resolves directly to these five mutation tools
-and the shared inspector.
-
 ### Mesh production contract
 
-The Mesh domain exports exactly `mesh`, `from_object`, `transform`, `repair`,
-and `diagnostics`. Programs build immutable operation graphs from bounded finite
-triangle arrays or an authenticated stable native `Mesh::Feature` reference.
+The shipped Mesh domain exports exactly `mesh`, `from_object`, `transform`,
+`union`, `difference`, `intersection`, `repair`, `diagnostics`,
+`mesh_from_shape`, and `shape_from_mesh`. Programs build immutable operation
+graphs from bounded finite triangle arrays or an authenticated stable native
+`Mesh::Feature` reference, and may explicitly convert authenticated BREP or mesh
+references without leaving the shipped Mesh workbench.
 Transforms bake a translation, normalized quaternion rotation, and strictly
 positive non-uniform scale. Repair exposes ordered duplicate-point/facet,
 degeneration, non-manifold edge/point, self-intersection, bounded hole-fill,
@@ -638,18 +577,21 @@ regeneration and block deletion until detached. Mesh construction, repair,
 diagnostics, BMS I/O, and worker waits remain off the document thread; the live
 callback only assigns already validated native state and bounded properties.
 
-`core.inspect` domain scope exposes a bounded inventory of native Mesh objects
-with stable program identities, point/facet/edge counts, world-space bounds, and a
-compact accepted-validation summary. It does not rerun mesh diagnostics on the
-document thread.
+The Mesh workbench's editable-source context exposes stable program identities,
+eligible mesh references for `from_object` and `shape_from_mesh`, and eligible
+BREP references for `mesh_from_shape`. `vibescript.read_source` returns the
+owning program and its compact accepted-validation summary without rerunning
+mesh diagnostics on the document thread.
 
 ### MeshPart production contract
 
-MeshPart exposes exactly two conversion directions: `mesh_from_shape` and
-`shape_from_mesh`. Backend, deflection, segment, sewing, refinement, and target
-topology are explicit selectors on those operations instead of duplicate
-provider methods. Inputs are authenticated stable BREP or placement-baked BMS
-references; raw paths and unverified live kernels are forbidden.
+MeshPart exposes the same two conversion directions, `mesh_from_shape` and
+`shape_from_mesh`, as a compatibility context for existing saved programs. New
+work uses those calls directly from the shipped Mesh workbench. Backend,
+deflection, segment, sewing, refinement, and target topology remain explicit
+selectors on those operations instead of duplicate provider methods. Inputs are
+authenticated stable BREP or placement-baked BMS references; raw paths and
+unverified live kernels are forbidden.
 
 The worker executes native OpenCascade or Mefisto conversion, preserves selected
 source-face groups, performs explicit verified sewing rather than the
@@ -700,9 +642,9 @@ materializes a complete live cloud on the document thread.
 
 ### Assembly production contract
 
-The Assembly domain exports exactly `assembly`, `component`, `connector`,
-`joint`, `solve`, `motion`, `simulation`, `exploded_view`, and
-`bill_of_materials`. Grounding is the single
+The Assembly domain exports exactly `assembly`, `component`, `instances`,
+`fastener`, `connector`, `joint`, `solve`, `mechanism_check`, `motion`,
+`simulation`, `exploded_view`, and `bill_of_materials`. Grounding is the single
 `component(..., grounded=True)` operation; there is no redundant mutating
 `ground` alias. A program builds one immutable graph and returns its assembly,
 every component occurrence, every joint, and one solver diagnostics output
@@ -711,6 +653,20 @@ exactly one simulation that consumes the same assembly. Component inputs are
 stable document references whose exact solid Shapes, authenticated nested
 assembly graph, and semantic-interface metadata are hashed into the candidate
 revision.
+
+`mechanism_check` evaluates only explicitly declared rigid component pairs at
+the native solved state. Collision-free and minimum-clearance requirements, and
+prohibited, clearance, allowed, required, and ignored contact policies, require
+their complete pair-specific values; VibeCAD infers no pair, fit, exemption, or
+tolerance. Allowed and required contact names one semantic interface on each
+component. The worker uses exact transformed OCCT BREPs; the host independently
+reloads authenticated source BREPs and reproduces the report before publishing
+a stable `mechanism_verification` object under the Assembly's `Verification`
+group. Its portable v1 report records hashes, verdicts, exact evidence, first
+failure, and `motion_certified=False`. Failed updates preserve the accepted
+report, and save/reopen restores it without VibeScript replay. Continuous
+motion and flexible-subassembly verification are not claimed by this static
+surface.
 
 An exploded presentation is one `exploded_view` output with an ordered move
 list, rather than separate create-view/create-step/apply-line tools. Each move
@@ -763,17 +719,16 @@ BREPs and independently derives the assembly bounds, native radial factors,
 normal composition order, final placements, line lengths, proxy types, and
 reference paths. Publication assigns only that accepted move state. Compatible
 regeneration retains the view and per-index move identities, and
-`core.inspect` program scope exposes bounded accepted evidence so the model can verify the
-live result without applying the explosion.
+`vibescript.read_source` exposes bounded accepted evidence so the model can
+verify the live result without applying the explosion.
 
 Motion source uses seconds for `time`, radians for angular values, and
 millimetres for linear values. Only `time`, `initialValue`, `pi`, arithmetic,
 powers, and the documented bounded one-argument functions are accepted. A
 time-dependent formula that produces no measurable movement is rejected with
 the motion output, joint, formula, observed magnitude, and a direct correction.
-`core.inspect` program scope returns bounded accepted solver, simulation, and exploded-view
-and BOM evidence plus trace/table previews so the model can close the
-discover-author-solve/simulate/present-repair-verify loop.
+`vibescript.read_source` returns bounded accepted solver, simulation,
+exploded-view, and BOM evidence plus trace/table previews.
 
 Rigid and authenticated flexible subassembly graphs use the same copy-ready
 source occurrence paths. A flexible component is available only when on-demand
@@ -912,9 +867,9 @@ stale, and reject unmanaged subelement references before mutation.
 
 ## Verification
 
-Automated contracts cover the complete 18-workbench resolver matrix and assert
+Automated contracts cover the complete 17-workbench resolver matrix and assert
 that only production-ready packs expose authoring tools. They also cover exact
-single-domain schemas, removal of the BIM opt-in, unsupported startup surfaces,
+single-domain schemas, unsupported startup surfaces,
 Part Design schema digests, v1 migration, source/input policy, subscription
 snapshot integrity, and duplicate/mixed/stale call rejection.
 
@@ -928,7 +883,7 @@ Qt event-loop heartbeat executes every production domain worker while all
 subprocess waits remain on a background thread. Its substantial cases include
 Part booleans/lofts, a 120-geometry Sketcher solve, a 1,200-instance Draft array,
 Surface interpolation, an 800-cell Spreadsheet batch, native Material catalog
-hashing, BIM opening cuts, a 9,800-facet Mesh repair, Mefisto conversion, a
+hashing, a 9,800-facet Mesh repair, Mefisto conversion, a
 40,000-point pipeline, reconstruction and inspection fitting, Robot simulation,
 FEM deck generation, CAM generation/simulation/postprocessing, six-direction
 TechDraw projection with dimension evaluation, and a native Assembly solve.
@@ -992,7 +947,7 @@ downstream-reference protection, save/close/reopen, regeneration, and guarded
 deletion. It also generates a native revolute simulation, validates
 seven frames/fourteen component poses and measured motion, rejects worker-result
 tampering and a zero-effect formula, proves stable motion/simulation identities,
-exposes accepted evidence through `core.inspect` program scope, retains the authenticated
+exposes accepted evidence through `vibescript.read_source`, retains the authenticated
 trace, and saves/reopens/deletes the graph. The same integration creates a real
 native exploded view with ordered normal and radial moves, independently rejects
 tampered line endpoints/final placements/proxy readback, proves stable view and
@@ -1004,18 +959,6 @@ stable references, and published-interface hints. Its native BOM path verifies
 built-in/property/custom columns, hierarchy controls, quantity aggregation,
 copy-ready row overrides, authenticated literal cells, stable identity,
 save/reopen, and deletion without live auto-generation.
-
-The BIM integration creates a native Site, Building, Building Storey, Wall,
-Slab, Column, and hosted Opening Element plus stable Draft/profile bases. It
-checks exact native/proxy/Draft/IFC contracts, hierarchy and host links, opening
-volume subtraction, failed-candidate retention, in-place input regeneration,
-foreign group-member preservation, bounded on-demand inspection, and stable
-whole-object consumers. Injected mid-publication and mid-deletion failures prove
-explicit state restoration after native mutation. The accepted hierarchy is
-then saved, closed, reopened, recomputed, reference-guarded, and deleted. The Qt
-heartbeat includes the same native BIM worker path and remains responsive while
-Arch recompute, opening cuts, validation, and BREP transfer run outside the GUI
-thread.
 
 The Mesh integration exercises explicit API signatures and bounds, quaternion
 normalization, bounded self-intersection detail, hole filling, native repair,

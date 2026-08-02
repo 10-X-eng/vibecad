@@ -918,8 +918,8 @@ gombok egyikét</translation>
       <location filename="../ui/TaskSelectPlane.ui" line="117"/>
       <source>Centers the working plane on the current view when pressing one
 of the buttons above</source>
-      <translation>A munkasíkot az aktuális nézetre központosítja a fenti gombok 
-egyikének 
+      <translation>A munkasíkot az aktuális nézetre központosítja a fenti gombok
+egyikének
 megnyomásakor</translation>
     </message>
     <message>
@@ -932,7 +932,7 @@ megnyomásakor</translation>
       <source>Moves the working plane without changing its
 orientation. If no point is selected, the plane
 will be moved to the center of the view.</source>
-      <translation>A munkasík mozgatása a tájolásának 
+      <translation>A munkasík mozgatása a tájolásának
 megváltoztatása nélkül. Ha nincs pont kijelölve, a sík
 a nézet középpontjába kerül.</translation>
     </message>
@@ -1562,7 +1562,7 @@ accidentally and modifying the entered value.</source>
       <translation>Ez egy olyan késleltetés, amely alatt az egér inaktív, miután számokat írt be
 manuálisan bármelyik koordinátamezőbe. A késleltetés kikapcsolható, ha 0-ra állítjuk.
 Ha 1 késleltetés van beállítva, akkor egy numerikus érték beírása után az egér nem fogja
-egy másodpercig frissíteni a mezőt, hogy elkerülje az egér véletlen 
+egy másodpercig frissíteni a mezőt, hogy elkerülje az egér véletlen
 mozgatását és a beírt érték módosítását.</translation>
     </message>
     <message>
@@ -2310,7 +2310,7 @@ fenntartva a blokk szerkezetet. A legjobb a tervrajz munkafelülettel való telj
 definitions are imported as reusable objects (Part Compounds) and instances
 become `App::Link` objects, maintaining the block structure. Best for
 script-based post-processing and Part workbench integration.</source>
-      <translation>Parametrikus alkatrész objektumokat hoz létre (pl. Part::Line, Part::Circle). A blokkok meghatározásai újrafelhasználható objektumokként (Alkatrész összetevőkként) importálódnak, és példányaik App::Link objektumokká válnak, megőrizve a blokk szerkezetét. 
+      <translation>Parametrikus alkatrész objektumokat hoz létre (pl. Part::Line, Part::Circle). A blokkok meghatározásai újrafelhasználható objektumokként (Alkatrész összetevőkként) importálódnak, és példányaik App::Link objektumokká válnak, megőrizve a blokk szerkezetét.
 A legjobb megoldás a szkriptek feldolgozásához és az alkatrész munkafelületben való integráláshoz.</translation>
     </message>
     <message>
@@ -2323,7 +2323,7 @@ A legjobb megoldás a szkriptek feldolgozásához és az alkatrész munkafelüle
       <source>Creates a non-parametric shape for each DXF entity. Block definitions are
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
-      <translation>Nem-parametrikus alakzatot hoz létre minden DXF-elemhez. A blokkdefiníciókat 
+      <translation>Nem-parametrikus alakzatot hoz létre minden DXF-elemhez. A blokkdefiníciókat
 újrafelhasználható objektumokként (Alkatrész összetevők) importálja, és a példányok `App::Link`
  objektumokká válnak, megtartva a blokkstruktúrát. Jól használható referenciázáshoz és méréshez.</translation>
     </message>
@@ -2433,7 +2433,7 @@ Ellenkező esetben az alapértelmezett FreeCAD színek kerülnek alkalmazásra</
       <location filename="../ui/preferences-dxf.ui" line="411"/>
       <source>If checked, imported texts will get the standard Draft text size, instead of
 the size defined in the DXF document. (Legacy importer only)</source>
-      <translation>Ha bejelölt, az importált szövegek a DXF-dokumentumban meghatározott méret helyett 
+      <translation>Ha bejelölt, az importált szövegek a DXF-dokumentumban meghatározott méret helyett
 a szabványos tervrajz-szövegméretet kapják. (Csak a régebbi importőr)</translation>
     </message>
     <message>
@@ -2525,7 +2525,7 @@ Ez sikertelen lehet a DXF R12 utáni sablonokon.</translation>
       <location filename="../ui/preferences-draftsnap.ui" line="92"/>
       <source>If checked, the outline of a human figure is displayed at the bottom left
 corner of the grid. Only effective if "Show grid border" is enabled.</source>
-      <translation>Ha bejelölt, akkor egy emberi alak körvonala jelenik meg a rács bal 
+      <translation>Ha bejelölt, akkor egy emberi alak körvonala jelenik meg a rács bal
 alsó sarkában. Csak akkor érvényes, ha a "Rácshatár megjelenítése" engedélyezve van.</translation>
     </message>
     <message>
@@ -3579,7 +3579,7 @@ https://wiki.freecad.org/Import_Export_Preferences</translation>
 Try moving the DWG file to a directory path without spaces and non-english characters,
 or try saving to a lower DWG version.</source>
       <translation>Hiba történt a DWG konverzió során.
-Próbáld meg áthelyezni a DWG fájlt szóközök és nem angol karakterek nélküli könyvtár elérési útra, 
+Próbáld meg áthelyezni a DWG fájlt szóközök és nem angol karakterek nélküli könyvtár elérési útra,
 vagy próbáld meg alacsonyabb DWG verzióra menteni.</translation>
     </message>
     <message>
@@ -4323,7 +4323,7 @@ vagy próbáld meg alacsonyabb DWG verzióra menteni.</translation>
       <location filename="../../draftguitools/gui_rotate.py" line="336"/>
       <source>The amount of rotation to perform.
 The final angle will be the base angle plus this amount.</source>
-      <translation>A végrehajtandó forgatás mértéke. 
+      <translation>A végrehajtandó forgatás mértéke.
 A teljes szög az alap szög plusz ennek az összeg lesz.</translation>
     </message>
     <message>
@@ -6446,7 +6446,7 @@ A FreeCAD letöltésének bekapcsolásához válassza az "Igen"-t.</translation>
       <source>Download of DXF libraries failed.
 Please install the DXF Library addon manually
 from menu Tools → Addon Manager</source>
-      <translation>DXF könyvtárak letöltése nem sikerült. 
+      <translation>DXF könyvtárak letöltése nem sikerült.
 Kérjük, telepítse a DXF könyvtár kiegészítőt
 kézzel az Eszközök → Kiegészítő kezelő menüből</translation>
     </message>
@@ -6629,7 +6629,7 @@ If the "Copy" option is active, it creates displaced copies.</source>
       <location filename="../../draftguitools/gui_rotate.py" line="65"/>
       <source>Rotates the selected objects.
 If the "Copy" option is active, it will create rotated copies.</source>
-      <translation>Forgassa el a kiválasztott objektumokat. 
+      <translation>Forgassa el a kiválasztott objektumokat.
 Ha a "Másolás" beállítás be van kapcsolva, forgatott példányok jönnek létre.</translation>
     </message>
   </context>
@@ -6874,8 +6874,8 @@ It can also create an offset copy of the original object.</source>
       <source>Heals faulty Draft objects saved with an earlier version of FreeCAD.
 If an object is selected it tries to heal only that object,
 otherwise it tries to heal all objects in the active document.</source>
-      <translation>Javítja a hibás tervrajz objektumokat, amelyeket egy korábbi FreeCAD verzióval mentettek. 
-Ha egy objektum kijelölt, megpróbálja kijavítani azt az objektumot, 
+      <translation>Javítja a hibás tervrajz objektumokat, amelyeket egy korábbi FreeCAD verzióval mentettek.
+Ha egy objektum kijelölt, megpróbálja kijavítani azt az objektumot,
 különben megpróbálja kijavítani az aktív dokumentum összes objektumát.</translation>
     </message>
   </context>
@@ -7022,9 +7022,9 @@ Igazra állítva egyesíti vagy hamisra az összekapcsoláshoz</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>Az ív végszöge (teljes körhöz 
+      <translation>Az ív végszöge (teljes körhöz
                 ugyanazt az értéket adja meg, mint az első szögben)</translation>
     </message>
     <message>
@@ -7180,7 +7180,7 @@ to the left or below the 'Text', otherwise to the right or above it,
 depending on the value of 'Straight Direction'.</source>
       <translation>A vezérvonal egyenes szegmensének hossza.
 
-Ez egy összehangolt távolság. Ha negatív, a vonal 
+Ez egy összehangolt távolság. Ha negatív, a vonal
 'Szöveg' alatt vagy balra, ellenkező esetben jobbra vagy felette,
 az 'Egyenes iránya' tulajdonság értékétől függően.</translation>
     </message>
@@ -7208,31 +7208,12 @@ Ez a tulajdonság írásvédett, mivel a végleges szöveg a 'Felirattípustól'
 Az 'Egyéni szöveg" csak akkor jelenik meg, ha a 'Felirattípus' beállítása 'Egyéni'.</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>A címke által megjelenített információ típusa.
-
-Ha az 'Egyéni' beállítást választja, a program az 'Egyéni szöveg' tartalmát használja.
-Más típusok esetében a karakterlánc automatikusan kiszámításra kerül a 'Cél' mezőben definiált objektumokból.
-A 'Címke' és az 'Anyag' csak olyan tárgyaknál működik, amelyek rendelkeznek ilyen tulajdonságokkal, például BIM objektumokkal.
-
-A 'Pozíció', a 'Hossz' és a 'Terület' tulajdonságokat a 'Cél' fő objektumból
-vagy a 'VégpontN', 'ÉlN' vagy 'FelületN' részelemből, ha megadott.</translation>
-    </message>
-    <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
       <source>General scaling factor that affects the annotation consistently
 because it scales the text, and the line decorations, if any,
 in the same proportion.</source>
       <translation>Általános léptéktényező, amely következetesen befolyásolja a jegyzetet
-mert skálázza a szöveget, és a vonal dekorációkat, ha rendelkezésre állnak, 
+mert skálázza a szöveget, és a vonal dekorációkat, ha rendelkezésre állnak,
 azonos arányban.</translation>
     </message>
     <message>
@@ -7509,11 +7490,6 @@ Ez a tulajdonság csak olvasható, mert a szám a 'Pont objektum' elemi pontjait
       <translation>Mutassa a rejtett vonalakat</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Ugyanazon típusú anyagból készült fal és építő elemeket olvaszt egybe</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Mozaikos ellipsziseket és B-Görbéket vonalszakaszokba</translation>
@@ -7615,10 +7591,10 @@ Ez a tulajdonság csak olvasható, mert a szám a 'Pont objektum' elemi pontjait
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>Az elliptikus ív befejező szöge 
+      <translation>Az elliptikus ív befejező szöge
 
                   (egy teljes körhöz, adja meg a kezdő szög értékét)</translation>
     </message>
@@ -7698,7 +7674,7 @@ that displays the measured angle.</source>
 
 - Lineáris méreteknél ez a tulajdonság határozza meg, hogy a méretvonal mennyire van
 a mért tárgytól.
-- Radiális méretekhez ez határozza meg a méretvonal irányát, 
+- Radiális méretekhez ez határozza meg a méretvonal irányát,
 amely jelzi a mért sugarat vagy átmérőt.
 - Szögméreteknél, ez szabályozza a méret ív sugarát,
 amely megjeleníti a mért szöget.</translation>
@@ -8238,7 +8214,7 @@ a méretvonalon túl</translation>
       <location filename="../../draftguitools/gui_beziers.py" line="271"/>
       <source>Creates a Bézier curve made of 2nd degree (quadratic) and 3rd degree (cubic) segments. Clicking and dragging allows to define segments.
 Control points and properties of each knot can be edited after creation.</source>
-      <translation>Hozzon létre másodfokú (kvadratikus) és harmadfokú (köbös) szegmensekből álló Bézier-görbét. Kattintással és húzással meghatározhatja a szegmenseket. 
+      <translation>Hozzon létre másodfokú (kvadratikus) és harmadfokú (köbös) szegmensekből álló Bézier-görbét. Kattintással és húzással meghatározhatja a szegmenseket.
 A vezérlőpontok és minden csomópont tulajdonságai a létrehozás után szerkeszthetők.</translation>
     </message>
   </context>
@@ -8295,8 +8271,8 @@ Ha más objektumok vannak kiválasztva, azokat figyelmen kívül hagyják.</tran
       <source>Converts bidirectionally between Draft objects and sketches.
 Multiple selected Draft objects are converted into a single sketch.
 However, a single sketch with disconnected traces is converted into several individual Draft objects.</source>
-      <translation>Kétirányúan konvertál tervrajz objektumokat és vázlatokat. 
-Több kiválasztott tervrajz objektum egyetlen vázlatba kerül konvertálásra. 
+      <translation>Kétirányúan konvertál tervrajz objektumokat és vázlatokat.
+Több kiválasztott tervrajz objektum egyetlen vázlatba kerül konvertálásra.
 Azonban egyetlen vázlat, amely szüneteket tartalmaz, több tervrajz objektummá alakul.</translation>
     </message>
   </context>
@@ -8346,11 +8322,6 @@ Azonban egyetlen vázlat, amely szüneteket tartalmaz, több tervrajz objektumm�
       <source>Auto-Group</source>
       <translation>Auto csoportosítás</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Új vázlat- és BIM-objektumok hozzáadása a kiválasztott réteghez vagy csoporthoz</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8364,8 +8335,8 @@ Azonban egyetlen vázlat, amely szüneteket tartalmaz, több tervrajz objektumm�
       <source>Adds the selected objects to the construction group,
 and changes their appearance to the construction style.
 The construction group is created if it does not exist.</source>
-      <translation>Hozzáadja a kiválasztott tárgyakat az szerkesztő csoporthoz, 
-és megváltoztatja a megjelenésüket szerkesztő stílusra. 
+      <translation>Hozzáadja a kiválasztott tárgyakat az szerkesztő csoporthoz,
+és megváltoztatja a megjelenésüket szerkesztő stílusra.
 Az szerkesztő csoport létrejön, ha még nem létezik.</translation>
     </message>
   </context>
@@ -8435,7 +8406,7 @@ If a polyline is selected, it will apply the slope transformation to each of its
 
 The slope will always change the Z value, therefore this command only works well for
 straight Draft lines that are drawn on the XY-plane.</source>
-      <translation>A kijelölt vonal meredekségét az egyik pontjának Z értékének módosításával határozza meg. 
+      <translation>A kijelölt vonal meredekségét az egyik pontjának Z értékének módosításával határozza meg.
 Ha egy vonallánc kijelölt, a meredekség átalakítása a szakaszainak mindegyikére érvényes.
 
 A meredekség mindig a Z értéket változtatja meg. Ezért ez a parancs csak a XY síkon rajzolt
@@ -8710,11 +8681,6 @@ The initial projection direction is the opposite of the current active view dire
       <source>Snap Center</source>
       <translation>Középpont illesztés</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>A felület és kör alakú élek középpontjához, valamint a munkasík-helyettesítő és az építőelemek elhelyezési pontjához illeszt</translation>
-    </message>
   </context>
   <context>
     <name>Draft_Snap_Extension</name>
@@ -8903,8 +8869,8 @@ The initial projection direction is the opposite of the current active view dire
 reusable objects (Part Compounds) and instances become `App::Link` objects,
 maintaining the block structure. Best for full integration with the Draft
 workbench.</source>
-      <translation>Teljesen paraméteres tervrajz objektumok létrehozása. A blokkdefiníciók 
-újrahasznosítható objektumokként (Alkatrész összetevők) importáljuk, és a példányok „App::Link” objektumokká válnak, 
+      <translation>Teljesen paraméteres tervrajz objektumok létrehozása. A blokkdefiníciók
+újrahasznosítható objektumokként (Alkatrész összetevők) importáljuk, és a példányok „App::Link” objektumokká válnak,
 így megőrizve a blokk szerkezetet. Ideális a tervrajz munkafelület teljes integrációjához.</translation>
     </message>
     <message>
@@ -8918,7 +8884,7 @@ workbench.</source>
 definitions are imported as reusable objects (Part Compounds) and instances
 become `App::Link` objects, maintaining the block structure. Best for
 script-based post-processing.</source>
-      <translation>Parametrikus alkatrész objektumokat hoz létre (pl. Part::Line, Part::Circle). A blokkok meghatározásai újrafelhasználható objektumokként (Alkatrész összetevőkként) importálódnak, és példányaik App::Link objektumokká válnak, megőrizve a blokk szerkezetét. 
+      <translation>Parametrikus alkatrész objektumokat hoz létre (pl. Part::Line, Part::Circle). A blokkok meghatározásai újrafelhasználható objektumokként (Alkatrész összetevőkként) importálódnak, és példányaik App::Link objektumokká válnak, megőrizve a blokk szerkezetét.
 Legjobb szkript-alapú utófeldolgozáshoz.</translation>
     </message>
     <message>
@@ -8931,7 +8897,7 @@ Legjobb szkript-alapú utófeldolgozáshoz.</translation>
       <source>Creates a non-parametric shape for each DXF entity. Block definitions are
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
-      <translation>Nem-parametrikus alakzatot hoz létre minden DXF-elemhez. A blokkdefiníciókat 
+      <translation>Nem-parametrikus alakzatot hoz létre minden DXF-elemhez. A blokkdefiníciókat
 újrafelhasználható objektumokként (Alkatrész összetevők) importálja, és a példányok `App::Link`
  objektumokká válnak, megtartva a blokkstruktúrát. Jól használható referenciázáshoz és méréshez.</translation>
     </message>

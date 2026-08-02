@@ -302,39 +302,25 @@ TaskDlgFemConstraintSpring::TaskDlgFemConstraintSpring(ViewProviderFemConstraint
 
 bool TaskDlgFemConstraintSpring::accept()
 {
-    /* Note: */
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintSpring* parameterStiffness = static_cast<const TaskFemConstraintSpring*>(
         parameter
     );
-    // const TaskFemConstraintSpring* parameterTan = static_cast<const
-    // TaskFemConstraintSpring>(parameter);
 
     try {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.NormalStiffness = \"%s\"",
-            name.c_str(),
+        runConstraintCommand(
+            "NormalStiffness = \"%s\"",
             parameterStiffness->getNormalStiffness().c_str()
         );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.TangentialStiffness = \"%s\"",
-            name.c_str(),
+        runConstraintCommand(
+            "TangentialStiffness = \"%s\"",
             parameterStiffness->getTangentialStiffness().c_str()
         );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.ElmerStiffness = '%s'",
-            name.c_str(),
-            parameterStiffness->getElmerStiffness().c_str()
-        );
+        runConstraintCommand("ElmerStiffness = '%s'", parameterStiffness->getElmerStiffness().c_str());
     }
     catch (const Base::Exception& e) {
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));
         return false;
     }
-    /* */
     return TaskDlgFemConstraint::accept();
 }
 

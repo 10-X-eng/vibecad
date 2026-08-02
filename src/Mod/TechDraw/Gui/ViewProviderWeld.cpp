@@ -33,6 +33,7 @@
 #include <Gui/Selection/Selection.h>
 
 #include "PreferencesGui.h"
+#include "TaskDocumentGuard.h"
 #include "TaskWeldingSymbol.h"
 #include "ViewProviderWeld.h"
 #include "QGIView.h"
@@ -96,19 +97,23 @@ bool ViewProviderWeld::setEdit(int ModNum)
     if (ModNum != ViewProvider::Default ) {
         return ViewProviderDrawingView::setEdit(ModNum);
     }
-    if (Gui::Control().activeDialog())  {         //TaskPanel already open!
+    auto* weld = getFeature();
+    if (!weld || Gui::Control().activeDialog(weld->getDocument())) {
         return false;
     }
     // clear the selection (convenience)
     Gui::Selection().clearSelection();
-    Gui::Control().showDialog(new TaskDlgWeldingSymbol(getFeature()));
+    TaskInternal::showDocumentDialog(
+        new TaskDlgWeldingSymbol(weld),
+        weld->getDocument()
+    );
     return true;
 }
 
 bool ViewProviderWeld::doubleClicked()
 {
 //    Base::Console().message("VPW::doubleClicked()\n");
-    setEdit(ViewProvider::Default);
+    startDefaultEditMode();
     return true;
 }
 

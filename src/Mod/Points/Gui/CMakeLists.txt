@@ -3,6 +3,7 @@
 set(PointsGui_LIBS
     Points
     FreeCADGui
+    MeshGui
 )
 
 set(Dialog_UIC_SRCS

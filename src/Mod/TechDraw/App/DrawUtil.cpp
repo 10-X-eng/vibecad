@@ -20,11 +20,13 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <sstream>
+#include <string_view>
 
 #include <boost_regex.hpp>
 
@@ -63,6 +65,10 @@
 #include <Base/UnitsApi.h>
 #include <Base/Vector3D.h>
 
+#include <App/DocumentTimeline.h>
+#include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
+
 #include "DrawUtil.h"
 #include "GeometryObject.h"
 #include "LineGroup.h"
@@ -71,6 +77,114 @@
 
 
 using namespace TechDraw;
+
+/*static*/ bool DrawUtil::isActiveInDocumentTimeline(const App::DocumentObject* object)
+{
+    try {
+        if (!App::DocumentTimeline::
+                isObjectUsableAtCurrentPosition(object)) {
+            return false;
+        }
+        const auto* linked = object->getLinkedObject(true);
+        return !linked || linked == object
+            || App::DocumentTimeline::
+                isObjectUsableAtCurrentPosition(linked);
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+/*static*/ void DrawUtil::markAsTimelineResource(App::DocumentObject* resource,
+                                                 App::DocumentObject* owner)
+{
+    if (!resource || !owner || resource == owner) {
+        throw Base::ValueError("A TechDraw timeline resource requires a distinct owner");
+    }
+    if (!resource->getDocument() || resource->getDocument() != owner->getDocument()) {
+        throw Base::ValueError(
+            "A TechDraw timeline resource and its owner must share a document"
+        );
+    }
+
+    auto ensureProperty = [](App::DocumentObject* object,
+                             const char* type,
+                             const char* name,
+                             const char* description) {
+        if (auto* existing = object->getPropertyByName(name)) {
+            return existing;
+        }
+        return object->addDynamicProperty(
+            type,
+            name,
+            "Timeline",
+            description,
+            App::Prop_NoRecompute,
+            true,
+            true
+        );
+    };
+
+    auto* role = dynamic_cast<App::PropertyString*>(
+        ensureProperty(
+            resource,
+            "App::PropertyString",
+            App::DocumentTimeline::RolePropertyName,
+            "Document timeline classification"
+        )
+    );
+    auto* ownerProperty = dynamic_cast<App::PropertyLinkHidden*>(
+        ensureProperty(
+            resource,
+            "App::PropertyLinkHidden",
+            App::DocumentTimeline::OwnerPropertyName,
+            "Durable operation which owns this generated TechDraw resource"
+        )
+    );
+    auto* ownerRole = dynamic_cast<App::PropertyString*>(
+        ensureProperty(
+            owner,
+            "App::PropertyString",
+            App::DocumentTimeline::RolePropertyName,
+            "Document timeline classification"
+        )
+    );
+    if (!role || !ownerProperty || !ownerRole) {
+        throw Base::TypeError(
+            "TechDraw timeline metadata properties have incompatible types"
+        );
+    }
+    const auto* ownerLinkProperty = owner->getPropertyByName(
+        App::DocumentTimeline::OwnerPropertyName
+    );
+    const auto* ownerLink = dynamic_cast<const App::PropertyLinkHidden*>(
+        ownerLinkProperty
+    );
+    if (std::string_view(ownerRole->getValue())
+            == App::DocumentTimeline::ResourceRole
+        || (ownerLinkProperty
+            && (!ownerLink || ownerLink->getValue()))) {
+        throw Base::ValueError(
+            "A generated TechDraw resource cannot be owned by another "
+            "timeline resource"
+        );
+    }
+
+    ownerProperty->setValue(owner);
+    role->setValue(App::DocumentTimeline::ResourceRole);
+    ownerRole->setValue(App::DocumentTimeline::OperationRole);
+
+    for (auto* property : std::array<App::Property*, 3> {
+             role,
+             ownerProperty,
+             ownerRole,
+         }) {
+        property->setStatus(App::Property::ReadOnly, false);
+        property->setStatus(App::Property::Hidden, true);
+        property->setStatus(App::Property::LockDynamic, true);
+        property->setStatus(App::Property::NoRecompute, true);
+    }
+}
 
 /*static*/ int DrawUtil::getIndexFromName(const std::string& geomName)
 {

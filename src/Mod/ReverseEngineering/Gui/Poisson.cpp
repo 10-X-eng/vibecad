@@ -26,15 +26,43 @@
 
 
 #include <App/Document.h>
+#include <Base/Exception.h>
+#include <Base/Interpreter.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/WaitCursor.h>
+#include <Mod/Mesh/App/MeshFeature.h>
+#include <Mod/Points/App/PointsFeature.h>
 
+#include "OperationSupport.h"
 #include "Poisson.h"
 #include "ui_Poisson.h"
 
 
 using namespace ReenGui;
+
+namespace
+{
+
+bool poissonSupportAvailable()
+{
+    Base::PyGILStateLocker lock;
+    PyObject* module = PyImport_ImportModule("ReverseEngineering");
+    if (!module) {
+        PyErr_Clear();
+        return false;
+    }
+    const int available = PyObject_HasAttrString(module, "poissonReconstruction");
+    Py_DECREF(module);
+    if (available < 0) {
+        PyErr_Clear();
+        return false;
+    }
+    return available != 0;
+}
+
+}  // namespace
 
 class PoissonWidget::Private
 {
@@ -63,8 +91,22 @@ PoissonWidget::~PoissonWidget()
 bool PoissonWidget::accept()
 {
     try {
-        QString document = QString::fromStdString(d->obj.getDocumentPython());
-        QString object = QString::fromStdString(d->obj.getObjectPython());
+        auto* source = ReverseEngineeringGui::OperationSupport::usableTaskSource(d->obj);
+        auto* pointCloud = freecad_cast<Points::Feature*>(source);
+        auto* document = source ? source->getDocument() : nullptr;
+        if (!pointCloud || !document || pointCloud->Points.getValue().size() == 0) {
+            throw Base::RuntimeError(
+                "The original point cloud is no longer available for reconstruction"
+            );
+        }
+        if (!poissonSupportAvailable()) {
+            throw Base::RuntimeError(
+                "Poisson reconstruction requires a VibeCAD build with PCL Surface support"
+            );
+        }
+
+        const QString documentPython = QString::fromStdString(d->obj.getDocumentPython());
+        const QString objectPython = QString::fromStdString(d->obj.getObjectPython());
 
         QString argument = QStringLiteral(
                                "Points=%1.Points, "
@@ -72,7 +114,7 @@ bool PoissonWidget::accept()
                                "SolverDivide=%3, "
                                "SamplesPerNode=%4"
         )
-                               .arg(object)
+                               .arg(objectPython)
                                .arg(d->ui.octreeDepth->value())
                                .arg(d->ui.solverDivide->value())
                                .arg(d->ui.samplesPerNode->value());
@@ -80,18 +122,47 @@ bool PoissonWidget::accept()
                               "%1.addObject(\"Mesh::Feature\", \"Poisson\").Mesh = "
                               "ReverseEngineering.poissonReconstruction(%2)"
         )
-                              .arg(document, argument);
+                              .arg(documentPython, argument);
 
         Gui::WaitCursor wc;
+        Gui::ExactTransaction mutation(
+            *document,
+            QT_TRANSLATE_NOOP("Command", "Poisson reconstruction")
+        );
+        const auto previousIds = ReverseEngineeringGui::OperationSupport::objectIds(*document);
         Gui::Command::addModule(Gui::Command::App, "ReverseEngineering");
-        d->obj.getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Poisson reconstruction"));
         Gui::Command::runCommand(Gui::Command::Doc, command.toLatin1());
-        d->obj.getDocument()->commitTransaction();
+
+        auto created = ReverseEngineeringGui::OperationSupport::createdObjects(*document, previousIds);
+        std::vector<Mesh::Feature*> outputs;
+        for (auto* object : created) {
+            if (auto* mesh = freecad_cast<Mesh::Feature*>(object)) {
+                outputs.push_back(mesh);
+            }
+        }
+        if (outputs.size() != 1 || outputs.front()->Mesh.getValue().countFacets() == 0) {
+            throw Base::RuntimeError("Poisson reconstruction did not produce exactly one usable mesh");
+        }
+        auto* output = outputs.front();
+        output->Label.setValue(pointCloud->Label.getStrValue() + " Poisson Surface");
+        ReverseEngineeringGui::OperationSupport::setSource(*output, *pointCloud);
+        ReverseEngineeringGui::OperationSupport::publishSourcePreserving(
+            *document,
+            {pointCloud},
+            {output},
+            "PoissonSurface",
+            "Poisson Surface",
+            "Poisson reconstruction"
+        );
+        document->recompute();
+        if (output->isError() || output->Mesh.getValue().countFacets() == 0) {
+            throw Base::RuntimeError("The reconstructed Poisson mesh is invalid");
+        }
+        ReverseEngineeringGui::OperationSupport::commit(mutation);
         Gui::Command::updateActive();
     }
     catch (const Base::Exception& e) {
-        d->obj.getDocument()->abortTransaction();
-        QMessageBox::warning(this, tr("Input Error"), QString::fromLatin1(e.what()));
+        QMessageBox::warning(this, tr("Poisson Reconstruction"), QString::fromUtf8(e.what()));
         return false;
     }
 
@@ -111,6 +182,10 @@ void PoissonWidget::changeEvent(QEvent* e)
 
 TaskPoisson::TaskPoisson(const App::DocumentObjectT& obj)
 {
+    if (auto* document = obj.getDocument()) {
+        setDocumentName(document->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
     widget = new PoissonWidget(obj);
     addTaskBox(Gui::BitmapFactory().pixmap("actions/FitSurface"), widget);
 }

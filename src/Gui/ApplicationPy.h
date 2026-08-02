@@ -72,6 +72,7 @@ public:
     static PyObject* sShow                     (PyObject *self,PyObject *args); // deprecated
     static PyObject* sHideObject               (PyObject *self,PyObject *args); // hide view provider object
     static PyObject* sShowObject               (PyObject *self,PyObject *args); // show view provider object
+    static PyObject* sTimelineOperationDeletionPlan(PyObject *self,PyObject *args);
 
     static PyObject* sOpen                     (PyObject *self,PyObject *args); // open Python scripts
     static PyObject* sInsert                   (PyObject *self,PyObject *args); // open Python scripts
@@ -93,6 +94,7 @@ public:
     static PyObject* sDoCommand                (PyObject *self,PyObject *args);
     static PyObject* sDoCommandGui             (PyObject *self,PyObject *args);
     static PyObject* sDoCommandEval            (PyObject *self,PyObject *args);
+    static PyObject* sRunDocumentObjectCommand (PyObject *self,PyObject *args);
     static PyObject* sDoCommandSkip            (PyObject *self,PyObject *args);
     static PyObject* sAddModule                (PyObject *self,PyObject *args);
 

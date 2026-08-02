@@ -24,6 +24,9 @@
 
 #pragma once
 
+#include <string>
+#include <utility>
+
 #include <fastsignals/signal.h>
 
 #include <Gui/TaskView/TaskDialog.h>
@@ -37,6 +40,11 @@
 
 
 using Connection = fastsignals::connection;
+
+namespace App
+{
+class Document;
+}
 
 namespace SketcherGui
 {
@@ -89,6 +97,8 @@ protected:
 private:
     void slotToolChanged(const std::string& toolname);
     void saveDialogState() const;
+    Gui::Document* resolveExactGuiDocument() const;
+    ViewProviderSketch* resolveExactSketchView() const;
 
 protected:
     ViewProviderSketch* sketchView;
@@ -101,6 +111,11 @@ protected:
 private:
     Connection connectionToolSettings;
     bool isEscapeAction {false};
+    App::Document* exactDocument {nullptr};
+    std::string exactDocumentName;
+    std::string exactDocumentUid;
+    long exactSketchId {0};
+    std::string exactSketchName;
 };
 
 

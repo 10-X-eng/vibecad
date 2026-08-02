@@ -28,7 +28,6 @@
 #include <QEvent>
 #include <QFileInfo>
 #include <QImage>
-#include <QPushButton>
 #include <QStyledItemDelegate>
 
 class FileCardDelegate: public QStyledItemDelegate
@@ -55,7 +54,6 @@ private:
     Base::Reference<ParameterGrp> _parameterGroup;
     const int margin = 11;
     const int textspacing = 2;
-    QPushButton styleButton;
 
     static QCache<QString, QPixmap> _thumbnailCache;  // cache key structure: "path:modtime:size"
     static constexpr const int CACHE_SIZE_MB = 50;    // 50MB cache limit

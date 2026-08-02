@@ -29,6 +29,7 @@
 #include <QTextStream>
 
 
+#include <App/Application.h>
 #include <App/Document.h>
 #include <App/Origin.h>
 #include <Base/Console.h>
@@ -68,8 +69,11 @@ const QString TaskSketchBasedParameters::onAddSelection(
 {
     // Note: The validity checking has already been done in ReferenceSelection.cpp
     auto sketchBased = getObject<PartDesign::ProfileBased>();
-    App::DocumentObject* selObj = sketchBased->getDocument()->getObject(msg.pObjectName);
-    if (selObj == sketchBased) {
+    App::DocumentObject* selObj = resolveModelingReference(
+        sketchBased,
+        sketchBased->getDocument()->getObject(msg.pObjectName)
+    );
+    if (!selObj || selObj == sketchBased) {
         return QString();
     }
 
@@ -154,7 +158,9 @@ void TaskSketchBasedParameters::onSelectReference(AllowSelectionFlags allow)
         if (AllowSelectionFlags::Int(allow) != int(AllowSelection::NONE)) {
             startReferenceSelection(sketchBased, prevSolid);
             this->blockSelection(false);
-            Gui::Selection().clearSelection();
+            Gui::Selection().clearSelection(
+                sketchBased->getDocument()->getName()
+            );
             Gui::Selection().addSelectionGate(new ReferenceSelection(prevSolid, allow));
         }
         else {
@@ -338,17 +344,42 @@ bool TaskDlgSketchBasedParameters::reject()
         throw Base::TypeError("Bad object processed in the sketch based dialog.");
     }
 
-    App::DocumentObjectWeakPtrT weakptr(feature);
-    auto sketch = dynamic_cast<Sketcher::SketchObject*>(feature->Profile.getValue());
+    auto* document = feature->getDocument();
+    const std::string documentName =
+        document ? document->getName() : std::string();
+    const std::string featureName =
+        feature->getNameInDocument() ? feature->getNameInDocument() : "";
+    auto* sketch =
+        dynamic_cast<Sketcher::SketchObject*>(feature->Profile.getValue());
+    const std::string sketchName =
+        sketch && sketch->getNameInDocument()
+        ? sketch->getNameInDocument()
+        : "";
 
     bool value = TaskDlgFeatureParameters::reject();
 
-    // if abort command deleted the object the sketch is visible again.
-    // The previous one feature already should be made visible
-    if (weakptr.expired()) {
-        // Make the sketch visible
-        if (sketch && Gui::Application::Instance->getViewProvider(sketch)) {
-            Gui::Application::Instance->getViewProvider(sketch)->show();
+    // Rollback may delete both the provisional feature and a sketch created
+    // by the same command. Resolve by document/name after rollback instead of
+    // retaining either raw pointer across transaction restoration.
+    App::Document* restoredDocument = nullptr;
+    try {
+        restoredDocument =
+            App::GetApplication().getDocument(documentName.c_str());
+    }
+    catch (...) {
+    }
+    const bool featureWasRemoved =
+        restoredDocument
+        && (featureName.empty()
+            || !restoredDocument->getObject(featureName.c_str()));
+    auto* restoredSketch =
+        restoredDocument && !sketchName.empty()
+        ? restoredDocument->getObject(sketchName.c_str())
+        : nullptr;
+    if (featureWasRemoved && restoredSketch) {
+        if (auto* viewProvider =
+                Gui::Application::Instance->getViewProvider(restoredSketch)) {
+            viewProvider->show();
         }
     }
 

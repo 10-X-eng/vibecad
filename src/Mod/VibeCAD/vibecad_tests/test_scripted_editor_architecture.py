@@ -4,11 +4,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-import VibeCADBuild123d as build123d
-import VibeCADOpenSCAD as openscad
 import VibeCADVibeScriptDomains as domains
+import VibeCADVibeScriptDomainRuntime as runtime
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -29,47 +29,6 @@ class _Document:
     Name = "EditorIndex"
     Uid = "editor-index-document"
     Objects = [_ShapeTrap()]
-
-
-class _DirectEngineModel:
-    Name = "DirectModel"
-    Label = "Direct model"
-    TypeId = "App::Part"
-    PropertiesList = list(
-        {
-            build123d.PROP_MODEL_ID,
-            build123d.PROP_SOURCE,
-            build123d.PROP_REVISION,
-            openscad.PROP_MODEL_ID,
-        }
-    )
-
-    @property
-    def Shape(self):
-        raise AssertionError("A selector index must never access model geometry")
-
-    def __getattr__(self, name: str):
-        values = {
-            build123d.PROP_MODEL_ID: "a" * 32,
-            build123d.PROP_SOURCE: "result = {}\n",
-            build123d.PROP_REVISION: "build-revision",
-            build123d.PROP_RUNTIME_VERSION: "test",
-            build123d.PROP_OUTPUTS: "{}",
-            build123d.PROP_INPUTS: "{}",
-            build123d.PROP_PARAMETERS: "{}",
-            openscad.PROP_MODEL_ID: "b" * 32,
-            openscad.PROP_SOURCE: "cube(1);\n",
-            openscad.PROP_REVISION: "openscad-revision",
-            openscad.PROP_PARAMETERS: "{}",
-            openscad.PROP_OUTPUTS: "{}",
-            openscad.PROP_CONVERSION_MODE: "exact_brep",
-            openscad.PROP_FIDELITY: "exact_brep",
-        }
-        return values.get(name, "")
-
-
-class _DirectDocument:
-    Objects = [_DirectEngineModel()]
 
 
 class _Service:
@@ -101,17 +60,9 @@ def test_editor_program_index_never_captures_domain_geometry() -> None:
     assert "component_candidates" not in completed
 
 
-def test_direct_engine_editor_indexes_never_capture_geometry() -> None:
-    build_index = build123d.editor_model_index_snapshot(_DirectDocument())
-    scad_index = openscad.editor_model_index_snapshot(_DirectDocument())
-    assert len(build_index["native_models"]) == 1
-    assert len(scad_index["native_models"]) == 1
-    assert "shape" not in build_index["native_models"][0]
-    assert "shape" not in scad_index["native_models"][0]
-
-
-def test_editor_uses_explicit_builds_and_native_resizing() -> None:
+def test_editor_is_vibescript_only_with_three_human_actions() -> None:
     source = (ROOT / "src/Mod/VibeCAD/VibeCADScriptedEditor.py").read_text(encoding="utf-8")
+    session = (ROOT / "src/Mod/VibeCAD/VibeCADSession.py").read_text(encoding="utf-8")
     assert "domain_program_index_snapshot(" in source
     assert "domain_context_snapshot(" not in source
     assert ".timer.start()" not in source
@@ -120,5 +71,97 @@ def test_editor_uses_explicit_builds_and_native_resizing() -> None:
     assert "widget.setMinimumWidth" not in source
     assert "widget.setMinimumHeight" not in source
     assert '"VibeScriptedContentSplitter"' in source
+    assert '("New", "VibeScriptedNew"' in source
+    assert '"Save",' in source
+    assert '"VibeScriptedSave"' in source
     assert '"Build", "VibeScriptedRender"' in source
-    assert '"Apply", "VibeScriptedAccept"' in source
+    assert 'QtWidgets.QToolButton(selector_row)' in source
+    assert 'setObjectName("VibeScriptedDelete")' in source
+    assert '"vibescript_program_deleted"' in source
+    assert 'f"vibescript.{self.domain}.delete_program"' in source
+    assert "VibeScriptedAccept" not in source
+    assert "VibeScriptedRevert" not in source
+    assert "VibeScriptedImport" not in source
+    assert "VibeScriptedExport" not in source
+    assert "QFileSystemWatcher" not in source
+    assert 'SCRIPTED_ENGINES = {"vibescript"}' in source
+    assert "self._start_vibescript_apply()" in source
+    assert "self._adopt_failed_vibescript_revision(result)" in source
+    assert 'captured["allow_unchanged_revision"] = True' in session
+
+
+def test_editor_delete_lifecycle_accepts_a_failed_source_only_program(
+    tmp_path: Path,
+) -> None:
+    pack = domains.get_vibescript_pack("PartDesignWorkbench")
+    assert pack is not None
+    program_id = "1" * 32
+    source = "result = {'Body': api.box(1, 2, 3)}"
+    input_schema = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+    expected_outputs = [{"name": "Body", "type": "solid"}]
+    revision = domains.program_revision(
+        domain=pack.domain,
+        source=source,
+        input_schema=input_schema,
+        inputs={},
+        expected_outputs=expected_outputs,
+    )
+    directory = tmp_path / "vibescript" / pack.domain / program_id
+    directory.mkdir(parents=True)
+    (directory / "program.json").write_text(
+        json.dumps(
+            {
+                "schema": domains.PROGRAM_SCHEMA,
+                "version": domains.PROGRAM_VERSION,
+                "program_id": program_id,
+                "domain": pack.domain,
+                "workbench": pack.workbench,
+                "label": "Failed source only",
+                "source": source,
+                "input_schema": input_schema,
+                "inputs": {},
+                "expected_outputs": expected_outputs,
+                "working_revision": revision,
+                "accepted_revision": "",
+                "accepted_contract": None,
+                "live_outputs": {},
+                "latest_candidate": {
+                    "status": "failed",
+                    "revision": revision,
+                    "failure": {"error": "Candidate did not build."},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    prepared = runtime.prepare_delete(
+        {
+            "pack": pack,
+            "operation": "delete_program",
+            "tool_name": "vibescript.partdesign.delete_program",
+            "arguments": {
+                "program_id": program_id,
+                "expected_revision": revision,
+                "reason": "Deleted from Model Code Editor",
+            },
+            "project_root": str(tmp_path),
+            "document_program": {},
+            "live_programs": [],
+        }
+    )
+    assert not directory.exists()
+    assert Path(prepared["trash_directory"]).is_dir()
+    deleted = runtime.finish_delete(prepared, {"deleted_objects": []})
+    assert deleted == {
+        "ok": True,
+        "program_id": program_id,
+        "domain": "partdesign",
+        "deleted_objects": [],
+        "reason": "Deleted from Model Code Editor",
+        "artifacts_deleted": True,
+    }
+    assert not Path(prepared["trash_directory"]).exists()

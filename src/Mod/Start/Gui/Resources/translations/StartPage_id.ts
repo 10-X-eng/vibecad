@@ -109,16 +109,6 @@
       <translation type="unfinished">Create a 2D Draft with the Draft workbench</translation>
     </message>
     <message>
-      <location filename="../../StartView.cpp" line="193"/>
-      <source>BIM/Architecture</source>
-      <translation type="unfinished">BIM/Architecture</translation>
-    </message>
-    <message>
-      <location filename="../../StartView.cpp" line="194"/>
-      <source>Create an architectural project</source>
-      <translation type="unfinished">Create an architectural project</translation>
-    </message>
-    <message>
       <location filename="../../StartView.cpp" line="434"/>
       <source>New File</source>
       <translation type="unfinished">New File</translation>

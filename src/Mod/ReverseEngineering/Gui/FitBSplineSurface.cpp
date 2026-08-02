@@ -29,15 +29,20 @@
 #include <App/ComplexGeoData.h>
 #include <App/Document.h>
 #include <App/Placement.h>
+#include <Base/Exception.h>
 #include <Base/Converter.h>
 #include <Base/CoordinateSystem.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/WaitCursor.h>
 #include <Mod/Mesh/App/Core/Approximation.h>
+#include <Mod/Mesh/Gui/CommandGuard.h>
+#include <Mod/Part/App/PartFeature.h>
 
 #include "FitBSplineSurface.h"
+#include "OperationSupport.h"
 #include "ui_FitBSplineSurface.h"
 
 
@@ -108,75 +113,95 @@ void FitBSplineSurfaceWidget::saveSettings()
 void FitBSplineSurfaceWidget::onMakePlacementClicked()
 {
     try {
-        App::GeoFeature* geo = d->obj.getObjectAs<App::GeoFeature>();
-        if (geo) {
-            const App::PropertyComplexGeoData* geom = geo->getPropertyOfGeometry();
-            if (geom) {
-                std::vector<Base::Vector3d> points, normals;
-                geom->getComplexData()->getPoints(points, normals, 0.001);
-
-                std::vector<Base::Vector3f> data;
-                std::transform(
-                    points.begin(),
-                    points.end(),
-                    std::back_inserter(data),
-                    [](const Base::Vector3d& v) { return Base::convertTo<Base::Vector3f>(v); }
-                );
-                MeshCore::PlaneFit fit;
-                fit.AddPoints(data);
-                if (fit.Fit() < std::numeric_limits<float>::max()) {
-                    Base::Vector3f base = fit.GetBase();
-                    Base::Vector3f dirU = fit.GetDirU();
-                    Base::Vector3f norm = fit.GetNormal();
-
-                    Base::CoordinateSystem cs;
-                    cs.setPosition(Base::convertTo<Base::Vector3d>(base));
-                    cs.setAxes(
-                        Base::convertTo<Base::Vector3d>(norm),
-                        Base::convertTo<Base::Vector3d>(dirU)
-                    );
-                    Base::Placement pm = Base::CoordinateSystem().displacement(cs);
-                    double q0, q1, q2, q3;
-                    pm.getRotation().getValue(q0, q1, q2, q3);
-
-                    QString argument = QStringLiteral(
-                                           "Base.Placement(Base.Vector(%1, %2, "
-                                           "%3), Base.Rotation(%4, %5, %6, %7))"
-                    )
-                                           .arg(base.x)
-                                           .arg(base.y)
-                                           .arg(base.z)
-                                           .arg(q0)
-                                           .arg(q1)
-                                           .arg(q2)
-                                           .arg(q3);
-
-                    QString document = QString::fromStdString(d->obj.getDocumentPython());
-                    QString command = QStringLiteral(
-                                          R"(%1.addObject("App::Placement", "Placement").Placement = %2)"
-                    )
-                                          .arg(document, argument);
-
-                    d->obj.getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Placement"));
-                    Gui::Command::runCommand(Gui::Command::Doc, "from FreeCAD import Base");
-                    Gui::Command::runCommand(Gui::Command::Doc, command.toLatin1());
-                    d->obj.getDocument()->commitTransaction();
-                    Gui::Command::updateActive();
-                }
-            }
+        auto* source = ReverseEngineeringGui::OperationSupport::usableTaskSource(d->obj);
+        auto* geometrySource = freecad_cast<App::GeoFeature*>(source);
+        auto* targetDocument = source ? source->getDocument() : nullptr;
+        const auto* geometry = geometrySource ? geometrySource->getPropertyOfGeometry() : nullptr;
+        const auto* complexGeometry = geometry ? geometry->getComplexData() : nullptr;
+        if (!geometrySource || !targetDocument || !complexGeometry) {
+            throw Base::RuntimeError("The original geometry is no longer available");
         }
+
+        std::vector<Base::Vector3d> points;
+        std::vector<Base::Vector3d> normals;
+        complexGeometry->getPoints(points, normals, 0.001);
+        if (points.size() < 3) {
+            throw Base::ValueError("Placement fitting requires at least three source points");
+        }
+
+        std::vector<Base::Vector3f> data;
+        data.reserve(points.size());
+        std::transform(
+            points.begin(),
+            points.end(),
+            std::back_inserter(data),
+            [](const Base::Vector3d& point) { return Base::convertTo<Base::Vector3f>(point); }
+        );
+        MeshCore::PlaneFit fit;
+        fit.AddPoints(data);
+        if (fit.Fit() >= std::numeric_limits<float>::max()) {
+            throw Base::RuntimeError("The source points could not define a local placement");
+        }
+
+        Base::CoordinateSystem coordinateSystem;
+        coordinateSystem.setPosition(Base::convertTo<Base::Vector3d>(fit.GetBase()));
+        coordinateSystem.setAxes(
+            Base::convertTo<Base::Vector3d>(fit.GetNormal()),
+            Base::convertTo<Base::Vector3d>(fit.GetDirU())
+        );
+        const Base::Placement placement = Base::CoordinateSystem().displacement(coordinateSystem);
+
+        Gui::ExactTransaction mutation(
+            *targetDocument,
+            QT_TRANSLATE_NOOP("Command", "Create fitted placement")
+        );
+        auto* output = targetDocument->addObject<App::Placement>("FittedPlacement");
+        if (!output) {
+            throw Base::RuntimeError("The fitted placement object could not be created");
+        }
+        output->Label.setValue(geometrySource->Label.getStrValue() + " Placement");
+        output->GeoFeature::Placement.setValue(placement);
+        ReverseEngineeringGui::OperationSupport::setSource(*output, *geometrySource);
+        ReverseEngineeringGui::OperationSupport::publishSourcePreserving(
+            *targetDocument,
+            {geometrySource},
+            {output},
+            "FittedPlacements",
+            "Fitted Placement",
+            "Create fitted placement"
+        );
+        targetDocument->recompute();
+        if (output->isError()) {
+            throw Base::RuntimeError("The fitted placement is invalid");
+        }
+        ReverseEngineeringGui::OperationSupport::commit(mutation);
+        Gui::Command::updateActive();
     }
     catch (const Base::Exception& e) {
-        d->obj.getDocument()->abortTransaction();
-        QMessageBox::warning(this, tr("Input Error"), QString::fromLatin1(e.what()));
+        QMessageBox::warning(this, tr("Create Fitted Placement"), QString::fromUtf8(e.what()));
     }
 }
 
 bool FitBSplineSurfaceWidget::accept()
 {
     try {
-        QString document = QString::fromStdString(d->obj.getDocumentPython());
-        QString object = QString::fromStdString(d->obj.getObjectPython());
+        auto* source = ReverseEngineeringGui::OperationSupport::usableTaskSource(d->obj);
+        auto* geometrySource = freecad_cast<App::GeoFeature*>(source);
+        auto* targetDocument = source ? source->getDocument() : nullptr;
+        const auto* geometry = geometrySource ? geometrySource->getPropertyOfGeometry() : nullptr;
+        const auto* complexGeometry = geometry ? geometry->getComplexData() : nullptr;
+        if (!geometrySource || !targetDocument || !complexGeometry) {
+            throw Base::RuntimeError("The original point cloud or mesh is no longer available");
+        }
+        std::vector<Base::Vector3d> sourcePoints;
+        std::vector<Base::Vector3d> sourceNormals;
+        complexGeometry->getPoints(sourcePoints, sourceNormals, 0.001);
+        if (sourcePoints.size() < 4) {
+            throw Base::ValueError("Surface fitting requires at least four source points");
+        }
+
+        QString documentPython = QString::fromStdString(d->obj.getDocumentPython());
+        QString objectPython = QString::fromStdString(d->obj.getObjectPython());
 
         QString argument = QStringLiteral(
                                "Points=getattr(%1, %1.getPropertyNameOfGeometry()), "
@@ -191,7 +216,7 @@ bool FitBSplineSurfaceWidget::accept()
                                "PatchFactor=%12, "
                                "Correction=True"
         )
-                               .arg(object)
+                               .arg(objectPython)
                                .arg(d->ui.degreeU->value())
                                .arg(d->ui.degreeV->value())
                                .arg(d->ui.polesU->value())
@@ -209,7 +234,8 @@ bool FitBSplineSurfaceWidget::accept()
         if (d->ui.uvdir->isChecked()) {
             std::vector<App::Placement*> selection
                 = Gui::Selection().getObjectsOfType<App::Placement>();
-            if (selection.size() != 1) {
+            if (selection.size() != 1 || selection.front()->getDocument() != source->getDocument()
+                || !MeshGui::isNativeMeshInputActive(selection.front())) {
                 QMessageBox::warning(
                     this,
                     tr("Wrong selection"),
@@ -235,18 +261,48 @@ bool FitBSplineSurfaceWidget::accept()
                               "%1.addObject(\"Part::Spline\", \"Spline\").Shape = "
                               "ReverseEngineering.approxSurface(%2).toShape()"
         )
-                              .arg(document, argument);
+                              .arg(documentPython, argument);
 
         Gui::WaitCursor wc;
+        Gui::ExactTransaction mutation(
+            *targetDocument,
+            QT_TRANSLATE_NOOP("Command", "Fit B-spline surface")
+        );
+        const auto previousIds = ReverseEngineeringGui::OperationSupport::objectIds(*targetDocument);
         Gui::Command::addModule(Gui::Command::App, "ReverseEngineering");
-        d->obj.getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Fit B-spline"));
         Gui::Command::runCommand(Gui::Command::Doc, command.toLatin1());
-        d->obj.getDocument()->commitTransaction();
+
+        auto created
+            = ReverseEngineeringGui::OperationSupport::createdObjects(*targetDocument, previousIds);
+        std::vector<Part::Feature*> outputs;
+        for (auto* createdObject : created) {
+            if (auto* feature = freecad_cast<Part::Feature*>(createdObject)) {
+                outputs.push_back(feature);
+            }
+        }
+        if (outputs.size() != 1 || outputs.front()->Shape.getValue().IsNull()) {
+            throw Base::RuntimeError("Surface fitting did not produce exactly one usable B-spline");
+        }
+        auto* output = outputs.front();
+        output->Label.setValue(geometrySource->Label.getStrValue() + " B-Spline Surface");
+        ReverseEngineeringGui::OperationSupport::setSource(*output, *geometrySource);
+        ReverseEngineeringGui::OperationSupport::publishSourcePreserving(
+            *targetDocument,
+            {geometrySource},
+            {output},
+            "FittedSurface",
+            "Fitted Surface",
+            "Fit B-spline surface"
+        );
+        targetDocument->recompute();
+        if (output->isError() || output->Shape.getValue().IsNull()) {
+            throw Base::RuntimeError("The fitted B-spline surface is invalid");
+        }
+        ReverseEngineeringGui::OperationSupport::commit(mutation);
         Gui::Command::updateActive();
     }
     catch (const Base::Exception& e) {
-        d->obj.getDocument()->abortTransaction();
-        QMessageBox::warning(this, tr("Input Error"), QString::fromLatin1(e.what()));
+        QMessageBox::warning(this, tr("Fit B-Spline Surface"), QString::fromUtf8(e.what()));
         return false;
     }
 
@@ -266,6 +322,10 @@ void FitBSplineSurfaceWidget::changeEvent(QEvent* e)
 
 TaskFitBSplineSurface::TaskFitBSplineSurface(const App::DocumentObjectT& obj)
 {
+    if (auto* document = obj.getDocument()) {
+        setDocumentName(document->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
     widget = new FitBSplineSurfaceWidget(obj);
     addTaskBox(Gui::BitmapFactory().pixmap("actions/FitSurface"), widget);
 }

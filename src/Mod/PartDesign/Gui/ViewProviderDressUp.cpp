@@ -33,6 +33,9 @@
 
 #include <Gui/Application.h>
 #include <Mod/Part/Gui/ReferenceHighlighter.h>
+#include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
+#include <Mod/PartDesign/App/DesignModel.h>
 #include <Mod/PartDesign/App/FeatureDressUp.h>
 
 #include "ViewProviderDressUp.h"
@@ -84,6 +87,33 @@ bool ViewProviderDressUp::setEdit(int ModNum)
         // Otherwise it could call unhandled exception.
         PartDesign::DressUp* dressUp = getObject<PartDesign::DressUp>();
         assert(dressUp);
+        if (auto* selections =
+                dynamic_cast<PartDesign::DesignSubelementOperationProperties*>(
+                    dressUp
+                )) {
+            auto* operation =
+                dynamic_cast<PartDesign::DesignOperationProperties*>(dressUp);
+            const auto groups = selections->targetElementGroups();
+            if (operation
+                && !operation->OutputBodyIds.getValues().empty()
+                && operation->OutputBodyIds.getSize()
+                    == operation->InputStates.getSize()
+                && groups.size()
+                    == static_cast<std::size_t>(
+                        operation->OutputBodyIds.getSize()
+                    )) {
+                return ViewProvider::setEdit(ModNum);
+            }
+            QMessageBox::warning(
+                nullptr,
+                QObject::tr("Feature error"),
+                QObject::tr(
+                    "%1 has no complete Body and subelement target set."
+                )
+                    .arg(QString::fromLatin1(dressUp->getNameInDocument()))
+            );
+            return false;
+        }
         if (dressUp->getBaseObject(/*silent =*/true)) {
             return ViewProvider::setEdit(ModNum);
         }
@@ -108,6 +138,71 @@ bool ViewProviderDressUp::setEdit(int ModNum)
 void ViewProviderDressUp::highlightReferences(const bool on)
 {
     PartDesign::DressUp* pcDressUp = getObject<PartDesign::DressUp>();
+    if (auto* selections =
+            dynamic_cast<PartDesign::DesignSubelementOperationProperties*>(
+                pcDressUp
+            )) {
+        auto* operation =
+            dynamic_cast<PartDesign::DesignOperationProperties*>(pcDressUp);
+        auto* document = pcDressUp ? pcDressUp->getDocument() : nullptr;
+        if (!operation || !document) {
+            return;
+        }
+        const auto bodyIds = operation->OutputBodyIds.getValues();
+        const auto groups = selections->targetElementGroups();
+        if (bodyIds.size() != groups.size()) {
+            return;
+        }
+        for (std::size_t index = 0; index < bodyIds.size(); ++index) {
+            auto* body = PartDesign::DesignModel::bodyWithId(
+                *document,
+                bodyIds[index]
+            );
+            auto* vp = body
+                ? dynamic_cast<PartGui::ViewProviderPart*>(
+                      Gui::Application::Instance->getViewProvider(body)
+                  )
+                : nullptr;
+            if (!vp) {
+                continue;
+            }
+            if (!on) {
+                vp->unsetHighlightedFaces();
+                vp->unsetHighlightedEdges();
+                continue;
+            }
+
+            std::vector<std::string> faces;
+            std::vector<std::string> edges;
+            for (const auto& reference : groups[index]) {
+                if (reference.starts_with("Face")) {
+                    faces.push_back(reference);
+                }
+                else if (reference.starts_with("Edge")) {
+                    edges.push_back(reference);
+                }
+            }
+            PartGui::ReferenceHighlighter highlighter(
+                body->Shape.getValue(),
+                ShapeAppearance.getDiffuseColor()
+            );
+            if (!faces.empty()) {
+                auto materials = vp->ShapeAppearance.getValues();
+                highlighter.getFaceMaterials(faces, materials);
+                vp->setHighlightedFaces(materials);
+            }
+            if (!edges.empty()) {
+                auto colors = vp->LineColorArray.getValues();
+                PartGui::ReferenceHighlighter edgeHighlighter(
+                    body->Shape.getValue(),
+                    LineColor.getValue()
+                );
+                edgeHighlighter.getEdgeColors(edges, colors);
+                vp->setHighlightedEdges(colors);
+            }
+        }
+        return;
+    }
     Part::Feature* base = pcDressUp->getBaseObject(/*silent =*/true);
     if (!base) {
         return;

@@ -113,6 +113,119 @@ int getExternalEdgeId(std::string_view name)
     return -std::atoi(name.substr(extEdge.size(), maxlen).data()) - 2;
 }
 
+template<typename Predicate>
+bool hasSelectedSketchElement(Gui::Document* doc, Predicate&& predicate)
+{
+    if (!isCommandActive(doc)) {
+        return false;
+    }
+
+    const auto selection = Gui::Selection().getSelectionEx(
+        doc->getDocument()->getName()
+    );
+    if (selection.size() != 1
+        || !selection.front().isObjectTypeOf(
+            Sketcher::SketchObject::getClassTypeId()
+        )) {
+        return false;
+    }
+
+    const auto* sketch = static_cast<const Sketcher::SketchObject*>(
+        selection.front().getObject()
+    );
+    auto* editingView =
+        dynamic_cast<SketcherGui::ViewProviderSketch*>(
+            doc->getInEdit()
+        );
+    if (!sketch || !editingView
+        || editingView->getSketchObject() != sketch) {
+        return false;
+    }
+
+    for (const auto& subName : selection.front().getSubNames()) {
+        if (predicate(*sketch, subName)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hasAxesAlignmentRemovalInput(Gui::Document* doc)
+{
+    return hasSelectedSketchElement(
+        doc,
+        [](const Sketcher::SketchObject& sketch, const std::string& subName) {
+            if (isEdge(subName)) {
+                return getEdgeId(subName) >= 0;
+            }
+            if (!isVertex(subName)) {
+                return false;
+            }
+
+            int geometryId = Sketcher::GeoEnum::GeoUndef;
+            Sketcher::PointPos position = Sketcher::PointPos::none;
+            sketch.getGeoVertexIndex(
+                getVertexId(subName),
+                geometryId,
+                position
+            );
+            const Part::Geometry* geometry =
+                geometryId >= 0 ? sketch.getGeometry(geometryId) : nullptr;
+            return geometry && geometry->is<Part::GeomPoint>();
+        }
+    );
+}
+
+bool hasOffsetInput(Gui::Document* doc)
+{
+    return hasSelectedSketchElement(
+        doc,
+        [](const Sketcher::SketchObject& sketch, const std::string& subName) {
+            int geometryId = Sketcher::GeoEnum::GeoUndef;
+            if (isEdge(subName)) {
+                geometryId = getEdgeId(subName);
+            }
+            else if (isExternalEdge(subName)) {
+                geometryId = getExternalEdgeId(subName);
+            }
+            else {
+                return false;
+            }
+
+            const Part::Geometry* geometry = sketch.getGeometry(geometryId);
+            return geometry
+                && !isPoint(*geometry)
+                && !isBSplineCurve(*geometry)
+                && !isEllipse(*geometry)
+                && !isArcOfEllipse(*geometry)
+                && !isArcOfHyperbola(*geometry)
+                && !isArcOfParabola(*geometry)
+                && !GeometryFacade::isInternalAligned(geometry);
+        }
+    );
+}
+
+bool hasInternalGeometryToggleInput(Gui::Document* doc)
+{
+    return hasSelectedSketchElement(
+        doc,
+        [](const Sketcher::SketchObject& sketch, const std::string& subName) {
+            if (!isEdge(subName)) {
+                return false;
+            }
+            const int geometryId = getEdgeId(subName);
+            const Part::Geometry* geometry =
+                geometryId >= 0 ? sketch.getGeometry(geometryId) : nullptr;
+            return geometry
+                && (geometry->is<Part::GeomEllipse>()
+                    || geometry->is<Part::GeomArcOfEllipse>()
+                    || geometry->is<Part::GeomArcOfHyperbola>()
+                    || geometry->is<Part::GeomArcOfParabola>()
+                    || geometry->is<Part::GeomBSplineCurve>());
+        }
+    );
+}
+
 bool isConstraint(std::string_view name)
 {
     const std::string_view constr("Constraint");
@@ -1183,7 +1296,7 @@ void CmdSketcherRestoreInternalAlignmentGeometry::activated(int iMsg)
 
 bool CmdSketcherRestoreInternalAlignmentGeometry::isActive()
 {
-    return isCommandNeedingGeometryActive(getActiveGuiDocument());
+    return hasInternalGeometryToggleInput(getActiveGuiDocument());
 }
 
 // ================================================================================
@@ -2409,7 +2522,7 @@ void CmdSketcherRemoveAxesAlignment::activated(int iMsg)
 
 bool CmdSketcherRemoveAxesAlignment::isActive()
 {
-    return isCommandNeedingGeometryActive(getActiveGuiDocument());
+    return hasAxesAlignmentRemovalInput(getActiveGuiDocument());
 }
 
 
@@ -2492,7 +2605,7 @@ void CmdSketcherOffset::activated(int iMsg)
 
 bool CmdSketcherOffset::isActive()
 {
-    return isCommandNeedingGeometryActive(getActiveGuiDocument());
+    return hasOffsetInput(getActiveGuiDocument());
 }
 
 // Rotate tool =====================================================================

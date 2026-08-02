@@ -24,9 +24,11 @@
 
 
 #include <Gui/Control.h>
+#include <Gui/Document.h>
 #include <Mod/Robot/App/TrajectoryCompound.h>
 #include <Mod/Robot/Gui/TaskDlgTrajectoryCompound.h>
 
+#include "OperationSupport.h"
 #include "ViewProviderTrajectoryCompound.h"
 
 
@@ -35,29 +37,24 @@ using namespace RobotGui;
 
 PROPERTY_SOURCE(RobotGui::ViewProviderTrajectoryCompound, RobotGui::ViewProviderTrajectory)
 
-// bool ViewProviderTrajectoryCompound::doubleClicked(void)
-//{
-//     Gui::TaskView::TaskDialog* dlg = new
-//     TaskDlgTrajectoryCompound(getObject<Robot::TrajectoryCompound >());
-//     Gui::Control().showDialog(dlg);
-//     return true;
-// }
-
+bool ViewProviderTrajectoryCompound::doubleClicked()
+{
+    auto* document = getDocument();
+    return document && document->setEdit(this, Gui::ViewProvider::Default);
+}
 
 bool ViewProviderTrajectoryCompound::setEdit(int)
 {
-    Gui::TaskView::TaskDialog* dlg = new TaskDlgTrajectoryCompound(
-        getObject<Robot::TrajectoryCompound>()
-    );
-    Gui::Control().showDialog(dlg);
+    auto* object = getObject<Robot::TrajectoryCompound>();
+    if (!object || !RobotGui::OperationSupport::isUsableObject(object)) {
+        return false;
+    }
+    Gui::Control().showDialog(new TaskDlgTrajectoryCompound(object), object->getDocument());
     return true;
 }
 
 void ViewProviderTrajectoryCompound::unsetEdit(int)
-{
-    // when pressing ESC make sure to close the dialog
-    Gui::Control().closeDialog();
-}
+{}
 
 std::vector<App::DocumentObject*> ViewProviderTrajectoryCompound::claimChildren() const
 {

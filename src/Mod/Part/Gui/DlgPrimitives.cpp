@@ -22,7 +22,9 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <exception>
 #include <limits>
+#include <map>
 
 #include <GC_MakeArcOfCircle.hxx>
 #include <Geom_Circle.hxx>
@@ -37,14 +39,17 @@
 
 
 #include <App/Application.h>
-#include <App/Part.h>
 #include <App/Document.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/Rotation.h>
 #include <Base/Tools.h>
 #include <Base/UnitsApi.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
 #include <Gui/Command.h>
+#include <Gui/MDIView.h>
+#include <Gui/MainWindow.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/Selection/SoFCUnifiedSelection.h>
@@ -55,6 +60,8 @@
 #include <Mod/Part/App/Tools.h>
 
 #include "DlgPrimitives.h"
+#include "ModelingSelection.h"
+#include "TaskResultValidation.h"
 #include "ui_DlgPrimitives.h"
 #include "ui_Location.h"
 
@@ -64,23 +71,36 @@ using namespace PartGui;
 namespace PartGui
 {
 
-QString getAutoGroupCommandStr(QString objectName)
-// Helper function to get the python code to add the newly created object to the active Part object
-// if present
+namespace
 {
-    App::Part* activePart = Gui::Application::Instance->activeView()->getActiveObject<App::Part*>(
-        "part"
-    );
-    if (activePart) {
-        QString activeObjectName = QString::fromUtf8(activePart->getNameInDocument());
-        return QStringLiteral(
-                   "App.ActiveDocument.getObject('%1\')."
-                   "addObject(App.ActiveDocument.getObject('%2\'))\n"
-        )
-            .arg(activeObjectName, objectName);
-    }
-    return QStringLiteral("# Object %1 created at document root").arg(objectName);
+struct PrimitiveEditState
+{
+    explicit PrimitiveEditState(Part::Primitive* feature)
+        : feature(feature)
+        , attempt(
+              std::make_unique<ModelingTaskAttempt>(
+                  *feature->getDocument(),
+                  "Edit primitive"
+              )
+          )
+    {}
+
+    App::DocumentObjectWeakPtrT feature;
+    std::unique_ptr<ModelingTaskAttempt> attempt;
+};
+
+std::map<TaskPrimitivesEdit*, PrimitiveEditState>& primitiveEditStates()
+{
+    static std::map<TaskPrimitivesEdit*, PrimitiveEditState> states;
+    return states;
 }
+
+std::map<const DlgPrimitives*, App::DocumentObject*>& primitiveCreatedResults()
+{
+    static std::map<const DlgPrimitives*, App::DocumentObject*> results;
+    return results;
+}
+}  // namespace
 
 const char* gce_ErrorStatusText(gce_ErrorType et)
 {
@@ -125,20 +145,136 @@ static QString safeQuantityQString(Gui::QuantitySpinBox* qs)
 
 void Picker::createPrimitive(QWidget* widget, const QString& descr, Gui::Document* doc)
 {
-    try {
-        App::Document* app = doc->getDocument();
-        QString cmd = this->command(app);
+    createPrimitiveAndReport(widget, descr, doc);
+}
 
-        // Execute the Python block
-        doc->openCommand(descr.toUtf8());
-        Gui::Command::runCommand(Gui::Command::Doc, cmd.toUtf8());
-        doc->commitCommand();
+App::DocumentObject* Picker::createPrimitiveAndReport(
+    QWidget* widget,
+    const QString& descr,
+    Gui::Document* doc
+)
+{
+    try {
+        auto* appDocument = doc ? doc->getDocument() : nullptr;
+        if (!appDocument
+            || App::GetApplication().getActiveDocument() != appDocument
+            || !Gui::Application::Instance
+            || Gui::Application::Instance->activeDocument() != doc) {
+            throw Base::RuntimeError("The active document is unavailable");
+        }
+
+        const QByteArray transactionName = descr.toUtf8();
+        ModelingTaskAttempt attempt(
+            *appDocument,
+            transactionName.constData()
+        );
+
+        Gui::Command::runCommand(
+            Gui::Command::Doc,
+            "from FreeCAD import Base"
+        );
+        Gui::Command::runCommand(Gui::Command::Doc, "import Part,PartGui");
+        App::DocumentObject* result = nullptr;
+        if (exactTypeName() && exactDefaultName()) {
+            const std::string name = appDocument->getUniqueObjectName(
+                exactDefaultName()
+            );
+            const QString factory = QStringLiteral(
+                                        "App.getDocument('%1').addObject("
+                                        "'%2','%3')"
+                                    )
+                                        .arg(
+                                            QString::fromLatin1(
+                                                appDocument->getName()
+                                            ),
+                                            QString::fromLatin1(
+                                                exactTypeName()
+                                            ),
+                                            QString::fromStdString(name)
+                                        );
+            result = Gui::Command::runDocumentObjectCommand(
+                Gui::Command::Doc,
+                *appDocument,
+                factory.toUtf8(),
+                Part::Primitive::getClassTypeId()
+            );
+            const QString configure = exactConfigurationCommand(
+                appDocument,
+                QString::fromStdString(
+                    Gui::Command::getObjectCmd(result)
+                )
+            );
+            if (configure.isEmpty()) {
+                throw Base::RuntimeError(
+                    "The exact primitive picker returned no configuration"
+                );
+            }
+            Gui::Command::runCommand(
+                Gui::Command::Doc,
+                configure.toUtf8()
+            );
+        }
+        else {
+            const QString cmd = command(appDocument);
+            Gui::Command::runCommand(
+                Gui::Command::Doc,
+                cmd.toUtf8()
+            );
+            result = TaskResultValidation::requirePythonPartResult(
+                *appDocument,
+                "__vibecad_part_result__"
+            );
+        }
+        attempt.trackCreatedObject(*result);
+        attempt.markResultAsDesignDefinition(*result);
         Gui::Command::runCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        Gui::Command::runCommand(Gui::Command::Gui, "Gui.SendMsgToActiveView(\"ViewFit\")");
+        TaskResultValidation::validatePartResult(result);
+
+        attempt.commit();
+        try {
+            Gui::Command::runCommand(
+                Gui::Command::Gui,
+                "Gui.SendMsgToActiveView(\"ViewFit\")"
+            );
+        }
+        catch (const Base::Exception& error) {
+            Base::Console().warning(
+                "Primitive was committed, but fitting the active view failed: %s\n",
+                error.what()
+            );
+        }
+        catch (...) {
+            Base::Console().warning(
+                "Primitive was committed, but fitting the active view failed.\n"
+            );
+        }
+        return result;
     }
-    catch (const Base::Exception& e) {
-        QMessageBox::warning(widget, descr, QCoreApplication::translate("Exception", e.what()));
+    catch (const Base::PyException& error) {
+        QMessageBox::warning(
+            widget,
+            descr,
+            QCoreApplication::translate("Exception", error.what())
+        );
     }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            widget,
+            descr,
+            QCoreApplication::translate("Exception", error.what())
+        );
+    }
+    catch (const std::exception& error) {
+        QMessageBox::warning(
+            widget,
+            descr,
+            QCoreApplication::translate("Exception", error.what())
+        );
+    }
+    catch (...) {
+        QMessageBox::warning(widget, descr, QObject::tr("Unknown error"));
+    }
+    return nullptr;
 }
 
 QString Picker::toPlacement(const gp_Ax2& axis) const
@@ -180,6 +316,55 @@ public:
         points.emplace_back(pnt[0], pnt[1], pnt[2]);
         return points.size() == 3;
     }
+    const char* exactTypeName() const override
+    {
+        return "Part::Circle";
+    }
+    const char* exactDefaultName() const override
+    {
+        return "Circle";
+    }
+    QString exactConfigurationCommand(
+        App::Document*,
+        const QString& objectExpression
+    ) const override
+    {
+        GC_MakeArcOfCircle arc(points[0], points[1], points[2]);
+        if (!arc.IsDone()) {
+            throw Base::CADKernelError(
+                gce_ErrorStatusText(arc.Status())
+            );
+        }
+        Handle(Geom_TrimmedCurve) trim = arc.Value();
+        Handle(Geom_Circle) circle =
+            Handle(Geom_Circle)::DownCast(trim->BasisCurve());
+        return QStringLiteral(
+                   "%1.Radius=%2\n"
+                   "%1.Angle1=%3\n"
+                   "%1.Angle2=%4\n"
+                   "%1.Placement=%5\n"
+               )
+            .arg(objectExpression)
+            .arg(
+                circle->Radius(),
+                0,
+                'g',
+                Base::UnitsApi::getDecimals()
+            )
+            .arg(
+                Base::toDegrees(trim->FirstParameter()),
+                0,
+                'g',
+                Base::UnitsApi::getDecimals()
+            )
+            .arg(
+                Base::toDegrees(trim->LastParameter()),
+                0,
+                'g',
+                Base::UnitsApi::getDecimals()
+            )
+            .arg(toPlacement(circle->Position()));
+    }
     QString command(App::Document* doc) const override
     {
         GC_MakeArcOfCircle arc(points[0], points[1], points[2]);
@@ -191,7 +376,7 @@ public:
 
         QString name = QString::fromUtf8(doc->getUniqueObjectName("Circle").c_str());
         return QStringLiteral(
-                   "App.ActiveDocument.addObject(\"Part::Circle\",\"%1\")\n"
+                   "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Circle\",\"%1\")\n"
                    "App.ActiveDocument.%1.Radius=%2\n"
                    "App.ActiveDocument.%1.Angle1=%3\n"
                    "App.ActiveDocument.%1.Angle2=%4\n"
@@ -284,7 +469,7 @@ const char* PlanePrimitive::getDefaultName() const
 QString PlanePrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Plane\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Plane\",\"%1\")\n"
                "App.ActiveDocument.%1.Length='%2'\n"
                "App.ActiveDocument.%1.Width='%3'\n"
                "App.ActiveDocument.%1.Placement=%4\n"
@@ -376,7 +561,7 @@ const char* BoxPrimitive::getDefaultName() const
 QString BoxPrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Box\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Box\",\"%1\")\n"
                "App.ActiveDocument.%1.Length='%2'\n"
                "App.ActiveDocument.%1.Width='%3'\n"
                "App.ActiveDocument.%1.Height='%4'\n"
@@ -489,7 +674,7 @@ const char* CylinderPrimitive::getDefaultName() const
 QString CylinderPrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Cylinder\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Cylinder\",\"%1\")\n"
                "App.ActiveDocument.%1.Radius='%2'\n"
                "App.ActiveDocument.%1.Height='%3'\n"
                "App.ActiveDocument.%1.Angle='%4'\n"
@@ -610,7 +795,7 @@ const char* ConePrimitive::getDefaultName() const
 QString ConePrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Cone\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Cone\",\"%1\")\n"
                "App.ActiveDocument.%1.Radius1='%2'\n"
                "App.ActiveDocument.%1.Radius2='%3'\n"
                "App.ActiveDocument.%1.Height='%4'\n"
@@ -724,7 +909,7 @@ const char* SpherePrimitive::getDefaultName() const
 QString SpherePrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Sphere\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Sphere\",\"%1\")\n"
                "App.ActiveDocument.%1.Radius='%2'\n"
                "App.ActiveDocument.%1.Angle1='%3'\n"
                "App.ActiveDocument.%1.Angle2='%4'\n"
@@ -854,7 +1039,7 @@ const char* EllipsoidPrimitive::getDefaultName() const
 QString EllipsoidPrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Ellipsoid\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Ellipsoid\",\"%1\")\n"
                "App.ActiveDocument.%1.Radius1='%2'\n"
                "App.ActiveDocument.%1.Radius2='%3'\n"
                "App.ActiveDocument.%1.Radius3='%4'\n"
@@ -990,7 +1175,7 @@ const char* TorusPrimitive::getDefaultName() const
 QString TorusPrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Torus\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Torus\",\"%1\")\n"
                "App.ActiveDocument.%1.Radius1='%2'\n"
                "App.ActiveDocument.%1.Radius2='%3'\n"
                "App.ActiveDocument.%1.Angle1='%4'\n"
@@ -1111,7 +1296,7 @@ const char* PrismPrimitive::getDefaultName() const
 QString PrismPrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Prism\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Prism\",\"%1\")\n"
                "App.ActiveDocument.%1.Polygon=%2\n"
                "App.ActiveDocument.%1.Circumradius='%3'\n"
                "App.ActiveDocument.%1.Height='%4'\n"
@@ -1292,7 +1477,7 @@ const char* WedgePrimitive::getDefaultName() const
 QString WedgePrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Wedge\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Wedge\",\"%1\")\n"
                "App.ActiveDocument.%1.Xmin='%2'\n"
                "App.ActiveDocument.%1.Ymin='%3'\n"
                "App.ActiveDocument.%1.Zmin='%4'\n"
@@ -1450,7 +1635,7 @@ const char* HelixPrimitive::getDefaultName() const
 QString HelixPrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Helix\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Helix\",\"%1\")\n"
                "App.ActiveDocument.%1.Pitch='%2'\n"
                "App.ActiveDocument.%1.Height='%3'\n"
                "App.ActiveDocument.%1.Radius='%4'\n"
@@ -1480,6 +1665,7 @@ QString HelixPrimitive::change(const QString& objectName, const QString& placeme
                "%1.Radius='%4'\n"
                "%1.Angle='%5'\n"
                "%1.LocalCoord=%6\n"
+               "%1.Style=1\n"
                "%1.Placement=%7\n"
     )
         .arg(
@@ -1563,7 +1749,7 @@ const char* SpiralPrimitive::getDefaultName() const
 QString SpiralPrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Spiral\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Spiral\",\"%1\")\n"
                "App.ActiveDocument.%1.Growth='%2'\n"
                "App.ActiveDocument.%1.Rotations=%3\n"
                "App.ActiveDocument.%1.Radius='%4'\n"
@@ -1662,7 +1848,7 @@ const char* CirclePrimitive::getDefaultName() const
 QString CirclePrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Circle\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Circle\",\"%1\")\n"
                "App.ActiveDocument.%1.Radius='%2'\n"
                "App.ActiveDocument.%1.Angle1='%3'\n"
                "App.ActiveDocument.%1.Angle2='%4'\n"
@@ -1769,7 +1955,7 @@ const char* EllipsePrimitive::getDefaultName() const
 QString EllipsePrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Ellipse\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Ellipse\",\"%1\")\n"
                "App.ActiveDocument.%1.MajorRadius='%2'\n"
                "App.ActiveDocument.%1.MinorRadius='%3'\n"
                "App.ActiveDocument.%1.Angle1='%4'\n"
@@ -1861,7 +2047,7 @@ const char* PolygonPrimitive::getDefaultName() const
 QString PolygonPrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::RegularPolygon\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::RegularPolygon\",\"%1\")\n"
                "App.ActiveDocument.%1.Polygon=%2\n"
                "App.ActiveDocument.%1.Circumradius='%3'\n"
                "App.ActiveDocument.%1.Placement=%4\n"
@@ -1961,7 +2147,7 @@ const char* LinePrimitive::getDefaultName() const
 QString LinePrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Line\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Line\",\"%1\")\n"
                "App.ActiveDocument.%1.X1='%2'\n"
                "App.ActiveDocument.%1.Y1='%3'\n"
                "App.ActiveDocument.%1.Z1='%4'\n"
@@ -2086,7 +2272,7 @@ const char* VertexPrimitive::getDefaultName() const
 QString VertexPrimitive::create(const QString& objectName, const QString& placement) const
 {
     return QStringLiteral(
-               "App.ActiveDocument.addObject(\"Part::Vertex\",\"%1\")\n"
+               "__vibecad_part_result__=App.ActiveDocument.addObject(\"Part::Vertex\",\"%1\")\n"
                "App.ActiveDocument.%1.X='%2'\n"
                "App.ActiveDocument.%1.Y='%3'\n"
                "App.ActiveDocument.%1.Z='%4'\n"
@@ -2148,6 +2334,7 @@ DlgPrimitives::DlgPrimitives(QWidget* parent, Part::Primitive* feature)
     , ui(new Ui_DlgPrimitives)
     , featurePtr(feature)
 {
+    primitiveCreatedResults().emplace(this, nullptr);
     ui->setupUi(this);
     connect(
         ui->buttonCircleFromThreePoints,
@@ -2155,19 +2342,31 @@ DlgPrimitives::DlgPrimitives(QWidget* parent, Part::Primitive* feature)
         this,
         &DlgPrimitives::buttonCircleFromThreePoints
     );
-    Gui::Command::doCommand(Gui::Command::Doc, "from FreeCAD import Base");
-    Gui::Command::doCommand(Gui::Command::Doc, "import Part,PartGui");
+    // Part Design owns the Body-native solid primitives.  Keep their pages
+    // when editing an existing legacy Part primitive, but do not offer a
+    // second, inferior standalone creator in the consolidated create dialog.
+    // Remove in descending order so the generated UI indices stay valid.
+    if (!feature) {
+        for (int index = 8; index >= 1; --index) {
+            ui->widgetStack2->removeWidget(ui->widgetStack2->widget(index));
+            ui->PrimitiveTypeCB->removeItem(index);
+        }
+    }
 
-    // must be in the same order as of the stacked widget
+    // This list must remain in the same order as the filtered stacked widget.
     addPrimitive(std::make_shared<PlanePrimitive>(ui, dynamic_cast<Part::Plane*>(feature)));
-    addPrimitive(std::make_shared<BoxPrimitive>(ui, dynamic_cast<Part::Box*>(feature)));
-    addPrimitive(std::make_shared<CylinderPrimitive>(ui, dynamic_cast<Part::Cylinder*>(feature)));
-    addPrimitive(std::make_shared<ConePrimitive>(ui, dynamic_cast<Part::Cone*>(feature)));
-    addPrimitive(std::make_shared<SpherePrimitive>(ui, dynamic_cast<Part::Sphere*>(feature)));
-    addPrimitive(std::make_shared<EllipsoidPrimitive>(ui, dynamic_cast<Part::Ellipsoid*>(feature)));
-    addPrimitive(std::make_shared<TorusPrimitive>(ui, dynamic_cast<Part::Torus*>(feature)));
-    addPrimitive(std::make_shared<PrismPrimitive>(ui, dynamic_cast<Part::Prism*>(feature)));
-    addPrimitive(std::make_shared<WedgePrimitive>(ui, dynamic_cast<Part::Wedge*>(feature)));
+    if (feature) {
+        addPrimitive(std::make_shared<BoxPrimitive>(ui, dynamic_cast<Part::Box*>(feature)));
+        addPrimitive(std::make_shared<CylinderPrimitive>(ui, dynamic_cast<Part::Cylinder*>(feature)));
+        addPrimitive(std::make_shared<ConePrimitive>(ui, dynamic_cast<Part::Cone*>(feature)));
+        addPrimitive(std::make_shared<SpherePrimitive>(ui, dynamic_cast<Part::Sphere*>(feature)));
+        addPrimitive(
+            std::make_shared<EllipsoidPrimitive>(ui, dynamic_cast<Part::Ellipsoid*>(feature))
+        );
+        addPrimitive(std::make_shared<TorusPrimitive>(ui, dynamic_cast<Part::Torus*>(feature)));
+        addPrimitive(std::make_shared<PrismPrimitive>(ui, dynamic_cast<Part::Prism*>(feature)));
+        addPrimitive(std::make_shared<WedgePrimitive>(ui, dynamic_cast<Part::Wedge*>(feature)));
+    }
     addPrimitive(std::make_shared<HelixPrimitive>(ui, dynamic_cast<Part::Helix*>(feature)));
     addPrimitive(std::make_shared<SpiralPrimitive>(ui, dynamic_cast<Part::Spiral*>(feature)));
     addPrimitive(std::make_shared<CirclePrimitive>(ui, dynamic_cast<Part::Circle*>(feature)));
@@ -2184,7 +2383,10 @@ DlgPrimitives::DlgPrimitives(QWidget* parent, Part::Primitive* feature)
 /*
  *  Destroys the object and frees any allocated resources
  */
-DlgPrimitives::~DlgPrimitives() = default;
+DlgPrimitives::~DlgPrimitives()
+{
+    primitiveCreatedResults().erase(this);
+}
 
 void DlgPrimitives::activatePage()
 {
@@ -2274,7 +2476,15 @@ void DlgPrimitives::executeCallback(Picker* p)
             viewer->removeEventCallback(SoMouseButtonEvent::getClassTypeId(), pickCallback, p);
 
             if (ret == 0) {
-                p->createPrimitive(this, ui->PrimitiveTypeCB->currentText(), doc);
+                auto*& createdResult = primitiveCreatedResults().at(this);
+                createdResult = p->createPrimitiveAndReport(
+                    this,
+                    ui->PrimitiveTypeCB->currentText(),
+                    doc
+                );
+                if (createdResult) {
+                    Q_EMIT pickedPrimitiveCreated();
+                }
             }
         }
     }
@@ -2286,9 +2496,10 @@ void DlgPrimitives::buttonCircleFromThreePoints()
     executeCallback(&pp);
 }
 
-void DlgPrimitives::tryCreatePrimitive(const QString& placement)
+bool DlgPrimitives::tryCreatePrimitive(const QString& placement)
 {
-    QString cmd;
+    auto*& createdResult = primitiveCreatedResults().at(this);
+    createdResult = nullptr;
     QString name;
     App::Document* doc = App::GetApplication().getActiveDocument();
     if (!doc) {
@@ -2297,34 +2508,95 @@ void DlgPrimitives::tryCreatePrimitive(const QString& placement)
             tr("Create %1").arg(ui->PrimitiveTypeCB->currentText()),
             tr("No active document")
         );
-        return;
+        return false;
     }
 
     std::shared_ptr<AbstractPrimitive> primitive = getPrimitive(ui->PrimitiveTypeCB->currentIndex());
     name = QString::fromUtf8(doc->getUniqueObjectName(primitive->getDefaultName()).c_str());
-    cmd = primitive->create(name, placement);
 
-    // Execute the Python block
+    auto* guiDocument = Gui::Application::Instance->activeDocument();
+    if (!guiDocument || guiDocument->getDocument() != doc) {
+        throw Base::RuntimeError("The active GUI document is unavailable");
+    }
+
     QString prim = tr("Create %1").arg(ui->PrimitiveTypeCB->currentText());
-    Gui::Application::Instance->activeDocument()->openCommand(prim.toUtf8());
-    Gui::Command::runCommand(Gui::Command::Doc, cmd.toUtf8());
-    Gui::Command::runCommand(Gui::Command::Doc, getAutoGroupCommandStr(name).toUtf8());
-    Gui::Application::Instance->activeDocument()->commitCommand();
+    const QByteArray transactionName = prim.toUtf8();
+    ModelingTaskAttempt attempt(*doc, transactionName.constData());
+    Gui::Command::runCommand(
+        Gui::Command::Doc,
+        "from FreeCAD import Base"
+    );
+    Gui::Command::runCommand(Gui::Command::Doc, "import Part,PartGui");
+    const QString factory = QStringLiteral(
+                                "App.getDocument('%1').addObject("
+                                "'Part::%2','%3')"
+                            )
+                                .arg(
+                                    QString::fromLatin1(doc->getName()),
+                                    QString::fromLatin1(
+                                        primitive->getDefaultName()
+                                    ),
+                                    name
+                                );
+    auto* result = Gui::Command::runDocumentObjectCommand(
+        Gui::Command::Doc,
+        *doc,
+        factory.toUtf8(),
+        Part::Primitive::getClassTypeId()
+    );
+    attempt.trackCreatedObject(*result);
+    attempt.markResultAsDesignDefinition(*result);
+    const QString resultExpression = QString::fromStdString(
+        Gui::Command::getObjectCmd(result)
+    );
+    Gui::Command::runCommand(
+        Gui::Command::Doc,
+        primitive->change(resultExpression, placement).toUtf8()
+    );
+    const QByteArray label = ui->PrimitiveTypeCB->currentText().toUtf8();
+    FCMD_OBJ_CMD(
+        result,
+        "Label = \""
+            << Base::Tools::escapeEncodeString(label.constData()) << "\""
+    );
     Gui::Command::runCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-    Gui::Command::runCommand(Gui::Command::Gui, "Gui.SendMsgToActiveView(\"ViewFit\")");
+    TaskResultValidation::validatePartResult(result);
+
+    attempt.commit();
+    createdResult = result;
+
+    try {
+        Gui::Command::runCommand(Gui::Command::Gui, "Gui.SendMsgToActiveView(\"ViewFit\")");
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().warning(
+            "Primitive was committed, but fitting the active view failed: %s\n",
+            error.what()
+        );
+    }
+    catch (...) {
+        Base::Console().warning(
+            "Primitive was committed, but fitting the active view failed.\n"
+        );
+    }
+    return true;
+}
+
+App::DocumentObject* DlgPrimitives::lastCreatedResult() const
+{
+    const auto found = primitiveCreatedResults().find(this);
+    return found == primitiveCreatedResults().end() ? nullptr : found->second;
 }
 
 void DlgPrimitives::createPrimitive(const QString& placement)
 {
+    createPrimitiveAndReport(placement);
+}
+
+bool DlgPrimitives::createPrimitiveAndReport(const QString& placement)
+{
     try {
-        tryCreatePrimitive(placement);
-    }
-    catch (const std::exception& e) {
-        QMessageBox::warning(
-            this,
-            tr("Create %1").arg(ui->PrimitiveTypeCB->currentText()),
-            QCoreApplication::translate("Exception", e.what())
-        );
+        return tryCreatePrimitive(placement);
     }
     catch (const Base::PyException& e) {
         QMessageBox::warning(
@@ -2332,6 +2604,31 @@ void DlgPrimitives::createPrimitive(const QString& placement)
             tr("Create %1").arg(ui->PrimitiveTypeCB->currentText()),
             QCoreApplication::translate("Exception", e.what())
         );
+        return false;
+    }
+    catch (const Base::Exception& e) {
+        QMessageBox::warning(
+            this,
+            tr("Create %1").arg(ui->PrimitiveTypeCB->currentText()),
+            QCoreApplication::translate("Exception", e.what())
+        );
+        return false;
+    }
+    catch (const std::exception& e) {
+        QMessageBox::warning(
+            this,
+            tr("Create %1").arg(ui->PrimitiveTypeCB->currentText()),
+            QCoreApplication::translate("Exception", e.what())
+        );
+        return false;
+    }
+    catch (...) {
+        QMessageBox::warning(
+            this,
+            tr("Create %1").arg(ui->PrimitiveTypeCB->currentText()),
+            tr("Unknown error")
+        );
+        return false;
     }
 }
 
@@ -2354,14 +2651,23 @@ void DlgPrimitives::acceptChanges(const QString& placement)
 
 void DlgPrimitives::accept(const QString& placement)
 {
+    applyChanges(placement);
+    if (!featurePtr.expired()) {
+        featurePtr->getDocument()->commitTransaction();
+    }
+}
+
+void DlgPrimitives::applyChanges(const QString& placement)
+{
     if (featurePtr.expired()) {
-        return;
+        throw Base::RuntimeError(
+            "The primitive being edited is no longer available"
+        );
     }
     App::Document* doc = featurePtr->getDocument();
     acceptChanges(placement);
     doc->recompute();
-    // commit undo command
-    doc->commitTransaction();
+    TaskResultValidation::validatePartResult(featurePtr.get<Part::Primitive>());
 }
 
 void DlgPrimitives::reject()
@@ -2633,7 +2939,16 @@ QString Location::toPlacement() const
 
 TaskPrimitives::TaskPrimitives()
 {
+    setAcceptClosesDialog(false);
     widget = new DlgPrimitives();
+    connect(
+        widget,
+        &DlgPrimitives::pickedPrimitiveCreated,
+        this,
+        [this]() {
+            markCommandInteractionStateDurable({widget->lastCreatedResult()});
+        }
+    );
     addTaskBox(widget);
 
     location = new Location();
@@ -2653,8 +2968,12 @@ void TaskPrimitives::modifyStandardButtons(QDialogButtonBox* box)
 
 bool TaskPrimitives::accept()
 {
-    widget->createPrimitive(location->toPlacement());
-    return false;
+    const bool created =
+        widget->createPrimitiveAndReport(location->toPlacement());
+    if (created) {
+        markCommandInteractionStateDurable({widget->lastCreatedResult()});
+    }
+    return created;
 }
 
 bool TaskPrimitives::reject()
@@ -2666,14 +2985,19 @@ bool TaskPrimitives::reject()
 
 /* TRANSLATOR PartGui::TaskPrimitivesEdit */
 
-TaskPrimitivesEdit::TaskPrimitivesEdit(Part::Primitive* feature)
+TaskPrimitivesEdit::TaskPrimitivesEdit(Part::Primitive* editedFeature)
 {
+    primitiveEditStates().emplace(this, PrimitiveEditState(editedFeature));
+    connect(this, &QObject::destroyed, [task = this]() {
+        primitiveEditStates().erase(task);
+    });
+
     // create and show dialog for the primitives
-    widget = new DlgPrimitives(nullptr, feature);
+    widget = new DlgPrimitives(nullptr, editedFeature);
     addTaskBox(widget);
 
     // create and show dialog for the location
-    location = new Location(nullptr, feature);
+    location = new Location(nullptr, editedFeature);
     addTaskBox(location);
 }
 
@@ -2684,17 +3008,74 @@ QDialogButtonBox::StandardButtons TaskPrimitivesEdit::getStandardButtons() const
 
 bool TaskPrimitivesEdit::accept()
 {
-    widget->accept(location->toPlacement());
-    std::string document = getDocumentName();  // needed because resetEdit() deletes this instance
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.getDocument('%s').resetEdit()", document.c_str());
+    auto found = primitiveEditStates().find(this);
+    if (found == primitiveEditStates().end()) {
+        return false;
+    }
+    auto& state = found->second;
+    try {
+        widget->applyChanges(location->toPlacement());
+        state.attempt->commit();
+    }
+    catch (const Base::Exception& error) {
+        state.attempt.reset();
+        if (!state.feature.expired()) {
+            state.attempt = std::make_unique<ModelingTaskAttempt>(
+                *state.feature->getDocument(),
+                "Edit primitive"
+            );
+        }
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Primitive edit failed"),
+            QCoreApplication::translate("Exception", error.what())
+        );
+        return false;
+    }
+    catch (const std::exception& error) {
+        state.attempt.reset();
+        if (!state.feature.expired()) {
+            state.attempt = std::make_unique<ModelingTaskAttempt>(
+                *state.feature->getDocument(),
+                "Edit primitive"
+            );
+        }
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Primitive edit failed"),
+            QString::fromUtf8(error.what())
+        );
+        return false;
+    }
+
+    primitiveEditStates().erase(found);
+    std::string document = getDocumentName();  // resetEdit() deletes this instance
+    Gui::Command::doCommand(
+        Gui::Command::Gui,
+        "Gui.getDocument('%s').resetEdit()",
+        document.c_str()
+    );
     return true;
 }
 
 bool TaskPrimitivesEdit::reject()
 {
-    widget->reject();
-    std::string document = getDocumentName();  // needed because resetEdit() deletes this instance
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.getDocument('%s').resetEdit()", document.c_str());
+    std::unique_ptr<ModelingTaskAttempt> rollback;
+    auto found = primitiveEditStates().find(this);
+    if (found != primitiveEditStates().end()) {
+        rollback = std::move(found->second.attempt);
+        primitiveEditStates().erase(found);
+    }
+    const std::string documentName = getDocumentName();
+    auto* guiDocument = Gui::Application::Instance
+        ? Gui::Application::Instance->getDocument(documentName.c_str())
+        : nullptr;
+    if (guiDocument) {
+        // Clear the edit ViewProvider before the private transaction can replay
+        // object changes into the tree.
+        guiDocument->cancelEdit();
+    }
+    rollback.reset();
     return true;
 }
 

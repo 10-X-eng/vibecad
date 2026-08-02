@@ -335,7 +335,11 @@ class Arc(gui_base_original.Creator):
                         "Draft.select(circle)",
                         "FreeCAD.ActiveDocument.recompute()",
                     ]
-                    self.commit(translate("draft", "Create Circle (Part)"), _cmd_list)
+                    self.commit(
+                        translate("draft", "Create Circle (Part)"),
+                        _cmd_list,
+                        inputs=(),
+                    )
                 else:
                     # Insert a Draft circle
                     _base = DraftVecUtils.toString(self.center)
@@ -354,7 +358,11 @@ class Arc(gui_base_original.Creator):
                         "Draft.autogroup(circle)",
                         "FreeCAD.ActiveDocument.recompute()",
                     ]
-                    self.commit(translate("draft", "Create Circle"), _cmd_list)
+                    self.commit(
+                        translate("draft", "Create Circle"),
+                        _cmd_list,
+                        inputs=self.getSupportInputs(),
+                    )
             except Exception:
                 _err("Draft: error delaying commit")
         else:
@@ -386,7 +394,11 @@ class Arc(gui_base_original.Creator):
                         "Draft.select(circle)",
                         "FreeCAD.ActiveDocument.recompute()",
                     ]
-                    self.commit(translate("draft", "Create Arc (Part)"), _cmd_list)
+                    self.commit(
+                        translate("draft", "Create Arc (Part)"),
+                        _cmd_list,
+                        inputs=(),
+                    )
                 else:
                     # Insert a Draft circle
                     _base = DraftVecUtils.toString(self.center)
@@ -407,7 +419,11 @@ class Arc(gui_base_original.Creator):
                         "Draft.autogroup(circle)",
                         "FreeCAD.ActiveDocument.recompute()",
                     ]
-                    self.commit(translate("draft", "Create Arc"), _cmd_list)
+                    self.commit(
+                        translate("draft", "Create Arc"),
+                        _cmd_list,
+                        inputs=self.getSupportInputs(),
+                    )
             except Exception:
                 _err("Draft: error delaying commit")
 
@@ -617,7 +633,11 @@ class Arc_3Points(gui_base.GuiCommandBase):
             if params.get_param("UsePartPrimitives"):
                 _cmd_list.append("Draft.select(circle)")
             _cmd_list.append("FreeCAD.ActiveDocument.recompute()")
-            self.commit(translate("draft", "Create Arc From 3 Points"), _cmd_list)
+            self.commit(
+                translate("draft", "Create Arc From 3 Points"),
+                _cmd_list,
+                inputs=(),
+            )
             self.finish(cont=None)
 
     def drawArc(self, point, info):

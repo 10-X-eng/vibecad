@@ -16,11 +16,30 @@ from vibescript_domain_api import DomainValue
 
 
 VALIDATION_SCHEMA = "vibecad-vibescript-mesh-validation-v1"
-_OPERATIONS = ("mesh", "from_object", "transform", "repair", "diagnostics")
+_BOOLEAN_OPERATIONS = frozenset({"union", "difference", "intersection"})
+_OPERATIONS = (
+    "mesh",
+    "from_object",
+    "transform",
+    "union",
+    "difference",
+    "intersection",
+    "repair",
+    "diagnostics",
+)
 _PROPERTY_NAMES = {
     "mesh": {"label"},
     "from_object": {"label"},
     "transform": {"translation", "rotation", "scale", "label"},
+    **{
+        operation: {
+            "linear_deflection",
+            "angular_deflection_degrees",
+            "relative",
+            "label",
+        }
+        for operation in _BOOLEAN_OPERATIONS
+    },
     "repair": {
         "remove_duplicate_points",
         "remove_duplicate_facets",
@@ -48,6 +67,9 @@ _ARGUMENT_COUNTS = {
     "mesh": 1,
     "from_object": 1,
     "transform": 1,
+    "union": 2,
+    "difference": 2,
+    "intersection": 2,
     "repair": 1,
     "diagnostics": 1,
 }
@@ -60,6 +82,8 @@ _MAX_REFERENCE_COUNT = 128
 _MAX_REFERENCE_BYTES = 256 * 1024 * 1024
 _MAX_REFERENCE_FACETS = 2_000_000
 _MAX_REFERENCE_SEGMENTS = 4096
+_MAX_TRACE_OPERATIONS = 4096
+_BOOLEAN_BACKEND = "MeshPart::Boolean/OpenCASCADE"
 
 _REFERENCE_MESHES: Mapping[tuple[str, str], Any] = MappingProxyType({})
 _REFERENCE_METADATA: Mapping[tuple[str, str], Mapping[str, Any]] = MappingProxyType({})
@@ -105,6 +129,32 @@ def _default_correction(details: Mapping[str, Any]) -> str:
             "Read failures and diagnostics, add or adjust only the repair pass that addresses "
             "the reported defect, then preserve the requirement unchanged "
             "unless the human request explicitly permits relaxing it."
+        )
+    if stage == "boolean_input":
+        operand = str(details.get("operand") or "reported")
+        return (
+            f"Repair every component of the {operand} operand into a closed manifold "
+            f"solid before api.{operation}; preserve the other operand and operation."
+        )
+    if stage == "boolean_non_overlap":
+        return (
+            "Move or resize only one operand so api.intersection has positive solid "
+            "overlap; touching faces or edges cannot produce a publishable solid mesh."
+        )
+    if stage == "boolean_empty_result":
+        return (
+            "Move or resize the second operand so api.difference leaves positive solid "
+            "volume in the first operand; an empty mesh cannot be published."
+        )
+    if stage == "boolean_capability":
+        return (
+            "Use a VibeCAD build containing the native MeshPart::Boolean feature; "
+            "do not add an external CSG executable or serialize geometry through files."
+        )
+    if stage in {"boolean_kernel", "boolean_tessellation"}:
+        return (
+            f"Repair the reported closed-mesh operand or adjust only api.{operation}'s "
+            "positive tessellation controls, then retry the retained revision."
         )
     if stage in {"native_diagnostics", "native_operation"}:
         api_name = f"api.{operation}" if operation else "the reported Mesh operation"
@@ -577,7 +627,10 @@ def validate_mesh_definition(
             missing_properties=sorted(_PROPERTY_NAMES[operation] - set(properties)),
             unexpected_properties=sorted(set(properties) - _PROPERTY_NAMES[operation]),
         )
-    api = MeshDomainAPI(_OPERATIONS, ("mesh",))
+    api = MeshDomainAPI(
+        (*_OPERATIONS, "mesh_from_shape", "shape_from_mesh"),
+        ("mesh", "solid", "shell", "face", "wire", "compound"),
+    )
     try:
         if operation == "mesh":
             value = api.mesh(arguments[0], **properties)
@@ -591,7 +644,17 @@ def validate_mesh_definition(
                 depth=depth + 1,
             )
             parent = _value_from_payload(parent_payload)
-            value = getattr(api, operation)(parent, **properties)
+            if operation in _BOOLEAN_OPERATIONS:
+                second_payload = validate_mesh_definition(
+                    arguments[1],
+                    require_domain_value=False,
+                    context=f"{context}.arguments[1]",
+                    depth=depth + 1,
+                )
+                second = _value_from_payload(second_payload)
+                value = getattr(api, operation)(parent, second, **properties)
+            else:
+                value = getattr(api, operation)(parent, **properties)
     except (TypeError, ValueError) as exc:
         raise _fail(
             f"{context} failed api.{operation} validation: {exc}",
@@ -777,6 +840,196 @@ def _quick_counts(mesh: Any) -> dict[str, Any]:
     }
 
 
+def _compact_boolean_facts(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "points": int(diagnostics["points"]),
+        "facets": int(diagnostics["facets"]),
+        "open_edges": int(diagnostics["open_edges"]),
+        "components": int(diagnostics["components"]),
+        "is_solid": bool(diagnostics["is_solid"]),
+        "volume_mm3": float(diagnostics["volume_mm3"]),
+        "bounds": dict(diagnostics["bounds"]),
+    }
+
+
+def _definition_contains_boolean(definition: Mapping[str, Any]) -> bool:
+    if str(definition.get("operation") or "") in _BOOLEAN_OPERATIONS:
+        return True
+    return any(
+        isinstance(argument, Mapping) and _definition_contains_boolean(argument)
+        for argument in list(definition.get("arguments") or [])
+    )
+
+
+def _boolean_operand_facts(
+    mesh: Any,
+    *,
+    operation: str,
+    operand: str,
+) -> dict[str, Any]:
+    diagnostics = mesh_diagnostics(mesh)
+    failures = []
+    if not diagnostics["is_solid"]:
+        failures.append("is not a closed solid")
+    if int(diagnostics["open_edges"]) != 0:
+        failures.append(f"has {diagnostics['open_edges']} open edges")
+    if diagnostics["has_non_manifolds"] or diagnostics["has_invalid_neighbourhood"]:
+        failures.append("has non-manifold or invalid neighbourhood topology")
+    if diagnostics["has_non_uniform_orientation"]:
+        failures.append("has inconsistent facet orientation")
+    if diagnostics["has_self_intersections"]:
+        failures.append("has self-intersections")
+    if (
+        diagnostics["has_corrupted_facets"]
+        or diagnostics["has_facets_out_of_range"]
+        or diagnostics["has_invalid_points"]
+        or diagnostics["has_points_out_of_range"]
+    ):
+        failures.append("has corrupt or out-of-range mesh data")
+    if abs(float(diagnostics["volume_mm3"])) <= 1.0e-12:
+        failures.append("has no non-zero solid volume")
+    if failures:
+        raise _fail(
+            f"api.{operation} {operand} operand is invalid: {'; '.join(failures)}.",
+            stage="boolean_input",
+            operation=operation,
+            operand=operand,
+            failures=failures,
+            diagnostics=diagnostics,
+        )
+    return _compact_boolean_facts(diagnostics)
+
+
+def _native_boolean(
+    first: Any,
+    second: Any,
+    *,
+    operation: str,
+    properties: Mapping[str, Any],
+) -> Any:
+    """Evaluate one OCC-backed native MeshPart boolean without geometry files."""
+
+    import FreeCAD as App
+
+    try:
+        import MeshPart  # noqa: F401
+    except Exception as exc:
+        raise _fail(
+            "The native MeshPart boolean implementation is unavailable.",
+            stage="boolean_capability",
+            operation=operation,
+            exception_type=type(exc).__name__,
+        ) from exc
+
+    previous_document = getattr(App, "ActiveDocument", None)
+    previous_name = (
+        str(previous_document.Name) if previous_document is not None else ""
+    )
+    document = None
+    try:
+        document = App.newDocument(
+            "VibeCADMeshBooleanEvaluation",
+            "VibeCAD Mesh Boolean Evaluation",
+            True,
+            True,
+        )
+        first_feature = document.addObject("Mesh::Feature", "FirstOperand")
+        second_feature = document.addObject("Mesh::Feature", "SecondOperand")
+        result_feature = document.addObject("MeshPart::Boolean", "BooleanResult")
+        if first_feature is None or second_feature is None or result_feature is None:
+            raise _fail(
+                "The native MeshPart::Boolean document object is unavailable.",
+                stage="boolean_capability",
+                operation=operation,
+            )
+        first_feature.Mesh = first.copy()
+        second_feature.Mesh = second.copy()
+        result_feature.Source1 = first_feature
+        result_feature.Source2 = second_feature
+        result_feature.Operation = {
+            "union": "Union",
+            "difference": "Difference",
+            "intersection": "Intersection",
+        }[operation]
+        result_feature.LinearDeflection = float(properties["linear_deflection"])
+        result_feature.AngularDeflection = math.radians(
+            float(properties["angular_deflection_degrees"])
+        )
+        result_feature.Relative = bool(properties["relative"])
+        document.recompute()
+        state = {str(item) for item in list(result_feature.State or [])}
+        status = str(
+            getattr(result_feature, "getStatusString", lambda: "")() or ""
+        )
+        if {"Invalid", "Error"} & state or not bool(result_feature.isValid()):
+            empty_or_overlap = any(
+                token in status.casefold()
+                for token in ("no solid", "zero solid", "overlap")
+            )
+            raise _fail(
+                f"Open CASCADE could not compute api.{operation}: "
+                f"{status or ', '.join(sorted(state)) or 'native feature failed'}.",
+                stage=(
+                    "boolean_non_overlap"
+                    if operation == "intersection" and empty_or_overlap
+                    else (
+                        "boolean_empty_result"
+                        if operation == "difference" and empty_or_overlap
+                        else "boolean_kernel"
+                    )
+                ),
+                operation=operation,
+                native_state=sorted(state),
+                native_status=status,
+            )
+        output = result_feature.Mesh.copy()
+        if int(output.CountFacets) <= 0:
+            raise _fail(
+                (
+                    f"api.{operation} produced no publishable solid mesh facets."
+                ),
+                stage=(
+                    "boolean_non_overlap"
+                    if operation == "intersection"
+                    else (
+                        "boolean_empty_result"
+                        if operation == "difference"
+                        else "boolean_tessellation"
+                    )
+                ),
+                operation=operation,
+            )
+        return output
+    except MeshCandidateError:
+        raise
+    except Exception as exc:
+        message = str(exc).strip()
+        capability_failure = (
+            "MeshPart::Boolean" in message
+            and any(
+                token in message.casefold()
+                for token in ("unknown", "not found", "unavailable")
+            )
+        )
+        raise _fail(
+            f"Native OCC api.{operation} failed: {message or type(exc).__name__}.",
+            stage="boolean_capability" if capability_failure else "boolean_kernel",
+            operation=operation,
+            exception_type=type(exc).__name__,
+        ) from exc
+    finally:
+        if document is not None:
+            try:
+                App.closeDocument(str(document.Name))
+            except Exception:
+                pass
+        if previous_name:
+            try:
+                App.setActiveDocument(previous_name)
+            except Exception:
+                pass
+
+
 def _requirements(properties: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: properties[key]
@@ -894,6 +1147,92 @@ def _evaluate_definition(
                     "result": _quick_counts(mesh),
                 }
             ]
+        elif operation in _BOOLEAN_OPERATIONS:
+            first_payload = validate_mesh_definition(
+                arguments[0],
+                require_domain_value=False,
+                context=f"api.{operation}.first",
+            )
+            second_payload = validate_mesh_definition(
+                arguments[1],
+                require_domain_value=False,
+                context=f"api.{operation}.second",
+            )
+            first, first_trace = _evaluate_definition(first_payload, cache)
+            second, second_trace = _evaluate_definition(second_payload, cache)
+            first_facts = _boolean_operand_facts(
+                first,
+                operation=operation,
+                operand="first",
+            )
+            second_facts = _boolean_operand_facts(
+                second,
+                operation=operation,
+                operand="second",
+            )
+            mesh = _native_boolean(
+                first,
+                second,
+                operation=operation,
+                properties=properties,
+            )
+            result_diagnostics = mesh_diagnostics(mesh)
+            result_failures = []
+            if not result_diagnostics["is_solid"]:
+                result_failures.append("result is not a closed solid")
+            if int(result_diagnostics["open_edges"]) != 0:
+                result_failures.append(
+                    f"result has {result_diagnostics['open_edges']} open edges"
+                )
+            if (
+                result_diagnostics["has_non_manifolds"]
+                or result_diagnostics["has_invalid_neighbourhood"]
+            ):
+                result_failures.append(
+                    "result has non-manifold or invalid neighbourhood topology"
+                )
+            if result_diagnostics["has_non_uniform_orientation"]:
+                result_failures.append("result has inconsistent facet orientation")
+            if result_diagnostics["has_self_intersections"]:
+                result_failures.append("result has self-intersections")
+            if abs(float(result_diagnostics["volume_mm3"])) <= 1.0e-12:
+                result_failures.append("result has no non-zero solid volume")
+            if result_failures:
+                raise _fail(
+                    f"api.{operation} produced an invalid tessellation: "
+                    f"{'; '.join(result_failures)}.",
+                    stage="boolean_tessellation",
+                    operation=operation,
+                    failures=result_failures,
+                    diagnostics=result_diagnostics,
+                )
+            result_facts = _compact_boolean_facts(result_diagnostics)
+            trace = [
+                *first_trace,
+                *second_trace,
+                {
+                    "operation": operation,
+                    "first_definition_sha256": hashlib.sha256(
+                        _encoded(first_payload).encode("utf-8")
+                    ).hexdigest(),
+                    "second_definition_sha256": hashlib.sha256(
+                        _encoded(second_payload).encode("utf-8")
+                    ).hexdigest(),
+                    "first": first_facts,
+                    "second": second_facts,
+                    "tessellation": {
+                        "linear_deflection": float(
+                            properties["linear_deflection"]
+                        ),
+                        "angular_deflection_degrees": float(
+                            properties["angular_deflection_degrees"]
+                        ),
+                        "relative": bool(properties["relative"]),
+                    },
+                    "backend": _BOOLEAN_BACKEND,
+                    "result": result_facts,
+                },
+            ]
         else:
             source_payload = validate_mesh_definition(
                 arguments[0],
@@ -992,6 +1331,15 @@ def _evaluate_definition(
             operation=operation,
             exception_type=type(exc).__name__,
         ) from exc
+    if len(trace) > _MAX_TRACE_OPERATIONS:
+        raise _fail(
+            f"api.{operation} expands to {len(trace)} Mesh operations; "
+            f"the maximum is {_MAX_TRACE_OPERATIONS}.",
+            stage="definition_contract",
+            operation=operation,
+            received_operation_count=len(trace),
+            maximum_operation_count=_MAX_TRACE_OPERATIONS,
+        )
     if int(mesh.CountFacets) <= 0:
         raise _fail(
             f"Native api.{operation} removed every mesh facet.",
@@ -1025,6 +1373,8 @@ def validate_and_build_meshes(
     raw_result: Mapping[str, Any],
     expected_outputs: Sequence[Mapping[str, Any]],
     root: Path,
+    *,
+    output_indices: Sequence[int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Evaluate, diagnose, and export every declared native Mesh output."""
 
@@ -1036,10 +1386,23 @@ def validate_and_build_meshes(
             expected_names=expected_names,
             received_names=list(raw_result),
         )
+    indices = (
+        list(range(len(expected_outputs)))
+        if output_indices is None
+        else list(output_indices)
+    )
+    if len(indices) != len(expected_outputs) or any(
+        isinstance(index, bool) or not isinstance(index, int) or index < 0
+        for index in indices
+    ):
+        raise _fail(
+            "Mesh output_indices must contain one non-negative integer per output.",
+            stage="result_contract",
+        )
     cache: dict[str, tuple[Any, list[dict[str, Any]]]] = {}
     outputs = []
     summaries = []
-    for index, expected in enumerate(expected_outputs):
+    for expected, artifact_index in zip(expected_outputs, indices, strict=True):
         name = str(expected["name"])
         if str(expected.get("type") or "") != "mesh":
             raise _fail(
@@ -1058,7 +1421,40 @@ def validate_and_build_meshes(
             if definition["operation"] == "diagnostics"
             else mesh_diagnostics(mesh)
         )
-        relative = Path("outputs") / f"output-{index:03d}.bms"
+        if _definition_contains_boolean(definition):
+            final_failures = []
+            if not diagnostics["is_solid"]:
+                final_failures.append("final result is not a closed solid")
+            if int(diagnostics["open_edges"]) != 0:
+                final_failures.append(
+                    f"final result has {diagnostics['open_edges']} open edges"
+                )
+            if (
+                diagnostics["has_non_manifolds"]
+                or diagnostics["has_invalid_neighbourhood"]
+            ):
+                final_failures.append(
+                    "final result has non-manifold or invalid neighbourhood topology"
+                )
+            if diagnostics["has_non_uniform_orientation"]:
+                final_failures.append(
+                    "final result has inconsistent facet orientation"
+                )
+            if diagnostics["has_self_intersections"]:
+                final_failures.append("final result has self-intersections")
+            if abs(float(diagnostics["volume_mm3"])) <= 1.0e-12:
+                final_failures.append("final result has no non-zero solid volume")
+            if final_failures:
+                raise _fail(
+                    f"Mesh output {name!r} no longer contains a valid boolean solid: "
+                    f"{'; '.join(final_failures)}.",
+                    stage="boolean_tessellation",
+                    operation=str(definition["operation"]),
+                    output_name=name,
+                    failures=final_failures,
+                    diagnostics=diagnostics,
+                )
+        relative = Path("outputs") / f"output-{artifact_index:03d}.bms"
         artifact_sha256 = _export_mesh(mesh, root / relative, output_name=name)
         data = {
             "schema": VALIDATION_SCHEMA,

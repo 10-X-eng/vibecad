@@ -73,7 +73,12 @@ public:
     unsigned int getMemSize() const override;
 
 private:
+    void clearOwnedValues();
+
     std::vector<CenterLine*> _lValueList;
+    // Normal document properties retain the historical pointer ownership
+    // contract.  Transaction snapshots own the deep copies made by Copy().
+    bool _ownsValues {false};
 };
 
 } // namespace TechDraw

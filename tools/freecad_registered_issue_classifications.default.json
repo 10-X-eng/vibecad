@@ -2,24 +2,6 @@
   "schema": "freecad-registered-issue-classifications-v1",
   "issues": [
     {
-      "suite": "TestArch",
-      "expected_result": "traceback",
-      "reason": "Known BIM/Arch async GUI lifetime noise: ArchSite updateSunPosition timer touches a deleted view provider.",
-      "required_evidence": [
-        "ReferenceError: Cannot access attribute 'ShowSunPosition' of deleted object",
-        "ArchSite.py"
-      ],
-      "expected_counts": {
-        "deleted_object_reference_errors": 12,
-        "quantity_slot_type_errors": 0,
-        "returncode": 0,
-        "segmentation_fault": false,
-        "timeout": false,
-        "traceback_count": 16
-      },
-      "hard_blocker": true
-    },
-    {
       "suite": "TestDraftGui",
       "expected_result": "ok_with_process_errors",
       "reason": "Known Draft manual input Qt/PySide Base::Quantity slot conversion noise despite suite return code 0.",
@@ -94,24 +76,6 @@
         "segmentation_fault": true,
         "timeout": false,
         "traceback_count": 0
-      },
-      "hard_blocker": true
-    },
-    {
-      "suite": "TestArchGui",
-      "expected_result": "process_failed",
-      "reason": "Known BIM/Arch covering GUI quantity conversion failure.",
-      "required_evidence": [
-        "RuntimeError: Can't find converter for 'Base::Quantity'",
-        "ArchCoveringGui.py"
-      ],
-      "expected_counts": {
-        "deleted_object_reference_errors": 0,
-        "quantity_slot_type_errors": 0,
-        "returncode": 1,
-        "segmentation_fault": false,
-        "timeout": false,
-        "traceback_count": 9
       },
       "hard_blocker": true
     },

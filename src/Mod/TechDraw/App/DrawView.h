@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include <unordered_set>
+
 #include <fastsignals/signal.h>
 #include <QCoreApplication>
 #include <QRectF>
@@ -100,6 +102,8 @@ public:
     virtual void setPosition(double x, double y, bool force = false);
     virtual Base::Vector3d getPosition() const { return Base::Vector3d(X.getValue(), Y.getValue(), 0.0); }
     virtual bool keepUpdated(void);
+    /// True when this view is on the active side of the document timeline.
+    virtual bool isActiveInDocumentTimeline() const;
 
     fastsignals::signal<void (const DrawView*)> signalGuiPaint;
     fastsignals::signal<void (const DrawView*, std::string, std::string)> signalProgressMessage;
@@ -130,6 +134,15 @@ public:
     virtual bool snapsToPosition() const { return true; }
 
 protected:
+    using TimelineDependencyStack =
+        std::unordered_set<const App::DocumentObject*>;
+
+    virtual bool timelineDependenciesActive(
+        TimelineDependencyStack& stack) const;
+    static bool timelineDependencyIsActive(
+        const App::DocumentObject* object,
+        TimelineDependencyStack& stack);
+
     void onBeforeChange(const App::Property *prop) override;
     void onChanged(const App::Property* prop) override;
     virtual void validateScale();
@@ -143,6 +156,8 @@ protected:
     void touchTreeOwner(App::DocumentObject *owner) const;
 
 private:
+    bool isActiveInDocumentTimeline(TimelineDependencyStack& stack) const;
+
     static const char* ScaleTypeEnums[];
     static App::PropertyFloatConstraint::Constraints scaleRange;
 

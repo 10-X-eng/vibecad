@@ -39,6 +39,8 @@ from draftfunctions import heal
 from draftguitools import gui_base
 
 from draftutils.translate import translate
+from draftutils.transaction import object_is_usable_at_current_position
+from draftutils.transaction import run_document_mutation
 
 
 class Heal(gui_base.GuiCommandSimplest):
@@ -70,13 +72,24 @@ class Heal(gui_base.GuiCommandSimplest):
         """Execute when the command is called."""
         super().Activated()
 
-        s = Gui.Selection.getSelection()
-        self.doc.openTransaction("Heal")
-        if s:
-            heal.heal(s)
-        else:
-            heal.heal()
-        self.doc.commitTransaction()
+        selected = tuple(
+            obj
+            for obj in Gui.Selection.getSelection()
+            if object_is_usable_at_current_position(obj, self.doc)
+        )
+        inputs = selected or tuple(
+            obj
+            for obj in self.doc.Objects
+            if object_is_usable_at_current_position(obj, self.doc)
+        )
+        if not inputs:
+            return
+        run_document_mutation(
+            self.doc,
+            translate("draft", "Heal"),
+            lambda: heal.heal(list(inputs)),
+            objects=inputs,
+        )
 
 
 Gui.addCommand("Draft_Heal", Heal())

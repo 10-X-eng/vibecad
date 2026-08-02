@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <stack>
 #include <tuple>
 #include <QString>
@@ -154,18 +155,15 @@ public:
      * // normal macro output is restored
      * @endcode
      */
-    class MacroRedirector
+    class GuiExport MacroRedirector
     {
     public:
-        explicit MacroRedirector(const std::function<void(LineType, const char*)>& func)
-        {
-            MacroManager::redirectFuncs.push(func);
-        }
-
-        ~MacroRedirector()
-        {
-            MacroManager::redirectFuncs.pop();
-        }
+        explicit MacroRedirector(const std::function<void(LineType, const char*)>& func);
+        MacroRedirector(const MacroRedirector&);
+        MacroRedirector(MacroRedirector&&) noexcept;
+        MacroRedirector& operator=(const MacroRedirector&);
+        MacroRedirector& operator=(MacroRedirector&&) noexcept;
+        ~MacroRedirector();
     };
 
     /** Opens a new Macro recording session
@@ -217,6 +215,17 @@ public:
     {
         return buffer.getLines();
     }
+    /**
+     * Return the number of replayable command lines submitted to addLine().
+     *
+     * Unlike getLines(), this count advances while output is redirected. It
+     * lets command dispatch detect an explicit App/Gui trace without adding a
+     * duplicate Gui.runCommand() fallback to a deferred task trace.
+     */
+    std::uint64_t getSubmittedCommandLines() const
+    {
+        return submittedCommandLines;
+    }
 
 private:
     void processPendingLines();
@@ -226,6 +235,7 @@ private:
 private:
     MacroFile macroFile;
     MacroOutputBuffer buffer;
+    std::uint64_t submittedCommandLines {0};
     MacroOutputOption option;
     bool localEnv {true};
     mutable PythonConsole* pyConsole {nullptr};  // link to the python console

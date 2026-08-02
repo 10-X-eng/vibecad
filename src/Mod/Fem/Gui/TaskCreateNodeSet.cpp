@@ -97,14 +97,30 @@ void TaskCreateNodeSet::setSelectionGate()
 
 void TaskCreateNodeSet::Poly()
 {
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    Gui::MDIView* view = doc->getActiveView();
-    if (view->isDerivedFrom<Gui::View3DInventor>()) {
-        Gui::View3DInventorViewer* viewer = ((Gui::View3DInventor*)view)->getViewer();
-        viewer->setEditing(true);
-        viewer->startSelection(Gui::View3DInventorViewer::Clip);
-        viewer->addEventCallback(SoMouseButtonEvent::getClassTypeId(), DefineNodesCallback, this);
+    stopPolygonSelection();
+
+    Gui::Document* document = Gui::Application::Instance->getDocument(
+        pcObject ? pcObject->getDocument() : nullptr
+    );
+    if (!document) {
+        Base::Console().warning("Cannot select FEM nodes: the owning document is no longer open.\n");
+        return;
     }
+
+    Gui::MDIView* view = document->getActiveView();
+    if (!view || !view->isDerivedFrom<Gui::View3DInventor>()) {
+        Base::Console().warning("Cannot select FEM nodes: the document has no active 3D view.\n");
+        return;
+    }
+
+    polygonViewer = static_cast<Gui::View3DInventor*>(view)->getViewer();
+    if (!polygonViewer) {
+        return;
+    }
+
+    polygonViewer->setEditing(true);
+    polygonViewer->startSelection(Gui::View3DInventorViewer::Clip);
+    polygonViewer->addEventCallback(SoMouseButtonEvent::getClassTypeId(), DefineNodesCallback, this);
 }
 
 void TaskCreateNodeSet::Pick()
@@ -142,6 +158,7 @@ void TaskCreateNodeSet::DefineNodesCallback(void* ud, SoEventCallback* n)
     Gui::View3DInventorViewer* view = static_cast<Gui::View3DInventorViewer*>(n->getUserData());
     view->setEditing(false);
     view->removeEventCallback(SoMouseButtonEvent::getClassTypeId(), DefineNodesCallback, ud);
+    taskBox->polygonViewer = nullptr;
     n->setHandled();
 
     Gui::SelectionRole role;
@@ -162,6 +179,17 @@ void TaskCreateNodeSet::DefineNodesCallback(void* ud, SoEventCallback* n)
     }
 
     taskBox->DefineNodes(polygon, proj, role == Gui::SelectionRole::Inner ? true : false);
+}
+
+void TaskCreateNodeSet::stopPolygonSelection()
+{
+    if (!polygonViewer) {
+        return;
+    }
+
+    polygonViewer->removeEventCallback(SoMouseButtonEvent::getClassTypeId(), DefineNodesCallback, this);
+    polygonViewer->setEditing(false);
+    polygonViewer = nullptr;
 }
 
 void TaskCreateNodeSet::DefineNodes(
@@ -239,6 +267,7 @@ void TaskCreateNodeSet::onSelectionChanged(const Gui::SelectionChanges& msg)
 
 TaskCreateNodeSet::~TaskCreateNodeSet()
 {
+    stopPolygonSelection();
     Gui::Selection().rmvSelectionGate();
 }
 

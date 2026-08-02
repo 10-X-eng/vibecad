@@ -25,6 +25,7 @@
 #pragma once
 
 #include <App/PropertyLinks.h>
+#include <App/SuppressibleExtension.h>
 #include <Mod/Part/App/FeaturePartSpline.h>
 #include <Mod/Surface/SurfaceGlobal.h>
 
@@ -77,6 +78,8 @@ public:
     }
 
 private:
+    App::SuppressibleExtension suppressibleExtension;
+
     void addConstraints(
         BRepFill_Filling& builder,
         const App::PropertyLinkSubList& edges,

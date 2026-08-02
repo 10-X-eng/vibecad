@@ -34,6 +34,10 @@ class ViewProviderSetNodes: public Gui::ViewProviderGeometryObject
 
 public:
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
 
 protected:
     bool setEdit(int ModNum) override;

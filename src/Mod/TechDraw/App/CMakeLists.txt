@@ -96,8 +96,6 @@ SET(Draw_SRCS
     DrawGeomHatch.h
     DrawViewDraft.cpp
     DrawViewDraft.h
-    DrawViewArch.cpp
-    DrawViewArch.h
     DrawViewMulti.cpp
     DrawViewMulti.h
     DrawViewImage.cpp

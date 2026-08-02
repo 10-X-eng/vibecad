@@ -28,6 +28,7 @@
 
 
 #include <Mod/PartDesign/App/FeatureHelix.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Gui/BitmapFactory.h>
 
 #include <Gui/Application.h>
@@ -76,6 +77,9 @@ QIcon ViewProviderHelix::getIcon() const
 std::vector<App::DocumentObject*> ViewProviderHelix::claimChildren() const
 {
     std::vector<App::DocumentObject*> temp;
+    if (getObject<PartDesign::DesignHelix>()) {
+        return temp;
+    }
     App::DocumentObject* sketch = getObject<PartDesign::ProfileBased>()->Profile.getValue();
     if (sketch && sketch->isDerivedFrom<Part::Part2DObject>()) {
         temp.push_back(sketch);

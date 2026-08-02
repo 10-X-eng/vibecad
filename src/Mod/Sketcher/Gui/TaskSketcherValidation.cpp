@@ -28,6 +28,7 @@
 #include <QMessageBox>
 #include <algorithm>
 #include <array>
+#include <exception>
 
 #include <Inventor/nodes/SoBaseColor.h>
 #include <Inventor/nodes/SoCoordinate3.h>
@@ -35,9 +36,13 @@
 #include <Inventor/nodes/SoMarkerSet.h>
 #include <Inventor/nodes/SoSeparator.h>
 
+#include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/CommandT.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Inventor/MarkerBitmaps.h>
 #include <Gui/Notifications.h>
 #include <Gui/TaskView/TaskView.h>
@@ -58,6 +63,21 @@ SketcherValidation::SketcherValidation(Sketcher::SketchObject* Obj, QWidget* par
     : QWidget(parent)
     , ui(new Ui_TaskSketcherValidation())
     , sketch(Obj)
+    , exactDocument(Obj ? Obj->getDocument() : nullptr)
+    , exactDocumentName(
+          exactDocument ? exactDocument->getName() : std::string()
+      )
+    , exactDocumentUid(
+          exactDocument
+              ? exactDocument->Uid.getValueStr()
+              : std::string()
+      )
+    , exactSketchId(Obj ? Obj->getID() : 0)
+    , exactSketchName(
+          Obj && Obj->getNameInDocument()
+              ? Obj->getNameInDocument()
+              : std::string()
+      )
     , coincidenceRoot(nullptr)
 {
     ui->setupUi(this);
@@ -96,6 +116,113 @@ SketcherValidation::SketcherValidation(Sketcher::SketchObject* Obj, QWidget* par
 SketcherValidation::~SketcherValidation()
 {
     hidePoints();
+}
+
+Sketcher::SketchObject* SketcherValidation::resolveExactSketch(
+    bool requireCurrentHistory
+) const
+{
+    if (!exactDocument || exactDocumentName.empty()
+        || exactDocumentUid.empty() || exactSketchId <= 0
+        || exactSketchName.empty()) {
+        return nullptr;
+    }
+    auto* document =
+        App::GetApplication().getDocument(exactDocumentName.c_str());
+    if (document != exactDocument
+        || document->Uid.getValueStr() != exactDocumentUid) {
+        return nullptr;
+    }
+    auto* object = document->getObjectByID(exactSketchId);
+    if (!object || !object->getNameInDocument()
+        || exactSketchName != object->getNameInDocument()
+        || document->getObject(exactSketchName.c_str()) != object
+        || sketch.expired() || sketch.get() != object) {
+        return nullptr;
+    }
+    auto* exactSketch =
+        freecad_cast<Sketcher::SketchObject*>(object);
+    if (!exactSketch) {
+        return nullptr;
+    }
+    if (requireCurrentHistory) {
+        try {
+            if (!App::DocumentTimeline::
+                    isObjectUsableAtCurrentPosition(exactSketch)) {
+                return nullptr;
+            }
+        }
+        catch (...) {
+            return nullptr;
+        }
+    }
+    return exactSketch;
+}
+
+bool SketcherValidation::runExactMutation(
+    const char* transactionName,
+    const std::function<void(Sketcher::SketchObject&)>& mutation,
+    bool recompute
+)
+{
+    auto* exactSketch = resolveExactSketch();
+    auto* document =
+        exactSketch ? exactSketch->getDocument() : nullptr;
+    if (!exactSketch || !document) {
+        return false;
+    }
+    if (document->getBookedTransactionID()
+            != App::NullTransaction
+        || document->hasPendingTransaction()) {
+        Gui::TranslatedUserWarning(
+            exactSketch,
+            tr("Sketch validation is busy"),
+            tr("Another modeling operation already owns this document.")
+        );
+        return false;
+    }
+
+    try {
+        Gui::ExactTransaction transaction(
+            *document,
+            transactionName
+        );
+        mutation(*exactSketch);
+        if (resolveExactSketch(false) != exactSketch) {
+            throw Base::RuntimeError(
+                "The validated Sketch changed during the operation"
+            );
+        }
+        if (recompute) {
+            document->recompute();
+        }
+        if (resolveExactSketch(false) != exactSketch) {
+            throw Base::RuntimeError(
+                "The validated Sketch changed before the operation completed"
+            );
+        }
+        if (!transaction.commit()) {
+            throw Base::RuntimeError(
+                "The Sketch validation transaction could not be committed"
+            );
+        }
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        Gui::TranslatedUserWarning(
+            exactDocumentName,
+            tr("Sketch validation failed"),
+            QString::fromUtf8(error.what())
+        );
+    }
+    catch (const std::exception& error) {
+        Gui::TranslatedUserWarning(
+            exactDocumentName,
+            tr("Sketch validation failed"),
+            QString::fromUtf8(error.what())
+        );
+    }
+    return false;
 }
 
 void SketcherValidation::setupConnections()
@@ -138,7 +265,8 @@ void SketcherValidation::changeEvent(QEvent* e)
 
 void SketcherValidation::onFindButtonClicked()
 {
-    if (sketch.expired()) {
+    auto* exactSketch = resolveExactSketch();
+    if (!exactSketch) {
         return;
     }
 
@@ -158,10 +286,13 @@ void SketcherValidation::onFindButtonClicked()
         }
     }
 
-    sketch->detectMissingPointOnPointConstraints(prec, !ui->checkBoxIgnoreConstruction->isChecked());
+    exactSketch->detectMissingPointOnPointConstraints(
+        prec,
+        !ui->checkBoxIgnoreConstruction->isChecked()
+    );
 
     std::vector<Sketcher::ConstraintIds>& vertexConstraints
-        = sketch->getMissingPointOnPointConstraints();
+        = exactSketch->getMissingPointOnPointConstraints();
 
     std::vector<Base::Vector3d> points;
     points.reserve(vertexConstraints.size());
@@ -173,7 +304,7 @@ void SketcherValidation::onFindButtonClicked()
     hidePoints();
     if (vertexConstraints.empty()) {
         Gui::TranslatedNotification(
-            *sketch,
+            exactSketch,
             tr("No missing coincidences"),
             tr("No missing coincidences found")
         );
@@ -183,7 +314,7 @@ void SketcherValidation::onFindButtonClicked()
     else {
         showPoints(points);
         Gui::TranslatedUserWarning(
-            *sketch,
+            exactSketch,
             tr("Missing coincidences"),
             tr("%1 missing coincidences found").arg(vertexConstraints.size())
         );
@@ -194,34 +325,38 @@ void SketcherValidation::onFindButtonClicked()
 
 void SketcherValidation::onFixButtonClicked()
 {
-    if (sketch.expired()) {
+    if (!resolveExactSketch()) {
         return;
     }
 
-    // undo command open
-    App::Document* doc = sketch->getDocument();
-    doc->openTransaction("Add coincident constraint");
-
-    Gui::cmdAppObjectArgs(sketch.get(), "makeMissingPointOnPointCoincident()");
+    Gui::WaitCursor wait;
+    if (!runExactMutation(
+            "Add coincident constraint",
+            [](Sketcher::SketchObject& exactSketch) {
+                Gui::cmdAppObjectArgs(
+                    &exactSketch,
+                    "makeMissingPointOnPointCoincident()"
+                );
+            },
+            true
+        )) {
+        return;
+    }
 
     ui->fixButton->setEnabled(false);
     hidePoints();
-
-    // finish the transaction and update
-    Gui::WaitCursor wc;
-    doc->commitTransaction();
-    doc->recompute();
 }
 
 void SketcherValidation::onHighlightButtonClicked()
 {
-    if (sketch.expired()) {
+    auto* exactSketch = resolveExactSketch();
+    if (!exactSketch) {
         return;
     }
 
     std::vector<Base::Vector3d> points;
 
-    points = sketch->getOpenVertices();
+    points = exactSketch->getOpenVertices();
 
     hidePoints();
     if (!points.empty()) {
@@ -231,13 +366,14 @@ void SketcherValidation::onHighlightButtonClicked()
 
 void SketcherValidation::onFindConstraintClicked()
 {
-    if (sketch.expired()) {
+    auto* exactSketch = resolveExactSketch();
+    if (!exactSketch) {
         return;
     }
 
-    if (sketch->evaluateConstraints()) {
+    if (exactSketch->evaluateConstraints()) {
         Gui::TranslatedNotification(
-            *sketch,
+            exactSketch,
             tr("No invalid constraints"),
             tr("No invalid constraints found")
         );
@@ -245,7 +381,11 @@ void SketcherValidation::onFindConstraintClicked()
         ui->fixConstraint->setEnabled(false);
     }
     else {
-        Gui::TranslatedUserError(*sketch, tr("Invalid constraints"), tr("Invalid constraints found"));
+        Gui::TranslatedUserError(
+            exactSketch,
+            tr("Invalid constraints"),
+            tr("Invalid constraints found")
+        );
 
         ui->fixConstraint->setEnabled(true);
     }
@@ -253,22 +393,34 @@ void SketcherValidation::onFindConstraintClicked()
 
 void SketcherValidation::onFixConstraintClicked()
 {
-    if (sketch.expired()) {
+    if (!resolveExactSketch()) {
         return;
     }
 
-    Gui::cmdAppObjectArgs(sketch.get(), "validateConstraints()");
-    ui->fixConstraint->setEnabled(false);
+    if (runExactMutation(
+            "Validate sketch constraints",
+            [](Sketcher::SketchObject& exactSketch) {
+                Gui::cmdAppObjectArgs(
+                    &exactSketch,
+                    "validateConstraints()"
+                );
+            },
+            true
+        )) {
+        ui->fixConstraint->setEnabled(false);
+    }
 }
 
 void SketcherValidation::onFindReversedClicked()
 {
-    if (sketch.expired()) {
+    auto* exactSketch = resolveExactSketch();
+    if (!exactSketch) {
         return;
     }
 
     std::vector<Base::Vector3d> points;
-    const std::vector<Part::Geometry*>& geom = sketch->getExternalGeometry();
+    const std::vector<Part::Geometry*>& geom =
+        exactSketch->getExternalGeometry();
     for (const auto geo : geom) {
         // only arcs of circles need to be repaired. Arcs of ellipse were so broken there should be
         // nothing to repair from.
@@ -281,11 +433,14 @@ void SketcherValidation::onFindReversedClicked()
     }
     hidePoints();
     if (!points.empty()) {
-        int nc = sketch->port_reversedExternalArcs(/*justAnalyze=*/true);
+        int nc =
+            exactSketch->port_reversedExternalArcs(
+                /*justAnalyze=*/true
+            );
         showPoints(points);
         if (nc > 0) {
             Gui::TranslatedUserWarning(
-                *sketch,
+                exactSketch,
                 tr("Reversed external geometry"),
                 tr("%1 reversed external geometry arcs were found. Their endpoints are"
                    " encircled in the 3D view.\n\n"
@@ -301,7 +456,7 @@ void SketcherValidation::onFindReversedClicked()
         }
         else {
             Gui::TranslatedUserWarning(
-                *sketch,
+                exactSketch,
                 tr("Reversed external geometry"),
                 tr("%1 reversed external geometry arcs were found. Their endpoints are "
                    "encircled in the 3D view.\n\n"
@@ -314,7 +469,7 @@ void SketcherValidation::onFindReversedClicked()
     }
     else {
         Gui::TranslatedNotification(
-            *sketch,
+            exactSketch,
             tr("Reversed external geometry"),
             tr("No reversed external geometry arcs were found.")
         );
@@ -323,74 +478,105 @@ void SketcherValidation::onFindReversedClicked()
 
 void SketcherValidation::onSwapReversedClicked()
 {
-    if (sketch.expired()) {
+    if (!resolveExactSketch()) {
         return;
     }
 
-    App::Document* doc = sketch->getDocument();
-    doc->openTransaction("Sketch porting");
-
-    int n = sketch->port_reversedExternalArcs(/*justAnalyze=*/false);
+    int changes = 0;
+    if (!runExactMutation(
+            "Sketch porting",
+            [&changes](Sketcher::SketchObject& exactSketch) {
+                changes = exactSketch.port_reversedExternalArcs(
+                    /*justAnalyze=*/false
+                );
+            },
+            true
+        )) {
+        return;
+    }
+    auto* exactSketch = resolveExactSketch();
+    if (!exactSketch) {
+        return;
+    }
     Gui::TranslatedNotification(
-        *sketch,
+        exactSketch,
         tr("Reversed external geometry"),
-        tr("%1 changes were made to constraints linking to endpoints of reversed arcs.").arg(n)
+        tr("%1 changes were made to constraints linking to endpoints of reversed arcs.")
+            .arg(changes)
     );
 
     hidePoints();
     ui->swapReversed->setEnabled(false);
-
-    doc->commitTransaction();
 }
 
 void SketcherValidation::onOrientLockEnableClicked()
 {
-    if (sketch.expired()) {
+    if (!resolveExactSketch()) {
         return;
     }
 
-    App::Document* doc = sketch->getDocument();
-    doc->openTransaction("Constraint orientation lock");
-
-    int n = sketch->changeConstraintsLocking(/*bLock=*/true);
+    int changes = 0;
+    if (!runExactMutation(
+            "Constraint orientation lock",
+            [&changes](Sketcher::SketchObject& exactSketch) {
+                changes = exactSketch.changeConstraintsLocking(
+                    /*bLock=*/true
+                );
+            },
+            true
+        )) {
+        return;
+    }
+    auto* exactSketch = resolveExactSketch();
+    if (!exactSketch) {
+        return;
+    }
     Gui::TranslatedNotification(
-        *sketch,
+        exactSketch,
         tr("Constraint orientation locking"),
         tr("Orientation locking was enabled and recomputed for %1 constraints. The"
            " constraints have been listed in the report view (menu View → Panels →"
            " Report view).")
-            .arg(n)
+            .arg(changes)
     );
-
-    doc->commitTransaction();
 }
 
 void SketcherValidation::onOrientLockDisableClicked()
 {
-    if (sketch.expired()) {
+    if (!resolveExactSketch()) {
         return;
     }
 
-    App::Document* doc = sketch->getDocument();
-    doc->openTransaction("Constraint orientation unlock");
-
-    int n = sketch->changeConstraintsLocking(/*bLock=*/false);
+    int changes = 0;
+    if (!runExactMutation(
+            "Constraint orientation unlock",
+            [&changes](Sketcher::SketchObject& exactSketch) {
+                changes = exactSketch.changeConstraintsLocking(
+                    /*bLock=*/false
+                );
+            },
+            true
+        )) {
+        return;
+    }
+    auto* exactSketch = resolveExactSketch();
+    if (!exactSketch) {
+        return;
+    }
     Gui::TranslatedNotification(
-        *sketch,
+        exactSketch,
         tr("Constraint orientation locking"),
         tr("Orientation locking was disabled for %1 constraints. The"
            " constraints have been listed in the report view (menu View → Panels →"
            " Report view). Note that for all future constraints, the locking still"
            " defaults to ON.")
-            .arg(n)
+            .arg(changes)
     );
-
-    doc->commitTransaction();
 }
 
 void SketcherValidation::onDelConstrExtrClicked()
 {
-    if (sketch.expired()) {
+    if (!resolveExactSketch()) {
         return;
     }
 
@@ -407,15 +593,25 @@ void SketcherValidation::onDelConstrExtrClicked()
         return;
     }
 
-    App::Document* doc = sketch->getDocument();
-    doc->openTransaction("Delete constraints");
-
-    Gui::cmdAppObjectArgs(sketch.get(), "delConstraintsToExternal()");
-
-    doc->commitTransaction();
+    if (!runExactMutation(
+            "Delete constraints",
+            [](Sketcher::SketchObject& exactSketch) {
+                Gui::cmdAppObjectArgs(
+                    &exactSketch,
+                    "delConstraintsToExternal()"
+                );
+            },
+            true
+        )) {
+        return;
+    }
+    auto* exactSketch = resolveExactSketch();
+    if (!exactSketch) {
+        return;
+    }
 
     Gui::TranslatedNotification(
-        *sketch,
+        exactSketch,
         tr("Delete constraints to external geom."),
         tr("All constraints that deal with external geometry were deleted.")
     );
@@ -423,12 +619,28 @@ void SketcherValidation::onDelConstrExtrClicked()
 
 void SketcherValidation::showPoints(const std::vector<Base::Vector3d>& pts)
 {
+    hidePoints();
+
+    auto* exactSketch = resolveExactSketch();
+    if (!exactSketch || !Gui::Application::Instance) {
+        return;
+    }
+
+    Gui::ViewProvider* vp =
+        Gui::Application::Instance->getViewProvider(exactSketch);
+    if (!vp || !vp->getRoot()) {
+        return;
+    }
+
     auto coords = new SoCoordinate3();
     auto drawStyle = new SoDrawStyle();
     drawStyle->pointSize = 6;
     auto pcPoints = new SoPointSet();
 
     coincidenceRoot = new SoGroup();
+    // Keep the marker group alive independently of the view provider. A document
+    // may close while the validation panel is still being torn down.
+    coincidenceRoot->ref();
 
     coincidenceRoot->addChild(drawStyle);
     auto pointsep = new SoSeparator();
@@ -459,35 +671,40 @@ void SketcherValidation::showPoints(const std::vector<Base::Vector3d>& pts)
     }
     coords->point.finishEditing();
 
-    if (!sketch.expired()) {
-        Gui::ViewProvider* vp = Gui::Application::Instance->getViewProvider(sketch.get());
-        vp->getRoot()->addChild(coincidenceRoot);
-    }
+    vp->getRoot()->addChild(coincidenceRoot);
 }
 
 void SketcherValidation::hidePoints()
 {
     if (coincidenceRoot) {
-        if (!sketch.expired()) {
-            Gui::ViewProvider* vp = Gui::Application::Instance->getViewProvider(sketch.get());
-            vp->getRoot()->removeChild(coincidenceRoot);
+        auto* exactSketch = resolveExactSketch(false);
+        if (exactSketch && Gui::Application::Instance) {
+            Gui::ViewProvider* vp =
+                Gui::Application::Instance->getViewProvider(
+                    exactSketch
+                );
+            if (vp && vp->getRoot() && vp->getRoot()->findChild(coincidenceRoot) >= 0) {
+                vp->getRoot()->removeChild(coincidenceRoot);
+            }
         }
+        coincidenceRoot->unref();
         coincidenceRoot = nullptr;
     }
 }
 
 void SketcherValidation::onFindDegeneratedClicked()
 {
-    if (sketch.expired()) {
+    auto* exactSketch = resolveExactSketch();
+    if (!exactSketch) {
         return;
     }
 
     double prec = Precision::Confusion();
-    int count = sketch->detectDegeneratedGeometries(prec);
+    int count = exactSketch->detectDegeneratedGeometries(prec);
 
     if (count == 0) {
         Gui::TranslatedNotification(
-            *sketch,
+            exactSketch,
             tr("No degenerated geometry"),
             tr("No degenerated geometry found")
         );
@@ -496,7 +713,7 @@ void SketcherValidation::onFindDegeneratedClicked()
     }
     else {
         Gui::TranslatedUserWarning(
-            *sketch,
+            exactSketch,
             tr("Degenerated geometry"),
             tr("%1 degenerated geometry found").arg(count)
         );
@@ -507,30 +724,36 @@ void SketcherValidation::onFindDegeneratedClicked()
 
 void SketcherValidation::onFixDegeneratedClicked()
 {
-    if (sketch.expired()) {
+    if (!resolveExactSketch()) {
         return;
     }
 
-    // undo command open
-    App::Document* doc = sketch->getDocument();
-    doc->openTransaction("Remove degenerated geometry");
-
-    double prec = Precision::Confusion();
-    Gui::cmdAppObjectArgs(sketch.get(), "removeDegeneratedGeometries(%.12f)", prec);
+    const double precision = Precision::Confusion();
+    Gui::WaitCursor wait;
+    if (!runExactMutation(
+            "Remove degenerated geometry",
+            [precision](Sketcher::SketchObject& exactSketch) {
+                Gui::cmdAppObjectArgs(
+                    &exactSketch,
+                    "removeDegeneratedGeometries(%.12f)",
+                    precision
+                );
+            },
+            true
+        )) {
+        return;
+    }
 
     ui->fixButton->setEnabled(false);
     hidePoints();
-
-    // finish the transaction and update
-    Gui::WaitCursor wc;
-    doc->commitTransaction();
-    doc->recompute();
 }
 
 // -----------------------------------------------
 
 TaskSketcherValidation::TaskSketcherValidation(Sketcher::SketchObject* Obj)
 {
+    setAutoCloseOnDeletedDocument(true);
+
     QWidget* widget = new SketcherValidation(Obj);
     auto taskbox = new Gui::TaskView::TaskBox(QPixmap(), widget->windowTitle(), true, nullptr);
     taskbox->groupLayout()->addWidget(widget);

@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 #include <QApplication>
+#include <QByteArray>
 #include <QCheckBox>
 #include <QGridLayout>
 #include <QVBoxLayout>
@@ -33,9 +34,14 @@
 #include <QSignalBlocker>
 #include <QWidgetAction>
 
+#include <memory>
 
 #include <App/DocumentObjectGroup.h>
+#include <App/DocumentTimeline.h>
 #include <App/Datums.h>
+#include <App/Part.h>
+#include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
 #include <Gui/Action.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -52,6 +58,7 @@
 #include <Mod/Part/App/BodyBase.h>
 #include <Mod/Part/App/Part2DObject.h>
 #include <Mod/Part/Gui/AttacherTexts.h>
+#include <Mod/Part/Gui/ModelingSelection.h>
 #include <Mod/Sketcher/App/Constraint.h>
 #include <Mod/Sketcher/App/ExternalGeometryFacade.h>
 #include <Mod/Sketcher/App/SketchObject.h>
@@ -71,9 +78,440 @@ using namespace Part;
 using namespace Attacher;
 
 
-namespace SketcherGui
+namespace
 {
 
+App::Property* ensureSketchTimelineProperty(
+    App::DocumentObject& object,
+    const char* type,
+    const char* name,
+    const char* description
+)
+{
+    auto* property = object.getPropertyByName(name);
+    if (!property) {
+        property = object.addDynamicProperty(
+            type,
+            name,
+            "Timeline",
+            description,
+            App::Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    property->setStatus(App::Property::Hidden, true);
+    property->setStatus(App::Property::LockDynamic, true);
+    property->setStatus(App::Property::NoRecompute, true);
+    return property;
+}
+
+void markSketchCommandOutputs(
+    const std::vector<Sketcher::SketchObject*>& outputs
+)
+{
+    if (outputs.empty()) {
+        return;
+    }
+
+    auto* operation = outputs.back();
+    auto* operationRole = dynamic_cast<App::PropertyString*>(
+        ensureSketchTimelineProperty(
+            *operation,
+            "App::PropertyString",
+            App::DocumentTimeline::RolePropertyName,
+            "Document timeline classification"
+        )
+    );
+    if (!operationRole) {
+        throw Base::TypeError(
+            "Sketch timeline role metadata has an incompatible type"
+        );
+    }
+    if (auto* ownerProperty = operation->getPropertyByName(
+            App::DocumentTimeline::OwnerPropertyName
+        )) {
+        ownerProperty->setStatus(App::Property::Hidden, true);
+        ownerProperty->setStatus(App::Property::LockDynamic, true);
+        ownerProperty->setStatus(App::Property::NoRecompute, true);
+        auto* owner = dynamic_cast<App::PropertyLinkHidden*>(ownerProperty);
+        if (!owner || owner->getValue()) {
+            throw Base::TypeError(
+                "A root Sketch operation cannot retain resource-owner metadata"
+            );
+        }
+    }
+    operationRole->setValue(App::DocumentTimeline::OperationRole);
+
+    for (std::size_t index = 0; index + 1 < outputs.size(); ++index) {
+        auto* resource = outputs[index];
+        if (!resource || resource == operation
+            || resource->getDocument() != operation->getDocument()) {
+            throw Base::ValueError(
+                "Sketch command resources must be distinct outputs in one document"
+            );
+        }
+        auto* resourceRole = dynamic_cast<App::PropertyString*>(
+            ensureSketchTimelineProperty(
+                *resource,
+                "App::PropertyString",
+                App::DocumentTimeline::RolePropertyName,
+                "Document timeline classification"
+            )
+        );
+        auto* resourceOwner = dynamic_cast<App::PropertyLinkHidden*>(
+            ensureSketchTimelineProperty(
+                *resource,
+                "App::PropertyLinkHidden",
+                App::DocumentTimeline::OwnerPropertyName,
+                "Sketch operation which owns this generated result"
+            )
+        );
+        if (!resourceRole || !resourceOwner) {
+            throw Base::TypeError(
+                "Sketch timeline resource metadata has an incompatible type"
+            );
+        }
+        resourceOwner->setValue(operation);
+        resourceRole->setValue(App::DocumentTimeline::ResourceRole);
+    }
+
+    std::vector<App::DocumentObject*> orderedOutputs(
+        outputs.begin(),
+        outputs.end()
+    );
+    App::DocumentTimeline::ensure(operation->getDocument())
+        ->finalizeProvisionalOperationBlock(
+            operation,
+            orderedOutputs
+        );
+}
+
+struct ExactSketchDocumentIdentity
+{
+    App::Document* address = nullptr;
+    std::string name;
+    std::string uid;
+};
+
+struct ExactSketchObjectIdentity
+{
+    ExactSketchDocumentIdentity document;
+    long id = 0;
+    std::string name;
+};
+
+struct ExactSketchSelectionOccurrence
+{
+    ExactSketchObjectIdentity object;
+    std::vector<std::string> subNames;
+};
+
+ExactSketchDocumentIdentity exactSketchDocumentIdentity(
+    App::Document* document
+)
+{
+    if (!document) {
+        return {};
+    }
+    return {
+        document,
+        document->getName(),
+        document->Uid.getValueStr(),
+    };
+}
+
+ExactSketchObjectIdentity exactSketchObjectIdentity(
+    const App::DocumentObject* object
+)
+{
+    if (!object || !object->isAttachedToDocument()
+        || !object->getNameInDocument()) {
+        return {};
+    }
+    return {
+        exactSketchDocumentIdentity(object->getDocument()),
+        object->getID(),
+        object->getNameInDocument(),
+    };
+}
+
+App::Document* resolveExactSketchDocument(
+    const ExactSketchDocumentIdentity& identity
+)
+{
+    if (!identity.address || identity.name.empty() || identity.uid.empty()) {
+        return nullptr;
+    }
+    auto* document =
+        App::GetApplication().getDocument(identity.name.c_str());
+    return document == identity.address
+            && document->Uid.getValueStr() == identity.uid
+        ? document
+        : nullptr;
+}
+
+App::DocumentObject* resolveExactSketchObject(
+    const ExactSketchObjectIdentity& identity
+)
+{
+    auto* document = resolveExactSketchDocument(identity.document);
+    auto* object = document && identity.id > 0
+        ? document->getObjectByID(identity.id)
+        : nullptr;
+    return object && object->getNameInDocument()
+            && identity.name == object->getNameInDocument()
+            && document->getObject(identity.name.c_str()) == object
+        ? object
+        : nullptr;
+}
+
+App::DocumentObject* resolveExactUsableSketchObject(
+    const ExactSketchObjectIdentity& identity
+)
+{
+    auto* object = resolveExactSketchObject(identity);
+    return object && PartGui::isModelingObjectActive(object)
+        ? object
+        : nullptr;
+}
+
+Sketcher::SketchObject* resolveExactStandaloneSketch(
+    const ExactSketchObjectIdentity& identity
+)
+{
+    return freecad_cast<Sketcher::SketchObject*>(
+        resolveExactSketchObject(identity)
+    );
+}
+
+Sketcher::SketchObject* resolveExactUsableStandaloneSketch(
+    const ExactSketchObjectIdentity& identity
+)
+{
+    return freecad_cast<Sketcher::SketchObject*>(
+        resolveExactUsableSketchObject(identity)
+    );
+}
+
+App::DocumentObjectGroup* resolveExactSketchGroup(
+    const ExactSketchObjectIdentity& identity
+)
+{
+    return freecad_cast<App::DocumentObjectGroup*>(
+        resolveExactSketchObject(identity)
+    );
+}
+
+App::DocumentObjectGroup* resolveExactUsableSketchGroup(
+    const ExactSketchObjectIdentity& identity
+)
+{
+    auto* group = resolveExactSketchGroup(identity);
+    return group && PartGui::isModelingObjectActive(group)
+        ? group
+        : nullptr;
+}
+
+std::vector<ExactSketchSelectionOccurrence> captureExactSketchSelection(
+    const std::vector<Gui::SelectionObject>& selection
+)
+{
+    std::vector<ExactSketchSelectionOccurrence> captured;
+    captured.reserve(selection.size());
+    for (const auto& selected : selection) {
+        auto* object = selected.getObject();
+        if (!object || !PartGui::isModelingObjectActive(object)) {
+            return {};
+        }
+        captured.push_back(
+            {
+                exactSketchObjectIdentity(object),
+                selected.getSubNames(),
+            }
+        );
+    }
+    return captured;
+}
+
+bool restoreExactSketchSupport(
+    App::PropertyLinkSubList& support,
+    const std::vector<ExactSketchSelectionOccurrence>& selection,
+    App::Document& document
+)
+{
+    if (selection.empty()) {
+        return false;
+    }
+
+    std::vector<App::DocumentObject*> objects;
+    std::vector<std::string> subNames;
+    for (const auto& selected : selection) {
+        auto* object = resolveExactUsableSketchObject(selected.object);
+        if (!object || object->getDocument() != &document) {
+            return false;
+        }
+        if (selected.subNames.empty()) {
+            objects.push_back(object);
+            subNames.emplace_back();
+            continue;
+        }
+        for (const auto& subName : selected.subNames) {
+            objects.push_back(object);
+            subNames.push_back(subName);
+        }
+    }
+    support.setValues(std::move(objects), std::move(subNames));
+    return true;
+}
+
+bool isGlobalSketchContext(const Gui::SelectionObject& selection)
+{
+    if (!selection.getSubNames().empty()) {
+        return false;
+    }
+
+    auto* object = selection.getObject();
+    if (!object) {
+        return false;
+    }
+    if (object->isDerivedFrom<Part::BodyBase>()
+        || object->isDerivedFrom<App::DocumentObjectGroup>()) {
+        return true;
+    }
+
+    auto* component = freecad_cast<App::Part*>(object);
+    return component && component->Type.getStrValue() == "Component";
+}
+
+bool selectionBelongsToExactSketchDocument(App::Document* document)
+{
+    if (!document) {
+        return false;
+    }
+    const auto selection = Gui::Selection().getSelectionEx(
+        document->getName(),
+        App::DocumentObject::getClassTypeId(),
+        Gui::ResolveMode::NoResolve
+    );
+    return std::ranges::all_of(
+        selection,
+        [document](const Gui::SelectionObject& selected) {
+            auto* object = selected.getObject();
+            return object && object->getDocument() == document
+                && PartGui::isModelingObjectActive(object);
+        }
+    );
+}
+
+std::vector<ExactSketchObjectIdentity> selectedExactUsableSketches(
+    App::Document* document
+)
+{
+    std::vector<ExactSketchObjectIdentity> result;
+    if (!document) {
+        return result;
+    }
+
+    const auto selection = Gui::Selection().getSelectionEx(
+             document->getName(),
+             App::DocumentObject::getClassTypeId(),
+             // The Fusion-style tree records a selected Body child as the
+             // Body plus an exact child path (for example, "Sketch.").
+             // Resolve that path to its selected object, but deliberately do
+             // not use FollowLink: setup commands must never turn selection
+             // of a linked occurrence into an edit of its shared definition.
+             Gui::ResolveMode::OldStyleElement
+         );
+    if (selection.empty()) {
+        return result;
+    }
+
+    result.reserve(selection.size());
+    for (const auto& selected : selection) {
+        auto* sketch = freecad_cast<Sketcher::SketchObject*>(
+            selected.getObject()
+        );
+        if (!sketch || sketch->getDocument() != document
+            || !PartGui::isModelingObjectActive(sketch)) {
+            return {};
+        }
+        result.push_back(exactSketchObjectIdentity(sketch));
+    }
+    return result;
+}
+
+Sketcher::SketchObject* createStandaloneSketchExact(
+    const ExactSketchDocumentIdentity& documentIdentity,
+    const ExactSketchObjectIdentity* groupIdentity,
+    const std::string& requestedName
+)
+{
+    auto* document = resolveExactSketchDocument(documentIdentity);
+    auto* group = groupIdentity
+        ? resolveExactUsableSketchGroup(*groupIdentity)
+        : nullptr;
+    if (!document || requestedName.empty()) {
+        throw Base::RuntimeError(
+            "Creating a standalone Sketch requires one exact live document "
+            "and requested name"
+        );
+    }
+    if (groupIdentity && (!group || group->getDocument() != document)) {
+        throw Base::RuntimeError(
+            "Creating a grouped standalone Sketch requires one exact live "
+            "group in its document"
+        );
+    }
+
+    QByteArray factory;
+    if (group) {
+        factory = Gui::Command::getObjectCmd(group).c_str();
+        factory += ".newObject('Sketcher::SketchObject','";
+    }
+    else {
+        factory = "App.getDocument('";
+        factory += documentIdentity.name.c_str();
+        factory += "').addObject('Sketcher::SketchObject','";
+    }
+    factory += requestedName.c_str();
+    factory += "')";
+
+    auto* sketch = freecad_cast<Sketcher::SketchObject*>(
+        Gui::Command::runDocumentObjectCommand(
+            Gui::Command::Doc,
+            *document,
+            factory,
+            Sketcher::SketchObject::getClassTypeId()
+        )
+    );
+    if (!sketch) {
+        throw Base::RuntimeError(
+            "The standalone Sketch factory returned an incompatible result"
+        );
+    }
+
+    const auto sketchIdentity = exactSketchObjectIdentity(sketch);
+    sketch = resolveExactStandaloneSketch(sketchIdentity);
+    document = resolveExactSketchDocument(documentIdentity);
+    group = groupIdentity
+        ? resolveExactUsableSketchGroup(*groupIdentity)
+        : nullptr;
+    if (!document || !sketch
+        || (groupIdentity && (!group || !group->hasObject(sketch)))) {
+        throw Base::RuntimeError(
+            "The standalone Sketch factory did not retain its exact output "
+            "and ownership"
+        );
+    }
+    return sketch;
+}
+
+}  // namespace
+
+
+namespace SketcherGui
+{
 class ExceptionWrongInput: public Base::Exception
 {
 public:
@@ -94,10 +532,35 @@ public:
     QString ErrMsg;
 };
 
+void setSupportFromSelection(
+    App::PropertyLinkSubList& support,
+    const std::vector<Gui::SelectionObject>& selection
+)
+{
+    std::vector<App::DocumentObject*> objects;
+    std::vector<std::string> subNames;
+    for (auto selected : selection) {
+        auto* object = selected.getObject();
+        if (!object) {
+            continue;
+        }
+        if (selected.getSubNames().empty()) {
+            objects.push_back(object);
+            subNames.emplace_back();
+            continue;
+        }
+        for (const auto& subName : selected.getSubNames()) {
+            objects.push_back(object);
+            subNames.push_back(subName);
+        }
+    }
+    support.setValues(std::move(objects), std::move(subNames));
+}
 
 Attacher::eMapMode SuggestAutoMapMode(Attacher::SuggestResult::eSuggestResult* pMsgId = nullptr,
                                       QString* message = nullptr,
-                                      std::vector<Attacher::eMapMode>* allmodes = nullptr)
+                                      std::vector<Attacher::eMapMode>* allmodes = nullptr,
+                                      App::PropertyLinkSubList* selectedSupport = nullptr)
 {
     // convert pointers into valid references, to avoid checking for null pointers everywhere
     Attacher::SuggestResult::eSuggestResult buf;
@@ -110,11 +573,14 @@ Attacher::eMapMode SuggestAutoMapMode(Attacher::SuggestResult::eSuggestResult* p
     QString& msg_str = *message;
 
     App::PropertyLinkSubList tmpSupport;
-    Gui::Selection().getAsPropertyLinkSubList(tmpSupport);
+    if (!selectedSupport) {
+        Gui::Selection().getAsPropertyLinkSubList(tmpSupport);
+        selectedSupport = &tmpSupport;
+    }
 
     Attacher::SuggestResult sugr;
     AttachEngine3D eng;
-    eng.setUp(tmpSupport);
+    eng.setUp(*selectedSupport);
     eng.suggestMapModes(sugr);
     if (allmodes)
         *allmodes = sugr.allApplicableModes;
@@ -132,7 +598,8 @@ Attacher::eMapMode SuggestAutoMapMode(Attacher::SuggestResult::eSuggestResult* p
             msg_str = QObject::tr("Unexpected error");
             break;
         case Attacher::SuggestResult::srIncompatibleGeometry:
-            if (tmpSupport.getSubValues()[0].substr(0, 4) == std::string("Face"))
+            if (!selectedSupport->getSubValues().empty()
+                && selectedSupport->getSubValues()[0].substr(0, 4) == std::string("Face"))
                 msg_str = QObject::tr("Face is non-planar");
             else
                 msg_str = QObject::tr("Selected shapes are of wrong form (e.g., a curved edge "
@@ -144,6 +611,21 @@ Attacher::eMapMode SuggestAutoMapMode(Attacher::SuggestResult::eSuggestResult* p
     }
 
     return sugr.bestFitMode;
+}
+
+bool isSketchSetupAvailable(Gui::Document* document)
+{
+    if (!document || document->getInEdit()
+        || !PartGui::canStartRetainedModelingTask(
+            document->getDocument()
+        )
+        || Gui::Control().activeDialog(document->getDocument())) {
+        return false;
+    }
+
+    return selectionBelongsToExactSketchDocument(
+        document->getDocument()
+    );
 }
 }// namespace SketcherGui
 
@@ -166,28 +648,64 @@ CmdSketcherNewSketch::CmdSketcherNewSketch()
 void CmdSketcherNewSketch::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    Attacher::eMapMode mapmode = Attacher::mmDeactivated;
-    std::string groupName;
-    bool bAttach = false;
-    bool groupSelected = false;
-    if (Gui::Selection().countObjectsOfType<App::DocumentObjectGroup>() > 0) {
-        auto selection = Gui::Selection().getSelection();
-        if (selection.size() > 1) {
-            Gui::TranslatedUserWarning(
-                getActiveGuiDocument(),
-                QObject::tr("Invalid Selection"),
-                QObject::tr("Too many objects selected"));
-                return;
-        }
-
-        groupName = selection[0].FeatName;
-        groupSelected = true;
+    auto* guiDocument = getActiveGuiDocument();
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    const auto documentIdentity = exactSketchDocumentIdentity(document);
+    if (resolveExactSketchDocument(documentIdentity) != document
+        || !isSketchSetupAvailable(guiDocument)) {
+        return;
     }
-    else if (Gui::Selection().hasSelection()) {
+
+    Attacher::eMapMode mapmode = Attacher::mmDeactivated;
+    bool bAttach = false;
+    std::vector<ExactSketchSelectionOccurrence> capturedSupport;
+    const auto rawSelection = Gui::Selection().getSelectionEx(
+        document->getName(),
+        App::DocumentObject::getClassTypeId(),
+        Gui::ResolveMode::NoResolve
+    );
+    const bool contextOnly =
+        rawSelection.size() == 1
+        && isGlobalSketchContext(rawSelection.front());
+    if (contextOnly) {
+        // A VibeCAD Sketch is a Design-level reusable definition. A selected
+        // Body, Component, or presentation group provides UI context only:
+        // it is neither ownership nor attachment support.
+    }
+    else if (!rawSelection.empty()) {
+        const auto supportSelection =
+            PartGui::getModelingSelection(document->getName());
+        if (supportSelection.empty()) {
+            Gui::TranslatedUserWarning(
+                guiDocument,
+                QObject::tr("Sketch mapping"),
+                QObject::tr(
+                    "The selected support is not available at the current "
+                    "History position."
+                )
+            );
+            return;
+        }
+        capturedSupport =
+            captureExactSketchSelection(supportSelection);
+        App::PropertyLinkSubList support;
+        if (capturedSupport.empty()
+            || !restoreExactSketchSupport(
+                support,
+                capturedSupport,
+                *document
+            )) {
+            return;
+        }
         Attacher::SuggestResult::eSuggestResult msgid = Attacher::SuggestResult::srOK;
         QString msg_str;
         std::vector<Attacher::eMapMode> validModes;
-        mapmode = SuggestAutoMapMode(&msgid, &msg_str, &validModes);
+        mapmode = SuggestAutoMapMode(
+            &msgid,
+            &msg_str,
+            &validModes,
+            &support
+        );
         if (msgid == Attacher::SuggestResult::srOK)
             bAttach = true;
         if (msgid != Attacher::SuggestResult::srOK
@@ -236,44 +754,152 @@ void CmdSketcherNewSketch::activated(int iMsg)
     }
 
     if (bAttach) {
-
-        std::vector<Gui::SelectionObject> objects = Gui::Selection().getSelectionEx();
+        document = resolveExactSketchDocument(documentIdentity);
+        if (!document || getActiveGuiDocument() != guiDocument) {
+            return;
+        }
         App::PropertyLinkSubList support;
-        Gui::Selection().getAsPropertyLinkSubList(support);
+        if (!restoreExactSketchSupport(
+                support,
+                capturedSupport,
+                *document
+            )) {
+            Gui::TranslatedUserWarning(
+                guiDocument,
+                QObject::tr("Sketch mapping"),
+                QObject::tr(
+                    "The selected support changed while choosing the "
+                    "attachment mode."
+                )
+            );
+            return;
+        }
         std::string supportString = support.getPyReprString();
 
-        // create Sketch on Face
-        std::string FeatName = getUniqueObjectName("Sketch");
+        const ExactSketchObjectIdentity* targetGroupIdentity = nullptr;
 
-        openCommand(QT_TRANSLATE_NOOP("Command", "Create a new sketch on a face"));
-        doCommand(Doc,
-                  "App.activeDocument().addObject('Sketcher::SketchObject', '%s')",
-                  FeatName.c_str());
-        if (mapmode < Attacher::mmDummy_NumberOfModes)
-            doCommand(Gui,
-                      "App.activeDocument().%s.MapMode = \"%s\"",
-                      FeatName.c_str(),
-                      AttachEngine::getModeName(mapmode).c_str());
-        else
-            assert(0 /* mapmode index out of range */);
-        doCommand(
-            Gui, "App.activeDocument().%s.AttachmentSupport = %s", FeatName.c_str(), supportString.c_str());
-        doCommand(Gui, "App.activeDocument().recompute()");// recompute the sketch placement based
-                                                           // on its support
-        doCommand(Gui, "Gui.activeDocument().setEdit('%s')", FeatName.c_str());
-
-        Part::Feature* part = static_cast<Part::Feature*>(
-            support.getValue());// if multi-part support, this will return 0
-        if (part) {
-            App::DocumentObjectGroup* grp = part->getGroup();
-            if (grp) {
-                doCommand(Doc,
-                          "App.activeDocument().%s.addObject(App.activeDocument().%s)",
-                          grp->getNameInDocument(),
-                          FeatName.c_str());
-            }
+        if (targetGroupIdentity
+            && !resolveExactUsableSketchObject(*targetGroupIdentity)) {
+            return;
         }
-        commitCommand();
+        const std::string requestedName =
+            document->getUniqueObjectName("Sketch");
+        const int existingTransaction =
+            document->getBookedTransactionID();
+        const int transactionId = openCommand(
+            document,
+            QT_TRANSLATE_NOOP("Command", "Create a new sketch on a face")
+        );
+        if (transactionId == App::NullTransaction
+            || document->getBookedTransactionID() != transactionId
+            || !App::GetApplication().transactionIsActive(
+                transactionId
+            )) {
+            if (existingTransaction == App::NullTransaction
+                && transactionId != App::NullTransaction
+                && document->getBookedTransactionID()
+                    == transactionId) {
+                abortCommand(transactionId);
+            }
+            resetTransactionID();
+            return;
+        }
+
+        try {
+            auto* sketch = createStandaloneSketchExact(
+                documentIdentity,
+                targetGroupIdentity,
+                requestedName
+            );
+            const auto sketchIdentity = exactSketchObjectIdentity(sketch);
+            const auto requireSketch = [&]() {
+                auto* exactSketch =
+                    resolveExactStandaloneSketch(sketchIdentity);
+                if (!exactSketch) {
+                    throw Base::RuntimeError(
+                        "The exact standalone Sketch changed during setup"
+                    );
+                }
+                if (targetGroupIdentity) {
+                    auto* exactGroup =
+                        resolveExactUsableSketchGroup(
+                            *targetGroupIdentity
+                        );
+                    if (!exactGroup || !exactGroup->hasObject(exactSketch)) {
+                        throw Base::RuntimeError(
+                            "The exact standalone Sketch changed ownership "
+                            "during setup"
+                        );
+                    }
+                }
+                return exactSketch;
+            };
+
+            if (mapmode >= Attacher::mmDummy_NumberOfModes) {
+                throw Base::ValueError(
+                    "The selected Sketch attachment mode is invalid"
+                );
+            }
+            const auto requireSupport = [&]() {
+                auto* exactDocument =
+                    resolveExactSketchDocument(documentIdentity);
+                App::PropertyLinkSubList exactSupport;
+                if (!exactDocument
+                    || !restoreExactSketchSupport(
+                        exactSupport,
+                        capturedSupport,
+                        *exactDocument
+                    )) {
+                    throw Base::RuntimeError(
+                        "The selected Sketch support changed during setup"
+                    );
+                }
+                return exactSupport.getPyReprString();
+            };
+            sketch = requireSketch();
+            doCommand(Gui,
+                      "%s.MapMode = \"%s\"",
+                      Gui::Command::getObjectCmd(sketch).c_str(),
+                      AttachEngine::getModeName(mapmode).c_str());
+            sketch = requireSketch();
+            supportString = requireSupport();
+            doCommand(
+                Gui,
+                "%s.AttachmentSupport = %s",
+                Gui::Command::getObjectCmd(sketch).c_str(),
+                supportString.c_str()
+            );
+            requireSketch();
+            requireSupport();
+            doCommand(
+                Gui,
+                "App.getDocument('%s').recompute()",
+                documentIdentity.name.c_str()
+            );
+            sketch = requireSketch();
+            doCommand(
+                Gui,
+                "Gui.getDocument('%s').setEdit('%s')",
+                documentIdentity.name.c_str(),
+                sketch->getNameInDocument()
+            );
+            sketch = requireSketch();
+            if (guiDocument->getInEdit()
+                != Gui::Application::Instance->getViewProvider(sketch)) {
+                throw Base::RuntimeError(
+                    "The exact standalone Sketch did not enter edit mode"
+                );
+            }
+            resetTransactionID();
+        }
+        catch (...) {
+            abortCommand(transactionId);
+            resetTransactionID();
+            throw;
+        }
+        // setEdit() transfers this transaction to the sketch task. The task
+        // commits it on Finish and aborts it on Cancel, including creation of
+        // the provisional sketch.
     }
     else {
         // ask user for orientation
@@ -285,47 +911,120 @@ void CmdSketcherNewSketch::activated(int iMsg)
         Base::Vector3d p = Dlg.Pos.getPosition();
         Base::Rotation r = Dlg.Pos.getRotation();
 
-        std::string FeatName = getUniqueObjectName("Sketch");
-
-        openCommand(QT_TRANSLATE_NOOP("Command", "Create a new sketch"));
-        if (groupSelected) {
-            doCommand(Doc,
-                    "App.activeDocument().getObject('%s').addObject(App.activeDocument().addObject('Sketcher::SketchObject', '%s'))",
-                    groupName.c_str(),
-                    FeatName.c_str());
+        document = resolveExactSketchDocument(documentIdentity);
+        if (!document) {
+            return;
         }
-        else {
-            doCommand(Doc,
-                  "App.activeDocument().addObject('Sketcher::SketchObject', '%s')",
-                  FeatName.c_str());
+        const ExactSketchObjectIdentity* targetGroupIdentity = nullptr;
+        if (targetGroupIdentity
+            && !resolveExactUsableSketchGroup(
+                *targetGroupIdentity
+            )) {
+            return;
+        }
+        const std::string requestedName =
+            document->getUniqueObjectName("Sketch");
+        const int existingTransaction =
+            document->getBookedTransactionID();
+        const int transactionId = openCommand(
+            document,
+            QT_TRANSLATE_NOOP("Command", "Create a new sketch")
+        );
+        if (transactionId == App::NullTransaction
+            || document->getBookedTransactionID() != transactionId
+            || !App::GetApplication().transactionIsActive(
+                transactionId
+            )) {
+            if (existingTransaction == App::NullTransaction
+                && transactionId != App::NullTransaction
+                && document->getBookedTransactionID()
+                    == transactionId) {
+                abortCommand(transactionId);
+            }
+            resetTransactionID();
+            return;
         }
 
-        doCommand(Doc,
-                  "App.activeDocument().%s.Placement = App.Placement(App.Vector(%f, %f, %f), "
-                  "App.Rotation(%f, %f, %f, %f))",
-                  FeatName.c_str(),
-                  p.x,
-                  p.y,
-                  p.z,
-                  r[0],
-                  r[1],
-                  r[2],
-                  r[3]);
-        doCommand(Doc,
-                  "App.activeDocument().%s.MapMode = \"%s\"",
-                  FeatName.c_str(),
-                  AttachEngine::getModeName(Attacher::mmDeactivated).c_str());
-        doCommand(Gui, "Gui.activeDocument().setEdit('%s')", FeatName.c_str());
-        commitCommand();
+        try {
+            auto* sketch = createStandaloneSketchExact(
+                documentIdentity,
+                targetGroupIdentity,
+                requestedName
+            );
+            const auto sketchIdentity = exactSketchObjectIdentity(sketch);
+            const auto requireSketch = [&]() {
+                auto* exactSketch =
+                    resolveExactStandaloneSketch(sketchIdentity);
+                if (!exactSketch) {
+                    throw Base::RuntimeError(
+                        "The exact standalone Sketch changed during setup"
+                    );
+                }
+                if (targetGroupIdentity) {
+                    auto* exactGroup =
+                        resolveExactUsableSketchGroup(
+                            *targetGroupIdentity
+                        );
+                    if (!exactGroup || !exactGroup->hasObject(exactSketch)) {
+                        throw Base::RuntimeError(
+                            "The exact standalone Sketch changed ownership "
+                            "during setup"
+                        );
+                    }
+                }
+                return exactSketch;
+            };
+
+            sketch = requireSketch();
+            doCommand(
+                Doc,
+                "%s.Placement = App.Placement(App.Vector(%f, %f, %f), "
+                "App.Rotation(%f, %f, %f, %f))",
+                Gui::Command::getObjectCmd(sketch).c_str(),
+                p.x,
+                p.y,
+                p.z,
+                r[0],
+                r[1],
+                r[2],
+                r[3]
+            );
+            sketch = requireSketch();
+            doCommand(
+                Doc,
+                "%s.MapMode = \"%s\"",
+                Gui::Command::getObjectCmd(sketch).c_str(),
+                AttachEngine::getModeName(Attacher::mmDeactivated).c_str()
+            );
+            sketch = requireSketch();
+            doCommand(
+                Gui,
+                "Gui.getDocument('%s').setEdit('%s')",
+                documentIdentity.name.c_str(),
+                sketch->getNameInDocument()
+            );
+            sketch = requireSketch();
+            if (guiDocument->getInEdit()
+                != Gui::Application::Instance->getViewProvider(sketch)) {
+                throw Base::RuntimeError(
+                    "The exact standalone Sketch did not enter edit mode"
+                );
+            }
+            resetTransactionID();
+        }
+        catch (...) {
+            abortCommand(transactionId);
+            resetTransactionID();
+            throw;
+        }
+        // setEdit() transfers this transaction to the sketch task. Do not
+        // close its rollback journal before the user chooses Finish or Cancel.
     }
 }
 
 bool CmdSketcherNewSketch::isActive()
 {
-    if (getActiveGuiDocument())
-        return true;
-    else
-        return false;
+    return isSketchSetupAvailable(getActiveGuiDocument());
 }
 
 DEF_STD_CMD_A(CmdSketcherEditSketch)
@@ -345,18 +1044,32 @@ CmdSketcherEditSketch::CmdSketcherEditSketch()
 void CmdSketcherEditSketch::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    Gui::SelectionFilter SketchFilter("SELECT Sketcher::SketchObject COUNT 1");
-
-    if (SketchFilter.match()) {
-        Sketcher::SketchObject* Sketch =
-            static_cast<Sketcher::SketchObject*>(SketchFilter.Result[0][0].getObject());
-        doCommand(Gui, "Gui.activeDocument().setEdit('%s')", Sketch->getNameInDocument());
+    auto* guiDocument = getActiveGuiDocument();
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    const auto selected = selectedExactUsableSketches(document);
+    if (selected.size() != 1) {
+        return;
     }
+    auto* sketch = resolveExactUsableStandaloneSketch(selected.front());
+    if (!sketch || sketch->getDocument() != document
+        || getActiveGuiDocument() != guiDocument) {
+        return;
+    }
+    doCommand(
+        Gui,
+        "Gui.getDocument('%s').setEdit('%s')",
+        document->getName(),
+        sketch->getNameInDocument()
+    );
 }
 
 bool CmdSketcherEditSketch::isActive()
 {
-    return Gui::Selection().countObjectsOfType<Sketcher::SketchObject>() == 1;
+    auto* guiDocument = getActiveGuiDocument();
+    return isSketchSetupAvailable(guiDocument)
+        && selectedExactUsableSketches(
+               guiDocument->getDocument()
+           ).size() == 1;
 }
 
 DEF_STD_CMD_A(CmdSketcherLeaveSketch)
@@ -378,18 +1091,35 @@ void CmdSketcherLeaveSketch::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
     Gui::Document* doc = getActiveGuiDocument();
+    if (!doc) {
+        return;
+    }
+    const auto documentIdentity =
+        exactSketchDocumentIdentity(doc->getDocument());
 
-    if (doc) {
-        // checks if a Sketch Viewprovider is in Edit and is in no special mode
-        SketcherGui::ViewProviderSketch* vp =
-            dynamic_cast<SketcherGui::ViewProviderSketch*>(doc->getInEdit());
-        if (vp && vp->getSketchMode() != ViewProviderSketch::STATUS_NONE)
-            vp->purgeHandler();
+    // checks if a Sketch Viewprovider is in Edit and is in no special mode
+    SketcherGui::ViewProviderSketch* vp =
+        dynamic_cast<SketcherGui::ViewProviderSketch*>(doc->getInEdit());
+    if (vp && vp->getSketchMode() != ViewProviderSketch::STATUS_NONE)
+        vp->purgeHandler();
+
+    if (Gui::Control().activeDialog(doc->getDocument())) {
+        // Finish through the owning task dialog so it can make the launch
+        // transaction durable before edit teardown destroys the panel.
+        Gui::Control().accept(doc->getDocument());
+        return;
     }
 
     // See also TaskDlgEditSketch::reject
-    doCommand(Gui, "Gui.activeDocument().resetEdit()");
-    doCommand(Doc, "App.ActiveDocument.recompute()");
+    doCommand(
+        Gui,
+        "Gui.getDocument('%s').resetEdit()",
+        documentIdentity.name.c_str()
+    );
+    if (auto* exactDocument =
+            resolveExactSketchDocument(documentIdentity)) {
+        Gui::cmdAppDocument(exactDocument, "recompute()");
+    }
 }
 
 bool CmdSketcherLeaveSketch::isActive()
@@ -431,9 +1161,24 @@ void CmdSketcherCancelSketch::activated(int iMsg)
         vp->purgeHandler();
     }
 
+    if (Gui::Control().activeDialog(doc->getDocument())) {
+        // Route through the installed task dialog so its command checkpoint is
+        // restored after the edit transaction has been aborted.
+        Gui::Control().reject(doc->getDocument());
+        return;
+    }
+
+    const auto sketchIdentity =
+        exactSketchObjectIdentity(vp->getObject());
     vp->editingCancelled = true;
-    doCommand(Gui, "Gui.activeDocument().resetEdit()");
-    vp->editingCancelled = false;
+    doc->cancelEdit();
+    if (auto* sketch =
+            resolveExactStandaloneSketch(sketchIdentity)) {
+        if (auto* restored = dynamic_cast<ViewProviderSketch*>(
+                Gui::Application::Instance->getViewProvider(sketch))) {
+            restored->editingCancelled = false;
+        }
+    }
 }
 
 bool CmdSketcherCancelSketch::isActive()
@@ -521,9 +1266,20 @@ CmdSketcherReorientSketch::CmdSketcherReorientSketch()
 void CmdSketcherReorientSketch::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    Sketcher::SketchObject* sketch =
-        Gui::Selection().getObjectsOfType<Sketcher::SketchObject>().front();
-    if (sketch->AttachmentSupport.getValue()) {
+    auto* guiDocument = getActiveGuiDocument();
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    const auto documentIdentity = exactSketchDocumentIdentity(document);
+    const auto selected = selectedExactUsableSketches(document);
+    if (selected.size() != 1) {
+        return;
+    }
+    const auto sketchIdentity = selected.front();
+    auto* sketch = resolveExactUsableStandaloneSketch(sketchIdentity);
+    if (!sketch || sketch->getDocument() != document) {
+        return;
+    }
+    const bool detachFromSupport = sketch->AttachmentSupport.getValue();
+    if (detachFromSupport) {
         int ret = QMessageBox::question(
             Gui::getMainWindow(),
             qApp->translate("Sketcher_ReorientSketch", "Sketch Has Support"),
@@ -533,7 +1289,6 @@ void CmdSketcherReorientSketch::activated(int iMsg)
             QMessageBox::Yes | QMessageBox::No);
         if (ret == QMessageBox::No)
             return;
-        sketch->AttachmentSupport.setValue(nullptr);
     }
 
     // ask user for orientation
@@ -543,6 +1298,14 @@ void CmdSketcherReorientSketch::activated(int iMsg)
         return;// canceled
     Base::Vector3d p = Dlg.Pos.getPosition();
     Base::Rotation r = Dlg.Pos.getRotation();
+
+    document = resolveExactSketchDocument(documentIdentity);
+    sketch = resolveExactUsableStandaloneSketch(sketchIdentity);
+    if (!document || !sketch || sketch->getDocument() != document
+        || getActiveGuiDocument() != guiDocument
+        || !isSketchSetupAvailable(guiDocument)) {
+        return;
+    }
 
     // do the right view direction
     std::string camstring;
@@ -621,24 +1384,88 @@ void CmdSketcherReorientSketch::activated(int iMsg)
             break;
     }
 
-    openCommand(QT_TRANSLATE_NOOP("Command", "Reorient sketch"));
-    Gui::cmdAppObjectArgs(
-        sketch,
-        "Placement = App.Placement(App.Vector(%f, %f, %f), App.Rotation(%f, %f, %f, %f))",
-        p.x,
-        p.y,
-        p.z,
-        r[0],
-        r[1],
-        r[2],
-        r[3]);
-    doCommand(Gui, "Gui.ActiveDocument.setEdit('%s')", sketch->getNameInDocument());
-    commitCommand();
+    const int existingTransaction =
+        document->getBookedTransactionID();
+    const int transactionId = openCommand(
+        document,
+        QT_TRANSLATE_NOOP("Command", "Reorient sketch")
+    );
+    if (transactionId == App::NullTransaction
+        || document->getBookedTransactionID() != transactionId
+        || !App::GetApplication().transactionIsActive(transactionId)) {
+        if (existingTransaction == App::NullTransaction
+            && transactionId != App::NullTransaction
+            && document->getBookedTransactionID() == transactionId) {
+            abortCommand(transactionId);
+        }
+        resetTransactionID();
+        return;
+    }
+
+    try {
+        sketch = resolveExactUsableStandaloneSketch(sketchIdentity);
+        if (!sketch) {
+            throw Base::RuntimeError(
+                "The selected Sketch changed before reorientation"
+            );
+        }
+        if (detachFromSupport) {
+            Gui::cmdAppObjectArgs(sketch, "AttachmentSupport = None");
+            sketch = resolveExactUsableStandaloneSketch(sketchIdentity);
+            if (!sketch) {
+                throw Base::RuntimeError(
+                    "The selected Sketch changed while detaching its support"
+                );
+            }
+        }
+        Gui::cmdAppObjectArgs(
+            sketch,
+            "Placement = App.Placement(App.Vector(%f, %f, %f), "
+            "App.Rotation(%f, %f, %f, %f))",
+            p.x,
+            p.y,
+            p.z,
+            r[0],
+            r[1],
+            r[2],
+            r[3]
+        );
+        sketch = resolveExactUsableStandaloneSketch(sketchIdentity);
+        if (!sketch) {
+            throw Base::RuntimeError(
+                "The selected Sketch changed while applying its orientation"
+            );
+        }
+        doCommand(
+            Gui,
+            "Gui.getDocument('%s').setEdit('%s')",
+            documentIdentity.name.c_str(),
+            sketch->getNameInDocument()
+        );
+        if (guiDocument->getInEdit() !=
+            Gui::Application::Instance->getViewProvider(sketch)) {
+            throw Base::RuntimeError(
+                "The reoriented Sketch did not enter edit mode"
+            );
+        }
+        resetTransactionID();
+    }
+    catch (...) {
+        abortCommand(transactionId);
+        resetTransactionID();
+        throw;
+    }
+    // setEdit() transfers this transaction to the sketch task. Finish commits
+    // the new placement and Cancel restores the exact pre-command placement.
 }
 
 bool CmdSketcherReorientSketch::isActive()
 {
-    return Gui::Selection().countObjectsOfType<Sketcher::SketchObject>() == 1;
+    auto* guiDocument = getActiveGuiDocument();
+    return isSketchSetupAvailable(guiDocument)
+        && selectedExactUsableSketches(
+               guiDocument->getDocument()
+           ).size() == 1;
 }
 
 DEF_STD_CMD_A(CmdSketcherMapSketch)
@@ -663,14 +1490,54 @@ void CmdSketcherMapSketch::activated(int iMsg)
     try {
         Attacher::eMapMode suggMapMode;
         std::vector<Attacher::eMapMode> validModes;
+        auto* guiDocument = getActiveGuiDocument();
+        App::Document* doc =
+            guiDocument ? guiDocument->getDocument() : nullptr;
+        const auto documentIdentity =
+            exactSketchDocumentIdentity(doc);
+        if (!doc || !isSketchSetupAvailable(guiDocument)) {
+            return;
+        }
+
+        // A Body is the visible result container, while its Tip owns the
+        // topology. Use one projected support snapshot for suggestion,
+        // dependency validation, and the final property assignment.
+        std::vector<Gui::SelectionObject> supportSelection =
+            PartGui::getModelingSelection(doc->getName());
+        if (supportSelection.empty()) {
+            throw ExceptionWrongInput(
+                QT_TR_NOOP("The selected support is not attachable geometry."));
+        }
+        const auto capturedSupport =
+            captureExactSketchSelection(supportSelection);
+        App::PropertyLinkSubList support;
+        if (capturedSupport.empty()
+            || !restoreExactSketchSupport(
+                support,
+                capturedSupport,
+                *doc
+            )) {
+            throw ExceptionWrongInput(
+                QT_TR_NOOP(
+                    "The selected support is no longer available at the "
+                    "current History position."
+                )
+            );
+        }
 
         // check that selection is valid for at least some mapping mode.
         Attacher::SuggestResult::eSuggestResult msgid = Attacher::SuggestResult::srOK;
-        suggMapMode = SuggestAutoMapMode(&msgid, &msg_str, &validModes);
+        suggMapMode = SuggestAutoMapMode(&msgid, &msg_str, &validModes, &support);
         bool sketchInSelection = false;
-        std::vector<App::DocumentObject*> selectedSketches = Gui::Selection()
-                .getObjectsOfType(Part::Part2DObject::getClassTypeId());
-        App::Document* doc = App::GetApplication().getActiveDocument();
+        std::vector<const Part::Part2DObject*> selectedSketches;
+        for (const auto& selected : supportSelection) {
+            if (const auto* selectedSketch =
+                    freecad_cast<Part::Part2DObject*>(
+                        selected.getObject()
+                    )) {
+                selectedSketches.push_back(selectedSketch);
+            }
+        }
         std::vector<App::DocumentObject*> sketches =
             doc->getObjectsOfType(Part::Part2DObject::getClassTypeId());
 
@@ -682,8 +1549,14 @@ void CmdSketcherMapSketch::activated(int iMsg)
          */
         const auto newEnd = std::ranges::remove_if(sketches,
             [&selectedSketches, &sketchInSelection](App::DocumentObject* obj) {
-                if (const auto sketch = dynamic_cast<Part::Part2DObject*>(obj);
-                    sketch && std::ranges::find(selectedSketches, sketch) != selectedSketches.end()) {
+                if (!PartGui::isModelingObjectActive(obj)) {
+                    return true;
+                }
+                if (const auto* sketch =
+                        dynamic_cast<const Part::Part2DObject*>(obj);
+                    sketch
+                    && std::ranges::find(selectedSketches, sketch)
+                        != selectedSketches.end()) {
                     sketchInSelection = true;
                     return true;
                 }
@@ -707,10 +1580,24 @@ void CmdSketcherMapSketch::activated(int iMsg)
 
         bool ok;
         QStringList items;
-        for (std::vector<App::DocumentObject*>::iterator it = sketches.begin();
-             it != sketches.end();
-             ++it)
-            items.push_back(QString::fromUtf8((*it)->Label.getValue()));
+        std::vector<ExactSketchObjectIdentity> sketchChoices;
+        sketchChoices.reserve(sketches.size());
+        for (auto* candidate : sketches) {
+            sketchChoices.push_back(
+                exactSketchObjectIdentity(candidate)
+            );
+            items.push_back(
+                QStringLiteral("%1 (%2)")
+                    .arg(
+                        QString::fromUtf8(
+                            candidate->Label.getValue()
+                        ),
+                        QString::fromLatin1(
+                            candidate->getNameInDocument()
+                        )
+                    )
+            );
+        }
         QString text = QInputDialog::getItem(
             Gui::getMainWindow(),
             qApp->translate("Sketcher_MapSketch", "Select Sketch"),
@@ -726,17 +1613,44 @@ void CmdSketcherMapSketch::activated(int iMsg)
         if (!ok)
             return;
         int index = items.indexOf(text);
-        Part2DObject* sketch = static_cast<Part2DObject*>(sketches[index]);
+        if (index < 0
+            || index >= static_cast<int>(sketchChoices.size())) {
+            return;
+        }
+        doc = resolveExactSketchDocument(documentIdentity);
+        if (!doc || getActiveGuiDocument() != guiDocument) {
+            return;
+        }
+        const auto sketchIdentity =
+            sketchChoices[index];
+        Part2DObject* sketch = freecad_cast<Part2DObject*>(
+            resolveExactUsableSketchObject(sketchIdentity)
+        );
+        if (!sketch || sketch->getDocument() != doc) {
+            throw ExceptionWrongInput(
+                QT_TR_NOOP(
+                    "The selected sketch changed while the attachment "
+                    "dialog was open."
+                )
+            );
+        }
+        // Re-resolve the exact occurrences after the first modal dialog.
+        App::PropertyLinkSubList circularSupport;
+        if (!restoreExactSketchSupport(
+                circularSupport,
+                capturedSupport,
+                *doc
+            )) {
+            throw ExceptionWrongInput(
+                QT_TR_NOOP(
+                    "The selected support changed while the attachment "
+                    "dialog was open."
+                )
+            );
+        }
 
         // check circular dependency
-        std::vector<Gui::SelectionObject> selobjs = Gui::Selection().getSelectionEx();
-        for (size_t i = 0; i < selobjs.size(); ++i) {
-            App::DocumentObject* part = static_cast<Part::Feature*>(selobjs[i].getObject());
-            if (!part) {
-                assert(0);
-                throw Base::ValueError(
-                    "Unexpected null pointer in CmdSketcherMapSketch::activated");
-            }
+        for (auto* part : circularSupport.getValues()) {
             if (std::vector<App::DocumentObject*> input = part->getOutListRecursive();
                 std::ranges::find(input, sketch) != input.end()) {
                 throw ExceptionWrongInput(
@@ -815,6 +1729,10 @@ void CmdSketcherMapSketch::activated(int iMsg)
         if (!ok)
             return;
         index = items.indexOf(text);
+        if (index < 0
+            || index > static_cast<int>(validModes.size())) {
+            return;
+        }
         if (index == 0) {
             bAttach = false;
             suggMapMode = Attacher::mmDeactivated;
@@ -825,27 +1743,142 @@ void CmdSketcherMapSketch::activated(int iMsg)
         }
 
         // * action
-        if (bAttach) {
-            App::PropertyLinkSubList support;
-            Gui::Selection().getAsPropertyLinkSubList(support);
-            std::string supportString = support.getPyReprString();
-
-            openCommand(QT_TRANSLATE_NOOP("Command", "Attach sketch"));
-            Gui::cmdAppObjectArgs(
-                sketch, "MapMode = \"%s\"", AttachEngine::getModeName(suggMapMode).c_str());
-            Gui::cmdAppObjectArgs(sketch, "AttachmentSupport = %s", supportString.c_str());
-            // commitCommand();
-            commitCommand();
-            doCommand(Gui, "App.activeDocument().recompute()");
+        doc = resolveExactSketchDocument(documentIdentity);
+        sketch = freecad_cast<Part2DObject*>(
+            resolveExactUsableSketchObject(sketchIdentity)
+        );
+        App::PropertyLinkSubList exactSupport;
+        if (!doc || !sketch || sketch->getDocument() != doc
+            || getActiveGuiDocument() != guiDocument
+            || !isSketchSetupAvailable(guiDocument)
+            || !restoreExactSketchSupport(
+                exactSupport,
+                capturedSupport,
+                *doc
+            )) {
+            throw ExceptionWrongInput(
+                QT_TR_NOOP(
+                    "The sketch or its selected support changed while the "
+                    "attachment dialog was open."
+                )
+            );
         }
-        else {
-            openCommand(QT_TRANSLATE_NOOP("Command", "Detach sketch"));
+
+        if (bAttach) {
+            Attacher::SuggestResult::eSuggestResult finalMessage =
+                Attacher::SuggestResult::srOK;
+            std::vector<Attacher::eMapMode> finalModes;
+            SuggestAutoMapMode(
+                &finalMessage,
+                &msg_str,
+                &finalModes,
+                &exactSupport
+            );
+            if (finalMessage != Attacher::SuggestResult::srOK
+                || std::ranges::find(finalModes, suggMapMode)
+                    == finalModes.end()) {
+                throw ExceptionWrongInput(
+                    QT_TR_NOOP(
+                        "The chosen attachment mode is no longer valid for "
+                        "the selected support."
+                    )
+                );
+            }
+        }
+        for (auto* part : exactSupport.getValues()) {
+            const auto dependencies = part->getOutListRecursive();
+            if (std::ranges::find(dependencies, sketch)
+                != dependencies.end()) {
+                throw ExceptionWrongInput(
+                    QT_TR_NOOP(
+                        "Some of the selected objects depend on the sketch "
+                        "to be mapped. Circular dependencies are not allowed."
+                    )
+                );
+            }
+        }
+
+        const int existingTransaction =
+            doc->getBookedTransactionID();
+        const int transactionId = openCommand(
+            doc,
+            bAttach
+                ? QT_TRANSLATE_NOOP("Command", "Attach sketch")
+                : QT_TRANSLATE_NOOP("Command", "Detach sketch")
+        );
+        if (transactionId == App::NullTransaction
+            || doc->getBookedTransactionID() != transactionId
+            || !App::GetApplication().transactionIsActive(
+                transactionId
+            )) {
+            if (existingTransaction == App::NullTransaction
+                && transactionId != App::NullTransaction
+                && doc->getBookedTransactionID()
+                    == transactionId) {
+                abortCommand(transactionId);
+            }
+            resetTransactionID();
+            return;
+        }
+
+        try {
+            const auto requireTargetAndSupport = [&]() {
+                auto* exactDocument =
+                    resolveExactSketchDocument(documentIdentity);
+                auto* exactSketch = freecad_cast<Part2DObject*>(
+                    resolveExactUsableSketchObject(sketchIdentity)
+                );
+                App::PropertyLinkSubList currentSupport;
+                if (!exactDocument || !exactSketch
+                    || exactSketch->getDocument() != exactDocument
+                    || !restoreExactSketchSupport(
+                        currentSupport,
+                        capturedSupport,
+                        *exactDocument
+                    )) {
+                    throw Base::RuntimeError(
+                        "The exact Sketch attachment inputs changed"
+                    );
+                }
+                return exactSketch;
+            };
+
+            sketch = requireTargetAndSupport();
+            if (bAttach) {
+                const std::string supportString =
+                    exactSupport.getPyReprString();
+                Gui::cmdAppObjectArgs(
+                    sketch,
+                    "AttachmentSupport = %s",
+                    supportString.c_str()
+                );
+                sketch = requireTargetAndSupport();
+            }
             Gui::cmdAppObjectArgs(
-                sketch, "MapMode = \"%s\"", AttachEngine::getModeName(suggMapMode).c_str());
-            Gui::cmdAppObjectArgs(sketch, "AttachmentSupport = None");
-            // commitCommand();
-            commitCommand();
-            doCommand(Gui, "App.activeDocument().recompute()");
+                sketch,
+                "MapMode = \"%s\"",
+                AttachEngine::getModeName(suggMapMode).c_str()
+            );
+            sketch = requireTargetAndSupport();
+            if (!bAttach) {
+                Gui::cmdAppObjectArgs(sketch, "AttachmentSupport = None");
+                requireTargetAndSupport();
+            }
+            auto* recomputeDocument =
+                resolveExactSketchDocument(documentIdentity);
+            if (!recomputeDocument) {
+                throw Base::RuntimeError(
+                    "The Sketch attachment document changed before recompute"
+                );
+            }
+            Gui::cmdAppDocument(recomputeDocument, "recompute()");
+            commitCommand(transactionId);
+            resetTransactionID();
+        }
+        catch (...) {
+            abortCommand(transactionId);
+            resetTransactionID();
+            throw;
         }
     }
     catch (ExceptionWrongInput& e) {
@@ -856,13 +1889,23 @@ void CmdSketcherMapSketch::activated(int iMsg)
                                                    "%1")
                                        .arg(e.ErrMsg.length() ? e.ErrMsg : msg_str));
     }
+    catch (const Base::Exception& error) {
+        Gui::TranslatedUserWarning(
+            getActiveGuiDocument(),
+            qApp->translate("Sketcher_MapSketch", "Map sketch"),
+            QString::fromUtf8(error.what())
+        );
+    }
 }
 
 bool CmdSketcherMapSketch::isActive()
 {
-    App::Document* doc = App::GetApplication().getActiveDocument();
-    std::vector<Gui::SelectionObject> selobjs = Gui::Selection().getSelectionEx();
-    return doc && doc->countObjectsOfType<Part::Part2DObject>() > 0 && !selobjs.empty();
+    auto* guiDocument = getActiveGuiDocument();
+    App::Document* doc =
+        guiDocument ? guiDocument->getDocument() : nullptr;
+    return isSketchSetupAvailable(guiDocument) && doc
+        && doc->countObjectsOfType<Part::Part2DObject>() > 0
+        && !PartGui::getModelingSelection(doc->getName()).empty();
 }
 
 DEF_STD_CMD_A(CmdSketcherViewSketch)
@@ -916,25 +1959,35 @@ CmdSketcherValidateSketch::CmdSketcherValidateSketch()
 void CmdSketcherValidateSketch::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    std::vector<Gui::SelectionObject> selection =
-        getSelection().getSelectionEx(nullptr, Sketcher::SketchObject::getClassTypeId());
+    auto* guiDocument = getActiveGuiDocument();
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    const auto selection = selectedExactUsableSketches(document);
     if (selection.size() != 1) {
         Gui::TranslatedUserWarning(
-            getActiveGuiDocument(),
+            guiDocument,
             qApp->translate("CmdSketcherValidateSketch", "Wrong selection"),
             qApp->translate("CmdSketcherValidateSketch", "Select only 1 sketch."));
         return;
     }
 
-    Sketcher::SketchObject* Obj = static_cast<Sketcher::SketchObject*>(selection[0].getObject());
-    Gui::Control().showDialog(new TaskSketcherValidation(Obj));
+    auto* sketch =
+        resolveExactUsableStandaloneSketch(selection.front());
+    if (!sketch || sketch->getDocument() != document) {
+        return;
+    }
+    Gui::Control().showDialog(new TaskSketcherValidation(sketch));
 }
-
 bool CmdSketcherValidateSketch::isActive()
 {
-    if (Gui::Control().activeDialog())
+    auto* document = getActiveGuiDocument();
+    if (!document
+        || !PartGui::canStartRetainedModelingTask(document->getDocument())
+        || !isSketchSetupAvailable(document)) {
         return false;
-    return Gui::Selection().countObjectsOfType<Sketcher::SketchObject>() == 1;
+    }
+    return selectedExactUsableSketches(
+               document->getDocument()
+           ).size() == 1;
 }
 
 DEF_STD_CMD_A(CmdSketcherMirrorSketch)
@@ -957,11 +2010,14 @@ CmdSketcherMirrorSketch::CmdSketcherMirrorSketch()
 void CmdSketcherMirrorSketch::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    std::vector<Gui::SelectionObject> selection =
-        getSelection().getSelectionEx(nullptr, Sketcher::SketchObject::getClassTypeId());
+    auto* guiDocument = getActiveGuiDocument();
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    const auto documentIdentity =
+        exactSketchDocumentIdentity(document);
+    const auto selection = selectedExactUsableSketches(document);
     if (selection.empty()) {
         Gui::TranslatedUserWarning(
-            getActiveGuiDocument(),
+            guiDocument,
             qApp->translate("CmdSketcherMirrorSketch", "Wrong selection"),
             qApp->translate("CmdSketcherMirrorSketch", "Select at least 1 sketch"));
         return;
@@ -977,92 +2033,218 @@ void CmdSketcherMirrorSketch::activated(int iMsg)
     refgeoid = smd.RefGeoid;
     refposid = smd.RefPosid;
 
-    App::Document* doc = App::GetApplication().getActiveDocument();
-    openCommand(QT_TRANSLATE_NOOP("Command", "Create a mirrored sketch for each selected sketch"));
-
-    for (std::vector<Gui::SelectionObject>::const_iterator it = selection.begin();
-         it != selection.end();
-         ++it) {
-        // create Sketch
-        std::string FeatName = getUniqueObjectName("MirroredSketch");
-        doCommand(Doc,
-                  "App.activeDocument().addObject('Sketcher::SketchObject', '%s')",
-                  FeatName.c_str());
-        Sketcher::SketchObject* mirrorsketch =
-            static_cast<Sketcher::SketchObject*>(doc->getObject(FeatName.c_str()));
-
-        const Sketcher::SketchObject* Obj =
-            static_cast<const Sketcher::SketchObject*>((*it).getObject());
-        Base::Placement pl = Obj->Placement.getValue();
-        Base::Vector3d p = pl.getPosition();
-        Base::Rotation r = pl.getRotation();
-
-        doCommand(Doc,
-                  "App.activeDocument().%s.Placement = App.Placement(App.Vector(%f, %f, %f), "
-                  "App.Rotation(%f, %f, %f, %f))",
-                  FeatName.c_str(),
-                  p.x,
-                  p.y,
-                  p.z,
-                  r[0],
-                  r[1],
-                  r[2],
-                  r[3]);
-
-        Sketcher::SketchObject* tempsketch = new Sketcher::SketchObject();
-        int addedGeometries = tempsketch->addGeometry(Obj->getInternalGeometry());
-        int addedConstraints = tempsketch->addConstraints(Obj->Constraints.getValues());
-
-        std::vector<int> geoIdList;
-
-        for (int i = 0; i <= addedGeometries; i++)
-            geoIdList.push_back(i);
-
-        tempsketch->addSymmetric(geoIdList, refgeoid, refposid);
-
-        std::vector<Part::Geometry*> tempgeo = tempsketch->getInternalGeometry();
-        std::vector<Sketcher::Constraint*> tempconstr = tempsketch->Constraints.getValues();
-
-        // If value of addedGeometries or addedConstraints is -1, it gets added to vector begin
-        // iterator and that is invalid
-        std::vector<Part::Geometry*> mirrorgeo(tempgeo.begin() + (addedGeometries + 1),
-                                               tempgeo.end());
-        std::vector<Sketcher::Constraint*> mirrorconstr(tempconstr.begin() + (addedConstraints + 1),
-                                                        tempconstr.end());
-
-        for (std::vector<Sketcher::Constraint*>::const_iterator itc = mirrorconstr.begin();
-             itc != mirrorconstr.end();
-             ++itc) {
-
-            if ((*itc)->First != Sketcher::GeoEnum::GeoUndef
-                || (*itc)->First == Sketcher::GeoEnum::HAxis
-                || (*itc)->First == Sketcher::GeoEnum::VAxis)
-                // not x, y axes or origin
-                (*itc)->First -= (addedGeometries + 1);
-            if ((*itc)->Second != Sketcher::GeoEnum::GeoUndef
-                || (*itc)->Second == Sketcher::GeoEnum::HAxis
-                || (*itc)->Second == Sketcher::GeoEnum::VAxis)
-                // not x, y axes or origin
-                (*itc)->Second -= (addedGeometries + 1);
-            if ((*itc)->Third != Sketcher::GeoEnum::GeoUndef
-                || (*itc)->Third == Sketcher::GeoEnum::HAxis
-                || (*itc)->Third == Sketcher::GeoEnum::VAxis)
-                // not x, y axes or origin
-                (*itc)->Third -= (addedGeometries + 1);
+    document = resolveExactSketchDocument(documentIdentity);
+    if (!document || getActiveGuiDocument() != guiDocument
+        || !isSketchSetupAvailable(guiDocument)) {
+        return;
+    }
+    for (const auto& sourceIdentity : selection) {
+        auto* source =
+            resolveExactUsableStandaloneSketch(sourceIdentity);
+        if (!source || source->getDocument() != document) {
+            return;
         }
-
-        mirrorsketch->addGeometry(mirrorgeo);
-        mirrorsketch->addConstraints(mirrorconstr);
-        delete tempsketch;
     }
 
-    commitCommand();
-    doCommand(Gui, "App.activeDocument().recompute()");
+    const int existingTransaction =
+        document->getBookedTransactionID();
+    const int transactionId = openCommand(
+        document,
+        QT_TRANSLATE_NOOP(
+            "Command",
+            "Create a mirrored sketch for each selected sketch"
+        )
+    );
+    if (transactionId == App::NullTransaction
+        || document->getBookedTransactionID() != transactionId
+        || !App::GetApplication().transactionIsActive(transactionId)) {
+        if (existingTransaction == App::NullTransaction
+            && transactionId != App::NullTransaction
+            && document->getBookedTransactionID() == transactionId) {
+            abortCommand(transactionId);
+        }
+        resetTransactionID();
+        return;
+    }
+
+    std::vector<ExactSketchObjectIdentity> mirroredSketches;
+    mirroredSketches.reserve(selection.size());
+
+    try {
+        for (const auto& sourceIdentity : selection) {
+            auto* source =
+                resolveExactUsableStandaloneSketch(sourceIdentity);
+            if (!source || source->getDocument() != document) {
+                throw Base::RuntimeError(
+                    "A Mirror Sketch source changed before it was copied"
+                );
+            }
+
+            const Base::Placement sourcePlacement =
+                source->Placement.getValue();
+            auto temporarySketch =
+                std::make_unique<Sketcher::SketchObject>();
+            const int addedGeometries =
+                temporarySketch->addGeometry(
+                    source->getInternalGeometry()
+                );
+            const int addedConstraints =
+                temporarySketch->addConstraints(
+                    source->Constraints.getValues()
+                );
+
+            std::vector<int> geometryIds;
+            for (int geometryId = 0;
+                 geometryId <= addedGeometries;
+                 ++geometryId) {
+                geometryIds.push_back(geometryId);
+            }
+            temporarySketch->addSymmetric(
+                geometryIds,
+                refgeoid,
+                refposid
+            );
+
+            const auto temporaryGeometry =
+                temporarySketch->getInternalGeometry();
+            const auto temporaryConstraints =
+                temporarySketch->Constraints.getValues();
+            std::vector<Part::Geometry*> mirroredGeometry(
+                temporaryGeometry.begin() + (addedGeometries + 1),
+                temporaryGeometry.end()
+            );
+            std::vector<Sketcher::Constraint*> mirroredConstraints(
+                temporaryConstraints.begin() + (addedConstraints + 1),
+                temporaryConstraints.end()
+            );
+            for (auto* constraint : mirroredConstraints) {
+                // The temporary sketch prefixes the mirrored geometry with the
+                // source geometry. Only ordinary geometry indices need rebasing;
+                // axes, the origin, external geometry, and GeoUndef are stable
+                // negative identifiers and must remain unchanged.
+                if (constraint->First >= 0)
+                    constraint->First -= (addedGeometries + 1);
+                if (constraint->Second >= 0)
+                    constraint->Second -= (addedGeometries + 1);
+                if (constraint->Third >= 0)
+                    constraint->Third -= (addedGeometries + 1);
+            }
+
+            const std::string featureName =
+                document->getUniqueObjectName("MirroredSketch");
+            const QString factory =
+                QStringLiteral(
+                    "App.getDocument('%1').addObject("
+                    "'Sketcher::SketchObject','%2')")
+                    .arg(
+                        QString::fromLatin1(document->getName()),
+                        QString::fromStdString(featureName)
+                    );
+            auto* mirroredSketch =
+                freecad_cast<Sketcher::SketchObject*>(
+                Gui::Command::runDocumentObjectCommand(
+                    Gui::Command::Doc,
+                    *document,
+                    factory.toUtf8(),
+                    Sketcher::SketchObject::getClassTypeId()));
+            if (!mirroredSketch) {
+                throw Base::RuntimeError("Mirror Sketch returned an incompatible result");
+            }
+            const auto mirroredIdentity =
+                exactSketchObjectIdentity(mirroredSketch);
+            if (!resolveExactUsableStandaloneSketch(sourceIdentity)
+                || resolveExactStandaloneSketch(mirroredIdentity)
+                    != mirroredSketch) {
+                throw Base::RuntimeError(
+                    "Mirror Sketch inputs or output changed during creation"
+                );
+            }
+
+            const Base::Vector3d position =
+                sourcePlacement.getPosition();
+            const Base::Rotation rotation =
+                sourcePlacement.getRotation();
+            doCommand(
+                Doc,
+                "%s.Placement = App.Placement(App.Vector(%f, %f, %f), "
+                "App.Rotation(%f, %f, %f, %f))",
+                Gui::Command::getObjectCmd(mirroredSketch).c_str(),
+                position.x,
+                position.y,
+                position.z,
+                rotation[0],
+                rotation[1],
+                rotation[2],
+                rotation[3]
+            );
+            mirroredSketch =
+                resolveExactStandaloneSketch(mirroredIdentity);
+            if (!mirroredSketch) {
+                throw Base::RuntimeError(
+                    "Mirror Sketch output changed while applying placement"
+                );
+            }
+            mirroredSketch->addGeometry(mirroredGeometry);
+            mirroredSketch =
+                resolveExactStandaloneSketch(mirroredIdentity);
+            if (!mirroredSketch) {
+                throw Base::RuntimeError(
+                    "Mirror Sketch output changed while copying geometry"
+                );
+            }
+            mirroredSketch->addConstraints(mirroredConstraints);
+            if (!resolveExactStandaloneSketch(mirroredIdentity)) {
+                throw Base::RuntimeError(
+                    "Mirror Sketch output changed while copying constraints"
+                );
+            }
+            mirroredSketches.push_back(mirroredIdentity);
+        }
+
+        std::vector<Sketcher::SketchObject*> exactOutputs;
+        exactOutputs.reserve(mirroredSketches.size());
+        for (const auto& outputIdentity : mirroredSketches) {
+            auto* output =
+                resolveExactStandaloneSketch(outputIdentity);
+            if (!output) {
+                throw Base::RuntimeError(
+                    "A Mirror Sketch output changed before History finalization"
+                );
+            }
+            exactOutputs.push_back(output);
+        }
+        markSketchCommandOutputs(exactOutputs);
+        auto* exactDocument =
+            resolveExactSketchDocument(documentIdentity);
+        if (!exactDocument) {
+            throw Base::RuntimeError(
+                "The Mirror Sketch document changed before recompute"
+            );
+        }
+        Gui::cmdAppDocument(exactDocument, "recompute()");
+        commitCommand(transactionId);
+        resetTransactionID();
+    }
+    catch (Base::Exception& error) {
+        abortCommand(transactionId);
+        resetTransactionID();
+        error.reportException();
+        return;
+    }
+    catch (...) {
+        abortCommand(transactionId);
+        resetTransactionID();
+        throw;
+    }
 }
 
 bool CmdSketcherMirrorSketch::isActive()
 {
-    return Gui::Selection().countObjectsOfType<Sketcher::SketchObject>() > 0;
+    auto* guiDocument = getActiveGuiDocument();
+    return isSketchSetupAvailable(guiDocument)
+        && !selectedExactUsableSketches(
+                guiDocument->getDocument()
+            ).empty();
 }
 
 // Private helpers for CmdSketcherMergeSketches::activated()
@@ -1106,7 +2288,9 @@ namespace {
         // helper: check if the external object is in scope for dstSketch
         auto isExternalObjectInScope =
             [&](const App::DocumentObject* srcExtObj) -> bool {
-            if (dstSketch->getDocument() != srcExtObj->getDocument()) {
+            if (!srcExtObj
+                || !PartGui::isModelingObjectActive(srcExtObj)
+                || dstSketch->getDocument() != srcExtObj->getDocument()) {
                 return false; // different documents, not in scope
             }
             auto dstBody = Part::BodyBase::findBodyOf(dstSketch);
@@ -1262,150 +2446,296 @@ CmdSketcherMergeSketches::CmdSketcherMergeSketches()
 void CmdSketcherMergeSketches::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    std::vector<Gui::SelectionObject> selection =
-        getSelection().getSelectionEx(nullptr, Sketcher::SketchObject::getClassTypeId());
+    auto* guiDocument = getActiveGuiDocument();
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    const auto documentIdentity =
+        exactSketchDocumentIdentity(document);
+    const auto selection = selectedExactUsableSketches(document);
     if (selection.size() < 2) {
         Gui::TranslatedUserWarning(
-            getActiveGuiDocument(),
+            guiDocument,
             qApp->translate("CmdSketcherMergeSketches", "Wrong selection"),
             qApp->translate("CmdSketcherMergeSketches", "Select at least 2 sketches"));
         return;
     }
 
-    App::Document* doc = App::GetApplication().getActiveDocument();
-
-    // create Sketch
-    std::string FeatName = getUniqueObjectName("Sketch");
-
-    openCommand(QT_TRANSLATE_NOOP("Command", "Merge sketches"));
-
+    document = resolveExactSketchDocument(documentIdentity);
+    if (!document || getActiveGuiDocument() != guiDocument
+        || !isSketchSetupAvailable(guiDocument)) {
+        return;
+    }
     std::set<Part::BodyBase*> bodies;
-    for (const auto& sel : selection) {
-        const auto* srcSketch = static_cast<const Sketcher::SketchObject*>(sel.getObject());
-        bodies.insert(Part::BodyBase::findBodyOf(srcSketch));
+    for (const auto& sourceIdentity : selection) {
+        const auto* source =
+            resolveExactUsableStandaloneSketch(sourceIdentity);
+        if (!source || source->getDocument() != document) {
+            return;
+        }
+        bodies.insert(Part::BodyBase::findBodyOf(source));
     }
+
+    ExactSketchObjectIdentity targetBodyIdentity;
     if (bodies.size() == 1 && *bodies.begin() != nullptr) {
-        // all sketches belong to the same body → create merged sketch inside the body
-        doCommand(
-            Doc,
-            "App.activeDocument().%s.newObject('Sketcher::SketchObject', '%s')",
-            (*bodies.begin())->getNameInDocument(),
-            FeatName.c_str());
-    } else {
-        // otherwise, create the merged sketch at the document level
-        doCommand(
-            Doc,
-            "App.activeDocument().addObject('Sketcher::SketchObject', '%s')",
-            FeatName.c_str());
+        auto* targetBody = *bodies.begin();
+        if (!PartGui::isModelingObjectActive(targetBody)) {
+            return;
+        }
+        targetBodyIdentity = exactSketchObjectIdentity(targetBody);
     }
-    auto* mergeSketch = static_cast<Sketcher::SketchObject*>(doc->getObject(FeatName.c_str()));
 
-    int baseGeometry = 0;
-    int baseConstraints = 0;
+    const std::string featureName =
+        document->getUniqueObjectName("Sketch");
+    QByteArray factory;
+    if (targetBodyIdentity.id > 0) {
+        auto* targetBody = resolveExactUsableSketchObject(
+            targetBodyIdentity
+        );
+        if (!targetBody) {
+            return;
+        }
+        // all sketches belong to the same body → create merged sketch inside the body
+        factory =
+            Gui::Command::getObjectCmd(targetBody).c_str();
+        factory += ".newObject('Sketcher::SketchObject', '";
+        factory += featureName.c_str();
+        factory += "')";
+    }
+    else {
+        // otherwise, create the merged sketch at the document level
+        factory = "App.getDocument('";
+        factory += document->getName();
+        factory += "').addObject('Sketcher::SketchObject', '";
+        factory += featureName.c_str();
+        factory += "')";
+    }
 
-    // constraint indices to delete after merging
-    std::vector<int> constraintsToDelete;
+    const int existingTransaction =
+        document->getBookedTransactionID();
+    const int transactionId = openCommand(
+        document,
+        QT_TRANSLATE_NOOP("Command", "Merge sketches")
+    );
+    if (transactionId == App::NullTransaction
+        || document->getBookedTransactionID() != transactionId
+        || !App::GetApplication().transactionIsActive(transactionId)) {
+        if (existingTransaction == App::NullTransaction
+            && transactionId != App::NullTransaction
+            && document->getBookedTransactionID() == transactionId) {
+            abortCommand(transactionId);
+        }
+        resetTransactionID();
+        return;
+    }
 
-    // helper: remap GeoId for merged constraints; return false if remapping fails
-    auto remapGeoId =
-        [&](int& geoId,
-            const std::map<int, int>& extGeoIdMap) -> bool {
-        if (geoId == Sketcher::GeoEnum::GeoUndef
-            || geoId == Sketcher::GeoEnum::HAxis
-            || geoId == Sketcher::GeoEnum::VAxis) {
-            return true;
+    try {
+        auto* mergeSketch = freecad_cast<Sketcher::SketchObject*>(
+            Gui::Command::runDocumentObjectCommand(
+                Gui::Command::Doc,
+                *document,
+                factory,
+                Sketcher::SketchObject::getClassTypeId()));
+        if (!mergeSketch) {
+            throw Base::RuntimeError("Merge Sketches returned an incompatible result");
         }
 
-        // external reference
-        if (geoId <= Sketcher::GeoEnum::RefExt) {
-            auto it = extGeoIdMap.find(geoId);
-            if (it == extGeoIdMap.end()) {
-                return false; // not in map
+        const auto mergeIdentity =
+            exactSketchObjectIdentity(mergeSketch);
+        const auto requireMergeSketch = [&]() {
+            auto* exactMergeSketch =
+                resolveExactStandaloneSketch(mergeIdentity);
+            if (!exactMergeSketch) {
+                throw Base::RuntimeError(
+                    "The Merge Sketches output changed during creation"
+                );
             }
-            if (it->second == Sketcher::GeoEnum::GeoUndef) {
-                return false; // invalid (not imported)
+            return exactMergeSketch;
+        };
+
+        int baseGeometry = 0;
+        int baseConstraints = 0;
+        std::vector<int> constraintsToDelete;
+
+        const auto remapGeoId =
+            [&](int& geoId,
+                const std::map<int, int>& extGeoIdMap) -> bool {
+            if (geoId == Sketcher::GeoEnum::GeoUndef
+                || geoId == Sketcher::GeoEnum::HAxis
+                || geoId == Sketcher::GeoEnum::VAxis) {
+                return true;
             }
-            geoId = it->second;
+
+            if (geoId <= Sketcher::GeoEnum::RefExt) {
+                const auto mapping = extGeoIdMap.find(geoId);
+                if (mapping == extGeoIdMap.end()
+                    || mapping->second
+                        == Sketcher::GeoEnum::GeoUndef) {
+                    return false;
+                }
+                geoId = mapping->second;
+                return true;
+            }
+
+            mergeSketch = requireMergeSketch();
+            const int newId = geoId + baseGeometry;
+            if (newId < 0
+                || newId >= static_cast<int>(
+                    mergeSketch->getInternalGeometry().size()
+                )) {
+                return false;
+            }
+            geoId = newId;
             return true;
-        }
+        };
 
-        // internal reference
-        int newId = geoId + baseGeometry;
-        if (newId >= static_cast<int>(mergeSketch->getInternalGeometry().size())) {
-            return false; // out of range
-        }
-        geoId = newId;
-        return true;
-    };
+        for (const auto& sourceIdentity : selection) {
+            auto* source =
+                resolveExactUsableStandaloneSketch(sourceIdentity);
+            if (!source || source->getDocument() != document) {
+                throw Base::RuntimeError(
+                    "A Merge Sketches source changed before it was copied"
+                );
+            }
+            const std::string sourceName =
+                source->getNameInDocument();
+            const int sourceConstraintCount =
+                source->Constraints.getSize();
 
-    for (const auto& sel : selection) {
-        const auto* srcSketch = static_cast<const Sketcher::SketchObject*>(sel.getObject());
+            mergeSketch = requireMergeSketch();
+            const int afterGeometry =
+                1 + mergeSketch->addGeometry(
+                    source->getInternalGeometry()
+                );
 
-        // addGeometry() returns Geometry.getSize()-1 (last index, not an error code).
-        // Adding 1 restores it to the total count.
-        int afterGeometry = 1 + mergeSketch->addGeometry(srcSketch->getInternalGeometry());
+            source =
+                resolveExactUsableStandaloneSketch(sourceIdentity);
+            mergeSketch = requireMergeSketch();
+            if (!source) {
+                throw Base::RuntimeError(
+                    "A Merge Sketches source changed while copying geometry"
+                );
+            }
+            const auto externalGeometryMap =
+                importExternalGeometry(source, mergeSketch);
 
-        auto extGeoIdMap = importExternalGeometry(srcSketch, mergeSketch);
-
-        // addCopyOfConstraints() returns Constraints.getSize()-1 (last index, not an error code).
-        // Adding 1 restores it to the total count.
-        int afterConstraints = 1 + mergeSketch->addCopyOfConstraints(*srcSketch);
-        int addedConstraints = afterConstraints - baseConstraints;
-        int srcConstraints = srcSketch->Constraints.getValues().size();
-
-        if (addedConstraints < 0) {
-            throw Base::ValueError("Constraint error in CmdSketcherMergeSketches");
-        }
-        if (addedConstraints != srcConstraints) {
-            QString msg = qApp->translate(
-                "CmdSketcherMergeSketches",
-                "Copied %1 of %2 constraints from '%3'. Some were skipped.\n")
-                .arg(addedConstraints)
-                .arg(srcConstraints)
-                .arg(srcSketch->getNameInDocument());
-            Base::Console().message(msg.toUtf8().constData());
-        }
-        if (addedConstraints > 0) {
-            for (int i = 0; i < addedConstraints; i++) {
-                int index = i + baseConstraints;
-                auto* constraint = mergeSketch->Constraints.getValues()[index];
-                if (!remapGeoId(constraint->First, extGeoIdMap)
-                    || !remapGeoId(constraint->Second, extGeoIdMap)
-                    || !remapGeoId(constraint->Third, extGeoIdMap)) {
+            source =
+                resolveExactUsableStandaloneSketch(sourceIdentity);
+            mergeSketch = requireMergeSketch();
+            if (!source) {
+                throw Base::RuntimeError(
+                    "A Merge Sketches source changed while copying external geometry"
+                );
+            }
+            const int afterConstraints =
+                1 + mergeSketch->addCopyOfConstraints(*source);
+            const int addedConstraints =
+                afterConstraints - baseConstraints;
+            if (addedConstraints < 0) {
+                throw Base::ValueError(
+                    "Constraint error in CmdSketcherMergeSketches"
+                );
+            }
+            if (addedConstraints != sourceConstraintCount) {
+                const QString message = qApp->translate(
+                    "CmdSketcherMergeSketches",
+                    "Copied %1 of %2 constraints from '%3'. Some were skipped.\n")
+                    .arg(addedConstraints)
+                    .arg(sourceConstraintCount)
+                    .arg(QString::fromStdString(sourceName));
+                Base::Console().message(
+                    message.toUtf8().constData()
+                );
+            }
+            mergeSketch = requireMergeSketch();
+            for (int offset = 0;
+                 offset < addedConstraints;
+                 ++offset) {
+                const int index = offset + baseConstraints;
+                auto* constraint =
+                    mergeSketch->Constraints.getValues()[index];
+                if (!remapGeoId(
+                        constraint->First,
+                        externalGeometryMap
+                    )
+                    || !remapGeoId(
+                        constraint->Second,
+                        externalGeometryMap
+                    )
+                    || !remapGeoId(
+                        constraint->Third,
+                        externalGeometryMap
+                    )) {
                     constraintsToDelete.push_back(index);
-                    QString msg = qApp->translate(
+                    const QString message = qApp->translate(
                         "CmdSketcherMergeSketches",
-                        "Skipping constraint #%1 of '%2': references unmerged geometry.\n")
-                        .arg(i+1)
-                        .arg(srcSketch->getNameInDocument());
-                    Base::Console().message(msg.toUtf8().constData());
-                    continue;
+                        "Skipping constraint #%1 of '%2': references "
+                        "unmerged geometry.\n")
+                        .arg(offset + 1)
+                        .arg(QString::fromStdString(sourceName));
+                    Base::Console().message(
+                        message.toUtf8().constData()
+                    );
                 }
             }
+
+            baseGeometry = afterGeometry;
+            baseConstraints = afterConstraints;
         }
 
-        baseGeometry = afterGeometry;
-        baseConstraints = afterConstraints;
+        std::ranges::sort(
+            constraintsToDelete,
+            std::greater<int>()
+        );
+        for (const int index : constraintsToDelete) {
+            requireMergeSketch()->delConstraint(index);
+        }
+
+        auto* firstSource =
+            resolveExactUsableStandaloneSketch(selection.front());
+        mergeSketch = requireMergeSketch();
+        if (!firstSource) {
+            throw Base::RuntimeError(
+                "The first Merge Sketches source changed before placement"
+            );
+        }
+        doCommand(
+            Doc,
+            "%s.Placement = %s.Placement",
+            Gui::Command::getObjectCmd(mergeSketch).c_str(),
+            Gui::Command::getObjectCmd(firstSource).c_str()
+        );
+        mergeSketch = requireMergeSketch();
+        markSketchCommandOutputs({mergeSketch});
+
+        auto* exactDocument =
+            resolveExactSketchDocument(documentIdentity);
+        if (!exactDocument) {
+            throw Base::RuntimeError(
+                "The Merge Sketches document changed before recompute"
+            );
+        }
+        Gui::cmdAppDocument(exactDocument, "recompute()");
+        commitCommand(transactionId);
+        resetTransactionID();
     }
-
-    // delete in descending order to keep indices valid
-    std::sort(constraintsToDelete.begin(), constraintsToDelete.end(), std::greater<int>());
-    for (int index : constraintsToDelete) {
-        mergeSketch->delConstraint(index);
+    catch (Base::Exception& error) {
+        abortCommand(transactionId);
+        resetTransactionID();
+        error.reportException();
     }
-
-    // apply the placement of the first sketch in the list (#0002434)
-    doCommand(Doc,
-              "App.activeDocument().ActiveObject.Placement = App.activeDocument().%s.Placement",
-              selection.front().getFeatName());
-
-    commitCommand();
-    doCommand(Doc, "App.activeDocument().recompute()");
+    catch (...) {
+        abortCommand(transactionId);
+        resetTransactionID();
+        throw;
+    }
 }
 
 bool CmdSketcherMergeSketches::isActive()
 {
-    return Gui::Selection().countObjectsOfType<Sketcher::SketchObject>() > 1;
+    auto* guiDocument = getActiveGuiDocument();
+    return isSketchSetupAvailable(guiDocument)
+        && selectedExactUsableSketches(
+               guiDocument->getDocument()
+           ).size() > 1;
 }
 
 // Acknowledgement of idea and original python macro goes to SpritKopf:

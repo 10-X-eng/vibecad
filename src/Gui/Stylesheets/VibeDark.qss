@@ -82,6 +82,73 @@ QLabel {
     color: #5c6874; }
 
 /*--------------------------------------------------------------------------------------------------
+Start page
+--------------------------------------------------------------------------------------------------*/
+#StartView {
+  background-color: #171c23;
+  color: #e8edf2; }
+
+#StartView QScrollArea {
+  background-color: transparent;
+  border: none; }
+
+QWidget#CreateNewRow {
+  background-color: transparent;
+  padding: 2px; }
+
+QPushButton#newFileButton {
+  min-width: 180px;
+  max-width: 180px;
+  min-height: 76px;
+  color: #e8edf2;
+  background-color: #1d242d;
+  border: 1px solid #29313c;
+  border-radius: 8px; }
+  QPushButton#newFileButton:hover {
+    background-color: #232b35;
+    border-color: #39434f; }
+  QPushButton#newFileButton:pressed {
+    color: #ffffff;
+    background-color: #283140;
+    border-color: #4dabf7; }
+  QPushButton#newFileButton:focus {
+    border-color: #4dabf7; }
+  QPushButton#newFileButton QLabel {
+    color: #e8edf2;
+    background-color: transparent; }
+
+StartGui--FirstStartWidget,
+StartGui--ThemeSelectorWidget,
+StartGui--GeneralSettingsWidget {
+  background-color: #1d242d;
+  border: 1px solid #29313c;
+  border-radius: 10px; }
+
+StartGui--FirstStartWidget::title {
+  subcontrol-origin: margin;
+  left: 12px;
+  padding: 0px 4px;
+  color: #e8edf2;
+  background-color: #1d242d; }
+
+/*--------------------------------------------------------------------------------------------------
+Semantic feedback
+--------------------------------------------------------------------------------------------------*/
+Gui--UrlLabel {
+  color: #74c0fc; }
+  Gui--UrlLabel:hover {
+    color: #ffffff; }
+
+QLabel[vibeStatus="error"] {
+  color: #ff6b6b; }
+QLabel[vibeStatus="warning"] {
+  color: #ffa94d; }
+QLabel[vibeStatus="success"] {
+  color: #51cf66; }
+QLabel[vibeStatus="info"] {
+  color: #74c0fc; }
+
+/*--------------------------------------------------------------------------------------------------
 Menu bar & menus
 --------------------------------------------------------------------------------------------------*/
 QMenuBar {
@@ -898,6 +965,24 @@ QDockWidget QTreeView, QDockWidget QListView {
   border: none;
   border-radius: 0px; }
 
+/* Permanent model browser: viewport-owned chrome, never a dock surface. */
+QWidget#VibeCADModelBrowserHost,
+QWidget#VibeCADModelBrowserHost QWidget,
+QDockWidget#Std_TreeView {
+  background-color: transparent;
+  border: none; }
+
+QDockWidget#Std_TreeView QTreeView {
+  background-color: transparent;
+  alternate-background-color: transparent;
+  border: none;
+  border-radius: 0px; }
+
+QDockWidget#Std_TreeView QHeaderView,
+QDockWidget#Std_TreeView QHeaderView::section {
+  background-color: transparent;
+  border: none; }
+
 QStatusBar {
   min-height: 32px;
   max-height: 40px;
@@ -1600,3 +1685,192 @@ QPushButton#VibeScriptedAccept {
 QLabel#VibeScriptedStatus {
   color: #9fb0c2;
   padding: 2px; }
+
+/* VibeCAD document strip and task ribbon */
+QToolBar#VibeCADRibbonToolBar {
+  spacing: 0px;
+  padding: 0px;
+  background-color: #12171d;
+  border-bottom: 1px solid #29313c; }
+
+QWidget#VibeCADRibbon,
+QWidget#VibeCADApplicationStrip,
+QWidget#VibeCADDomainStrip {
+  background-color: #12171d; }
+
+QWidget#VibeCADApplicationStrip {
+  min-height: 36px;
+  border-bottom: 1px solid #2a323c; }
+
+QWidget#VibeCADLeadingTools,
+QWidget#VibeCADTrailingTools {
+  background-color: transparent; }
+
+QWidget#VibeCADDomainStrip {
+  min-height: 31px;
+  background-color: #151a21; }
+
+QToolButton#VibeCADAppButton {
+  min-width: 30px;
+  min-height: 30px;
+  max-width: 30px;
+  max-height: 30px;
+  padding: 1px;
+  background-color: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px; }
+
+QToolButton#VibeCADAppButton:hover,
+QToolButton#VibeCADAppButton:pressed {
+  background-color: #242c35;
+  border-color: #394552; }
+
+QToolButton#VibeCADRibbonOpen,
+QToolButton#VibeCADRibbonSave,
+QToolButton#VibeCADRibbonUndo,
+QToolButton#VibeCADRibbonRedo,
+QToolButton#VibeCADRibbonNew,
+QToolButton#VibeCADRibbonSearch,
+QToolButton#VibeCADThemeToggle,
+QToolButton#VibeCADRibbonAssistant,
+QToolButton#VibeCADRibbonSettings {
+  min-width: 29px;
+  min-height: 29px;
+  max-width: 29px;
+  max-height: 29px;
+  padding: 3px;
+  background-color: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px; }
+
+QToolButton#VibeCADRibbonOpen:hover,
+QToolButton#VibeCADRibbonSave:hover,
+QToolButton#VibeCADRibbonUndo:hover,
+QToolButton#VibeCADRibbonRedo:hover,
+QToolButton#VibeCADRibbonNew:hover,
+QToolButton#VibeCADRibbonSearch:hover,
+QToolButton#VibeCADThemeToggle:hover,
+QToolButton#VibeCADRibbonAssistant:hover,
+QToolButton#VibeCADRibbonSettings:hover {
+  background-color: #242c35;
+  border-color: #394552; }
+
+QFrame#VibeCADRibbonSeparator {
+  margin: 5px 3px;
+  color: #303945; }
+
+QTabBar#VibeCADDocumentTabs {
+  min-height: 31px;
+  background-color: #0e1217;
+  border: 1px solid #303945;
+  border-bottom: 0px;
+  border-radius: 6px 6px 0px 0px; }
+
+QTabBar#VibeCADDocumentTabs::tab {
+  min-width: 150px;
+  min-height: 29px;
+  padding: 0px 34px 0px 14px;
+  margin: 1px 1px 0px 1px;
+  color: #9aa6b2;
+  background-color: transparent;
+  border: 1px solid transparent;
+  border-bottom: 0px;
+  border-radius: 5px 5px 0px 0px; }
+
+QTabBar#VibeCADDocumentTabs::tab:hover {
+  color: #e4e9ef;
+  background-color: #1b222a; }
+
+QTabBar#VibeCADDocumentTabs::tab:selected {
+  color: #ffffff;
+  font-weight: 500;
+  background-color: #1a2028;
+  border-color: #35404c; }
+
+QTabBar#VibeCADDocumentTabs::close-button {
+  subcontrol-position: right;
+  width: 12px;
+  height: 12px;
+  margin-right: 7px;
+  image: url(qss:images_dark-light/close_light.svg); }
+
+QLineEdit#VibeCADCommandSearch {
+  min-height: 28px;
+  padding: 2px 10px;
+  background-color: #11161c;
+  border: 1px solid #35404c;
+  border-radius: 5px; }
+
+QLineEdit#VibeCADCommandSearch:focus {
+  border-color: #4dabf7; }
+
+QTabBar#VibeCADRibbonTabs {
+  background-color: #0e1116; }
+
+QTabBar#VibeCADRibbonTabs::tab {
+  min-width: 76px;
+  min-height: 29px;
+  padding: 0px 14px;
+  color: #9aa7b4;
+  background-color: transparent;
+  border: 0px solid transparent;
+  border-bottom: 3px solid transparent; }
+
+QTabBar#VibeCADRibbonTabs::tab:hover {
+  color: #e8edf2;
+  background-color: #202730; }
+
+QTabBar#VibeCADRibbonTabs::tab:selected {
+  color: #ffffff;
+  font-weight: 600;
+  background-color: #1a2028;
+  border-bottom-color: #4dabf7; }
+
+QWidget#VibeCADRibbonPage {
+  background-color: #1a2028;
+  border-top: 1px solid #2a323c; }
+
+QFrame[ribbonGroup="true"] {
+  background-color: transparent;
+  border-right: 1px solid #303945; }
+
+QWidget#VibeCADRibbonGroupExpanded {
+  background-color: transparent; }
+
+QToolButton[ribbonCommand="true"] {
+  min-width: 38px;
+  min-height: 35px;
+  padding: 1px 3px;
+  background-color: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px; }
+
+QToolButton[ribbonCommand="true"]:hover {
+  background-color: #252d36;
+  border-color: #3a4653; }
+
+QToolButton#VibeCADRibbonGroupMenu {
+  min-height: 16px;
+  max-height: 16px;
+  padding: 0px 16px 0px 8px;
+  color: #919daa;
+  font-size: 9px;
+  background-color: transparent;
+  border: 0px; }
+
+QToolButton#VibeCADRibbonGroupMenu:hover {
+  color: #ffffff;
+  background-color: #252d36; }
+
+QToolButton#VibeCADRibbonGroupMenu::menu-indicator {
+  width: 9px;
+  height: 9px;
+  subcontrol-origin: padding;
+  subcontrol-position: right center;
+  image: url(qss:images_dark-light/light_more_arrow.svg); }
+
+QToolButton#VibeCADRibbonCollapsedGroup,
+QToolButton#VibeCADRibbonPageMore {
+  min-height: 50px;
+  padding: 2px 6px;
+  color: #c7d0da; }

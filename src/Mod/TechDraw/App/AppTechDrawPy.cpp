@@ -435,6 +435,9 @@ private:
             if (PyObject_TypeCheck(viewObj, &(TechDraw::DrawViewPartPy::Type))) {
                 obj = static_cast<App::DocumentObjectPy*>(viewObj)->getDocumentObjectPtr();
                 dvp = static_cast<TechDraw::DrawViewPart*>(obj);
+                if (!dvp->isActiveInDocumentTimeline() || !dvp->hasGeometry()) {
+                    return Py::String();
+                }
                 TechDraw::GeometryObjectPtr gObj = dvp->getGeometryObject();
                 if (!gObj) {
                     Base::Console().message("TechDraw: %s has no geometry object!\n", dvp->Label.getValue());
@@ -498,6 +501,9 @@ private:
             if (PyObject_TypeCheck(viewObj, &(TechDraw::DrawViewPartPy::Type))) {
                 obj = static_cast<App::DocumentObjectPy*>(viewObj)->getDocumentObjectPtr();
                 dvp = static_cast<TechDraw::DrawViewPart*>(obj);
+                if (!dvp->isActiveInDocumentTimeline() || !dvp->hasGeometry()) {
+                    return Py::String();
+                }
                 TechDraw::GeometryObjectPtr gObj = dvp->getGeometryObject();
                 if (!gObj) {
                     Base::Console().message("TechDraw: %s has no geometry object!\n", dvp->Label.getValue());
@@ -563,6 +569,10 @@ private:
 
     void write1ViewDxf( ImpExpDxfWrite& writer, TechDraw::DrawViewPart* dvp, bool alignPage)
     {
+        if (!dvp->isActiveInDocumentTimeline()) {
+            return;
+        }
+
         if(!dvp->hasGeometry()) {
             return;
         }
@@ -713,7 +723,7 @@ private:
             if (PyObject_TypeCheck(pageObj, &(TechDraw::DrawPagePy::Type))) {
                 obj = static_cast<App::DocumentObjectPy*>(pageObj)->getDocumentObjectPtr();
                 dPage = static_cast<TechDraw::DrawPage*>(obj);
-                auto views = dPage->getAllViews();
+                auto views = dPage->getAllActiveViews();
                 for (auto& view : views) {
                     if (view->isDerivedFrom<TechDraw::DrawViewPart>()) {
                         TechDraw::DrawViewPart* dvp = static_cast<TechDraw::DrawViewPart*>(view);

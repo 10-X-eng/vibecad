@@ -28,19 +28,23 @@
 #include <Base/PyObjectBase.h>
 #include <Base/ServiceProvider.h>
 
+#include <App/DocumentObjectPy.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
+#include <Gui/Document.h>
 #include <Gui/Dialogs/DlgPreferencesImp.h>
 #include <Gui/WidgetFactory.h>
 #include <Gui/Language/Translator.h>
 
 #include <Mod/Part/App/PreviewExtension.h>
+#include <Mod/Part/App/BodyBase.h>
 
 #include "AttacherTexts.h"
 #include "PropertyEnumAttacherItem.h"
 #include "DlgSettings3DViewPartImp.h"
 #include "DlgSettingsGeneral.h"
 #include "DlgSettingsObjectColor.h"
+#include "ModelingSelection.h"
 #include "PreviewUpdateScheduler.h"
 #include "SoBrepEdgeSet.h"
 #include "SoBrepFaceSet.h"
@@ -78,7 +82,6 @@
 #include "ViewProviderSphereParametric.h"
 #include "ViewProviderSpline.h"
 #include "ViewProviderTorusParametric.h"
-#include "Workbench.h"
 #include "WorkbenchManipulator.h"
 
 
@@ -104,10 +107,248 @@ public:
     Module()
         : Py::ExtensionModule<Module>("PartGui")
     {
+        add_varargs_method(
+            "resolveModelingObject",
+            &Module::resolveModelingObject,
+            "resolveModelingObject(object) -> object or None\n\n"
+            "Return a directly selected Body's exact current modeling state. "
+            "Presentation objects are never returned as geometry inputs. "
+            "Ordinary objects and App::Link occurrences are returned unchanged."
+        );
+        add_varargs_method(
+            "findModelingBody",
+            &Module::findModelingBody,
+            "findModelingBody(object) -> object or None\n\n"
+            "Return the unique native Body represented by a Body member, "
+            "component, or linked presentation."
+        );
+        add_varargs_method(
+            "resolveModelingObjectForBody",
+            &Module::resolveModelingObjectForBody,
+            "resolveModelingObjectForBody(object, body) -> object or None\n\n"
+            "Resolve a visible Body or component presentation to the exact "
+            "state that a new operation may safely consume."
+        );
+        add_varargs_method(
+            "isModelingObjectActive",
+            &Module::isModelingObjectActive,
+            "isModelingObjectActive(object) -> bool\n\n"
+            "Return whether the exact object, its Body result, and any linked "
+            "definition belong to the current unsuppressed History state."
+        );
+        add_varargs_method(
+            "resolveModelingPresentationObject",
+            &Module::resolveModelingPresentationObject,
+            "resolveModelingPresentationObject(object) -> object or None\n\n"
+            "Return the Body which actually renders a Body-owned modeling "
+            "operand. Root objects and App::Link occurrences are returned "
+            "unchanged."
+        );
+        add_varargs_method(
+            "setModelingReplacedInputs",
+            &Module::setModelingReplacedInputs,
+            "setModelingReplacedInputs(result, inputs) -> bool\n\n"
+            "Persist exact visible inputs intentionally hidden by a root "
+            "modeling result. Body-native results use Tip history and return "
+            "False."
+        );
+        add_varargs_method(
+            "publishDesignDefinitionBlock",
+            &Module::publishDesignDefinitionBlock,
+            "publishDesignDefinitionBlock(outputs) -> None\n\n"
+            "Publish newly created root-level outputs as one reusable Design "
+            "definition. The final output is the semantic History root."
+        );
+        add_varargs_method(
+            "canStartRetainedModelingTask",
+            &Module::canStartRetainedModelingTask,
+            "canStartRetainedModelingTask() -> bool\n\n"
+            "Return whether a retained Part task can safely own the active "
+            "document transaction."
+        );
         initialize("This module is the PartGui module.");  // register with Python
     }
 
 private:
+    Py::Object isModelingObjectActive(const Py::Tuple& args)
+    {
+        PyObject* pythonObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &pythonObject)) {
+            throw Py::Exception();
+        }
+        if (!PyObject_TypeCheck(pythonObject, &App::DocumentObjectPy::Type)) {
+            throw Py::TypeError("object must be a document object");
+        }
+        auto* object =
+            static_cast<App::DocumentObjectPy*>(pythonObject)->getDocumentObjectPtr();
+        return Py::Boolean(PartGui::isModelingObjectActive(object));
+    }
+
+    Py::Object canStartRetainedModelingTask(const Py::Tuple& args)
+    {
+        if (!PyArg_ParseTuple(args.ptr(), "")) {
+            throw Py::Exception();
+        }
+        auto* guiDocument = Gui::Application::Instance->activeDocument();
+        return Py::Boolean(
+            PartGui::canStartRetainedModelingTask(
+                guiDocument ? guiDocument->getDocument() : nullptr
+            )
+        );
+    }
+
+    Py::Object resolveModelingObject(const Py::Tuple& args)
+    {
+        PyObject* pythonObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &pythonObject)) {
+            throw Py::Exception();
+        }
+        if (!PyObject_TypeCheck(pythonObject, &App::DocumentObjectPy::Type)) {
+            throw Py::TypeError("object must be a document object");
+        }
+        auto* object =
+            static_cast<App::DocumentObjectPy*>(pythonObject)->getDocumentObjectPtr();
+        auto* resolved = PartGui::resolveModelingObject(object);
+        return resolved ? Py::asObject(resolved->getPyObject()) : Py::None();
+    }
+
+    Py::Object findModelingBody(const Py::Tuple& args)
+    {
+        PyObject* pythonObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &pythonObject)) {
+            throw Py::Exception();
+        }
+        if (!PyObject_TypeCheck(pythonObject, &App::DocumentObjectPy::Type)) {
+            throw Py::TypeError("object must be a document object");
+        }
+        auto* object =
+            static_cast<App::DocumentObjectPy*>(pythonObject)->getDocumentObjectPtr();
+        auto* body = PartGui::findModelingBody(object);
+        return body ? Py::asObject(body->getPyObject()) : Py::None();
+    }
+
+    Py::Object resolveModelingObjectForBody(const Py::Tuple& args)
+    {
+        PyObject* pythonObject = nullptr;
+        PyObject* pythonBody = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "OO", &pythonObject, &pythonBody)) {
+            throw Py::Exception();
+        }
+        if (!PyObject_TypeCheck(pythonObject, &App::DocumentObjectPy::Type)
+            || !PyObject_TypeCheck(pythonBody, &App::DocumentObjectPy::Type)) {
+            throw Py::TypeError("object and body must be document objects");
+        }
+        auto* object =
+            static_cast<App::DocumentObjectPy*>(pythonObject)->getDocumentObjectPtr();
+        auto* bodyObject =
+            static_cast<App::DocumentObjectPy*>(pythonBody)->getDocumentObjectPtr();
+        auto* body = freecad_cast<Part::BodyBase*>(bodyObject);
+        if (!body) {
+            throw Py::TypeError("body must derive from Part::BodyBase");
+        }
+        auto* resolved = PartGui::resolveModelingObjectForBody(object, body);
+        return resolved ? Py::asObject(resolved->getPyObject()) : Py::None();
+    }
+
+    Py::Object resolveModelingPresentationObject(const Py::Tuple& args)
+    {
+        PyObject* pythonObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &pythonObject)) {
+            throw Py::Exception();
+        }
+        if (!PyObject_TypeCheck(pythonObject, &App::DocumentObjectPy::Type)) {
+            throw Py::TypeError("object must be a document object");
+        }
+        auto* object =
+            static_cast<App::DocumentObjectPy*>(pythonObject)->getDocumentObjectPtr();
+        auto* resolved =
+            PartGui::resolveModelingPresentationObject(object);
+        return resolved ? Py::asObject(resolved->getPyObject()) : Py::None();
+    }
+
+    Py::Object setModelingReplacedInputs(const Py::Tuple& args)
+    {
+        PyObject* pythonResult = nullptr;
+        PyObject* pythonInputs = nullptr;
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "OO",
+                &pythonResult,
+                &pythonInputs
+            )) {
+            throw Py::Exception();
+        }
+        if (!PyObject_TypeCheck(
+                pythonResult,
+                &App::DocumentObjectPy::Type
+            )) {
+            throw Py::TypeError("result must be a document object");
+        }
+
+        auto* result =
+            static_cast<App::DocumentObjectPy*>(pythonResult)
+                ->getDocumentObjectPtr();
+        std::vector<App::DocumentObject*> inputs;
+        Py::Sequence sequence(pythonInputs);
+        inputs.reserve(sequence.size());
+        for (auto iterator = sequence.begin();
+             iterator != sequence.end();
+             ++iterator) {
+            PyObject* item = (*iterator).ptr();
+            if (!PyObject_TypeCheck(
+                    item,
+                    &App::DocumentObjectPy::Type
+                )) {
+                throw Py::TypeError(
+                    "every replacement input must be a document object"
+                );
+            }
+            inputs.push_back(
+                static_cast<App::DocumentObjectPy*>(item)
+                    ->getDocumentObjectPtr()
+            );
+        }
+        return Py::Boolean(
+            PartGui::setModelingReplacedInputs(*result, inputs)
+        );
+    }
+
+    Py::Object publishDesignDefinitionBlock(const Py::Tuple& args)
+    {
+        PyObject* pythonOutputs = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &pythonOutputs)) {
+            throw Py::Exception();
+        }
+
+        std::vector<App::DocumentObject*> outputs;
+        Py::Sequence sequence(pythonOutputs);
+        outputs.reserve(sequence.size());
+        for (auto iterator = sequence.begin();
+             iterator != sequence.end();
+             ++iterator) {
+            PyObject* item = (*iterator).ptr();
+            if (!PyObject_TypeCheck(
+                    item,
+                    &App::DocumentObjectPy::Type
+                )) {
+                throw Py::TypeError(
+                    "every Design definition output must be a document "
+                    "object"
+                );
+            }
+            outputs.push_back(
+                static_cast<App::DocumentObjectPy*>(item)
+                    ->getDocumentObjectPtr()
+            );
+        }
+        try {
+            PartGui::publishModelingDesignDefinitionBlock(outputs);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
+    }
 };
 
 PyObject* initModule()
@@ -228,7 +469,6 @@ PyMOD_INIT_FUNC(PartGui)
     PartGui::ViewProviderFace                       ::init();
     PartGui::ViewProviderProjectOnSurface           ::init();
 
-    PartGui::Workbench                              ::init();
     auto manip = std::make_shared<PartGui::WorkbenchManipulator>();
     Gui::WorkbenchManipulator::installManipulator(manip);
 

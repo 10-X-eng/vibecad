@@ -26,6 +26,7 @@ __author__ = "Bernd Hahnebach"
 __url__ = "https://www.freecad.org"
 
 import sys
+import tempfile
 import unittest
 from os.path import join
 
@@ -1194,6 +1195,296 @@ class TestObjectType(unittest.TestCase):
         )
         # TODO: vtk post objs, thus 5 obj less than test_femobjects_make
         self.assertEqual(len(doc.Objects), testtools.get_defmake_count(False))
+
+    def test_shipped_analysis_input_factories_are_suppressible(self):
+        doc = self.document
+        objects = []
+
+        constraint_factories = (
+            ObjectsFem.makeConstraintElectromagnetic,
+            ObjectsFem.makeConstraintCurrentDensity,
+            ObjectsFem.makeConstraintMagnetization,
+            ObjectsFem.makeConstraintElectricChargeDensity,
+            ObjectsFem.makeConstraintInitialFlowVelocity,
+            ObjectsFem.makeConstraintInitialPressure,
+            ObjectsFem.makeConstraintFlowVelocity,
+            ObjectsFem.makeConstraintPlaneRotation,
+            ObjectsFem.makeConstraintSectionPrint,
+            ObjectsFem.makeConstraintTransform,
+            ObjectsFem.makeConstraintFixed,
+            ObjectsFem.makeConstraintRigidBody,
+            ObjectsFem.makeConstraintDisplacement,
+            ObjectsFem.makeConstraintContact,
+            ObjectsFem.makeConstraintTie,
+            ObjectsFem.makeConstraintSpring,
+            ObjectsFem.makeConstraintForce,
+            ObjectsFem.makeConstraintPressure,
+            ObjectsFem.makeConstraintCentrif,
+            ObjectsFem.makeConstraintSelfWeight,
+            ObjectsFem.makeConstraintInitialTemperature,
+            ObjectsFem.makeConstraintHeatflux,
+            ObjectsFem.makeConstraintTemperature,
+            ObjectsFem.makeConstraintBodyHeatSource,
+        )
+        objects.extend(factory(doc) for factory in constraint_factories)
+
+        material = ObjectsFem.makeMaterialSolid(doc)
+        objects.extend(
+            (
+                material,
+                ObjectsFem.makeMaterialFluid(doc),
+                ObjectsFem.makeMaterialMechanicalNonlinear(doc, material),
+                ObjectsFem.makeMaterialReinforced(doc),
+            )
+        )
+        objects.extend(
+            (
+                ObjectsFem.makeElementGeometry1D(doc),
+                ObjectsFem.makeElementRotation1D(doc),
+                ObjectsFem.makeElementGeometry2D(doc),
+                ObjectsFem.makeElementFluid1D(doc),
+            )
+        )
+
+        mesh = ObjectsFem.makeMeshGmsh(doc)
+        objects.extend(
+            (
+                mesh,
+                ObjectsFem.makeMeshNetgen(doc),
+                ObjectsFem.makeMeshRegion(doc, mesh),
+                ObjectsFem.makeMeshGroup(doc, mesh),
+                ObjectsFem.makeMeshDistance(doc, mesh),
+                ObjectsFem.makeMeshBoundaryLayer(doc, mesh),
+                ObjectsFem.makeMeshShape(doc, mesh),
+                ObjectsFem.makeMeshManipulate(doc, mesh),
+                ObjectsFem.makeMeshAdvanced(doc, mesh),
+                ObjectsFem.makeMeshTransfiniteCurve(doc, mesh),
+                ObjectsFem.makeMeshTransfiniteSurface(doc, mesh),
+                ObjectsFem.makeMeshTransfiniteVolume(doc, mesh),
+            )
+        )
+
+        solvers = (
+            ObjectsFem.makeSolverCalculiX(doc),
+            ObjectsFem.makeSolverElmer(doc),
+            ObjectsFem.makeSolverMystran(doc),
+            ObjectsFem.makeSolverZ88(doc),
+        )
+        objects.extend(solvers)
+        elmer = solvers[1]
+        equation_factories = (
+            ObjectsFem.makeEquationDeformation,
+            ObjectsFem.makeEquationElasticity,
+            ObjectsFem.makeEquationElectricforce,
+            ObjectsFem.makeEquationElectrostatic,
+            ObjectsFem.makeEquationFlow,
+            ObjectsFem.makeEquationFlux,
+            ObjectsFem.makeEquationHeat,
+            ObjectsFem.makeEquationMagnetodynamic,
+            ObjectsFem.makeEquationMagnetodynamic2D,
+            ObjectsFem.makeEquationStaticCurrent,
+        )
+        equations = tuple(factory(doc, elmer) for factory in equation_factories)
+        objects.extend(equations)
+
+        for obj in objects:
+            with self.subTest(object=obj.Name, type_id=obj.TypeId):
+                self.assertTrue(
+                    obj.hasExtension("App::SuppressibleExtension"),
+                    obj.Name,
+                )
+                self.assertFalse(obj.Suppressed, obj.Name)
+
+        for obj in (*solvers, *equations):
+            with self.subTest(python_extension=obj.Name):
+                self.assertTrue(
+                    obj.hasExtension("App::SuppressibleExtensionPython"),
+                    obj.Name,
+                )
+
+    def test_member_activity_delegates_to_shared_document_contract(self):
+        from femtools import membertools
+
+        class DocumentProbe:
+            def __init__(self):
+                self.usable = True
+                self.seen = []
+
+            def isObjectUsableAtCurrentTimelinePosition(self, obj):
+                self.seen.append(obj)
+                return self.usable
+
+        class MemberProbe:
+            pass
+
+        document = DocumentProbe()
+        member = MemberProbe()
+        member.Document = document
+
+        self.assertFalse(membertools._is_suppressed(member))
+        self.assertFalse(membertools._is_after_timeline_marker(member))
+        self.assertEqual(document.seen, [member, member])
+
+        document.usable = False
+        self.assertTrue(membertools._is_suppressed(member))
+        self.assertTrue(membertools._is_after_timeline_marker(member))
+        self.assertEqual(document.seen, [member, member, member, member])
+
+    def test_suppression_persists_and_filters_solver_members(self):
+        import Part
+
+        from femmesh import meshtools
+        from femmesh.gmshtools import GmshTools
+        from femsolver.elmer import writer
+        from femsolver import run
+        from femtools import membertools
+
+        analysis = ObjectsFem.makeAnalysis(self.document)
+        active_solver = ObjectsFem.makeSolverElmer(self.document, "ActiveSolver")
+        disabled_solver = ObjectsFem.makeSolverCalculiX(self.document, "DisabledSolver")
+        analysis.addObject(active_solver)
+        analysis.addObject(disabled_solver)
+
+        active_equation = ObjectsFem.makeEquationHeat(
+            self.document,
+            active_solver,
+            "ActiveEquation",
+        )
+        disabled_equation = ObjectsFem.makeEquationFlow(
+            self.document,
+            active_solver,
+            "DisabledEquation",
+        )
+        active_mesh = ObjectsFem.makeMeshGmsh(self.document, "ActiveMesh")
+        disabled_mesh = ObjectsFem.makeMeshNetgen(self.document, "DisabledMesh")
+        analysis.addObject(active_mesh)
+        analysis.addObject(disabled_mesh)
+        part = self.document.addObject("Part::Feature", "AnalysisPart")
+        part.Shape = Part.makeBox(10.0, 10.0, 10.0)
+        active_material = ObjectsFem.makeMaterialSolid(
+            self.document,
+            "ActiveMaterial",
+        )
+        disabled_material = ObjectsFem.makeMaterialSolid(
+            self.document,
+            "DisabledMaterial",
+        )
+        active_material.References = [(part, ("Solid1",))]
+        disabled_material.References = [(part, ("Solid1",))]
+        analysis.addObject(active_material)
+        analysis.addObject(disabled_material)
+
+        disabled_solver.Suppressed = True
+        disabled_equation.Suppressed = True
+        disabled_mesh.Suppressed = True
+        disabled_material.Suppressed = True
+
+        self.assertEqual(
+            membertools.get_member(analysis, "Fem::FemSolverObject"),
+            [active_solver],
+        )
+        self.assertEqual(
+            membertools.get_member(analysis, "App::MaterialObject"),
+            [active_material],
+        )
+        self.assertIs(membertools.get_mesh_to_solve(analysis), active_mesh)
+        elmer_writer = writer.Writer.__new__(writer.Writer)
+        elmer_writer.solver = active_solver
+        self.assertEqual(
+            elmer_writer._get_active_equations(),
+            [active_equation],
+        )
+        analysis_groups = meshtools.get_analysis_group_elements(analysis, part)
+        self.assertIn(active_material.Name, analysis_groups)
+        self.assertNotIn(disabled_material.Name, analysis_groups)
+        with self.assertRaisesRegex(ValueError, "suppressed FEM solver"):
+            run.getMachine(disabled_solver)
+        with self.assertRaisesRegex(ValueError, "cannot be executed"):
+            GmshTools(disabled_mesh)
+
+        with tempfile.TemporaryDirectory() as directory:
+            file_path = join(directory, "fem_suppression.FCStd")
+            self.document.saveAs(file_path)
+            FreeCAD.closeDocument(self.document.Name)
+            self.document = FreeCAD.openDocument(file_path)
+
+            for name in (
+                "DisabledSolver",
+                "DisabledEquation",
+                "DisabledMesh",
+                "DisabledMaterial",
+            ):
+                obj = self.document.getObject(name)
+                with self.subTest(restored=name):
+                    self.assertIsNotNone(obj)
+                    self.assertTrue(
+                        obj.hasExtension("App::SuppressibleExtension"),
+                        name,
+                    )
+                    self.assertTrue(obj.Suppressed, name)
+
+    def test_timeline_resources_follow_their_owner_in_fem_computation(self):
+        from femtools import membertools
+
+        owner = ObjectsFem.makeMaterialSolid(
+            self.document,
+            "TimelineMaterialOwner",
+        )
+        resource = ObjectsFem.makeMaterialSolid(
+            self.document,
+            "TimelineMaterialResource",
+        )
+        resource.addProperty(
+            "App::PropertyString",
+            "VibeCADTimelineRole",
+            "Timeline",
+        )
+        resource.addProperty(
+            "App::PropertyLinkHidden",
+            "VibeCADTimelineOwner",
+            "Timeline",
+        )
+        resource.VibeCADTimelineOwner = owner
+        resource.VibeCADTimelineRole = "resource"
+
+        timeline = self.document.getObject("VibeCADTimeline")
+        self.assertIsNotNone(timeline)
+        operations = list(timeline.Operations)
+        self.assertGreater(operations.index(resource), operations.index(owner))
+
+        timeline.Position = operations.index(owner) + 1
+        self.assertTrue(
+            self.document.isObjectUsableAtCurrentTimelinePosition(
+                resource
+            )
+        )
+        self.assertFalse(membertools._is_suppressed(resource))
+
+        timeline.Position = operations.index(owner)
+        self.assertFalse(
+            self.document.isObjectUsableAtCurrentTimelinePosition(
+                resource
+            )
+        )
+        self.assertTrue(membertools._is_suppressed(resource))
+
+        timeline.Position = len(operations)
+        owner.Suppressed = True
+        self.assertFalse(
+            self.document.isObjectUsableAtCurrentTimelinePosition(
+                resource
+            )
+        )
+        self.assertTrue(membertools._is_suppressed(resource))
+
+        owner.Suppressed = False
+        resource.VibeCADTimelineOwner = None
+        self.assertFalse(
+            self.document.isObjectUsableAtCurrentTimelinePosition(
+                resource
+            )
+        )
+        self.assertTrue(membertools._is_suppressed(resource))
 
 
 # helper

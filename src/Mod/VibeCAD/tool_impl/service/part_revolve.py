@@ -20,7 +20,7 @@ TOOL_SPEC = {
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
-    "workbench": "PartWorkbench",
+    "workbench": "PartDesignWorkbench",
     "edit_modes": ["none"],
     "parameters": {
         "type": "object",
@@ -41,6 +41,13 @@ TOOL_SPEC = {
                 "exclusiveMinimum": 0,
                 "maximum": 360,
                 "description": "Sweep angle in degrees; 360 for a full revolution.",
+            },
+            "symmetric": {
+                "type": "boolean",
+                "description": (
+                    "Center the requested angle on the profile instead of revolving in one "
+                    "direction. Omit or use false for historical one-direction behavior."
+                ),
             },
             "solid": {
                 "type": "boolean",
@@ -75,6 +82,7 @@ def run(
     angle_degrees: float,
     solid: bool,
     label: str,
+    symmetric: bool = False,
 ) -> dict[str, Any]:
     clean_label = str(label or "").strip()
     if not clean_label:
@@ -146,7 +154,14 @@ def run(
         revolution.Base = domain_runtime.parse_vector(axis_point)
         revolution.Axis = axis_vector
         revolution.Angle = float(angle_degrees)
+        revolution.Symmetric = bool(symmetric)
         revolution.Solid = bool(solid)
+        domain_runtime.adopt_part_result(
+            revolution,
+            replaced_inputs=(
+                [base] if visibility_before.get("visible") is True else []
+            ),
+        )
         active.recompute()
         view = getattr(base, "ViewObject", None)
         if view is not None and hasattr(view, "Visibility"):
@@ -169,6 +184,8 @@ def run(
             },
             "requested_angle_degrees": float(angle_degrees),
             "actual_angle_degrees": float(revolution.Angle),
+            "symmetric_requested": bool(symmetric),
+            "symmetric_actual": bool(revolution.Symmetric),
             "solid_requested": bool(solid),
             "solid_count": len(list(getattr(revolution.Shape, "Solids", []) or [])),
             "source_visibility_before": visibility_before,

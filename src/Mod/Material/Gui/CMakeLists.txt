@@ -118,6 +118,8 @@ SET(MatGui_SRCS
     ModelSelect.h
     ModelSelect.ui
     PreCompiled.h
+    SelectionTargetIdentity.cpp
+    SelectionTargetIdentity.h
     TextEdit.cpp
     TextEdit.h
     TextEdit.ui

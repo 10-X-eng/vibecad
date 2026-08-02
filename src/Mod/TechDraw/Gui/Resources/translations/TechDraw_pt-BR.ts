@@ -122,24 +122,7 @@
       <translation type="unfinished">Inserts an editable text block annotation to the current page</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>TechDraw - Desenhos Técnicos</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation type="unfinished">BIM View</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation type="unfinished">Inserts a view of a BIM section plane</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>Criar página</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation type="unfinished">Create BIM view</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation type="unfinished">Create image</translation>
@@ -3293,11 +3270,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation type="unfinished">Select one clip group and one view</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation type="unfinished">Page contains a BIM view which will not be exported. Continue?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation type="unfinished">Save DXF file</translation>
@@ -3331,16 +3303,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation type="unfinished">Select at least one object</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation type="unfinished">Select only 1 BIM section plane</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation type="unfinished">No BIM section plane in selection</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -4697,7 +4659,7 @@ Faces must be detected in order to use hatching, but there
 can be a performance penalty in complex models.</source>
       <translation>Se ativado, o TechDraw tentará construir faces usando os
 segmentos de linha obtidas pelo algoritmo de remoção de linhas ocultas.
-As faces precisam ser detectadas para poder usar hachuras, mas 
+As faces precisam ser detectadas para poder usar hachuras, mas
 pode demorar muito em modelos complexos.</translation>
     </message>
     <message>
@@ -6346,7 +6308,7 @@ Rápido, mas produz uma coleção de linhas retas simples.</translation>
       <location filename="../../MDIViewPage.cpp" line="429"/>
       <source>The printer uses a different orientation than the drawing.
 Do you want to continue?</source>
-      <translation>A impressora utiliza uma orientação diferente do que o desenho. 
+      <translation>A impressora utiliza uma orientação diferente do que o desenho.
 Deseja continuar?</translation>
     </message>
     <message>
@@ -10068,14 +10030,7 @@ there is an open task dialog.</translation>
       <translation>Linha</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

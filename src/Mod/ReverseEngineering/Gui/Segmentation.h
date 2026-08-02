@@ -54,6 +54,7 @@ public:
     );
     ~Segmentation() override;
     void accept();
+    bool tryAccept();
 
 protected:
     void changeEvent(QEvent* e) override;

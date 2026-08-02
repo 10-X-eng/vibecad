@@ -70,7 +70,6 @@ SET(StartGuiIcon_SVG
         )
 
 SET(StartGuiThumbnail_PNG
-        Resources/thumbnails/Theme_thumbnail_classic.png
         Resources/thumbnails/Theme_thumbnail_dark.png
         Resources/thumbnails/Theme_thumbnail_light.png
         )

@@ -105,7 +105,7 @@ MassPropertiesData CalculateMassProperties(
                     return feature;
                 }
 
-                App::DocumentObject* linked = candidate->getLinkedObject(true);
+                App::DocumentObject* linked = candidate->getLinkedObject(false);
                 if (!linked || linked == candidate) {
                     break;
                 }

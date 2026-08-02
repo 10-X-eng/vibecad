@@ -30,8 +30,10 @@
 #include <App/Range.h>
 #include <Base/Tools.h>
 #include <Gui/CommandT.h>
+#include <Gui/ExactTransaction.h>
 
 #include "DlgSheetConf.h"
+#include "MutationSupport.h"
 #include "ui_DlgSheetConf.h"
 
 
@@ -169,7 +171,6 @@ App::Property* DlgSheetConf::prepare(
 
 void DlgSheetConf::accept()
 {
-    bool commandActive = false;
     try {
         std::string rangeConf;
         CellAddress from, to;
@@ -201,8 +202,18 @@ void DlgSheetConf::accept()
             FC_THROWM(Base::RuntimeError, "Invalid property expression: " << expr->toString());
         }
 
-        sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Setup conf table"));
-        commandActive = true;
+        auto* obj = path.getDocumentObject();
+        if (!obj) {
+            FC_THROWM(Base::RuntimeError, "Object not found");
+        }
+        auto* sheetDocument = sheet->getDocument();
+        auto* objectDocument = obj->getDocument();
+        MutationSupport::requireCleanBoundary(*sheetDocument);
+        Gui::ExactTransaction transaction(
+            *sheetDocument,
+            {sheetDocument, objectDocument},
+            QT_TRANSLATE_NOOP("Command", "Setup configuration table")
+        );
 
         // unbind any previous binding
         int count = range.rowCount() * range.colCount();
@@ -219,11 +230,6 @@ void DlgSheetConf::accept()
                 r.from().toString(),
                 r.to().toString()
             );
-        }
-
-        auto obj = path.getDocumentObject();
-        if (!obj) {
-            FC_THROWM(Base::RuntimeError, "Object not found");
         }
 
         // Add a dynamic PropertyEnumeration for user to switch the configuration
@@ -282,22 +288,21 @@ void DlgSheetConf::accept()
             from.row() + 2
         );
 
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        sheet->getDocument()->commitTransaction();
+        if (objectDocument != sheetDocument) {
+            MutationSupport::recompute(*objectDocument);
+        }
+        MutationSupport::recompute(*sheetDocument);
+        MutationSupport::commit(transaction);
         QDialog::accept();
     }
     catch (Base::Exception& e) {
         e.reportException();
         QMessageBox::critical(this, tr("Setup Configuration Table"), QString::fromUtf8(e.what()));
-        if (commandActive) {
-            sheet->getDocument()->abortTransaction();
-        }
     }
 }
 
 void DlgSheetConf::onDiscard()
 {
-    bool commandActive = false;
     try {
         std::string rangeConf;
         CellAddress from, to;
@@ -306,8 +311,15 @@ void DlgSheetConf::onDiscard()
 
         Range range(from, to);
 
-        sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Unsetup conf table"));
-        commandActive = true;
+        auto* obj = path.getDocumentObject();
+        auto* sheetDocument = sheet->getDocument();
+        auto* objectDocument = obj ? obj->getDocument() : sheetDocument;
+        MutationSupport::requireCleanBoundary(*sheetDocument);
+        Gui::ExactTransaction transaction(
+            *sheetDocument,
+            {sheetDocument, objectDocument},
+            QT_TRANSLATE_NOOP("Command", "Remove configuration table")
+        );
 
         // unbind any previous binding
         int count = range.rowCount() * range.colCount();
@@ -329,7 +341,6 @@ void DlgSheetConf::onDiscard()
         Gui::cmdAppObjectArgs(sheet, "clear('%s')", from.toString(CellAddress::Cell::ShowRowColumn));
 
         if (prop && prop->getName()) {
-            auto obj = path.getDocumentObject();
             if (!obj) {
                 FC_THROWM(Base::RuntimeError, "Object not found");
             }
@@ -339,16 +350,16 @@ void DlgSheetConf::onDiscard()
             }
         }
 
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        sheet->getDocument()->commitTransaction();
+        if (objectDocument != sheetDocument) {
+            MutationSupport::recompute(*objectDocument);
+        }
+        MutationSupport::recompute(*sheetDocument);
+        MutationSupport::commit(transaction);
         QDialog::accept();
     }
     catch (Base::Exception& e) {
         e.reportException();
         QMessageBox::critical(this, tr("Unsetup Configuration Table"), QString::fromUtf8(e.what()));
-        if (commandActive) {
-            sheet->getDocument()->abortTransaction();
-        }
     }
 }
 

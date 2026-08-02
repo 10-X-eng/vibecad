@@ -35,6 +35,7 @@ SET(Surface_SRCS
   PreCompiled.h
   FeatureExtend.cpp
   FeatureExtend.h
+  FeatureTimelineSupport.h
   FeatureGeomFillSurface.cpp
   FeatureGeomFillSurface.h
   FeatureFilling.cpp

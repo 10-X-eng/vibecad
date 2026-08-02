@@ -49,6 +49,7 @@ PROPERTY_SOURCE(RobotGui::ViewProviderTrajectory, Gui::ViewProviderGeometryObjec
 
 ViewProviderTrajectory::ViewProviderTrajectory()
 {
+    Gui::ViewProviderSuppressibleExtension::initExtension(this);
 
     pcTrajectoryRoot = new Gui::SoFCSelection();
     pcTrajectoryRoot->preselectionMode = Gui::SoFCSelection::OFF;

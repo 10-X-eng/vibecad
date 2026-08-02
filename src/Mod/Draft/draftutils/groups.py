@@ -24,11 +24,7 @@
 # *   USA                                                                   *
 # *                                                                         *
 # ***************************************************************************
-"""Provides utility functions to do operations with groups.
-
-The functions here are also used in the Arch Workbench as some of
-the objects created with this workbench work like groups.
-"""
+"""Provides utility functions to do operations with groups."""
 
 ## @package groups
 # \ingroup draftutils
@@ -54,26 +50,11 @@ def is_group(obj):
     Returns
     -------
     bool
-        Returns `True` if `obj` is considered a group:
-
-        The object is derived from `App::DocumentObjectGroup` but not
-        a `'LayerContainer'`.
-
-        Or the object is of the type `'Project'`, `'Site'`, `'Building'`,
-        `'Floor'`, `'BuildingPart'` or `'Space'` from the Arch Workbench.
-        Note that `'Floor'` and `'Building'` are obsolete types.
-
-        Otherwise returns `False`.
+        Returns `True` if `obj` is derived from `App::DocumentObjectGroup`
+        but is not a Draft `'LayerContainer'`.
     """
     typ = utils.get_type(obj)
-    return (obj.isDerivedFrom("App::DocumentObjectGroup") and typ != "LayerContainer") or typ in (
-        "Project",
-        "Site",
-        "Building",
-        "Floor",
-        "BuildingPart",
-        "Space",
-    )
+    return obj.isDerivedFrom("App::DocumentObjectGroup") and typ != "LayerContainer"
 
 
 def get_group_names(doc=None):
@@ -150,50 +131,7 @@ def ungroup(obj):
             group.Group = objects
 
 
-def get_windows(obj):
-    """Return the windows and rebars inside a host.
-
-    Parameters
-    ----------
-    obj: App::DocumentObject
-        A scripted object of type `'Wall'`, `'Roof'`, `'Structure'` or
-        `'CurtainWall'` (BIM Workbench).
-        This will be searched for objects of type `'Window'` and `'Rebar'`,
-        and clones of them, and the found elements will be added
-        to the output list.
-
-        The function will search recursively all elements under `obj.OutList`,
-        in case the windows and rebars are nested under other hosts.
-
-    Returns
-    -------
-    list
-        A list of all found windows and rebars in `obj`.
-        If `obj` is itself a `'Window'` or a `'Rebar'`, or a clone of them,
-        it will return the same `obj` element.
-    """
-    out = []
-    if utils.get_type(obj) in ("Wall", "Roof", "Structure", "CurtainWall"):
-        for o in obj.OutList:
-            out.extend(get_windows(o))
-        for i in obj.InList:
-            if utils.get_type(i.getLinkedObject()) == "Window" or utils.is_clone(obj, "Window"):
-                if hasattr(i, "Hosts"):
-                    if obj in i.Hosts:
-                        out.append(i)
-            elif utils.get_type(i) == "Rebar" or utils.is_clone(obj, "Rebar"):
-                if hasattr(i, "Host"):
-                    if obj == i.Host:
-                        out.append(i)
-    elif utils.get_type(obj.getLinkedObject()) in ("Window", "Rebar") or utils.is_clone(
-        obj, ["Window", "Rebar"]
-    ):
-        out.append(obj)
-
-    return out
-
-
-def get_group_contents(objectslist, walls=False, addgroups=False, spaces=False, noarchchild=False):
+def get_group_contents(objectslist, addgroups=False):
     """Return a list of objects from expanding the input groups.
 
     The function accepts any type of object, although it is most useful
@@ -209,25 +147,9 @@ def get_group_contents(objectslist, walls=False, addgroups=False, spaces=False, 
         Single items that aren't groups are added to the output list
         as is.
 
-    walls: bool, optional
-        It defaults to `False`.
-        If it is `True`, Wall, Roof, Structure and CurtainWall objects
-        (BIM Workbench) are treated as groups; they are scanned for Window,
-        Door, and Rebar objects, and these are added to the output list.
-
     addgroups: bool, optional
         It defaults to `False`.
         If it is `True`, the group itself is kept as part of the output list.
-
-    spaces: bool, optional
-        It defaults to `False`.
-        If it is `True`, Arch Spaces are added to the output list even
-        when addgroups is False (their contents are always added).
-
-    noarchchild: bool, optional
-        It defaults to `False`.
-        If it is `True`, the objects inside Building and BuildingParts
-        (Arch Workbench) aren't added to the output list.
 
     Returns
     -------
@@ -242,17 +164,12 @@ def get_group_contents(objectslist, walls=False, addgroups=False, spaces=False, 
     for obj in objectslist:
         if obj:
             if is_group(obj):
-                if addgroups or (spaces and utils.get_type(obj) == "Space"):
+                if addgroups:
                     newlist.append(obj)
-                if not (noarchchild and utils.get_type(obj) in ("Building", "BuildingPart")):
-                    newlist.extend(
-                        get_group_contents(obj.Group, walls, addgroups, spaces, noarchchild)
-                    )
+                newlist.extend(get_group_contents(obj.Group, addgroups))
             else:
                 # print("adding ", obj.Name)
                 newlist.append(obj)
-                if walls:
-                    newlist.extend(get_windows(obj))
 
     # Clean possible duplicates
     cleanlist = []
@@ -263,11 +180,11 @@ def get_group_contents(objectslist, walls=False, addgroups=False, spaces=False, 
     return cleanlist
 
 
-def getGroupContents(objectslist, walls=False, addgroups=False, spaces=False, noarchchild=False):
+def getGroupContents(objectslist, addgroups=False):
     """Return a list of objects from groups. DEPRECATED."""
     utils.use_instead("get_group_contents")
 
-    return get_group_contents(objectslist, walls, addgroups, spaces, noarchchild)
+    return get_group_contents(objectslist, addgroups)
 
 
 def get_movable_children(objectslist, recursive=True, _donelist=[]):
@@ -275,7 +192,7 @@ def get_movable_children(objectslist, recursive=True, _donelist=[]):
 
     Builds a list of objects with all child objects (`obj.OutList`)
     that have their `MoveWithHost` attribute set to `True`.
-    This function is mostly useful for Arch Workbench objects.
+    This function is useful for scripted objects with hosted children.
 
     Parameters
     ----------
@@ -313,9 +230,7 @@ def get_movable_children(objectslist, recursive=True, _donelist=[]):
             "App::Part",
             "PartDesign::Body",
             "Clone",
-            "SectionPlane",
             "Facebinder",
-            "BuildingPart",
             "App::Link",
         ):
             children = obj.OutList
@@ -323,7 +238,6 @@ def get_movable_children(objectslist, recursive=True, _donelist=[]):
                 hasattr(obj, "Proxy")
                 and obj.Proxy
                 and hasattr(obj.Proxy, "getSiblings")
-                and utils.get_type(obj) != "Window"
             ):
                 # children.extend(obj.Proxy.getSiblings(obj))
                 pass

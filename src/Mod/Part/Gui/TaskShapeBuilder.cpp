@@ -23,6 +23,9 @@
  ***************************************************************************/
 
 
+#include <algorithm>
+#include <exception>
+
 #include <QButtonGroup>
 #include <QMessageBox>
 #include <QTextStream>
@@ -46,6 +49,8 @@
 #include <Mod/Part/App/PartFeature.h>
 
 #include "TaskShapeBuilder.h"
+#include "ModelingSelection.h"
+#include "TaskResultValidation.h"
 #include "ui_TaskShapeBuilder.h"
 #include "BoxSelection.h"
 
@@ -102,6 +107,57 @@ public:
     QButtonGroup bg;
     ShapeSelection* gate;
     BoxSelection selection;
+    std::vector<const App::DocumentObject*> exactOperands;
+    App::DocumentObject* exactResult {nullptr};
+
+    bool createExactResult(
+        App::Document& document,
+        const char* baseName,
+        const QString& shapeExpression
+    )
+    {
+        exactResult = nullptr;
+        const std::string resultName =
+            document.getUniqueObjectName(baseName);
+        const QString factory = QStringLiteral(
+                                    "App.getDocument('%1').addObject("
+                                    "'Part::Feature','%2')"
+                                )
+                                    .arg(
+                                        QString::fromLatin1(
+                                            document.getName()
+                                        ),
+                                        QString::fromStdString(resultName)
+                                    );
+        auto* result = Gui::Command::runDocumentObjectCommand(
+            Gui::Command::Doc,
+            document,
+            factory.toUtf8(),
+            Part::Feature::getClassTypeId()
+        );
+        FCMD_OBJ_CMD(
+            result,
+            "Shape = " << shapeExpression.toStdString()
+        );
+        exactResult = result;
+        return true;
+    }
+
+    void captureExactOperands(
+        const std::vector<Gui::SelectionObject>& selections
+    )
+    {
+        exactOperands.clear();
+        for (const auto& selection : selections) {
+            auto* object = selection.getObject();
+            if (object
+                && std::ranges::find(exactOperands, object)
+                    == exactOperands.end()) {
+                exactOperands.push_back(object);
+            }
+        }
+    }
+
     Private()
     {
         Gui::Command::runCommand(Gui::Command::App, "from FreeCAD import Base");
@@ -116,6 +172,7 @@ ShapeBuilderWidget::ShapeBuilderWidget(QWidget* parent)
     : d(new Private())
 {
     Q_UNUSED(parent);
+    createdResults.reserve(1);
     d->ui.setupUi(this);
     d->ui.label->setText(QString());
     d->bg.addButton(d->ui.radioButtonEdgeFromVertex, 0);
@@ -180,31 +237,78 @@ void ShapeBuilderWidget::onCreateButtonClicked()
     if (!doc) {
         return;
     }
+    auto* appDocument = doc->getDocument();
+    d->exactOperands.clear();
+    d->exactResult = nullptr;
+    createdResults.clear();
+
+    static constexpr const char* transactionNames[] = {
+        QT_TRANSLATE_NOOP("Command", "Edge"),
+        QT_TRANSLATE_NOOP("Command", "Wire"),
+        QT_TRANSLATE_NOOP("Command", "Face"),
+        QT_TRANSLATE_NOOP("Command", "Face"),
+        QT_TRANSLATE_NOOP("Command", "Shell"),
+        QT_TRANSLATE_NOOP("Command", "Solid"),
+    };
+    if (mode < 0 || mode >= 6) {
+        return;
+    }
 
     try {
+        ModelingTaskAttempt attempt(*appDocument, transactionNames[mode]);
+
+        bool created = false;
         if (mode == 0) {
-            createEdgeFromVertex();
+            created = createEdgeFromVertex();
         }
         else if (mode == 1) {
-            createWireFromEdge();
+            created = createWireFromEdge();
         }
         else if (mode == 2) {
-            createFaceFromVertex();
+            created = createFaceFromVertex();
         }
         else if (mode == 3) {
-            createFaceFromEdge();
+            created = createFaceFromEdge();
         }
         else if (mode == 4) {
-            createShellFromFace();
+            created = createShellFromFace();
         }
         else if (mode == 5) {
-            createSolidFromShell();
+            created = createSolidFromShell();
         }
-        doc->getDocument()->recompute();
+        if (!created) {
+            return;
+        }
+
+        auto* result = d->exactResult;
+        if (!result || result->getDocument() != appDocument
+            || !appDocument->containsObject(result)
+            || appDocument->getObjectByID(result->getID()) != result) {
+            throw Base::RuntimeError(
+                "Shape Builder did not return its exact result"
+            );
+        }
+        attempt.trackCreatedObject(*result);
+        attempt.markResultAsDesignDefinition(*result);
+        appDocument->recompute();
+        TaskResultValidation::validatePartResult(result);
+
+        attempt.commit();
+        createdResults.push_back(result);
+        Q_EMIT durableResultCreated();
         Gui::Selection().clearSelection();
     }
     catch (const Base::Exception& e) {
+        createdResults.clear();
         Base::Console().error("%s\n", e.what());
+    }
+    catch (const std::exception& e) {
+        createdResults.clear();
+        Base::Console().error("Shape Builder failed: %s\n", e.what());
+    }
+    catch (...) {
+        createdResults.clear();
+        Base::Console().error("Shape Builder failed with an unknown error\n");
     }
 }
 
@@ -225,16 +329,17 @@ void ShapeBuilderWidget::onSelectButtonClicked()
     }
 }
 
-void ShapeBuilderWidget::createEdgeFromVertex()
+bool ShapeBuilderWidget::createEdgeFromVertex()
 {
     Gui::SelectionFilter vertexFilter("SELECT Part::Feature SUBELEMENT Vertex COUNT 2");
     bool matchVertex = vertexFilter.match();
     if (!matchVertex) {
         QMessageBox::critical(this, tr("Wrong Selection"), tr("Select two vertices"));
-        return;
+        return false;
     }
 
-    std::vector<Gui::SelectionObject> sel = vertexFilter.Result[0];
+    auto sel = PartGui::resolveModelingSelections(vertexFilter.Result[0]);
+    d->captureExactOperands(sel);
     std::vector<QString> elements;
     std::vector<Gui::SelectionObject>::iterator it;
     std::vector<std::string>::const_iterator jt;
@@ -242,7 +347,10 @@ void ShapeBuilderWidget::createEdgeFromVertex()
         for (jt = it->getSubNames().begin(); jt != it->getSubNames().end(); ++jt) {
             QString line;
             QTextStream str(&line);
-            str << "App.ActiveDocument." << it->getFeatName() << ".Shape." << jt->c_str() << ".Point";
+            str << QString::fromStdString(
+                       Gui::Command::getObjectCmd(it->getObject())
+                   )
+                << ".Shape." << jt->c_str() << ".Point";
             elements.push_back(line);
         }
     }
@@ -250,39 +358,30 @@ void ShapeBuilderWidget::createEdgeFromVertex()
     // should actually never happen
     if (elements.size() != 2) {
         QMessageBox::critical(this, tr("Wrong Selection"), tr("Select two vertices"));
-        return;
+        return false;
     }
 
-    QString cmd;
-    cmd = QStringLiteral(
-              "_=Part.makeLine(%1, %2)\n"
-              "if _.isNull(): raise RuntimeError('Failed to create edge')\n"
-              "App.ActiveDocument.addObject('Part::Feature','Edge').Shape=_\n"
-              "del _\n"
-    )
-              .arg(elements[0], elements[1]);
-
-    try {
-        Gui::Application::Instance->activeDocument()->openCommand(QT_TRANSLATE_NOOP("Command", "Edge"));
-        Gui::Command::runCommand(Gui::Command::App, cmd.toLatin1());
-        Gui::Application::Instance->activeDocument()->commitCommand();
-    }
-    catch (const Base::Exception&) {
-        Gui::Application::Instance->activeDocument()->abortCommand();
-        throw;
-    }
+    auto* document = App::GetApplication().getActiveDocument();
+    return document
+        && d->createExactResult(
+            *document,
+            "Edge",
+            QStringLiteral("Part.makeLine(%1, %2)")
+                .arg(elements[0], elements[1])
+        );
 }
 
-void ShapeBuilderWidget::createWireFromEdge()
+bool ShapeBuilderWidget::createWireFromEdge()
 {
     Gui::SelectionFilter edgeFilter("SELECT Part::Feature SUBELEMENT Edge COUNT 1..");
     bool matchEdge = edgeFilter.match();
     if (!matchEdge) {
         QMessageBox::critical(this, tr("Wrong Selection"), tr("Select at least 1 edge"));
-        return;
+        return false;
     }
 
-    std::vector<Gui::SelectionObject> sel = edgeFilter.Result[0];
+    auto sel = PartGui::resolveModelingSelections(edgeFilter.Result[0]);
+    d->captureExactOperands(sel);
     std::vector<Gui::SelectionObject>::iterator it;
     std::vector<std::string>::const_iterator jt;
 
@@ -291,40 +390,35 @@ void ShapeBuilderWidget::createWireFromEdge()
     str << "[";
     for (it = sel.begin(); it != sel.end(); ++it) {
         for (jt = it->getSubNames().begin(); jt != it->getSubNames().end(); ++jt) {
-            str << "App.ActiveDocument." << it->getFeatName() << ".Shape." << jt->c_str() << ", ";
+            str << QString::fromStdString(
+                       Gui::Command::getObjectCmd(it->getObject())
+                   )
+                << ".Shape." << jt->c_str() << ", ";
         }
     }
     str << "]";
 
-    QString cmd;
-    cmd = QStringLiteral(
-              "_=Part.Wire(Part.__sortEdges__(%1))\n"
-              "if _.isNull(): raise RuntimeError('Failed to create a wire')\n"
-              "App.ActiveDocument.addObject('Part::Feature','Wire').Shape=_\n"
-              "del _\n"
-    )
-              .arg(list);
-    try {
-        Gui::Application::Instance->activeDocument()->openCommand(QT_TRANSLATE_NOOP("Command", "Wire"));
-        Gui::Command::runCommand(Gui::Command::App, cmd.toLatin1());
-        Gui::Application::Instance->activeDocument()->commitCommand();
-    }
-    catch (const Base::Exception&) {
-        Gui::Application::Instance->activeDocument()->abortCommand();
-        throw;
-    }
+    auto* document = App::GetApplication().getActiveDocument();
+    return document
+        && d->createExactResult(
+            *document,
+            "Wire",
+            QStringLiteral("Part.Wire(Part.__sortEdges__(%1))")
+                .arg(list)
+        );
 }
 
-void ShapeBuilderWidget::createFaceFromVertex()
+bool ShapeBuilderWidget::createFaceFromVertex()
 {
     Gui::SelectionFilter vertexFilter("SELECT Part::Feature SUBELEMENT Vertex COUNT 3..");
     bool matchVertex = vertexFilter.match();
     if (!matchVertex) {
         QMessageBox::critical(this, tr("Wrong Selection"), tr("Select three or more vertices"));
-        return;
+        return false;
     }
 
-    std::vector<Gui::SelectionObject> sel = vertexFilter.Result[0];
+    auto sel = PartGui::resolveModelingSelections(vertexFilter.Result[0]);
+    d->captureExactOperands(sel);
     std::vector<Gui::SelectionObject>::iterator it;
     std::vector<std::string>::const_iterator jt;
 
@@ -333,53 +427,48 @@ void ShapeBuilderWidget::createFaceFromVertex()
     str << "[";
     for (it = sel.begin(); it != sel.end(); ++it) {
         for (jt = it->getSubNames().begin(); jt != it->getSubNames().end(); ++jt) {
-            str << "App.ActiveDocument." << it->getFeatName() << ".Shape." << jt->c_str()
+            str << QString::fromStdString(
+                       Gui::Command::getObjectCmd(it->getObject())
+                   )
+                << ".Shape." << jt->c_str()
                 << ".Point, ";
         }
     }
     str << "]";
 
-    QString cmd;
+    QString shapeExpression;
     if (d->ui.checkPlanar->isChecked()) {
-        cmd = QStringLiteral(
-                  "_=Part.Face(Part.makePolygon(%1, True))\n"
-                  "if _.isNull(): raise RuntimeError('Failed to create face')\n"
-                  "App.ActiveDocument.addObject('Part::Feature','Face').Shape=_\n"
-                  "del _\n"
-        )
-                  .arg(list);
+        shapeExpression =
+            QStringLiteral("Part.Face(Part.makePolygon(%1, True))")
+                .arg(list);
     }
     else {
-        cmd = QStringLiteral(
-                  "_=Part.makeFilledFace(Part.makePolygon(%1, True).Edges)\n"
-                  "if _.isNull(): raise RuntimeError('Failed to create face')\n"
-                  "App.ActiveDocument.addObject('Part::Feature','Face').Shape=_\n"
-                  "del _\n"
-        )
-                  .arg(list);
+        shapeExpression = QStringLiteral(
+                              "Part.makeFilledFace("
+                              "Part.makePolygon(%1, True).Edges)"
+                          )
+                              .arg(list);
     }
-
-    try {
-        Gui::Application::Instance->activeDocument()->openCommand(QT_TRANSLATE_NOOP("Command", "Face"));
-        Gui::Command::runCommand(Gui::Command::App, cmd.toLatin1());
-        Gui::Application::Instance->activeDocument()->commitCommand();
-    }
-    catch (const Base::Exception&) {
-        Gui::Application::Instance->activeDocument()->abortCommand();
-        throw;
-    }
+    auto* document = App::GetApplication().getActiveDocument();
+    return document
+        && d->createExactResult(
+            *document,
+            "Face",
+            shapeExpression
+        );
 }
 
-void ShapeBuilderWidget::createFaceFromEdge()
+bool ShapeBuilderWidget::createFaceFromEdge()
 {
     Gui::SelectionFilter edgeFilter("SELECT Part::Feature SUBELEMENT Edge COUNT 1..");
     bool matchEdge = edgeFilter.match();
     if (!matchEdge) {
         QMessageBox::critical(this, tr("Wrong Selection"), tr("Select at least 1 edge"));
-        return;
+        return false;
     }
 
-    std::vector<Gui::SelectionObject> sel = edgeFilter.Result[0];
+    auto sel = PartGui::resolveModelingSelections(edgeFilter.Result[0]);
+    d->captureExactOperands(sel);
     std::vector<Gui::SelectionObject>::iterator it;
     std::vector<std::string>::const_iterator jt;
 
@@ -388,52 +477,49 @@ void ShapeBuilderWidget::createFaceFromEdge()
     str << "[";
     for (it = sel.begin(); it != sel.end(); ++it) {
         for (jt = it->getSubNames().begin(); jt != it->getSubNames().end(); ++jt) {
-            str << "App.ActiveDocument." << it->getFeatName() << ".Shape." << jt->c_str() << ", ";
+            str << QString::fromStdString(
+                       Gui::Command::getObjectCmd(it->getObject())
+                   )
+                << ".Shape." << jt->c_str() << ", ";
         }
     }
     str << "]";
 
-    QString cmd;
+    QString shapeExpression;
     if (d->ui.checkPlanar->isChecked()) {
-        cmd = QStringLiteral(
-                  "_=Part.Face(Part.Wire(Part.__sortEdges__(%1)))\n"
-                  "if _.isNull(): raise RuntimeError('Failed to create face')\n"
-                  "App.ActiveDocument.addObject('Part::Feature','Face').Shape=_\n"
-                  "del _\n"
-        )
-                  .arg(list);
+        shapeExpression = QStringLiteral(
+                              "Part.Face("
+                              "Part.Wire(Part.__sortEdges__(%1)))"
+                          )
+                              .arg(list);
     }
     else {
-        cmd = QStringLiteral(
-                  "_=Part.makeFilledFace(Part.__sortEdges__(%1))\n"
-                  "if _.isNull(): raise RuntimeError('Failed to create face')\n"
-                  "App.ActiveDocument.addObject('Part::Feature','Face').Shape=_\n"
-                  "del _\n"
-        )
-                  .arg(list);
+        shapeExpression =
+            QStringLiteral(
+                "Part.makeFilledFace(Part.__sortEdges__(%1))"
+            )
+                .arg(list);
     }
-
-    try {
-        Gui::Application::Instance->activeDocument()->openCommand(QT_TRANSLATE_NOOP("Command", "Face"));
-        Gui::Command::runCommand(Gui::Command::App, cmd.toLatin1());
-        Gui::Application::Instance->activeDocument()->commitCommand();
-    }
-    catch (const Base::Exception&) {
-        Gui::Application::Instance->activeDocument()->abortCommand();
-        throw;
-    }
+    auto* document = App::GetApplication().getActiveDocument();
+    return document
+        && d->createExactResult(
+            *document,
+            "Face",
+            shapeExpression
+        );
 }
 
-void ShapeBuilderWidget::createShellFromFace()
+bool ShapeBuilderWidget::createShellFromFace()
 {
     Gui::SelectionFilter faceFilter("SELECT Part::Feature SUBELEMENT Face COUNT 2..");
     bool matchFace = faceFilter.match();
     if (!matchFace) {
         QMessageBox::critical(this, tr("Wrong Selection"), tr("Select at least 2 faces"));
-        return;
+        return false;
     }
 
-    std::vector<Gui::SelectionObject> sel = faceFilter.Result[0];
+    auto sel = PartGui::resolveModelingSelections(faceFilter.Result[0]);
+    d->captureExactOperands(sel);
 
     QString list;
     QTextStream str(&list);
@@ -444,108 +530,92 @@ void ShapeBuilderWidget::createShellFromFace()
         }
         str << "[]";
         for (auto it : obj) {
-            str << "+ App.ActiveDocument." << it->getNameInDocument() << ".Shape.Faces";
+            str << "+ "
+                << QString::fromStdString(
+                       Gui::Command::getObjectCmd(it)
+                   )
+                << ".Shape.Faces";
         }
     }
     else {
         str << "[";
         for (const auto& it : sel) {
             for (const auto& jt : it.getSubNames()) {
-                str << "App.ActiveDocument." << it.getFeatName() << ".Shape." << jt.c_str() << ", ";
+                str << QString::fromStdString(
+                           Gui::Command::getObjectCmd(it.getObject())
+                       )
+                    << ".Shape." << jt.c_str() << ", ";
             }
         }
         str << "]";
     }
 
-    QString cmd;
+    QString shapeExpression;
     if (d->ui.checkRefine->isEnabled() && d->ui.checkRefine->isChecked()) {
-        cmd = QStringLiteral(
-                  "_=Part.Shell(%1)\n"
-                  "if _.isNull(): raise RuntimeError('Failed to create shell')\n"
-                  "App.ActiveDocument.addObject('Part::Feature','Shell').Shape=_.removeSplitter()\n"
-                  "del _\n"
-        )
-                  .arg(list);
+        shapeExpression =
+            QStringLiteral("Part.Shell(%1).removeSplitter()")
+                .arg(list);
     }
     else {
-        cmd = QStringLiteral(
-                  "_=Part.Shell(%1)\n"
-                  "if _.isNull(): raise RuntimeError('Failed to create shell')\n"
-                  "App.ActiveDocument.addObject('Part::Feature','Shell').Shape=_\n"
-                  "del _\n"
-        )
-                  .arg(list);
+        shapeExpression = QStringLiteral("Part.Shell(%1)").arg(list);
     }
-
-    try {
-        Gui::Application::Instance->activeDocument()->openCommand(
-            QT_TRANSLATE_NOOP("Command", "Shell")
+    auto* document = App::GetApplication().getActiveDocument();
+    return document
+        && d->createExactResult(
+            *document,
+            "Shell",
+            shapeExpression
         );
-        Gui::Command::runCommand(Gui::Command::App, cmd.toLatin1());
-        Gui::Application::Instance->activeDocument()->commitCommand();
-    }
-    catch (const Base::Exception&) {
-        Gui::Application::Instance->activeDocument()->abortCommand();
-        throw;
-    }
 }
 
-void ShapeBuilderWidget::createSolidFromShell()
+bool ShapeBuilderWidget::createSolidFromShell()
 {
     Gui::SelectionFilter partFilter("SELECT Part::Feature COUNT 1");
     bool matchPart = partFilter.match();
     if (!matchPart) {
         QMessageBox::critical(this, tr("Wrong Selection"), tr("Select only 1 shape object"));
-        return;
+        return false;
     }
 
     QString line;
     QTextStream str(&line);
 
-    std::vector<Gui::SelectionObject> sel = partFilter.Result[0];
+    auto sel = PartGui::resolveModelingSelections(partFilter.Result[0]);
+    d->captureExactOperands(sel);
     std::vector<Gui::SelectionObject>::iterator it;
     for (it = sel.begin(); it != sel.end(); ++it) {
-        str << "App.ActiveDocument." << it->getFeatName() << ".Shape";
+        str << QString::fromStdString(
+                   Gui::Command::getObjectCmd(it->getObject())
+               )
+            << ".Shape";
         break;
     }
 
-    QString cmd;
-    if (d->ui.checkRefine->isEnabled() && d->ui.checkRefine->isChecked()) {
-        cmd = QStringLiteral(
-                  "shell=%1\n"
-                  "if shell.ShapeType != 'Shell': raise RuntimeError('Part object is not a "
-                  "shell')\n"
-                  "_=Part.Solid(shell)\n"
-                  "if _.isNull(): raise RuntimeError('Failed to create solid')\n"
-                  "App.ActiveDocument.addObject('Part::Feature','Solid').Shape=_.removeSplitter()\n"
-                  "del _\n"
+    Gui::Command::runCommand(
+        Gui::Command::App,
+        QStringLiteral(
+            "if %1.ShapeType != 'Shell': "
+            "raise RuntimeError('Part object is not a shell')"
         )
-                  .arg(line);
+            .arg(line)
+            .toLatin1()
+    );
+    QString shapeExpression;
+    if (d->ui.checkRefine->isEnabled() && d->ui.checkRefine->isChecked()) {
+        shapeExpression =
+            QStringLiteral("Part.Solid(%1).removeSplitter()")
+                .arg(line);
     }
     else {
-        cmd = QStringLiteral(
-                  "shell=%1\n"
-                  "if shell.ShapeType != 'Shell': raise RuntimeError('Part object is not a "
-                  "shell')\n"
-                  "_=Part.Solid(shell)\n"
-                  "if _.isNull(): raise RuntimeError('Failed to create solid')\n"
-                  "App.ActiveDocument.addObject('Part::Feature','Solid').Shape=_\n"
-                  "del _\n"
-        )
-                  .arg(line);
+        shapeExpression = QStringLiteral("Part.Solid(%1)").arg(line);
     }
-
-    try {
-        Gui::Application::Instance->activeDocument()->openCommand(
-            QT_TRANSLATE_NOOP("Command", "Solid")
+    auto* document = App::GetApplication().getActiveDocument();
+    return document
+        && d->createExactResult(
+            *document,
+            "Solid",
+            shapeExpression
         );
-        Gui::Command::runCommand(Gui::Command::App, cmd.toLatin1());
-        Gui::Application::Instance->activeDocument()->commitCommand();
-    }
-    catch (const Base::Exception&) {
-        Gui::Application::Instance->activeDocument()->abortCommand();
-        throw;
-    }
 }
 
 void ShapeBuilderWidget::switchMode(int mode)
@@ -624,6 +694,14 @@ void ShapeBuilderWidget::changeEvent(QEvent* e)
 TaskShapeBuilder::TaskShapeBuilder()
 {
     widget = new ShapeBuilderWidget();
+    connect(
+        widget,
+        &ShapeBuilderWidget::durableResultCreated,
+        this,
+        [this]() {
+            markCommandInteractionStateDurable(widget->lastCreatedResults());
+        }
+    );
     addTaskBox(Gui::BitmapFactory().pixmap("Part_Shapebuilder"), widget);
 }
 

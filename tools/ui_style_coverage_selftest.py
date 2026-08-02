@@ -42,11 +42,9 @@ def build_config(
 ) -> Path:
     config = {
         "required_workbenches": [
-            "PartWorkbench",
             "PartDesignWorkbench",
             "SketcherWorkbench",
             "DraftWorkbench",
-            "BIMWorkbench",
             "TechDrawWorkbench",
             "FemWorkbench",
             "CAMWorkbench",
@@ -57,7 +55,6 @@ def build_config(
             "partdesign",
             "sketcher",
             "draft",
-            "bim",
             "techdraw",
             "fem",
             "cam",
@@ -72,7 +69,7 @@ def build_config(
         "required_task_coverage": [
             "partdesign-task",
             "sketcher-edit",
-            "draft-bim-panel",
+            "draft-panel",
             "techdraw-page-view",
             "fem-solver-material",
             "cam-setup-tool",
@@ -154,7 +151,7 @@ def run_selftest(summary_path: Path, results_dir: Path, output: Path | None) -> 
         fixture_config["scenes"] = list(fixture_config["scenes"]) + [
             {
                 "name": "selftest-missing-fixture",
-                "workbench": "PartWorkbench",
+                "workbench": "PartDesignWorkbench",
                 "file": "data/tests/Crank.fcstd",
             }
         ]
@@ -532,7 +529,7 @@ def run_selftest(summary_path: Path, results_dir: Path, output: Path | None) -> 
         invalid_task_config["task_scenes"] = list(invalid_task_config["task_scenes"]) + [
             weak_task,
             {"name": "selftest-task-missing-workbench", "edit_object": "Sketch"},
-            {"name": "selftest-task-missing-file", "workbench": "PartWorkbench", "file": "missing.FCStd", "edit_object": "Box"},
+            {"name": "selftest-task-missing-file", "workbench": "PartDesignWorkbench", "file": "missing.FCStd", "edit_object": "Box"},
         ]
         invalid_task_path = temp_dir / "invalid-tasks.json"
         write_json(invalid_task_path, invalid_task_config)

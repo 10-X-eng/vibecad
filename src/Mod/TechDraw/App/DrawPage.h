@@ -23,6 +23,7 @@
 #pragma once
 
 #include <fastsignals/signal.h>
+#include <fastsignals/connection.h>
 
 #include <App/DocumentObject.h>
 #include <App/PropertyStandard.h>
@@ -33,6 +34,8 @@
 
 namespace TechDraw
 {
+
+class DrawTemplate;
 
 class TechDrawExport DrawPage: public App::DocumentObject
 {
@@ -47,7 +50,7 @@ public:
     App::PropertyBool KeepUpdated;
 
     App::PropertyFloatConstraint Scale;
-    App::PropertyEnumeration ProjectionType;// First or Third angle
+    App::PropertyEnumeration ProjectionType;  // First or Third angle
 
     App::PropertyInteger NextBalloonIndex;
 
@@ -56,22 +59,29 @@ public:
     /// recalculate the Feature
     App::DocumentObjectExecReturn* execute() override;
     //@}
-    void handleChangedPropertyType(Base::XMLReader& reader, const char* TypeName,
-                                   App::Property* prop) override;
+    void handleChangedPropertyType(
+        Base::XMLReader& reader,
+        const char* TypeName,
+        App::Property* prop
+    ) override;
 
     int addView(App::DocumentObject* docObj, bool setPosition = true);
     /// Add validated precomputed state without positioning, fit checks, or scale evaluation.
     int addPrecomputedView(App::DocumentObject* docObj);
     int removeView(App::DocumentObject* docObj);
+    bool isTimelineStructuralChild(const App::DocumentObject* object) const override;
     short mustExecute() const override;
     fastsignals::signal<void(const DrawPage*)> signalGuiPaint;
 
     /// returns the type name of the ViewProvider
-    const char* getViewProviderName() const override { return "TechDrawGui::ViewProviderPage"; }
+    const char* getViewProviderName() const override
+    {
+        return "TechDrawGui::ViewProviderPage";
+    }
 
     PyObject* getPyObject() override;
 
-    //App::DocumentObjectExecReturn * recompute(void);
+    // App::DocumentObjectExecReturn * recompute(void);
 
     /// Check whether we've got a valid template
     /*!
@@ -90,18 +100,33 @@ public:
     double getPageHeight() const;
     const char* getPageOrientation() const;
     int getOrientation() const;
-    bool isUnsetting() { return nowUnsetting; }
+    bool isUnsetting()
+    {
+        return nowUnsetting;
+    }
     void requestPaint();
     std::vector<App::DocumentObject*> getViews() const;
     std::vector<App::DocumentObject*> getAllViews() const;
+    /// Direct page views which are active at the current document timeline marker.
+    std::vector<App::DocumentObject*> getActiveViews() const;
+    /// Active direct and collection-owned views used for computation and rendering.
+    std::vector<App::DocumentObject*> getAllActiveViews() const;
+    /// The page template when it is active at the current timeline marker.
+    DrawTemplate* getActiveTemplate() const;
 
     int getNextBalloonIndex();
 
     void updateAllViews();
     static bool GlobalUpdateDrawings();
     static bool AllowPageOverride();
-    void forceRedraw(bool b) { m_forceRedraw = b; }
-    bool forceRedraw() { return m_forceRedraw; }
+    void forceRedraw(bool b)
+    {
+        m_forceRedraw = b;
+    }
+    bool forceRedraw()
+    {
+        return m_forceRedraw;
+    }
     void redrawCommand();
 
     bool canUpdate() const;
@@ -110,13 +135,15 @@ public:
 
     void translateLabel(std::string context, std::string baseName, std::string uniqueName);
 
-    enum class PageProjectionConvention {
+    enum class PageProjectionConvention
+    {
         FirstAngle = 0,
         ThirdAngle
     };
 
 
 protected:
+    void onSettingDocument() override;
     void onBeforeChange(const App::Property* prop) override;
     void onChanged(const App::Property* prop) override;
     void onDocumentRestored() override;
@@ -125,6 +152,7 @@ protected:
     bool m_forceRedraw;
 
 private:
+    fastsignals::scoped_connection connectTimelineChanged;
     int addViewImpl(App::DocumentObject* docObj, bool setPosition, bool evaluateFit);
     static const char* ProjectionTypeEnums[];
     bool nowUnsetting;
@@ -133,4 +161,4 @@ private:
 
 using DrawPagePython = App::FeaturePythonT<DrawPage>;
 
-}//namespace TechDraw
+}  // namespace TechDraw

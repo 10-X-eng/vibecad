@@ -32,10 +32,9 @@ __url__ = "https://www.freecad.org"
 from PySide import QtCore, QtGui
 
 import FreeCAD
+import FreeCADGui
 
 from . import base_femtaskpanel
-
-translate = FreeCAD.Qt.translate
 
 
 class _BasePostTaskPanel(base_femtaskpanel._BaseTaskPanel):
@@ -60,13 +59,28 @@ class _BasePostTaskPanel(base_femtaskpanel._BaseTaskPanel):
     def clicked(self, button):
         # apply button hit?
         if button == QtGui.QDialogButtonBox.Apply:
-            self.obj.Document.recompute()
+            document, _, _ = self._resolve_editor()
+            document.recompute()
 
     def open(self):
-        # open a new transaction if non is open
-        if FreeCAD.ActiveDocument.getBookedTransactionID() == 0:
-            FreeCAD.ActiveDocument.openTransaction(
-                translate("FEM", "Edit {}").format(self.obj.Label)
+        # Normal tree, History, and ribbon entry points open and transfer the
+        # transaction before the panel is shown. A task panel must never
+        # manufacture an unowned transaction after TaskView has already
+        # captured the command boundary.
+        document, gui_document, _ = self._resolve_editor()
+        transaction_id = int(document.getBookedTransactionID())
+        owns_transaction = getattr(
+            FreeCADGui.Control,
+            "ownsCommandTransaction",
+            None,
+        )
+        if (
+            transaction_id
+            and owns_transaction is not None
+            and not owns_transaction(gui_document, transaction_id)
+        ):
+            raise RuntimeError(
+                "The FEM post editor does not own the current transaction"
             )
 
     # Helper functions

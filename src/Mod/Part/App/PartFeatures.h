@@ -168,7 +168,7 @@ private:
     static const char* JoinEnums[];
 };
 
-class Refine: public Part::Feature
+class PartExport Refine: public Part::Feature
 {
     PROPERTY_HEADER_WITH_OVERRIDE(Part::Refine);
 
@@ -188,7 +188,7 @@ public:
     //@}
 };
 
-class Reverse: public Part::Feature
+class PartExport Reverse: public Part::Feature
 {
     PROPERTY_HEADER_WITH_OVERRIDE(Part::Reverse);
 

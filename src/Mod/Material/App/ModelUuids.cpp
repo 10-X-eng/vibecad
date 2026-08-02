@@ -83,11 +83,6 @@ const QString ModelUUIDs::ModelUUID_Thermal_Default =
 const QString ModelUUIDs::ModelUUID_Electromagnetic_Default =
     QStringLiteral("b2eb5f48-74b3-4193-9fbb-948674f427f3");
 
-const QString ModelUUIDs::ModelUUID_Architectural_Default =
-    QStringLiteral("32439c3b-262f-4b7b-99a8-f7f44e5894c8");
-const QString ModelUUIDs::ModelUUID_Rendering_Architectural =
-    QStringLiteral("27e48ac9-54e1-4a1f-aa49-d5d690242705");
-
 const QString ModelUUIDs::ModelUUID_Costs_Default =
     QStringLiteral("881df808-8726-4c2e-be38-688bb6cce466");
 

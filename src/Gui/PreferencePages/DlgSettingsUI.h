@@ -28,9 +28,6 @@
 
 namespace Gui
 {
-
-class PrefComboBox;
-
 namespace Dialog
 {
 class Ui_DlgSettingsUI;
@@ -50,20 +47,8 @@ public:
     void saveSettings() override;
     void loadSettings() override;
 
-    void loadStyleSheet();
-
 protected:
     void changeEvent(QEvent* e) override;
-
-    void populateStylesheets(
-        const char* key,
-        const char* path,
-        PrefComboBox* combo,
-        const char* def,
-        QStringList filter = QStringList()
-    );
-
-    void openThemeEditor();
 
 private:
     std::unique_ptr<Ui_DlgSettingsUI> ui;

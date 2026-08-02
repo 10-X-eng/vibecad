@@ -60,7 +60,7 @@ struct MeasureExport MassPropertiesData
     Base::Vector3d principalAxis2 {0.0, 0.0, 0.0};
     Base::Vector3d principalAxis3 {0.0, 0.0, 0.0};
 
-    double axisInertia;
+    double axisInertia {0.0};
 };
 
 struct MeasureExport MassPropertiesInput
@@ -68,6 +68,9 @@ struct MeasureExport MassPropertiesInput
     App::DocumentObject* object = nullptr;
     TopoDS_Shape shape;
     Base::Placement placement;
+    App::DocumentObject* source = nullptr;
+    std::string sourceSubName;
+    Base::Placement sourceParentPlacement;
 };
 
 enum class MassPropertiesMode

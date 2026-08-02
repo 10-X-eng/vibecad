@@ -2402,7 +2402,7 @@ These are often used for hatches and dimensions</source>
       <location filename="../ui/preferences-dxf.ui" line="360"/>
       <source>If checked, the boundaries of hatch objects will be imported as closed wires.
 (Legacy importer only)</source>
-      <translation>Si está marcado, los límites de los objetos colgantes se importarán como alambres cerrados 
+      <translation>Si está marcado, los límites de los objetos colgantes se importarán como alambres cerrados
 (solo importador de legado).</translation>
     </message>
     <message>
@@ -7017,9 +7017,9 @@ establecer verdadero para fusión o falso para compuesto</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>Ángulo final del arco (para un círculo completo, 
+      <translation>Ángulo final del arco (para un círculo completo,
                 darle el mismo valor de primer ángulo)</translation>
     </message>
     <message>
@@ -7201,22 +7201,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 Esta propiedad es de solo lectura, así que el texto definitivo depende de 'Tipo de Etiqueta',
 y lo definido en 'Objetivo'.
 El 'Texto personalizado' se muestra sólo si 'Tipo de etiqueta' está ajustado en 'Personalizar'.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>Tipo de información que muestra esta etiqueta.
-Si se selecciona «Personalizado», se utilizará el contenido de «Texto personalizado».
-Para otros tipos, la cadena se calculará automáticamente a partir del objeto definido en «Destino».
-«Etiqueta» y «Material» solo funcionan con objetos que poseen estas propiedades, como los objetos BIM.
-Para 'Posición', 'Longitud' y 'Área', estas propiedades se extraerán del objeto principal en 'Objetivo', o del subelemento 'VérticeN', 'AristaN' o 'CaraN', respectivamente, si se especifica.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7501,11 +7485,6 @@ Esta propiedad es de solo lectura, así que el número depende de los puntos con
       <translation>Mostrar líneas ocultas</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Fusionar muro y objetos de estructura del mismo tipo y material</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Teselar elipses y curvas B-spline en segmentos de línea</translation>
@@ -7607,7 +7586,7 @@ Esta propiedad es de solo lectura, así que el número depende de los puntos con
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
       <translation>Ángulo final del arco elíptico
@@ -8336,11 +8315,6 @@ Sin embargo, un único boceto con trazados desconectados se convierte en varios 
       <source>Auto-Group</source>
       <translation>Agrupación automática</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Agrega nuevos objetos Boceto y BIM a la capa o grupo seleccionado</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8697,11 +8671,6 @@ La dirección de proyección inicial es la opuesta a la dirección de la vista a
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>Ajuste de centro</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Se ajusta al punto central de las caras y los bordes circulares, y al punto de colocación de los proxies del plano de trabajo y las piezas de construcción</translation>
     </message>
   </context>
   <context>

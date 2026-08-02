@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include <App/PropertyStandard.h>
 #include <Mod/Part/App/BodyBase.h>
 #include <Mod/PartDesign/PartDesignGlobal.h>
 
@@ -44,6 +45,9 @@ class PartDesignExport Body: public Part::BodyBase
 
 public:
     App::PropertyBool AllowCompound;
+    App::PropertyUUID VibeCADBodyId;
+    App::PropertyUUID DesignId;
+    App::PropertyString ComponentId;
 
     /// True if this body feature is active or was active when the document was last closed
     // App::PropertyBool IsActive;
@@ -61,6 +65,11 @@ public:
     {
         return "PartDesignGui::ViewProviderBody";
     }
+
+    App::DocumentObject* getModelingState() override;
+    const App::DocumentObject* getModelingState() const override;
+    const App::DocumentObject* getModelingPresentation() const override;
+    bool containsModelingState(const App::DocumentObject* object) const override;
     //@}
 
     /**
@@ -95,11 +104,20 @@ public:
     bool isAfterInsertPoint(App::DocumentObject* feature);
 
     /**
-     * Return true if the given feature is a solid feature allowed in a Body. Currently this is only
-     * valid for features derived from PartDesign::Feature Return false if the given feature is a
-     * Sketch or a Part::Datum feature
+     * Return true if the given feature is a legacy Part Design solid-sequence feature.
+     *
+     * This preserves the historical public contract. New code that needs to identify nodes in the
+     * consolidated Body result sequence must use isResultFeature().
      */
     static bool isSolidFeature(const App::DocumentObject* obj);
+
+    /**
+     * Return true if the object participates in the Body's ordered result sequence.
+     *
+     * This includes Part Design material features and ordinary Part shape results. Sketches,
+     * datums, Body containers, and other support objects are not result features.
+     */
+    static bool isResultFeature(const App::DocumentObject* obj);
 
     /**
      * Return true if the given feature is allowed in a Body. Currently allowed are
@@ -133,19 +151,19 @@ public:
         showTip = enable;
     }
 
-    /**
-     * Return the solid feature before the given feature, or before the Tip feature
-     * That is, sketches and datum features are skipped
-     */
+    /** Return the result feature before the given feature, or before the Tip feature. */
+    App::DocumentObject* getPrevResultFeature(App::DocumentObject* start = nullptr);
+
+    /** Compatibility name for getPrevResultFeature(). */
     App::DocumentObject* getPrevSolidFeature(App::DocumentObject* start = nullptr);
 
-    /**
-     * Return the next solid feature after the given feature, or after the Tip feature
-     * That is, sketches and datum features are skipped
-     */
+    /** Return the next result feature after the given feature, or after the Tip feature. */
+    App::DocumentObject* getNextResultFeature(App::DocumentObject* start = nullptr);
+
+    /** Compatibility name for getNextResultFeature(). */
     App::DocumentObject* getNextSolidFeature(App::DocumentObject* start = nullptr);
 
-    // a body is solid if it has features that are solid according to member isSolidFeature.
+    /// Return true when any Body result contains solid topology.
     bool isSolid();
 
 protected:

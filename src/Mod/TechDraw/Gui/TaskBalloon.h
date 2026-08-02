@@ -27,6 +27,8 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
+
 namespace Gui
 {
 class Document;
@@ -34,6 +36,10 @@ class Document;
 namespace App
 {
 class Document;
+}
+namespace TechDraw
+{
+class DrawViewBalloon;
 }
 
 namespace TechDrawGui
@@ -68,6 +74,9 @@ private Q_SLOTS:
     void onKinkLengthChanged();
 
 private:
+    TechDraw::DrawViewBalloon* resolveBalloon() const;
+    ViewProviderBalloon* resolveViewProvider() const;
+
     std::unique_ptr<Ui_TaskBalloon> ui;
     QGIViewBalloon *m_parent;
     ViewProviderBalloon* m_balloonVP;
@@ -75,6 +84,9 @@ private:
     std::string m_balloonName;
     App::Document* m_appDocument;
     Gui::Document* m_guiDocument;
+    TaskInternal::DocumentIdentity m_documentIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewBalloon>
+        m_balloonIdentity;
 };
 
 class TaskDlgBalloon : public Gui::TaskView::TaskDialog

@@ -161,6 +161,99 @@ def _program_source() -> str:
     )
 
 
+def _assert_projection_timeline_block(document, projection) -> None:
+    timeline = document.getObject("VibeCADTimeline")
+    assert timeline is not None
+    operations = list(timeline.Operations)
+    resources = list(projection.Views)
+    indices = [operations.index(resource) for resource in resources]
+    projection_index = operations.index(projection)
+    assert indices == list(
+        range(projection_index - len(resources), projection_index)
+    )
+    assert all(
+        resource.VibeCADTimelineRole == "resource"
+        and resource.VibeCADTimelineOwner is projection
+        and resource.getTypeIdOfProperty("VibeCADTimelineOwner")
+        == "App::PropertyLinkHidden"
+        for resource in resources
+    )
+    assert projection.VibeCADTimelineRole == "operation"
+
+
+def _assert_page_timeline_block(document, page, template) -> None:
+    timeline = document.getObject("VibeCADTimeline")
+    assert timeline is not None
+    operations = list(timeline.Operations)
+    assert operations.index(template) == operations.index(page) - 1
+    assert page.VibeCADTimelineRole == "operation"
+    assert template.VibeCADTimelineRole == "resource"
+    assert template.VibeCADTimelineOwner is page
+    assert (
+        template.getTypeIdOfProperty("VibeCADTimelineOwner")
+        == "App::PropertyLinkHidden"
+    )
+
+
+def _assert_techdraw_timeline_graph(
+    document,
+    outputs: dict[str, object],
+    source,
+) -> dict[str, object]:
+    assert document.getObject(source.Name) is source
+    projection = outputs["Views"]
+    page = outputs["Sheet"]
+    template = outputs["Template"]
+    _assert_projection_timeline_block(document, projection)
+    _assert_page_timeline_block(document, page, template)
+    timeline = document.getObject("VibeCADTimeline")
+    assert timeline is not None
+    operations = list(timeline.Operations)
+    for name in ("Views", "Width", "Note", "Sheet"):
+        obj = outputs[name]
+        assert obj in operations
+        assert obj.VibeCADTimelineRole == "operation"
+        assert getattr(obj, "VibeCADTimelineOwner", None) is None
+
+    children = list(projection.Views)
+    assert list(projection.Source) == [source]
+    assert all(list(child.Source) == [source] for child in children)
+    assert page.Template is template
+    assert set(page.Views) == {
+        projection,
+        outputs["Width"],
+        outputs["Note"],
+    }
+    dimension_sources = [
+        reference[0] for reference in list(outputs["Width"].References2D)
+    ]
+    assert dimension_sources
+    assert all(target in children for target in dimension_sources)
+    return {
+        "operations": {
+            name: str(outputs[name].Name)
+            for name in ("Views", "Width", "Note", "Sheet")
+        },
+        "projection_resources": [str(child.Name) for child in children],
+        "projection_owners": {
+            str(child.Name): str(child.VibeCADTimelineOwner.Name)
+            for child in children
+        },
+        "page_resource": str(template.Name),
+        "page_owner": str(template.VibeCADTimelineOwner.Name),
+        "projection_sources": [
+            str(item.Name) for item in projection.Source
+        ],
+        "child_sources": {
+            str(child.Name): [str(item.Name) for item in child.Source]
+            for child in children
+        },
+        "dimension_sources": [
+            str(target.Name) for target in dimension_sources
+        ],
+    }
+
+
 def _captured(
     root: Path,
     document,
@@ -225,6 +318,7 @@ def _prepare_execute(
         "vibescript_part_worker.py",
         "vibescript_techdraw_api.py",
         "vibescript_techdraw_worker.py",
+        "vibescript_worker_progress.py",
     }, sorted(staged_names)
     execution = execute_candidate(prepared, cancellation_check=None)
     return prepared, execution
@@ -432,7 +526,21 @@ def _exercise_api() -> None:
 def _exercise_lifecycle() -> None:
     surface = resolve_modeling_surface("TechDrawWorkbench", "vibescript")
     assert surface.available, surface.unavailable_reason
-    assert len(surface.tool_names) == 10
+    assert surface.tool_names == (
+        "conversation.ask_user",
+        "conversation.review_design",
+        "core.capture_view_screenshot",
+        "core.set_view",
+        "vibescript.read_source",
+        "vibescript.read_api",
+        "vibescript.build_program",
+        "vibescript.edit_source",
+        "vibescript.techdraw.create_program",
+        "vibescript.techdraw.set_inputs",
+        "vibescript.techdraw.reconfigure_program",
+        "vibescript.techdraw.delete_program",
+        "techdraw.list_pages",
+    )
     assert not any(name.startswith("native.") for name in surface.tool_names)
     adapter = get_domain_adapter("techdraw")
     assert adapter is not None and adapter.production_ready
@@ -455,10 +563,12 @@ def _exercise_lifecycle() -> None:
         root = Path(raw_root).resolve()
         document = App.newDocument("TechDrawVibeScriptLifecycle")
         try:
+            document.UndoMode = 1
             source = document.addObject("Part::Feature", "SourceSolid")
             source.Label = "Human source solid"
             source.Shape = Part.makeBox(30, 20, 10)
             source_name = str(source.Name)
+            document.commitTransaction()
             service = _Service(root)
             prepared, execution, validated = _prepare_execute_validate(
                 _captured(root, document, source), service
@@ -513,6 +623,12 @@ def _exercise_lifecycle() -> None:
             }
             children = {str(child.Type): child for child in outputs["Views"].Views}
             assert set(children) == {"Front", "Top", "Right"}
+            _assert_projection_timeline_block(document, outputs["Views"])
+            _assert_page_timeline_block(
+                document,
+                outputs["Sheet"],
+                outputs["Template"],
+            )
             assert all(child.isFrozen() for child in children.values())
             assert all(obj.isFrozen() for obj in outputs.values())
             assert outputs["Sheet"].KeepUpdated is False
@@ -564,6 +680,31 @@ def _exercise_lifecycle() -> None:
             stable_children = {
                 str(child.Type): str(child.Name) for child in outputs["Views"].Views
             }
+            created_state = _assert_techdraw_timeline_graph(
+                document,
+                outputs,
+                source,
+            )
+            created_managed_names = {
+                str(obj.Name) for obj in _managed(document, prepared["program_id"])
+            }
+            document.undo()
+            assert not _managed(document, prepared["program_id"])
+            assert document.getObject(source_name) is not None
+            document.redo()
+            outputs = {
+                name: document.getObject(object_name)
+                for name, object_name in stable_names.items()
+            }
+            assert all(outputs.values())
+            assert {
+                str(obj.Name) for obj in _managed(document, prepared["program_id"])
+            } == created_managed_names
+            assert _assert_techdraw_timeline_graph(
+                document,
+                outputs,
+                document.getObject(source_name),
+            ) == created_state
             invalid_reference = "['Edge999']"
             failed_reference, failed_execution = _prepare_execute(
                 _captured(
@@ -574,9 +715,10 @@ def _exercise_lifecycle() -> None:
                     arguments={
                         "program_id": prepared["program_id"],
                         "expected_revision": accepted["working_revision"],
-                        "replacements": [
-                            {"old": "['Edge0']", "new": invalid_reference}
-                        ],
+                        "source": _program_source().replace(
+                            "['Edge0']",
+                            invalid_reference,
+                        ),
                     },
                 ),
                 service,
@@ -617,9 +759,7 @@ def _exercise_lifecycle() -> None:
                         arguments={
                             "program_id": prepared["program_id"],
                             "expected_revision": failed_reference["revision"],
-                            "replacements": [
-                                {"old": invalid_reference, "new": "['Edge0']"}
-                            ],
+                            "source": _program_source(),
                         },
                     ),
                     service,
@@ -662,7 +802,42 @@ def _exercise_lifecycle() -> None:
             assert {
                 str(child.Type): str(child.Name) for child in outputs["Views"].Views
             } == stable_children
+            _assert_projection_timeline_block(document, outputs["Views"])
+            _assert_page_timeline_block(
+                document,
+                outputs["Sheet"],
+                outputs["Template"],
+            )
             assert abs(float(outputs["Views"].X) - 120.0) <= 1.0e-9
+            updated_state = _assert_techdraw_timeline_graph(
+                document,
+                outputs,
+                document.getObject(source_name),
+            )
+            document.undo()
+            outputs = {
+                name: document.getObject(object_name)
+                for name, object_name in stable_names.items()
+            }
+            assert all(outputs.values())
+            assert abs(float(outputs["Views"].X) - 100.0) <= 1.0e-9
+            _assert_techdraw_timeline_graph(
+                document,
+                outputs,
+                document.getObject(source_name),
+            )
+            document.redo()
+            outputs = {
+                name: document.getObject(object_name)
+                for name, object_name in stable_names.items()
+            }
+            assert all(outputs.values())
+            assert abs(float(outputs["Views"].X) - 120.0) <= 1.0e-9
+            assert _assert_techdraw_timeline_graph(
+                document,
+                outputs,
+                document.getObject(source_name),
+            ) == updated_state
 
             accepted_snapshot = _snapshot(document, prepared["program_id"])
             failed, _execution, failed_validated = _prepare_execute_validate(
@@ -702,6 +877,7 @@ def _exercise_lifecycle() -> None:
             App.closeDocument(document_name)
             document = App.openDocument(str(save_path))
             App.setActiveDocument(document.Name)
+            document.UndoMode = 1
             reopened_snapshot = _snapshot(document, prepared["program_id"])
             assert reopened_snapshot == accepted_snapshot
             outputs = {
@@ -709,6 +885,12 @@ def _exercise_lifecycle() -> None:
                 for name, object_name in stable_names.items()
             }
             assert all(obj.isFrozen() for obj in outputs.values())
+            _assert_projection_timeline_block(document, outputs["Views"])
+            _assert_page_timeline_block(
+                document,
+                outputs["Sheet"],
+                outputs["Template"],
+            )
             assert abs(float(outputs["Width"].getRawValue()) - 20.0) <= 1.0e-9
 
             source = document.getObject(source_name)
@@ -731,6 +913,21 @@ def _exercise_lifecycle() -> None:
             finished = finish_delete(prepared_delete, deletion)
             assert finished["artifacts_deleted"] is True
             assert not _managed(document, prepared["program_id"])
+            assert document.getObject(source_name) is not None
+            document.undo()
+            outputs = {
+                name: document.getObject(object_name)
+                for name, object_name in stable_names.items()
+            }
+            assert all(outputs.values())
+            assert _assert_techdraw_timeline_graph(
+                document,
+                outputs,
+                document.getObject(source_name),
+            ) == updated_state
+            document.redo()
+            assert not _managed(document, prepared["program_id"])
+            assert document.getObject(source_name) is not None
         finally:
             if App.getDocument(document.Name) is not None:
                 App.closeDocument(document.Name)

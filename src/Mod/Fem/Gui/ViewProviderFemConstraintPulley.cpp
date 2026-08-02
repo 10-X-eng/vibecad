@@ -51,10 +51,10 @@ ViewProviderFemConstraintPulley::~ViewProviderFemConstraintPulley() = default;
 bool ViewProviderFemConstraintPulley::setEdit(int ModNum)
 {
     if (ModNum == ViewProvider::Default) {
-        Gui::Control().closeDialog();
+        Gui::Control().closeDialog(getObject()->getDocument());
         // clear the selection (convenience)
         Gui::Selection().clearSelection();
-        Gui::Control().showDialog(new TaskDlgFemConstraintPulley(this));
+        Gui::Control().showDialog(new TaskDlgFemConstraintPulley(this), getObject()->getDocument());
 
         return true;
     }

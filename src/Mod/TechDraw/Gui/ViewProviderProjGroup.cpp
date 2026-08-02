@@ -42,6 +42,7 @@
 #include <Mod/TechDraw/App/DrawViewSection.h>
 
 #include "TaskProjGroup.h"
+#include "TaskDocumentGuard.h"
 #include "QGIViewPart.h"
 #include "QGIProjGroup.h"
 #include "QGSPage.h"
@@ -67,7 +68,12 @@ bool ViewProviderProjGroup::setEdit(int ModNum)
     // When double-clicking on the item for this sketch the
     // object unsets and sets its edit mode without closing
     // the task panel
-    auto* dlg = Gui::Control().activeDialog();
+    auto* projection = getObject();
+    if (!projection) {
+        return false;
+    }
+    auto* dlg =
+        Gui::Control().activeDialog(projection->getDocument());
     auto* projDlg = qobject_cast<TaskDlgProjGroup *>(dlg);
     if (projDlg && projDlg->getViewProvider() != this) {
         projDlg = nullptr; // another sketch left open its task panel
@@ -79,9 +85,11 @@ bool ViewProviderProjGroup::setEdit(int ModNum)
     // start the edit dialog
     if (projDlg) {
         projDlg->setCreateMode(false);
-        Gui::Control().showDialog(projDlg);
     } else {
-        Gui::Control().showDialog(new TaskDlgProjGroup(getObject(), false));
+        TaskInternal::showDocumentDialog(
+            new TaskDlgProjGroup(projection, false),
+            projection->getDocument()
+        );
     }
 
     return true;
@@ -89,7 +97,7 @@ bool ViewProviderProjGroup::setEdit(int ModNum)
 
 bool ViewProviderProjGroup::doubleClicked()
 {
-    setEdit(0);
+    startDefaultEditMode();
     return true;
 }
 

@@ -20,16 +20,18 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
 #include <array>
 #include <QAction>
 #include <QApplication>
 #include <QDataStream>
 #include <QDockWidget>
+#include <QLayout>
 #include <QMap>
 #include <QMouseEvent>
 #include <QPointer>
 #include <QSet>
-#include <QTimer>
+#include <QSignalBlocker>
 
 #include <boost/algorithm/string/predicate.hpp>
 
@@ -102,6 +104,75 @@ QDockWidget* findDockByName(const QList<QDockWidget*>& docks, const QString& nam
     }
 
     return nullptr;
+}
+
+QString dockVisibilityName(const QDockWidget* dock)
+{
+    if (!dock) {
+        return {};
+    }
+    const QString actionName = dock->toggleViewAction()->data().toString();
+    return actionName.isEmpty() ? dock->objectName() : actionName;
+}
+
+bool isPermanentModelBrowser(const QDockWidget* dock)
+{
+    return dockVisibilityName(dock) == QStringLiteral("Std_TreeView");
+}
+
+void presentPermanentModelBrowser(QDockWidget* dock)
+{
+    if (!dock || !getMainWindow()) {
+        return;
+    }
+
+    auto* host = getMainWindow()->findChild<QWidget*>(QStringLiteral("VibeCADModelBrowserHost"));
+    if (!host || !host->layout()) {
+        Base::Console().error("VibeCAD model-browser host is unavailable\n");
+        return;
+    }
+
+    if (dock->parentWidget() != host) {
+        getMainWindow()->removeDockWidget(dock);
+        dock->setParent(host);
+        host->layout()->addWidget(dock);
+    }
+
+    dock->setProperty("vibecadPermanentModelBrowser", true);
+    dock->setAllowedAreas(Qt::NoDockWidgetArea);
+    dock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    dock->setAttribute(Qt::WA_NoSystemBackground);
+    dock->setAttribute(Qt::WA_TranslucentBackground);
+    dock->setAutoFillBackground(false);
+    if (auto* content = dock->widget()) {
+        content->setAttribute(Qt::WA_NoSystemBackground);
+        content->setAttribute(Qt::WA_TranslucentBackground);
+        content->setAutoFillBackground(false);
+    }
+
+    auto* titleBar = dock->titleBarWidget();
+    if (!titleBar || titleBar->objectName() != QStringLiteral("VibeCADModelBrowserTitle")) {
+        auto* replacement = new QWidget(dock);
+        replacement->setObjectName(QStringLiteral("VibeCADModelBrowserTitle"));
+        replacement->setFixedHeight(0);
+        dock->setTitleBarWidget(replacement);
+        if (titleBar) {
+            titleBar->deleteLater();
+        }
+    }
+
+    QAction* toggle = dock->toggleViewAction();
+    {
+        QSignalBlocker blocker(toggle);
+        toggle->setChecked(true);
+    }
+    toggle->setEnabled(false);
+    toggle->setVisible(false);
+
+    host->show();
+    dock->show();
+    dock->raise();
+    host->raise();
 }
 
 }  // namespace
@@ -221,10 +292,10 @@ struct DockWindowManagerP
 {
     QList<QDockWidget*> _dockedWindows;
     QMap<QString, QPointer<QWidget>> _dockWindows;
+    QMap<QString, bool> _requestedVisibility;
     DockWindowItems _dockWindowItems;
     ParameterGrp::handle _hPref;
     fastsignals::advanced_scoped_connection _connParam;
-    QTimer _timer;
     DockWidgetEventFilter _dockWidgetEventFilter;
     QPointer<OverlayManager> overlayManager;
 };
@@ -434,6 +505,59 @@ bool DockWindowManager::isOverlayActivated() const
     return (d->overlayManager != nullptr);
 }
 
+bool DockWindowManager::managesDockWidget(const QDockWidget* dock) const
+{
+    return dock && std::ranges::find(d->_dockedWindows, dock) != d->_dockedWindows.end();
+}
+
+bool DockWindowManager::isVisibilityRequested(const QDockWidget* dock) const
+{
+    if (isPermanentModelBrowser(dock)) {
+        return true;
+    }
+
+    const QString name = dockVisibilityName(dock);
+    if (name.isEmpty()) {
+        return false;
+    }
+
+    const auto requested = d->_requestedVisibility.constFind(name);
+    if (requested != d->_requestedVisibility.cend()) {
+        return requested.value();
+    }
+
+    const QByteArray encodedName = name.toUtf8();
+    return d->_hPref->GetBool(encodedName.constData(), false);
+}
+
+void DockWindowManager::applyRequestedVisibility(QDockWidget* dock, bool visible)
+{
+    if (!dock) {
+        return;
+    }
+
+    const QString name = dockVisibilityName(dock);
+    if (isPermanentModelBrowser(dock)) {
+        visible = true;
+    }
+    if (!name.isEmpty()) {
+        d->_requestedVisibility.insert(name, visible);
+    }
+
+    if (isPermanentModelBrowser(dock)) {
+        presentPermanentModelBrowser(dock);
+        return;
+    }
+
+    if (d->overlayManager) {
+        if (d->overlayManager->setDockWidgetVisible(dock, visible)) {
+            return;
+        }
+    }
+
+    dock->setVisible(visible);
+}
+
 void DockWindowManager::setupOverlayManagement()
 {
     d->overlayManager = OverlayManager::instance();
@@ -446,8 +570,14 @@ void DockWindowManager::setupOverlayManagement()
             if (Param == d->_hPref) {
                 switch (Type) {
                     case ParameterGrp::ParamType::FCBool:
-                        // For batch process UI setting changes, e.g. loading new preferences
-                        d->_timer.start(100);
+                        if (name && *name) {
+                            const QString dockName = QString::fromUtf8(name);
+                            if (auto* dock = findDockWidget(d->_dockedWindows, dockName)) {
+                                const bool visible = d->_hPref->GetBool(name, false);
+                                d->_requestedVisibility.insert(dockName, visible);
+                                applyRequestedVisibility(dock, visible);
+                            }
+                        }
                         break;
                     case ParameterGrp::ParamType::FCInt:
                         if (name && boost::equals(name, "CursorMargin")) {
@@ -462,18 +592,6 @@ void DockWindowManager::setupOverlayManagement()
         },
         fastsignals::advanced_tag()
     );
-
-    d->_timer.setSingleShot(true);
-
-    connect(&d->_timer, &QTimer::timeout, [this]() {
-        for (auto w : this->getDockWindows()) {
-            if (auto dw = qobject_cast<QDockWidget*>(w)) {
-                QSignalBlocker blocker(dw);
-                QByteArray dockName = dw->toggleViewAction()->data().toByteArray();
-                dw->setVisible(d->_hPref->GetBool(dockName, dw->isVisible()));
-            }
-        }
-    });
 }
 
 /**
@@ -495,8 +613,13 @@ QDockWidget* DockWindowManager::addDockWindow(const char* name, QWidget* widget,
     // QMainWindow identifies saved dock layout entries by objectName. Set it before
     // asking Qt to restore a dock that was created after MainWindow::restoreState().
     dw->setObjectName(QString::fromUtf8(name));
+    // The toggle action is the authoritative user-facing visibility state. Set
+    // its persistence key before restore/overlay setup can emit visibility
+    // changes; an overlaid dock can be logically enabled while its native
+    // QDockWidget is hidden by the overlay container.
+    dw->toggleViewAction()->setData(QString::fromUtf8(name));
 
-    if (d->overlayManager) {
+    if (d->overlayManager && !isPermanentModelBrowser(dw)) {
         d->overlayManager->setupTitleBar(dw);
     }
 
@@ -535,15 +658,26 @@ QDockWidget* DockWindowManager::addDockWindow(const char* name, QWidget* widget,
 
     d->_dockedWindows.push_back(dw);
 
-    if (d->overlayManager) {
+    connect(dw->toggleViewAction(), &QAction::triggered, [this, dw](bool checked) {
+        const QString dockName = dockVisibilityName(dw);
+        if (dockName.isEmpty()) {
+            return;
+        }
+        d->_requestedVisibility.insert(dockName, checked);
+        {
+            Base::ConnectionBlocker block(d->_connParam);
+            const QByteArray encodedName = dockName.toUtf8();
+            d->_hPref->SetBool(encodedName.constData(), checked);
+        }
+        applyRequestedVisibility(dw, checked);
+    });
+
+    if (isPermanentModelBrowser(dw)) {
+        presentPermanentModelBrowser(dw);
+    }
+    else if (d->overlayManager) {
         d->overlayManager->initDockWidget(dw);
     }
-
-    connect(dw->toggleViewAction(), &QAction::triggered, [this, dw]() {
-        Base::ConnectionBlocker block(d->_connParam);
-        QByteArray dockName = dw->toggleViewAction()->data().toByteArray();
-        d->_hPref->SetBool(dockName.constData(), dw->isVisible());
-    });
 
     auto cb = []() {
         getMainWindow()->saveWindowSettings(true);
@@ -746,6 +880,7 @@ void DockWindowManager::setup(DockWindowItems* items)
         QDockWidget* dw = findDockWidget(docked, it.name);
         QByteArray dockName = it.name.toLatin1();
         bool visible = d->_hPref->GetBool(dockName.constData(), it.visibility);
+        d->_requestedVisibility.insert(it.name, visible);
 
         if (!dw) {
             QMap<QString, QPointer<QWidget>>::Iterator jt = d->_dockWindows.find(it.name);
@@ -753,15 +888,15 @@ void DockWindowManager::setup(DockWindowItems* items)
                 dw = addDockWindow(dockName.constData(), jt.value(), it.pos);
                 jt.value()->show();
                 dw->toggleViewAction()->setData(it.name);
-                dw->setVisible(visible);
             }
         }
         else {
-            dw->setVisible(visible);
             dw->toggleViewAction()->setVisible(true);
             int index = docked.indexOf(dw);
             docked.removeAt(index);
         }
+
+        applyRequestedVisibility(dw, visible);
 
         if (d->overlayManager && dw && visible && !dw->titleBarWidget()) {
             d->overlayManager->setupDockWidget(dw);
@@ -825,12 +960,17 @@ void DockWindowManager::tabifyDockWidgets(DockWindowItems* items)
 
 void DockWindowManager::saveState()
 {
+    Base::ConnectionBlocker block(d->_connParam);
     const QList<DockWindowItem>& dockItems = d->_dockWindowItems.dockWidgets();
     for (QList<DockWindowItem>::ConstIterator it = dockItems.begin(); it != dockItems.end(); ++it) {
         QDockWidget* dw = findDockWidget(d->_dockedWindows, it->name);
         if (dw) {
-            QByteArray dockName = dw->toggleViewAction()->data().toByteArray();
-            d->_hPref->SetBool(dockName.constData(), dw->isVisible());
+            const QString dockName = dockVisibilityName(dw);
+            const auto requested = d->_requestedVisibility.constFind(dockName);
+            if (!dockName.isEmpty() && requested != d->_requestedVisibility.cend()) {
+                const QByteArray encodedName = dockName.toUtf8();
+                d->_hPref->SetBool(encodedName.constData(), requested.value());
+            }
         }
     }
 }
@@ -848,7 +988,8 @@ void DockWindowManager::loadState()
         if (dw) {
             QByteArray dockName = it->name.toUtf8();
             bool visible = hPref->GetBool(dockName.constData(), it->visibility);
-            dw->setVisible(visible);
+            d->_requestedVisibility.insert(it->name, visible);
+            applyRequestedVisibility(dw, visible);
         }
     }
 }

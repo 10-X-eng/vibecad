@@ -42,6 +42,9 @@ class VPMaterialCommon(view_base_femmaterial.VPBaseFemMaterial):
     A View Provider for the MaterialCommon object
     """
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def getIcon(self):
         if hasattr(self.Object, "Category"):
             if self.Object.Category == "Solid":

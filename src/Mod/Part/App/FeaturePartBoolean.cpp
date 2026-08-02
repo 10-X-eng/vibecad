@@ -79,6 +79,11 @@ Boolean::Boolean()
 {
     ADD_PROPERTY(Base, (nullptr));
     ADD_PROPERTY(Tool, (nullptr));
+    // General Part booleans are coordinate-system independent BREP operations. Promote an operand
+    // link only when it actually crosses a Body or App::Part boundary, preserving historical local
+    // grouping for ordinary graphs while allowing cross-container operations.
+    allowCrossContainerLink(Base);
+    allowCrossContainerLink(Tool);
     ADD_PROPERTY_TYPE(
         History,
         (ShapeHistory()),

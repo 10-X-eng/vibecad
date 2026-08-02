@@ -70,6 +70,18 @@ public:
      */
     virtual void transformPlacement(const Base::Placement& transform);
 
+    /**
+     * Return true when the model tree must keep every direct Group member directly below this
+     * group, even when one member exposes another member as a dependency child.
+     *
+     * Most GeoFeatureGroups retain the historical dependency-nesting behavior. Modeling bodies
+     * override this so ownership and feature dependencies are represented independently.
+     */
+    virtual bool keepDirectChildrenInTree() const
+    {
+        return false;
+    }
+
     /// Constructor
     GeoFeatureGroupExtension();
     ~GeoFeatureGroupExtension() override;

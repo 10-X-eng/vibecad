@@ -41,6 +41,11 @@ class BaseProxy:
     def __init__(self, obj):
         obj.Proxy = self
         obj.addProperty("App::PropertyLinkSubList", "References", "Base", "", locked=True)
+        obj.addExtension("App::SuppressibleExtensionPython")
+
+    def onDocumentRestored(self, obj):
+        if not obj.hasExtension("App::SuppressibleExtensionPython"):
+            obj.addExtension("App::SuppressibleExtensionPython")
 
     def execute(self, obj):
         return True
@@ -50,6 +55,7 @@ class BaseViewProxy:
 
     def __init__(self, vobj):
         vobj.Proxy = self
+        vobj.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
 
     def attach(self, vobj):
         default = coin.SoGroup()

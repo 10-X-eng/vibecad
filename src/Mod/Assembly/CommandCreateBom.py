@@ -58,6 +58,48 @@ ColumnNames = [
     "Quantity",
 ]
 
+_ACTIVE_ASSEMBLY_UNSET = object()
+
+
+def _findBomAssembly(bom_object):
+    """Return the exact assembly which structurally owns *bom_object*."""
+
+    return UtilsAssembly.findOwningAssembly(
+        bom_object,
+        include_inactive=True,
+    )
+
+
+def createBomFeature(document, assembly=None):
+    """Create and return one exact bill-of-materials document object."""
+    if document is None:
+        raise RuntimeError("A document is required to create a bill of materials")
+    if (
+        assembly is not None
+        and (
+            assembly.Document is not document
+            or document.getObject(assembly.Name) is not assembly
+            or not UtilsAssembly.isTimelineOperationActive(assembly)
+        )
+    ):
+        raise RuntimeError(
+            "The bill-of-materials assembly is not live in its document"
+        )
+
+    if assembly is None:
+        return document.addObject(
+            "Assembly::BomObject",
+            "Bill of Materials",
+        )
+
+    bom_group = UtilsAssembly.getBomGroup(assembly)
+    if bom_group is None or bom_group.Document is not document:
+        raise RuntimeError("The assembly has no live bill-of-materials group")
+    return bom_group.newObject(
+        "Assembly::BomObject",
+        "Bill of Materials",
+    )
+
 
 class CommandCreateBom:
     def __init__(self):
@@ -78,20 +120,113 @@ class CommandCreateBom:
         }
 
     def IsActive(self):
-        return True
+        document = App.ActiveDocument
+        return (
+            document is not None
+            and not Gui.Control.activeDialog()
+            and document.getBookedTransactionID() == 0
+            and not document.HasPendingTransaction
+        )
 
     def Activated(self):
-        self.panel = TaskAssemblyCreateBom()
-        dialog = Gui.Control.showDialog(self.panel)
+        if not self.IsActive():
+            return
+        document = App.ActiveDocument
+        assembly = UtilsAssembly.activeAssembly()
+        if assembly is not None and assembly.Document is not document:
+            assembly = None
+        self.panel = TaskAssemblyCreateBom(
+            document=document,
+            assembly=assembly,
+        )
+        dialog = Gui.Control.showDialog(self.panel, self.panel.gui_doc)
         if dialog is not None:
             dialog.setAutoCloseOnDeletedDocument(True)
-            dialog.setDocumentName(App.ActiveDocument.Name)
+            dialog.setDocumentName(document.Name)
 
 
 ######### Create Exploded View Task ###########
 class TaskAssemblyCreateBom(QtCore.QObject):
-    def __init__(self, bomObj=None):
+    def __init__(
+        self,
+        bomObj=None,
+        document=None,
+        existing_transaction_id=0,
+        assembly=_ACTIVE_ASSEMBLY_UNSET,
+    ):
         super().__init__()
+
+        if document is None and bomObj is not None:
+            document = bomObj.Document
+        if document is None:
+            document = App.ActiveDocument
+        if document is None:
+            raise RuntimeError("A document is required to create a bill of materials")
+        if bomObj is not None:
+            if (
+                bomObj.Document is not document
+                or not UtilsAssembly._document_is_open(document)
+                or document.getObject(bomObj.Name) is not bomObj
+                or not UtilsAssembly.isTimelineOperationActive(bomObj)
+            ):
+                raise RuntimeError(
+                    "The bill of materials is not an active live operation "
+                    "in the task document"
+                )
+
+        self.doc = document
+        self.document_uid = str(
+            getattr(self.doc, "Uid", "") or ""
+        )
+        self.gui_doc = Gui.getDocument(self.doc.Name)
+        if self.gui_doc is None:
+            raise RuntimeError(
+                "The bill-of-materials task has no GUI document"
+            )
+        if bomObj is not None:
+            self.assembly = _findBomAssembly(bomObj)
+            if (
+                self.assembly is not None
+                and not UtilsAssembly.isTimelineOperationActive(
+                    self.assembly
+                )
+            ):
+                raise RuntimeError(
+                    "The bill-of-materials assembly is not active in History"
+                )
+        elif assembly is _ACTIVE_ASSEMBLY_UNSET:
+            self.assembly = UtilsAssembly.activeAssembly()
+            if (
+                self.assembly is not None
+                and self.assembly.Document is not self.doc
+            ):
+                self.assembly = None
+        else:
+            self.assembly = assembly
+            if (
+                self.assembly is not None
+                and (
+                    self.assembly.Document is not self.doc
+                    or self.doc.getObject(self.assembly.Name)
+                    is not self.assembly
+                    or not UtilsAssembly.isTimelineOperationActive(
+                        self.assembly
+                    )
+                )
+            ):
+                raise RuntimeError(
+                    "The exact bill-of-materials assembly is no longer "
+                    "active and live"
+                )
+        self.assembly_identity = (
+            (
+                str(self.assembly.Name),
+                int(self.assembly.ID),
+                self.assembly,
+            )
+            if self.assembly is not None
+            else None
+        )
 
         self.form = Gui.PySideUic.loadUi(":/panels/TaskAssemblyCreateBom.ui")
 
@@ -115,7 +250,11 @@ class TaskAssemblyCreateBom(QtCore.QObject):
         pref = Preferences.preferences()
 
         if bomObj:
-            Gui.ActiveDocument.openCommand("Edit Bill Of Materials")
+            self.transaction = UtilsAssembly._TaskTransactionOwner(
+                self.doc,
+                "Edit Bill Of Materials",
+                existing_transaction_id,
+            )
 
             for name in bomObj.columnsNames:
                 if name in ColumnNames:
@@ -126,7 +265,10 @@ class TaskAssemblyCreateBom(QtCore.QObject):
 
             self.bomObj = bomObj
         else:
-            Gui.ActiveDocument.openCommand("Create Bill Of Materials")
+            self.transaction = UtilsAssembly._TaskTransactionOwner(
+                self.doc,
+                "Create Bill Of Materials",
+            )
 
             # Add the columns
             for name in TranslatedColumnNames:
@@ -136,6 +278,11 @@ class TaskAssemblyCreateBom(QtCore.QObject):
             self.bomObj.onlyParts = pref.GetBool("BOMOnlyParts", False)
             self.bomObj.detailParts = pref.GetBool("BOMDetailParts", True)
             self.bomObj.detailSubAssemblies = pref.GetBool("BOMDetailSubAssemblies", True)
+        self.bom_identity = (
+            str(self.bomObj.Name),
+            int(self.bomObj.ID),
+            self.bomObj,
+        )
 
         self.form.CheckBox_onlyParts.setChecked(self.bomObj.onlyParts)
         self.form.CheckBox_detailParts.setChecked(self.bomObj.detailParts)
@@ -151,28 +298,100 @@ class TaskAssemblyCreateBom(QtCore.QObject):
         self.updateColumnList()
 
     def accept(self):
+        if not self.transaction.owns_current():
+            App.Console.PrintError(
+                "Could not update the bill of materials: "
+                "the task no longer owns its exact document transaction\n"
+            )
+            return False
+        try:
+            live_assembly = _findBomAssembly(self.bomObj)
+        except Exception as error:
+            App.Console.PrintError(
+                "Could not update the bill of materials: "
+                f"{error}\n"
+            )
+            return False
+        if (
+            not UtilsAssembly._document_is_open(self.doc)
+            or str(getattr(self.doc, "Uid", "") or "")
+            != self.document_uid
+            or self.doc.getObject(self.bom_identity[0])
+            is not self.bom_identity[2]
+            or int(self.bom_identity[2].ID)
+            != self.bom_identity[1]
+            or not UtilsAssembly.isTimelineOperationActive(self.bomObj)
+            or live_assembly is not self.assembly
+            or (
+                self.assembly is not None
+                and (
+                    self.assembly_identity is None
+                    or self.doc.getObject(
+                        self.assembly_identity[0]
+                    )
+                    is not self.assembly_identity[2]
+                    or int(self.assembly_identity[2].ID)
+                    != self.assembly_identity[1]
+                    or not UtilsAssembly.isTimelineOperationActive(
+                        self.assembly
+                    )
+                )
+            )
+        ):
+            App.Console.PrintError(
+                "Could not update the bill of materials: "
+                "its exact Assembly objects are no longer active\n"
+            )
+            return False
+        try:
+            self.bomObj.recompute()
+        except Exception as error:
+            App.Console.PrintError(
+                "Could not update the bill of materials: "
+                f"{error}\n"
+            )
+            return False
+
         self.deactivate()
-        Gui.ActiveDocument.commitCommand()
-
-        self.bomObj.recompute()
-
-        self.bomObj.ViewObject.showSheetMdi()
-
+        QtCore.QTimer.singleShot(0, self._showAcceptedSheet)
         return True
 
     def reject(self):
         self.deactivate()
-        Gui.ActiveDocument.abortCommand()
         return True
+
+    def _showAcceptedSheet(self):
+        """Open the sheet only after TaskView has durably accepted the task."""
+
+        try:
+            accepted = (
+                UtilsAssembly._document_is_open(self.doc)
+                and str(getattr(self.doc, "Uid", "") or "")
+                == self.document_uid
+                and self.doc.getBookedTransactionID()
+                != self.transaction.transaction_id
+                and self.doc.getObject(self.bom_identity[0])
+                is self.bom_identity[2]
+                and int(self.bom_identity[2].ID)
+                == self.bom_identity[1]
+                and UtilsAssembly.isTimelineOperationActive(
+                    self.bomObj
+                )
+            )
+        except (AttributeError, RuntimeError):
+            accepted = False
+        if not accepted:
+            return
+        self.bomObj.ViewObject.showSheetMdi()
+
+    def autoClosedOnDeletedDocument(self):
+        self.transaction.document_deleted()
 
     def deactivate(self):
         pref = Preferences.preferences()
         pref.SetBool("BOMOnlyParts", self.form.CheckBox_onlyParts.isChecked())
         pref.SetBool("BOMDetailParts", self.form.CheckBox_detailParts.isChecked())
         pref.SetBool("BOMDetailSubAssemblies", self.form.CheckBox_detailSubAssemblies.isChecked())
-
-        if Gui.Control.activeDialog():
-            Gui.Control.closeDialog()
 
     def onIncludeSolids(self, val):
         self.bomObj.onlyParts = val
@@ -314,22 +533,68 @@ class TaskAssemblyCreateBom(QtCore.QObject):
         return False
 
     def createBomObject(self):
-        assembly = UtilsAssembly.activeAssembly()
-        Gui.addModule("UtilsAssembly")
-        if assembly is not None:
-            commands = (
-                "assembly = UtilsAssembly.activeAssembly()\n"
-                "bom_group = UtilsAssembly.getBomGroup(assembly)\n"
-                'bomObj = bom_group.newObject("Assembly::BomObject", "Bill of Materials")'
+        Gui.addModule("CommandCreateBom")
+        document_expression = f"App.getDocument({str(self.doc.Name)!r})"
+        if self.assembly is not None:
+            factory_expression = (
+                "CommandCreateBom.createBomFeature("
+                f"{document_expression}, "
+                f"{document_expression}.getObject({str(self.assembly.Name)!r}))"
             )
         else:
-            commands = 'bomObj = App.activeDocument().addObject("Assembly::BomObject", "Bill of Materials")'
-        Gui.doCommand(commands)
-        self.bomObj = Gui.doCommandEval("bomObj")
+            factory_expression = (
+                "CommandCreateBom.createBomFeature("
+                f"{document_expression})"
+            )
+        self.bomObj = Gui.runDocumentObjectCommand(
+            self.doc,
+            factory_expression,
+            "Assembly::BomObject",
+        )
 
     def export(self):
-        self.bomObj.recompute()
-        self.bomObj.ViewObject.exportAsFile()
+        try:
+            live_assembly = _findBomAssembly(self.bomObj)
+            valid = (
+                self.transaction.owns_current()
+                and UtilsAssembly._document_is_open(self.doc)
+                and str(getattr(self.doc, "Uid", "") or "")
+                == self.document_uid
+                and self.doc.getObject(self.bom_identity[0])
+                is self.bom_identity[2]
+                and int(self.bom_identity[2].ID)
+                == self.bom_identity[1]
+                and UtilsAssembly.isTimelineOperationActive(
+                    self.bomObj
+                )
+                and live_assembly is self.assembly
+                and (
+                    self.assembly is None
+                    or (
+                        self.assembly_identity is not None
+                        and self.doc.getObject(
+                            self.assembly_identity[0]
+                        )
+                        is self.assembly_identity[2]
+                        and int(self.assembly_identity[2].ID)
+                        == self.assembly_identity[1]
+                        and UtilsAssembly.isTimelineOperationActive(
+                            self.assembly
+                        )
+                    )
+                )
+            )
+            if not valid:
+                raise RuntimeError(
+                    "the exact BOM context is no longer active"
+                )
+            self.bomObj.recompute()
+            self.bomObj.ViewObject.exportAsFile()
+        except Exception as error:
+            App.Console.PrintError(
+                "Could not export the bill of materials: "
+                f"{error}\n"
+            )
 
     def eventFilter(self, watched, event):
         if self.form is not None and watched == self.form.columnList:
