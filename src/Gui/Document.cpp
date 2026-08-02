@@ -32,6 +32,8 @@
 #include <mutex>
 #include <QApplication>
 #include <QCheckBox>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QOpenGLWidget>
@@ -2454,6 +2456,8 @@ void Document::RestoreDocFile(Base::Reader& reader)
         // read the viewproviders itself
         localreader->readElement("ViewProviderData");
         int Cnt = localreader->getAttribute<long>("Count");
+        QElapsedTimer restoreEvents;
+        restoreEvents.start();
         for (int i = 0; i < Cnt; i++) {
             localreader->readElement("ViewProvider");
             std::string name = localreader->getAttribute<const char*>("name");
@@ -2485,6 +2489,18 @@ void Document::RestoreDocFile(Base::Reader& reader)
                 this->signalExpandObject(*pObj, TreeItemMode::ExpandItem, 0, 0);
             }
             localreader->readEndElement("ViewProvider");
+
+            // GuiDocument.xml is restored as one project-file step. Large
+            // documents can spend a long time in this loop without returning
+            // to Qt, making the application appear hung. Repaint periodically
+            // while excluding user input and socket activity so no command can
+            // observe or mutate the partially restored document.
+            if (restoreEvents.hasExpired(100)) {
+                qApp->processEvents(
+                    QEventLoop::ExcludeUserInputEvents | QEventLoop::ExcludeSocketNotifiers
+                );
+                restoreEvents.restart();
+            }
         }
         localreader->readEndElement("ViewProviderData");
 

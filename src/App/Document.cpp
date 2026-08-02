@@ -1713,7 +1713,9 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
 
     long lastId = 0;
     bool warnedRemovedArchitecture = false;
+    Base::SequencerLauncher restoreObjects("Creating document objects...", 2 * Cnt);
     for (int i = 0; i < Cnt; i++) {
+        restoreObjects.next();
         reader.readElement("Object");
         std::string type = reader.getAttribute<const char*>("type");
         std::string name = reader.getAttribute<const char*>("name");
@@ -1812,7 +1814,9 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
     reader.clearPartialRestoreDocumentObject();
     reader.readElement("ObjectData");
     Cnt = static_cast<int>(reader.getAttribute<long>("Count"));
+    restoreObjects.setText("Restoring document properties...");
     for (int i = 0; i < Cnt; i++) {
+        restoreObjects.next();
         reader.readElement("Object");
         std::string name = reader.getName(reader.getAttribute<const char*>("name"));
         if (DocumentObject* pObj = getObject(name.c_str()); pObj
