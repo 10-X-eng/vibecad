@@ -1216,7 +1216,7 @@ gp_Ax2 DrawViewSection::getSectionCS() const
 Base::Vector3d DrawViewSection::getCutCentroid() const
 {
     if (!sectionIntermediateStateIsCurrent()) {
-        return {};
+        return Base::Vector3d();
     }
     gp_Pnt inputCenter = ShapeUtils::findCentroid(m_cutPieces, getProjectionCS());
     return Base::Vector3d(inputCenter.X(), inputCenter.Y(), inputCenter.Z());

@@ -78,6 +78,25 @@ using namespace Fem;
 using namespace Base;
 using namespace boost;
 
+namespace {
+
+template <typename MeshType>
+int importUNVForDocumentRestore(MeshType* mesh, const char* fileName)
+{
+    if constexpr (requires(MeshType* candidate, const char* path) {
+                      candidate->UNVToMeshPreservingIds(path);
+                  }) {
+        return mesh->UNVToMeshPreservingIds(fileName);
+    }
+
+    // Older external SMESH packages expose only the historical import API.
+    // Keep those builds source-compatible until their preserving-ID API is
+    // available in the packaged SMESH dependency.
+    return mesh->UNVToMesh(fileName);
+}
+
+} // namespace
+
 SMESH_Gen* FemMesh::_mesh_gen = nullptr;
 
 TYPESYSTEM_SOURCE(Fem::FemMesh, Base::Persistence)
@@ -2539,7 +2558,7 @@ void FemMesh::RestoreDocFile(Base::Reader& reader)
     // constraints, filtered meshes, and groups persist references to them.
     // Generic UNV import retains its historical compacting behavior, while
     // native document restore must reproduce the identifiers exactly.
-    myMesh->UNVToMeshPreservingIds(fi.filePath().c_str());
+    importUNVForDocumentRestore(myMesh, fi.filePath().c_str());
 
     // delete the temp file
     fi.deleteFile();

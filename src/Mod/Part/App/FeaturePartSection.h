@@ -32,7 +32,7 @@
 namespace Part
 {
 
-class Section: public Boolean
+class PartExport Section: public Boolean
 {
     PROPERTY_HEADER_WITH_OVERRIDE(Part::Section);
 

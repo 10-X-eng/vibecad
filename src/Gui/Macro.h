@@ -155,7 +155,7 @@ public:
      * // normal macro output is restored
      * @endcode
      */
-    class MacroRedirector
+    class GuiExport MacroRedirector
     {
     public:
         explicit MacroRedirector(const std::function<void(LineType, const char*)>& func);
