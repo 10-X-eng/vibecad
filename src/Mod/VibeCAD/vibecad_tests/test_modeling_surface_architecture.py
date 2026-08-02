@@ -25,7 +25,7 @@ from VibeCADModelingSurface import (
     resolve_modeling_surface,
     validate_surface_names,
 )
-from VibeCADTools import ToolSpec
+from VibeCADTools import SafetyLevel, ToolSpec
 import VibeCADVibeScriptDomains as domains
 from VibeCADWorkbenchTools import WORKBENCH_TOOL_PACKS
 
@@ -555,6 +555,222 @@ def test_universal_build_program_replays_exact_saved_source(
     assert result["tool"] == "vibescript.build_program"
     assert result["source_id"] == source_id
     assert result["requested_action"] == "build_program"
+
+
+def test_deferred_publication_recompute_uses_exact_worker_safe_targets() -> None:
+    import VibeCADSession as session
+
+    class DocumentObject:
+        State: list[str] = []
+
+        def __init__(self, name: str) -> None:
+            self.Name = name
+
+    class Document:
+        Name = "Engine"
+        Recomputing = False
+        RecomputePending = False
+
+        def __init__(self) -> None:
+            self.objects = {
+                name: DocumentObject(name) for name in ("RotorLink", "HousingLink")
+            }
+            self.requests: list[tuple[list[DocumentObject], bool]] = []
+
+        def getObject(self, name: str) -> DocumentObject | None:
+            return self.objects.get(name)
+
+        def recomputeAsync(
+            self, targets: list[DocumentObject], recursive: bool
+        ) -> int:
+            self.requests.append((targets, recursive))
+            return 1
+
+    document = Document()
+    service = type(
+        "Service", (), {"_active_document": lambda _self: document}
+    )()
+    events: list[dict[str, object]] = []
+
+    result = session._deferred_publication_recompute(
+        service,
+        {
+            "recompute_deferred": True,
+            "downstream_references": {
+                "part_recompute_objects": [
+                    "RotorLink",
+                    "HousingLink",
+                    "RotorLink",
+                ]
+            },
+        },
+        dispatch=lambda operation: operation(),
+        cancellation_check=lambda: True,
+        progress_callback=events.append,
+    )
+
+    assert result["mode"] == "worker"
+    assert result["completed"] is True
+    assert result["target_count"] == 2
+    assert len(document.requests) == 1
+    targets, recursive = document.requests[0]
+    assert [target.Name for target in targets] == ["RotorLink", "HousingLink"]
+    assert recursive is True
+    assert events[-1]["event"] == "vibescript_domain_deferred_recompute_completed"
+
+
+def test_deferred_publication_recompute_has_exact_document_thread_fallback() -> (
+    None
+):
+    import VibeCADSession as session
+
+    class DocumentObject:
+        State: list[str] = []
+
+        def __init__(self, name: str) -> None:
+            self.Name = name
+
+    class Document:
+        Name = "Engine"
+        Recomputing = False
+        RecomputePending = False
+
+        def __init__(self) -> None:
+            self.target = DocumentObject("ThreadAffineLink")
+            self.fallback_requests: list[
+                tuple[list[DocumentObject], bool, bool]
+            ] = []
+
+        def getObject(self, name: str) -> DocumentObject | None:
+            return self.target if name == self.target.Name else None
+
+        def recomputeAsync(
+            self, _targets: list[DocumentObject], _recursive: bool
+        ) -> int:
+            raise RuntimeError("dependency requires the document thread")
+
+        def recompute(
+            self,
+            targets: list[DocumentObject],
+            recursive: bool,
+            raise_on_error: bool,
+        ) -> int:
+            self.fallback_requests.append((targets, recursive, raise_on_error))
+            return 1
+
+    document = Document()
+    service = type(
+        "Service", (), {"_active_document": lambda _self: document}
+    )()
+
+    result = session._deferred_publication_recompute(
+        service,
+        {
+            "recompute_deferred": True,
+            "downstream_references": {
+                "part_recompute_objects": ["ThreadAffineLink"]
+            },
+        },
+        dispatch=lambda operation: operation(),
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert result["mode"] == "document_thread_fallback"
+    assert result["completed"] is True
+    assert "document thread" in result["async_rejection"]
+    assert len(document.fallback_requests) == 1
+    targets, recursive, raise_on_error = document.fallback_requests[0]
+    assert [target.Name for target in targets] == ["ThreadAffineLink"]
+    assert recursive is True
+    assert raise_on_error is True
+
+
+def test_native_tool_runner_reports_document_thread_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    class Spec:
+        requires_document = False
+
+        @staticmethod
+        def validate_arguments(_arguments: dict[str, object]) -> None:
+            return None
+
+        @staticmethod
+        def supports_edit_mode(_edit_mode: str) -> bool:
+            return True
+
+    tool = type(
+        "Tool",
+        (),
+        {
+            "safety": SafetyLevel.READ,
+            "workbench": "PartDesignWorkbench",
+            "spec": Spec(),
+        },
+    )()
+
+    class Registry:
+        @staticmethod
+        def get(_name: str) -> object:
+            return tool
+
+        @staticmethod
+        def call(_name: str, **_arguments: object) -> dict[str, object]:
+            return {"ok": True, "value": 42}
+
+    class Service:
+        registry = Registry()
+
+        @staticmethod
+        def note_provider_tool_targets(
+            _arguments: dict[str, object], _payload: dict[str, object]
+        ) -> None:
+            return None
+
+    monkeypatch.setattr(
+        session,
+        "_live_provider_surface_state",
+        lambda _service, _mode: {
+            "workbench": "PartDesignWorkbench",
+            "engine": "native",
+            "surface_id": "native-test",
+            "runtime_state": {"edit_mode": "none"},
+            "tool_names": ["model.read_test"],
+        },
+    )
+    monkeypatch.setattr(
+        session,
+        "_minimal_runtime_state",
+        lambda _service: {"edit_mode": "none"},
+    )
+    events: list[dict[str, object]] = []
+    trace: list[dict[str, object]] = []
+    runner = session.make_provider_tool_runner(
+        Service(),
+        tool_trace=trace,
+        progress_callback=events.append,
+        cancellation_check=None,
+        steering_check=None,
+        question_callback=None,
+        document_thread_dispatch=lambda operation: operation(),
+    )
+
+    result = runner("model.read_test", "{}")
+
+    assert result["ok"] is True
+    assert result["document_thread_elapsed_seconds"] >= 0.0
+    assert [
+        event["event"]
+        for event in events
+        if str(event["event"]).startswith("native_tool_document_phase_")
+    ] == [
+        "native_tool_document_phase_started",
+        "native_tool_document_phase_completed",
+    ]
+    assert trace[0]["result"]["document_thread_elapsed_seconds"] >= 0.0
 
 
 def test_universal_edit_source_maps_to_the_active_domain_with_complete_code(

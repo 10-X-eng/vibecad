@@ -297,6 +297,17 @@ public:
     static std::vector<Body*> finalizeOperation(DesignOperationEdit& edit);
 
     /**
+     * Atomically publish a worker-validated VibeScript operation without
+     * recomputing unrelated document branches.
+     *
+     * The operation and every affected Body dependency chain are recomputed
+     * and validated before this returns. Other downstream objects remain
+     * touched so the caller can schedule their worker-safe recompute after
+     * committing the short publication transaction.
+     */
+    static std::vector<Body*> finalizeScriptOperation(DesignOperationEdit& edit);
+
+    /**
      * Remove one complete Design operation and reconcile every Body output.
      *
      * Operation-created Bodies are removed only when nothing outside the
@@ -353,6 +364,11 @@ public:
     static void validateDesign(App::Document& document);
 
 private:
+    static std::vector<Body*> finalizeOperationImpl(
+        DesignOperationEdit& edit,
+        bool affectedBodiesOnly
+    );
+
     static void finalizeNewOperation(DesignOperationEdit& edit, std::vector<Body*>& targets);
     static void finalizeExistingOperation(DesignOperationEdit& edit, std::vector<Body*>& targets);
 };

@@ -182,6 +182,12 @@ public:
             "Validate and atomically publish one Design operation edit."
         );
         add_varargs_method(
+            "finalizeDesignScriptOperationEdit",
+            &Module::finalizeDesignScriptOperationEdit,
+            "Publish one worker-validated VibeScript edit and defer unrelated downstream "
+            "recompute."
+        );
+        add_varargs_method(
             "removeDesignOperation",
             &Module::removeDesignOperation,
             "Remove one global Design operation and reconcile every Body output."
@@ -701,6 +707,16 @@ private:
 
     Py::Object finalizeDesignOperationEdit(const Py::Tuple& args)
     {
+        return finalizeDesignOperationEditImpl(args, false);
+    }
+
+    Py::Object finalizeDesignScriptOperationEdit(const Py::Tuple& args)
+    {
+        return finalizeDesignOperationEditImpl(args, true);
+    }
+
+    Py::Object finalizeDesignOperationEditImpl(const Py::Tuple& args, bool scriptOperation)
+    {
         PyObject* editObject = nullptr;
         if (!PyArg_ParseTuple(args.ptr(), "O", &editObject)) {
             throw Py::Exception();
@@ -708,7 +724,8 @@ private:
         auto* edit = designEditFromCapsule(editObject);
         std::vector<Body*> bodies;
         try {
-            bodies = DesignModel::finalizeOperation(*edit);
+            bodies = scriptOperation ? DesignModel::finalizeScriptOperation(*edit)
+                                     : DesignModel::finalizeOperation(*edit);
         }
         catch (const Base::Exception& error) {
             throw Py::RuntimeError(error.what());

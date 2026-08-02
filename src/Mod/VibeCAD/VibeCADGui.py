@@ -1702,6 +1702,30 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         if result.get("error"):
             return f"CAD action {status}: {result['error']}"
         return f"CAD action {status}: {event.get('tool_name', 'unknown')}"
+    if name == "vibescript_domain_phase_started":
+        phase = str(event.get("phase") or "work").replace("_", " ")
+        return f"VibeScript {phase}..."
+    if name == "vibescript_domain_phase_completed":
+        phase = str(event.get("phase") or "work").replace("_", " ")
+        elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
+        return f"VibeScript {phase} completed in {elapsed:.2f}s."
+    if name == "vibescript_domain_deferred_recompute_completed":
+        count = int(event.get("target_count", 0) or 0)
+        elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
+        return f"Updated {count} downstream CAD objects in {elapsed:.2f}s."
+    if name == "document_recompute_waiting":
+        count = int(event.get("target_count", 0) or 0)
+        if str(event.get("phase") or "") == "scheduling":
+            return f"Scheduling {count} downstream CAD updates..."
+        elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
+        return f"Updating the document in the background... {elapsed:.1f}s"
+    if name == "native_tool_document_phase_started":
+        tool = str(event.get("tool_name") or "CAD tool")
+        return f"Applying {tool}..."
+    if name == "native_tool_document_phase_completed":
+        tool = str(event.get("tool_name") or "CAD tool")
+        elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
+        return f"Applied {tool} in {elapsed:.2f}s."
     return name.replace("_", " ")
 
 
@@ -1724,7 +1748,12 @@ _PROGRESS_STATUS_ONLY_EVENTS: set[str] = {
     "intent_memory_update_started",
     "intent_memory_update_completed",
     "intent_memory_update_failed",
+    "native_tool_document_phase_completed",
+    "native_tool_document_phase_started",
     "provider_turn_started",
+    "vibescript_domain_deferred_recompute_completed",
+    "vibescript_domain_phase_completed",
+    "vibescript_domain_phase_started",
 }
 
 

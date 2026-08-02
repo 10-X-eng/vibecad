@@ -107,6 +107,31 @@ def _ordered_object_names(timeline):
     ]
 
 
+def _icon_pixels(icon):
+    image = icon.pixmap(QtCore.QSize(22, 22)).toImage().convertToFormat(
+        QtGui.QImage.Format_ARGB32
+    )
+    return tuple(
+        image.pixelColor(x, y).getRgb()
+        for y in range(image.height())
+        for x in range(image.width())
+    )
+
+
+def _has_colored_pixel(pixels):
+    return any(
+        alpha and (red != green or green != blue)
+        for red, green, blue, alpha in pixels
+    )
+
+
+def _is_grayscale(pixels):
+    return all(
+        not alpha or (red == green == blue)
+        for red, green, blue, alpha in pixels
+    )
+
+
 def _document_timeline(document):
     return next(
         (
@@ -709,6 +734,42 @@ class TestFeatureTimeline(unittest.TestCase):
             self.timeline_widget,
         )
         self.assertFalse(self.timeline_widget.isHidden())
+
+    def test_history_icons_follow_owning_body_visibility(self):
+        self.body.ViewObject.Visibility = True
+
+        def body_items_with_state(state):
+            items = [
+                item
+                for item in _object_items(self.timeline).values()
+                if item.data(OWNER_NAME_ROLE) == self.body.Name
+            ]
+            return (
+                items
+                if items
+                and all(
+                    "Body visibility: {}".format(state) in item.toolTip()
+                    for item in items
+                )
+                else None
+            )
+
+        visible_items = _wait_until(lambda: body_items_with_state("Visible"))
+        self.assertIsNotNone(visible_items)
+        visible_pixels = _icon_pixels(
+            _object_items(self.timeline)[self.first.Name].icon()
+        )
+
+        self.body.ViewObject.Visibility = False
+        hidden_items = _wait_until(lambda: body_items_with_state("Hidden"))
+        self.assertIsNotNone(hidden_items)
+        hidden_pixels = _icon_pixels(
+            _object_items(self.timeline)[self.first.Name].icon()
+        )
+
+        self.assertTrue(_is_grayscale(hidden_pixels))
+        if _has_colored_pixel(visible_pixels):
+            self.assertNotEqual(hidden_pixels, visible_pixels)
 
     def test_long_history_rebuild_reveals_current_state_marker(self):
         Gui.Selection.clearSelection()

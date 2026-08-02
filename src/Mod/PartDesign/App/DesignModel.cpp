@@ -1835,6 +1835,24 @@ DesignOperationEdit DesignModel::beginOperationEdit(App::DocumentObject& operati
 
 std::vector<Body*> DesignModel::finalizeOperation(DesignOperationEdit& edit)
 {
+    return finalizeOperationImpl(edit, false);
+}
+
+std::vector<Body*> DesignModel::finalizeScriptOperation(DesignOperationEdit& edit)
+{
+    if (!freecad_cast<DesignScriptOperation*>(edit.operation)) {
+        throw Base::TypeError(
+            "Only a DesignScriptOperation can use deferred downstream recompute"
+        );
+    }
+    return finalizeOperationImpl(edit, true);
+}
+
+std::vector<Body*> DesignModel::finalizeOperationImpl(
+    DesignOperationEdit& edit,
+    bool affectedBodiesOnly
+)
+{
     auto* operation = edit.operation;
     auto* document = operation ? operation->getDocument() : nullptr;
     auto* properties = dynamic_cast<DesignOperationProperties*>(operation);
@@ -1889,7 +1907,26 @@ std::vector<Body*> DesignModel::finalizeOperation(DesignOperationEdit& edit)
         }
         targets.front()->Label.setValue(generated->OutputLabel.getValue());
     }
-    document->recompute();
+    if (affectedBodiesOnly) {
+        std::vector<App::DocumentObject*> affectedBodies;
+        affectedBodies.reserve(targets.size());
+        for (auto* body : targets) {
+            affectedBodies.push_back(body);
+        }
+        bool hasError = false;
+        document->recompute(affectedBodies, true, &hasError);
+        if (hasError
+            || std::ranges::any_of(targets, [](const Body* body) {
+                   return !body || !body->isValid();
+               })) {
+            throw Base::RuntimeError(
+                "A VibeScript output Body failed its targeted publication recompute"
+            );
+        }
+    }
+    else {
+        document->recompute();
+    }
     validateDesign(*document);
     return targets;
 }

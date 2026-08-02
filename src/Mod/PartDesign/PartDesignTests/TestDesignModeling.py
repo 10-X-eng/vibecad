@@ -3371,6 +3371,50 @@ class TestDesignModeling(unittest.TestCase):
         PartDesign.validateDesign(operation)
         self._assert_dependency_graph_acyclic(self.document)
 
+    def test_vibescript_finalizer_leaves_unrelated_document_branch_deferred(self):
+        class RecomputeCounter:
+            def __init__(self):
+                self.count = 0
+
+            def execute(self, _object):
+                self.count += 1
+
+        unrelated = self.document.addObject("App::FeaturePython", "Unrelated")
+        counter = RecomputeCounter()
+        unrelated.Proxy = counter
+        self.document.recompute()
+        baseline_count = counter.count
+        unrelated.touch()
+
+        program = self.document.addObject("App::Part", "ScriptProgram")
+        self.document.openTransaction("Publish targeted VibeScript program")
+        operation = self.document.addObject(
+            "PartDesign::DesignScriptOperation",
+            "ScriptOperation",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        PartDesign.setDesignScriptOutputs(
+            edit,
+            program.Name,
+            "program-targeted-recompute",
+            "revision-1",
+            ["Housing"],
+            ["Housing"],
+            [Part.makeBox(12, 8, 3)],
+            [None],
+        )
+        bodies = PartDesign.finalizeDesignScriptOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(counter.count, baseline_count)
+        self.assertIn("Touched", [str(state) for state in unrelated.State])
+        self.assertEqual(len(bodies), 1)
+        self.assertAlmostEqual(bodies[0].Shape.Volume, 288.0)
+        PartDesign.validateDesign(operation)
+
+        self.document.recompute()
+        self.assertGreater(counter.count, baseline_count)
+
     def test_vibescript_program_tracks_mixed_outputs_without_fake_bodies(self):
         program = self.document.addObject("App::Part", "ScriptProgram")
 

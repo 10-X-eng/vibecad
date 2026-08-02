@@ -868,7 +868,24 @@ bool Application::canRecomputeRequestOnWorker(const RecomputeRequest& req) const
 {
     if (!req.documentObjectName.empty()) {
         DocumentObject* documentObject = req.resolveDocumentObject();
-        return documentObject && documentObject->canRecomputeOnWorker();
+        if (!documentObject || !documentObject->canRecomputeOnWorker()) {
+            return false;
+        }
+        if (!req.recursive) {
+            return true;
+        }
+        try {
+            const auto dependencies = Document::getDependencyList(
+                std::vector<DocumentObject*> {documentObject},
+                Document::DepSort
+            );
+            return std::ranges::all_of(dependencies, [](const DocumentObject* object) {
+                return object && object->canRecomputeOnWorker();
+            });
+        }
+        catch (const Base::BadGraphError&) {
+            return false;
+        }
     }
 
     Document* document = req.resolveDocument();

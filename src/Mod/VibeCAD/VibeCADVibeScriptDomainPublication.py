@@ -14639,7 +14639,7 @@ def _publish_partdesign_design_candidate(
             [str(item["name"]) for item in items],
             [str(item["type"]) for item in items],
         )
-        bodies = list(PartDesign.finalizeDesignOperationEdit(edit))
+        bodies = list(PartDesign.finalizeDesignScriptOperationEdit(edit))
         if len(bodies) != len(body_items):
             raise RuntimeError(
                 "The Design VibeScript operation did not publish one Body per "

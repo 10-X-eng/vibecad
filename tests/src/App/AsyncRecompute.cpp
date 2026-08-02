@@ -116,6 +116,18 @@ TEST_F(AsyncRecomputeTest, WorkerSafetyIsCheckedFromRequest)
     EXPECT_FALSE(
         App::GetApplication().canRecomputeRequestOnWorker(App::RecomputeRequest::fromDocument(*_doc))
     );
+
+    safeObject->Source1.setValue(unsafeObject);
+    EXPECT_TRUE(
+        App::GetApplication().canRecomputeRequestOnWorker(
+            App::RecomputeRequest::fromDocumentObject(*safeObject, false)
+        )
+    );
+    EXPECT_FALSE(
+        App::GetApplication().canRecomputeRequestOnWorker(
+            App::RecomputeRequest::fromDocumentObject(*safeObject, true)
+        )
+    );
 }
 
 TEST_F(AsyncRecomputeTest, StrictBatchQueueRejectsAtomically)

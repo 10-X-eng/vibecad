@@ -182,6 +182,133 @@ def _wait_for_document_idle(
         time.sleep(0.05)
 
 
+def _deferred_publication_recompute(
+    service: VibeCADService,
+    publication: Mapping[str, Any],
+    *,
+    dispatch: DocumentThreadDispatch | None,
+    cancellation_check: CancellationCheck | None,
+    progress_callback: ProgressCallback | None,
+) -> dict[str, Any]:
+    """Refresh exact native downstream carriers without occupying Qt when safe."""
+
+    if publication.get("recompute_deferred") is not True:
+        return {"scheduled": False, "mode": "not_requested", "target_count": 0}
+    downstream = publication.get("downstream_references")
+    if not isinstance(downstream, Mapping):
+        return {"scheduled": False, "mode": "no_downstream", "target_count": 0}
+    requested_names = list(
+        dict.fromkeys(
+            str(name).strip()
+            for name in list(downstream.get("part_recompute_objects") or [])
+            if str(name).strip()
+        )
+    )
+    if not requested_names:
+        return {"scheduled": False, "mode": "no_targets", "target_count": 0}
+
+    _emit(
+        progress_callback,
+        {
+            "event": "document_recompute_waiting",
+            "phase": "scheduling",
+            "target_count": len(requested_names),
+        },
+    )
+
+    def schedule() -> dict[str, Any]:
+        document = service._active_document()
+        if document is None:
+            raise RuntimeError("The active document closed before downstream recompute.")
+        targets = [document.getObject(name) for name in requested_names]
+        missing = [
+            name for name, target in zip(requested_names, targets) if target is None
+        ]
+        if missing:
+            raise RuntimeError(
+                "Downstream recompute targets disappeared: " + ", ".join(missing)
+            )
+        live_targets = [target for target in targets if target is not None]
+        async_recompute = getattr(document, "recomputeAsync", None)
+        if callable(async_recompute):
+            try:
+                queued = int(async_recompute(live_targets, True))
+                return {
+                    "scheduled": True,
+                    "mode": "worker",
+                    "target_count": len(live_targets),
+                    "request_count": queued,
+                    "document": str(document.Name),
+                }
+            except Exception as exc:
+                async_error = str(exc)
+        else:
+            async_error = "Document.recomputeAsync is unavailable"
+
+        # Preserve correctness for a thread-affine dependency chain. This is
+        # intentionally a narrow, exact-target fallback rather than a full
+        # document recompute.
+        recomputed = int(document.recompute(live_targets, True, True))
+        return {
+            "scheduled": True,
+            "mode": "document_thread_fallback",
+            "target_count": len(live_targets),
+            "recomputed_object_count": recomputed,
+            "async_rejection": async_error,
+            "document": str(document.Name),
+        }
+
+    started = time.monotonic()
+    scheduled = _on_document_thread(dispatch, schedule)
+    if scheduled.get("mode") == "worker":
+        # Publication has already committed at this point.  A provider-side
+        # cancellation must not let the lifecycle accept or reject the
+        # candidate while FreeCAD is still mutating its downstream graph.
+        # Keep the UI responsive, but wait for the native request to reach a
+        # stable document boundary before returning control to the lifecycle.
+        idle = _wait_for_document_idle(
+            service,
+            dispatch,
+            None,
+            progress_callback,
+        )
+        scheduled["idle"] = idle
+        if not idle.get("ok"):
+            scheduled["completed"] = False
+            scheduled["elapsed_seconds"] = round(time.monotonic() - started, 4)
+            return scheduled
+
+    def inspect() -> dict[str, Any]:
+        document = service._active_document()
+        if document is None:
+            return {"ok": False, "error": "The document closed after recompute."}
+        problems = []
+        for name in requested_names:
+            obj = document.getObject(name)
+            if obj is None:
+                problems.append({"object": name, "state": ["Missing"]})
+                continue
+            state = [str(value) for value in list(getattr(obj, "State", []) or [])]
+            if any(value in {"Invalid", "Error"} for value in state):
+                problems.append({"object": name, "state": state})
+        return {"ok": not problems, "problems": problems}
+
+    scheduled["inspection"] = _on_document_thread(dispatch, inspect)
+    scheduled["completed"] = bool(scheduled["inspection"].get("ok"))
+    scheduled["elapsed_seconds"] = round(time.monotonic() - started, 4)
+    _emit(
+        progress_callback,
+        {
+            "event": "vibescript_domain_deferred_recompute_completed",
+            "mode": scheduled.get("mode"),
+            "target_count": scheduled.get("target_count"),
+            "elapsed_seconds": scheduled["elapsed_seconds"],
+            "ok": scheduled["completed"],
+        },
+    )
+    return scheduled
+
+
 def _document_idle_failure(
     tool_name: str,
     requested: dict[str, Any],
@@ -1175,6 +1302,46 @@ def _run_domain_vibescript_tool(
         retain_candidate,
     )
 
+    lifecycle_started = time.monotonic()
+    phase_timings: dict[str, float] = {}
+
+    def run_phase(phase: str, callback: Callable[[], Any]) -> Any:
+        _emit(
+            progress_callback,
+            {
+                "event": "vibescript_domain_phase_started",
+                "tool_name": tool_name,
+                "phase": phase,
+            },
+        )
+        started = time.monotonic()
+        completed = False
+        try:
+            value = callback()
+            completed = True
+            return value
+        finally:
+            elapsed = round(time.monotonic() - started, 4)
+            phase_timings[phase] = elapsed
+            _emit(
+                progress_callback,
+                {
+                    "event": "vibescript_domain_phase_completed",
+                    "tool_name": tool_name,
+                    "phase": phase,
+                    "elapsed_seconds": elapsed,
+                    "ok": completed,
+                },
+            )
+
+    def finish(payload: dict[str, Any]) -> dict[str, Any]:
+        payload["phase_timings_seconds"] = dict(phase_timings)
+        payload["lifecycle_elapsed_seconds"] = round(
+            time.monotonic() - lifecycle_started,
+            4,
+        )
+        return payload
+
     def candidate_model_state(prepared: Mapping[str, Any]) -> dict[str, Any]:
         program_id = str(prepared["program_id"])
         working_revision = str(prepared["revision"])
@@ -1222,16 +1389,22 @@ def _run_domain_vibescript_tool(
         return describe_api(pack)
     try:
         if operation == "inspect_program":
-            captured = _on_document_thread(
-                document_thread_dispatch,
-                lambda: capture_inspection_state(
-                    service, tool_name, str(args["program_id"])
+            captured = run_phase(
+                "capture",
+                lambda: _on_document_thread(
+                    document_thread_dispatch,
+                    lambda: capture_inspection_state(
+                        service, tool_name, str(args["program_id"])
+                    ),
                 ),
             )
-            return complete_inspection(captured)
-        captured = _on_document_thread(
-            document_thread_dispatch,
-            lambda: capture_operation_state(service, tool_name, args),
+            return finish(complete_inspection(captured))
+        captured = run_phase(
+            "capture",
+            lambda: _on_document_thread(
+                document_thread_dispatch,
+                lambda: capture_operation_state(service, tool_name, args),
+            ),
         )
         if allow_unchanged_revision:
             captured["allow_unchanged_revision"] = True
@@ -1250,14 +1423,20 @@ def _run_domain_vibescript_tool(
                 restore_prepared_delete(prepared_delete)
                 raise
             return finish_delete(prepared_delete, publication)
-        prepared = prepare_candidate(captured)
+        prepared = run_phase("prepare", lambda: prepare_candidate(captured))
         if prepared.get("reference_requirements") and not prepared.get("finalized"):
             try:
-                snapshots = _on_document_thread(
-                    document_thread_dispatch,
-                    lambda: capture_reference_inputs(service, prepared),
+                snapshots = run_phase(
+                    "capture_references",
+                    lambda: _on_document_thread(
+                        document_thread_dispatch,
+                        lambda: capture_reference_inputs(service, prepared),
+                    ),
                 )
-                prepared = finalize_candidate(prepared, snapshots)
+                prepared = run_phase(
+                    "finalize_candidate",
+                    lambda: finalize_candidate(prepared, snapshots),
+                )
             except Exception:
                 abandon_prepared_candidate(prepared)
                 raise
@@ -1270,8 +1449,12 @@ def _run_domain_vibescript_tool(
                 "revision": prepared["revision"],
             },
         )
-        execution = adapter.execute_candidate(
-            prepared, cancellation_check=cancellation_check
+        execution = run_phase(
+            "worker",
+            lambda: adapter.execute_candidate(
+                prepared,
+                cancellation_check=cancellation_check,
+            ),
         )
         if execution.get("ok") is not True:
             retained = retain_candidate(prepared, status="failed", failure=execution)
@@ -1282,9 +1465,12 @@ def _run_domain_vibescript_tool(
                 "accepted_revision": prepared["accepted_revision_before"],
             }
             execution["model_state"] = candidate_model_state(prepared)
-            return execution
+            return finish(execution)
         try:
-            validated = adapter.validate_result(prepared, execution)
+            validated = run_phase(
+                "validate",
+                lambda: adapter.validate_result(prepared, execution),
+            )
         except DomainRuntimeFailure as exc:
             retained = retain_candidate(
                 prepared, status="validation_failed", failure=exc.payload
@@ -1296,7 +1482,7 @@ def _run_domain_vibescript_tool(
                 "accepted_revision": prepared["accepted_revision_before"],
             }
             exc.payload["model_state"] = candidate_model_state(prepared)
-            return exc.payload
+            return finish(exc.payload)
         except Exception as exc:
             failure = tool_failure(
                 tool_name,
@@ -1316,12 +1502,15 @@ def _run_domain_vibescript_tool(
                 "accepted_revision": prepared["accepted_revision_before"],
             }
             failure["model_state"] = candidate_model_state(prepared)
-            return failure
+            return finish(failure)
         retain_candidate(prepared, status="validated")
         try:
-            publication = _on_document_thread(
-                document_thread_dispatch,
-                lambda: adapter.publish(service, prepared, validated),
+            publication = run_phase(
+                "publish",
+                lambda: _on_document_thread(
+                    document_thread_dispatch,
+                    lambda: adapter.publish(service, prepared, validated),
+                ),
             )
         except Exception as exc:
             failure = tool_failure(
@@ -1342,9 +1531,20 @@ def _run_domain_vibescript_tool(
                 "accepted_revision": prepared["accepted_revision_before"],
             }
             failure["model_state"] = candidate_model_state(prepared)
-            return failure
+            return finish(failure)
+        deferred_recompute = run_phase(
+            "deferred_recompute",
+            lambda: _deferred_publication_recompute(
+                service,
+                publication,
+                dispatch=document_thread_dispatch,
+                cancellation_check=cancellation_check,
+                progress_callback=progress_callback,
+            ),
+        )
         payload = accept_candidate(prepared, publication)
         payload["source_id"] = str(payload.get("program_id") or prepared["program_id"])
+        payload["deferred_recompute"] = deferred_recompute
         _emit(
             progress_callback,
             {
@@ -1355,17 +1555,19 @@ def _run_domain_vibescript_tool(
                 "output_count": len(payload.get("outputs") or []),
             },
         )
-        return payload
+        return finish(payload)
     except DomainRuntimeFailure as exc:
-        return exc.payload
+        return finish(exc.payload)
     except Exception as exc:
-        return tool_failure(
-            tool_name,
-            "DOMAIN_LIFECYCLE_FAILED",
-            "external_process",
-            str(exc),
-            requested=args,
-            observed={"exception_type": exc.__class__.__name__},
+        return finish(
+            tool_failure(
+                tool_name,
+                "DOMAIN_LIFECYCLE_FAILED",
+                "external_process",
+                str(exc),
+                requested=args,
+                observed={"exception_type": exc.__class__.__name__},
+            )
         )
 
 
@@ -2567,7 +2769,16 @@ def apply_domain_vibescript_editor_candidate(
         )
         retain_candidate(prepared, status="publication_failed", failure=failure)
         return failure
-    return accept_candidate(prepared, publication)
+    deferred_recompute = _deferred_publication_recompute(
+        service,
+        publication,
+        dispatch=document_thread_dispatch,
+        cancellation_check=cancellation_check,
+        progress_callback=None,
+    )
+    payload = accept_candidate(prepared, publication)
+    payload["deferred_recompute"] = deferred_recompute
+    return payload
 
 
 def make_provider_tool_runner(
@@ -2993,6 +3204,14 @@ def make_provider_tool_runner(
             finally:
                 cleanup_isolated_measurement(prepared)
             return finalize(payload)
+        _emit(
+            progress_callback,
+            {
+                "event": "native_tool_document_phase_started",
+                "tool_name": tool_name,
+            },
+        )
+        document_phase_started = time.monotonic()
         try:
             raw = _on_document_thread(
                 document_thread_dispatch,
@@ -3011,6 +3230,23 @@ def make_provider_tool_runner(
                 requested=args,
                 observed={"exception_type": exc.__class__.__name__},
             )
+        document_thread_elapsed = round(
+            time.monotonic() - document_phase_started,
+            4,
+        )
+        payload.setdefault(
+            "document_thread_elapsed_seconds",
+            document_thread_elapsed,
+        )
+        _emit(
+            progress_callback,
+            {
+                "event": "native_tool_document_phase_completed",
+                "tool_name": tool_name,
+                "elapsed_seconds": document_thread_elapsed,
+                "ok": bool(payload.get("ok")),
+            },
+        )
         try:
             steering = _consume_steering(steering_check)
         except Exception as exc:

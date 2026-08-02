@@ -6,6 +6,7 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -19,6 +20,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QImage>
 #include <QListView>
 #include <QListWidget>
 #include <QMenu>
@@ -71,9 +73,30 @@ constexpr int timelineHeight = 56;
 constexpr int timelineItemHeight = 34;
 constexpr int timelineItemWidth = 38;
 
-QIcon timelineObjectIcon(const QIcon& base, const App::DocumentObject* object, bool disabled)
+QPixmap desaturatePixmap(const QPixmap& source)
+{
+    QImage image = source.toImage().convertToFormat(QImage::Format_ARGB32);
+    for (int y = 0; y < image.height(); ++y) {
+        auto* pixels = reinterpret_cast<QRgb*>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            const int gray = qGray(pixels[x]);
+            pixels[x] = qRgba(gray, gray, gray, qAlpha(pixels[x]));
+        }
+    }
+    return QPixmap::fromImage(image);
+}
+
+QIcon timelineObjectIcon(
+    const QIcon& base,
+    const App::DocumentObject* object,
+    bool disabled,
+    bool owningBodyHidden
+)
 {
     QPixmap pixmap = base.pixmap(QSize(22, 22), disabled ? QIcon::Disabled : QIcon::Normal);
+    if (owningBodyHidden) {
+        pixmap = desaturatePixmap(pixmap);
+    }
     const char* overlayName = nullptr;
     if (object && object->isError()) {
         overlayName = "overlay_error";
@@ -553,6 +576,20 @@ App::DocumentObject* operationOwner(
         return entry->object;
     }
     return entry->body ? entry->body : entry->component;
+}
+
+std::optional<bool> owningBodyVisibility(const App::DocumentObject* owner)
+{
+    if (!ModelTreeBrowserProjection::isBody(owner) || !Gui::Application::Instance) {
+        return std::nullopt;
+    }
+    const auto* viewProvider = dynamic_cast<const Gui::ViewProviderDocumentObject*>(
+        Gui::Application::Instance->getViewProvider(owner)
+    );
+    if (!viewProvider || !viewProvider->canToggleVisibility()) {
+        return std::nullopt;
+    }
+    return viewProvider->isShow();
 }
 
 class TimelineApplyingGuard
@@ -1297,6 +1334,7 @@ void FeatureTimeline::rebuild()
         const bool isCurrent = static_cast<int>(index) == lastActiveVisible;
         const bool afterPosition = !controller->isOperationActive(object);
         auto* owner = operationOwner(object, projection);
+        const std::optional<bool> bodyVisible = owningBodyVisibility(owner);
         const QString label = objectLabel(object);
         const QString ownerLabel = owner && owner != object ? objectLabel(owner) : QString();
         const QString statusText = timelineStatusText(object);
@@ -1330,7 +1368,14 @@ void FeatureTimeline::rebuild()
                     Gui::Application::Instance->getViewProvider(iconObject)
                 )) {
                 const QIcon icon = viewProvider->getIcon();
-                item->setIcon(timelineObjectIcon(icon, object, afterPosition));
+                item->setIcon(
+                    timelineObjectIcon(
+                        icon,
+                        object,
+                        afterPosition,
+                        bodyVisible.has_value() && !*bodyVisible
+                    )
+                );
             }
         }
 
@@ -1345,26 +1390,35 @@ void FeatureTimeline::rebuild()
 
         const QString ownershipText = ownerLabel.isEmpty() ? QString()
                                                            : tr("\nPart: %1").arg(ownerLabel);
+        const QString visibilityText = !bodyVisible.has_value()
+            ? QString()
+            : *bodyVisible ? tr("\nBody visibility: Visible")
+                           : tr("\nBody visibility: Hidden");
         if (afterPosition) {
             item->setForeground(palette().brush(QPalette::Disabled, QPalette::Text));
             item->setToolTip(
                 statusText.isEmpty()
-                    ? tr("%1%2\nAfter the current document state").arg(label, ownershipText)
-                    : tr("%1%2\n%3\nAfter the current document state").arg(label, ownershipText, statusText)
+                    ? tr("%1%2%3\nAfter the current document state")
+                          .arg(label, ownershipText, visibilityText)
+                    : tr("%1%2%3\n%4\nAfter the current document state")
+                          .arg(label, ownershipText, visibilityText, statusText)
             );
         }
         else if (isCurrent) {
             item->setForeground(palette().brush(QPalette::Active, QPalette::Link));
             item->setToolTip(
                 statusText.isEmpty()
-                    ? tr("%1%2\nCurrent document state").arg(label, ownershipText)
-                    : tr("%1%2\n%3\nCurrent document state").arg(label, ownershipText, statusText)
+                    ? tr("%1%2%3\nCurrent document state")
+                          .arg(label, ownershipText, visibilityText)
+                    : tr("%1%2%3\n%4\nCurrent document state")
+                          .arg(label, ownershipText, visibilityText, statusText)
             );
         }
         else {
             item->setToolTip(
-                statusText.isEmpty() ? tr("%1%2").arg(label, ownershipText)
-                                     : tr("%1%2\n%3").arg(label, ownershipText, statusText)
+                statusText.isEmpty()
+                    ? tr("%1%2%3").arg(label, ownershipText, visibilityText)
+                    : tr("%1%2%3\n%4").arg(label, ownershipText, visibilityText, statusText)
             );
         }
 
