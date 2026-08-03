@@ -56,6 +56,11 @@ PROP_MECHANISM_ASSEMBLY_OUTPUT = "VibeCADMechanismAssemblyOutput"
 PROP_MECHANISM_STATIC_CHECK = "VibeCADMechanismStaticCheck"
 PROP_MECHANISM_VERIFICATION_REPORT = "VibeCADMechanismVerificationReport"
 PROP_PARTDESIGN_HISTORY_KEY = "VibeCADPartDesignHistoryKey"
+PROP_PARTDESIGN_COMPONENT_OCCURRENCES = "VibeCADPartDesignComponentOccurrences"
+PROP_COMPONENT_AUTHORED_PLACEMENT = "VibeCADComponentAuthoredPlacement"
+PROP_ASSEMBLY_ADOPTED_OUTPUTS = "VibeCADAssemblyAdoptedOutputs"
+PROP_ASSEMBLY_ADOPTED_OCCURRENCES = "VibeCADAssemblyAdoptedOccurrences"
+PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES = "VibeCADAssemblyAdoptedOccurrenceNames"
 MATERIAL_OWNERSHIP_SCHEMA = "vibecad-material-ownership-v1"
 PARTDESIGN_PRESENTATION_OWNERSHIP_SCHEMA = (
     "vibecad-partdesign-presentation-ownership-v1"
@@ -488,6 +493,183 @@ def _configure_assembly_dependency_anchor(
         _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE,
         _definition(assembly_item),
     )
+
+
+def _assembly_adopted_occurrences(anchor: Any | None) -> dict[str, Any]:
+    """Read the exact Assembly-output mapping for borrowed Model occurrences."""
+
+    if anchor is None:
+        return {}
+    properties = _properties(anchor)
+    if PROP_ASSEMBLY_ADOPTED_OUTPUTS not in properties:
+        return {}
+    names = [
+        str(value or "")
+        for value in list(getattr(anchor, PROP_ASSEMBLY_ADOPTED_OUTPUTS, []) or [])
+    ]
+    if PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES in properties:
+        object_names = [
+            str(value or "")
+            for value in list(
+                getattr(anchor, PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES, []) or []
+            )
+        ]
+        document = getattr(anchor, "Document", None)
+        occurrences = [
+            document.getObject(object_name)
+            if document is not None and object_name
+            else None
+            for object_name in object_names
+        ]
+    elif PROP_ASSEMBLY_ADOPTED_OCCURRENCES in properties:
+        # Compatibility with the first occurrence-adoption documents. New
+        # documents store stable object names because a top-level resource link
+        # into an Assembly child is out of native PropertyXLink scope.
+        occurrences = list(
+            getattr(anchor, PROP_ASSEMBLY_ADOPTED_OCCURRENCES, []) or []
+        )
+    else:
+        return {}
+    if (
+        len(names) != len(occurrences)
+        or any(not name or "." in name for name in names)
+        or len(set(names)) != len(names)
+        or any(occurrence is None for occurrence in occurrences)
+        or len({id(occurrence) for occurrence in occurrences})
+        != len(occurrences)
+    ):
+        raise RuntimeError(
+            "Assembly borrowed-occurrence metadata is malformed."
+        )
+    return dict(zip(names, occurrences))
+
+
+def _set_assembly_adopted_occurrences(
+    anchor: Any,
+    occurrences: Mapping[str, Any],
+) -> None:
+    """Persist output identity without overwriting the borrowed object's owner."""
+
+    ordered = sorted((str(name), obj) for name, obj in occurrences.items())
+    if any(not name or "." in name or obj is None for name, obj in ordered):
+        raise RuntimeError("Assembly borrowed-occurrence mapping is invalid.")
+    if len({id(obj) for _name, obj in ordered}) != len(ordered):
+        raise RuntimeError(
+            "One existing occurrence cannot back multiple Assembly outputs. "
+            "Create another linked occurrence with api.component or api.instances."
+        )
+    _add_property(
+        anchor,
+        "App::PropertyStringList",
+        PROP_ASSEMBLY_ADOPTED_OUTPUTS,
+        "Assembly output names backed by existing Model occurrences.",
+    )
+    _add_property(
+        anchor,
+        "App::PropertyStringList",
+        PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES,
+        "Stable object names of existing occurrences adopted by this Assembly.",
+    )
+    setattr(anchor, PROP_ASSEMBLY_ADOPTED_OUTPUTS, [name for name, _obj in ordered])
+    setattr(
+        anchor,
+        PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES,
+        [str(obj.Name) for _name, obj in ordered],
+    )
+    if PROP_ASSEMBLY_ADOPTED_OCCURRENCES in _properties(anchor):
+        setattr(anchor, PROP_ASSEMBLY_ADOPTED_OCCURRENCES, [])
+    _hide_property(anchor, PROP_ASSEMBLY_ADOPTED_OUTPUTS)
+    _hide_property(anchor, PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES)
+    if PROP_ASSEMBLY_ADOPTED_OCCURRENCES in _properties(anchor):
+        _hide_property(anchor, PROP_ASSEMBLY_ADOPTED_OCCURRENCES)
+
+
+def _assembly_adoption_target(
+    doc: Any,
+    item: Mapping[str, Any],
+) -> Any | None:
+    """Return an existing local occurrence that Assembly must reuse in place."""
+
+    if (
+        str(item.get("type") or "") != "component_link"
+        or str(_definition(item).get("operation") or "") != "component"
+    ):
+        return None
+    data = item.get("assembly_data")
+    data = dict(data) if isinstance(data, Mapping) else {}
+    source = data.get("source")
+    if source is None:
+        source = _definition_argument(_definition(item), 0, "source")
+    target = _reference_target(
+        doc,
+        source,
+        f"output {item.get('name')} source",
+    )
+    if getattr(target, "Document", None) is not doc:
+        return None
+    properties = _properties(target)
+    if (
+        str(getattr(target, "TypeId", "") or "") != "App::Link"
+        or contracts.PROP_PROGRAM_ID not in properties
+        or contracts.PROP_PROGRAM_DOMAIN not in properties
+        or PROP_OUTPUT_TYPE not in properties
+        or str(getattr(target, PROP_OUTPUT_TYPE, "") or "") != "component_link"
+        or str(getattr(target, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+        not in {"partdesign", "robot"}
+    ):
+        return None
+    return target
+
+
+def _assembly_occurrence_containers(occurrence: Any) -> list[Any]:
+    return [
+        owner
+        for owner in list(getattr(occurrence, "InList", []) or [])
+        if str(getattr(owner, "TypeId", "") or "")
+        == "Assembly::AssemblyObject"
+    ]
+
+
+def _adopt_assembly_occurrence(
+    assembly: Any,
+    occurrence: Any,
+    *,
+    output_name: str,
+) -> None:
+    owners = _assembly_occurrence_containers(occurrence)
+    foreign = [owner for owner in owners if owner is not assembly]
+    if foreign:
+        raise RuntimeError(
+            f"Model occurrence {occurrence.Name!r} is already adopted by Assembly "
+            f"{foreign[0].Name!r}; one occurrence cannot belong to two mechanisms. "
+            "Create another linked occurrence with api.component or api.instances."
+        )
+    if not owners:
+        add_object = getattr(assembly, "addObject", None)
+        if not callable(add_object):
+            raise RuntimeError(
+                "The native Assembly container cannot adopt an existing occurrence."
+            )
+        add_object(occurrence)
+    if assembly not in _assembly_occurrence_containers(occurrence):
+        raise RuntimeError(
+            f"Assembly failed to adopt Model occurrence for output {output_name!r}."
+        )
+
+
+def _release_assembly_occurrence(assembly: Any, occurrence: Any) -> None:
+    if assembly not in _assembly_occurrence_containers(occurrence):
+        return
+    remove_object = getattr(assembly, "removeObject", None)
+    if not callable(remove_object):
+        raise RuntimeError(
+            "The native Assembly container cannot release a borrowed occurrence."
+        )
+    remove_object(occurrence)
+    if assembly in _assembly_occurrence_containers(occurrence):
+        raise RuntimeError(
+            f"Assembly failed to release borrowed occurrence {occurrence.Name!r}."
+        )
 
 
 def migrate_assembly_dependency_anchors(doc: Any) -> dict[str, Any]:
@@ -3191,9 +3373,26 @@ def _configure_component(
                 "Keep the mode or return the changed component under a new output name",
                 external,
             )
-    initial_placement = _placement(
-        properties.get("placement") or properties.get("position")
+    authored_placement = properties.get("placement") or properties.get("position")
+    authored_placement_state = {
+        "placement": authored_placement,
+        "placement_authored": bool(properties.get("placement_authored")),
+    }
+    encoded_authored_placement = json.dumps(
+        authored_placement_state,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     )
+    preserve_live_placement = (
+        prepared["pack"].domain in {"partdesign", "robot"}
+        and PROP_COMPONENT_AUTHORED_PLACEMENT in _properties(obj)
+        and str(getattr(obj, PROP_COMPONENT_AUTHORED_PLACEMENT, "") or "")
+        == encoded_authored_placement
+        and getattr(obj, "LinkedObject", None) is not None
+    )
+    initial_placement = _placement(authored_placement)
     obj.LinkedObject = target
     if is_assembly_link:
         if not was_linked or mode_changed:
@@ -3201,8 +3400,15 @@ def _configure_component(
             obj.Rigid = not flexible
     if item.get("solved_placement_matrix") is not None:
         obj.Placement = _placement_from_matrix(item["solved_placement_matrix"])
-    else:
+    elif not preserve_live_placement:
         obj.Placement = initial_placement
+    _add_string_property(
+        obj,
+        PROP_COMPONENT_AUTHORED_PLACEMENT,
+        "Last source-authored component placement; live solved placement may differ.",
+    )
+    setattr(obj, PROP_COMPONENT_AUTHORED_PLACEMENT, encoded_authored_placement)
+    _hide_property(obj, PROP_COMPONENT_AUTHORED_PLACEMENT)
     reference = _assembly_component_reference(prepared, item)
     descriptor = (
         reference.get("assembly_hierarchy")
@@ -3246,6 +3452,27 @@ def _configure_component(
                 list(local.get("matrix") or [])
             )
     return []
+
+
+def _configure_adopted_assembly_component(
+    obj: Any,
+    item: Mapping[str, Any],
+) -> None:
+    """Apply Assembly state without turning a borrowed link into a self-link."""
+
+    properties = _definition_properties(item)
+    if bool(properties.get("flexible")):
+        raise RuntimeError(
+            f"Borrowed Model occurrence {item['name']!r} cannot be flexible. "
+            "Flexible mode is only valid for a native subassembly definition."
+        )
+    solved = item.get("solved_placement_matrix")
+    if solved is not None:
+        obj.Placement = _placement_from_matrix(solved)
+    elif bool(properties.get("placement_authored")):
+        obj.Placement = _placement(
+            properties.get("placement") or properties.get("position")
+        )
 
 
 def _configure_component_grounding(
@@ -8042,13 +8269,14 @@ def _restore_robot_exact_property(obj: Any, name: str, captured: Any) -> None:
 
 
 def _robot_rollback_states(objects: list[Any]) -> list[dict[str, Any]]:
-    """Capture every accepted Robot object except its transferable trajectory."""
+    """Capture every accepted Robot-domain output for exact rollback."""
 
     allowed = {
         "Robot::RobotObject",
         "Robot::TrajectoryObject",
         "Robot::TrajectoryDressUpObject",
         "App::FeaturePython",
+        "App::Link",
     }
     states = []
     for obj in objects:
@@ -9064,6 +9292,15 @@ def _configure_object(
         _configure_reverse_engineering(obj, item)
     elif prepared["pack"].domain == "inspection":
         _configure_inspection(doc, obj, item, outputs)
+    elif output_type == "component_link":
+        owned_resources = _configure_component(
+            doc,
+            obj,
+            item,
+            outputs,
+            prepared,
+            assembly_fastener_sources,
+        )
     elif prepared["pack"].domain == "robot":
         _configure_robot(obj, item, outputs, robot_trajectory_swaps)
     elif prepared["pack"].domain == "fem":
@@ -9074,15 +9311,6 @@ def _configure_object(
         obj.Shape = item["detached_shape"]
     elif output_type == "mesh":
         obj.Mesh = item["detached_mesh"]
-    elif output_type == "component_link":
-        owned_resources = _configure_component(
-            doc,
-            obj,
-            item,
-            outputs,
-            prepared,
-            assembly_fastener_sources,
-        )
     elif output_type == "joint":
         _configure_joint(obj, item, outputs, prepared)
     elif (
@@ -12761,6 +12989,11 @@ def _partdesign_publications(
             or "VibeCADVibeScriptOutputKey" in _properties(obj)
         )
     )
+    candidates.extend(
+        obj
+        for obj in _partdesign_component_occurrences(root)
+        if obj not in candidates
+    )
     for obj in candidates:
         output_name = str(
             getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "")
@@ -12836,6 +13069,9 @@ def _partdesign_interface_table(
         output_name = str(item["name"])
         published = publications[output_name]
         data = item.get("partdesign_data")
+        if str(item.get("type") or "") == "component_link":
+            outputs[output_name] = {}
+            continue
         if not isinstance(data, Mapping):
             raise RuntimeError(
                 f"Part Design output {output_name!r} has no interface evidence."
@@ -12886,6 +13122,124 @@ def _partdesign_interface_table(
         if len(definitions) == 1:
             table[name] = definitions[0]
     return table
+
+
+def _partdesign_component_occurrences(root: Any) -> list[Any]:
+    if PROP_PARTDESIGN_COMPONENT_OCCURRENCES not in _properties(root):
+        return []
+    return list(getattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, []) or [])
+
+
+def _set_partdesign_component_occurrences(root: Any, occurrences: list[Any]) -> None:
+    _add_property(
+        root,
+        "App::PropertyLinkList",
+        PROP_PARTDESIGN_COMPONENT_OCCURRENCES,
+        "Top-level reusable component occurrences owned by this Design program.",
+    )
+    setattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, list(occurrences))
+    _hide_property(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES)
+
+
+def _is_partdesign_component_occurrence(obj: Any) -> bool:
+    return (
+        str(getattr(obj, "TypeId", "") or "") == "App::Link"
+        and str(getattr(obj, PROP_OUTPUT_TYPE, "") or "") == "component_link"
+        and str(getattr(obj, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+        == "partdesign"
+    )
+
+
+def _delete_partdesign_publication(doc: Any, root: Any, published: Any) -> list[str]:
+    if not _is_partdesign_component_occurrence(published):
+        return scripted_publication.delete_publication(doc, root, published)
+    retained = [
+        item
+        for item in _partdesign_component_occurrences(root)
+        if item is not published
+    ]
+    _set_partdesign_component_occurrences(root, retained)
+    name = str(getattr(published, "Name", "") or "")
+    if name and doc.getObject(name) is not None:
+        return _remove_timeline_deletion(
+            doc,
+            _prepare_timeline_deletion(doc, [published]),
+        )
+    return []
+
+
+def _create_partdesign_component_occurrence(
+    doc: Any,
+    root: Any,
+    prepared: Mapping[str, Any],
+    item: Mapping[str, Any],
+) -> Any:
+    output_name = str(item["name"])
+    occurrence = doc.addObject(
+        "App::Link",
+        _internal_name(prepared, output_name),
+    )
+    if occurrence is None:
+        raise RuntimeError(
+            f"FreeCAD did not create component occurrence {output_name!r}."
+        )
+    scripted_publication.tag_object(
+        occurrence,
+        role=scripted_publication.ROLE_IMPLEMENTATION,
+        engine="vibescript:partdesign",
+        model_id=str(prepared["program_id"]),
+        output_key=output_name,
+        revision=str(prepared["revision"]),
+    )
+    _update_partdesign_component_occurrence(
+        doc,
+        root,
+        occurrence,
+        prepared,
+        item,
+    )
+    return occurrence
+
+
+def _update_partdesign_component_occurrence(
+    doc: Any,
+    root: Any,
+    occurrence: Any,
+    prepared: Mapping[str, Any],
+    item: Mapping[str, Any],
+) -> None:
+    output_name = str(item["name"])
+    if str(getattr(occurrence, "TypeId", "") or "") != "App::Link":
+        raise RuntimeError(
+            f"Stable component output {output_name!r} is not an App::Link."
+        )
+    previous_type = str(getattr(occurrence, PROP_OUTPUT_TYPE, "") or "")
+    if previous_type and previous_type != "component_link":
+        raise RuntimeError(
+            f"Stable output {output_name!r} cannot change from {previous_type!r} "
+            "to 'component_link'. Return the occurrence under a new output name."
+        )
+    _configure_component(doc, occurrence, item, {}, prepared)
+    occurrence.Label = str(
+        dict(item.get("component_data") or {}).get("label") or output_name
+    )
+    if hasattr(occurrence, "LinkTransform"):
+        occurrence.LinkTransform = True
+    scripted_publication.tag_object(
+        occurrence,
+        role=scripted_publication.ROLE_IMPLEMENTATION,
+        engine="vibescript:partdesign",
+        model_id=str(prepared["program_id"]),
+        output_key=output_name,
+        revision=str(prepared["revision"]),
+    )
+    _set_metadata(
+        occurrence,
+        prepared,
+        output_name,
+        "component_link",
+        _definition(item),
+    )
 
 
 def _partdesign_history_reference(
@@ -14425,8 +14779,11 @@ def _publish_partdesign_design_candidate(
     previous_presentation = {
         name: _preflight_partdesign_presentation(obj)
         for name, obj in publications.items()
+        if not _is_partdesign_component_occurrence(obj)
     }
     for item in items:
+        if str(item.get("type") or "") == "component_link":
+            continue
         output_name = str(item["name"])
         published = publications.get(output_name)
         if published is None:
@@ -14487,13 +14844,18 @@ def _publish_partdesign_design_candidate(
             )
 
     existing_values = list(publications.values())
+    existing_shape_publications = [
+        obj
+        for obj in existing_values
+        if not _is_partdesign_component_occurrence(obj)
+    ]
     reference_preflight = (
         reference_contracts.preflight_regeneration(
             service,
-            existing_values,
+            existing_shape_publications,
             model_root=root,
         )
-        if root is not None and existing_values
+        if root is not None and existing_shape_publications
         else None
     )
     desired = {str(item["name"]) for item in items}
@@ -14549,8 +14911,9 @@ def _publish_partdesign_design_candidate(
     rollback_targets: dict[int, Any] = {}
     for obj in publications.values():
         rollback_targets[id(obj)] = obj
-        implementation = scripted_publication.publication_target(obj, root)
-        rollback_targets[id(implementation)] = implementation
+        if not _is_partdesign_component_occurrence(obj):
+            implementation = scripted_publication.publication_target(obj, root)
+            rollback_targets[id(implementation)] = implementation
     rollback_states = [
         _material_target_snapshot(obj)
         for obj in rollback_targets.values()
@@ -14582,10 +14945,17 @@ def _publish_partdesign_design_candidate(
             created.append(str(root.Name))
         root.Label = str(prepared["program_name"])
         _tag_partdesign_root(root, prepared)
+        # Component occurrences are top-level History operations. Temporarily
+        # remove the root's semantic LinkList while the native Design
+        # operation replaces its own resources, otherwise the timeline sees a
+        # later occurrence as an implementation dependency of an earlier
+        # consumer. The exact LinkList is restored after all outputs update.
+        if _partdesign_component_occurrences(root):
+            _set_partdesign_component_occurrences(root, [])
 
         for name in retired_names:
             removed.extend(
-                scripted_publication.delete_publication(
+                _delete_partdesign_publication(
                     doc,
                     root,
                     publications.pop(name),
@@ -14675,8 +15045,35 @@ def _publish_partdesign_design_candidate(
                     output_key=name,
                     revision=revision,
                 )
-            carrier = _PartDesignShapeCarrier(item)
             published = publications.get(name)
+            if output_type == "component_link":
+                if published is None:
+                    published = _create_partdesign_component_occurrence(
+                        doc,
+                        root,
+                        prepared,
+                        item,
+                    )
+                    publications[name] = published
+                    created.append(str(published.Name))
+                    rollback_targets[id(published)] = published
+                    rollback_states.append(
+                        _material_target_snapshot(
+                            published,
+                            required_after_abort=False,
+                        )
+                    )
+                else:
+                    _update_partdesign_component_occurrence(
+                        doc,
+                        root,
+                        published,
+                        prepared,
+                        item,
+                    )
+                _set_view_visibility(published, True)
+                continue
+            carrier = _PartDesignShapeCarrier(item)
             if published is None:
                 published = scripted_publication.create_publication(
                     doc,
@@ -14748,6 +15145,15 @@ def _publish_partdesign_design_candidate(
                 # operation but intentionally have no physical Body identity.
                 _set_view_visibility(published, True)
 
+        _set_partdesign_component_occurrences(
+            root,
+            [
+                publications[str(item["name"])]
+                for item in items
+                if str(item.get("type") or "") == "component_link"
+            ],
+        )
+
         ownership_repairs = _repair_partdesign_implementation_body_claims(
             doc,
             program_id,
@@ -14760,7 +15166,11 @@ def _publish_partdesign_design_candidate(
         )
         reference_contracts.validate_removed_interfaces(
             doc,
-            list(publications.values()),
+            [
+                obj
+                for obj in publications.values()
+                if not _is_partdesign_component_occurrence(obj)
+            ],
             program_id,
             reference_contracts.interface_identities(previous_interfaces),
             reference_contracts.interface_identities(interface_table),
@@ -15441,6 +15851,8 @@ def publish_candidate(
     created: list[Any] = []
     removed: list[str] = []
     assembly_dependency_anchor: Any | None = None
+    assembly_previous_adoptions: dict[str, Any] = {}
+    assembly_adoptions: dict[str, Any] = {}
     assembly_fastener_sources: dict[str, Any] = {}
     assembly_replaced_fastener_source_identities: list[tuple[str, int]] = []
     robot_trajectory_swaps: list[dict[str, Any]] = []
@@ -15457,7 +15869,34 @@ def publish_candidate(
         def ensure_output_object(item: Mapping[str, Any], owner: Any | None) -> Any:
             output_name = str(item["name"])
             output_type = str(item["type"])
+            adoption_target = (
+                _assembly_adoption_target(doc, item)
+                if prepared["pack"].domain == "assembly"
+                and owner is not None
+                else None
+            )
+            previous_adoption = assembly_previous_adoptions.get(output_name)
+            if previous_adoption is not None and adoption_target is not previous_adoption:
+                raise RuntimeError(
+                    f"Assembly output {output_name!r} already adopts Model occurrence "
+                    f"{previous_adoption.Name!r}. Keep that source or use a new output "
+                    "name for a different occurrence."
+                )
             obj = outputs.get(output_name) or existing.get(output_name)
+            if adoption_target is not None:
+                if obj is not None and obj is not adoption_target:
+                    raise RuntimeError(
+                        f"Assembly output {output_name!r} already owns a different native "
+                        "occurrence. Use a new output name when adopting an existing "
+                        "Model occurrence."
+                    )
+                obj = adoption_target
+                _adopt_assembly_occurrence(
+                    owner,
+                    obj,
+                    output_name=output_name,
+                )
+                assembly_adoptions[output_name] = obj
             if obj is None:
                 obj = _create_object(
                     doc,
@@ -15515,6 +15954,9 @@ def publish_candidate(
                     assembly_output,
                 )
                 created.append(assembly_dependency_anchor)
+            assembly_previous_adoptions = _assembly_adopted_occurrences(
+                assembly_dependency_anchor
+            )
         configure_order = list(validated["outputs"])
         if prepared["pack"].domain == "assembly":
             priority = {
@@ -15562,6 +16004,7 @@ def publish_candidate(
         for item in configure_order:
             output_name = str(item["name"])
             output_type = str(item["type"])
+            adopted_occurrence = False
             occurrence_reconciliation: dict[str, Any] | None = None
             occurrence_reconciliation_staged = False
             if prepared["pack"].domain == "assembly":
@@ -15610,6 +16053,7 @@ def publish_candidate(
                         for source in replaced_fastener_sources
                     )
                 obj = ensure_output_object(item, assembly)
+                adopted_occurrence = assembly_adoptions.get(output_name) is obj
             else:
                 # Create and configure each output in dependency order. Some
                 # native containers join History only when their members are
@@ -15670,23 +16114,27 @@ def publish_candidate(
                         ),
                     )
 
-            obj.Label = _label(item, output_name)
-            configured_resources = _configure_object(
-                doc,
-                obj,
-                item,
-                outputs,
-                prepared,
-                robot_trajectory_swaps,
-                assembly_fastener_sources,
-            )
-            _set_metadata(
-                obj,
-                prepared,
-                output_name,
-                str(item["type"]),
-                _definition(item),
-            )
+            if adopted_occurrence:
+                _configure_adopted_assembly_component(obj, item)
+                configured_resources = []
+            else:
+                obj.Label = _label(item, output_name)
+                configured_resources = _configure_object(
+                    doc,
+                    obj,
+                    item,
+                    outputs,
+                    prepared,
+                    robot_trajectory_swaps,
+                    assembly_fastener_sources,
+                )
+                _set_metadata(
+                    obj,
+                    prepared,
+                    output_name,
+                    str(item["type"]),
+                    _definition(item),
+                )
             if inspection_feature:
                 _freeze_inspection_feature(obj)
             if robot_dressup:
@@ -15751,6 +16199,34 @@ def publish_candidate(
 
             if output_type == "component_link":
                 import UtilsAssembly
+
+                if adopted_occurrence:
+                    grounding, retired_grounding = _configure_component_grounding(
+                        doc,
+                        obj,
+                        item,
+                        outputs,
+                        prepared,
+                    )
+                    removed.extend(retired_grounding)
+                    if grounding is not None:
+                        _mark_timeline_operation(
+                            grounding,
+                            context=(
+                                f"Assembly grounding operation for {output_name!r}"
+                            ),
+                        )
+                        if _is_current_transaction_timeline_object(doc, grounding):
+                            created.append(grounding)
+                            _publish_new_timeline_resource_block(
+                                doc,
+                                grounding,
+                                [],
+                                context=(
+                                    f"Assembly grounding operation for {output_name!r}"
+                                ),
+                            )
+                    continue
 
                 fastener_source = assembly_fastener_sources.get(output_name)
                 if fastener_source is not None and getattr(
@@ -16005,6 +16481,13 @@ def publish_candidate(
                 assembly_dependency_anchor,
                 prepared,
                 assembly_item,
+            )
+            for output_name, occurrence in assembly_previous_adoptions.items():
+                if output_name not in assembly_adoptions:
+                    _release_assembly_occurrence(assembly, occurrence)
+            _set_assembly_adopted_occurrences(
+                assembly_dependency_anchor,
+                assembly_adoptions,
             )
         unreconciled_fastener_source_identities = [
             identity
@@ -16543,7 +17026,7 @@ def _delete_partdesign_design_program(
             doc.openTransaction("Delete Part Design VibeScript program")
             transaction_open = True
         for published in list(publications.values()):
-            scripted_publication.delete_publication(
+            _delete_partdesign_publication(
                 doc,
                 root,
                 published,
@@ -16712,6 +17195,24 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
     objects = _program_objects(
         doc, str(prepared["program_id"]), prepared["pack"].domain
     )
+    assembly_borrowed_occurrences: list[tuple[Any, Any]] = []
+    if prepared["pack"].domain == "assembly":
+        assembly_roots = [
+            obj
+            for obj in objects
+            if str(getattr(obj, "TypeId", "") or "")
+            == "Assembly::AssemblyObject"
+        ]
+        if len(assembly_roots) > 1:
+            raise RuntimeError(
+                "One Assembly VibeScript program cannot own multiple native Assembly roots."
+            )
+        if assembly_roots:
+            for anchor in objects:
+                for occurrence in _assembly_adopted_occurrences(anchor).values():
+                    assembly_borrowed_occurrences.append(
+                        (assembly_roots[0], occurrence)
+                    )
     timeline_deletion = _prepare_timeline_deletion(doc, objects)
     deletion_targets = list(timeline_deletion["delete_objects"])
     mesh_rollbacks = (
@@ -16791,6 +17292,8 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
             transaction_open = True
         if prepared["pack"].domain == "robot":
             robot_trajectories = _extract_robot_trajectories(objects)
+        for assembly, occurrence in assembly_borrowed_occurrences:
+            _release_assembly_occurrence(assembly, occurrence)
         _remove_timeline_deletion(doc, timeline_deletion)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()

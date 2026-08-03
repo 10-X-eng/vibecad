@@ -110,6 +110,8 @@ _MAX_ASSEMBLY_HIERARCHY_JSON_BYTES = 8 * 1024 * 1024
 # boundary even though the source sandbox cannot import arbitrary modules.
 _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
     "partdesign": (
+        "vibescript_component_api.py",
+        "vibescript_component_worker.py",
         "vibescript_partdesign_api.py",
         "vibescript_partdesign_worker.py",
         "vibescript_sketcher_api.py",
@@ -125,6 +127,7 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_part_worker.py",
     ),
     "assembly": (
+        "vibescript_component_api.py",
         "vibescript_assembly_api.py",
         "vibescript_assembly_worker.py",
         "vibescript_part_worker.py",
@@ -191,6 +194,8 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_points_worker.py",
     ),
     "robot": (
+        "vibescript_component_api.py",
+        "vibescript_component_worker.py",
         "vibescript_robot_api.py",
         "vibescript_robot_worker.py",
     ),
@@ -1235,6 +1240,7 @@ def capture_reference_inputs(
         "fem",
         "cam",
         "techdraw",
+        "robot",
     }:
         return []
     from VibeCADModelingSurface import resolve_service_surface
@@ -1261,12 +1267,12 @@ def capture_reference_inputs(
     snapshots: list[dict[str, Any]] = []
     for index, reference in enumerate(requirements):
         object_name = str(reference["object_name"])
-        if domain == "assembly":
+        if domain in {"partdesign", "assembly", "robot"}:
             try:
                 obj = resolve_reference_target(
                     doc,
                     reference,
-                    f"Assembly input reference {object_name!r}",
+                    f"{prepared['pack'].title} input reference {object_name!r}",
                 )
             except DocumentReferenceError as exc:
                 raise RuntimeError(str(exc)) from exc
@@ -1277,17 +1283,19 @@ def capture_reference_inputs(
                 f"{prepared['pack'].title} input reference {object_name!r} "
                 "disappeared before capture."
             )
-        if domain == "assembly" and getattr(obj, "Document", None) is not doc:
+        if domain in {"partdesign", "assembly", "robot"} and getattr(
+            obj, "Document", None
+        ) is not doc:
             if not str(getattr(doc, "FileName", "") or "").strip():
                 raise RuntimeError(
-                    "External Assembly components require the Assembly document "
+                    f"External {prepared['pack'].title} components require the active document "
                     "to be saved before building."
                 )
             if not str(
                 getattr(getattr(obj, "Document", None), "FileName", "") or ""
             ).strip():
                 raise RuntimeError(
-                    f"External Assembly component {object_name!r} belongs to an "
+                    f"External component {object_name!r} belongs to an "
                     "unsaved source document."
                 )
         if domain in {
@@ -1303,6 +1311,7 @@ def capture_reference_inputs(
             "fem",
             "cam",
             "techdraw",
+            "robot",
         } and str(getattr(obj, contracts.PROP_PROGRAM_ID, "") or "") == str(
             prepared.get("program_id") or ""
         ):
@@ -1322,7 +1331,21 @@ def capture_reference_inputs(
             if str(getattr(obj, "TypeId", "") or "") == "App::Link":
                 import VibeCADReferenceContracts as reference_contracts
 
-                if reference_contracts.published_object(obj) is None:
+                managed_occurrence = (
+                    str(getattr(obj, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+                    in {"partdesign", "robot"}
+                    and str(
+                        getattr(obj, "VibeCADVibeScriptOutputType", "") or ""
+                    )
+                    == "component_link"
+                    and bool(
+                        str(getattr(obj, contracts.PROP_PROGRAM_ID, "") or "")
+                    )
+                )
+                if (
+                    reference_contracts.published_object(obj) is None
+                    and not managed_occurrence
+                ):
                     target = getattr(obj, "LinkedObject", None)
                     raise RuntimeError(
                         f"Assembly input reference {object_name!r} is a generic App::Link. "
@@ -1496,6 +1519,7 @@ def capture_reference_inputs(
             _assembly_reference_contract(service, obj)
             if domain
             in {
+                "partdesign",
                 "assembly",
                 "sketcher",
                 "surface",
@@ -1507,6 +1531,7 @@ def capture_reference_inputs(
                 "fem",
                 "cam",
                 "techdraw",
+                "robot",
             }
             else {}
         )
@@ -2306,6 +2331,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                 "fem",
                 "cam",
                 "techdraw",
+                "robot",
             }
             else []
         )
@@ -8311,6 +8337,22 @@ def _validate_assembly_execution(
                 f"Component output {name!r} source type metadata disagrees with "
                 "the authenticated host snapshot."
             )
+        for field in (
+            "source_program_id",
+            "source_program_domain",
+            "source_revision",
+        ):
+            if str(data.get(field) or "") != str(resolved.get(field) or ""):
+                raise ValueError(
+                    f"Component output {name!r} {field} disagrees with the "
+                    "authenticated host snapshot."
+                )
+        if bool(data.get("placement_authored")) is not bool(
+            properties.get("placement_authored")
+        ):
+            raise ValueError(
+                f"Component output {name!r} placement authorship metadata was altered."
+            )
         if (
             not isinstance(properties.get("grounded"), bool)
             or bool(data.get("grounded")) is not properties["grounded"]
@@ -12069,7 +12111,7 @@ def _validate_definition_value(
                 # bundled catalog definition and generated BREP by
                 # _validate_assembly_execution before structured-data traversal.
                 return
-            if prepared["pack"].domain == "assembly":
+            if prepared["pack"].domain in {"partdesign", "assembly", "robot"}:
                 authenticated = next(
                     (
                         item
@@ -12083,7 +12125,7 @@ def _validate_definition_value(
                 )
                 if authenticated is None:
                     raise ValueError(
-                        f"{path} refers to an unauthenticated Assembly component."
+                        f"{path} refers to an unauthenticated reusable component."
                     )
                 if (
                     clean_reference.get("document_path")
@@ -12126,6 +12168,20 @@ def _validate_robot_execution(
         validate_and_build_robot,
         validate_robot_definition,
     )
+    from vibescript_component_worker import (
+        configure_component_references,
+        validate_component_definition,
+    )
+
+    configure_component_references(
+        [
+            dict(item)
+            for item in list(prepared.get("resolved_references") or [])
+            if isinstance(item, Mapping)
+            and item.get("document_uid")
+            and item.get("object_name")
+        ]
+    )
 
     validation = execution.get("robot_validation")
     if not isinstance(validation, dict):
@@ -12146,14 +12202,23 @@ def _validate_robot_execution(
     raw_result: dict[str, Any] = {}
     for item in outputs:
         name = str(item["name"])
-        definition = validate_robot_definition(
-            item.get("definition"),
-            expected_output_type=str(item["type"]),
-            require_domain_value=False,
-            context=f"outputs.{name}.definition",
-        )
+        if str(item["type"]) == "component_link":
+            definition, _component_data = validate_component_definition(
+                item.get("definition"),
+                domain="robot",
+                output_name=name,
+            )
+        else:
+            definition = validate_robot_definition(
+                item.get("definition"),
+                expected_output_type=str(item["type"]),
+                require_domain_value=False,
+                context=f"outputs.{name}.definition",
+            )
         item["definition"] = definition
         raw_result[name] = _inflate(definition)
+        if str(item["type"]) == "component_link":
+            continue
         data = item.get("robot_data")
         if not isinstance(data, dict):
             raise ValueError(f"Robot output {name!r} has no native readback.")
@@ -15384,7 +15449,11 @@ def _validate_partdesign_native_history(
         raise ValueError("Part Design native-history metadata is malformed.")
     if metadata.get("schema") != _PARTDESIGN_NATIVE_HISTORY_SCHEMA:
         raise ValueError("Part Design native-history schema is unsupported.")
-    expected_names = [str(item["name"]) for item in list(prepared["expected_outputs"])]
+    expected_names = [
+        str(item["name"])
+        for item in list(prepared["expected_outputs"])
+        if str(item.get("type") or "") != "component_link"
+    ]
     if metadata.get("outputs") != expected_names:
         raise ValueError("Part Design native history changed output identity.")
 
@@ -15708,6 +15777,58 @@ def validate_candidate(
                 item["partdesign_native_material"] = native_material
             item["facts"] = facts
             item["detached_shape"] = shape
+        elif output_type == "component_link" and pack.domain in {
+            "partdesign",
+            "robot",
+        }:
+            data = item.get("component_data")
+            if not isinstance(data, Mapping) or set(data) != {
+                "schema",
+                "source",
+                "source_metadata",
+                "placement",
+                "placement_authored",
+                "label",
+            }:
+                raise ValueError(
+                    f"Component output {declaration['name']!r} has malformed validation evidence."
+                )
+            if data.get("schema") != "vibecad-component-occurrence-v1":
+                raise ValueError(
+                    f"Component output {declaration['name']!r} has an unsupported schema."
+                )
+            source = data.get("source")
+            placement = data.get("placement")
+            if not isinstance(source, Mapping) or not isinstance(placement, Mapping):
+                raise ValueError(
+                    f"Component output {declaration['name']!r} is missing source or placement."
+                )
+            key = (
+                str(source.get("document_uid") or ""),
+                str(source.get("object_name") or ""),
+            )
+            authenticated = {
+                (
+                    str(reference.get("document_uid") or ""),
+                    str(reference.get("object_name") or ""),
+                )
+                for reference in list(prepared.get("resolved_references") or [])
+                if isinstance(reference, Mapping)
+            }
+            if not all(key) or key not in authenticated:
+                raise ValueError(
+                    f"Component output {declaration['name']!r} source was not authenticated."
+                )
+            if set(placement) != {"position", "rotation"} or len(
+                list(placement.get("position") or [])
+            ) != 3 or len(list(placement.get("rotation") or [])) != 4:
+                raise ValueError(
+                    f"Component output {declaration['name']!r} placement is malformed."
+                )
+            if type(data.get("placement_authored")) is not bool:
+                raise ValueError(
+                    f"Component output {declaration['name']!r} placement authorship is malformed."
+                )
         elif output_type == "mesh" and pack.domain != "fem":
             if item.get("artifact_kind") == "mesh_bms":
                 path = (staging / str(item.get("artifact_path") or "")).resolve()
@@ -17097,34 +17218,29 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     "transparency": "integer percentage from 0 through 100",
                 },
                 "evaluation_model": (
-                    "API calls build an immutable graph regenerated from inputs. "
-                    "Publication updates one global History operation and retains "
-                    "each output Body identity by result key."
+                    "Calls build an immutable graph from inputs. Publication retains each "
+                    "Body or linked occurrence by result key."
                 ),
                 "authoring_priority": {
                     "default": (
-                        "Use api.sketch plus native feature operations for solids defined "
-                        "by planar profiles. The source code is the editable "
-                        "parametric definition."
+                        "Use api.sketch plus native feature operations for planar solids; "
+                        "source is the editable parametric definition."
                     ),
                     "planar_profile_rule": (
-                        "Every planar feature profile is an api.sketch on a principal plane, "
-                        "an arbitrary placement, or a stable attached support; it is not a "
-                        "*_3d curve or api.wire."
+                        "Every planar feature profile is an api.sketch on a principal, "
+                        "placed, or attached plane; never a *_3d curve or api.wire."
                     ),
                     "direct_topology_exception": (
                         "Use direct OCC topology only for nonplanar, imported, repair, "
-                        "standalone, or otherwise unrepresentable geometry."
+                        "standalone, or unrepresentable geometry."
                     ),
                     "do_not_regress": (
-                        "Do not replace valid native history or clear sketch-and-feature "
-                        "intent with direct topology merely to shorten source or bypass a "
-                        "failing feature."
+                        "Do not replace valid native history with direct topology to shorten "
+                        "source or bypass a failed feature."
                     ),
                     "verification": (
-                        "A sketch-driven Body must report its sketches and feature "
-                        "types in accepted validation evidence; an empty sketch list means "
-                        "the intended native profile history was not built."
+                        "A sketch-driven Body must report sketches and feature types; an empty "
+                        "sketch list means its native profile history was not built."
                     ),
                 },
                 "profile_contract": {
@@ -17185,56 +17301,47 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     "publication": (
                         "api.body publishes one connected solid as a stable Design "
                         "Body. api.publish publishes standalone solid, shell, face, "
-                        "wire, or compound topology."
+                        "wire, or compound topology. api.component and api.instances "
+                        "publish linked occurrences without copying source BREP."
                     ),
                 },
                 "operation_selection": {
                     "material_intent": (
-                        "extrude, revolve, loft, and sweep use operation='new_solid', "
-                        "'new_surface', 'add_material', or 'remove_material'. helix accepts "
-                        "only add_material or remove_material."
+                        "extrude, revolve, loft, and sweep declare new_solid, new_surface, "
+                        "add_material, or remove_material; helix declares add/remove only."
                     ),
                     "connected_boolean": (
-                        "api.boolean performs union, subtract, or intersect. A solid result must "
-                        "be exactly one connected solid."
+                        "api.boolean performs union, subtract, or intersect; a solid result "
+                        "must be connected."
                     ),
                     "disconnected_geometry": (
-                        "api.compound preserves separate shapes. Do not use disconnected shapes "
-                        "as additive Body features."
+                        "api.compound preserves separate shapes; they cannot be additive Body features."
                     ),
                     "stable_selection": (
-                        "api.find_subelements creates count-guarded geometric selections. Raw "
-                        "FaceN and EdgeN names are not stable across regeneration."
+                        "api.find_subelements creates count-guarded selections; raw FaceN/EdgeN "
+                        "names are unstable."
                     ),
                     "verification": (
-                        "api.measure declares dimensional or topology checks passed to api.body "
-                        "or api.publish."
+                        "api.measure declares checks passed to api.body or api.publish."
                     ),
                     "physical_material": (
-                        "api.material selects an exact catalog UUID and is passed as material= "
-                        "to api.body or api.publish."
+                        "api.material selects a catalog UUID for material= on body/publish."
                     ),
                     "visible_appearance": (
-                        "api.appearance defines color, transparency, display mode, visibility, "
-                        "and selection state. RGB channels are 0-255. Pass it as appearance= "
-                        "to api.body or api.publish."
+                        "api.appearance defines display state; RGB channels are 0-255. Pass it "
+                        "as appearance= to body/publish."
                     ),
                     "standard_hardware": (
-                        "Use fastener_catalog.search for exact standard, thread, length, and "
-                        "option values. Create catalog hardware with api.fastener; never draw "
-                        "a standard fastener from primitives. Use api.fastener_hole to derive "
-                        "clearance, tapped, counterbore, or countersink dimensions from that "
-                        "same returned fastener value."
+                        "Use fastener_catalog.search and api.fastener; never draw standard "
+                        "hardware. api.fastener_hole derives its hole from that same value."
                     ),
                     "publish": "api.body for one solid Body; api.publish for standalone topology",
                     "redundancy_contract": (
                         "Use api.extrude for straight constant-cross-section additions and cuts, "
-                        "api.revolve for axial features, api.sweep when a profile follows a path, "
-                        "and api.loft only when the cross-section itself genuinely changes between "
-                        "section planes. Do not use api.loft as a shortcut for a wedge, dovetail, "
-                        "simple taper, or diagonal transition that api.sketch plus api.extrude, "
-                        "api.draft, api.chamfer, or a sketch cut expresses directly. Use "
-                        "api.boolean for union, subtraction, or intersection."
+                        "api.revolve for axial features, api.sweep for path-driven profiles, and "
+                        "api.loft only when the cross-section itself genuinely changes. Do not "
+                        "use api.loft as a shortcut for geometry expressible by sketch/extrude, "
+                        "draft, or chamfer. Use api.boolean to combine solids."
                     ),
                 },
                 "semantic_interfaces": {
@@ -17262,6 +17369,10 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "Call material_catalog.search with the required properties and pass one "
                         "returned api.material constructor unchanged; never invent a UUID."
                     ),
+                    "available_components": (
+                        "Definitions and placed occurrences are injected with explicit kind. "
+                        "Search only when the required item or detail is absent."
+                    ),
                 },
                 "workbench_handoffs": {
                     "sketcher": (
@@ -17273,21 +17384,19 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "here for standalone topology and repair."
                     ),
                     "assembly": (
-                        "Part Design authors one reusable component definition and publishes "
-                        "stable interfaces. Assembly consumes its reference from the injected "
-                        "available_components inventory, creates lightweight linked occurrences with "
-                        "api.component/api.instances, and owns joints, collision/clearance checks, "
-                        "solved motion, exploded views, and bills of materials. Use "
-                        "component_catalog.search only when the definition is not listed."
+                        "Place definitions from available_components with api.component or "
+                        "api.instances. Assembly adopts an existing occurrence reference in "
+                        "place, or creates an occurrence from a definition, then adds joints, "
+                        "motion, checks, views, and BOMs. Use component_catalog.search only "
+                        "when the item or required metadata is absent."
                     ),
                     "material": (
                         "Use api.material and api.appearance here; no Material workbench switch "
                         "is needed for a Part Design output."
                     ),
                     "rule": (
-                        "The active workbench determines the available API. Use this Part Design "
-                        "API for the complete part, and describe follow-on work only when the "
-                        "requested output belongs to another workbench."
+                        "The active workbench determines the available API. Use this API for "
+                        "part geometry and Model placements; use Assembly for joints."
                     ),
                 },
                 "error_contract": {
@@ -20917,13 +21026,19 @@ class RobotDomainAdapter(DeclarativeDomainAdapter):
                         "Assembly, a controller program, collision model, or dynamics model"
                     ),
                     "complete_robot_rule": (
-                        "Use this workbench for arm kinematics and motion evidence. A complete "
-                        "physical robot also needs geometry/components and joints in Part Design/"
-                        "Part/Assembly plus Material assignments; those are explicit human-mediated "
-                        "workbench handoffs, never hidden cross-workbench calls."
+                        "Place referenced equipment here with api.component/api.instances and "
+                        "author arm kinematics and paths. Assembly owns mechanical joints; Part "
+                        "Design owns component geometry."
                     ),
                 },
                 "operation_selection": {
+                    "component": (
+                        "Place one linked definition from available_components; return it under "
+                        "one stable output key."
+                    ),
+                    "instances": (
+                        "Place repeated linked occurrences of one definition without copied BREP."
+                    ),
                     "robot": (
                         "Start once per arm: choose built-in KUKA IR500 or six inline DH rows, "
                         "declare joint state/IK seed, world base, flange-to-tool transform, and home."
@@ -21218,22 +21333,22 @@ class RobotDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The active workbench determines the available API. Complete and verify "
-                        "the Robot graph here, then describe the work required for the next "
-                        "deliverable."
+                        "The active workbench determines the available API. Use Robot for "
+                        "equipment layout, arm kinematics, paths, and simulation. Referenced "
+                        "Part Design sources remain editable through universal source tools."
                     ),
                     "complete_robot": {
                         "Part Design/Part": "design link, housing, flange, end-effector, and fixture geometry",
                         "Assembly": (
-                            "create components, revolute joints, grounding, solved placements, and interference-ready structure"
+                            "adopt placed occurrences and add joints, grounding, solved motion, and checks"
                         ),
                         "Material": "assign physical materials and appearance to stable component references",
                         "FEM": "analyze link/tool/fixture strength using semantic geometry references",
                         "CAM": "manufacture robot parts and fixtures after geometry is accepted",
                     },
                     "unsupported_here": (
-                        "Robot does not author solids, assemblies, material cards, FEM loads, CAM toolpaths, "
-                        "controller files, or collision geometry, and it never invokes those hidden domains."
+                        "Robot does not author solids, assembly joints, material cards, FEM loads, "
+                        "CAM toolpaths, controller files, or collision geometry."
                     ),
                 },
                 "recommended_patterns": [
@@ -22466,7 +22581,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "Pass component sources through inputs. The host detaches each exact "
                         "Shape, hashes the BREP and semantic-interface contract into the "
                         "program revision, and marks accepted Assembly outputs stale if a "
-                        "source changes. Copy references from available_components. Use "
+                        "source changes. A definition reference creates a linked occurrence; "
+                        "an occurrence reference adopts that exact placed object in place. "
+                        "Copy references from available_components. Use "
                         "component_catalog.search only when the needed definition is omitted "
                         "from that bounded inventory or more catalog metadata is required. Its "
                         "optional document_path is portable relative "
@@ -22504,8 +22621,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "graph_contract": {
                     "component": (
-                        "Create one authored-source occurrence with api.component, or several "
-                        "occurrences of one source with api.instances. Create each exact "
+                        "Use api.component for one definition or existing occurrence. An "
+                        "existing Model/Robot occurrence is reused in place; a definition "
+                        "creates a link. Use api.instances for repeated definitions. Create exact "
                         "standard-hardware occurrence with api.fastener. Set "
                         "grounded=True on at least one fixed base and reuse that exact "
                         "variable in connectors."
@@ -23147,10 +23265,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         ),
                     },
                     "boundary": (
-                        "Assembly VibeScript owns occurrences, connectors, joints, solve evidence, "
-                        "motion, exploded views, and BOMs. Component solids remain owned by their "
-                        "Part Design sources, which may be edited through the universal source "
-                        "tools without changing the visible workbench."
+                        "Assembly owns its new occurrences and all joints, solve evidence, motion, "
+                        "views, and BOMs. An adopted Model/Robot occurrence keeps its original "
+                        "program identity and is released, not deleted, when the Assembly is removed."
                     ),
                 },
                 "recommended_patterns": [
@@ -23300,7 +23417,8 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
             "component": {
                 "definition_rule": (
                     "The input reference identifies one authored reusable definition. "
-                    "The result is one lightweight native linked occurrence, not copied BREP. "
+                    "It creates one lightweight native link. If the reference itself is a "
+                    "Model/Robot occurrence, Assembly adopts that same object in place. "
                     "Every non-subassembly reference is one rigid mechanism body even when "
                     "its source Shape contains several solids."
                 ),

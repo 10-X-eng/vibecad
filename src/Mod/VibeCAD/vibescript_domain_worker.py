@@ -898,18 +898,25 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         "fem",
         "cam",
         "techdraw",
+        "robot",
     }:
         references = request.get("document_references", [])
         if not isinstance(references, list):
             raise TypeError("document_references must be an array.")
         if domain == "partdesign":
             from vibescript_partdesign_worker import configure_partdesign_references
+            from vibescript_component_worker import configure_component_references
 
             configure_partdesign_references(root, references)
+            configure_component_references(references)
         elif domain == "assembly":
             from vibescript_assembly_worker import configure_assembly_references
 
             configure_assembly_references(root, references)
+        elif domain == "robot":
+            from vibescript_component_worker import configure_component_references
+
+            configure_component_references(references)
         elif domain == "part":
             from vibescript_part_worker import configure_part_references
 

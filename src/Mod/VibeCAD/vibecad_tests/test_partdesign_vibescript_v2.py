@@ -17,7 +17,7 @@ from vibescript_partdesign_api import PartDesignDomainAPI
 
 
 PROGRAM_ID = "0123456789abcdef0123456789abcdef"
-OUTPUT_TYPES = ("solid", "shell", "face", "wire", "compound")
+OUTPUT_TYPES = ("solid", "shell", "face", "wire", "compound", "component_link")
 
 
 def _pack():

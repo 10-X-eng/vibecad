@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 from vibescript_domain_api import DomainValue
+from vibescript_component_api import component_value, instance_values
 from vibescript_material_api import MaterialDomainAPI
 from vibescript_part_api import PartDomainAPI
 from vibescript_sketcher_api import SketcherDomainAPI
@@ -46,6 +47,7 @@ _QUERY_FIELDS = frozenset(
 )
 _SKETCH_EXPORTS = SketcherDomainAPI.exported_names
 _PUBLISHABLE_TYPES = ("solid", "shell", "face", "wire", "compound")
+_PUBLIC_OUTPUT_TYPES = (*_PUBLISHABLE_TYPES, "component_link")
 _TOPOLOGY_TYPES = frozenset({"edge", *_PUBLISHABLE_TYPES})
 _MATERIAL_OPERATIONS = frozenset({"add_material", "remove_material"})
 _CREATION_OPERATIONS = frozenset({"new_solid", "new_surface"})
@@ -736,6 +738,8 @@ class PartDesignDomainAPI:
         "sphere",
         "torus",
         "fastener",
+        "component",
+        "instances",
         # Sketch geometry.  Explicit *_3d names below avoid dimensional ambiguity.
         "point",
         "line",
@@ -814,7 +818,10 @@ class PartDesignDomainAPI:
                 "Part Design pack exports do not match the runtime contract: "
                 f"expected {self.exported_names!r}, received {declared!r}."
             )
-        if tuple(dict.fromkeys(str(item) for item in output_types)) != _PUBLISHABLE_TYPES:
+        declared_output_types = tuple(
+            dict.fromkeys(str(item) for item in output_types)
+        )
+        if declared_output_types not in {_PUBLISHABLE_TYPES, _PUBLIC_OUTPUT_TYPES}:
             raise RuntimeError(
                 "Part Design publication types do not match the unified modeling contract."
             )
@@ -838,6 +845,43 @@ class PartDesignDomainAPI:
         )
         object.__setattr__(self, "_sketch_values", {})
         object.__setattr__(self, "_next_feature_id", 1)
+
+    def component(
+        self,
+        source: Mapping[str, str],
+        *,
+        placement: Sequence[float] | Mapping[str, Any] | None = None,
+        label: str = "",
+    ) -> DomainValue:
+        """Place one linked occurrence from an ``available_components`` reference.
+
+        The source remains the reusable definition; editing it updates the occurrence.
+        """
+
+        return component_value(
+            self.domain,
+            source,
+            placement=placement,
+            label=label,
+        )
+
+    def instances(
+        self,
+        source: Mapping[str, str],
+        placements: Sequence[
+            Sequence[float] | Mapping[str, Any] | None
+        ],
+        *,
+        labels: Sequence[str] | None = None,
+    ) -> tuple[DomainValue, ...]:
+        """Place repeated lightweight occurrences of one reusable component."""
+
+        return instance_values(
+            self.domain,
+            source,
+            placements,
+            labels=labels,
+        )
 
     def _from_sketcher(self, value: DomainValue) -> DomainValue:
         wrapped = _retag(value, "partdesign")

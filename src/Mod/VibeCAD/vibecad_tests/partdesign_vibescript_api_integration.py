@@ -885,6 +885,15 @@ def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
             covered.update(case_exports)
         finally:
             App.closeDocument(document.Name)
+    component_reference = {
+        "document_uid": "partdesign-api-fixture",
+        "object_name": "MotorDefinition",
+    }
+    occurrence = api.component(component_reference, placement=[1, 2, 3])
+    repeated = api.instances(component_reference, [[0, 0, 0], [10, 0, 0]])
+    assert occurrence.output_type == "component_link"
+    assert len(repeated) == 2
+    covered.update({"component", "instances"})
     missing = set(pack.api_exports) - covered
     assert not missing, f"Unexercised Part Design VibeScript exports: {sorted(missing)}"
     return evidence
@@ -2148,6 +2157,215 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     }
 
 
+def _exercise_component_occurrence(root: Path, pack) -> dict:
+    """Publish, reopen, and delete one reusable linked occurrence."""
+
+    import FreeCAD as App
+    import Part
+    from pathlib import Path as LocalPath
+
+    document = App.newDocument("PartDesignComponentOccurrence")
+    document.UndoMode = True
+    source = document.addObject("Part::Feature", "MotorDefinition")
+    source.Label = "Catalog motor"
+    source.Shape = Part.makeBox(20, 10, 8)
+    source_name = str(source.Name)
+    document.recompute()
+    service = _Service(document, root)
+    base_capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": service.provider_document_revision(),
+        "document_objects": [
+            {
+                "name": str(source.Name),
+                "label": str(source.Label),
+                "type_id": str(source.TypeId),
+            }
+        ],
+        "surface": resolve_modeling_surface(
+            "PartDesignWorkbench", "vibescript"
+        ).summary(),
+        "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "motor": {
+                "type": "object",
+                "x-vibecad-reference": True,
+                "properties": {
+                    "document_uid": {"type": "string"},
+                    "object_name": {"type": "string"},
+                },
+                "required": ["document_uid", "object_name"],
+                "additionalProperties": False,
+            }
+        },
+        "required": ["motor"],
+        "additionalProperties": False,
+    }
+    inputs = {
+        "motor": {
+            "document_uid": str(document.Uid),
+            "object_name": str(source.Name),
+        }
+    }
+    initial_source = (
+        "motor = api.component(inputs['motor'], label='Motor occurrence')\n"
+        "result = {'Motor': motor}\n"
+    )
+    active_document = document
+    try:
+        prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="create_program",
+                arguments={
+                    "program_name": "Placed motor",
+                    "source": initial_source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": [
+                        {"name": "Motor", "type": "component_link"}
+                    ],
+                },
+            ),
+            service,
+        )
+        occurrence_name = accepted["live_outputs"]["Motor"]["object_name"]
+        occurrence = document.getObject(occurrence_name)
+        assert occurrence is not None
+        assert occurrence.TypeId == "App::Link"
+        assert occurrence.LinkedObject is source
+        assert occurrence.Placement.Base == App.Vector(0, 0, 0)
+
+        import Assembly
+
+        del Assembly
+        mechanism = document.addObject(
+            "Assembly::AssemblyObject",
+            "ComponentOccurrenceConsumer",
+        )
+        mechanism.addObject(occurrence)
+        assert mechanism in list(occurrence.InList)
+
+        occurrence.Placement = App.Placement(
+            App.Vector(37, 4, 2),
+            App.Rotation(App.Vector(0, 0, 1), 15),
+        )
+        label_edit = initial_source.replace("Motor occurrence", "Drive motor")
+        _prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="edit_source",
+                arguments={
+                    "program_id": prepared["program_id"],
+                    "expected_revision": accepted["working_revision"],
+                    "source": label_edit,
+                },
+            ),
+            service,
+        )
+        assert document.getObject(occurrence_name) is occurrence
+        assert math.isclose(occurrence.Placement.Base.x, 37.0, abs_tol=1.0e-9)
+        assert math.isclose(occurrence.Placement.Base.y, 4.0, abs_tol=1.0e-9)
+
+        moved_source = label_edit.replace(
+            "inputs['motor'], label=",
+            "inputs['motor'], placement=[0, 0, 0], label=",
+        )
+        _prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="edit_source",
+                arguments={
+                    "program_id": prepared["program_id"],
+                    "expected_revision": accepted["working_revision"],
+                    "source": moved_source,
+                },
+            ),
+            service,
+        )
+        assert occurrence.Placement.Base == App.Vector(0, 0, 0)
+        assert mechanism in list(occurrence.InList)
+        candidate = next(
+            item
+            for item in open_component_candidates(document)
+            if item["object_name"] == occurrence_name
+        )
+        assert candidate["kind"] == "occurrence"
+        assert candidate["reference"]["object_name"] == occurrence_name
+        mechanism.removeObject(occurrence)
+        assert mechanism not in list(occurrence.InList)
+        document.removeObject(mechanism.Name)
+
+        save_path = root / "partdesign-component-occurrence.FCStd"
+        program_id = str(prepared["program_id"])
+        accepted_revision = str(accepted["working_revision"])
+        document.recompute()
+        document.saveAs(str(save_path))
+        App.closeDocument(document.Name)
+        reopened = App.openDocument(str(save_path))
+        active_document = reopened
+        reopened_occurrence = reopened.getObject(occurrence_name)
+        reopened_source = reopened.getObject(source_name)
+        assert reopened_occurrence is not None
+        assert reopened_source is not None
+        assert reopened_occurrence.LinkedObject is reopened_source
+        assert reopened_occurrence.Placement.Base == App.Vector(0, 0, 0)
+
+        reopened_service = _Service(reopened, root)
+        delete_capture = _capture(
+            {
+                **base_capture,
+                "document_name": str(reopened.Name),
+                "document_uid": str(reopened.Uid),
+                "document_objects": [
+                    {
+                        "name": str(obj.Name),
+                        "label": str(obj.Label),
+                        "type_id": str(obj.TypeId),
+                    }
+                    for obj in reopened.Objects
+                ],
+            },
+            operation="delete_program",
+            arguments={
+                "program_id": program_id,
+                "expected_revision": accepted_revision,
+                "reason": "Component occurrence lifecycle complete",
+            },
+        )
+        adapter = get_domain_adapter("partdesign")
+        assert adapter is not None
+        deletion = prepare_delete(delete_capture)
+        deletion_publication = adapter.delete(
+            reopened_service,
+            deletion,
+            deletion["manifest"],
+        )
+        assert finish_delete(deletion, deletion_publication)["ok"] is True
+        assert reopened.getObject(occurrence_name) is None
+        assert reopened.getObject(source_name) is reopened_source
+        return {
+            "occurrence": occurrence_name,
+            "source": source_name,
+            "live_placement_preserved": True,
+            "authored_placement_update_applied": True,
+            "assembly_containment_survived_rebuild": True,
+            "save_reopen_preserved_link": True,
+            "deletion_preserved_definition": True,
+        }
+    finally:
+        if str(active_document.Name) in App.listDocuments():
+            App.closeDocument(active_document.Name)
+
+
 def _exercise_topology_publication(root: Path, pack) -> dict:
     """Prove non-solid Part Design outputs retain their exact live type metadata."""
 
@@ -2845,6 +3063,7 @@ def main() -> int:
             root,
             pack,
         )
+        component_occurrence = _exercise_component_occurrence(root, pack)
         lifecycle = _exercise_lifecycle(root, pack)
         print(
             dump_json(
@@ -2862,6 +3081,7 @@ def main() -> int:
                     "physical_material": physical_material,
                     "direct_solid_label": direct_solid_label,
                     "saved_source_compatibility": saved_source_compatibility,
+                    "component_occurrence": component_occurrence,
                     "lifecycle": lifecycle,
                 },
                 sort_keys=True,

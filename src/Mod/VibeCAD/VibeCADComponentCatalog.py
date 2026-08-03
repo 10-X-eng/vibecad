@@ -192,17 +192,28 @@ def _live_component_candidate(
 ) -> dict[str, Any] | None:
     type_id = str(getattr(obj, "TypeId", "") or "")
     scripted_role = str(getattr(obj, "VibeCADScriptedRole", "") or "")
-    if scripted_role in {"implementation", "model", "publication_target"}:
+    reusable_occurrence = (
+        type_id == "App::Link"
+        and str(getattr(obj, "VibeCADVibeScriptOutputType", "") or "")
+        == "component_link"
+        and str(getattr(obj, "VibeCADVibeScriptDomain", "") or "")
+        in {"partdesign", "robot"}
+    )
+    if (
+        scripted_role in {"implementation", "model", "publication_target"}
+        and not reusable_occurrence
+    ):
         return None
     scripted_publication = scripted_role == "publication"
     if type_id == "Assembly::AssemblyLink" or (
-        type_id == "App::Link" and not scripted_publication
+        type_id == "App::Link" and not scripted_publication and not reusable_occurrence
     ):
         return None
     if _inside_partdesign_body(obj):
         return None
     supported = (
-        scripted_publication
+        reusable_occurrence
+        or scripted_publication
         or type_id == "PartDesign::Body"
         or _object_is_derived(obj, "Assembly::AssemblyObject")
         or (
@@ -240,6 +251,7 @@ def _live_component_candidate(
         "object_name": str(getattr(obj, "Name", "") or ""),
         "label": str(getattr(obj, "Label", "") or ""),
         "type_id": type_id,
+        "kind": "occurrence" if reusable_occurrence else "definition",
         "source": "open_document",
         "live_validated": True,
         "portable": portable,
@@ -367,7 +379,7 @@ def capture_component_catalog(service: Any) -> dict[str, Any]:
     owner = service._active_document()
     if owner is None:
         raise ComponentCatalogError(
-            "Component search requires an active Assembly document."
+            "Component search requires an active document."
         )
     import FreeCAD as App
 
@@ -637,9 +649,21 @@ def _saved_document_candidates(
             continue
         values = metadata.get(object_name, {})
         scripted_role = values.get("VibeCADScriptedRole", "")
-        if scripted_role in {"implementation", "model", "publication_target"}:
+        reusable_occurrence = (
+            type_id == "App::Link"
+            and values.get("VibeCADVibeScriptOutputType") == "component_link"
+            and values.get("VibeCADVibeScriptDomain") in {"partdesign", "robot"}
+        )
+        if (
+            scripted_role in {"implementation", "model", "publication_target"}
+            and not reusable_occurrence
+        ):
             continue
-        if type_id == "App::Link" and scripted_role != "publication":
+        if (
+            type_id == "App::Link"
+            and scripted_role != "publication"
+            and not reusable_occurrence
+        ):
             continue
         label = values.get("Label") or object_name
         item = {
@@ -647,6 +671,7 @@ def _saved_document_candidates(
             "object_name": object_name,
             "label": label,
             "type_id": type_id,
+            "kind": "occurrence" if reusable_occurrence else "definition",
             "source": "saved_project_file",
             "live_validated": False,
             "portable": True,
@@ -793,6 +818,7 @@ def _component_reference_result(candidate: Mapping[str, Any]) -> dict[str, Any]:
     label = str(candidate.get("label") or candidate.get("object_name") or "")
     result = {
         "label": label[:MAX_COMPONENT_REFERENCE_LABEL_CHARACTERS],
+        "kind": str(candidate.get("kind") or "definition"),
         "reference": dict(candidate.get("reference") or {}),
     }
     if len(label) > MAX_COMPONENT_REFERENCE_LABEL_CHARACTERS:
@@ -816,11 +842,16 @@ def prepare_captured_component_catalog(
 ) -> dict[str, Any]:
     """Read saved metadata once and retain one immutable turn catalog."""
 
-    candidates = [
-        dict(item)
-        for item in list(captured.get("open_candidates") or [])
-        if isinstance(item, Mapping)
-    ]
+    candidates = []
+    for raw_candidate in list(captured.get("open_candidates") or []):
+        if not isinstance(raw_candidate, Mapping):
+            continue
+        candidate = dict(raw_candidate)
+        # Snapshots captured before occurrence-aware catalogs remain readable.
+        # Every inventory returned to an authoring model still has one explicit
+        # definition/occurrence classification.
+        candidate.setdefault("kind", "definition")
+        candidates.append(candidate)
     project_directory = str(captured.get("project_directory") or "").strip()
     scanned_files = 0
     skipped_files = 0
@@ -1025,13 +1056,14 @@ def component_inventory(
     *,
     limit: int = MAX_INJECTED_COMPONENTS,
 ) -> dict[str, Any]:
-    """Return the bounded copy-ready inventory injected into Assembly turns."""
+    """Return the bounded inventory injected into component-capable turns."""
 
     found = search_prepared_component_catalog(prepared, limit=limit)
     included_fields = (
         "document_label",
         "object_name",
         "label",
+        "kind",
         "type_id",
         "source",
         "live_validated",
@@ -1062,7 +1094,8 @@ def component_inventory(
         "project_file_search_available": bool(found["project_file_search_available"]),
         "components": components,
         "usage": (
-            "Use a component's reference directly with api.component or api.instances. "
+            "Use a definition reference with api.component or api.instances. Reuse an "
+            "occurrence reference when Assembly must adopt that exact placed object. "
             "Call component_catalog.search only when the needed component is not listed "
             "or when additional catalog metadata is required. To enumerate a truncated "
             "catalog, use detail='references', limit=200, offset=0, then repeat with "

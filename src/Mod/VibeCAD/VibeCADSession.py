@@ -701,15 +701,22 @@ def _capture_context_for_provider(
                 resolution.domain,
             )
         )
-        if resolution.domain == "assembly":
+        if resolution.domain in {"partdesign", "assembly", "robot"}:
             if prepared_component_catalog is not None:
                 context["_vibecad_component_catalog"] = dict(prepared_component_catalog)
             else:
-                from VibeCADComponentCatalog import capture_component_catalog
-
-                context["_vibecad_component_catalog"] = capture_component_catalog(
-                    service
+                from VibeCADComponentCatalog import (
+                    ComponentCatalogError,
+                    capture_component_catalog,
                 )
+
+                try:
+                    context["_vibecad_component_catalog"] = (
+                        capture_component_catalog(service)
+                    )
+                except ComponentCatalogError as exc:
+                    if str(exc) != "Component search requires an active document.":
+                        raise
     context["_vibecad_debug"] = service.provider_debug_config()
     runtime_state = _minimal_runtime_state(service)
     schemas = provider_tool_schemas(

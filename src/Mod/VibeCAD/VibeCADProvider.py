@@ -91,11 +91,13 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
     if pack is None or pack.domain != domain:
         return ""
     component_instruction = (
-        " Use available_components references directly. Search the component catalog "
-        "only when the needed definition is not listed or more metadata is required. "
+        " Use a definition in available_components with api.component or api.instances. "
+        "In Assembly, an occurrence reference adopts that exact placed object instead "
+        "of making a duplicate. Search the component catalog only when the needed item "
+        "is not listed or more metadata is required. "
         "If its inventory is truncated, enumerate compact references with limit=200 "
         "and always follow next_offset until it is null; byte-safe pages may be smaller."
-        if domain == "assembly"
+        if domain in {"partdesign", "assembly", "robot"}
         else ""
     )
     return (

@@ -3855,6 +3855,161 @@ def _exercise_portable_external_instances(root: Path, pack) -> dict:
     }
 
 
+def _exercise_model_occurrence_adoption(root: Path, pack) -> dict:
+    """Adopt, reopen, and release one existing Model occurrence in place."""
+
+    import FreeCAD as App
+    import Part
+
+    document = App.newDocument("AssemblyModelOccurrenceAdoption")
+    source = document.addObject("Part::Feature", "ImportedMotorDefinition")
+    source.Shape = Part.makeBox(30, 18, 18)
+    source.Label = "Imported motor definition"
+    occurrence = document.addObject("App::Link", "PlacedMotor")
+    occurrence.LinkedObject = source
+    occurrence.Label = "Placed motor"
+    occurrence.Placement = App.Placement(App.Vector(45, 8, 3), App.Rotation())
+    for name, value in (
+        (PROP_PROGRAM_ID, "model-occurrence-program"),
+        (PROP_PROGRAM_DOMAIN, "partdesign"),
+        (PROP_PROGRAM_WORKBENCH, "PartDesignWorkbench"),
+        (PROP_PROGRAM_OUTPUT, "Motor"),
+        (PROP_PROGRAM_REVISION, "model-occurrence-revision"),
+        (PROP_OUTPUT_TYPE, "component_link"),
+    ):
+        occurrence.addProperty("App::PropertyString", name, "VibeCAD")
+        setattr(occurrence, name, value)
+    document.recompute()
+    original_link = occurrence.LinkedObject
+    original_program_id = str(occurrence.VibeCADVibeScriptProgramId)
+
+    service = _Service(document, root)
+    reference = {
+        "document_uid": str(document.Uid),
+        "object_name": str(occurrence.Name),
+    }
+    source_text = (
+        "motor = api.component(inputs['motor'], grounded=True)\n"
+        "model = api.assembly([motor], [], label='Robot mechanism')\n"
+        "diagnostics = api.solve(model, require_solved=False)\n"
+        "result = {'Model': model, 'Motor': motor, 'Diagnostics': diagnostics}\n"
+    )
+    expected_outputs = [
+        {"name": "Model", "type": "assembly"},
+        {"name": "Motor", "type": "component_link"},
+        {"name": "Diagnostics", "type": "solver_diagnostics"},
+    ]
+    base_capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": service.provider_document_revision(),
+        "document_objects": _document_objects(document),
+        "surface": resolve_modeling_surface(
+            "AssemblyWorkbench", "vibescript"
+        ).summary(),
+        "freecad_home": str(Path(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    create = _candidate_capture(
+        base_capture,
+        operation="create_program",
+        tool_name="vibescript.assembly.create_program",
+        arguments={
+            "program_name": "Adopt placed motor",
+            "source": source_text,
+            "input_schema": {
+                "type": "object",
+                "properties": {"motor": _reference_schema()},
+                "required": ["motor"],
+                "additionalProperties": False,
+            },
+            "inputs": {"motor": reference},
+            "expected_outputs": expected_outputs,
+        },
+    )
+    active_document = document
+    try:
+        prepared, _execution, publication, accepted = _run_candidate(create, service)
+        published_motor = next(
+            item for item in publication["outputs"] if item["name"] == "Motor"
+        )
+        assert published_motor["object_name"] == occurrence.Name
+        assert occurrence.LinkedObject is original_link
+        assert str(occurrence.VibeCADVibeScriptProgramId) == original_program_id
+        assembly = document.getObject(accepted["live_outputs"]["Model"]["object_name"])
+        assert assembly is not None
+        assert assembly in list(occurrence.InList)
+        assert len(
+            [
+                obj
+                for obj in document.Objects
+                if obj.TypeId == "App::Link" and obj.LinkedObject is source
+            ]
+        ) == 1
+
+        save_path = root / "assembly-model-occurrence-adoption.FCStd"
+        program_id = str(prepared["program_id"])
+        accepted_revision = str(accepted["working_revision"])
+        assembly_name = str(assembly.Name)
+        occurrence_name = str(occurrence.Name)
+        source_name = str(source.Name)
+        document.recompute()
+        document.saveAs(str(save_path))
+        App.closeDocument(document.Name)
+        reopened = App.openDocument(str(save_path))
+        active_document = reopened
+        occurrence = reopened.getObject(occurrence_name)
+        source = reopened.getObject(source_name)
+        assembly = reopened.getObject(assembly_name)
+        assert occurrence is not None and source is not None and assembly is not None
+        assert occurrence.LinkedObject is source
+        assert str(occurrence.VibeCADVibeScriptProgramId) == original_program_id
+        assert assembly in list(occurrence.InList)
+        service = _Service(reopened, root)
+
+        deletion = prepare_delete(
+            {
+                **base_capture,
+                "document_name": str(reopened.Name),
+                "document_uid": str(reopened.Uid),
+                "document_objects": _document_objects(reopened),
+                "operation": "delete_program",
+                "tool_name": "vibescript.assembly.delete_program",
+                "arguments": {
+                    "program_id": program_id,
+                    "expected_revision": accepted_revision,
+                    "reason": "Adoption lifecycle complete",
+                },
+            }
+        )
+        deleted = delete_live_program(service, deletion)
+        assert finish_delete(deletion, deleted)["ok"] is True
+        assert reopened.getObject(occurrence.Name) is occurrence
+        assert occurrence.LinkedObject is source
+        assert not _assembly_owners_for_test(occurrence)
+        return {
+            "occurrence": str(occurrence.Name),
+            "reused_in_place": True,
+            "model_authorship_preserved": True,
+            "save_reopen_preserved_adoption": True,
+            "release_preserved_occurrence": True,
+        }
+    finally:
+        if str(active_document.Name) in App.listDocuments():
+            App.closeDocument(active_document.Name)
+
+
+def _assembly_owners_for_test(occurrence) -> list:
+    return [
+        owner
+        for owner in list(occurrence.InList)
+        if str(getattr(owner, "TypeId", "")) == "Assembly::AssemblyObject"
+    ]
+
+
 def _exercise_static_geometry_evidence() -> dict:
     """Prove raw exact evidence for separated, touching, and overlapping pairs."""
 
@@ -4335,6 +4490,7 @@ def main() -> int:
             root,
             pack,
         )
+        model_occurrence_adoption = _exercise_model_occurrence_adoption(root, pack)
         static_geometry_evidence = _exercise_static_geometry_evidence()
         static_mechanism_verification = (
             _exercise_static_mechanism_verification_lifecycle(root, pack)
@@ -4359,6 +4515,7 @@ def main() -> int:
                 "bom": bom,
                 "catalog_fasteners": catalog_fasteners,
                 "portable_external_instances": portable_external_instances,
+                "model_occurrence_adoption": model_occurrence_adoption,
                 "static_geometry_evidence": static_geometry_evidence,
                 "static_mechanism_verification": static_mechanism_verification,
                 "scoped_member_graph": scoped_member_graph,

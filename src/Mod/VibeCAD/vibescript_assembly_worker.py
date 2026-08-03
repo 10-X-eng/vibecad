@@ -814,6 +814,11 @@ def configure_assembly_references(root: Path, entries: list[dict[str, Any]]) -> 
                 "label": str(raw.get("label") or ""),
                 "type_id": str(raw.get("type_id") or ""),
                 "source_kind": str(raw.get("source_kind") or "shape"),
+                "source_program_id": str(raw.get("source_program_id") or ""),
+                "source_program_domain": str(
+                    raw.get("source_program_domain") or ""
+                ),
+                "source_revision": str(raw.get("source_revision") or ""),
                 "transient_topology": bool(raw.get("transient_topology")),
                 "requires_semantic_interfaces": bool(
                     raw.get("requires_semantic_interfaces")
@@ -4334,6 +4339,12 @@ def validate_and_solve_assembly(
             "source": source_ref,
             "source_type_id": str(metadata.get("type_id") or ""),
             "source_kind": source_kind,
+            "source_program_id": str(metadata.get("source_program_id") or ""),
+            "source_program_domain": str(
+                metadata.get("source_program_domain") or ""
+            ),
+            "source_revision": str(metadata.get("source_revision") or ""),
+            "placement_authored": bool(properties.get("placement_authored")),
             "source_facts": dict(metadata.get("facts") or {}),
             "grounded": grounded,
             "flexible": flexible,

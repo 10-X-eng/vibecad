@@ -42,9 +42,11 @@ SHARED_CONTEXT_TOOLS = frozenset(
     }
 )
 FASTENER_WORKBENCHES = frozenset({"PartDesignWorkbench", "AssemblyWorkbench"})
-COMPONENT_CATALOG_WORKBENCHES = frozenset({"AssemblyWorkbench"})
+COMPONENT_CATALOG_WORKBENCHES = frozenset(
+    {"PartDesignWorkbench", "AssemblyWorkbench", "RobotWorkbench"}
+)
 COMPONENT_INTERFACE_WORKBENCHES = frozenset(
-    {"PartDesignWorkbench", "AssemblyWorkbench"}
+    {"PartDesignWorkbench", "AssemblyWorkbench", "RobotWorkbench"}
 )
 MATERIAL_CATALOG_WORKBENCHES = frozenset({"PartDesignWorkbench", "MaterialWorkbench"})
 

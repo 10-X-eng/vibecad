@@ -427,7 +427,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "PartDesignWorkbench",
         "partdesign",
         "Part Design",
-        ("solid", "shell", "face", "wire", "compound"),
+        ("solid", "shell", "face", "wire", "compound", "component_link"),
         "Create editable native Body history from source-parametric features; the "
         "VibeScript source is its definition. Use "
         "api.sketch for planar feature profiles. Use api.extrude with "
@@ -450,6 +450,8 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "sphere",
             "torus",
             "fastener",
+            "component",
+            "instances",
             "point",
             "line",
             "arc",
@@ -765,10 +767,18 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "RobotWorkbench",
         "robot",
         "Robot",
-        ("robot", "trajectory", "dressup", "simulation"),
-        "Define robots, waypoints, trajectories, dress-ups, and worker-computed "
-        "simulation diagnostics.",
-        ("robot", "waypoint", "trajectory", "dressup", "simulate"),
+        ("component_link", "robot", "trajectory", "dressup", "simulation"),
+        "Place reusable equipment, then define robots, waypoints, trajectories, "
+        "dress-ups, and worker-computed simulation diagnostics.",
+        (
+            "component",
+            "instances",
+            "robot",
+            "waypoint",
+            "trajectory",
+            "dressup",
+            "simulate",
+        ),
         production_ready=True,
     ),
     "FemWorkbench": _pack(

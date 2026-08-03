@@ -10,10 +10,27 @@ import re
 from typing import Any
 
 from vibescript_domain_api import DomainValue
+from vibescript_component_api import component_value, instance_values
 
 
-_EXPORTS = ("robot", "waypoint", "trajectory", "dressup", "simulate")
-_OUTPUT_TYPES = ("robot", "trajectory", "dressup", "simulation")
+_EXPORTS = (
+    "component",
+    "instances",
+    "robot",
+    "waypoint",
+    "trajectory",
+    "dressup",
+    "simulate",
+)
+_LEGACY_EXPORTS = ("robot", "waypoint", "trajectory", "dressup", "simulate")
+_OUTPUT_TYPES = (
+    "component_link",
+    "robot",
+    "trajectory",
+    "dressup",
+    "simulation",
+)
+_LEGACY_OUTPUT_TYPES = ("robot", "trajectory", "dressup", "simulation")
 _MAX_LABEL_CHARS = 256
 _MAX_WAYPOINTS = 512
 _MAX_COORDINATE = 1.0e9
@@ -368,14 +385,14 @@ class RobotDomainAPI:
     def __init__(self, exports: Iterable[str], output_types: Iterable[str]) -> None:
         declared_exports = tuple(dict.fromkeys(str(item) for item in exports))
         declared_outputs = tuple(dict.fromkeys(str(item) for item in output_types))
-        if declared_exports != _EXPORTS:
+        if declared_exports not in {_LEGACY_EXPORTS, _EXPORTS}:
             raise RuntimeError(
                 "Robot pack exports do not match the production runtime contract: "
                 f"expected {_EXPORTS!r}, received {declared_exports!r}."
             )
-        if declared_outputs != _OUTPUT_TYPES:
+        if declared_outputs not in {_LEGACY_OUTPUT_TYPES, _OUTPUT_TYPES}:
             raise RuntimeError(
-                "Robot pack must publish exactly robot, trajectory, dressup, and simulation."
+                "Robot pack publication types do not match the runtime contract."
             )
 
     @staticmethod
@@ -391,6 +408,40 @@ class RobotDomainAPI:
             output_type=output_type,
             arguments=tuple(arguments),
             properties=properties,
+        )
+
+    def component(
+        self,
+        source: Mapping[str, str],
+        *,
+        placement: Sequence[float] | Mapping[str, Any] | None = None,
+        label: str = "",
+    ) -> DomainValue:
+        """Place one reusable component in a robot or automation layout."""
+
+        return component_value(
+            self.domain,
+            source,
+            placement=placement,
+            label=label,
+        )
+
+    def instances(
+        self,
+        source: Mapping[str, str],
+        placements: Sequence[
+            Sequence[float] | Mapping[str, Any] | None
+        ],
+        *,
+        labels: Sequence[str] | None = None,
+    ) -> tuple[DomainValue, ...]:
+        """Place repeated lightweight occurrences in a robot or cell layout."""
+
+        return instance_values(
+            self.domain,
+            source,
+            placements,
+            labels=labels,
         )
 
     def robot(

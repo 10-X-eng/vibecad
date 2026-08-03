@@ -67,10 +67,19 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
         expected_core = set(CORE_CONVERSATION_VIEW_TOOLS)
         if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}:
             expected_core.add(FASTENER_CATALOG_TOOL)
-        if workbench == "AssemblyWorkbench":
+        if workbench in {
+            "PartDesignWorkbench",
+            "AssemblyWorkbench",
+            "RobotWorkbench",
+        }:
             expected_core.add(COMPONENT_CATALOG_TOOL)
+        if workbench == "AssemblyWorkbench":
             expected_core.add(ASSEMBLY_PLAYBACK_TOOL)
-        if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}:
+        if workbench in {
+            "PartDesignWorkbench",
+            "AssemblyWorkbench",
+            "RobotWorkbench",
+        }:
             expected_core.add(COMPONENT_INTERFACE_TOOL)
         if workbench in {"PartDesignWorkbench", "MaterialWorkbench"}:
             expected_core.add(MATERIAL_CATALOG_TOOL)
@@ -91,11 +100,10 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             assert len(scripted.cad_tool_names) == len(
                 domain_pack.provider_tool_names
             ) + len(focused_reads)
-            # Assembly adds exact cross-workbench source/interface playback controls;
-            # every other focused surface retains the original tighter ceiling.
-            assert len(scripted.tool_names) <= (
-                18 if workbench == "AssemblyWorkbench" else 16
-            )
+            # The component-capable surfaces add only their exact catalog/interface
+            # controls; Assembly alone also exposes saved playback.
+            ceiling = 18 if workbench == "AssemblyWorkbench" else 17
+            assert len(scripted.tool_names) <= ceiling
             assert "core.inspect" not in scripted.tool_names
             unrelated_human_commands = set(
                 WORKBENCH_TOOL_PACKS[workbench].tool_names
@@ -1719,6 +1727,57 @@ def test_saved_catalog_uses_publication_not_private_implementation(
     assert match["interfaces"][0]["frame"] == frame
 
 
+def test_saved_catalog_keeps_managed_model_occurrences_reusable(
+    tmp_path: Path,
+) -> None:
+    from VibeCADComponentCatalog import search_captured_component_catalog
+
+    owner = tmp_path / "assembly.FCStd"
+    owner.write_bytes(b"owner")
+    component = tmp_path / "layout.FCStd"
+    document_xml = """<?xml version="1.0" encoding="utf-8"?>
+<Document>
+  <Properties>
+    <Property name="Label" type="App::PropertyString"><String value="Cell Layout"/></Property>
+    <Property name="Uid" type="App::PropertyUUID"><Uuid value="layout-uid"/></Property>
+  </Properties>
+  <Objects>
+    <Object type="App::Link" name="PlacedRail" id="1"/>
+  </Objects>
+  <ObjectData>
+    <Object name="PlacedRail"><Properties>
+      <Property name="Label" type="App::PropertyString"><String value="Placed Linear Rail"/></Property>
+      <Property name="VibeCADScriptedRole" type="App::PropertyString"><String value="implementation"/></Property>
+      <Property name="VibeCADVibeScriptProgramId" type="App::PropertyString"><String value="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/></Property>
+      <Property name="VibeCADVibeScriptDomain" type="App::PropertyString"><String value="partdesign"/></Property>
+      <Property name="VibeCADVibeScriptOutputName" type="App::PropertyString"><String value="Rail"/></Property>
+      <Property name="VibeCADVibeScriptOutputType" type="App::PropertyString"><String value="component_link"/></Property>
+    </Properties></Object>
+  </ObjectData>
+</Document>
+"""
+    with zipfile.ZipFile(component, "w") as archive:
+        archive.writestr("Document.xml", document_xml)
+
+    result = search_captured_component_catalog(
+        {
+            "project_directory": str(tmp_path),
+            "owner_file": str(owner),
+            "open_document_files": [str(owner)],
+            "open_candidates": [],
+        },
+        "placed rail",
+    )
+
+    assert result["match_count"] == 1
+    assert result["matches"][0]["kind"] == "occurrence"
+    assert result["matches"][0]["reference"] == {
+        "document_uid": "layout-uid",
+        "object_name": "PlacedRail",
+        "document_path": "layout.FCStd",
+    }
+
+
 def test_component_inventory_is_copy_ready_and_prepared_search_does_not_rescan(
     tmp_path: Path,
 ) -> None:
@@ -1732,6 +1791,7 @@ def test_component_inventory_is_copy_ready_and_prepared_search_does_not_rescan(
         "document_label": "Drive Module",
         "object_name": "BracketBody",
         "label": "Motor Bracket",
+        "kind": "definition",
         "type_id": "PartDesign::Body",
         "source": "open_document",
         "live_validated": True,
@@ -1766,7 +1826,8 @@ def test_component_inventory_is_copy_ready_and_prepared_search_does_not_rescan(
         "project_file_search_available": False,
         "components": [candidate],
         "usage": (
-            "Use a component's reference directly with api.component or api.instances. "
+            "Use a definition reference with api.component or api.instances. Reuse an "
+            "occurrence reference when Assembly must adopt that exact placed object. "
             "Call component_catalog.search only when the needed component is not listed "
             "or when additional catalog metadata is required. To enumerate a truncated "
             "catalog, use detail='references', limit=200, offset=0, then repeat with "
@@ -1862,7 +1923,7 @@ def test_component_catalog_large_inventory_has_explicit_bounded_pagination() -> 
     assert first["returned_count"] == 200
     assert first["next_offset"] == 200
     assert first["matches_truncated"] is True
-    assert set(first["matches"][0]) == {"label", "reference"}
+    assert set(first["matches"][0]) == {"kind", "label", "reference"}
     assert second["offset"] == 200
     assert second["returned_count"] == 144
     assert second["next_offset"] is None
@@ -3485,6 +3546,54 @@ def test_assembly_api_rejects_ambiguous_graphs_and_wrong_joint_parameters() -> N
                 }
             ],
         )
+
+
+@pytest.mark.parametrize(
+    "workbench",
+    ["PartDesignWorkbench", "AssemblyWorkbench", "RobotWorkbench"],
+)
+def test_component_capable_domains_share_one_placement_vocabulary(
+    workbench: str,
+) -> None:
+    import math
+
+    from vibescript_domain_api import create_domain_api
+
+    pack = domains.get_vibescript_pack(workbench)
+    assert pack is not None
+    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+    reference = {"document_uid": "components", "object_name": "LinearRail"}
+
+    occurrence = api.component(
+        reference,
+        placement={
+            "position": [10, 20, 30],
+            "axis": [0, 0, 1],
+            "angle_degrees": 90,
+        },
+        label="Rail",
+    )
+    implicit = api.component(reference)
+    repeated = api.instances(
+        reference,
+        [[0, 0, 0], {"position": [100, 0, 0], "rotation": [0, 0, 0, 2]}],
+        labels=["Rail 1", "Rail 2"],
+    )
+
+    assert occurrence.operation == "component"
+    assert occurrence.output_type == "component_link"
+    assert occurrence.arguments[0] == reference
+    assert occurrence.properties["placement"]["position"] == (10.0, 20.0, 30.0)
+    assert math.isclose(
+        occurrence.properties["placement"]["rotation"][2],
+        math.sqrt(0.5),
+        abs_tol=1.0e-12,
+    )
+    assert occurrence.properties["placement_authored"] is True
+    assert implicit.properties["placement_authored"] is False
+    assert len(repeated) == 2
+    assert repeated[1].properties["placement"]["position"] == (100.0, 0.0, 0.0)
+    assert repeated[1].properties["placement"]["rotation"] == (0.0, 0.0, 0.0, 1.0)
 
 
 def test_assembly_bom_planner_keeps_model_paths_exact_and_actionable() -> None:
@@ -5456,6 +5565,7 @@ def test_part_reference_capture_only_detaches_live_shapes() -> None:
                 "fasteners-provenance.json",
                 "vibescript_assembly_api.py",
                 "vibescript_assembly_worker.py",
+                "vibescript_component_api.py",
                 "vibescript_part_worker.py",
             },
         ),
@@ -5538,7 +5648,15 @@ def test_part_reference_capture_only_detaches_live_shapes() -> None:
                 "vibescript_points_worker.py",
             },
         ),
-        ("robot", {"vibescript_robot_api.py", "vibescript_robot_worker.py"}),
+        (
+            "robot",
+            {
+                "vibescript_component_api.py",
+                "vibescript_component_worker.py",
+                "vibescript_robot_api.py",
+                "vibescript_robot_worker.py",
+            },
+        ),
         ("fem", {"vibescript_fem_api.py", "vibescript_fem_worker.py"}),
         (
             "cam",

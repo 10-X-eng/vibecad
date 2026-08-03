@@ -37,6 +37,7 @@ class PartDesignCandidateError(RuntimeError):
 
 _PART_DIRECT_OPERATIONS = frozenset(PartDomainAPI.exported_names.fget(None))
 _PUBLISHABLE_TYPES = frozenset({"solid", "shell", "face", "wire", "compound"})
+_OUTPUT_TYPES = frozenset({*_PUBLISHABLE_TYPES, "component_link"})
 PARTDESIGN_PRESENTATION_SCHEMA = "vibecad-partdesign-presentation-v1"
 PARTDESIGN_NATIVE_HISTORY_SCHEMA = "vibecad-partdesign-native-history-v1"
 PARTDESIGN_NATIVE_HISTORY_ARTIFACT = "partdesign-native-history.json"
@@ -2564,10 +2565,39 @@ def validate_and_build_partdesign(
         name = str(expected["name"])
         worker_progress.set_output(name)
         output_type = str(expected.get("type") or "")
-        if output_type not in _PUBLISHABLE_TYPES:
+        if output_type not in _OUTPUT_TYPES:
             raise PartDesignCandidateError(
                 f"Part Design output {name!r} has unsupported type {output_type!r}."
             )
+        if output_type == "component_link":
+            from vibescript_component_worker import validate_component_definition
+
+            try:
+                definition, component_data = validate_component_definition(
+                    raw_result[name],
+                    domain="partdesign",
+                    output_name=name,
+                )
+            except ValueError as exc:
+                raise PartDesignCandidateError(
+                    str(exc),
+                    details={"stage": "component_occurrence", "output": name},
+                ) from exc
+            outputs.append(
+                {
+                    "name": name,
+                    "type": output_type,
+                    "definition": definition,
+                    "component_data": component_data,
+                }
+            )
+            validation_outputs.append(
+                {
+                    "name": name,
+                    "component_data": component_data,
+                }
+            )
+            continue
         definition = _payload(raw_result[name], context=f"result[{name!r}]")
         publication_operation = str(definition.get("operation") or "")
         if publication_operation not in {"body", "publish"}:
@@ -2917,6 +2947,8 @@ def export_partdesign_native_history(
     histories: list[dict[str, Any]] = []
     for item in outputs:
         output_name = str(item.get("name") or "")
+        if str(item.get("type") or "") == "component_link":
+            continue
         data = item.get("partdesign_data")
         if not isinstance(data, Mapping):
             raise PartDesignCandidateError(
@@ -2978,5 +3010,9 @@ def export_partdesign_native_history(
         "artifact_path": str(relative),
         "artifact_sha256": hashlib.sha256(encoded).hexdigest(),
         "artifact_bytes": len(encoded),
-        "outputs": [str(item.get("name") or "") for item in outputs],
+        "outputs": [
+            str(item.get("name") or "")
+            for item in outputs
+            if str(item.get("type") or "") != "component_link"
+        ],
     }

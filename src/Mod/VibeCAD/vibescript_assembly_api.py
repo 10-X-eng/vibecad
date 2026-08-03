@@ -16,9 +16,11 @@ import math
 import re
 from typing import Any, Iterable
 
-from VibeCADDocumentReferences import (
-    DocumentReferenceError,
-    normalize_document_reference,
+from vibescript_component_api import (
+    component_placement,
+    component_reference,
+    component_value,
+    instance_values,
 )
 from vibescript_domain_api import DomainValue
 
@@ -488,108 +490,11 @@ def _vector(
 
 
 def _placement(operation: str, parameter: str, value: Any) -> dict[str, list[float]]:
-    if value is None:
-        position = [0.0, 0.0, 0.0]
-        rotation = [0.0, 0.0, 0.0, 1.0]
-    elif isinstance(value, (list, tuple)):
-        position = _vector(operation, parameter, value, size=3)
-        rotation = [0.0, 0.0, 0.0, 1.0]
-    elif isinstance(value, Mapping):
-        extra = set(value) - {"position", "rotation", "axis", "angle_degrees"}
-        if extra:
-            raise _error(
-                operation,
-                parameter,
-                "supports position plus either rotation or axis/angle_degrees; "
-                f"unknown keys {sorted(extra)}",
-            )
-        position = _vector(
-            operation,
-            f"{parameter}.position",
-            value.get("position", [0.0, 0.0, 0.0]),
-            size=3,
-        )
-        has_quaternion = "rotation" in value
-        has_axis = "axis" in value
-        has_angle = "angle_degrees" in value
-        if has_quaternion and (has_axis or has_angle):
-            raise _error(
-                operation,
-                parameter,
-                "rotation cannot be combined with axis or angle_degrees",
-                value,
-            )
-        if has_axis != has_angle:
-            missing = "angle_degrees" if has_axis else "axis"
-            raise _error(
-                operation,
-                parameter,
-                f"axis and angle_degrees must be supplied together; missing {missing}",
-                value,
-            )
-        if has_axis:
-            axis = _vector(
-                operation,
-                f"{parameter}.axis",
-                value["axis"],
-                size=3,
-            )
-            axis_magnitude = math.sqrt(sum(item * item for item in axis))
-            if axis_magnitude <= 1.0e-12:
-                raise _error(
-                    operation,
-                    f"{parameter}.axis",
-                    "axis-angle rotation requires a non-zero axis",
-                    value["axis"],
-                )
-            half_angle = math.radians(
-                _number(
-                    operation,
-                    f"{parameter}.angle_degrees",
-                    value["angle_degrees"],
-                )
-            ) / 2.0
-            scale = math.sin(half_angle) / axis_magnitude
-            rotation = [
-                axis[0] * scale,
-                axis[1] * scale,
-                axis[2] * scale,
-                math.cos(half_angle),
-            ]
-        else:
-            rotation = _vector(
-                operation,
-                f"{parameter}.rotation",
-                value.get("rotation", [0.0, 0.0, 0.0, 1.0]),
-                size=4,
-            )
-    else:
-        raise _error(
-            operation,
-            parameter,
-            "expected [x,y,z], a position/quaternion object, or a "
-            "position/axis/angle_degrees object",
-            value,
-        )
-    magnitude = math.sqrt(sum(item * item for item in rotation))
-    if magnitude <= 1.0e-12:
-        raise _error(operation, f"{parameter}.rotation", "quaternion must be non-zero")
-    return {
-        "position": position,
-        "rotation": [item / magnitude for item in rotation],
-    }
+    return component_placement(operation, parameter, value)
 
 
 def _reference(operation: str, value: Any) -> dict[str, str]:
-    try:
-        return normalize_document_reference(value)
-    except DocumentReferenceError as exc:
-        raise _error(
-            operation,
-            "source",
-            str(exc),
-            value,
-        ) from exc
+    return component_reference(operation, value)
 
 
 def _domain_value(
@@ -1218,11 +1123,10 @@ class AssemblyDomainAPI:
                 "a native flexible subassembly cannot be grounded; ground a rigid base "
                 "component in the parent assembly instead",
             )
-        return self._value(
-            operation,
-            "component_link",
-            _reference(operation, source),
-            placement=_placement(operation, "placement", placement),
+        return component_value(
+            self.domain,
+            source,
+            placement=placement,
             grounded=grounded,
             flexible=flexible,
             label=label,
@@ -1250,10 +1154,8 @@ class AssemblyDomainAPI:
         """
 
         operation = "instances"
-        clean_source = _reference(operation, source)
         if isinstance(placements, (str, bytes)) or not isinstance(
-            placements,
-            Sequence,
+            placements, Sequence
         ):
             raise _error(
                 operation,
@@ -1289,45 +1191,13 @@ class AssemblyDomainAPI:
                 "a flexible subassembly occurrence cannot be grounded",
                 grounded_index,
             )
-        if labels is None:
-            clean_labels = [""] * len(raw_placements)
-        else:
-            if isinstance(labels, (str, bytes)) or not isinstance(labels, Sequence):
-                raise _error(
-                    operation,
-                    "labels",
-                    "expected one string per placement",
-                    labels,
-                )
-            if len(labels) != len(raw_placements):
-                raise _error(
-                    operation,
-                    "labels",
-                    "must contain exactly one string per placement",
-                    labels,
-                )
-            clean_labels = [
-                _label(operation, str(value or "")) for value in labels
-            ]
-        clean_placements = [
-            _placement(
-                operation,
-                f"placements[{index}]",
-                value,
-            )
-            for index, value in enumerate(raw_placements)
-        ]
-        return tuple(
-            self._value(
-                "component",
-                "component_link",
-                clean_source,
-                placement=placement,
-                grounded=index == grounded_index,
-                flexible=flexible,
-                label=clean_labels[index],
-            )
-            for index, placement in enumerate(clean_placements)
+        return instance_values(
+            self.domain,
+            source,
+            raw_placements,
+            labels=labels,
+            grounded=lambda index: index == grounded_index,
+            flexible=flexible,
         )
 
     def fastener(
