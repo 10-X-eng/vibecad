@@ -644,9 +644,11 @@ public:
      * @param expectedType Optional required base type; a bad type accepts any
      * App::DocumentObject.
      */
+    // The explicit construction also handles an empty variadic argument list
+    // without compiler-specific comma elision or preprocessor modes.
 #define runDocumentObjectCommand(_type, _document, _expression, ...) \
     _runDocumentObjectCommand(                                                            \
-        __FILE__, __LINE__, _type, _document, _expression __VA_OPT__(, ) __VA_ARGS__       \
+        __FILE__, __LINE__, _type, _document, _expression, Base::Type{__VA_ARGS__}          \
     )
     static App::DocumentObject* _runDocumentObjectCommand(
         const char* file,

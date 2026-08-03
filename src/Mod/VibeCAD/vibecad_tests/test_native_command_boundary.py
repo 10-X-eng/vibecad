@@ -136,8 +136,13 @@ def test_recorded_python_factories_return_one_exact_document_object() -> None:
         encoding="utf-8"
     )
 
-    assert "runDocumentObjectCommand(_type, _document, _expression" in header
-    assert "_expression __VA_OPT__(, ) __VA_ARGS__" in header
+    macro = header.split("#define runDocumentObjectCommand", 1)[1].split(
+        "static App::DocumentObject*", 1
+    )[0]
+    assert "(_type, _document, _expression, ...)" in macro
+    assert "_expression, Base::Type{__VA_ARGS__}" in macro
+    assert "__VA_OPT__" not in macro
+    assert "##__VA_ARGS__" not in macro
     factory = _function(
         implementation,
         "App::DocumentObject* Command::_runDocumentObjectCommand(",

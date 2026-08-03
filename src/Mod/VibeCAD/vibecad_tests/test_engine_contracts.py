@@ -63,6 +63,15 @@ def test_linux_bundle_smokes_python_dependencies_independently() -> None:
     assert "importlib.util.find_spec('agents') is None" in linux_bundle
 
 
+def test_macos_runtime_validator_imports_importlib_util_explicitly() -> None:
+    validator = (
+        ROOT / "package/rattler-build/scripts/validate_vibecad_macos_runtime.py"
+    ).read_text(encoding="utf-8")
+
+    assert "import importlib.util" in validator
+    assert "importlib.util.find_spec(module_name)" in validator
+
+
 class TestStageAwareFailureRendering:
     @staticmethod
     def _gui():
