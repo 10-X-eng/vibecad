@@ -12,6 +12,7 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import shutil
 import signal
 import sys
 import threading
@@ -32,6 +33,7 @@ MAX_PROVIDER_COMPLETE_READ_BYTES = 2 * 1024 * 1024
 MAX_PROVIDER_RESULT_TOP_LEVEL_FIELDS = 256
 MAX_PROVIDER_INSTRUCTIONS_BYTES = 8 * 1024
 DEFAULT_ANTHROPIC_MAX_TOKENS = 8192
+PROVIDER_STREAM_DELTA_FLUSH_SECONDS = 0.075
 ANTHROPIC_THINKING_BUDGETS = {
     "minimal": 1024,
     "low": 2048,
@@ -108,6 +110,10 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
         "and unbuilt code. Read its exact source_id with vibescript.read_source before "
         "editing; send the complete updated source and returned revision to "
         "vibescript.edit_source. Use vibescript.build_program to rebuild unchanged code. "
+        "Use vibescript.read_geometry on an exact object reference before depending on "
+        "imported or unfamiliar geometry. "
+        "Use vibescript.read_placement before relying on an unfamiliar sketch plane or "
+        "oriented primitive. "
         "Read only needed API calls with vibescript.read_api(names=[...]) or groups=[...]. "
         "Source receives immutable doc and api values plus validated inputs. Outputs "
         "keep stable names and must use these types: "
@@ -1061,23 +1067,41 @@ def _provider_windows_gui_session() -> bool:
 def _provider_spawn_python_executable(
     prefer_windowless: bool | None = None,
 ) -> str | None:
-    if sys.platform not in {"darwin", "win32"}:
+    if sys.platform not in {"darwin", "linux", "win32"}:
         return None
 
-    if sys.platform == "darwin":
+    if sys.platform in {"darwin", "linux"}:
+        versioned_name = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        executable_names = (versioned_name, "python3", "python")
         candidates: list[Path] = []
         current_executable = Path(sys.executable or "")
         if current_executable.name.startswith("python"):
             candidates.append(current_executable)
+        for prefix in (
+            os.environ.get("CONDA_PREFIX"),
+            os.environ.get("VIRTUAL_ENV"),
+            sys.prefix,
+            getattr(sys, "base_prefix", ""),
+            str(Path(__file__).resolve().parents[2]),
+        ):
+            if prefix:
+                candidates.extend(
+                    Path(prefix) / "bin" / name for name in executable_names
+                )
         candidates.extend(
-            [
-                Path(sys.prefix) / "bin" / "python",
-                Path(__file__).resolve().parents[2] / "bin" / "python",
-            ]
+            Path(resolved)
+            for name in executable_names
+            for resolved in (shutil.which(name),)
+            if resolved
         )
+        seen: set[str] = set()
         for candidate in candidates:
+            candidate_text = str(candidate)
+            if not candidate_text or candidate_text in seen:
+                continue
+            seen.add(candidate_text)
             if candidate.is_file() and os.access(candidate, os.X_OK):
-                return str(candidate)
+                return candidate_text
         return None
 
     use_windowless = (
@@ -1120,23 +1144,20 @@ def _provider_multiprocessing_context(
     prefer_windowless_python: bool | None = None,
 ) -> multiprocessing.context.BaseContext:
     start_methods = multiprocessing.get_all_start_methods()
-    if sys.platform == "darwin":
+    if sys.platform in {"darwin", "linux"}:
         python_executable = _provider_spawn_python_executable()
         if not python_executable:
             raise ProviderUnavailable(
                 "VibeCAD cannot start the AI provider process because the packaged "
-                "macOS Python executable was not found."
+                f"{sys.platform} Python executable was not found."
             )
         if "spawn" not in start_methods:
             raise ProviderUnavailable(
-                "VibeCAD cannot start the AI provider process because Python spawn "
-                "support is unavailable on macOS."
+                "VibeCAD cannot start the AI provider process because clean Python "
+                f"spawn support is unavailable on {sys.platform}."
             )
         multiprocessing.set_executable(python_executable)
         return multiprocessing.get_context("spawn")
-
-    if "fork" in start_methods:
-        return multiprocessing.get_context("fork")
 
     if sys.platform == "win32":
         python_executable = _provider_spawn_python_executable(
@@ -1167,7 +1188,9 @@ def _provider_spawn_bootstrap_environment():
     command line.
     """
 
-    if sys.platform not in {"darwin", "win32"} or not getattr(sys, "frozen", False):
+    if sys.platform not in {"darwin", "linux", "win32"} or not getattr(
+        sys, "frozen", False
+    ):
         yield
         return
 
@@ -1337,6 +1360,10 @@ def _run_provider_subprocess(
                     raise ProviderUnavailable(
                         f"{provider_label} process ended before sending a result."
                     ) from exc
+                if not isinstance(message, dict):
+                    raise ProviderUnavailable(
+                        f"{provider_label} process sent an invalid terminal message."
+                    )
                 last_provider_activity_at = time.monotonic()
                 message_type = message.get("type")
                 last_wait_notice_at = 0.0
@@ -1393,7 +1420,7 @@ def _run_provider_subprocess(
                         _emit_provider_progress(progress_callback, event)
                     continue
                 elif message_type == "error":
-                    error = str(message.get("error", "unknown provider error"))
+                    error = str(message.get("error") or "unknown provider error")
                     raise ProviderUnavailable(error)
                 else:
                     continue
@@ -1431,8 +1458,18 @@ def _run_provider_subprocess(
                     raise ProviderUnavailable(
                         f"{provider_label} exited without a result."
                     )
+                exit_detail = f"code {process.exitcode}"
+                if (
+                    os.name != "nt"
+                    and process.exitcode is not None
+                    and process.exitcode < 0
+                ):
+                    try:
+                        exit_detail = signal.Signals(-process.exitcode).name
+                    except ValueError:
+                        exit_detail = f"signal {-process.exitcode}"
                 raise ProviderUnavailable(
-                    f"{provider_label} process exited with code {process.exitcode}."
+                    f"{provider_label} process exited with {exit_detail}."
                 )
     finally:
         parent_conn.close()
@@ -1466,6 +1503,78 @@ def _emit_provider_progress(
 
 def _send_child_progress(conn: Any, event: dict[str, Any]) -> None:
     conn.send({"type": "progress", "event": _json_safe(event)})
+
+
+class _ProviderStreamDeltaBatcher:
+    """Coalesce high-frequency provider deltas before crossing into the GUI.
+
+    Provider SDKs commonly yield a separate event for a few characters or one
+    token. Forwarding every event through the parent pipe causes one synchronous
+    Qt transcript edit per fragment. Keep the stream live while bounding those
+    cross-process GUI updates to a human-scale cadence.
+    """
+
+    def __init__(
+        self,
+        emit: Callable[[dict[str, Any]], None],
+        *,
+        provider: str,
+        turn: int,
+        flush_seconds: float = PROVIDER_STREAM_DELTA_FLUSH_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._emit = emit
+        self._provider = provider
+        self._turn = turn
+        self._flush_seconds = max(0.001, float(flush_seconds))
+        self._clock = clock
+        self._event_name = ""
+        self._parts: list[str] = []
+        self._last_flush_at = clock()
+
+    def append(self, event_name: str, text: Any) -> None:
+        delta = str(text or "")
+        if not delta:
+            return
+        clean_event = str(event_name or "").strip()
+        if clean_event not in {"provider_text_delta", "provider_reasoning_delta"}:
+            raise ValueError(f"Unsupported provider delta event {clean_event!r}.")
+        if self._event_name and clean_event != self._event_name:
+            self.flush()
+        self._event_name = clean_event
+        self._parts.append(delta)
+        if self._clock() - self._last_flush_at >= self._flush_seconds:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._parts:
+            return
+        event = {
+            "event": self._event_name,
+            "provider": self._provider,
+            "turn": self._turn,
+            "text": "".join(self._parts),
+        }
+        self._event_name = ""
+        self._parts = []
+        self._last_flush_at = self._clock()
+        self._emit(event)
+
+
+def _send_child_error(conn: Any, provider_label: str, exc: BaseException) -> None:
+    """Best-effort terminal error delivery from an isolated provider child."""
+
+    detail = " ".join(str(exc or "").split())
+    exception_name = type(exc).__name__
+    message = f"{provider_label} failed with {exception_name}"
+    if detail:
+        message += f": {detail}"
+    try:
+        conn.send({"type": "error", "error": message})
+    except (BrokenPipeError, EOFError, OSError):
+        # The parent already owns cancellation/timeout reporting after closing
+        # its pipe. There is no remaining receiver for a terminal child event.
+        pass
 
 
 def _tool_arguments_summary(arguments_json: str) -> dict[str, Any]:
@@ -2578,14 +2687,13 @@ def _anthropic_child_main(
             _clear_inherited_sdk_modules()
         import anthropic
     except Exception as exc:
-        conn.send(
-            {
-                "type": "error",
-                "error": (
-                    "Anthropic SDK is not available. Install the optional "
-                    f"'anthropic' package and configure authentication. ({exc})"
-                ),
-            }
+        _send_child_error(
+            conn,
+            "Anthropic SDK initialization",
+            ProviderUnavailable(
+                "Install the bundled 'anthropic' package and configure authentication. "
+                f"({exc})"
+            ),
         )
         conn.close()
         return
@@ -2690,6 +2798,11 @@ def _anthropic_child_main(
                     "output_config": request_kwargs.get("output_config"),
                 },
             )
+            delta_batcher = _ProviderStreamDeltaBatcher(
+                lambda event: _send_child_progress(conn, event),
+                provider="Anthropic",
+                turn=turn,
+            )
             with client.messages.stream(**sdk_request) as stream:
                 event_count = 0
                 last_delta_notice_at = 0.0
@@ -2711,25 +2824,15 @@ def _anthropic_child_main(
                     delta_type = summary.get("delta_type")
                     text_delta = summary.get("text_delta")
                     if text_delta:
-                        _send_child_progress(
-                            conn,
-                            {
-                                "event": "provider_text_delta",
-                                "provider": "Anthropic",
-                                "turn": turn,
-                                "text": str(text_delta),
-                            },
+                        delta_batcher.append(
+                            "provider_text_delta",
+                            text_delta,
                         )
                     reasoning_delta = summary.get("reasoning_delta")
                     if reasoning_delta:
-                        _send_child_progress(
-                            conn,
-                            {
-                                "event": "provider_reasoning_delta",
-                                "provider": "Anthropic",
-                                "turn": turn,
-                                "text": reasoning_delta,
-                            },
+                        delta_batcher.append(
+                            "provider_reasoning_delta",
+                            reasoning_delta,
                         )
                     if (
                         stream_event_type == "content_block_start"
@@ -2773,6 +2876,7 @@ def _anthropic_child_main(
                         should_report = True
                         last_delta_notice_at = now
                     if should_report:
+                        delta_batcher.flush()
                         event = {
                             "event": "anthropic_stream_event",
                             "turn": turn,
@@ -2780,6 +2884,7 @@ def _anthropic_child_main(
                         }
                         event.update(summary)
                         _send_child_progress(conn, event)
+                delta_batcher.flush()
                 _send_child_progress(
                     conn,
                     {
@@ -2844,10 +2949,18 @@ def _anthropic_child_main(
                 if getattr(block, "type", None) == "tool_use"
             ]
             if response.stop_reason != "tool_use" or not tool_use_blocks:
+                final_output = response_text.strip()
+                if not final_output:
+                    summary = _anthropic_response_summary(response)
+                    raise RuntimeError(
+                        "Anthropic completed the turn without any user-visible text "
+                        f"(stop_reason={summary['stop_reason'] or 'unknown'}, "
+                        f"blocks={summary['block_counts']})."
+                    )
                 conn.send(
                     {
                         "type": "done",
-                        "final_output": response_text.strip(),
+                        "final_output": final_output,
                         "raw": None,
                     }
                 )
@@ -2949,8 +3062,8 @@ def _anthropic_child_main(
                 "error": "Anthropic provider turn limit reached.",
             }
         )
-    except Exception as exc:
-        conn.send({"type": "error", "error": str(exc)})
+    except BaseException as exc:
+        _send_child_error(conn, "Anthropic provider", exc)
     finally:
         conn.close()
 

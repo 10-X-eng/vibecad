@@ -75,6 +75,8 @@ def main() -> int:
         candidate = next(
             item for item in captured["open_candidates"] if item["object_name"] == body.Name
         )
+        assert candidate["live_validated"] is False
+        assert candidate["geometry_validation"] == "deferred_until_use"
         assert candidate["published_interfaces"] == ["RotationAxis"]
         assert candidate["interfaces"][0]["connector"] == definition["connector"]
         assert candidate["local_coordinate_systems"] == [

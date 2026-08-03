@@ -103,8 +103,9 @@ MAX_RECENT_CONVERSATION_JSON_BYTES = 48 * 1024
 MAX_RECENT_CONVERSATION_TURN_CHARACTERS = 6000
 MAX_PROVIDER_TOOL_SCHEMAS_JSON_BYTES = 128 * 1024
 # Keep exact schemas intact rather than hiding constraints from the model behind
-# an undersized tactical cap. This remains well below the provider wire limit.
-MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 22 * 1024
+# an undersized tactical cap. The full-shape query contract still leaves this
+# well below the provider wire limit.
+MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 28 * 1024
 
 
 @dataclass(frozen=True)
@@ -1373,6 +1374,34 @@ def _run_domain_vibescript_tool(
             ),
         }
 
+    def retain_failed_candidate(
+        payload: dict[str, Any],
+        prepared: Mapping[str, Any],
+        *,
+        status: str,
+    ) -> dict[str, Any]:
+        """Persist a failed source and expose its next editable identity directly."""
+
+        retained = retain_candidate(prepared, status=status, failure=payload)
+        program_id = str(prepared["program_id"])
+        revision = str(prepared["revision"])
+        payload.update(
+            {
+                "program_id": program_id,
+                "source_id": program_id,
+                "working_revision": revision,
+                "next_write_expected_revision": revision,
+                "failed_candidate": {
+                    "program_id": program_id,
+                    "revision": revision,
+                    "attempt_directory": retained["attempt_directory"],
+                    "accepted_revision": prepared["accepted_revision_before"],
+                },
+                "model_state": candidate_model_state(prepared),
+            }
+        )
+        return finish(payload)
+
     parsed = parse_domain_tool(tool_name)
     if parsed is None:
         return tool_failure(
@@ -1464,32 +1493,18 @@ def _run_domain_vibescript_tool(
             ),
         )
         if execution.get("ok") is not True:
-            retained = retain_candidate(prepared, status="failed", failure=execution)
-            execution["failed_candidate"] = {
-                "program_id": prepared["program_id"],
-                "revision": prepared["revision"],
-                "attempt_directory": retained["attempt_directory"],
-                "accepted_revision": prepared["accepted_revision_before"],
-            }
-            execution["model_state"] = candidate_model_state(prepared)
-            return finish(execution)
+            return retain_failed_candidate(execution, prepared, status="failed")
         try:
             validated = run_phase(
                 "validate",
                 lambda: adapter.validate_result(prepared, execution),
             )
         except DomainRuntimeFailure as exc:
-            retained = retain_candidate(
-                prepared, status="validation_failed", failure=exc.payload
+            return retain_failed_candidate(
+                exc.payload,
+                prepared,
+                status="validation_failed",
             )
-            exc.payload["failed_candidate"] = {
-                "program_id": prepared["program_id"],
-                "revision": prepared["revision"],
-                "attempt_directory": retained["attempt_directory"],
-                "accepted_revision": prepared["accepted_revision_before"],
-            }
-            exc.payload["model_state"] = candidate_model_state(prepared)
-            return finish(exc.payload)
         except Exception as exc:
             failure = tool_failure(
                 tool_name,
@@ -1499,17 +1514,11 @@ def _run_domain_vibescript_tool(
                 requested=args,
                 observed={"exception_type": exc.__class__.__name__},
             )
-            retained = retain_candidate(
-                prepared, status="validation_failed", failure=failure
+            return retain_failed_candidate(
+                failure,
+                prepared,
+                status="validation_failed",
             )
-            failure["failed_candidate"] = {
-                "program_id": prepared["program_id"],
-                "revision": prepared["revision"],
-                "attempt_directory": retained["attempt_directory"],
-                "accepted_revision": prepared["accepted_revision_before"],
-            }
-            failure["model_state"] = candidate_model_state(prepared)
-            return finish(failure)
         retain_candidate(prepared, status="validated")
         try:
             publication = run_phase(
@@ -1528,17 +1537,11 @@ def _run_domain_vibescript_tool(
                 requested=args,
                 observed={"exception_type": exc.__class__.__name__},
             )
-            retained = retain_candidate(
-                prepared, status="publication_failed", failure=failure
+            return retain_failed_candidate(
+                failure,
+                prepared,
+                status="publication_failed",
             )
-            failure["failed_candidate"] = {
-                "program_id": prepared["program_id"],
-                "revision": prepared["revision"],
-                "attempt_directory": retained["attempt_directory"],
-                "accepted_revision": prepared["accepted_revision_before"],
-            }
-            failure["model_state"] = candidate_model_state(prepared)
-            return finish(failure)
         deferred_recompute = run_phase(
             "deferred_recompute",
             lambda: _deferred_publication_recompute(
@@ -2118,7 +2121,28 @@ def _resolve_vibescript_source_target(
         )
 
     if editable_record is not None:
-        indexed_domain = str(editable_record.get("domain") or "").strip().lower()
+        record_domain = str(editable_record.get("domain") or "").strip().lower()
+        index_domain = (
+            str(editable_sources.get("domain") or "").strip().lower()
+            if isinstance(editable_sources, Mapping)
+            else ""
+        )
+        if record_domain and index_domain and record_domain != index_domain:
+            raise _SourceTargetError(
+                "SOURCE_DOMAIN_MISMATCH",
+                f"Source {clean_source_id} conflicts with its owning source index.",
+                observed={
+                    "source_id": clean_source_id,
+                    "record_domain": record_domain,
+                    "index_domain": index_domain,
+                },
+            )
+        indexed_domain = record_domain or index_domain
+        if not indexed_domain and isinstance(editable_sources, Mapping):
+            indexed_workbench = str(editable_sources.get("workbench") or "").strip()
+            indexed_pack = vibescript_domains.get_vibescript_pack(indexed_workbench)
+            if indexed_pack is not None:
+                indexed_domain = indexed_pack.domain
         pack = vibescript_domains.get_vibescript_pack_for_domain(indexed_domain)
         if pack is None or pack.domain != active_pack.domain:
             raise _SourceTargetError(
@@ -2270,6 +2294,86 @@ def _run_universal_vibescript_tool(
         if target is not None:
             payload["source_target"] = _source_target_payload(target)
         return payload
+    if tool_name == "vibescript.read_geometry":
+        from VibeCADGeometryInspection import (
+            GeometryInspectionError,
+            capture_geometry_read,
+            complete_geometry_read,
+            discard_geometry_read,
+        )
+
+        try:
+            captured = _on_document_thread(
+                document_thread_dispatch,
+                lambda: capture_geometry_read(service, args),
+            )
+            if cancellation_check is not None and cancellation_check():
+                discard_geometry_read(captured)
+                return tool_failure(
+                    tool_name,
+                    "RUN_CANCELLED",
+                    "precondition",
+                    "The geometry read was superseded after capture.",
+                    requested=args,
+                    cancelled=True,
+                )
+            _emit(
+                progress_callback,
+                {
+                    "event": "geometry_worker_started",
+                    "operation": "inspect_brep",
+                    "analysis_level": str(
+                        args.get("analysis_level") or "full"
+                    ),
+                    "include_subelements": bool(args.get("include_subelements")),
+                },
+            )
+            return complete_geometry_read(
+                captured,
+                cancellation_check=cancellation_check,
+            )
+        except GeometryInspectionError as exc:
+            return tool_failure(
+                tool_name,
+                exc.code,
+                "precondition",
+                str(exc),
+                requested=args,
+            )
+        except Exception as exc:
+            return tool_failure(
+                tool_name,
+                "GEOMETRY_READ_FAILED",
+                "native_call",
+                str(exc),
+                requested=args,
+                observed={"exception_type": exc.__class__.__name__},
+            )
+    if tool_name == "vibescript.read_placement":
+        from VibeCADPlacementInspection import (
+            PlacementInspectionError,
+            read_placement,
+        )
+
+        try:
+            return read_placement(args)
+        except PlacementInspectionError as exc:
+            return tool_failure(
+                tool_name,
+                exc.code,
+                "precondition",
+                str(exc),
+                requested=args,
+            )
+        except Exception as exc:
+            return tool_failure(
+                tool_name,
+                "PLACEMENT_READ_FAILED",
+                "precondition",
+                str(exc),
+                requested=args,
+                observed={"exception_type": exc.__class__.__name__},
+            )
     if tool_name == "vibescript.read_source":
         from VibeCADVibeScriptDomainRuntime import (
             DomainRuntimeFailure,
@@ -2816,6 +2920,165 @@ def make_provider_tool_runner(
         ),
         "dirty": False,
     }
+    editable_sources_state: dict[str, Any] = {
+        "prepared": (
+            dict(turn_editable_sources)
+            if isinstance(turn_editable_sources, Mapping)
+            else None
+        ),
+    }
+    source_lifecycle_tools = frozenset(
+        {
+            "vibescript.create_program",
+            "vibescript.build_program",
+            "vibescript.edit_source",
+            "vibescript.set_inputs",
+            "vibescript.reconfigure_program",
+            "vibescript.delete_output",
+            "vibescript.delete_program",
+        }
+    )
+
+    def refresh_editable_sources(active_workbench: str | None) -> str:
+        """Refresh mutable source authority without changing the frozen tool surface."""
+
+        pack = vibescript_domains.get_vibescript_pack(active_workbench)
+        if pack is None:
+            return "The active workbench has no editable VibeScript source domain."
+        try:
+            captured = _on_document_thread(
+                document_thread_dispatch,
+                lambda: vibescript_domains.capture_editable_sources_snapshot(
+                    service,
+                    pack.domain,
+                ),
+            )
+            editable_sources_state["prepared"] = (
+                vibescript_domains.complete_editable_sources_snapshot(captured)
+            )
+        except Exception as exc:
+            return str(exc)
+        return ""
+
+    def apply_source_lifecycle_result(
+        tool_name: str,
+        payload: Mapping[str, Any],
+        active_workbench: str | None,
+    ) -> None:
+        """Keep a source returned by this turn authorized even if indexing lags."""
+
+        active_pack = vibescript_domains.get_vibescript_pack(active_workbench)
+        if active_pack is None:
+            return
+        source_target = payload.get("source_target")
+        target = dict(source_target) if isinstance(source_target, Mapping) else {}
+        failed_candidate = payload.get("failed_candidate")
+        failed = dict(failed_candidate) if isinstance(failed_candidate, Mapping) else {}
+        source_id = str(
+            payload.get("source_id")
+            or payload.get("program_id")
+            or failed.get("program_id")
+            or ""
+        ).strip().lower()
+        if len(source_id) != 32 or any(
+            character not in "0123456789abcdef" for character in source_id
+        ):
+            return
+        domain = str(
+            target.get("domain") or payload.get("domain") or active_pack.domain
+        ).strip().lower()
+        if domain != active_pack.domain:
+            return
+
+        current = (
+            dict(editable_sources_state["prepared"])
+            if isinstance(editable_sources_state.get("prepared"), Mapping)
+            else {}
+        )
+        sources = [
+            dict(item)
+            for item in list(current.get("sources") or [])
+            if isinstance(item, Mapping)
+            and str(item.get("source_id") or "").strip().lower() != source_id
+        ]
+        if tool_name == "vibescript.delete_program" and payload.get("ok") is True:
+            current["sources"] = sources
+            current["source_count"] = len(sources)
+            editable_sources_state["prepared"] = current
+            return
+
+        revision = str(
+            payload.get("working_revision")
+            or payload.get("next_write_expected_revision")
+            or failed.get("revision")
+            or target.get("current_revision")
+            or ""
+        ).strip().lower()
+        if len(revision) != 64 or any(
+            character not in "0123456789abcdef" for character in revision
+        ):
+            return
+        raw_outputs = payload.get("live_outputs")
+        if isinstance(raw_outputs, Mapping):
+            affected_outputs = [
+                {
+                    "name": str(name),
+                    **(
+                        {
+                            "object_name": str(details.get("object_name") or ""),
+                            "label": str(details.get("label") or ""),
+                        }
+                        if isinstance(details, Mapping)
+                        else {}
+                    ),
+                }
+                for name, details in raw_outputs.items()
+                if str(name)
+            ]
+        else:
+            affected_outputs = [
+                dict(item)
+                for item in list(target.get("affected_outputs") or [])
+                if isinstance(item, Mapping)
+            ]
+        record = {
+            "source_id": source_id,
+            "source_kind": "vibescript_program",
+            "domain": domain,
+            "workbench": str(active_pack.workbench),
+            "current_revision": revision,
+            "status": "accepted" if payload.get("ok") is True else "build_failed",
+            "affected_outputs": affected_outputs,
+            "read_tool": "vibescript.read_source",
+            "build_tool": "vibescript.build_program",
+            "edit_tool": "vibescript.edit_source",
+            "delete_output_tool": "vibescript.delete_output",
+            "delete_program_tool": "vibescript.delete_program",
+            "build_arguments": {
+                "source_id": source_id,
+                "expected_revision": revision,
+            },
+            "edit_target_arguments": {
+                "source_id": source_id,
+                "expected_revision": revision,
+            },
+            "delete_target_arguments": {
+                "source_id": source_id,
+                "expected_revision": revision,
+                "reason": "Remove this source and its owned outputs.",
+            },
+        }
+        sources.append(record)
+        current.update(
+            {
+                "schema": "vibecad-editable-sources-v1",
+                "domain": domain,
+                "workbench": str(active_pack.workbench),
+                "source_count": len(sources),
+                "sources": sources,
+            }
+        )
+        editable_sources_state["prepared"] = current
 
     def run(tool_name: str, arguments_json: str = "{}") -> dict[str, Any]:
         started = time.monotonic()
@@ -3070,6 +3333,27 @@ def make_provider_tool_runner(
                 },
             )
             return finalize({"ok": True, "review": review})
+        if tool_name == "vibescript.delete_object":
+            from VibeCADObjectDeletion import (
+                ObjectDeletionError,
+                delete_exact_object,
+            )
+
+            try:
+                payload = _on_document_thread(
+                    document_thread_dispatch,
+                    lambda: delete_exact_object(service, args),
+                )
+            except ObjectDeletionError as exc:
+                payload = tool_failure(
+                    tool_name,
+                    exc.code,
+                    "precondition",
+                    str(exc),
+                    requested=args,
+                    observed=exc.observed,
+                )
+            return finalize(payload)
         if tool_name == "component_catalog.search":
             from tool_impl.service.component_catalog_search import (
                 capture,
@@ -3130,6 +3414,8 @@ def make_provider_tool_runner(
         if tool_name in {
             "vibescript.read_source",
             "vibescript.read_api",
+            "vibescript.read_geometry",
+            "vibescript.read_placement",
             "vibescript.create_program",
             "vibescript.build_program",
             "vibescript.edit_source",
@@ -3138,29 +3424,38 @@ def make_provider_tool_runner(
             "vibescript.delete_output",
             "vibescript.delete_program",
         }:
-            return finalize(
-                _run_universal_vibescript_tool(
-                    service,
-                    active_workbench,
-                    tool_name,
-                    args,
-                    component_catalog=(
-                        component_catalog_state.get("prepared")
-                        if isinstance(
-                            component_catalog_state.get("prepared"), Mapping
-                        )
-                        else None
-                    ),
-                    editable_sources=(
-                        turn_editable_sources
-                        if isinstance(turn_editable_sources, Mapping)
-                        else None
-                    ),
-                    document_thread_dispatch=document_thread_dispatch,
-                    cancellation_check=cancellation_check,
-                    progress_callback=progress_callback,
-                )
+            payload = _run_universal_vibescript_tool(
+                service,
+                active_workbench,
+                tool_name,
+                args,
+                component_catalog=(
+                    component_catalog_state.get("prepared")
+                    if isinstance(
+                        component_catalog_state.get("prepared"), Mapping
+                    )
+                    else None
+                ),
+                editable_sources=(
+                    editable_sources_state.get("prepared")
+                    if isinstance(editable_sources_state.get("prepared"), Mapping)
+                    else None
+                ),
+                document_thread_dispatch=document_thread_dispatch,
+                cancellation_check=cancellation_check,
+                progress_callback=progress_callback,
             )
+            if tool_name in source_lifecycle_tools:
+                refresh_error = refresh_editable_sources(active_workbench)
+                apply_source_lifecycle_result(tool_name, payload, active_workbench)
+                if refresh_error:
+                    payload.setdefault("warnings", []).append(
+                        {
+                            "code": "EDITABLE_SOURCE_INDEX_REFRESH_FAILED",
+                            "error": refresh_error,
+                        }
+                    )
+            return finalize(payload)
         if (
             vibescript_domains.get_domain_adapter(
                 tool_name.split(".")[1]
@@ -3287,6 +3582,9 @@ def make_provider_tool_runner(
         completed = refreshed
         _consume_context_view_attachment(service, completed, document_thread_dispatch)
         if not isinstance(turn_surface, dict):
+            refreshed_sources = completed.get("editable_sources")
+            if isinstance(refreshed_sources, Mapping):
+                editable_sources_state["prepared"] = dict(refreshed_sources)
             return completed
 
         live_surface = dict(completed.get("provider_tool_surface") or {})
@@ -3346,6 +3644,10 @@ def make_provider_tool_runner(
                 },
                 "next_turn_required": True,
             }
+        else:
+            refreshed_sources = completed.get("editable_sources")
+            if isinstance(refreshed_sources, Mapping):
+                editable_sources_state["prepared"] = dict(refreshed_sources)
         return completed
 
     run.provider_update = provider_update

@@ -12969,7 +12969,7 @@ def _partdesign_program_root(doc: Any, program_id: str) -> Any | None:
 
 def _partdesign_publications(
     doc: Any,
-    root: Any,
+    root: Any | None,
     program_id: str,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {}
@@ -12980,20 +12980,21 @@ def _partdesign_publications(
         and str(getattr(obj, scripted_publication.PROP_MODEL_ID, "") or "")
         == program_id
     ]
-    candidates.extend(
-        obj
-        for obj in list(getattr(root, "Group", []) or [])
-        if obj not in candidates
-        and (
-            scripted_publication.is_publication(obj)
-            or "VibeCADVibeScriptOutputKey" in _properties(obj)
+    if root is not None:
+        candidates.extend(
+            obj
+            for obj in list(getattr(root, "Group", []) or [])
+            if obj not in candidates
+            and (
+                scripted_publication.is_publication(obj)
+                or "VibeCADVibeScriptOutputKey" in _properties(obj)
+            )
         )
-    )
-    candidates.extend(
-        obj
-        for obj in _partdesign_component_occurrences(root)
-        if obj not in candidates
-    )
+        candidates.extend(
+            obj
+            for obj in _partdesign_component_occurrences(root)
+            if obj not in candidates
+        )
     for obj in candidates:
         output_name = str(
             getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "")
@@ -13150,9 +13151,55 @@ def _is_partdesign_component_occurrence(obj: Any) -> bool:
     )
 
 
-def _delete_partdesign_publication(doc: Any, root: Any, published: Any) -> list[str]:
+def _delete_partdesign_publication(
+    doc: Any,
+    root: Any | None,
+    published: Any,
+) -> list[str]:
     if not _is_partdesign_component_occurrence(published):
-        return scripted_publication.delete_publication(doc, root, published)
+        if root is not None:
+            try:
+                return scripted_publication.delete_publication(doc, root, published)
+            except scripted_publication.PublicationError:
+                # A prior interrupted deletion may have removed the program
+                # container or private shape target before its stable
+                # publication. Recover only objects carrying the same exact
+                # source ownership identity.
+                pass
+        program_id = str(
+            getattr(published, scripted_publication.PROP_MODEL_ID, "") or ""
+        )
+        deleted: list[str] = []
+        target_name = str(
+            getattr(published, scripted_publication.PROP_IMPLEMENTATION, "") or ""
+        )
+        target = doc.getObject(target_name) if target_name else None
+        if target is not None:
+            if (
+                scripted_publication.role_of(target)
+                != scripted_publication.ROLE_PUBLICATION_TARGET
+                or str(
+                    getattr(target, scripted_publication.PROP_MODEL_ID, "") or ""
+                )
+                != program_id
+            ):
+                raise RuntimeError(
+                    "A broken Part Design publication points at an object not "
+                    "owned by the same VibeScript source."
+                )
+            doc.removeObject(str(target.Name))
+            deleted.append(str(target.Name))
+        published_name = str(getattr(published, "Name", "") or "")
+        if published_name and doc.getObject(published_name) is not None:
+            doc.removeObject(published_name)
+            deleted.append(published_name)
+        return deleted
+    if root is None:
+        name = str(getattr(published, "Name", "") or "")
+        if name and doc.getObject(name) is not None:
+            doc.removeObject(name)
+            return [name]
+        return []
     retained = [
         item
         for item in _partdesign_component_occurrences(root)
@@ -13611,6 +13658,20 @@ def _create_native_body_for_publication(
 
     scripted_publication.tag_object(
         body,
+        role=scripted_publication.ROLE_IMPLEMENTATION,
+        engine="vibescript:partdesign",
+        model_id=str(
+            getattr(publication, scripted_publication.PROP_MODEL_ID, "") or ""
+        ),
+        output_key=str(
+            getattr(publication, scripted_publication.PROP_OUTPUT_KEY, "") or ""
+        ),
+        revision=str(
+            getattr(publication, scripted_publication.PROP_REVISION, "") or ""
+        ),
+    )
+    scripted_publication.tag_object(
+        result,
         role=scripted_publication.ROLE_IMPLEMENTATION,
         engine="vibescript:partdesign",
         model_id=str(
@@ -14108,6 +14169,14 @@ def _materialize_partdesign_native_history(
                 f"{output_name}.__accepted_result__",
             )
             _hide_property(accepted, PROP_PARTDESIGN_HISTORY_KEY)
+            scripted_publication.tag_object(
+                accepted,
+                role=scripted_publication.ROLE_IMPLEMENTATION,
+                engine="vibescript:partdesign",
+                model_id=program_id,
+                output_key=output_name,
+                revision=revision,
+            )
             body.Tip = accepted
         scripted_publication.tag_object(
             body,
@@ -16951,7 +17020,7 @@ def _delete_techdraw_program(
 def _delete_partdesign_design_program(
     doc: Any,
     prepared: Mapping[str, Any],
-    root: Any,
+    root: Any | None,
     operation: Any,
 ) -> dict[str, Any]:
     """Delete one global VibeScript operation and every owned Body output."""
@@ -16975,6 +17044,23 @@ def _delete_partdesign_design_program(
             "The VibeScript Design operation lost one of its persistent "
             "Body outputs."
         )
+
+    contained: list[Any] = []
+    contained_ids: set[int] = set()
+
+    def collect_contained(obj: Any) -> None:
+        if id(obj) in contained_ids:
+            return
+        contained_ids.add(id(obj))
+        contained.append(obj)
+        group = getattr(obj, "Group", None)
+        if isinstance(group, (list, tuple)):
+            for child in group:
+                if child is not None:
+                    collect_contained(child)
+
+    for body in bodies:
+        collect_contained(body)
     states = [
         obj
         for obj in list(getattr(doc, "Objects", []) or [])
@@ -16983,19 +17069,12 @@ def _delete_partdesign_design_program(
         == "PartDesign::DesignBodyState"
     ]
     private_objects = [
-        root,
+        *([root] if root is not None else []),
         *list(getattr(root, "OutListRecursive", []) or []),
         *publications.values(),
         operation,
         *states,
-        *bodies,
-        *[
-            child
-            for body in bodies
-            for child in list(
-                getattr(body, "OutListRecursive", []) or []
-            )
-        ],
+        *contained,
     ]
     internal: list[Any] = []
     internal_ids: set[int] = set()
@@ -17020,6 +17099,23 @@ def _delete_partdesign_design_program(
         }
         for name, obj in publications.items()
     ]
+    deleted_names = {item["object_name"] for item in deleted}
+    deleted.extend(
+        {
+            "object_name": str(obj.Name),
+            "label": str(obj.Label),
+            "type_id": str(obj.TypeId),
+            "output_name": str(getattr(obj, scripted_publication.PROP_OUTPUT_KEY, "") or ""),
+        }
+        for obj in contained
+        if str(getattr(obj, "Name", "") or "")
+        not in deleted_names
+    )
+    contained_names = [
+        str(getattr(obj, "Name", "") or "")
+        for obj in contained
+        if str(getattr(obj, "Name", "") or "")
+    ]
     transaction_open = False
     try:
         if hasattr(doc, "openTransaction"):
@@ -17032,13 +17128,43 @@ def _delete_partdesign_design_program(
                 published,
             )
         PartDesign.removeDesignOperation(operation)
-        for child in reversed(list(getattr(root, "Group", []) or [])):
-            child_name = str(getattr(child, "Name", "") or "")
-            if child_name and doc.getObject(child_name) is not None:
+        # Native operation deletion owns the Bodies, but older Body layouts can
+        # leave an adopted result feature detached after their container is
+        # removed. Delete the exact captured containment closure and prove no
+        # source-owned native descendant survived before artifacts are purged.
+        for child_name in reversed(contained_names):
+            if doc.getObject(child_name) is not None:
                 doc.removeObject(child_name)
-        root_name = str(root.Name)
-        if doc.getObject(root_name) is not None:
-            doc.removeObject(root_name)
+        if root is not None:
+            for child in reversed(list(getattr(root, "Group", []) or [])):
+                child_name = str(getattr(child, "Name", "") or "")
+                if child_name and doc.getObject(child_name) is not None:
+                    doc.removeObject(child_name)
+            root_name = str(root.Name)
+            if doc.getObject(root_name) is not None:
+                doc.removeObject(root_name)
+        survivors = [
+            name for name in contained_names if doc.getObject(name) is not None
+        ]
+        survivors.extend(
+            str(getattr(obj, "Name", "") or "")
+            for obj in list(getattr(doc, "Objects", []) or [])
+            if (
+                str(getattr(obj, "ProgramId", "") or "") == program_id
+                or str(
+                    getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+                )
+                == program_id
+                or str(getattr(obj, contracts.PROP_PROGRAM_ID, "") or "")
+                == program_id
+            )
+        )
+        survivors = sorted({name for name in survivors if name})
+        if survivors:
+            raise RuntimeError(
+                "Part Design source deletion retained owned native objects: "
+                + ", ".join(survivors)
+            )
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
@@ -17059,8 +17185,6 @@ def _delete_partdesign_program(
 ) -> dict[str, Any]:
     program_id = str(prepared["program_id"])
     root = _partdesign_program_root(doc, program_id)
-    if root is None:
-        return {"ok": True, "deleted_objects": [], "recompute_deferred": True}
     operation = _partdesign_design_program_operation(doc, program_id)
     if operation is not None:
         return _delete_partdesign_design_program(
@@ -17069,6 +17193,44 @@ def _delete_partdesign_program(
             root,
             operation,
         )
+    if root is None:
+        publications = _partdesign_publications(doc, None, program_id)
+        if not publications:
+            return {"ok": True, "deleted_objects": [], "recompute_deferred": True}
+        deleted = [
+            {
+                "object_name": str(obj.Name),
+                "label": str(obj.Label),
+                "type_id": str(obj.TypeId),
+                "output_name": str(name),
+            }
+            for name, obj in publications.items()
+        ]
+        transaction_open = False
+        try:
+            if hasattr(doc, "openTransaction"):
+                doc.openTransaction("Delete orphaned Part Design VibeScript program")
+                transaction_open = True
+            for published in list(publications.values()):
+                _delete_partdesign_publication(doc, None, published)
+            survivors = _partdesign_publications(doc, None, program_id)
+            if survivors:
+                raise RuntimeError(
+                    "Part Design source deletion retained stable publications: "
+                    + ", ".join(sorted(str(obj.Name) for obj in survivors.values()))
+                )
+            if hasattr(doc, "commitTransaction") and transaction_open:
+                doc.commitTransaction()
+                transaction_open = False
+        except Exception:
+            if transaction_open and hasattr(doc, "abortTransaction"):
+                doc.abortTransaction()
+            raise
+        return {
+            "ok": True,
+            "deleted_objects": deleted,
+            "recompute_deferred": True,
+        }
     publications = _partdesign_publications(doc, root, program_id)
     internal = [
         root,

@@ -259,6 +259,41 @@ def test_oversized_selection_is_rejected_before_object_enumeration(
     assert "sample" not in summary
 
 
+def test_selected_object_includes_copy_ready_geometry_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_object = SimpleNamespace(
+        Name="ImportedMotor",
+        Label="Imported STEP Motor",
+        TypeId="Part::Feature",
+    )
+    selection = SimpleNamespace(
+        Object=selected_object,
+        SubElementNames=("Face2",),
+    )
+    gui = ModuleType("FreeCADGui")
+    gui.Selection = SimpleNamespace(getSelectionEx=lambda: [selection])
+    monkeypatch.setitem(sys.modules, "FreeCADGui", gui)
+    service = object.__new__(VibeCADService)
+    service._active_document = lambda: SimpleNamespace(Uid="document-uid")
+
+    assert service.provider_turn_selection_summary() == {
+        "selection_count": 1,
+        "selection": [
+            {
+                "object": "ImportedMotor",
+                "label": "Imported STEP Motor",
+                "type": "Part::Feature",
+                "reference": {
+                    "document_uid": "document-uid",
+                    "object_name": "ImportedMotor",
+                },
+                "subelements": ["Face2"],
+            }
+        ],
+    }
+
+
 def test_provider_context_does_not_copy_conversation_cache() -> None:
     service = object.__new__(VibeCADService)
     service.active_workbench_name = lambda: "AssemblyWorkbench"

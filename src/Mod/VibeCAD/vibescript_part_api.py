@@ -91,6 +91,31 @@ def _vector(
     return result
 
 
+def _oriented_x_direction(
+    operation: str,
+    direction: Sequence[float],
+    value: Any,
+) -> list[float] | None:
+    """Validate an optional explicit local +X direction for an oriented primitive."""
+
+    if value is None:
+        return None
+    x_direction = _vector(operation, "x_direction", value, nonzero=True)
+    cross = [
+        direction[1] * x_direction[2] - direction[2] * x_direction[1],
+        direction[2] * x_direction[0] - direction[0] * x_direction[2],
+        direction[0] * x_direction[1] - direction[1] * x_direction[0],
+    ]
+    if math.sqrt(sum(item * item for item in cross)) <= 1.0e-12:
+        raise _error(
+            operation,
+            "x_direction",
+            "must not be parallel to direction",
+            value,
+        )
+    return x_direction
+
+
 def _label(operation: str, value: Any) -> str:
     result = str(value or "").strip()
     if len(result) > 120:
@@ -318,11 +343,23 @@ class PartDomainAPI:
         *,
         origin: Sequence[float] = (0.0, 0.0, 0.0),
         direction: Sequence[float] = (0.0, 0.0, 1.0),
+        x_direction: Sequence[float] | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Create an oriented rectangular solid; dimensions must be positive."""
+        """Create a box in local +X/+Y/+Z; direction sets +Z and x_direction sets +X."""
 
         operation = "box"
+        clean_direction = _vector(
+            operation,
+            "direction",
+            direction,
+            nonzero=True,
+        )
+        clean_x_direction = _oriented_x_direction(
+            operation,
+            clean_direction,
+            x_direction,
+        )
         return self._value(
             operation,
             "solid",
@@ -330,7 +367,12 @@ class PartDomainAPI:
             _number(operation, "width", width, minimum=0.0, strict=True),
             _number(operation, "height", height, minimum=0.0, strict=True),
             origin=_vector(operation, "origin", origin),
-            direction=_vector(operation, "direction", direction, nonzero=True),
+            direction=clean_direction,
+            **(
+                {}
+                if clean_x_direction is None
+                else {"x_direction": clean_x_direction}
+            ),
             label=label,
         )
 
@@ -343,15 +385,27 @@ class PartDomainAPI:
         ridge_x: float = 0.0,
         origin: Sequence[float] = (0.0, 0.0, 0.0),
         direction: Sequence[float] = (0.0, 0.0, 1.0),
+        x_direction: Sequence[float] | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Create a right-angular wedge whose ridge runs along width at ridge_x."""
+        """Create a wedge in local +X/+Y/+Z; direction sets +Z and x_direction sets +X."""
 
         operation = "wedge"
         clean_length = _number(operation, "length", length, minimum=0.0, strict=True)
         clean_ridge = _number(operation, "ridge_x", ridge_x, minimum=0.0)
         if clean_ridge > clean_length:
             raise _error(operation, "ridge_x", "must not exceed length", ridge_x)
+        clean_direction = _vector(
+            operation,
+            "direction",
+            direction,
+            nonzero=True,
+        )
+        clean_x_direction = _oriented_x_direction(
+            operation,
+            clean_direction,
+            x_direction,
+        )
         return self._value(
             operation,
             "solid",
@@ -360,7 +414,12 @@ class PartDomainAPI:
             _number(operation, "height", height, minimum=0.0, strict=True),
             ridge_x=clean_ridge,
             origin=_vector(operation, "origin", origin),
-            direction=_vector(operation, "direction", direction, nonzero=True),
+            direction=clean_direction,
+            **(
+                {}
+                if clean_x_direction is None
+                else {"x_direction": clean_x_direction}
+            ),
             label=label,
         )
 

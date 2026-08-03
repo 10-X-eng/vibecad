@@ -13,7 +13,11 @@ from dataclasses import dataclass
 import hashlib
 from typing import Any, Iterable
 
-from VibeCADVibeScriptDomains import domain_availability, get_vibescript_pack
+from VibeCADVibeScriptDomains import (
+    UNIVERSAL_SOURCE_OPERATIONS,
+    domain_availability,
+    get_vibescript_pack,
+)
 from VibeCADWorkbenchTools import get_tool_pack
 
 MODELING_ENGINES = frozenset({"vibescript"})
@@ -272,17 +276,7 @@ def _vibescript_domains(names: Iterable[str]) -> set[str]:
         parts = str(name).split(".")
         if not parts or parts[0] != "vibescript":
             continue
-        if len(parts) == 2 and parts[1] in {
-            "read_source",
-            "read_api",
-            "create_program",
-            "build_program",
-            "edit_source",
-            "set_inputs",
-            "reconfigure_program",
-            "delete_output",
-            "delete_program",
-        }:
+        if len(parts) == 2 and parts[1] in UNIVERSAL_SOURCE_OPERATIONS:
             continue
         if len(parts) == 3:
             result.add(parts[1])

@@ -26,6 +26,7 @@ from VibeCADProvider import (
     _clear_inherited_sdk_modules,
     _json_safe,
     _run_provider_subprocess,
+    _send_child_error,
 )
 
 
@@ -134,8 +135,8 @@ def _anthropic_compiler_child_main(
         if not isinstance(update, dict):
             raise RuntimeError("Anthropic Intent Memory tool input was not an object.")
         conn.send({"type": "done", "final_output": "", "raw": _json_safe(update)})
-    except Exception as exc:
-        conn.send({"type": "error", "error": str(exc)})
+    except BaseException as exc:
+        _send_child_error(conn, "Anthropic Intent Memory compiler", exc)
     finally:
         conn.close()
 

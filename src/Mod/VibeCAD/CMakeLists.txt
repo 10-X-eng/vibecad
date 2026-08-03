@@ -15,6 +15,8 @@ set(VibeCAD_Scripts
     VibeCADFastenersGui.py
     VibeCADGrid.py
     VibeCADGeometry.py
+    VibeCADGeometryInspection.py
+    VibeCADPlacementInspection.py
     VibeCADGui.py
     VibeCADLegacyArchitecture.py
     VibeCADIntentMemory.py
@@ -111,6 +113,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_component_interface_integration.py
         vibecad_tests/partdesign_vibescript_api_integration.py
         vibecad_tests/qt_ribbon_theme_integration.py
+        vibecad_tests/read_geometry_integration.py
     )
 endif()
 

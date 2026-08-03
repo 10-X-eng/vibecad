@@ -566,6 +566,8 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "material_catalog.search",
         "vibescript.read_source",
         "vibescript.read_api",
+        "vibescript.read_geometry",
+        "vibescript.read_placement",
         "vibescript.create_program",
         "vibescript.build_program",
         "vibescript.edit_source",
@@ -772,7 +774,12 @@ def test_universal_source_tools_are_the_only_model_facing_vibescript_reads(
     import VibeCADSession as session
 
     assert "core.inspect" not in session.VIBESCRIPT_PROVIDER_TOOLS
-    assert {"vibescript.read_source", "vibescript.read_api"} <= set(
+    assert {
+        "vibescript.read_source",
+        "vibescript.read_api",
+        "vibescript.read_geometry",
+        "vibescript.read_placement",
+    } <= set(
         session.VIBESCRIPT_PROVIDER_TOOLS
     )
     assert all(
@@ -781,6 +788,8 @@ def test_universal_source_tools_are_the_only_model_facing_vibescript_reads(
     )
     assert specs["vibescript.read_source"][0].safety == SafetyLevel.READ
     assert specs["vibescript.read_api"][0].safety == SafetyLevel.READ
+    assert specs["vibescript.read_geometry"][0].safety == SafetyLevel.READ
+    assert specs["vibescript.read_placement"][0].safety == SafetyLevel.READ
     edit = specs["vibescript.edit_source"][0]
     assert edit.safety == SafetyLevel.SAFE_WRITE
     assert edit.parameters["required"] == [

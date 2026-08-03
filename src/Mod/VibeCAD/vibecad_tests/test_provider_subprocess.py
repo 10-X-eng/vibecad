@@ -4,6 +4,11 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
+import pytest
+
 import VibeCADProvider as provider
 import VibeCADSession as session
 
@@ -96,6 +101,113 @@ def test_clean_exit_drains_delayed_final_pipe_message(monkeypatch) -> None:
     assert context.child_conn.closed
     assert context.parent_conn.closed
     assert 0.2 in context.parent_conn.poll_timeouts
+
+
+def test_linux_provider_uses_clean_spawn_instead_of_gui_process_fork() -> None:
+    if sys.platform != "linux":
+        pytest.skip("Linux-specific provider process contract")
+
+    python_executable = provider._provider_spawn_python_executable()
+    assert python_executable
+    assert "python" in python_executable.rsplit("/", 1)[-1].lower()
+    assert provider._provider_multiprocessing_context().get_start_method() == "spawn"
+
+
+def test_provider_stream_deltas_are_batched_before_gui_delivery() -> None:
+    now = [0.0]
+    events: list[dict[str, object]] = []
+    batcher = provider._ProviderStreamDeltaBatcher(
+        events.append,
+        provider="Anthropic",
+        turn=3,
+        flush_seconds=0.075,
+        clock=lambda: now[0],
+    )
+
+    for fragment in ("one", " ", "small", " ", "update"):
+        batcher.append("provider_reasoning_delta", fragment)
+    assert events == []
+
+    now[0] = 0.08
+    batcher.append("provider_reasoning_delta", ".")
+    batcher.append("provider_text_delta", "Result")
+    batcher.append("provider_text_delta", " ready")
+    batcher.flush()
+
+    assert events == [
+        {
+            "event": "provider_reasoning_delta",
+            "provider": "Anthropic",
+            "turn": 3,
+            "text": "one small update.",
+        },
+        {
+            "event": "provider_text_delta",
+            "provider": "Anthropic",
+            "turn": 3,
+            "text": "Result ready",
+        },
+    ]
+
+
+class _CollectingConnection:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, object]] = []
+        self.closed = False
+
+    def send(self, message: dict[str, object]) -> None:
+        self.messages.append(message)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _EmptyAnthropicStream:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def __iter__(self):
+        return iter(())
+
+    @staticmethod
+    def get_final_message():
+        return SimpleNamespace(content=[], stop_reason="end_turn")
+
+
+def test_anthropic_empty_completion_returns_explicit_error(monkeypatch) -> None:
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(
+            messages=SimpleNamespace(stream=lambda **_kwargs: _EmptyAnthropicStream())
+        ),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    connection = _CollectingConnection()
+
+    provider._anthropic_child_main(
+        connection,
+        "Inspect the selected model.",
+        {"provider_tool_schemas": []},
+        "test-model",
+        "test-key",
+        None,
+        1.0,
+        1,
+        False,
+    )
+
+    terminal = [
+        message for message in connection.messages if message.get("type") == "error"
+    ]
+    assert len(terminal) == 1
+    assert "without any user-visible text" in str(terminal[0]["error"])
+    assert connection.closed
 
 
 def _vibescript_mode_context(
@@ -210,6 +322,8 @@ def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
     assert "validated inputs" in text
     assert "vibescript.read_source" in text
     assert "vibescript.read_api" in text
+    assert "vibescript.read_geometry" in text
+    assert "vibescript.read_placement" in text
     assert "complete updated source" in text
 
 
@@ -221,6 +335,8 @@ def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> N
     for instruction in (partdesign, assembly):
         assert "vibescript.read_source" in instruction
         assert "vibescript.read_api" in instruction
+        assert "vibescript.read_geometry" in instruction
+        assert "vibescript.read_placement" in instruction
         assert "vibescript.edit_source" in instruction
         assert "set_inputs" in instruction
         assert "reconfigure_program" in instruction

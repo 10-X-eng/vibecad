@@ -148,6 +148,15 @@ def normalize_tool_failure(
         observed = {"raw_observed": observed}
     else:
         observed = dict(observed)
+    continuation_keys = (
+        "program_id",
+        "source_id",
+        "working_revision",
+        "next_write_expected_revision",
+        "failed_candidate",
+        "model_state",
+    )
+    continuation = {key: raw[key] for key in continuation_keys if key in raw}
     reserved_input = {
         "ok",
         "tool",
@@ -171,6 +180,7 @@ def normalize_tool_failure(
         "commit_succeeded",
         "repair_targets",
     }
+    reserved_input.update(continuation_keys)
     tool_details = {
         key: value for key, value in raw.items() if key not in reserved_input
     }
@@ -190,6 +200,7 @@ def normalize_tool_failure(
         native_diagnostics=native_diagnostics,
         retry_same_call=bool(retry.get("same_call", False)),
         required_changes=list(retry.get("required_changes") or []),
+        **continuation,
     )
 
 

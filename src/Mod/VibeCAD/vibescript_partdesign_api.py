@@ -51,6 +51,9 @@ _PUBLIC_OUTPUT_TYPES = (*_PUBLISHABLE_TYPES, "component_link")
 _TOPOLOGY_TYPES = frozenset({"edge", *_PUBLISHABLE_TYPES})
 _MATERIAL_OPERATIONS = frozenset({"add_material", "remove_material"})
 _CREATION_OPERATIONS = frozenset({"new_solid", "new_surface"})
+_LINEAR_DIRECTIONS = frozenset(
+    {"along_normal", "opposite_normal", "symmetric"}
+)
 _COMPATIBILITY_METHODS = frozenset({"pad", "pocket", "groove"})
 _COMPATIBILITY_FEATURES = frozenset(
     {*_COMPATIBILITY_METHODS, "loft_subtractive"}
@@ -156,6 +159,54 @@ _DIRECT_PART_EXPORTS: tuple[tuple[str, str], ...] = (
 def _error(operation: str, parameter: str, reason: str, value: Any = None) -> ValueError:
     suffix = "" if value is None else f"; received {value!r}"
     return ValueError(f"api.{operation}: {parameter} {reason}{suffix}.")
+
+
+def _linear_feature_direction(
+    operation: str,
+    direction: str | None,
+    *,
+    reverse: bool,
+    midplane: bool,
+    subtractive: bool,
+) -> tuple[bool, bool, str]:
+    """Map one public direction to FreeCAD's operation-specific booleans.
+
+    FreeCAD's native Reversed flag points an additive Pad opposite its sketch
+    normal, but points a subtractive Pocket/Hole along its sketch normal.  The
+    public API intentionally hides that inconsistency behind one vocabulary.
+    """
+
+    if direction is None:
+        semantic = (
+            "symmetric"
+            if bool(midplane)
+            else "along_normal"
+            if bool(reverse) == bool(subtractive)
+            else "opposite_normal"
+        )
+        return bool(reverse), bool(midplane), semantic
+    clean = str(direction or "").strip().lower()
+    if clean not in _LINEAR_DIRECTIONS:
+        raise _error(
+            operation,
+            "direction",
+            "must be along_normal, opposite_normal, or symmetric",
+            direction,
+        )
+    if reverse or midplane:
+        raise _error(
+            operation,
+            "direction",
+            "cannot be combined with reverse or midplane",
+        )
+    if clean == "symmetric":
+        return False, True, clean
+    native_reverse = (
+        clean == "along_normal"
+        if subtractive
+        else clean == "opposite_normal"
+    )
+    return native_reverse, False, clean
 
 
 def _number(
@@ -293,6 +344,45 @@ def _value(value: Any, output_types: set[str], parameter: str, operation: str) -
 
 def _profile(operation: str, parameter: str, value: Any) -> DomainValue:
     return _value(value, {"profile"}, parameter, operation)
+
+
+def _hole_location_profile(operation: str, value: Any) -> DomainValue:
+    """Make point centers defining geometry for FreeCAD's native Hole feature."""
+
+    profile = _profile(operation, "profile", value)
+    if not profile.arguments:
+        return profile
+    geometry = profile.arguments[0]
+    if not isinstance(geometry, tuple):
+        return profile
+    normalized = []
+    changed = False
+    for item in geometry:
+        if (
+            isinstance(item, DomainValue)
+            and item.operation == "point"
+            and bool(item.properties.get("construction"))
+        ):
+            properties = dict(item.properties)
+            properties["construction"] = False
+            item = DomainValue(
+                domain=item.domain,
+                operation=item.operation,
+                output_type=item.output_type,
+                arguments=item.arguments,
+                properties=properties,
+            )
+            changed = True
+        normalized.append(item)
+    if not changed:
+        return profile
+    return DomainValue(
+        domain=profile.domain,
+        operation=profile.operation,
+        output_type=profile.output_type,
+        arguments=(tuple(normalized), *profile.arguments[1:]),
+        properties=profile.properties,
+    )
 
 
 def _feature(operation: str, parameter: str, value: Any) -> DomainValue:
@@ -801,6 +891,7 @@ class PartDesignDomainAPI:
         # Declarative inspection and publication.
         "find_subelements",
         "measure",
+        "minimum_distance",
         "material",
         "appearance",
         "body",
@@ -1379,14 +1470,13 @@ class PartDesignDomainAPI:
         require_closed_profile: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Create one planar Sketcher profile from 2D geometry and constraints.
+        """Create a planar profile, not a solid.
 
-        plane is XY, XZ, or YZ. plane_offset_mm moves it along its own normal;
-        z_offset_mm remains an equivalent compatibility name. For any other plane,
-        pass placement with origin, normal, and x_direction. To follow existing
-        geometry, pass a stable support reference/selection plus a compatible map_mode.
-        The validation flags reject an open profile or remaining native Sketcher
-        degrees of freedom when set. Returns a profile, not a solid.
+        XY maps [u,v] to [X,Y] with normal +Z.
+        XZ maps [u,v] to [X,Z] with normal -Y.
+        YZ maps [u,v] to [Y,Z] with normal +X. plane_offset_mm follows that
+        normal. Use placement for any other plane, or support plus map_mode to attach
+        to existing geometry. The require_* flags enforce profile validity.
         """
 
         clean_z_offset = _number("sketch", "z_offset_mm", z_offset_mm)
@@ -1474,10 +1564,18 @@ class PartDesignDomainAPI:
         base: DomainValue | None,
         reverse: bool,
         midplane: bool,
+        direction: str | None,
         refine: bool,
         label: str,
         api_operation: str,
     ) -> DomainValue:
+        clean_reverse, clean_midplane, clean_direction = _linear_feature_direction(
+            api_operation,
+            direction,
+            reverse=reverse,
+            midplane=midplane,
+            subtractive=False,
+        )
         return self._graph(
             "pad",
             "feature",
@@ -1494,8 +1592,9 @@ class PartDesignDomainAPI:
                 if base is None
                 else _feature(api_operation, "base", base)
             ),
-            reverse=bool(reverse),
-            midplane=bool(midplane),
+            reverse=clean_reverse,
+            midplane=clean_midplane,
+            direction=clean_direction,
             refine=bool(refine),
             label=_label(api_operation, label),
         )
@@ -1510,17 +1609,19 @@ class PartDesignDomainAPI:
         through_all: bool = False,
         reverse: bool = False,
         midplane: bool = False,
+        direction: str | None = None,
         refine: bool = True,
         vector: Sequence[float] | None = None,
         output_type: str | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Create a linear feature or standalone extrusion from a profile.
+        """Extrude when the cross-section stays constant.
 
-        Use this for straight additions and cuts whose cross-section stays constant.
-        operation is add_material, remove_material, new_solid, or new_surface.
-        remove_material requires base and exactly one of distance_mm or through_all.
-        vector and output_type apply only to standalone edge or wire extrusion.
+        For Body features use add_material or remove_material with base as needed.
+        direction is along_normal, opposite_normal, or symmetric; it has the
+        same meaning for additions and cuts. A cut needs distance_mm or through_all.
+        new_solid/new_surface create standalone geometry; vector and output_type
+        apply only there.
         """
 
         intent = _operation_intent("extrude", operation, allow_creation=True)
@@ -1546,6 +1647,7 @@ class PartDesignDomainAPI:
                 base=base,
                 reverse=reverse,
                 midplane=midplane,
+                direction=direction,
                 refine=refine,
                 label=label,
                 api_operation="extrude",
@@ -1567,6 +1669,7 @@ class PartDesignDomainAPI:
                 through_all=through_all,
                 reverse=reverse,
                 midplane=midplane,
+                direction=direction,
                 refine=refine,
                 label=label,
                 api_operation="extrude",
@@ -1576,6 +1679,12 @@ class PartDesignDomainAPI:
                 "extrude",
                 "base/through_all",
                 "are Body-material settings and cannot create standalone geometry",
+            )
+        if direction is not None:
+            raise _error(
+                "extrude",
+                "direction",
+                "is for Body features; use vector for standalone geometry",
             )
         if distance_mm is None:
             raise _error("extrude", "distance_mm", "is required for standalone geometry")
@@ -1633,6 +1742,7 @@ class PartDesignDomainAPI:
         through_all: bool,
         reverse: bool,
         midplane: bool,
+        direction: str | None,
         refine: bool,
         label: str,
         api_operation: str,
@@ -1650,6 +1760,13 @@ class PartDesignDomainAPI:
             minimum=0.0,
             strict=True,
         )
+        clean_reverse, clean_midplane, clean_direction = _linear_feature_direction(
+            api_operation,
+            direction,
+            reverse=reverse,
+            midplane=midplane,
+            subtractive=True,
+        )
         return self._graph(
             "pocket",
             "feature",
@@ -1657,8 +1774,9 @@ class PartDesignDomainAPI:
             _profile(api_operation, "profile", profile),
             length,
             through_all=bool(through_all),
-            reverse=bool(reverse),
-            midplane=bool(midplane),
+            reverse=clean_reverse,
+            midplane=clean_midplane,
+            direction=clean_direction,
             refine=bool(refine),
             label=_label(api_operation, label),
         )
@@ -2457,12 +2575,15 @@ class PartDesignDomainAPI:
         countersink_angle_degrees: float = 90.0,
         counterbore_diameter_mm: float | None = None,
         counterbore_depth_mm: float | None = None,
+        reverse: bool = False,
+        midplane: bool = False,
+        direction: str | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Cut a native hole at each point or circle in the location sketch.
+        """Cut one diameter at every point or circle center in a sketch.
 
-        Provide exactly one of depth_mm or through_all. A countersink and counterbore
-        are mutually exclusive; counterbore diameter and depth must be supplied together.
+        Use direction=along_normal, opposite_normal, or symmetric. For an ordinary
+        through hole, symmetric avoids dependence on which side holds the sketch.
         """
 
         if through_all == (depth_mm is not None):
@@ -2552,11 +2673,18 @@ class PartDesignDomainAPI:
                 "must be greater than diameter_mm",
                 counterbore_diameter,
             )
+        clean_reverse, clean_midplane, clean_direction = _linear_feature_direction(
+            "hole",
+            direction,
+            reverse=reverse,
+            midplane=midplane,
+            subtractive=True,
+        )
         return self._graph(
             "hole",
             "feature",
             _feature("hole", "base", base),
-            _profile("hole", "profile", profile),
+            _hole_location_profile("hole", profile),
             diameter,
             depth_mm=depth,
             through_all=bool(through_all),
@@ -2564,6 +2692,9 @@ class PartDesignDomainAPI:
             countersink_angle_degrees=countersink_angle,
             counterbore_diameter_mm=counterbore_diameter,
             counterbore_depth_mm=counterbore_depth,
+            reverse=clean_reverse,
+            midplane=clean_midplane,
+            direction=clean_direction,
             label=_label("hole", label),
         )
 
@@ -2577,14 +2708,12 @@ class PartDesignDomainAPI:
         fit: str = "normal",
         depth_mm: float | None = None,
         through_all: bool = False,
+        reverse: bool = False,
+        midplane: bool = False,
+        direction: str | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Cut a native Hole whose dimensions come from an exact catalog fastener.
-
-        purpose is clearance, tapped, counterbore, or countersink. fit is
-        normal, close, or loose and applies to unthreaded holes. Provide exactly
-        one of depth_mm or through_all=True.
-        """
+        """Cut a catalog-sized hole with api.hole direction semantics."""
 
         if through_all == (depth_mm is not None):
             raise _error(
@@ -2632,11 +2761,18 @@ class PartDesignDomainAPI:
                 "must be the exact value returned by api.fastener",
                 clean_fastener.operation,
             )
+        clean_reverse, clean_midplane, clean_direction = _linear_feature_direction(
+            "fastener_hole",
+            direction,
+            reverse=reverse,
+            midplane=midplane,
+            subtractive=True,
+        )
         return self._graph(
             "fastener_hole",
             "feature",
             _feature("fastener_hole", "base", base),
-            _profile("fastener_hole", "profile", profile),
+            _hole_location_profile("fastener_hole", profile),
             clean_fastener,
             purpose=clean_purpose,
             fit=clean_fit,
@@ -2652,6 +2788,9 @@ class PartDesignDomainAPI:
                 )
             ),
             through_all=bool(through_all),
+            reverse=clean_reverse,
+            midplane=clean_midplane,
+            direction=clean_direction,
             label=_label("fastener_hole", label),
         )
 
@@ -2780,12 +2919,7 @@ class PartDesignDomainAPI:
         angle_tolerance_degrees: float = 1.0,
         radius_tolerance_mm: float = 1.0e-6,
     ) -> dict[str, Any]:
-        """Build a stable geometric selector for edges or faces.
-
-        Describe geometry, direction, size, or location and set expected_count to the
-        exact intended matches. Regeneration fails instead of selecting the wrong
-        topology when that count changes.
-        """
+        """Build a stable face/edge selector with exact cardinality."""
 
         raw: dict[str, Any] = {
             "type": "query",
@@ -2831,15 +2965,7 @@ class PartDesignDomainAPI:
         tolerance: float = 1.0e-6,
         label: str = "",
     ) -> DomainValue:
-        """Require regenerated geometry to satisfy a measurement bound.
-
-        Bounds and mass properties are derived from the actual BREP. Pair checks
-        use other for minimum_distance_mm or interference_volume_mm3. Radius and
-        diameter require one exact edge/face selection. Wall thickness requires
-        two exact opposing face selections on shape. Mass and inertia require
-        exactly one solid and an api.material card containing Density. Pass the
-        check to api.body or api.publish; helper geometry is never evidence.
-        """
+        """Verify a regenerated-BREP bound and return a check."""
 
         clean_quantity = str(quantity or "").strip().lower()
         if clean_quantity not in _MEASURE_QUANTITIES:
@@ -2949,6 +3075,30 @@ class PartDesignDomainAPI:
             maximum=clean_maximum,
             tolerance=_number("measure", "tolerance", tolerance, minimum=0.0),
             label=_label("measure", label),
+        )
+
+    def minimum_distance(
+        self,
+        first: DomainValue,
+        second: DomainValue,
+        *,
+        expected: float | None = None,
+        minimum: float | None = None,
+        maximum: float | None = None,
+        tolerance: float = 1.0e-6,
+        label: str = "",
+    ) -> DomainValue:
+        """Verify exact BREP distance."""
+
+        return self.measure(
+            first,
+            "minimum_distance_mm",
+            other=second,
+            expected=expected,
+            minimum=minimum,
+            maximum=maximum,
+            tolerance=tolerance,
+            label=label,
         )
 
     def material(
@@ -3264,6 +3414,7 @@ class _SavedPartDesignCompatibilityAPI(PartDesignDomainAPI):
         base: DomainValue | None = None,
         reverse: bool = False,
         midplane: bool = False,
+        direction: str | None = None,
         refine: bool = True,
         label: str = "",
     ) -> DomainValue:
@@ -3273,6 +3424,7 @@ class _SavedPartDesignCompatibilityAPI(PartDesignDomainAPI):
             base=base,
             reverse=reverse,
             midplane=midplane,
+            direction=direction,
             refine=refine,
             label=label,
             api_operation="pad",
@@ -3287,6 +3439,7 @@ class _SavedPartDesignCompatibilityAPI(PartDesignDomainAPI):
         through_all: bool = False,
         reverse: bool = False,
         midplane: bool = False,
+        direction: str | None = None,
         refine: bool = True,
         label: str = "",
     ) -> DomainValue:
@@ -3297,6 +3450,7 @@ class _SavedPartDesignCompatibilityAPI(PartDesignDomainAPI):
             through_all=through_all,
             reverse=reverse,
             midplane=midplane,
+            direction=direction,
             refine=refine,
             label=label,
             api_operation="pocket",

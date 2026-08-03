@@ -227,12 +227,7 @@ def _live_component_candidate(
     try:
         shape = getattr(obj, "Shape", None)
         solids = list(getattr(shape, "Solids", []) or [])
-        if (
-            shape is None
-            or bool(shape.isNull())
-            or not bool(shape.isValid())
-            or len(solids) < 1
-        ):
+        if shape is None or bool(shape.isNull()) or not solids:
             return None
     except Exception:
         return None
@@ -253,7 +248,8 @@ def _live_component_candidate(
         "type_id": type_id,
         "kind": "occurrence" if reusable_occurrence else "definition",
         "source": "open_document",
-        "live_validated": True,
+        "live_validated": False,
+        "geometry_validation": "deferred_until_use",
         "portable": portable,
         "reference": reference,
         "assembly_contract": _assembly_component_contract(
@@ -1067,6 +1063,7 @@ def component_inventory(
         "type_id",
         "source",
         "live_validated",
+        "geometry_validation",
         "portable",
         "reference",
         "part_number",

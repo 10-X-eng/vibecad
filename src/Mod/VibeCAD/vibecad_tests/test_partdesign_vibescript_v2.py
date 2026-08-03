@@ -370,6 +370,23 @@ def test_partdesign_sketch_placement_and_geometry_checks_are_explicit() -> None:
         "x_direction": (1.0, 0.0, 0.0),
     }
     assert profile.properties["plane_offset_mm"] == 0.0
+    oriented_box = api.box(
+        10,
+        8,
+        6,
+        direction=[0, 1, 0],
+        x_direction=[1, 0, 0],
+    )
+    assert oriented_box.properties["direction"] == (0.0, 1.0, 0.0)
+    assert oriented_box.properties["x_direction"] == (1.0, 0.0, 0.0)
+    with pytest.raises(ValueError, match="must not be parallel to direction"):
+        api.wedge(
+            10,
+            8,
+            6,
+            direction=[0, 1, 0],
+            x_direction=[0, 2, 0],
+        )
     with pytest.raises(ValueError, match="map_mode is required with support"):
         api.sketch(
             [api.circle([0, 0], 2)],
@@ -407,6 +424,7 @@ def test_partdesign_sketch_placement_and_geometry_checks_are_explicit() -> None:
         other=second,
         expected=2,
     )
+    explicit_distance = api.minimum_distance(first, second, expected=2)
     thickness = api.measure(
         first,
         "minimum_wall_thickness_mm",
@@ -415,6 +433,9 @@ def test_partdesign_sketch_placement_and_geometry_checks_are_explicit() -> None:
         expected=10,
     )
     assert distance.properties["other"] is second
+    assert explicit_distance.operation == "measure"
+    assert explicit_distance.arguments[1] == "minimum_distance_mm"
+    assert explicit_distance.properties["other"] is second
     assert thickness.properties["selection"]["expected_count"] == 1
     assert thickness.properties["other_selection"]["expected_count"] == 1
 
@@ -440,6 +461,10 @@ def test_partdesign_sketch_placement_and_geometry_checks_are_explicit() -> None:
     assert set(details["constraint"]["forms"]) == set(details["constraint"]["kinds"])
     assert "arbitrary_placement" in details["sketch"]
     assert "minimum_distance_mm" in details["measure"]["pair_quantities"]
+    assert "api.minimum_distance" in details["measure"]["pair_quantities"][
+        "minimum_distance_mm"
+    ]
+    assert "api.subshape" in details["measure"]["minimum_distance_example"]
     assert details["material"]["catalog_tool"] == "material_catalog.search"
 
 
@@ -642,6 +667,17 @@ def test_hole_validates_cut_geometry_before_native_execution() -> None:
         operation="add_material",
     )
     profile = api.sketch([api.circle([0, 0], 1)], z_offset_mm=5)
+    reversed_hole = api.hole(
+        base,
+        profile,
+        2,
+        depth_mm=3,
+        reverse=True,
+        midplane=True,
+    )
+    assert reversed_hole.properties["reverse"] is True
+    assert reversed_hole.properties["midplane"] is True
+    assert reversed_hole.properties["direction"] == "symmetric"
 
     with pytest.raises(ValueError, match="greater than diameter_mm"):
         api.hole(
@@ -659,6 +695,71 @@ def test_hole_validates_cut_geometry_before_native_execution() -> None:
             through_all=True,
             countersink_diameter_mm=4,
             countersink_angle_degrees=180,
+        )
+
+
+def test_linear_feature_direction_is_consistent_across_additions_and_cuts() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    assert "direction: 'str | None' = None" in str(inspect.signature(api.extrude))
+    assert "direction: 'str | None' = None" in str(inspect.signature(api.hole))
+    assert "XZ maps [u,v] to [X,Z] with normal -Y" in inspect.getdoc(api.sketch)
+    assert "same meaning for additions and cuts" in inspect.getdoc(api.extrude)
+    profile = api.sketch([api.circle([0, 0], 5)])
+    base = api.extrude(
+        profile,
+        5,
+        operation="add_material",
+        direction="along_normal",
+    )
+    opposite_addition = api.extrude(
+        profile,
+        2,
+        operation="add_material",
+        base=base,
+        direction="opposite_normal",
+    )
+    along_cut = api.extrude(
+        profile,
+        operation="remove_material",
+        base=base,
+        through_all=True,
+        direction="along_normal",
+    )
+    symmetric_hole = api.hole(
+        base,
+        api.sketch([api.point([0, 0])], require_closed_profile=False),
+        2,
+        through_all=True,
+        direction="symmetric",
+    )
+
+    assert base.properties["direction"] == "along_normal"
+    assert base.properties["reverse"] is False
+    assert opposite_addition.properties["direction"] == "opposite_normal"
+    assert opposite_addition.properties["reverse"] is True
+    assert along_cut.properties["direction"] == "along_normal"
+    assert along_cut.properties["reverse"] is True
+    assert symmetric_hole.properties["direction"] == "symmetric"
+    assert symmetric_hole.properties["midplane"] is True
+    hole_profile = symmetric_hole.arguments[1]
+    assert hole_profile.arguments[0][0].operation == "point"
+    assert hole_profile.arguments[0][0].properties["construction"] is False
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        api.extrude(
+            profile,
+            5,
+            operation="add_material",
+            direction="along_normal",
+            reverse=True,
+        )
+    with pytest.raises(ValueError, match="along_normal, opposite_normal, or symmetric"):
+        api.hole(
+            base,
+            profile,
+            2,
+            through_all=True,
+            direction="guess",
         )
 
 

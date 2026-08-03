@@ -291,6 +291,37 @@ def _vector(operation: str, parameter: str, value: Any, *, nonzero: bool = False
     return result
 
 
+def _explicit_frame_placement(
+    operation: str,
+    origin: Any,
+    direction: Any,
+    x_direction: Any,
+):
+    """Build one right-handed local-to-global placement with explicit roll."""
+
+    import FreeCAD as App
+
+    local_origin = _vector(operation, "origin", origin)
+    z_axis = _vector(operation, "direction", direction, nonzero=True)
+    z_axis.normalize()
+    x_axis = _vector(operation, "x_direction", x_direction, nonzero=True)
+    x_axis = x_axis - z_axis * x_axis.dot(z_axis)
+    if x_axis.Length <= 1.0e-12:
+        raise _error(
+            operation,
+            "x_direction",
+            "must not be parallel to direction",
+        )
+    x_axis.normalize()
+    y_axis = z_axis.cross(x_axis)
+    y_axis.normalize()
+    matrix = App.Matrix()
+    matrix.A11, matrix.A21, matrix.A31 = x_axis.x, x_axis.y, x_axis.z
+    matrix.A12, matrix.A22, matrix.A32 = y_axis.x, y_axis.y, y_axis.z
+    matrix.A13, matrix.A23, matrix.A33 = z_axis.x, z_axis.y, z_axis.z
+    return App.Placement(local_origin, App.Rotation(matrix))
+
+
 def _serialized(operation: str, parameter: str, value: Any) -> dict[str, Any]:
     required = {"domain", "operation", "output_type", "arguments", "properties"}
     if not isinstance(value, dict) or not required <= set(value):
@@ -416,10 +447,22 @@ def _build(
             )
         return shape.copy()
     if operation == "box":
+        length = float(_argument(payload, 0, "length"))
+        width = float(_argument(payload, 1, "width"))
+        height = float(_argument(payload, 2, "height"))
+        if properties.get("x_direction") is not None:
+            shape = Part.makeBox(length, width, height)
+            shape.Placement = _explicit_frame_placement(
+                operation,
+                properties.get("origin", [0.0, 0.0, 0.0]),
+                properties.get("direction", [0.0, 0.0, 1.0]),
+                properties["x_direction"],
+            )
+            return shape
         return Part.makeBox(
-            float(_argument(payload, 0, "length")),
-            float(_argument(payload, 1, "width")),
-            float(_argument(payload, 2, "height")),
+            length,
+            width,
+            height,
             _vector(operation, "origin", properties.get("origin", [0.0, 0.0, 0.0])),
             _vector(
                 operation,
@@ -433,6 +476,26 @@ def _build(
         width = float(_argument(payload, 1, "width"))
         height = float(_argument(payload, 2, "height"))
         ridge = float(properties.get("ridge_x", 0.0))
+        if properties.get("x_direction") is not None:
+            shape = Part.makeWedge(
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                ridge,
+                length,
+                width,
+                height,
+                height,
+                ridge,
+            )
+            shape.Placement = _explicit_frame_placement(
+                operation,
+                properties.get("origin", [0.0, 0.0, 0.0]),
+                properties.get("direction", [0.0, 0.0, 1.0]),
+                properties["x_direction"],
+            )
+            return shape
         return Part.makeWedge(
             0.0,
             0.0,

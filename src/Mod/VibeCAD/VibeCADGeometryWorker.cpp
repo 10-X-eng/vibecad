@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <queue>
 #include <stdexcept>
@@ -17,23 +19,34 @@
 #include <BOPAlgo_ArgumentAnalyzer.hxx>
 #include <BOPAlgo_ListOfCheckResult.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepCheck_ListOfStatus.hxx>
 #include <BRepCheck_Result.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
+#include <BRep_Tool.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
 #include <Bnd_Box.hxx>
+#include <GeomAbs_CurveType.hxx>
+#include <GeomAbs_SurfaceType.hxx>
 #include <GProp_GProps.hxx>
 #include <Message_ProgressIndicator.hxx>
 #include <Precision.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Vec.hxx>
 #include <nlohmann/json.hpp>
 
 namespace
@@ -146,14 +159,18 @@ double boundsDistanceSquared(const Bounds& first, const Bounds& second)
 {
     double result = 0.0;
     for (int axis = 0; axis < 3; ++axis) {
-        const double firstMin = axis == 0 ? first.minimum.x : axis == 1 ? first.minimum.y
-                                                                        : first.minimum.z;
-        const double firstMax = axis == 0 ? first.maximum.x : axis == 1 ? first.maximum.y
-                                                                        : first.maximum.z;
-        const double secondMin = axis == 0 ? second.minimum.x : axis == 1 ? second.minimum.y
-                                                                           : second.minimum.z;
-        const double secondMax = axis == 0 ? second.maximum.x : axis == 1 ? second.maximum.y
-                                                                           : second.maximum.z;
+        const double firstMin = axis == 0 ? first.minimum.x
+            : axis == 1                   ? first.minimum.y
+                                          : first.minimum.z;
+        const double firstMax = axis == 0 ? first.maximum.x
+            : axis == 1                   ? first.maximum.y
+                                          : first.maximum.z;
+        const double secondMin = axis == 0 ? second.minimum.x
+            : axis == 1                    ? second.minimum.y
+                                           : second.minimum.z;
+        const double secondMax = axis == 0 ? second.maximum.x
+            : axis == 1                    ? second.maximum.y
+                                           : second.maximum.z;
         double separation = 0.0;
         if (firstMax < secondMin) {
             separation = secondMin - firstMax;
@@ -279,11 +296,7 @@ ClosestPair closestSegmentPair(
             }
             else if (secondParameter > 1.0) {
                 secondParameter = 1.0;
-                firstParameter = std::clamp(
-                    (coupling - firstOffset) / firstLength,
-                    0.0,
-                    1.0
-                );
+                firstParameter = std::clamp((coupling - firstOffset) / firstLength, 0.0, 1.0);
             }
         }
     }
@@ -488,8 +501,8 @@ private:
         }
         const Vec3 extent = centers.maximum - centers.minimum;
         const int axis = extent.x >= extent.y && extent.x >= extent.z ? 0
-            : extent.y >= extent.z                                ? 1
-                                                                 : 2;
+            : extent.y >= extent.z                                    ? 1
+                                                                      : 2;
         const std::size_t middle = begin + (end - begin) / 2;
         std::nth_element(
             order.begin() + static_cast<std::ptrdiff_t>(begin),
@@ -540,14 +553,12 @@ ClosestPair meshDistance(const TriangleBvh& first, const TriangleBvh& second)
         const BvhNode& secondNode = second.nodes[candidate.secondNode];
         if (firstNode.leaf() && secondNode.leaf()) {
             for (std::size_t firstOffset = 0; firstOffset < firstNode.count; ++firstOffset) {
-                const Triangle& firstTriangle =
-                    first.triangles[first.order[firstNode.begin + firstOffset]];
-                for (std::size_t secondOffset = 0; secondOffset < secondNode.count;
-                     ++secondOffset) {
-                    const Triangle& secondTriangle =
-                        second.triangles[second.order[secondNode.begin + secondOffset]];
-                    const ClosestPair measured =
-                        closestTrianglePair(firstTriangle, secondTriangle);
+                const Triangle& firstTriangle
+                    = first.triangles[first.order[firstNode.begin + firstOffset]];
+                for (std::size_t secondOffset = 0; secondOffset < secondNode.count; ++secondOffset) {
+                    const Triangle& secondTriangle
+                        = second.triangles[second.order[secondNode.begin + secondOffset]];
+                    const ClosestPair measured = closestTrianglePair(firstTriangle, secondTriangle);
                     if (measured.distanceSquared < best.distanceSquared) {
                         best = measured;
                     }
@@ -585,7 +596,7 @@ ClosestPair meshDistance(const TriangleBvh& first, const TriangleBvh& second)
     return best;
 }
 
-class DeadlineProgressIndicator final : public Message_ProgressIndicator
+class DeadlineProgressIndicator final: public Message_ProgressIndicator
 {
 public:
     explicit DeadlineProgressIndicator(std::chrono::milliseconds timeout)
@@ -644,9 +655,677 @@ Json shapeFacts(const TopoDS_Shape& shape)
         {"vertices", subshapeCount(shape, TopAbs_VERTEX)},
         {"volume_mm3", volume.Mass()},
         {"area_mm2", area.Mass()},
-        {"bbox",
-         {{"min", Json::array({xMin, yMin, zMin})},
-          {"max", Json::array({xMax, yMax, zMax})}}},
+        {"bbox", {{"min", Json::array({xMin, yMin, zMin})}, {"max", Json::array({xMax, yMax, zMax})}}},
+    };
+}
+
+Json boundsFacts(const TopoDS_Shape& shape)
+{
+    Bnd_Box box;
+    // A conservative topology box is the useful contract here.  AddOptimal
+    // analytically re-solves every surface and can turn a bounds read on a
+    // large imported B-rep into a minute-long operation.  Add includes each
+    // subshape's modeling tolerance, so it remains a safe enclosing box for
+    // selector prefilters and placement decisions without that recomputation.
+    BRepBndLib::Add(shape, box, true);
+    box.SetGap(0.0);
+    Standard_Real xMin = 0.0;
+    Standard_Real yMin = 0.0;
+    Standard_Real zMin = 0.0;
+    Standard_Real xMax = 0.0;
+    Standard_Real yMax = 0.0;
+    Standard_Real zMax = 0.0;
+    box.Get(xMin, yMin, zMin, xMax, yMax, zMax);
+    return {
+        {"min", Json::array({xMin, yMin, zMin})},
+        {"max", Json::array({xMax, yMax, zMax})},
+        {"size", Json::array({xMax - xMin, yMax - yMin, zMax - zMin})},
+    };
+}
+
+std::string displayShapeTypeName(TopAbs_ShapeEnum type)
+{
+    static const std::array<const char*, 9> names {
+        "Compound",
+        "CompSolid",
+        "Solid",
+        "Shell",
+        "Face",
+        "Wire",
+        "Edge",
+        "Vertex",
+        "Shape",
+    };
+    const std::size_t index = static_cast<std::size_t>(type);
+    return index < names.size() ? names[index] : "Unknown";
+}
+
+std::string orientationName(TopAbs_Orientation orientation)
+{
+    switch (orientation) {
+        case TopAbs_FORWARD:
+            return "Forward";
+        case TopAbs_REVERSED:
+            return "Reversed";
+        case TopAbs_INTERNAL:
+            return "Internal";
+        case TopAbs_EXTERNAL:
+            return "External";
+    }
+    return "Unknown";
+}
+
+std::string surfaceTypeName(GeomAbs_SurfaceType type)
+{
+    switch (type) {
+        case GeomAbs_Plane:
+            return "Plane";
+        case GeomAbs_Cylinder:
+            return "Cylinder";
+        case GeomAbs_Cone:
+            return "Cone";
+        case GeomAbs_Sphere:
+            return "Sphere";
+        case GeomAbs_Torus:
+            return "Torus";
+        case GeomAbs_BezierSurface:
+            return "BezierSurface";
+        case GeomAbs_BSplineSurface:
+            return "BSplineSurface";
+        case GeomAbs_SurfaceOfRevolution:
+            return "SurfaceOfRevolution";
+        case GeomAbs_SurfaceOfExtrusion:
+            return "SurfaceOfExtrusion";
+        case GeomAbs_OffsetSurface:
+            return "OffsetSurface";
+        case GeomAbs_OtherSurface:
+            return "OtherSurface";
+    }
+    return "Undefined";
+}
+
+std::string curveTypeName(GeomAbs_CurveType type)
+{
+    switch (type) {
+        case GeomAbs_Line:
+            return "Line";
+        case GeomAbs_Circle:
+            return "Circle";
+        case GeomAbs_Ellipse:
+            return "Ellipse";
+        case GeomAbs_Hyperbola:
+            return "Hyperbola";
+        case GeomAbs_Parabola:
+            return "Parabola";
+        case GeomAbs_BezierCurve:
+            return "BezierCurve";
+        case GeomAbs_BSplineCurve:
+            return "BSplineCurve";
+        case GeomAbs_OffsetCurve:
+            return "OffsetCurve";
+        case GeomAbs_OtherCurve:
+            return "OtherCurve";
+    }
+    return "Undefined";
+}
+
+Json directionJson(const gp_Dir& direction)
+{
+    return Json::array({direction.X(), direction.Y(), direction.Z()});
+}
+
+Json directionJson(const gp_Vec& direction)
+{
+    return Json::array({direction.X(), direction.Y(), direction.Z()});
+}
+
+Json faceFacts(int index, const TopoDS_Face& face)
+{
+    BRepAdaptor_Surface surface(face, true);
+    const std::string geometryType = surfaceTypeName(surface.GetType());
+    GProp_GProps properties;
+    BRepGProp::SurfaceProperties(face, properties);
+    Json normal = nullptr;
+    try {
+        Standard_Real uMin = 0.0;
+        Standard_Real uMax = 0.0;
+        Standard_Real vMin = 0.0;
+        Standard_Real vMax = 0.0;
+        BRepTools::UVBounds(face, uMin, uMax, vMin, vMax);
+        gp_Pnt point;
+        gp_Vec du;
+        gp_Vec dv;
+        surface.D1((uMin + uMax) / 2.0, (vMin + vMax) / 2.0, point, du, dv);
+        gp_Vec value = du.Crossed(dv);
+        if (value.Magnitude() > Precision::Confusion()) {
+            value.Normalize();
+            if (face.Orientation() == TopAbs_REVERSED) {
+                value.Reverse();
+            }
+            normal = Json::array({value.X(), value.Y(), value.Z()});
+        }
+    }
+    catch (const Standard_Failure&) {
+        normal = nullptr;
+    }
+    Json result {
+        {"index", index},
+        {"geometry_type", geometryType},
+        {"surface_type", geometryType},
+        {"orientation", orientationName(face.Orientation())},
+        {"area_mm2", properties.Mass()},
+        {"center_mm", pointJson(properties.CentreOfMass())},
+        {"bounds_mm", boundsFacts(face)},
+        {"edge_count", subshapeCount(face, TopAbs_EDGE)},
+        {"wire_count", subshapeCount(face, TopAbs_WIRE)},
+        {"normal", normal},
+        {"normal_at_center", normal},
+    };
+    switch (surface.GetType()) {
+        case GeomAbs_Plane: {
+            const auto plane = surface.Plane();
+            result["origin_mm"] = pointJson(plane.Location());
+            result["axis_direction"] = directionJson(plane.Axis().Direction());
+            result["x_direction"] = directionJson(plane.Position().XDirection());
+            break;
+        }
+        case GeomAbs_Cylinder: {
+            const auto cylinder = surface.Cylinder();
+            result["origin_mm"] = pointJson(cylinder.Location());
+            result["axis_direction"] = directionJson(cylinder.Axis().Direction());
+            result["x_direction"] = directionJson(cylinder.Position().XDirection());
+            result["radius_mm"] = cylinder.Radius();
+            break;
+        }
+        case GeomAbs_Cone: {
+            const auto cone = surface.Cone();
+            result["origin_mm"] = pointJson(cone.Location());
+            result["axis_direction"] = directionJson(cone.Axis().Direction());
+            result["x_direction"] = directionJson(cone.Position().XDirection());
+            result["reference_radius_mm"] = cone.RefRadius();
+            constexpr double radiansToDegrees = 57.2957795130823208768;
+            result["semi_angle_degrees"] = cone.SemiAngle() * radiansToDegrees;
+            break;
+        }
+        case GeomAbs_Sphere: {
+            const auto sphere = surface.Sphere();
+            result["origin_mm"] = pointJson(sphere.Location());
+            result["axis_direction"] = directionJson(sphere.Position().Direction());
+            result["x_direction"] = directionJson(sphere.Position().XDirection());
+            result["radius_mm"] = sphere.Radius();
+            break;
+        }
+        case GeomAbs_Torus: {
+            const auto torus = surface.Torus();
+            result["origin_mm"] = pointJson(torus.Location());
+            result["axis_direction"] = directionJson(torus.Axis().Direction());
+            result["x_direction"] = directionJson(torus.Position().XDirection());
+            result["major_radius_mm"] = torus.MajorRadius();
+            result["minor_radius_mm"] = torus.MinorRadius();
+            break;
+        }
+        default:
+            break;
+    }
+    return result;
+}
+
+Json edgeFacts(int index, const TopoDS_Edge& edge)
+{
+    BRepAdaptor_Curve curve(edge);
+    const std::string geometryType = curveTypeName(curve.GetType());
+    TopoDS_Vertex first;
+    TopoDS_Vertex last;
+    TopExp::Vertices(edge, first, last, true);
+    Json endpoints = Json::array();
+    if (!first.IsNull()) {
+        endpoints.push_back(pointJson(BRep_Tool::Pnt(first)));
+    }
+    if (!last.IsNull() && (first.IsNull() || !last.IsSame(first))) {
+        endpoints.push_back(pointJson(BRep_Tool::Pnt(last)));
+    }
+    GProp_GProps properties;
+    BRepGProp::LinearProperties(edge, properties);
+    Json direction = nullptr;
+    try {
+        const Standard_Real firstParameter = curve.FirstParameter();
+        const Standard_Real lastParameter = curve.LastParameter();
+        if (std::isfinite(firstParameter) && std::isfinite(lastParameter)) {
+            gp_Pnt point;
+            gp_Vec tangent;
+            curve.D1((firstParameter + lastParameter) / 2.0, point, tangent);
+            if (tangent.Magnitude() > Precision::Confusion()) {
+                tangent.Normalize();
+                if (edge.Orientation() == TopAbs_REVERSED) {
+                    tangent.Reverse();
+                }
+                direction = directionJson(tangent);
+            }
+        }
+    }
+    catch (const Standard_Failure&) {
+        direction = nullptr;
+    }
+    Json result {
+        {"index", index},
+        {"geometry_type", geometryType},
+        {"curve_type", geometryType},
+        {"orientation", orientationName(edge.Orientation())},
+        {"length_mm", properties.Mass()},
+        {"center_mm", pointJson(properties.CentreOfMass())},
+        {"bounds_mm", boundsFacts(edge)},
+        {"endpoints_mm", std::move(endpoints)},
+        {"closed", BRep_Tool::IsClosed(edge)},
+        {"direction", std::move(direction)},
+    };
+    switch (curve.GetType()) {
+        case GeomAbs_Line: {
+            const auto line = curve.Line();
+            result["origin_mm"] = pointJson(line.Location());
+            result["axis_direction"] = directionJson(line.Direction());
+            break;
+        }
+        case GeomAbs_Circle: {
+            const auto circle = curve.Circle();
+            result["origin_mm"] = pointJson(circle.Location());
+            result["axis_direction"] = directionJson(circle.Axis().Direction());
+            result["x_direction"] = directionJson(circle.Position().XDirection());
+            result["radius_mm"] = circle.Radius();
+            break;
+        }
+        case GeomAbs_Ellipse: {
+            const auto ellipse = curve.Ellipse();
+            result["origin_mm"] = pointJson(ellipse.Location());
+            result["axis_direction"] = directionJson(ellipse.Axis().Direction());
+            result["x_direction"] = directionJson(ellipse.Position().XDirection());
+            result["major_radius_mm"] = ellipse.MajorRadius();
+            result["minor_radius_mm"] = ellipse.MinorRadius();
+            break;
+        }
+        default:
+            break;
+    }
+    return result;
+}
+
+std::string lowerText(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+
+bool directionMatches(const Json& actual, const Json& requested, double toleranceDegrees)
+{
+    if (!actual.is_array() || actual.size() != 3 || !requested.is_array() || requested.size() != 3) {
+        return false;
+    }
+    const gp_Vec left(actual[0].get<double>(), actual[1].get<double>(), actual[2].get<double>());
+    const gp_Vec right(
+        requested[0].get<double>(),
+        requested[1].get<double>(),
+        requested[2].get<double>()
+    );
+    if (left.Magnitude() <= Precision::Confusion() || right.Magnitude() <= Precision::Confusion()) {
+        return false;
+    }
+    const double cosine
+        = std::clamp(left.Dot(right) / (left.Magnitude() * right.Magnitude()), -1.0, 1.0);
+    constexpr double radiansToDegrees = 57.2957795130823208768;
+    return std::acos(cosine) * radiansToDegrees <= toleranceDegrees;
+}
+
+bool numericRangeMatches(
+    const Json& facts,
+    const Json& query,
+    const char* factName,
+    const char* minimumName,
+    const char* maximumName
+)
+{
+    if (!query.contains(minimumName) && !query.contains(maximumName)) {
+        return true;
+    }
+    if (!facts.contains(factName) || !facts.at(factName).is_number()) {
+        return false;
+    }
+    const double value = facts.at(factName).get<double>();
+    return (!query.contains(minimumName) || value >= query.at(minimumName).get<double>())
+        && (!query.contains(maximumName) || value <= query.at(maximumName).get<double>());
+}
+
+bool geometryQueryMatches(const Json& facts, const Json& query)
+{
+    if (query.contains("geometry_type")
+        && lowerText(facts.value("geometry_type", ""))
+            != lowerText(query.at("geometry_type").get<std::string>())) {
+        return false;
+    }
+    const double angleTolerance = query.value("angle_tolerance_degrees", 1.0);
+    for (const char* field : {"normal", "direction", "axis_direction"}) {
+        if (query.contains(field)
+            && (!facts.contains(field)
+                || !directionMatches(facts.at(field), query.at(field), angleTolerance))) {
+            return false;
+        }
+    }
+    if (query.contains("radius_mm")) {
+        if (!facts.contains("radius_mm") || !facts.at("radius_mm").is_number()) {
+            return false;
+        }
+        const double tolerance = query.value("radius_tolerance_mm", 1.0e-6);
+        if (std::abs(facts.at("radius_mm").get<double>() - query.at("radius_mm").get<double>())
+            > tolerance) {
+            return false;
+        }
+    }
+    if (!numericRangeMatches(facts, query, "area_mm2", "min_area_mm2", "max_area_mm2")
+        || !numericRangeMatches(facts, query, "length_mm", "min_length_mm", "max_length_mm")) {
+        return false;
+    }
+    if (query.contains("near_point_mm")) {
+        if (!facts.contains("center_mm") || !facts.at("center_mm").is_array()) {
+            return false;
+        }
+        const Json& center = facts.at("center_mm");
+        const Json& point = query.at("near_point_mm");
+        if (center.size() != 3 || !point.is_array() || point.size() != 3) {
+            return false;
+        }
+        double distanceSquared = 0.0;
+        for (std::size_t index = 0; index < 3; ++index) {
+            const double difference = center[index].get<double>() - point[index].get<double>();
+            distanceSquared += difference * difference;
+        }
+        const double maximumDistance = query.value("max_distance_mm", 1.0e-6);
+        if (std::sqrt(distanceSquared) > maximumDistance) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool centerDistanceBoundsMayMatch(const TopoDS_Shape& shape, const Json& query)
+{
+    if (!query.contains("near_point_mm")) {
+        return true;
+    }
+    const Json& point = query.at("near_point_mm");
+    if (!point.is_array() || point.size() != 3) {
+        return false;
+    }
+    Bnd_Box box;
+    BRepBndLib::Add(shape, box, false);
+    if (box.IsVoid()) {
+        return false;
+    }
+    Standard_Real xMin = 0.0;
+    Standard_Real yMin = 0.0;
+    Standard_Real zMin = 0.0;
+    Standard_Real xMax = 0.0;
+    Standard_Real yMax = 0.0;
+    Standard_Real zMax = 0.0;
+    box.Get(xMin, yMin, zMin, xMax, yMax, zMax);
+    const std::array<double, 3> minimum {xMin, yMin, zMin};
+    const std::array<double, 3> maximum {xMax, yMax, zMax};
+    double distanceSquared = 0.0;
+    for (std::size_t index = 0; index < 3; ++index) {
+        const double coordinate = point[index].get<double>();
+        const double nearest = std::clamp(coordinate, minimum[index], maximum[index]);
+        const double difference = coordinate - nearest;
+        distanceSquared += difference * difference;
+    }
+    const double maximumDistance = query.value("max_distance_mm", 1.0e-6);
+    return distanceSquared <= maximumDistance * maximumDistance;
+}
+
+bool radiusMatches(double actual, const Json& query)
+{
+    if (!query.contains("radius_mm")) {
+        return true;
+    }
+    const double tolerance = query.value("radius_tolerance_mm", 1.0e-6);
+    return std::abs(actual - query.at("radius_mm").get<double>()) <= tolerance;
+}
+
+bool faceQueryMayMatch(const TopoDS_Face& face, const Json& query)
+{
+    BRepAdaptor_Surface surface(face, true);
+    const std::string geometryType = surfaceTypeName(surface.GetType());
+    if (query.contains("geometry_type")
+        && lowerText(geometryType) != lowerText(query.at("geometry_type").get<std::string>())) {
+        return false;
+    }
+    if (query.contains("radius_mm")) {
+        double radius = 0.0;
+        if (surface.GetType() == GeomAbs_Cylinder) {
+            radius = surface.Cylinder().Radius();
+        }
+        else if (surface.GetType() == GeomAbs_Sphere) {
+            radius = surface.Sphere().Radius();
+        }
+        else {
+            return false;
+        }
+        if (!radiusMatches(radius, query)) {
+            return false;
+        }
+    }
+    return centerDistanceBoundsMayMatch(face, query);
+}
+
+bool edgeQueryMayMatch(const TopoDS_Edge& edge, const Json& query)
+{
+    BRepAdaptor_Curve curve(edge);
+    const std::string geometryType = curveTypeName(curve.GetType());
+    if (query.contains("geometry_type")
+        && lowerText(geometryType) != lowerText(query.at("geometry_type").get<std::string>())) {
+        return false;
+    }
+    if (query.contains("radius_mm")) {
+        if (curve.GetType() != GeomAbs_Circle || !radiusMatches(curve.Circle().Radius(), query)) {
+            return false;
+        }
+    }
+    return centerDistanceBoundsMayMatch(edge, query);
+}
+
+void recordGeometryQueryMatch(Json& result, const Json& query, const Json& facts)
+{
+    if (!geometryQueryMatches(facts, query)) {
+        return;
+    }
+    const int matchedCount = result.value("matched_count", 0) + 1;
+    result["matched_count"] = matchedCount;
+    const int resultLimit = std::clamp(query.value("max_results", 16), 1, 16);
+    if (static_cast<int>(result.at("matches").size()) < resultLimit) {
+        result["matches"].push_back(facts);
+    }
+}
+
+Json inspectBrep(const Json& request)
+{
+    const TopoDS_Shape shape = readBrep(request.at("shape").at("path").get<std::string>());
+    const std::string analysisLevel = request.value("analysis_level", "full");
+    if (analysisLevel != "topology" && analysisLevel != "full") {
+        throw std::runtime_error("Shape inspection analysis_level must be topology or full.");
+    }
+    const bool includeGlobalProperties = analysisLevel == "full";
+    const int requestedLimit = request.value("max_subelements", 0);
+    const int detailLimit = std::clamp(requestedLimit, 0, 32);
+    const Json queries = request.value("queries", Json::array());
+    if (!queries.is_array() || queries.size() > 16) {
+        throw std::runtime_error("Shape inspection accepts at most 16 geometry queries.");
+    }
+
+    TopTools_IndexedMapOfShape solids;
+    TopTools_IndexedMapOfShape shells;
+    TopTools_IndexedMapOfShape faces;
+    TopTools_IndexedMapOfShape wires;
+    TopTools_IndexedMapOfShape edges;
+    TopTools_IndexedMapOfShape vertices;
+    TopExp::MapShapes(shape, TopAbs_SOLID, solids);
+    TopExp::MapShapes(shape, TopAbs_SHELL, shells);
+    TopExp::MapShapes(shape, TopAbs_FACE, faces);
+    TopExp::MapShapes(shape, TopAbs_WIRE, wires);
+    TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+    TopExp::MapShapes(shape, TopAbs_VERTEX, vertices);
+
+    std::future<GProp_GProps> linearFuture;
+    std::future<GProp_GProps> surfaceFuture;
+    std::future<GProp_GProps> volumeFuture;
+    std::future<bool> validityFuture;
+    if (includeGlobalProperties) {
+        linearFuture = std::async(std::launch::async, [shape]() {
+            GProp_GProps properties;
+            BRepGProp::LinearProperties(shape, properties);
+            return properties;
+        });
+        surfaceFuture = std::async(std::launch::async, [shape]() {
+            GProp_GProps properties;
+            BRepGProp::SurfaceProperties(shape, properties);
+            return properties;
+        });
+        volumeFuture = std::async(std::launch::async, [shape]() {
+            GProp_GProps properties;
+            BRepGProp::VolumeProperties(shape, properties);
+            return properties;
+        });
+        validityFuture = std::async(std::launch::async, [shape]() {
+            return BRepCheck_Analyzer(shape, true).IsValid();
+        });
+    }
+    const Json bounds = boundsFacts(shape);
+    const auto& minimum = bounds.at("min");
+    const auto& maximum = bounds.at("max");
+
+    Json queryResults = Json::array();
+    bool queryFaces = false;
+    bool queryEdges = false;
+    for (const Json& query : queries) {
+        const std::string elementType = query.value("element_type", "");
+        if (elementType != "face" && elementType != "edge") {
+            throw std::runtime_error("A geometry query element_type must be face or edge.");
+        }
+        queryFaces = queryFaces || elementType == "face";
+        queryEdges = queryEdges || elementType == "edge";
+        queryResults.push_back({
+            {"name", query.value("name", "")},
+            {"element_type", elementType},
+            {"matched_count", 0},
+            {"matches", Json::array()},
+        });
+    }
+
+    Json faceDetails = Json::array();
+    const int inspectedFaceCount = queryFaces ? faces.Extent()
+                                              : std::min(detailLimit, faces.Extent());
+    for (int index = 1; index <= inspectedFaceCount; ++index) {
+        const TopoDS_Face face = TopoDS::Face(faces(index));
+        std::vector<std::size_t> candidateQueries;
+        if (queryFaces) {
+            for (std::size_t queryIndex = 0; queryIndex < queries.size(); ++queryIndex) {
+                if (queries[queryIndex].value("element_type", "") == "face"
+                    && faceQueryMayMatch(face, queries[queryIndex])) {
+                    candidateQueries.push_back(queryIndex);
+                }
+            }
+        }
+        if (index > detailLimit && candidateQueries.empty()) {
+            continue;
+        }
+        const Json facts = faceFacts(index, face);
+        if (index <= detailLimit) {
+            faceDetails.push_back(facts);
+        }
+        for (const std::size_t queryIndex : candidateQueries) {
+            recordGeometryQueryMatch(queryResults[queryIndex], queries[queryIndex], facts);
+        }
+    }
+    Json edgeDetails = Json::array();
+    const int inspectedEdgeCount = queryEdges ? edges.Extent()
+                                              : std::min(detailLimit, edges.Extent());
+    for (int index = 1; index <= inspectedEdgeCount; ++index) {
+        const TopoDS_Edge edge = TopoDS::Edge(edges(index));
+        std::vector<std::size_t> candidateQueries;
+        if (queryEdges) {
+            for (std::size_t queryIndex = 0; queryIndex < queries.size(); ++queryIndex) {
+                if (queries[queryIndex].value("element_type", "") == "edge"
+                    && edgeQueryMayMatch(edge, queries[queryIndex])) {
+                    candidateQueries.push_back(queryIndex);
+                }
+            }
+        }
+        if (index > detailLimit && candidateQueries.empty()) {
+            continue;
+        }
+        const Json facts = edgeFacts(index, edge);
+        if (index <= detailLimit) {
+            edgeDetails.push_back(facts);
+        }
+        for (const std::size_t queryIndex : candidateQueries) {
+            recordGeometryQueryMatch(queryResults[queryIndex], queries[queryIndex], facts);
+        }
+    }
+    for (std::size_t queryIndex = 0; queryIndex < queries.size(); ++queryIndex) {
+        Json& result = queryResults[queryIndex];
+        const Json& query = queries[queryIndex];
+        result["matches_truncated"] = result.at("matched_count").get<int>()
+            > static_cast<int>(result.at("matches").size());
+        if (query.contains("expected_count")) {
+            const int expectedCount = query.at("expected_count").get<int>();
+            result["expected_count"] = expectedCount;
+            result["cardinality_ok"] = result.at("matched_count").get<int>() == expectedCount;
+        }
+    }
+
+    Json geometry {
+        {"analysis_level", analysisLevel},
+        {"shape_type", displayShapeTypeName(shape.ShapeType())},
+        {"null", shape.IsNull()},
+        {"solids", solids.Extent()},
+        {"shells", shells.Extent()},
+        {"faces", faces.Extent()},
+        {"wires", wires.Extent()},
+        {"edges", edges.Extent()},
+        {"vertices", vertices.Extent()},
+        {"bounds_center_mm",
+         Json::array(
+             {(minimum[0].get<double>() + maximum[0].get<double>()) / 2.0,
+              (minimum[1].get<double>() + maximum[1].get<double>()) / 2.0,
+              (minimum[2].get<double>() + maximum[2].get<double>()) / 2.0}
+         )},
+        {"bounds_mm", bounds},
+        {"face_details", std::move(faceDetails)},
+        {"edge_details", std::move(edgeDetails)},
+        {"query_results", std::move(queryResults)},
+        {"subelement_detail_limit", detailLimit},
+        {"subelement_details_truncated",
+         faces.Extent() > detailLimit || edges.Extent() > detailLimit},
+    };
+    if (includeGlobalProperties) {
+        const GProp_GProps linear = linearFuture.get();
+        const GProp_GProps surface = surfaceFuture.get();
+        const GProp_GProps volume = volumeFuture.get();
+        const bool valid = validityFuture.get();
+        const TopAbs_ShapeEnum centerType = solids.Extent() > 0 ? TopAbs_SOLID
+            : faces.Extent() > 0                                ? TopAbs_FACE
+                                                                : TopAbs_EDGE;
+        const gp_Pnt center = centerType == TopAbs_SOLID ? volume.CentreOfMass()
+            : centerType == TopAbs_FACE                  ? surface.CentreOfMass()
+                                                         : linear.CentreOfMass();
+        geometry["valid"] = valid;
+        geometry["length_mm"] = linear.Mass();
+        geometry["area_mm2"] = surface.Mass();
+        geometry["volume_mm3"] = volume.Mass();
+        geometry["center_of_mass_mm"] = pointJson(center);
+    }
+
+    return {
+        {"ok", true},
+        {"operation", "inspect_brep"},
+        {"geometry", std::move(geometry)},
     };
 }
 
@@ -750,7 +1429,7 @@ Json brepDefects(const TopoDS_Shape& shape, BRepCheck_Analyzer& analyzer)
             if (analyzer.IsValid(subshape)) {
                 continue;
             }
-            const Handle(BRepCheck_Result) & result = analyzer.Result(subshape);
+            const Handle(BRepCheck_Result)& result = analyzer.Result(subshape);
             if (result.IsNull()) {
                 defects.push_back(
                     {{"shape_type", shapeTypeName(type)},
@@ -819,8 +1498,7 @@ Json bopDefects(const TopoDS_Shape& shape)
     analyzer.Perform();
 
     Json defects = Json::array();
-    for (BOPAlgo_ListIteratorOfListOfCheckResult iterator(analyzer.GetCheckResult());
-         iterator.More();
+    for (BOPAlgo_ListIteratorOfListOfCheckResult iterator(analyzer.GetCheckResult()); iterator.More();
          iterator.Next()) {
         const BOPAlgo_CheckResult& result = iterator.Value();
         const std::size_t previousSize = defects.size();
@@ -928,8 +1606,7 @@ Json stlMinimumDistance(const Json& request)
         {"calculation", "isolated_exact_triangle_bvh"},
         {"distance", std::sqrt(std::max(0.0, measured.distanceSquared))},
         {"closest_point_pairs",
-         Json::array({{{"first", pointJson(measured.first)},
-                       {"second", pointJson(measured.second)}}})},
+         Json::array({{{"first", pointJson(measured.first)}, {"second", pointJson(measured.second)}}})},
         {"first_shape", {{"triangles", first.triangles.size()}}},
         {"second_shape", {{"triangles", second.triangles.size()}}},
     };
@@ -975,10 +1652,15 @@ int main(int argc, char** argv)
             }
             result = validateBrep(request);
         }
+        else if (operation == "inspect_brep") {
+            if (request.at("shape").at("format").get<std::string>() != "brep") {
+                throw std::runtime_error("Shape inspection requires a BREP artifact.");
+            }
+            result = inspectBrep(request);
+        }
         else if (operation == "minimum_distance") {
             const std::string firstFormat = request.at("first").at("format").get<std::string>();
-            const std::string secondFormat =
-                request.at("second").at("format").get<std::string>();
+            const std::string secondFormat = request.at("second").at("format").get<std::string>();
             if (firstFormat == "brep" && secondFormat == "brep") {
                 result = brepMinimumDistance(request);
             }
@@ -995,10 +1677,8 @@ int main(int argc, char** argv)
             throw std::runtime_error("Unsupported geometry worker operation.");
         }
         result["schema"] = "vibecad-geometry-result-v1";
-        result["elapsed_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   Clock::now() - started
-        )
-                                   .count();
+        result["elapsed_ms"]
+            = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count();
         writeJson(resultPath, result);
         return 0;
     }

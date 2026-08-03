@@ -160,7 +160,9 @@ def test_editor_delete_lifecycle_accepts_a_failed_source_only_program(
         "ok": True,
         "program_id": program_id,
         "domain": "partdesign",
+        "source_deleted": True,
         "deleted_objects": [],
+        "cad_objects_removed": 0,
         "reason": "Deleted from Model Code Editor",
         "artifacts_deleted": True,
     }

@@ -16553,11 +16553,14 @@ def finish_delete(
 ) -> dict[str, Any]:
     trash = Path(str(prepared["trash_directory"]))
     shutil.rmtree(trash)
+    deleted_objects = list(publication.get("deleted_objects") or [])
     return {
         "ok": True,
         "program_id": str(prepared["program_id"]),
         "domain": prepared["pack"].domain,
-        "deleted_objects": list(publication.get("deleted_objects") or []),
+        "source_deleted": True,
+        "deleted_objects": deleted_objects,
+        "cad_objects_removed": len(deleted_objects),
         "reason": str(prepared["arguments"].get("reason") or ""),
         "artifacts_deleted": True,
     }
@@ -16645,10 +16648,11 @@ class DeclarativeDomainAdapter:
             "instructions": self.pack.instructions,
             "model_operating_contract": {
                 "context_first": (
-                    "Each editable_sources item is one part or program. Use its exact "
-                    "source_id with vibescript.read_source before changing that code. "
-                    "Use vibescript.read_api when an exact callable or signature is "
-                    "missing. Never invent source ids, revisions, or API calls."
+                    "Use editable_sources and vibescript.read_source before editing code. "
+                    "Use vibescript.read_api for exact signatures and "
+                    "vibescript.read_geometry for exact native or imported shape facts. "
+                    "vibescript.read_placement resolves planned frames. "
+                    "Never invent IDs, revisions, or API calls."
                 ),
                 "mutation_selection": {
                     "edit_source": (
@@ -16866,8 +16870,8 @@ class PartDomainAdapter(DeclarativeDomainAdapter):
                     "guidance": (
                         "Use explicit indices for stable, intentional fillets, chamfers, and "
                         "thickness operations. Worker errors report the available index range. "
-                        "The domain context's document_shapes contains bounded, 1-based face and "
-                        "edge details plus copy-ready stable references. Re-inspect accepted "
+                        "vibescript.read_geometry returns bounded, 1-based face and edge "
+                        "details for an exact object reference. Re-inspect accepted "
                         "face_details and edge_details after every topology-changing regeneration "
                         "before reusing an index."
                     ),
@@ -16957,8 +16961,8 @@ class PartDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "operation_selection": {
                     "existing_document_shape": (
-                        "api.from_object; copy one stable reference from document_shapes "
-                        "context and declare the exact source topology type"
+                        "api.from_object; copy the exact reference used with "
+                        "vibescript.read_geometry and declare the source topology type"
                     ),
                     "analytic_or_regular_primitive": (
                         "the single matching primitive: api.box, api.wedge, api.plane, "
@@ -17669,15 +17673,22 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     "center_of_mass_z_mm",
                 ],
                 "pair_quantities": {
-                    "minimum_distance_mm": "requires other=shape",
+                    "minimum_distance_mm": (
+                        "Prefer api.minimum_distance. Extract targeted topology with "
+                        "api.subshape first; selection fields are invalid here."
+                    ),
                     "interference_volume_mm3": "requires other=shape",
                 },
+                "minimum_distance_example": (
+                    "a = api.subshape(first, 'face', selector_a); "
+                    "b = api.subshape(second, 'face', selector_b); "
+                    "check = api.minimum_distance(a, b, maximum=0.1)"
+                ),
                 "selected_quantities": {
                     "radius_mm": "requires one exact edge or face selector",
                     "diameter_mm": "requires one exact edge or face selector",
                     "minimum_wall_thickness_mm": (
-                        "requires selection and other_selection, each matching one "
-                        "non-touching opposing face on the same shape"
+                        "requires two one-face selectors on the same shape"
                     ),
                 },
                 "material_quantities": {
@@ -17691,15 +17702,16 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "inertia_zz_kg_mm2",
                     ],
                     "requirement": (
-                        "The measured shape must contain exactly one solid. Pass "
-                        "material=api.material(..., "
+                        "Requires one solid and api.material(..., "
                         "require_physical_properties=['Density'])."
                     ),
                 },
                 "evidence_rule": (
-                    "All values come from regenerated BREP topology. A helper line, face, "
-                    "or arithmetic value cannot certify another shape."
+                    "A check certifies only the regenerated BREP passed to it."
                 ),
+            },
+            "minimum_distance": {
+                "targeted_topology": "Extract faces or edges with api.subshape first."
             },
             "body": {
                 "interfaces": interface_schema,

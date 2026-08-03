@@ -53,6 +53,7 @@ from VibeCADVibeScriptDomains import (  # noqa: E402
 from VibeCADVibeScriptDomainPublication import (  # noqa: E402
     PROP_OUTPUT_TYPE,
     PROP_PARTDESIGN_MATERIAL_BASELINE,
+    _delete_partdesign_program,
     _material_target_snapshot,
     _restore_material_target_snapshots,
     _set_physical_material_preserving_view,
@@ -712,6 +713,11 @@ def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
         stitch_volume_check = api.measure(
             stitching, "volume_mm3", minimum=70.0
         )
+        distance_check = api.minimum_distance(
+            box,
+            api.box(1, 1, 1, origin=[6, 0, 0]),
+            expected=2,
+        )
         face_profile = planar_face(
             api, [[0, 0, 0], [3, 0, 0], [3, 2, 0], [0, 2, 0]]
         )
@@ -768,7 +774,13 @@ def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
             ("face", face_profile, "face", {"face"}, ()),
             ("shell", shell, "shell", {"shell"}, ()),
             ("solid", direct_solid, "solid", {"solid"}, ()),
-            ("compound", stitching, "compound", {"compound", "loft", "measure"}, (stitch_check, stitch_volume_check)),
+            (
+                "compound",
+                stitching,
+                "compound",
+                {"compound", "loft", "measure", "minimum_distance"},
+                (stitch_check, stitch_volume_check, distance_check),
+            ),
             ("subshape", bottom_face, "face", {"subshape", "find_subelements"}, ()),
             ("extrude", api.extrude(face_profile, 4, operation="new_solid", vector=[0, 0, 1]), "solid", {"extrude"}, ()),
             ("extrude_surface", api.extrude(api.line_3d([0, 0, 0], [3, 0, 0]), 2, operation="new_surface", vector=[0, 0, 1]), "face", {"extrude"}, ()),
@@ -941,6 +953,235 @@ def _exercise_material_guardrails(root: Path, pack) -> dict:
         App.closeDocument(document.Name)
 
 
+def _exercise_placement_and_hole_direction(root: Path, pack) -> dict:
+    """Prove explicit primitive roll and actionable native hole direction evidence."""
+
+    import FreeCAD as App
+
+    oriented_root = root / "explicit-primitive-frame"
+    (oriented_root / "outputs").mkdir(parents=True)
+    oriented_document = App.newDocument("PartDesignExplicitPrimitiveFrame")
+    try:
+        api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+        oriented = api.box(
+            2,
+            3,
+            4,
+            origin=[10, 20, 30],
+            direction=[0, 1, 0],
+            x_direction=[1, 0, 0],
+        )
+        outputs, _validation = validate_and_build_partdesign(
+            oriented_document,
+            {"Result": api.publish(oriented)},
+            [{"name": "Result", "type": "solid"}],
+            oriented_root,
+            max_shape_subelements=32,
+        )
+        assert outputs[0]["facts"]["bounds_mm"] == {
+            "min": [10.0, 20.0, 27.0],
+            "max": [12.0, 24.0, 30.0],
+            "size": [2.0, 4.0, 3.0],
+        }
+    finally:
+        App.closeDocument(oriented_document.Name)
+
+    failed_root = root / "hole-direction-failure"
+    (failed_root / "outputs").mkdir(parents=True)
+    failed_document = App.newDocument("PartDesignHoleDirectionFailure")
+    try:
+        api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 5)]),
+            8,
+            operation="add_material",
+        )
+        far_profile = api.sketch(
+            [api.circle([0, 0], 1)],
+            plane_offset_mm=108,
+        )
+        failed_hole = api.hole(base, far_profile, 2, depth_mm=4)
+        try:
+            validate_and_build_partdesign(
+                failed_document,
+                {"Result": api.body(failed_hole)},
+                [{"name": "Result", "type": "solid"}],
+                failed_root,
+                max_shape_subelements=32,
+            )
+        except PartDesignCandidateError as error:
+            assert error.details["stage"] == "feature_postcondition"
+            assert error.details["profile_source_placement"] == {
+                "plane": "XY",
+                "plane_offset_mm": 108.0,
+            }
+            assert error.details["profile_frame"]["origin_mm"] == [0.0, 0.0, 108.0]
+            direction = error.details["attempted_cut_directions"][0]
+            assert direction["direction_global"] == [-0.0, -0.0, -1.0]
+            assert direction["base_bounds_projection_from_profile_mm"] == [100.0, 108.0]
+            assert direction["requested_reach_mm"] == 4.0
+            assert direction["axial_reach_can_intersect_bounds"] is False
+            failure_evidence = dict(error.details)
+        else:
+            raise AssertionError("A hole that cannot reach its base passed validation.")
+    finally:
+        App.closeDocument(failed_document.Name)
+
+    reversed_root = root / "reversed-hole"
+    (reversed_root / "outputs").mkdir(parents=True)
+    reversed_document = App.newDocument("PartDesignReversedHole")
+    try:
+        api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 5)]),
+            8,
+            operation="add_material",
+        )
+        bottom_profile = api.sketch(
+            [api.point([0, 0])],
+            require_closed_profile=False,
+        )
+        reversed_hole = api.hole(
+            base,
+            bottom_profile,
+            2,
+            depth_mm=4,
+            direction="along_normal",
+        )
+        outputs, _validation = validate_and_build_partdesign(
+            reversed_document,
+            {"Result": api.body(reversed_hole)},
+            [{"name": "Result", "type": "solid"}],
+            reversed_root,
+            max_shape_subelements=32,
+        )
+        assert outputs[0]["partdesign_data"]["tip_type_id"] == "PartDesign::Hole"
+        reversed_volume = float(outputs[0]["facts"]["volume_mm3"])
+    finally:
+        App.closeDocument(reversed_document.Name)
+
+    symmetric_root = root / "single-point-symmetric-through-hole"
+    (symmetric_root / "outputs").mkdir(parents=True)
+    symmetric_document = App.newDocument("PartDesignSymmetricBoundaryHole")
+    try:
+        api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+        wall_profile = api.sketch(
+            [
+                api.line([-38, 0], [38, 0]),
+                api.line([38, 0], [38, 8]),
+                api.line([38, 8], [-38, 8]),
+                api.line([-38, 8], [-38, 0]),
+            ],
+            plane="XY",
+            plane_offset_mm=8,
+        )
+        wall = api.extrude(
+            wall_profile,
+            90,
+            operation="add_material",
+            direction="along_normal",
+        )
+        one_center = api.sketch(
+            [api.point([0, 53])],
+            plane="XZ",
+            plane_offset_mm=-8,
+            require_closed_profile=False,
+        )
+        boundary_hole = api.hole(
+            wall,
+            one_center,
+            42,
+            through_all=True,
+            direction="symmetric",
+        )
+        outputs, _validation = validate_and_build_partdesign(
+            symmetric_document,
+            {"Result": api.body(boundary_hole)},
+            [{"name": "Result", "type": "solid"}],
+            symmetric_root,
+            max_shape_subelements=32,
+        )
+        assert outputs[0]["partdesign_data"]["tip_type_id"] == "PartDesign::Hole"
+        symmetric_volume = float(outputs[0]["facts"]["volume_mm3"])
+        assert symmetric_volume < 76.0 * 8.0 * 90.0
+    finally:
+        App.closeDocument(symmetric_document.Name)
+
+    stepped_root = root / "symmetric-through-hole-across-material-step"
+    (stepped_root / "outputs").mkdir(parents=True)
+    stepped_document = App.newDocument("PartDesignSymmetricSteppedHole")
+    try:
+        api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+        wall_profile = api.sketch(
+            [
+                api.line([-20, 0], [20, 0]),
+                api.line([20, 0], [20, 40]),
+                api.line([20, 40], [-20, 40]),
+                api.line([-20, 40], [-20, 0]),
+            ],
+            plane="XZ",
+        )
+        wall = api.extrude(
+            wall_profile,
+            8,
+            operation="add_material",
+            direction="opposite_normal",
+        )
+        boss_profile = api.sketch(
+            [api.circle([0, 20], 9)],
+            plane="XZ",
+            plane_offset_mm=-8,
+        )
+        stepped_base = api.extrude(
+            boss_profile,
+            6,
+            operation="add_material",
+            base=wall,
+            direction="opposite_normal",
+        )
+        hole_locations = api.sketch(
+            [api.point([0, 20])],
+            plane="XZ",
+            plane_offset_mm=-8,
+            require_closed_profile=False,
+        )
+        stepped_hole = api.hole(
+            stepped_base,
+            hole_locations,
+            6.4,
+            through_all=True,
+            direction="symmetric",
+        )
+        outputs, _validation = validate_and_build_partdesign(
+            stepped_document,
+            {"Result": api.body(stepped_hole)},
+            [{"name": "Result", "type": "solid"}],
+            stepped_root,
+            max_shape_subelements=32,
+        )
+        stepped_volume = float(outputs[0]["facts"]["volume_mm3"])
+        expected_volume = (
+            40.0 * 40.0 * 8.0
+            + math.pi * 9.0 * 9.0 * 6.0
+            - math.pi * 3.2 * 3.2 * 14.0
+        )
+        assert abs(stepped_volume - expected_volume) <= 1.0e-5
+    finally:
+        App.closeDocument(stepped_document.Name)
+
+    return {
+        "oriented_bounds_verified": True,
+        "failed_hole_stage": str(failure_evidence["stage"]),
+        "failed_hole_direction_verified": True,
+        "point_hole_explicit_direction_verified": True,
+        "reversed_hole_volume_mm3": reversed_volume,
+        "single_point_symmetric_through_hole_verified": True,
+        "single_point_symmetric_volume_mm3": symmetric_volume,
+        "symmetric_stepped_through_hole_verified": True,
+        "symmetric_stepped_volume_mm3": stepped_volume,
+    }
+
+
 def _exercise_geometry_verification(root: Path, pack) -> dict:
     """Verify checks against regenerated BREP rather than helper arithmetic."""
 
@@ -999,6 +1240,7 @@ def _exercise_geometry_verification(root: Path, pack) -> dict:
                 other=separated,
                 expected=2,
             ),
+            api.minimum_distance(block, separated, expected=2),
             api.measure(
                 block,
                 "interference_volume_mm3",
@@ -2125,6 +2367,17 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         )
     }
     implementation_names.add(str(reopened_root.Name))
+    body_containment_names: set[str] = set()
+
+    def collect_body_containment(obj) -> None:
+        name = str(getattr(obj, "Name", "") or "")
+        if not name or name in body_containment_names:
+            return
+        body_containment_names.add(name)
+        for child in list(getattr(obj, "Group", []) or []):
+            collect_body_containment(child)
+
+    collect_body_containment(reopened.getObject(str(pre_delete_state["body"])))
     deletion = prepare_delete(delete_capture)
     deletion_publication = adapter.delete(service, deletion, deletion["manifest"])
     deleted = finish_delete(deletion, deletion_publication)
@@ -2132,6 +2385,11 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     assert reopened.getObject(identity) is None
     assert not {
         name for name in implementation_names if reopened.getObject(name) is not None
+    }
+    assert not {
+        name
+        for name in body_containment_names
+        if reopened.getObject(name) is not None
     }
     assert not LocalPath(deletion["program_directory"]).exists()
     reopened.undo()
@@ -2146,6 +2404,44 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     assert not {
         name for name in implementation_names if reopened.getObject(name) is not None
     }
+    assert not {
+        name
+        for name in body_containment_names
+        if reopened.getObject(name) is not None
+    }
+    # Recover the exact partial state produced by an interrupted historical
+    # deletion: the program container and its private publication target are
+    # gone, while the stable link and native Design operation remain. Both the
+    # editor and History delete commands must be able to finish this lifecycle.
+    reopened.undo()
+    restored_root = next(
+        obj
+        for obj in reopened.Objects
+        if role_of(obj) == ROLE_MODEL
+        and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+        == program_id
+    )
+    reopened.openTransaction("Simulate interrupted VibeScript deletion")
+    reopened.removeObject(str(restored_root.Name))
+    reopened.commitTransaction()
+    assert reopened.getObject(str(restored_root.Name)) is None
+    assert reopened.getObject(identity) is not None
+    assert reopened.getObject(str(pre_delete_state["operation"])) is not None
+    rootless_deletion = _delete_partdesign_program(
+        reopened,
+        {"program_id": program_id},
+    )
+    assert rootless_deletion["ok"] is True
+    assert reopened.getObject(identity) is None
+    assert not [
+        obj
+        for obj in reopened.Objects
+        if str(getattr(obj, "ProgramId", "") or "") == program_id
+        or str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+        == program_id
+        or str(getattr(obj, "VibeCADVibeScriptProgramId", "") or "")
+        == program_id
+    ]
     App.closeDocument(reopened.Name)
     return {
         "program_id": program_id,
@@ -2153,6 +2449,7 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         "failed_candidate_retained": failed_prepared["revision"],
         "unsafe_reference_rejected": True,
         "save_reopen_regenerated": True,
+        "rootless_delete_recovered": True,
         "deleted": [item["object_name"] for item in deleted["deleted_objects"]],
     }
 
@@ -2966,6 +3263,142 @@ def _exercise_saved_source_compatibility(root: Path, pack) -> dict:
         App.closeDocument(document.Name)
 
 
+def _exercise_provider_failed_source_lifecycle(root: Path, pack) -> dict:
+    """A failed create remains readable, editable, buildable, and deletable."""
+
+    import FreeCAD as App
+
+    import VibeCADVibeScriptDomains as domains
+    from VibeCADSession import make_provider_tool_runner
+    from VibeCADTools import ToolRegistry
+    from tool_impl import service as service_tools
+    from tool_impl import sketcher as sketcher_tools
+
+    document = App.newDocument("PartDesignProviderSourceLifecycle")
+
+    class RunnerService(_Service):
+        def __init__(self, active_document, project_root: Path) -> None:
+            super().__init__(active_document, project_root)
+            self.registry = ToolRegistry()
+            service_tools.register_tools(self.registry, self)
+            sketcher_tools.register_tools(self.registry, self)
+            domains.register_domain_tools(self.registry, self)
+
+        @staticmethod
+        def provider_edit_object_summary():
+            return None
+
+        @staticmethod
+        def design_review_enabled() -> bool:
+            return True
+
+        @staticmethod
+        def note_provider_tool_targets(_arguments, _payload) -> None:
+            return None
+
+    service = RunnerService(document, root / "provider-source-lifecycle")
+    failed_source = "\n".join(
+        (
+            "base = api.extrude(api.sketch([api.circle([0, 0], 5)]), 8, operation='add_material')",
+            "far = api.sketch([api.point([0, 0])], plane_offset_mm=100, require_closed_profile=False)",
+            "failed = api.hole(base, far, 2, depth_mm=1)",
+            "result = {'Result': api.body(failed)}",
+        )
+    )
+    valid_source = "\n".join(
+        (
+            "profile = api.sketch([api.circle([0, 0], 5)])",
+            "solid = api.extrude(profile, 8, operation='add_material')",
+            "result = {'Result': api.body(solid)}",
+        )
+    )
+    runner = make_provider_tool_runner(
+        service,
+        tool_trace=[],
+        progress_callback=None,
+        cancellation_check=None,
+        steering_check=None,
+        question_callback=None,
+        document_thread_dispatch=lambda operation: operation(),
+        turn_editable_sources={
+            "schema": "vibecad-editable-sources-v1",
+            "domain": "partdesign",
+            "workbench": "PartDesignWorkbench",
+            "sources": [],
+        },
+    )
+    try:
+        created = runner(
+            "vibescript.create_program",
+            json.dumps(
+                {
+                    "program_name": "Failed Source Lifecycle",
+                    "source": failed_source,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                    "inputs": {},
+                    "expected_outputs": [{"name": "Result", "type": "solid"}],
+                }
+            ),
+        )
+        assert created["ok"] is False, created
+        assert "source_id" in created, created
+        source_id = str(created["source_id"])
+        failed_revision = str(created["working_revision"])
+        assert len(source_id) == 32
+        assert len(failed_revision) == 64
+
+        read_failed = runner(
+            "vibescript.read_source",
+            json.dumps({"source_id": source_id, "include_logs": False}),
+        )
+        assert read_failed["ok"] is True, read_failed
+        assert read_failed["source"] == failed_source
+        assert read_failed["current_revision"] == failed_revision
+
+        edited = runner(
+            "vibescript.edit_source",
+            json.dumps(
+                {
+                    "source_id": source_id,
+                    "expected_revision": failed_revision,
+                    "source": valid_source,
+                }
+            ),
+        )
+        assert edited["ok"] is True, edited
+        accepted_revision = str(edited["working_revision"])
+        assert accepted_revision != failed_revision
+        assert document.getObject(edited["live_outputs"]["Result"]["object_name"])
+
+        deleted = runner(
+            "vibescript.delete_program",
+            json.dumps(
+                {
+                    "source_id": source_id,
+                    "expected_revision": accepted_revision,
+                    "reason": "Complete the provider source lifecycle integration test.",
+                }
+            ),
+        )
+        assert deleted["ok"] is True, deleted
+        missing = runner(
+            "vibescript.read_source",
+            json.dumps({"source_id": source_id, "include_logs": False}),
+        )
+        assert missing["failure_code"] == "SOURCE_NOT_FOUND", missing
+        return {
+            "failed_source_read": True,
+            "same_source_edited": True,
+            "same_source_deleted": True,
+        }
+    finally:
+        App.closeDocument(document.Name)
+
+
 class PartDesignMaterialDriftIntegration(unittest.TestCase):
     """Focused GUI-hosted regression for source edits after presentation drift."""
 
@@ -3049,6 +3482,10 @@ def main() -> int:
         feature_families = _exercise_feature_families(root, pack)
         unified_surface = _exercise_unified_standalone_surface(root, pack)
         material_guardrails = _exercise_material_guardrails(root, pack)
+        placement_and_hole_direction = _exercise_placement_and_hole_direction(
+            root,
+            pack,
+        )
         geometry_verification = _exercise_geometry_verification(root, pack)
         attached_sketch_history = _exercise_attached_sketch_history(root, pack)
         native_sketch_history = _exercise_native_sketch_history(root, pack)
@@ -3065,6 +3502,10 @@ def main() -> int:
         )
         component_occurrence = _exercise_component_occurrence(root, pack)
         lifecycle = _exercise_lifecycle(root, pack)
+        provider_source_lifecycle = _exercise_provider_failed_source_lifecycle(
+            root,
+            pack,
+        )
         print(
             dump_json(
                 {
@@ -3073,6 +3514,7 @@ def main() -> int:
                     "feature_families": feature_families,
                     "unified_surface": unified_surface,
                     "material_guardrails": material_guardrails,
+                    "placement_and_hole_direction": placement_and_hole_direction,
                     "geometry_verification": geometry_verification,
                     "attached_sketch_history": attached_sketch_history,
                     "native_sketch_history": native_sketch_history,
@@ -3083,6 +3525,7 @@ def main() -> int:
                     "saved_source_compatibility": saved_source_compatibility,
                     "component_occurrence": component_occurrence,
                     "lifecycle": lifecycle,
+                    "provider_source_lifecycle": provider_source_lifecycle,
                 },
                 sort_keys=True,
             )

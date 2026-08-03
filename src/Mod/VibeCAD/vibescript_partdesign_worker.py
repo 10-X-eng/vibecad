@@ -434,6 +434,261 @@ def _candidate_object_name(body: Any, kind: str, identity: str) -> str:
     return f"{prefix}{kind}_{identity}"
 
 
+def _shape_bounds_diagnostic(shape: Any) -> dict[str, list[float]] | None:
+    if shape is None or bool(getattr(shape, "isNull", lambda: True)()):
+        return None
+    bounds = getattr(shape, "BoundBox", None)
+    if bounds is None:
+        return None
+    return {
+        "min": [float(bounds.XMin), float(bounds.YMin), float(bounds.ZMin)],
+        "max": [float(bounds.XMax), float(bounds.YMax), float(bounds.ZMax)],
+        "size": [
+            float(bounds.XLength),
+            float(bounds.YLength),
+            float(bounds.ZLength),
+        ],
+    }
+
+
+def _profile_from_feature(feature: Any) -> Any | None:
+    profile = getattr(feature, "Profile", None)
+    if isinstance(profile, tuple):
+        profile = profile[0] if profile else None
+    return profile
+
+
+def _profile_frame_diagnostic(profile: Any) -> dict[str, Any] | None:
+    if profile is None:
+        return None
+    try:
+        placement = profile.getGlobalPlacement()
+    except (AttributeError, RuntimeError):
+        placement = getattr(profile, "Placement", None)
+    if placement is None:
+        return None
+    matrix = _placement_matrix(placement)
+    return {
+        "object_name": str(getattr(profile, "Name", "") or ""),
+        "plane": str(getattr(profile, "Support", "") or ""),
+        "origin_mm": [matrix[3], matrix[7], matrix[11]],
+        "local_x_global": [matrix[0], matrix[4], matrix[8]],
+        "local_y_global": [matrix[1], matrix[5], matrix[9]],
+        "local_normal_global": [matrix[2], matrix[6], matrix[10]],
+        "matrix_row_major": matrix,
+        "bounds_mm": _shape_bounds_diagnostic(getattr(profile, "Shape", None)),
+    }
+
+
+def _bounds_projection_interval(
+    bounds: Mapping[str, list[float]] | None,
+    origin: list[float],
+    direction: list[float],
+) -> list[float] | None:
+    """Project the conservative axis-aligned bounds onto one directed ray."""
+
+    if not isinstance(bounds, Mapping):
+        return None
+    minimum = list(bounds.get("min") or [])
+    maximum = list(bounds.get("max") or [])
+    if len(minimum) != 3 or len(maximum) != 3:
+        return None
+    projections = [
+        sum(
+            (coordinate - origin[index]) * direction[index]
+            for index, coordinate in enumerate(corner)
+        )
+        for corner in (
+            [x, y, z]
+            for x in (minimum[0], maximum[0])
+            for y in (minimum[1], maximum[1])
+            for z in (minimum[2], maximum[2])
+        )
+    ]
+    return [float(min(projections)), float(max(projections))]
+
+
+def _subtractive_feature_diagnostics(
+    operation: str,
+    payload: Mapping[str, Any],
+    feature: Any,
+    base_shape: Any,
+) -> dict[str, Any]:
+    """Explain the exact frame and reach used by one native material removal."""
+
+    properties = _properties(payload)
+    base_bounds = _shape_bounds_diagnostic(base_shape)
+    profile_frame = _profile_frame_diagnostic(_profile_from_feature(feature))
+    details: dict[str, Any] = {
+        "base_bounds_mm": base_bounds,
+        "subtractive_settings": {
+            key: properties.get(key)
+            for key in (
+                "through_all",
+                "depth_mm",
+                "reverse",
+                "midplane",
+                "direction",
+                "axis",
+                "angle_degrees",
+            )
+            if key in properties
+        },
+    }
+    arguments = payload.get("arguments")
+    if (
+        operation in {"hole", "fastener_hole", "pocket", "groove"}
+        and isinstance(arguments, list)
+        and len(arguments) > 1
+        and isinstance(arguments[1], Mapping)
+    ):
+        source_profile_properties = arguments[1].get("properties")
+        if isinstance(source_profile_properties, Mapping):
+            details["profile_source_placement"] = {
+                key: source_profile_properties.get(key)
+                for key in ("plane", "plane_offset_mm", "placement", "support")
+                if source_profile_properties.get(key) is not None
+            }
+    if profile_frame is None:
+        return details
+    details["profile_frame"] = profile_frame
+    if operation not in {"hole", "fastener_hole", "pocket"}:
+        return details
+
+    normal = [float(item) for item in profile_frame["local_normal_global"]]
+    reverse = bool(properties.get("reverse"))
+    midplane = bool(properties.get("midplane"))
+    directions = (
+        [normal, [-item for item in normal]]
+        if midplane
+        else [[item for item in normal]]
+        if reverse
+        else [[-item for item in normal]]
+    )
+    origin = [float(item) for item in profile_frame["origin_mm"]]
+    if properties.get("depth_mm") is not None:
+        reach = float(properties["depth_mm"])
+    elif operation == "pocket" and not bool(properties.get("through_all")):
+        try:
+            reach = float(_argument(payload, 2, context="api.pocket"))
+        except (PartDesignCandidateError, TypeError, ValueError):
+            reach = None
+    else:
+        reach = None
+    direction_facts = []
+    for direction in directions:
+        interval = _bounds_projection_interval(base_bounds, origin, direction)
+        fact: dict[str, Any] = {
+            "direction_global": direction,
+            "base_bounds_projection_from_profile_mm": interval,
+            "requested_reach_mm": "through_all" if reach is None else reach,
+        }
+        if interval is not None:
+            nearest, farthest = interval
+            fact["base_is_in_forward_direction"] = farthest >= -1.0e-9
+            fact["axial_reach_can_intersect_bounds"] = bool(
+                farthest >= -1.0e-9
+                and (reach is None or nearest <= reach + 1.0e-9)
+            )
+            if farthest < -1.0e-9:
+                fact["direction_problem"] = (
+                    "The base lies entirely opposite this cut direction."
+                )
+            elif reach is not None and nearest > reach + 1.0e-9:
+                fact["direction_problem"] = (
+                    f"The nearest base bound is {nearest:.6g} mm away, beyond the "
+                    f"requested {reach:.6g} mm reach."
+                )
+        direction_facts.append(fact)
+    details["attempted_cut_directions"] = direction_facts
+    details["direction_rule"] = (
+        "direction='along_normal' follows the reported sketch normal, "
+        "direction='opposite_normal' negates it, and direction='symmetric' cuts "
+        "both ways. Legacy reverse/midplane values are already normalized into "
+        "the reported direction."
+    )
+    return details
+
+
+def _removed_material_volume(base_shape: Any, result_shape: Any) -> float:
+    if (
+        result_shape is None
+        or result_shape.isNull()
+        or not result_shape.isValid()
+    ):
+        return 0.0
+    return float(base_shape.cut(result_shape).Volume)
+
+
+def _resolve_symmetric_through_hole(
+    feature: Any,
+    base_shape: Any,
+    properties: Mapping[str, Any],
+) -> Any:
+    """Prove a symmetric through-hole equals both exact one-sided cuts.
+
+    A valid symmetric result is the common material left by the forward and
+    reverse through-all results.  This catches partial cuts at a material step
+    or internal profile plane instead of accepting any non-zero removal as
+    sufficient evidence.
+    """
+
+    if not (
+        bool(properties.get("through_all"))
+        and bool(properties.get("midplane"))
+    ):
+        return getattr(feature, "Shape", None)
+    base_volume = float(getattr(base_shape, "Volume", 0.0) or 0.0)
+    tolerance = max(1.0e-7, abs(base_volume) * 1.0e-9)
+    current_shape = getattr(feature, "Shape", None)
+    had_current_shape = bool(
+        current_shape is not None and not current_shape.isNull()
+    )
+
+    candidates: list[Any] = []
+    feature.Midplane = False
+    for reversed_value in (False, True):
+        feature.Reversed = reversed_value
+        feature.Document.recompute()
+        candidate_shape = getattr(feature, "Shape", None)
+        removed = _removed_material_volume(base_shape, candidate_shape)
+        if removed > tolerance:
+            candidates.append(candidate_shape.copy())
+
+    feature.Midplane = True
+    feature.Reversed = bool(properties.get("reverse"))
+    feature.Document.recompute()
+    restored_shape = getattr(feature, "Shape", None)
+    if not had_current_shape or not candidates:
+        return restored_shape
+
+    expected_shape = candidates[0]
+    for candidate in candidates[1:]:
+        expected_shape = expected_shape.common(candidate)
+    missing_material_removal = float(restored_shape.cut(expected_shape).Volume)
+    unexpected_material_removal = float(expected_shape.cut(restored_shape).Volume)
+    if (
+        missing_material_removal > tolerance
+        or unexpected_material_removal > tolerance
+    ):
+        raise PartDesignCandidateError(
+            "api.hole symmetric through-all result did not traverse every "
+            "intersected material region.",
+            details={
+                "stage": "through_all_postcondition",
+                "operation": "hole",
+                "missing_material_removal_mm3": missing_material_removal,
+                "unexpected_material_removal_mm3": unexpected_material_removal,
+                "correction": (
+                    "The native symmetric-hole cutter is incomplete. Rebuild with "
+                    "a runtime that supports centered Hole cutters; do not replace "
+                    "the point sketch with guessed geometry."
+                ),
+            },
+        )
+    return restored_shape
+
+
 def _as_sketcher_payload(value: Any) -> Any:
     """Translate the embedded profile graph to the Sketcher evaluator contract."""
 
@@ -1779,6 +2034,8 @@ def _build_feature(
         body.Tip = subtractive_base
         feature = body.newObject("PartDesign::Hole", name)
         feature.Profile = profile
+        feature.Reversed = bool(properties.get("reverse"))
+        feature.Midplane = bool(properties.get("midplane"))
         feature.DepthType = (
             "ThroughAll"
             if bool(properties.get("through_all"))
@@ -1951,20 +2208,51 @@ def _build_feature(
     body.Tip = feature
     body.Document.recompute()
     shape = getattr(feature, "Shape", None)
-    if shape is None or shape.isNull() or not shape.isValid():
-        raise PartDesignCandidateError(
-            f"api.{operation} did not produce a valid feature shape.",
-            details={
-                "stage": "feature_validation",
-                "operation": operation,
-                "graph_id": graph_id,
-                "object_name": str(getattr(feature, "Name", "") or ""),
-                "error": str(getattr(feature, "getStatusString", lambda: "")() or ""),
-            },
-        )
     material_base = additive_base if additive_base is not None else subtractive_base
+    base_shape = (
+        getattr(material_base, "Shape", None)
+        if material_base is not None
+        else None
+    )
+    if operation in {"hole", "fastener_hole"} and base_shape is not None:
+        shape = _resolve_symmetric_through_hole(
+            feature,
+            base_shape,
+            properties,
+        )
+    if shape is None or shape.isNull() or not shape.isValid():
+        native_error = str(
+            getattr(feature, "getStatusString", lambda: "")() or ""
+        )
+        failure_details: dict[str, Any] = {
+            "stage": "feature_validation",
+            "operation": operation,
+            "graph_id": graph_id,
+            "object_name": str(getattr(feature, "Name", "") or ""),
+            "error": native_error,
+        }
+        if subtractive_base is not None:
+            failure_details.update(
+                _subtractive_feature_diagnostics(
+                    operation,
+                    payload,
+                    feature,
+                    base_shape,
+                )
+            )
+            failure_details["correction"] = (
+                "Use the reported profile frame and attempted cut direction. Move the "
+                "profile onto the target, set direction explicitly, or increase "
+                "the finite depth until the cutter reaches and overlaps the base. Use "
+                "vibescript.read_placement before rebuilding when the plane convention "
+                "is not already explicit."
+            )
+        raise PartDesignCandidateError(
+            f"api.{operation} did not produce a valid feature shape"
+            + (f": {native_error}" if native_error else "."),
+            details=failure_details,
+        )
     if material_base is not None:
-        base_shape = getattr(material_base, "Shape", None)
         base_volume = float(getattr(base_shape, "Volume", 0.0) or 0.0)
         result_volume = float(getattr(shape, "Volume", 0.0) or 0.0)
         tolerance = max(1.0e-7, abs(base_volume) * 1.0e-9)
@@ -1973,20 +2261,30 @@ def _build_feature(
             removed_volume = float(base_shape.cut(shape).Volume)
             added_volume = float(shape.cut(base_shape).Volume)
         except Exception as exc:
+            comparison_details: dict[str, Any] = {
+                "stage": "feature_postcondition",
+                "operation": operation,
+                "graph_id": graph_id,
+                "base_volume_mm3": base_volume,
+                "result_volume_mm3": result_volume,
+                "native_error": f"{type(exc).__name__}: {exc}",
+                "correction": (
+                    "Repair the base or generated feature so OpenCascade can compare "
+                    "their exact material regions."
+                ),
+            }
+            if subtractive_base is not None:
+                comparison_details.update(
+                    _subtractive_feature_diagnostics(
+                        operation,
+                        payload,
+                        feature,
+                        base_shape,
+                    )
+                )
             raise PartDesignCandidateError(
                 f"api.{operation} material effect could not be proven geometrically.",
-                details={
-                    "stage": "feature_postcondition",
-                    "operation": operation,
-                    "graph_id": graph_id,
-                    "base_volume_mm3": base_volume,
-                    "result_volume_mm3": result_volume,
-                    "native_error": f"{type(exc).__name__}: {exc}",
-                    "correction": (
-                        "Repair the base or generated feature so OpenCascade can compare "
-                        "their exact material regions."
-                    ),
-                },
+                details=comparison_details,
             ) from exc
         changed_material = (
             removed_volume > tolerance and added_volume <= tolerance
@@ -1996,22 +2294,38 @@ def _build_feature(
         if not changed_material:
             effect = "remove" if removes_material else "add"
             profile_role = "subtractive" if removes_material else "additive"
+            effect_details: dict[str, Any] = {
+                "stage": "feature_postcondition",
+                "operation": operation,
+                "graph_id": graph_id,
+                "base_volume_mm3": base_volume,
+                "result_volume_mm3": result_volume,
+                "removed_material_mm3": removed_volume,
+                "added_material_mm3": added_volume,
+                "correction": (
+                    f"Place the {profile_role} profile so its sweep intersects the "
+                    "current solid, and choose its attachment, direction, "
+                    "length, or angle semantics so it changes the body."
+                ),
+            }
+            if removes_material:
+                effect_details.update(
+                    _subtractive_feature_diagnostics(
+                        operation,
+                        payload,
+                        feature,
+                        base_shape,
+                    )
+                )
+                effect_details["correction"] = (
+                    "Use the reported profile frame, cut direction, base projection, "
+                    "and requested reach to make the cutter overlap the base. Use "
+                    "direction='along_normal', 'opposite_normal', or 'symmetric' "
+                    "to point it explicitly."
+                )
             raise PartDesignCandidateError(
                 f"api.{operation} did not {effect} material on its base feature.",
-                details={
-                    "stage": "feature_postcondition",
-                    "operation": operation,
-                    "graph_id": graph_id,
-                    "base_volume_mm3": base_volume,
-                    "result_volume_mm3": result_volume,
-                    "removed_material_mm3": removed_volume,
-                    "added_material_mm3": added_volume,
-                    "correction": (
-                        f"Place the {profile_role} profile so its sweep intersects the "
-                        "current solid, and choose its attachment, reverse, midplane, "
-                        "length, or angle semantics so it changes the body."
-                    ),
-                },
+                details=effect_details,
             )
     memo[graph_id] = feature
     worker_progress.graph_completed(operation, graph_id)

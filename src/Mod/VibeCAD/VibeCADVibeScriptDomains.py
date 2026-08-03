@@ -91,6 +91,8 @@ LIFECYCLE_OPERATIONS: tuple[str, ...] = (
 UNIVERSAL_SOURCE_OPERATIONS: tuple[str, ...] = (
     "read_source",
     "read_api",
+    "read_geometry",
+    "read_placement",
     "create_program",
     "build_program",
     "edit_source",
@@ -98,6 +100,7 @@ UNIVERSAL_SOURCE_OPERATIONS: tuple[str, ...] = (
     "reconfigure_program",
     "delete_output",
     "delete_program",
+    "delete_object",
 )
 
 # These are discovery groups, not separate APIs.  They let an agent request the
@@ -188,7 +191,7 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "refine",
             ),
         ),
-        ("verification", ("find_subelements", "measure")),
+        ("verification", ("find_subelements", "measure", "minimum_distance")),
         ("materials_and_publication", ("material", "appearance", "body", "publish")),
     ),
     "assembly": (
@@ -432,7 +435,10 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "VibeScript source is its definition. Use "
         "api.sketch for planar feature profiles. Use api.extrude with "
         "operation='add_material' or 'remove_material' for straight additions and cuts "
-        "whose cross-section stays constant. Use api.loft only when the intended "
+        "whose cross-section stays constant. Always set Body-feature direction to "
+        "'along_normal', 'opposite_normal', or 'symmetric'; do not infer reverse. "
+        "XY uses [X,Y]/+Z, XZ uses [X,Z]/-Y, and YZ uses [Y,Z]/+X. "
+        "Use api.loft only when the intended "
         "cross-section genuinely changes between section planes. Set operation to "
         "new_solid, new_surface, add_material, or remove_material. Reserve line_3d, "
         "arc_3d, wire, and other direct OCC topology for nonplanar, imported, repair, "
@@ -509,6 +515,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "refine",
             "find_subelements",
             "measure",
+            "minimum_distance",
             "material",
             "appearance",
             "body",
@@ -1190,6 +1197,8 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
         source = {
             "source_id": source_id,
             "source_kind": "vibescript_program",
+            "domain": domain,
+            "workbench": str(completed.get("workbench") or ""),
             "label": str(program.get("label") or "")[:240],
             "current_revision": revision,
             "status": _editable_source_status(program),
@@ -1216,6 +1225,7 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
             source["delete_target_arguments"] = {
                 "source_id": source_id,
                 "expected_revision": revision,
+                "reason": "Remove this source and its owned outputs.",
             }
         candidate = _compact_editable_source_candidate(program)
         if candidate is not None:
@@ -1237,6 +1247,8 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
         "tools": {
             "read_source": "vibescript.read_source",
             "read_api": "vibescript.read_api",
+            "read_geometry": "vibescript.read_geometry",
+            "read_placement": "vibescript.read_placement",
             "read_api_arguments": {
                 "names": ["exact_callable_name"],
             },
@@ -5654,6 +5666,119 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "additionalProperties": False,
         },
     )
+    geometry_reference = {
+        "description": (
+            "Exact object reference copied from selection[].reference, "
+            "available_components, or another VibeCAD result."
+        ),
+        "type": "object",
+        "x-vibecad-reference": True,
+        "properties": {
+            "document_uid": {"type": "string", "minLength": 1},
+            "object_name": {"type": "string", "minLength": 1},
+            "document_path": {"type": "string", "minLength": 1},
+        },
+        "required": ["document_uid", "object_name"],
+        "additionalProperties": False,
+    }
+    geometry_vector = {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": {"type": "number"},
+    }
+    geometry_query = {
+        "type": "object",
+        "properties": {
+            "name": _property_schema(
+                "Unique result name for this explicit query.",
+                type="string",
+                minLength=1,
+                maxLength=64,
+            ),
+            "element_type": {
+                "description": "Topology kind to inspect.",
+                "type": "string",
+                "enum": ["face", "edge"],
+            },
+            "geometry_type": _property_schema(
+                "Exact OCC geometry type, such as Plane, Cylinder, Circle, or Line.",
+                type="string",
+                minLength=1,
+            ),
+            "normal": {
+                "description": "Required directed face normal [x, y, z].",
+                **geometry_vector,
+            },
+            "direction": {
+                "description": "Required directed edge tangent [x, y, z].",
+                **geometry_vector,
+            },
+            "axis_direction": {
+                "description": "Required directed analytic plane, cylinder, circle, or line axis.",
+                **geometry_vector,
+            },
+            "radius_mm": _property_schema(
+                "Required analytic radius in millimetres.",
+                type="number",
+                minimum=0,
+            ),
+            "radius_tolerance_mm": _property_schema(
+                "Absolute radius tolerance in millimetres; defaults to 0.000001.",
+                type="number",
+                minimum=0,
+            ),
+            "min_area_mm2": _property_schema(
+                "Inclusive minimum face area in square millimetres.",
+                type="number",
+                minimum=0,
+            ),
+            "max_area_mm2": _property_schema(
+                "Inclusive maximum face area in square millimetres.",
+                type="number",
+                minimum=0,
+            ),
+            "min_length_mm": _property_schema(
+                "Inclusive minimum edge length in millimetres.",
+                type="number",
+                minimum=0,
+            ),
+            "max_length_mm": _property_schema(
+                "Inclusive maximum edge length in millimetres.",
+                type="number",
+                minimum=0,
+            ),
+            "near_point_mm": {
+                "description": "Required subelement center location [x, y, z] in millimetres.",
+                **geometry_vector,
+            },
+            "max_distance_mm": _property_schema(
+                "Maximum center distance from near_point_mm; defaults to 0.000001.",
+                type="number",
+                minimum=0,
+            ),
+            "angle_tolerance_degrees": _property_schema(
+                "Directed normal, tangent, or axis tolerance; defaults to 1 degree.",
+                type="number",
+                minimum=0,
+                maximum=180,
+            ),
+            "expected_count": _property_schema(
+                "Optional exact cardinality check reported as cardinality_ok.",
+                type="integer",
+                minimum=1,
+                maximum=256,
+            ),
+            "max_results": _property_schema(
+                "Maximum matching subelement records returned; total match count is always reported.",
+                type="integer",
+                minimum=1,
+                maximum=16,
+            ),
+        },
+        "required": ["name", "element_type"],
+        "additionalProperties": False,
+    }
     return (
         {
             "name": "vibescript.read_source",
@@ -5725,6 +5850,143 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     ),
                 },
                 "required": [],
+                "additionalProperties": False,
+            },
+            "safety": "READ",
+            "contextual": True,
+            "requires_document": False,
+            "edit_modes": ["none", "sketch"],
+        },
+        {
+            "name": "vibescript.read_geometry",
+            "description": (
+                "Inspect one exact native or imported B-rep without changing CAD. Copy "
+                "reference from selection or available_components. Queries search the "
+                "complete shape for planes, axes, cylinders, circles, sizes, or locations; "
+                "each match includes an api.subshape selector, and analytic matches include "
+                "copy-ready sketch or axis placements. Use analysis_level='topology' for "
+                "normal orientation, bounds, counts, and subelement discovery, especially "
+                "on imported models. Use 'full' only when exact validity, length, area, "
+                "volume, and center of mass are needed; omission preserves the full response. "
+                "include_subelements returns only a bounded sample. Query vectors are "
+                "[x,y,z]; units are mm and degrees."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reference": geometry_reference,
+                    "analysis_level": {
+                        "description": (
+                            "topology returns exact bounds, topology counts, and query "
+                            "matches without computing global mass properties or full B-rep "
+                            "validity; full also computes those expensive global facts. "
+                            "Defaults to full for compatibility."
+                        ),
+                        "type": "string",
+                        "enum": ["topology", "full"],
+                    },
+                    "include_subelements": _property_schema(
+                        "Include bounded, 1-based face and edge facts for this exact shape.",
+                        type="boolean",
+                    ),
+                    "max_subelements": _property_schema(
+                        "Maximum faces and maximum edges returned when subelements are included.",
+                        type="integer",
+                        minimum=1,
+                        maximum=32,
+                    ),
+                    "queries": {
+                        "description": "Search every face or edge with exact filters.",
+                        "type": "array",
+                        "maxItems": 16,
+                        "uniqueItems": True,
+                        "items": geometry_query,
+                    },
+                },
+                "required": ["reference"],
+                "additionalProperties": False,
+            },
+            "safety": "READ",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none", "sketch"],
+        },
+        {
+            "name": "vibescript.read_placement",
+            "description": (
+                "Resolve the exact local axes and local-to-global matrix for a planned "
+                "api.sketch, api.box, or api.wedge before building. For sketch, pass a "
+                "principal plane plus plane_offset_mm or an explicit placement. For an "
+                "extrude or hole, copy one returned linear_feature_directions key. For an "
+                "oriented box/wedge, pass direction and x_direction so its roll is explicit."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": _property_schema(
+                        "VibeScript operation whose coordinate frame is being planned.",
+                        type="string",
+                        enum=["sketch", "box", "wedge"],
+                    ),
+                    "plane": _property_schema(
+                        "Principal plane for api.sketch; defaults to XY.",
+                        type="string",
+                        enum=["XY", "XZ", "YZ"],
+                    ),
+                    "plane_offset_mm": _property_schema(
+                        "Signed offset along the selected sketch plane's exact local normal.",
+                        type="number",
+                    ),
+                    "placement": _property_schema(
+                        "Explicit api.sketch placement; do not combine with a plane offset.",
+                        type="object",
+                        properties={
+                            "origin": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "items": {"type": "number"},
+                            },
+                            "normal": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "items": {"type": "number"},
+                            },
+                            "x_direction": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "items": {"type": "number"},
+                            },
+                        },
+                        required=["origin", "normal", "x_direction"],
+                        additionalProperties=False,
+                    ),
+                    "origin": _property_schema(
+                        "Global origin [x,y,z] for api.box/api.wedge; defaults to [0,0,0].",
+                        type="array",
+                        minItems=3,
+                        maxItems=3,
+                        items={"type": "number"},
+                    ),
+                    "direction": _property_schema(
+                        "Global direction of primitive local +Z (height).",
+                        type="array",
+                        minItems=3,
+                        maxItems=3,
+                        items={"type": "number"},
+                    ),
+                    "x_direction": _property_schema(
+                        "Global direction projected to primitive local +X (length). Required "
+                        "with a non-default direction to define roll without guessing.",
+                        type="array",
+                        minItems=3,
+                        maxItems=3,
+                        items={"type": "number"},
+                    ),
+                },
+                "required": ["operation"],
                 "additionalProperties": False,
             },
             "safety": "READ",
@@ -5909,7 +6171,10 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.delete_program",
             "description": (
-                "Delete one guarded source, its live outputs, and persisted artifacts."
+                "Delete one saved source and everything it owns. Pass the source's "
+                "delete_target_arguments from editable_sources directly; another read "
+                "is not required. A failed source with no outputs deletes only its saved "
+                "source and build artifacts."
             ),
             "parameters": {
                 "type": "object",
@@ -5924,6 +6189,33 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     ),
                 },
                 "required": ["source_id", "expected_revision", "reason"],
+                "additionalProperties": False,
+            },
+            "safety": "SAFE_WRITE",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none"],
+        },
+        {
+            "name": "vibescript.delete_object",
+            "description": (
+                "Delete one exact unowned or imported CAD object and its contained "
+                "children. Copy reference from selection, available_components, or "
+                "read_geometry. Managed VibeScript outputs are rejected: use "
+                "delete_output or delete_program for those."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reference": geometry_reference,
+                    "reason": _property_schema(
+                        "Why this exact object should be removed.",
+                        type="string",
+                        minLength=1,
+                        maxLength=500,
+                    ),
+                },
+                "required": ["reference", "reason"],
                 "additionalProperties": False,
             },
             "safety": "SAFE_WRITE",

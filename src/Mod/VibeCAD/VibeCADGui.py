@@ -2621,10 +2621,23 @@ def _execute_assistant_run(
         terminal_status = ""
         if failure is not None:
             terminal_status = f"The CAD run failed: {failure}"
+            _append_conversation(
+                "System",
+                terminal_status,
+                persist=True,
+                metadata={"source": "provider_runtime_error"},
+            )
         elif response is not None:
             final_text = str(response.final_output or "").strip()
             if response.error:
                 terminal_status = final_text or str(response.error)
+                if terminal_status and not displayed_provider_texts:
+                    _append_conversation(
+                        "System",
+                        terminal_status,
+                        persist=True,
+                        metadata={"source": "provider_error"},
+                    )
             elif final_text and not displayed_provider_texts:
                 _append_conversation(
                     "VibeCAD",
@@ -4142,19 +4155,34 @@ def _selected_scripted_model_operation(
     program_id = str(getattr(operation, "ProgramId", "") or "")
     root_name = str(getattr(operation, "ProgramObjectName", "") or "")
     root = document.getObject(root_name) if root_name else None
-    if not program_id or root is None:
+    if not program_id:
         return None
     from VibeCADVibeScriptDomains import (
         PROP_PROGRAM_DOMAIN,
         PROP_PROGRAM_ID,
     )
 
-    if (
-        str(getattr(root, PROP_PROGRAM_ID, "") or "") != program_id
-        or str(getattr(root, PROP_PROGRAM_DOMAIN, "") or "")
-        != "partdesign"
-    ):
-        return None
+    if root is not None:
+        if (
+            str(getattr(root, PROP_PROGRAM_ID, "") or "") != program_id
+            or str(getattr(root, PROP_PROGRAM_DOMAIN, "") or "")
+            != "partdesign"
+        ):
+            return None
+    else:
+        # Recover an interrupted source deletion whose program container was
+        # removed before its native Design operation. The operation's own
+        # immutable ownership tags are sufficient to dispatch the exact
+        # lifecycle command; arbitrary History objects still cannot opt in.
+        if (
+            str(getattr(operation, "VibeCADScriptedRole", "") or "")
+            != "implementation"
+            or str(getattr(operation, "VibeCADScriptedEngine", "") or "")
+            != "vibescript:partdesign"
+            or str(getattr(operation, "VibeCADScriptedModelId", "") or "")
+            != program_id
+        ):
+            return None
     return operation
 
 

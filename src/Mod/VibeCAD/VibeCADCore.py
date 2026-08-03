@@ -390,6 +390,8 @@ class VibeCADService:
             return omitted(
                 "The explicit selection exceeds the bounded turn-start item limit."
             )
+        document = self._active_document()
+        document_uid = str(getattr(document, "Uid", "") or "")
         items = []
         for item in selected:
             try:
@@ -423,6 +425,16 @@ class VibeCADService:
                 items.append(
                     {
                         **fields,
+                        **(
+                            {
+                                "reference": {
+                                    "document_uid": document_uid,
+                                    "object_name": fields["object"],
+                                }
+                            }
+                            if document_uid and fields["object"]
+                            else {}
+                        ),
                         "subelements": subelements,
                     }
                 )
