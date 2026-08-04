@@ -5627,6 +5627,15 @@ def _base_tool_spec(
 
 
 def universal_tool_specs() -> tuple[dict[str, Any], ...]:
+    domain = _property_schema(
+        "Exact authoring domain. Use partdesign for part geometry and assembly "
+        "for occurrences, joints, mechanisms, and simulations. Omit only to keep "
+        "the visible ribbon's compatibility default.",
+        type="string",
+        enum=sorted(
+            {pack.domain for pack in VIBESCRIPT_WORKBENCH_PACKS.values()}
+        ),
+    )
     source_id = _property_schema(
         "Exact source_id from editable_sources or a VibeScript write result.",
         type="string",
@@ -5826,14 +5835,17 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.read_api",
             "description": (
-                "Read the VibeScript API that owns an exact editable source. Pass source_id "
-                "when inspecting component code from another workbench; omit it to read the "
-                "active workbench API. Pass exact callable or group names for a focused response."
+                "Read one exact VibeScript API. Pass source_id for an existing "
+                "program or domain when planning a new one; do not pass both. Model "
+                "and Assembly APIs are available without switching the visible ribbon. "
+                "Omitting both keeps the visible ribbon's compatibility default. Pass "
+                "exact callable or group names for a focused response."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "source_id": source_id,
+                    "domain": domain,
                     "names": _property_schema(
                         "Exact api callable names to read, such as sketch, constraint, or extrude.",
                         type="array",
@@ -5997,12 +6009,17 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.create_program",
             "description": (
-                "Create and publish one new VibeScript source in the active workbench. "
-                "Use only when no editable_sources entry owns the requested output."
+                "Create and publish one new VibeScript source in an exact authoring "
+                "domain. Use domain='partdesign' for part geometry or "
+                "domain='assembly' for occurrences, joints, mechanisms, and "
+                "simulations. Use only when no editable_sources entry owns the "
+                "requested output. Omitting domain keeps the visible ribbon's "
+                "compatibility default."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "domain": domain,
                     "program_name": _property_schema(
                         "Human-readable stable program label.",
                         type="string",

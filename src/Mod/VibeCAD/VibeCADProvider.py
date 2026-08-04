@@ -20,7 +20,11 @@ import time
 from typing import Any, Callable
 
 from VibeCADDebug import capture_provider_request
-from VibeCADModelingSurface import resolve_modeling_surface, validate_surface_names
+from VibeCADModelingSurface import (
+    is_model_assembly_workbench,
+    resolve_modeling_surface,
+    validate_surface_names,
+)
 from VibeCADVibeScriptDomains import get_vibescript_pack
 
 
@@ -58,7 +62,7 @@ VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical design engineer
 
 CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Treat explicit user constraints as requirements. A correction changes only the named geometry; preserve the existing architecture, identity, and history unless replacement or redesign was requested. Build editable, parametric geometry meeting function, dimensions, fit, manufacturability, and appearance. Default to catalog fasteners. Decide unspecified details; ask only if a choice changes function or geometry.
 
-Use only active-workbench tools and exact state returned in the current context or by a tool; never guess names, references, revisions, or API members. Fix failures before dependent features; never repeat an unchanged failure. Before claiming completion, verify requested dimensions, topology, interfaces, clearances, assembly retention, service motion, manufacturability, and appearance; capture the viewport for visual judgment. Never claim work or verification not performed."""
+Use only the tools exposed for this turn and exact state returned in the current context or by a tool; never guess names, references, revisions, or API members. Fix failures before dependent features; never repeat an unchanged failure. Before claiming completion, verify requested dimensions, topology, interfaces, clearances, assembly retention, service motion, manufacturability, and appearance; capture the viewport for visual judgment. Never claim work or verification not performed."""
 
 
 ANTHROPIC_TURN_COMPACTION_INSTRUCTIONS = """You compact one unfinished VibeCAD agent turn.
@@ -106,6 +110,37 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
     pack = get_vibescript_pack(workbench)
     if pack is None or pack.domain != domain:
         return ""
+    if is_model_assembly_workbench(workbench):
+        part_pack = get_vibescript_pack("PartDesignWorkbench")
+        assembly_pack = get_vibescript_pack("AssemblyWorkbench")
+        if part_pack is None or assembly_pack is None:
+            return ""
+        return (
+            "VIBESCRIPT MODEL + ASSEMBLY AUTHORING\n"
+            "Model and Assembly are one authoring surface; the visible ribbon is "
+            "presentation only. For a new source, pass domain='partdesign' to "
+            "vibescript.create_program for part geometry or domain='assembly' for "
+            "occurrences, joints, mechanisms, and simulations. Read the matching API "
+            "with vibescript.read_api(domain=...). Existing sources route by source_id "
+            "without a workbench switch.\n"
+            f"PARTS: {part_pack.instructions}\n"
+            f"ASSEMBLIES: {assembly_pack.instructions}\n"
+            "Use definitions in available_components with api.component or "
+            "api.instances; search only when the needed item is absent or needs more "
+            "metadata. editable_sources.all_sources lists both domains; each item is "
+            "one editable part or program, including failed and unbuilt code. Read "
+            "its exact source_id with "
+            "vibescript.read_source before editing, send the complete updated source "
+            "and revision to vibescript.edit_source, and use "
+            "vibescript.build_program only to rebuild unchanged code. Source receives "
+            "immutable doc and api values plus validated inputs. Reuse existing source. "
+            "Use vibescript.set_inputs for a value-only change; otherwise include "
+            "changed inputs, input_schema, or expected_outputs with "
+            "vibescript.edit_source. Use "
+            "vibescript.read_geometry for imported or unfamiliar geometry and "
+            "vibescript.read_placement before relying on an unfamiliar coordinate "
+            "convention."
+        )
     component_instruction = (
         " Use a definition in available_components with api.component or api.instances. "
         "In Assembly, an occurrence reference adopts that exact placed object instead "

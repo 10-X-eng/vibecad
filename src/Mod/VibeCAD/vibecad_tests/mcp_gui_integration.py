@@ -153,6 +153,27 @@ def run() -> None:
                                 },
                             )
                             observed["review"] = review.structured_content
+                            assembly_notification_count = int(
+                                observed.get("tool_list_notifications", 0)
+                            )
+                            assembly = await session.call_tool(
+                                "vibecad.switch_workbench",
+                                {"workbench": "AssemblyWorkbench"},
+                            )
+                            observed["assembly_switch"] = assembly.structured_content
+                            assembly_tools = await session.list_tools()
+                            observed["assembly_contracts"] = [
+                                {
+                                    "name": tool.name,
+                                    "description": tool.description or "",
+                                    "parameters": dict(tool.input_schema),
+                                }
+                                for tool in assembly_tools.tools
+                            ]
+                            await asyncio.sleep(0.25)
+                            observed["assembly_tool_list_notifications"] = int(
+                                observed.get("tool_list_notifications", 0)
+                            ) - assembly_notification_count
                             switched = await session.call_tool(
                                 "vibecad.switch_workbench",
                                 {"workbench": "MeshWorkbench"},
@@ -160,7 +181,8 @@ def run() -> None:
                             observed["mesh_switch"] = switched.structured_content
                             notification_deadline = time.monotonic() + 5.0
                             while (
-                                not observed.get("tool_list_notifications")
+                                int(observed.get("tool_list_notifications", 0))
+                                <= assembly_notification_count
                                 and time.monotonic() < notification_deadline
                             ):
                                 await asyncio.sleep(0.05)
@@ -207,6 +229,11 @@ def run() -> None:
         _wait(target_ready.is_set)
         if "client_error" in observed:
             raise observed["client_error"]
+        assert observed["assembly_switch"]["ok"] is True, observed[
+            "assembly_switch"
+        ]
+        assert observed["assembly_switch"]["tool_list_changed"] is False
+        assert observed["assembly_tool_list_notifications"] == 0
         assert observed["mesh_switch"]["ok"] is True, observed["mesh_switch"]
         assert observed.get("tool_list_notifications", 0) >= 1
         assert Gui.activeWorkbench().name() == "MeshWorkbench", observed["mesh_switch"]
@@ -214,6 +241,7 @@ def run() -> None:
         assert observed["unauthenticated_status"] == 401
         assert observed["tools_list_changed_capability"] is True
         assert observed["model_contracts"] == expected_model
+        assert observed["assembly_contracts"] == expected_model
         assert observed["mesh_contracts"] == expected_mesh
         assert observed["workbench_read"]["active_workbench"] == (
             "PartDesignWorkbench"

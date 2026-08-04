@@ -7,13 +7,18 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
+import threading
 
 import pytest
 
 import VibeCADVibeScriptDomainRuntime as runtime
 import VibeCADVibeScriptDomains as domains
+from VibeCADCore import VibeCADService
+import vibescript_domain_worker as domain_worker
 from vibescript_domain_api import DomainValue, create_domain_api
 from vibescript_partdesign_api import PartDesignDomainAPI
+from vibescript_partdesign_worker import _optimal_shape_bounds
+from vibescript_domain_worker import _execute_source
 
 
 PROGRAM_ID = "0123456789abcdef0123456789abcdef"
@@ -47,6 +52,112 @@ def _capture(root: Path, *, operation: str, arguments: dict) -> dict:
         "timeout_seconds": 30.0,
         "memory_limit_bytes": 512 * 1024 * 1024,
     }
+
+
+def test_measurement_bounds_prefer_exact_occ_geometry() -> None:
+    class Bounds:
+        def __init__(self, size: float) -> None:
+            self.XLength = size
+
+    class Shape:
+        BoundBox = Bounds(11.68)
+
+        @staticmethod
+        def optimalBoundingBox(
+            use_triangulation: bool, use_shape_tolerance: bool
+        ) -> Bounds:
+            assert use_triangulation is False
+            assert use_shape_tolerance is False
+            return Bounds(10.0)
+
+    assert _optimal_shape_bounds(Shape()).XLength == 10.0
+
+
+def test_failed_source_retains_bounded_print_output() -> None:
+    with pytest.raises(RuntimeError) as failure:
+        _execute_source(
+            source="print('axis probe: +Z')\nraise RuntimeError('stop')\n",
+            document_name="Diagnostics",
+            document_objects=[],
+            inputs={},
+            api=object(),
+            max_operations=100,
+            max_seconds=1.0,
+        )
+    assert getattr(failure.value, "vibescript_stdout", "") == "axis probe: +Z\n"
+
+
+def test_worker_failure_report_exposes_source_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request_path = tmp_path / "request.json"
+    result_path = tmp_path / "result.json"
+    request_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv(domain_worker.REQUEST_ENV, str(request_path))
+    monkeypatch.setenv(domain_worker.RESULT_ENV, str(result_path))
+    monkeypatch.setattr(domain_worker, "_resource_limits", lambda _request: None)
+    monkeypatch.setattr(domain_worker.worker_progress, "failed", lambda _exc: None)
+
+    def fail(_request, _root):
+        error = RuntimeError("validation stopped")
+        setattr(error, "vibescript_stdout", "measured clearance=0.12 mm\n")
+        raise error
+
+    monkeypatch.setattr(domain_worker, "_run", fail)
+    assert domain_worker.main() == 1
+    report = json.loads(result_path.read_text(encoding="utf-8"))
+    assert report["error"] == "validation stopped"
+    assert report["stdout"] == "measured clearance=0.12 mm\n"
+
+
+def test_reference_snapshot_cache_reuses_only_unchanged_dependencies() -> None:
+    copies = []
+
+    class Document:
+        Uid = "document-uid"
+
+    class Shape:
+        def copy(self):
+            detached = object()
+            copies.append(detached)
+            return detached
+
+    class Object:
+        def __init__(self, name: str) -> None:
+            self.Document = Document()
+            self.Name = name
+            self.Shape = Shape()
+            self.OutListRecursive = []
+            self.LinkedObject = None
+
+    dependency = Object("Dependency")
+    source = Object("ImportedMotor")
+    source.OutListRecursive = [dependency]
+    service = object.__new__(VibeCADService)
+    service._vibescript_reference_cache_lock = threading.RLock()
+    service._vibescript_reference_snapshots = {}
+
+    first = service.capture_vibescript_reference_shape(source)
+    service.store_vibescript_reference_artifact(
+        first["cache_token"],
+        {
+            "brep_bytes": b"exact-brep",
+            "brep_sha256": "a" * 64,
+            "shape_type": "Solid",
+            "facts": {"solids": 1},
+        },
+    )
+    second = service.capture_vibescript_reference_shape(source)
+    assert second["cache_hit"] is True
+    assert second["detached_shape"] is first["detached_shape"]
+    assert second["artifact"]["brep_bytes"] == b"exact-brep"
+    assert len(copies) == 1
+
+    service.invalidate_vibescript_reference_snapshots(dependency)
+    third = service.capture_vibescript_reference_shape(source)
+    assert third["cache_hit"] is False
+    assert third["detached_shape"] is not first["detached_shape"]
+    assert len(copies) == 2
 
 
 def _write_v1_program(root: Path) -> Path:
@@ -192,6 +303,22 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     assert "axis_direction" in description["api_details"]["body"]["interfaces"][
         "shape"
     ]["StableName"]["selection"]
+    placement = description["api_details"]["component"]["placement"]
+    assert list(placement["forms"]) == [
+        "translation",
+        "quaternion",
+        "axis_angle",
+    ]
+    assert placement["allowed_keys"] == [
+        "position",
+        "rotation",
+        "axis",
+        "angle_degrees",
+    ]
+    assert "4x4 matrices are invalid" in placement["rule"]
+    assert "OCC optimal geometry" in description["api_details"]["measure"][
+        "bounds_contract"
+    ]
     gear_description = next(
         item["description"]
         for item in description["runtime_exports"]

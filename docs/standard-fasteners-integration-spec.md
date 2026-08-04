@@ -12,9 +12,11 @@ Related specification: [Assembly and Mechanism Integration](assembly-mechanism-i
 The source implementation was completed on 2026-07-24 with these fixed
 decisions:
 
-- bundled dependency: FreeCAD Fasteners Workbench 0.5.64;
-- pinned revision: `79a06dc067b57ebc89532be835704eb2af5da96c`;
-- source: `https://github.com/shaise/FreeCAD_FastenersWB`;
+- bundled dependency: VibeCAD's FreeCAD Fasteners Workbench 0.5.64 fork;
+- pinned revision: `9a09ec46bf5bff87231fce007e1da53610b30854`;
+- source: `https://github.com/10-X-eng/FreeCAD_FastenersWB`;
+- upstream base: `79a06dc067b57ebc89532be835704eb2af5da96c` from
+  `https://github.com/shaise/FreeCAD_FastenersWB`;
 - license boundary: the separately distributed Fasteners module remains
   GPL-2.0-or-later; VibeCAD's headless adapter remains LGPL;
 - default real-thread setting: `model_thread=False`;
@@ -25,13 +27,17 @@ decisions:
 - full upstream workbench: all 224 upstream standards remain bundled and
   visible.
 
+The fork adds VibeCAD's host-theme search behavior and catalog-backed
+straight-wall heat inserts while retaining the upstream catalog and license
+boundary.
+
 The release matrix found 19 incomplete or generator-failing nominal rows among
 the 222 supported shared-catalog standards. It also found that every published
 row of `ISO8733` and `ISO8735` fails to create one valid solid in the pinned
 generator. Those exact rows are excluded from VibeCAD selectors and VibeScript
-with direct diagnostics; they are not silently substituted. The unmodified
-upstream workbench and source remain present so upstream behavior is neither
-hidden nor rewritten.
+with direct diagnostics; they are not silently substituted. The complete
+forked workbench remains present; unsupported catalog rows are reported
+explicitly rather than silently substituted.
 
 Local verification generated representative geometry for all 222 supported
 standards and compared `model_thread=False` and `True` BREP for every supported

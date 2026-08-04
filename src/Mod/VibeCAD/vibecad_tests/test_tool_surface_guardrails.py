@@ -117,7 +117,10 @@ def core_tools() -> frozenset[str]:
 def engine_tools() -> frozenset[str]:
     import VibeCADSession as session
     import VibeCADVibeScriptDomains as domains
-    from VibeCADModelingSurface import PROVIDER_READ_TOOL_OWNERS
+    from VibeCADModelingSurface import (
+        PROVIDER_READ_TOOL_OWNERS,
+        provider_read_tool_is_visible,
+    )
 
     return frozenset(
         session.VIBESCRIPT_PROVIDER_TOOLS
@@ -496,7 +499,10 @@ def test_selected_vibescript_excludes_human_mutation_commands(
     production_ready: bool,
 ) -> None:
     import VibeCADSession as session
-    from VibeCADModelingSurface import PROVIDER_READ_TOOL_OWNERS
+    from VibeCADModelingSurface import (
+        PROVIDER_READ_TOOL_OWNERS,
+        provider_read_tool_is_visible,
+    )
     from VibeCADWorkbenchTools import get_tool_pack
 
     service = _SurfaceService("vibescript")
@@ -510,8 +516,12 @@ def test_selected_vibescript_excludes_human_mutation_commands(
     assert domain_pack is not None
     allowed_reads = {
         name
-        for name, owner in PROVIDER_READ_TOOL_OWNERS.items()
-        if owner == (workbench, "vibescript")
+        for name in PROVIDER_READ_TOOL_OWNERS
+        if provider_read_tool_is_visible(
+            name,
+            workbench=workbench,
+            engine="vibescript",
+        )
     }
     assert (set(pack.tool_names) - allowed_reads).isdisjoint(names)
     assert allowed_reads <= names
@@ -556,6 +566,7 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
     from VibeCADModelingSurface import resolve_modeling_surface
 
     expected = (
+        "assembly.play_simulation",
         "component.publish_interface",
         "component_catalog.search",
         "conversation.ask_user",
@@ -576,6 +587,7 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "vibescript.delete_output",
         "vibescript.delete_program",
         "vibescript.delete_object",
+        "assembly.list_structure",
     )
     surface = resolve_modeling_surface("PartDesignWorkbench", "vibescript")
     names = session._surface_tool_names(
@@ -589,6 +601,60 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         if name.startswith("vibescript.") and name.count(".") == 2
     }
     assert qualified_domains == set()
+
+
+def test_model_and_assembly_share_one_stable_provider_contract() -> None:
+    import VibeCADSession as session
+    from VibeCADModelingSurface import resolve_modeling_surface
+
+    service = _SurfaceService("vibescript")
+    model = resolve_modeling_surface("PartDesignWorkbench", "vibescript")
+    assembly = resolve_modeling_surface("AssemblyWorkbench", "vibescript")
+
+    assert model.surface_id == assembly.surface_id
+    assert model.tool_names == assembly.tool_names
+    assert session._surface_tool_names(
+        service, "PartDesignWorkbench"
+    ) == session._surface_tool_names(service, "AssemblyWorkbench")
+    assert {
+        "assembly.list_structure",
+        "assembly.play_simulation",
+        "material_catalog.search",
+        "vibescript.create_program",
+        "vibescript.edit_source",
+    } <= set(model.tool_names)
+
+
+def test_model_authoring_contract_survives_document_and_task_transitions(specs) -> None:
+    import VibeCADSession as session
+
+    class Service(_SurfaceService):
+        registry = _SpecRegistry(specs)
+
+        def _active_document(self) -> None:
+            return None
+
+    service = Service("vibescript")
+    no_document = session.provider_tool_schemas(
+        service,
+        "PartDesignWorkbench",
+        runtime_state={"edit_mode": False, "active_sketch": None},
+    )
+    sketch_task = session.provider_tool_schemas(
+        service,
+        "PartDesignWorkbench",
+        runtime_state={
+            "edit_mode": True,
+            "active_sketch": {"name": "Sketch"},
+        },
+    )
+
+    assert [item["name"] for item in no_document] == [
+        item["name"] for item in sketch_task
+    ]
+    assert "vibescript.create_program" in {
+        item["name"] for item in no_document
+    }
 
 
 def test_retired_surface_and_publication_shims_are_absent() -> None:

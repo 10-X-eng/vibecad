@@ -22,6 +22,7 @@ from VibeCADModelingSurface import (
     FASTENER_CATALOG_TOOL,
     MATERIAL_CATALOG_TOOL,
     PROVIDER_READ_TOOL_OWNERS,
+    provider_read_tool_is_visible,
     resolve_modeling_surface,
     validate_surface_names,
 )
@@ -73,7 +74,7 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             "RobotWorkbench",
         }:
             expected_core.add(COMPONENT_CATALOG_TOOL)
-        if workbench == "AssemblyWorkbench":
+        if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}:
             expected_core.add(ASSEMBLY_PLAYBACK_TOOL)
         if workbench in {
             "PartDesignWorkbench",
@@ -81,15 +82,23 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             "RobotWorkbench",
         }:
             expected_core.add(COMPONENT_INTERFACE_TOOL)
-        if workbench in {"PartDesignWorkbench", "MaterialWorkbench"}:
+        if workbench in {
+            "PartDesignWorkbench",
+            "AssemblyWorkbench",
+            "MaterialWorkbench",
+        }:
             expected_core.add(MATERIAL_CATALOG_TOOL)
         assert set(scripted.core_tool_names) == expected_core
         if domain_pack.production_ready:
             observed_ready.add(workbench)
             focused_reads = tuple(
                 name
-                for name, owner in PROVIDER_READ_TOOL_OWNERS.items()
-                if owner == (workbench, "vibescript")
+                for name in PROVIDER_READ_TOOL_OWNERS
+                if provider_read_tool_is_visible(
+                    name,
+                    workbench=workbench,
+                    engine="vibescript",
+                )
             )
             assert scripted.available is True
             assert scripted.unavailable_reason == ""
@@ -108,7 +117,11 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             ) + len(focused_reads)
             # The component-capable surfaces add only their exact catalog/interface
             # controls; Assembly alone also exposes saved playback.
-            ceiling = 21 if workbench == "AssemblyWorkbench" else 20
+            ceiling = (
+                22
+                if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}
+                else 20
+            )
             assert len(scripted.tool_names) <= ceiling
             assert "core.inspect" not in scripted.tool_names
             unrelated_human_commands = set(
@@ -704,6 +717,133 @@ def test_universal_build_program_replays_exact_saved_source(
     assert result["tool"] == "vibescript.build_program"
     assert result["source_id"] == source_id
     assert result["requested_action"] == "build_program"
+
+
+def test_universal_create_program_targets_explicit_domain_without_ribbon_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    observed = {}
+
+    def run_internal(bound_service, tool_name, arguments, **_kwargs):
+        observed.update(
+            workbench=bound_service.active_workbench_name(),
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+        return {
+            "ok": True,
+            "tool": tool_name,
+            "program_id": "a" * 32,
+            "domain": "assembly",
+        }
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    document = type("Document", (), {"Objects": []})()
+    service = type(
+        "Service",
+        (),
+        {"_active_document": lambda self: document},
+    )()
+    result = session._run_universal_vibescript_tool(
+        service,
+        "PartDesignWorkbench",
+        "vibescript.create_program",
+        {
+            "domain": "assembly",
+            "program_name": "Robot Arm Assembly",
+            "source": "result = {'Arm': api.assembly([])}",
+            "input_schema": {"type": "object"},
+            "inputs": {},
+            "expected_outputs": [{"name": "Arm", "type": "assembly"}],
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed == {
+        "workbench": "AssemblyWorkbench",
+        "tool_name": "vibescript.assembly.create_program",
+        "arguments": {
+            "program_name": "Robot Arm Assembly",
+            "source": "result = {'Arm': api.assembly([])}",
+            "input_schema": {"type": "object"},
+            "inputs": {},
+            "expected_outputs": [{"name": "Arm", "type": "assembly"}],
+        },
+    }
+    assert result["tool"] == "vibescript.create_program"
+    assert result["source_id"] == "a" * 32
+
+
+def test_universal_read_api_accepts_explicit_model_or_assembly_domain() -> None:
+    import VibeCADSession as session
+
+    service = type("Service", (), {"_active_document": lambda self: None})()
+    result = session._run_universal_vibescript_tool(
+        service,
+        "AssemblyWorkbench",
+        "vibescript.read_api",
+        {"domain": "partdesign", "names": ["component", "instances"]},
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert result["ok"] is True
+    assert result["domain"] == "partdesign"
+    assert result["selected_names"] == ["component", "instances"]
+
+
+def test_unified_source_context_keeps_failed_programs_from_both_domains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    captured_workbenches = []
+
+    def capture(bound_service, domain):
+        captured_workbenches.append(bound_service.active_workbench_name())
+        return {"domain": domain, "workbench": bound_service.active_workbench_name()}
+
+    def complete(snapshot):
+        domain = str(snapshot["domain"])
+        return {
+            "schema": "vibecad-editable-sources-v1",
+            "domain": domain,
+            "workbench": str(snapshot["workbench"]),
+            "source_count": 1,
+            "sources": [
+                {
+                    "source_id": ("a" if domain == "partdesign" else "b") * 32,
+                    "domain": domain,
+                    "status": "build_failed",
+                }
+            ],
+            "tools": {},
+        }
+
+    monkeypatch.setattr(domains, "capture_editable_sources_snapshot", capture)
+    monkeypatch.setattr(domains, "complete_editable_sources_snapshot", complete)
+    service = type("Service", (), {})()
+
+    captured = session._capture_editable_sources_for_workbench(
+        service,
+        "PartDesignWorkbench",
+    )
+    completed = session._complete_editable_sources_for_workbench(captured)
+
+    assert captured_workbenches == ["PartDesignWorkbench", "AssemblyWorkbench"]
+    assert completed["domain"] == "partdesign"
+    assert completed["source_count"] == 1
+    assert completed["authoring_domains"] == ["partdesign", "assembly"]
+    assert [item["domain"] for item in completed["all_sources"]] == [
+        "assembly",
+        "partdesign",
+    ]
+    assert completed["all_source_count"] == 2
 
 
 def test_deferred_publication_recompute_uses_exact_worker_safe_targets() -> None:
@@ -1391,6 +1531,69 @@ def test_universal_delete_uses_owning_index_domain_for_outputless_source(
     assert result["source_id"] == source_id
     assert result["source_target"]["domain"] == "partdesign"
     assert result["source_target"]["affected_outputs"] == []
+
+
+def test_universal_source_tools_route_outputless_source_across_unified_domains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    source_id = "8" * 32
+    revision = "7" * 64
+    observed = {}
+
+    def run_internal(bound_service, qualified_name, arguments, **_kwargs):
+        observed.update(
+            workbench=bound_service.active_workbench_name(),
+            tool_name=qualified_name,
+            arguments=arguments,
+        )
+        return {
+            "ok": True,
+            "tool": qualified_name,
+            "program_id": source_id,
+            "source_deleted": True,
+        }
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    document = type(
+        "Document",
+        (),
+        {"Uid": "active-document", "Name": "Active", "FileName": "", "Objects": []},
+    )()
+    service = type("Service", (), {"_active_document": lambda self: document})()
+    result = session._run_universal_vibescript_tool(
+        service,
+        "PartDesignWorkbench",
+        "vibescript.delete_program",
+        {
+            "source_id": source_id,
+            "expected_revision": revision,
+            "reason": "Remove failed Assembly source.",
+        },
+        editable_sources={
+            "domain": "partdesign",
+            "workbench": "PartDesignWorkbench",
+            "authoring_domains": ["partdesign", "assembly"],
+            "sources": [],
+            "all_sources": [
+                {
+                    "source_id": source_id,
+                    "domain": "assembly",
+                    "current_revision": revision,
+                    "affected_outputs": [],
+                }
+            ],
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert result["ok"] is True
+    assert observed["workbench"] == "AssemblyWorkbench"
+    assert observed["tool_name"] == "vibescript.assembly.delete_program"
+    assert result["source_target"]["domain"] == "assembly"
 
 
 def test_universal_source_rejects_conflicting_row_and_index_domains() -> None:

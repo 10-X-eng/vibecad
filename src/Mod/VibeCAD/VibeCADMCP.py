@@ -150,7 +150,8 @@ def controller_tool_schemas() -> list[dict[str, Any]]:
             "name": SWITCH_WORKBENCH_TOOL,
             "description": (
                 "Switch VibeCAD to an exact workbench name returned by "
-                "vibecad.read_workbench. The MCP tool surface changes with it."
+                "vibecad.read_workbench. This changes the human ribbon; Model "
+                "and Assembly keep one combined MCP authoring surface."
             ),
             "parameters": {
                 "type": "object",
@@ -432,11 +433,16 @@ class _HostToolSession:
                     "error": f"VibeCAD did not activate workbench {target}.",
                     "observed": {"active_workbench": active_name},
                 }
+            from VibeCADModelingSurface import share_authoring_surface
+
             return {
                 "ok": True,
                 "previous_workbench": previous_name,
                 "active_workbench": active_name,
-                "tool_list_changed": previous_name != active_name,
+                "tool_list_changed": not share_authoring_surface(
+                    previous_name,
+                    active_name,
+                ),
             }
 
         result = self._dispatch(switch)
@@ -836,6 +842,7 @@ class VibeCADControlModeController:
         self._status_connection: Any | None = None
         self._shutdown_event: Any | None = None
         self._surface_generation: Any | None = None
+        self._surface_workbench = ""
         self._tool_cancellation: threading.Event | None = None
         self._token = ""
         self._bridge_thread: threading.Thread | None = None
@@ -1396,8 +1403,17 @@ class VibeCADControlModeController:
                 self._start_thread = start_thread
             start_thread.start()
 
-    def notify_tool_surface_changed(self) -> None:
+    def notify_tool_surface_changed(self, workbench_name: str | None = None) -> None:
         with self._lock:
+            current = str(workbench_name or "").strip()
+            previous = self._surface_workbench
+            if current:
+                self._surface_workbench = current
+            if previous and current:
+                from VibeCADModelingSurface import share_authoring_surface
+
+                if share_authoring_surface(previous, current):
+                    return
             generation = self._surface_generation
             if generation is None:
                 return

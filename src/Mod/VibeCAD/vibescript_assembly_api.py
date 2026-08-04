@@ -1094,7 +1094,7 @@ class AssemblyDomainAPI:
         self,
         source: Mapping[str, str],
         *,
-        placement: Sequence[float] | Mapping[str, Sequence[float]] | None = None,
+        placement: Sequence[float] | Mapping[str, Any] | None = None,
         grounded: bool = False,
         flexible: bool = False,
         label: str = "",
@@ -1136,7 +1136,7 @@ class AssemblyDomainAPI:
         self,
         source: Mapping[str, str],
         placements: Sequence[
-            Sequence[float] | Mapping[str, Sequence[float]] | None
+            Sequence[float] | Mapping[str, Any] | None
         ],
         *,
         grounded_index: int | None = None,

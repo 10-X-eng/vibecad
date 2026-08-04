@@ -417,7 +417,12 @@ class RobotDomainAPI:
         placement: Sequence[float] | Mapping[str, Any] | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Place one reusable component in a robot or automation layout."""
+        """Place one reusable component in a robot or automation layout.
+
+        ``placement`` accepts exactly ``[x,y,z]``, ``{'position':[x,y,z],
+        'rotation':[x,y,z,w]}``, or ``{'position':[x,y,z], 'axis':[x,y,z],
+        'angle_degrees':n}``.
+        """
 
         return component_value(
             self.domain,

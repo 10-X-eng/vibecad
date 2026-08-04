@@ -14,8 +14,9 @@ TOOL_SPEC = {
     "description": (
         "List every assembly in the active document with its exact internal "
         "name, component children, joints (type, references, grounded state), "
-        "and group counts. Use the returned internal names to target "
-        "assembly.insert_component, assembly.create_joint, and assembly.solve."
+        "and group counts. Use the returned identities when reading or editing "
+        "the owning Assembly VibeScript source; this read is available from both "
+        "the Model and Assembly ribbons."
     ),
     "contextual": True,
     "safety": "READ",

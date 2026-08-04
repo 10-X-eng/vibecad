@@ -1508,8 +1508,21 @@ def capture_reference_inputs(
             raise RuntimeError(
                 f"{prepared['pack'].title} input reference {object_name!r} has a null Shape."
             )
+        cache_token = ""
+        cached_artifact = None
+        artifact_store = None
+        capture_cached = getattr(service, "capture_vibescript_reference_shape", None)
         try:
-            detached = shape.copy()
+            if callable(capture_cached):
+                cached = capture_cached(obj)
+                detached = cached["detached_shape"]
+                cache_token = str(cached.get("cache_token") or "")
+                cached_artifact = cached.get("artifact")
+                artifact_store = getattr(
+                    service, "store_vibescript_reference_artifact", None
+                )
+            else:
+                detached = shape.copy()
         except Exception as exc:
             raise RuntimeError(
                 f"Could not detach Shape from {prepared['pack'].title} input "
@@ -1562,6 +1575,15 @@ def capture_reference_inputs(
                 "reference_artifact_kind": "brep",
                 "detached_shape": detached,
                 "snapshot_index": index,
+                **(
+                    {
+                        "_reference_cache_token": cache_token,
+                        "_reference_cached_artifact": cached_artifact,
+                        "_reference_artifact_store": artifact_store,
+                    }
+                    if cache_token
+                    else {}
+                ),
                 **(
                     {"assembly_hierarchy": assembly_hierarchy}
                     if assembly_hierarchy is not None
@@ -1944,7 +1966,39 @@ def finalize_candidate(
                         )
                     relative = Path("references") / f"reference-{index:03d}.brep"
                     target = staging / relative
-                    shape.exportBrep(str(target))
+                    cached_artifact = snapshot.get("_reference_cached_artifact")
+                    cached_bytes = (
+                        cached_artifact.get("brep_bytes")
+                        if isinstance(cached_artifact, Mapping)
+                        else None
+                    )
+                    cached_facts = (
+                        cached_artifact.get("facts")
+                        if isinstance(cached_artifact, Mapping)
+                        else None
+                    )
+                    cached_digest = (
+                        str(cached_artifact.get("brep_sha256") or "")
+                        if isinstance(cached_artifact, Mapping)
+                        else ""
+                    )
+                    cached_shape_type = (
+                        str(cached_artifact.get("shape_type") or "")
+                        if isinstance(cached_artifact, Mapping)
+                        else ""
+                    )
+                    reuse_artifact = (
+                        isinstance(cached_bytes, bytes)
+                        and bool(cached_bytes)
+                        and isinstance(cached_facts, Mapping)
+                        and len(cached_digest) == 64
+                        and cached_shape_type
+                        == str(getattr(shape, "ShapeType", "") or "")
+                    )
+                    if reuse_artifact:
+                        target.write_bytes(cached_bytes)
+                    else:
+                        shape.exportBrep(str(target))
                     if not target.is_file() or target.stat().st_size <= 0:
                         raise RuntimeError(
                             f"Could not serialize referenced object {key[1]!r} as BREP."
@@ -1954,11 +2008,31 @@ def finalize_candidate(
                         raise ValueError(
                             "Referenced shapes exceed the 256 MiB detached-input limit."
                         )
-                    digest = _sha256_file(target)
-                    facts = part_shape_facts(
-                        shape,
-                        max_subelements=_MAX_REFERENCE_FACT_SUBELEMENTS,
-                    )
+                    if reuse_artifact:
+                        digest = cached_digest
+                        facts = dict(cached_facts)
+                    else:
+                        digest = _sha256_file(target)
+                        facts = part_shape_facts(
+                            shape,
+                            max_subelements=_MAX_REFERENCE_FACT_SUBELEMENTS,
+                        )
+                        artifact_store = snapshot.get("_reference_artifact_store")
+                        cache_token = str(
+                            snapshot.get("_reference_cache_token") or ""
+                        )
+                        if callable(artifact_store) and cache_token:
+                            artifact_store(
+                                cache_token,
+                                {
+                                    "brep_bytes": target.read_bytes(),
+                                    "brep_sha256": digest,
+                                    "shape_type": str(
+                                        getattr(shape, "ShapeType", "") or ""
+                                    ),
+                                    "facts": dict(facts),
+                                },
+                            )
                     metadata = {
                         "document_uid": key[0],
                         "object_name": key[1],
@@ -17236,6 +17310,7 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
 
     def describe_api(self) -> dict[str, Any]:
         from vibescript_assembly_api import JOINT_TYPES
+        from vibescript_component_api import component_placement_contract
 
         description = super().describe_api()
         description.update(
@@ -17254,24 +17329,22 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                 ),
                 "authoring_priority": {
                     "default": (
-                        "Use api.sketch plus native feature operations for planar solids; "
-                        "source is the editable parametric definition."
+                        "Use api.sketch plus native feature operations for planar solids."
                     ),
                     "planar_profile_rule": (
-                        "Every planar feature profile is an api.sketch on a principal, "
-                        "placed, or attached plane; never a *_3d curve or api.wire."
+                        "Every planar feature profile is api.sketch on a principal, placed, "
+                        "or attached plane; never *_3d or api.wire."
                     ),
                     "direct_topology_exception": (
-                        "Use direct OCC topology only for nonplanar, imported, repair, "
-                        "standalone, or unrepresentable geometry."
+                        "Direct OCC is only for nonplanar, imported, repair, standalone, "
+                        "or unrepresentable geometry."
                     ),
                     "do_not_regress": (
-                        "Do not replace valid native history with direct topology to shorten "
-                        "source or bypass a failed feature."
+                        "Do not replace valid native history to shorten source or bypass failure."
                     ),
                     "verification": (
-                        "A sketch-driven Body must report sketches and feature types; an empty "
-                        "sketch list means its native profile history was not built."
+                        "A sketch-driven Body reports sketches/features; an empty sketch list "
+                        "means native profile history was not built."
                     ),
                 },
                 "profile_contract": {
@@ -17338,41 +17411,38 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "operation_selection": {
                     "material_intent": (
-                        "extrude, revolve, loft, and sweep declare new_solid, new_surface, "
-                        "add_material, or remove_material; helix declares add/remove only."
+                        "extrude/revolve/loft/sweep declare new_solid, new_surface, "
+                        "add_material, or remove_material; helix is add/remove only."
                     ),
                     "connected_boolean": (
                         "api.boolean performs union, subtract, or intersect; a solid result "
                         "must be connected."
                     ),
                     "disconnected_geometry": (
-                        "api.compound preserves separate shapes; they cannot be additive Body features."
+                        "api.compound preserves separate shapes; it is not a Body feature."
                     ),
                     "stable_selection": (
-                        "api.find_subelements creates count-guarded selections; raw FaceN/EdgeN "
-                        "names are unstable."
+                        "api.find_subelements is count-guarded; raw FaceN/EdgeN is unstable."
                     ),
                     "verification": (
                         "api.measure declares checks passed to api.body or api.publish."
                     ),
                     "physical_material": (
-                        "api.material selects a catalog UUID for material= on body/publish."
+                        "api.material selects catalog material= for body/publish."
                     ),
                     "visible_appearance": (
-                        "api.appearance defines display state; RGB channels are 0-255. Pass it "
-                        "as appearance= to body/publish."
+                        "api.appearance defines appearance=; RGB is 0-255."
                     ),
                     "standard_hardware": (
-                        "Use fastener_catalog.search and api.fastener; never draw standard "
-                        "hardware. api.fastener_hole derives its hole from that same value."
+                        "Use fastener_catalog.search + api.fastener; never draw standard "
+                        "hardware. api.fastener_hole consumes that value."
                     ),
                     "publish": "api.body for one solid Body; api.publish for standalone topology",
                     "redundancy_contract": (
-                        "Use api.extrude for straight constant-cross-section additions and cuts, "
-                        "api.revolve for axial features, api.sweep for path-driven profiles, and "
-                        "api.loft only when the cross-section itself genuinely changes. Do not "
-                        "use api.loft as a shortcut for geometry expressible by sketch/extrude, "
-                        "draft, or chamfer. Use api.boolean to combine solids."
+                        "Use api.extrude for straight constant-cross-section; revolve for "
+                        "axial; sweep for paths; api.loft only when the cross-section itself "
+                        "genuinely changes. Do not use api.loft as a shortcut for "
+                        "sketch/extrude, draft, or chamfer. Use api.boolean to combine solids."
                     ),
                 },
                 "semantic_interfaces": {
@@ -17495,27 +17565,24 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
         }
         axis_contract = {
             "body_feature": (
-                "H and X mean the sketch's local horizontal axis; V and Y mean its "
-                "local vertical axis; N and Z mean its local normal. These follow the "
-                "sketch placement and are not unconditional global axes."
+                "H/X = sketch-local horizontal, V/Y = local vertical, N/Z = local "
+                "normal. They follow sketch placement, not global axes."
             ),
             "standalone": (
-                "Use explicit origin plus non-zero direction: axis_origin/axis_direction "
-                "for revolve, center/axis_direction for polar_pattern, and "
-                "plane_origin/plane_normal for mirror."
+                "Use explicit global origin/direction: axis_origin/axis_direction "
+                "(revolve), center/axis_direction (polar_pattern), or "
+                "plane_origin/plane_normal (mirror)."
             ),
-            "vector_format": "[x, y, z] in global model coordinates",
+            "vector_format": "global [x,y,z]",
         }
         first_feature = {
             "native_body": (
-                "For the first native Body feature, use operation='add_material' with "
-                "base omitted. For every later addition or removal, pass the exact prior "
-                "feature as base."
+                "First Body feature: operation='add_material', omit base. Later "
+                "add/remove features: pass the exact prior feature as base."
             ),
             "standalone": (
-                "operation='new_solid' creates standalone topology. api.publish keeps it "
-                "standalone; api.body adopts it and promotes supported sketch extrusions, "
-                "revolutions, and lofts to native initial Body history."
+                "new_solid is standalone. api.publish keeps it standalone; api.body "
+                "promotes supported sketch extrusions/revolutions/lofts to Body history."
             ),
         }
         selector_schema = {
@@ -17524,21 +17591,19 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
             "expected_count": "positive exact cardinality",
             "optional_filters": {
                 "geometry_type": (
-                    "case-insensitive native analytic type. Edge values include Line, "
-                    "Circle, Ellipse, BezierCurve, and BSplineCurve; face values include "
-                    "Plane, Cylinder, Cone, Sphere, and Toroid"
+                    "Edge: Line|Circle|Ellipse|BezierCurve|BSplineCurve. Face: "
+                    "Plane|Cylinder|Cone|Sphere|Toroid (case-insensitive)"
                 ),
-                "normal": "face normal [x,y,z] plus normal_tolerance_degrees",
-                "direction": "edge tangent [x,y,z] plus direction_tolerance_degrees",
-                "radius": "analytic radius plus radius_tolerance",
-                "area": "min_area and/or max_area in mm^2",
-                "length": "min_length and/or max_length in mm",
-                "location": "near_point [x,y,z] plus max_distance in mm",
+                "normal": "normal [x,y,z] + normal_tolerance_degrees",
+                "direction": "tangent [x,y,z] + direction_tolerance_degrees",
+                "radius": "radius + radius_tolerance",
+                "area": "min_area/max_area mm^2",
+                "length": "min_length/max_length mm",
+                "location": "near_point [x,y,z] + max_distance mm",
             },
             "return": (
-                "A plain selector object consumed by topology operations, checks, and "
-                "semantic interfaces. It is not geometry and expected_count is rechecked "
-                "on every build."
+                "Selector for operations/checks/interfaces—not geometry. expected_count "
+                "is rechecked every build."
             ),
         }
         interface_schema = {
@@ -17608,6 +17673,17 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
             ),
         }
         description["api_details"] = {
+            "component": {
+                "placement": component_placement_contract(),
+                "definition_rule": (
+                    "One lightweight link for imported/reusable parts; do not copy their "
+                    "BREP to place them."
+                ),
+            },
+            "instances": {
+                "placement": "Same as api_details.component.placement.",
+                "definition_rule": "Repeated links; the source BREP is not copied.",
+            },
             "constraint": {
                 "kinds": sorted(_CONSTRAINT_KINDS),
                 "entity_selectors": {
@@ -17634,8 +17710,7 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
             "sketch": {
                 "principal_planes": ["XY", "XZ", "YZ"],
                 "parallel_offset": (
-                    "plane_offset_mm moves along the selected plane's local normal. "
-                    "z_offset_mm is the compatibility alias with identical behavior."
+                    "plane_offset_mm moves along local normal; z_offset_mm is its alias."
                 ),
                 "arbitrary_placement": {
                     "schema": {
@@ -17644,8 +17719,8 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "x_direction": [1, 0, 0],
                     },
                     "rule": (
-                        "Vectors are normalized; x_direction is projected into the plane "
-                        "and must not be parallel to normal. Do not combine with support."
+                        "Vectors normalize; x_direction projects into the plane and must not "
+                        "be parallel to normal. Do not combine with support."
                     ),
                 },
                 "attached_support": {
@@ -17660,25 +17735,27 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         },
                     },
                     "native_selection": (
-                        "A non-transient native source may instead use type='subelements' "
-                        "with one to four FaceN/EdgeN/VertexN names."
+                        "A stable native source may use type='subelements' with 1-4 "
+                        "FaceN/EdgeN/VertexN names."
                     ),
                     "map_mode": (
-                        "Required with support. Use the exact native mode for that support; "
-                        "FlatFace is valid for a planar face."
+                        "Required with support; FlatFace fits a planar face."
                     ),
                     "attachment_offset": (
-                        "{'position':[x,y,z], 'rotation':[x,y,z,w]}; quaternion is normalized"
+                        "{'position':[x,y,z], 'rotation':[x,y,z,w]}"
                     ),
                 },
                 "constraint_policy": (
-                    "Calculated source coordinates remain parametric inputs, but they do not "
-                    "remove native Sketcher degrees of freedom. Set require_fully_constrained "
-                    "only when downstream design intent requires a natively locked sketch."
+                    "Calculated coordinates do not remove Sketcher DoF. Set "
+                    "require_fully_constrained only when native locking is required."
                 ),
             },
             "find_subelements": selector_schema,
             "measure": {
+                "bounds_contract": (
+                    "bounds_* uses OCC optimal geometry without shape-tolerance inflation. "
+                    "Use check tolerance only for design allowance."
+                ),
                 "single_shape_quantities": [
                     "length_mm",
                     "area_mm2",
@@ -22579,6 +22656,7 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
             JOINT_REQUIRED_PARAMETERS,
             JOINT_TYPES,
         )
+        from vibescript_component_api import component_placement_contract
 
         description = super().describe_api()
         description.update(
@@ -23454,6 +23532,7 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
         )
         description["api_details"] = {
             "component": {
+                "placement": component_placement_contract(),
                 "definition_rule": (
                     "The input reference identifies one authored reusable definition. "
                     "It creates one lightweight native link. If the reference itself is a "
@@ -23474,6 +23553,7 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 ),
             },
             "instances": {
+                "placement": "Same as api_details.component.placement.",
                 "definition_rule": (
                     "Creates several lightweight native links to one authored definition. "
                     "It does not duplicate or recompute that definition's BREP."

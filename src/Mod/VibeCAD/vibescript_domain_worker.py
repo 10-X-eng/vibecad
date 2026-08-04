@@ -196,12 +196,19 @@ def _execute_source(
     previous_trace = sys.gettrace()
     try:
         sys.settrace(trace)
-        with redirect_stdout(output):
-            exec(
-                compile(source, source_filename, "exec"),
-                namespace,
-                namespace,
-            )
+        try:
+            with redirect_stdout(output):
+                exec(
+                    compile(source, source_filename, "exec"),
+                    namespace,
+                    namespace,
+                )
+        except BaseException as exc:
+            # Source-authored diagnostics are useful precisely when execution
+            # fails. Carry the same bounded text to the outer worker failure
+            # report instead of forcing programs to raise it as an exception.
+            setattr(exc, "vibescript_stdout", output.getvalue()[-MAX_STDOUT_CHARS:])
+            raise
     finally:
         sys.settrace(previous_trace)
     result = namespace.get("result")
@@ -1006,6 +1013,9 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             max_operations=int(request.get("max_operations") or 200_000),
             max_seconds=float(request.get("max_seconds") or 300.0),
         )
+        (root / "source-stdout.txt").write_text(
+            stdout[-MAX_STDOUT_CHARS:], encoding="utf-8"
+        )
         expected_names = [str(item.get("name") or "") for item in expected_outputs]
         if list(result) != expected_names:
             raise ValueError(
@@ -1269,6 +1279,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
 
 def main() -> int:
     result_path = Path(os.environ[RESULT_ENV]).resolve()
+    root: Path | None = None
     try:
         request_path = Path(os.environ[REQUEST_ENV]).resolve()
         root = request_path.parent
@@ -1279,11 +1290,19 @@ def main() -> int:
         payload = _run(request, root)
     except BaseException as exc:
         worker_progress.failed(exc)
+        captured_stdout = str(getattr(exc, "vibescript_stdout", "") or "")
+        stdout_path = root / "source-stdout.txt" if root is not None else None
+        if not captured_stdout and stdout_path is not None and stdout_path.is_file():
+            try:
+                captured_stdout = stdout_path.read_text(encoding="utf-8")
+            except OSError:
+                captured_stdout = ""
         payload = {
             "ok": False,
             "exception_type": exc.__class__.__name__,
             "error": str(exc),
             "traceback": traceback.format_exc(limit=40),
+            "stdout": captured_stdout[-MAX_STDOUT_CHARS:],
         }
         details = getattr(exc, "details", None)
         if isinstance(details, dict):

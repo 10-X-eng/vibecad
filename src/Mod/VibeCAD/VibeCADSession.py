@@ -27,11 +27,14 @@ from VibeCADProvider import (
 from VibeCADIntentMemoryCompiler import compile_intent_memory_update
 from VibeCADModelingSurface import (
     CORE_CONVERSATION_VIEW_TOOLS,
+    MODEL_ASSEMBLY_DOMAINS,
     ModelingSurface,
     PROVIDER_READ_TOOL_OWNERS,
     SHARED_CONTEXT_TOOLS,
     infer_engine_from_names,
+    is_model_assembly_workbench,
     resolve_service_surface,
+    share_authoring_surface,
     validate_surface_names,
 )
 from VibeCADTools import (
@@ -105,7 +108,10 @@ MAX_PROVIDER_TOOL_SCHEMAS_JSON_BYTES = 128 * 1024
 # Keep exact schemas intact rather than hiding constraints from the model behind
 # an undersized tactical cap. The full-shape query contract still leaves this
 # well below the provider wire limit.
-MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 28 * 1024
+# The stable Model+Assembly surface is intentionally complete and remains well
+# below the provider's 128 KiB hard bound.  Keep a tighter product budget while
+# allowing its exact 23 compact contracts without dynamic schema swapping.
+MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 32 * 1024
 
 
 @dataclass(frozen=True)
@@ -418,7 +424,12 @@ def _surface_tool_names(
 ) -> set[str]:
     resolution = resolve_service_surface(service, workbench)
     names = set(resolution.tool_names)
-    if not _active_document_exists(service):
+    # Model and Assembly are one stable authoring surface.  Keep its complete
+    # contract discoverable while a document opens; individual calls already
+    # enforce their exact document and task-state preconditions.
+    if not _active_document_exists(service) and not is_model_assembly_workbench(
+        workbench
+    ):
         names = {
             name
             for name in names
@@ -453,7 +464,12 @@ def _provider_safe_tool_names(
         tool = service.registry.get(name)
         if tool.safety not in allowed_safety:
             continue
-        if not tool.spec.supports_edit_mode(edit_mode):
+        # A sketch task is transient, not a different Model/Assembly API.  The
+        # runner returns EDIT_STATE_MISMATCH if a call cannot execute until the
+        # native task closes, without teaching MCP clients a temporary schema.
+        if not is_model_assembly_workbench(
+            workbench
+        ) and not tool.spec.supports_edit_mode(edit_mode):
             continue
         result.append(name)
     return result
@@ -475,7 +491,9 @@ def is_provider_safe_tool(
         return False
     if tool_name not in _surface_tool_names(service, active):
         return False
-    return tool.spec.supports_edit_mode(_current_edit_mode(service))
+    return is_model_assembly_workbench(active) or tool.spec.supports_edit_mode(
+        _current_edit_mode(service)
+    )
 
 
 def provider_tool_schemas(
@@ -526,6 +544,23 @@ def _live_provider_surface_state(
             interaction_mode,
         ),
     }
+
+
+def _surface_authorization_tuple(
+    workbench: str | None,
+    engine: str,
+    surface_id: str,
+) -> tuple[str, str, str]:
+    """Normalize presentation-equivalent ribbons to one authorization key."""
+
+    clean_workbench = str(workbench or "")
+    return (
+        "ModelAssemblyAuthoring"
+        if is_model_assembly_workbench(clean_workbench)
+        else clean_workbench,
+        str(engine or ""),
+        str(surface_id or ""),
+    )
 
 
 def _scripted_engines_in_tool_names(names: list[str]) -> list[str]:
@@ -666,6 +701,138 @@ def _minimal_runtime_state(service: VibeCADService) -> dict[str, Any]:
     }
 
 
+_COMBINED_SOURCE_INDEX_MARKER = (
+    "_vibecad_deferred_combined_vibescript_program_index"
+)
+
+
+def _capture_editable_sources_for_workbench(
+    service: VibeCADService,
+    workbench: str | None,
+) -> dict[str, Any]:
+    """Capture active or unified Model/Assembly source identities."""
+
+    active_pack = vibescript_domains.get_vibescript_pack(workbench)
+    if active_pack is None:
+        raise RuntimeError("The active workbench has no editable VibeScript domain.")
+    if not is_model_assembly_workbench(workbench):
+        return vibescript_domains.capture_editable_sources_snapshot(
+            service,
+            active_pack.domain,
+        )
+    snapshots = []
+    for domain in MODEL_ASSEMBLY_DOMAINS:
+        pack = vibescript_domains.get_vibescript_pack_for_domain(domain)
+        if pack is None:
+            continue
+        snapshots.append(
+            vibescript_domains.capture_editable_sources_snapshot(
+                _DomainBoundService(service, pack),
+                domain,
+            )
+        )
+    return {
+        _COMBINED_SOURCE_INDEX_MARKER: True,
+        "active_domain": active_pack.domain,
+        "active_workbench": active_pack.workbench,
+        "snapshots": snapshots,
+    }
+
+
+def _complete_editable_sources_for_workbench(
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Complete one source index while preserving its v1 active-domain view."""
+
+    if snapshot.get(_COMBINED_SOURCE_INDEX_MARKER) is not True:
+        return vibescript_domains.complete_editable_sources_snapshot(snapshot)
+    completed = [
+        vibescript_domains.complete_editable_sources_snapshot(candidate)
+        for candidate in list(snapshot.get("snapshots") or [])
+        if isinstance(candidate, Mapping)
+    ]
+    active_domain = str(snapshot.get("active_domain") or "")
+    active = next(
+        (
+            candidate
+            for candidate in completed
+            if str(candidate.get("domain") or "") == active_domain
+        ),
+        None,
+    )
+    if active is None:
+        raise RuntimeError(
+            f"The unified source index has no active {active_domain!r} domain."
+        )
+    result = dict(active)
+    all_sources = sorted(
+        (
+            dict(source)
+            for candidate in completed
+            for source in list(candidate.get("sources") or [])
+            if isinstance(source, Mapping)
+        ),
+        key=lambda item: (
+            str(item.get("domain") or ""),
+            str(item.get("source_id") or ""),
+        ),
+    )
+    result.update(
+        {
+            "authoring_domains": [
+                str(candidate.get("domain") or "") for candidate in completed
+            ],
+            "all_source_count": len(all_sources),
+            "all_sources": all_sources,
+            "domain_source_counts": {
+                str(candidate.get("domain") or ""): int(
+                    candidate.get("source_count") or 0
+                )
+                for candidate in completed
+            },
+        }
+    )
+    tools = dict(result.get("tools") or {})
+    tools["create_program_arguments"] = {
+        "domain": "partdesign or assembly",
+    }
+    tools["read_api_arguments"] = {
+        "domain": "partdesign or assembly",
+        "names": ["exact_callable_name"],
+    }
+    result["tools"] = tools
+    return result
+
+
+def _rebase_unified_source_index(
+    source_index: Mapping[str, Any],
+    workbench: str | None,
+) -> dict[str, Any]:
+    """Keep the v1 source slice aligned with a frozen ribbon default."""
+
+    result = dict(source_index)
+    if not is_model_assembly_workbench(workbench) or "all_sources" not in result:
+        return result
+    pack = vibescript_domains.get_vibescript_pack(workbench)
+    if pack is None:
+        return result
+    sources = [
+        dict(candidate)
+        for candidate in list(result.get("all_sources") or [])
+        if isinstance(candidate, Mapping)
+        and str(candidate.get("domain") or "") == pack.domain
+    ]
+    result.update(
+        {
+            "domain": pack.domain,
+            "workbench": pack.workbench,
+            "source_count": len(sources),
+            "sources": sources,
+        }
+    )
+    return result
+
+
 def _capture_context_for_provider(
     service: VibeCADService,
     session_trigger: dict[str, Any] | None = None,
@@ -696,17 +863,24 @@ def _capture_context_for_provider(
         "surface_id": resolution.surface_id,
         "available": resolution.available,
         **(
+            {
+                "authoring_domains": list(MODEL_ASSEMBLY_DOMAINS),
+                "default_domain": resolution.domain,
+                "workbench_presentation_only": True,
+            }
+            if is_model_assembly_workbench(workbench)
+            else {}
+        ),
+        **(
             {"unavailable_reason": resolution.unavailable_reason}
             if not resolution.available
             else {}
         ),
     }
     if resolution.engine == "vibescript" and resolution.available and resolution.domain:
-        context["editable_sources"] = (
-            vibescript_domains.capture_editable_sources_snapshot(
-                service,
-                resolution.domain,
-            )
+        context["editable_sources"] = _capture_editable_sources_for_workbench(
+            service,
+            workbench,
         )
         if resolution.domain in {"partdesign", "assembly", "robot"}:
             if prepared_component_catalog is not None:
@@ -761,10 +935,14 @@ def _complete_context_for_provider(context: Mapping[str, Any]) -> dict[str, Any]
     editable_sources = completed.get("editable_sources")
     if (
         isinstance(editable_sources, Mapping)
-        and editable_sources.get("_vibecad_deferred_vibescript_program_index") is True
+        and (
+            editable_sources.get("_vibecad_deferred_vibescript_program_index")
+            is True
+            or editable_sources.get(_COMBINED_SOURCE_INDEX_MARKER) is True
+        )
     ):
-        completed["editable_sources"] = (
-            vibescript_domains.complete_editable_sources_snapshot(editable_sources)
+        completed["editable_sources"] = _complete_editable_sources_for_workbench(
+            editable_sources
         )
     component_catalog = completed.get("_vibecad_component_catalog")
     if isinstance(component_catalog, Mapping):
@@ -1958,6 +2136,23 @@ class _SourceBoundService:
         )
 
 
+class _DomainBoundService:
+    """Bind a new source to one domain without changing the visible ribbon."""
+
+    def __init__(self, service: VibeCADService, pack: Any):
+        self._service = service
+        self._pack = pack
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._service, name)
+
+    def _active_document(self) -> Any:
+        return self._service._active_document()
+
+    def active_workbench_name(self) -> str:
+        return str(self._pack.workbench)
+
+
 def _catalog_source_records(
     component_catalog: Mapping[str, Any] | None,
     source_id: str,
@@ -1990,12 +2185,23 @@ def _editable_source_record(
 ) -> dict[str, Any] | None:
     if not isinstance(editable_sources, Mapping):
         return None
+    raw_sources = list(editable_sources.get("sources") or [])
+    raw_sources.extend(list(editable_sources.get("all_sources") or []))
     matches = [
         dict(candidate)
-        for candidate in list(editable_sources.get("sources") or [])
+        for candidate in raw_sources
         if isinstance(candidate, Mapping)
         and str(candidate.get("source_id") or "").strip().lower() == source_id
     ]
+    matches = list(
+        {
+            (
+                str(candidate.get("domain") or ""),
+                str(candidate.get("source_id") or ""),
+            ): candidate
+            for candidate in matches
+        }.values()
+    )
     if len(matches) > 1:
         raise _SourceTargetError(
             "SOURCE_OWNERSHIP_CONFLICT",
@@ -2133,7 +2339,16 @@ def _resolve_vibescript_source_target(
             if isinstance(editable_sources, Mapping)
             else ""
         )
-        if record_domain and index_domain and record_domain != index_domain:
+        authoring_domains = {
+            str(value or "").strip().lower()
+            for value in list(editable_sources.get("authoring_domains") or [])
+        }
+        if (
+            record_domain
+            and index_domain
+            and record_domain != index_domain
+            and not {record_domain, index_domain} <= authoring_domains
+        ):
             raise _SourceTargetError(
                 "SOURCE_DOMAIN_MISMATCH",
                 f"Source {clean_source_id} conflicts with its owning source index.",
@@ -2150,7 +2365,10 @@ def _resolve_vibescript_source_target(
             if indexed_pack is not None:
                 indexed_domain = indexed_pack.domain
         pack = vibescript_domains.get_vibescript_pack_for_domain(indexed_domain)
-        if pack is None or pack.domain != active_pack.domain:
+        if pack is None or (
+            pack.domain != active_pack.domain
+            and pack.domain not in authoring_domains
+        ):
             raise _SourceTargetError(
                 "SOURCE_DOMAIN_MISMATCH",
                 f"Source {clean_source_id} does not belong to the active source domain.",
@@ -2237,6 +2455,16 @@ def _run_universal_vibescript_tool(
     target: _VibeScriptSourceTarget | None = None
     pack = active_pack
     source_id = str(args.get("source_id") or "").strip().lower()
+    requested_domain = str(args.get("domain") or "").strip().lower()
+    if source_id and requested_domain:
+        return tool_failure(
+            tool_name,
+            "SOURCE_TARGET_AMBIGUOUS",
+            "schema",
+            "Pass source_id for an existing program or domain for a new program/API, not both.",
+            requested=args,
+            required_changes=[{"remove_one_of": ["source_id", "domain"]}],
+        )
     if source_id:
         try:
             target = _on_document_thread(
@@ -2259,9 +2487,42 @@ def _run_universal_vibescript_tool(
                 observed=exc.observed,
             )
         pack = target.pack
-    domain_service: Any = (
-        _SourceBoundService(service, target) if target is not None else service
-    )
+    elif requested_domain:
+        requested_pack = vibescript_domains.get_vibescript_pack_for_domain(
+            requested_domain
+        )
+        if requested_pack is None:
+            return tool_failure(
+                tool_name,
+                "DOMAIN_UNAVAILABLE",
+                "surface",
+                f"No VibeScript API owns domain {requested_domain!r}.",
+                requested=args,
+                allowed_values=sorted(
+                    {
+                        candidate.domain
+                        for candidate in vibescript_domains.VIBESCRIPT_WORKBENCH_PACKS.values()
+                    }
+                ),
+            )
+        available, reason = vibescript_domains.domain_availability(
+            requested_pack.workbench
+        )
+        if not available:
+            return tool_failure(
+                tool_name,
+                "DOMAIN_UNAVAILABLE",
+                "surface",
+                reason,
+                requested=args,
+            )
+        pack = requested_pack
+    if target is not None:
+        domain_service: Any = _SourceBoundService(service, target)
+    elif requested_domain:
+        domain_service = _DomainBoundService(service, pack)
+    else:
+        domain_service = service
 
     def finish_source_write(result: dict[str, Any]) -> dict[str, Any]:
         if target is None:
@@ -2524,6 +2785,7 @@ def _run_universal_vibescript_tool(
     operation = universal_domain_operations.get(tool_name)
     if operation is not None:
         domain_args = dict(args)
+        domain_args.pop("domain", None)
         if "source_id" in domain_args:
             domain_args["program_id"] = str(domain_args.pop("source_id"))
         qualified_name = f"vibescript.{pack.domain}.{operation}"
@@ -2959,13 +3221,13 @@ def make_provider_tool_runner(
         try:
             captured = _on_document_thread(
                 document_thread_dispatch,
-                lambda: vibescript_domains.capture_editable_sources_snapshot(
+                lambda: _capture_editable_sources_for_workbench(
                     service,
-                    pack.domain,
+                    active_workbench,
                 ),
             )
-            editable_sources_state["prepared"] = (
-                vibescript_domains.complete_editable_sources_snapshot(captured)
+            editable_sources_state["prepared"] = _complete_editable_sources_for_workbench(
+                captured
             )
         except Exception as exc:
             return str(exc)
@@ -2998,23 +3260,38 @@ def make_provider_tool_runner(
         domain = str(
             target.get("domain") or payload.get("domain") or active_pack.domain
         ).strip().lower()
-        if domain != active_pack.domain:
-            return
-
         current = (
             dict(editable_sources_state["prepared"])
             if isinstance(editable_sources_state.get("prepared"), Mapping)
             else {}
         )
+        authoring_domains = {
+            str(value or "").strip().lower()
+            for value in list(current.get("authoring_domains") or [])
+        }
+        if domain != active_pack.domain and domain not in authoring_domains:
+            return
+        target_pack = vibescript_domains.get_vibescript_pack_for_domain(domain)
+        if target_pack is None:
+            return
         sources = [
             dict(item)
             for item in list(current.get("sources") or [])
             if isinstance(item, Mapping)
             and str(item.get("source_id") or "").strip().lower() != source_id
         ]
+        all_sources = [
+            dict(item)
+            for item in list(current.get("all_sources") or sources)
+            if isinstance(item, Mapping)
+            and str(item.get("source_id") or "").strip().lower() != source_id
+        ]
         if tool_name == "vibescript.delete_program" and payload.get("ok") is True:
             current["sources"] = sources
             current["source_count"] = len(sources)
+            if "all_sources" in current:
+                current["all_sources"] = all_sources
+                current["all_source_count"] = len(all_sources)
             editable_sources_state["prepared"] = current
             return
 
@@ -3056,7 +3333,7 @@ def make_provider_tool_runner(
             "source_id": source_id,
             "source_kind": "vibescript_program",
             "domain": domain,
-            "workbench": str(active_pack.workbench),
+            "workbench": str(target_pack.workbench),
             "current_revision": revision,
             "status": "accepted" if payload.get("ok") is True else "build_failed",
             "affected_outputs": affected_outputs,
@@ -3079,16 +3356,23 @@ def make_provider_tool_runner(
                 "reason": "Remove this source and its owned outputs.",
             },
         }
-        sources.append(record)
+        if domain == str(current.get("domain") or active_pack.domain):
+            sources.append(record)
+        all_sources.append(record)
         current.update(
             {
                 "schema": "vibecad-editable-sources-v1",
-                "domain": domain,
-                "workbench": str(active_pack.workbench),
+                "domain": str(current.get("domain") or active_pack.domain),
+                "workbench": str(
+                    current.get("workbench") or active_pack.workbench
+                ),
                 "source_count": len(sources),
                 "sources": sources,
             }
         )
+        if "all_sources" in current or authoring_domains:
+            current["all_sources"] = all_sources
+            current["all_source_count"] = len(all_sources)
         editable_sources_state["prepared"] = current
 
     def run(tool_name: str, arguments_json: str = "{}") -> dict[str, Any]:
@@ -3160,16 +3444,16 @@ def make_provider_tool_runner(
         runtime_state = live_surface["runtime_state"]
         visible_names = live_surface["tool_names"]
         if isinstance(turn_surface, dict):
-            expected_tuple = {
-                "workbench": str(turn_surface.get("workbench") or ""),
-                "engine": str(turn_surface.get("engine") or ""),
-                "surface_id": str(turn_surface.get("surface_id") or ""),
-            }
-            observed_tuple = {
-                "workbench": str(active_workbench or ""),
-                "engine": str(live_surface.get("engine") or ""),
-                "surface_id": str(live_surface.get("surface_id") or ""),
-            }
+            expected_tuple = _surface_authorization_tuple(
+                str(turn_surface.get("workbench") or ""),
+                str(turn_surface.get("engine") or ""),
+                str(turn_surface.get("surface_id") or ""),
+            )
+            observed_tuple = _surface_authorization_tuple(
+                active_workbench,
+                str(live_surface.get("engine") or ""),
+                str(live_surface.get("surface_id") or ""),
+            )
             if observed_tuple != expected_tuple:
                 return finalize(
                     tool_failure(
@@ -3180,8 +3464,16 @@ def make_provider_tool_runner(
                         "Start the next turn with its current API.",
                         requested={"arguments_json": arguments_json},
                         observed={
-                            "turn_start": expected_tuple,
-                            "live": observed_tuple,
+                            "turn_start": {
+                                "authoring_surface": expected_tuple[0],
+                                "engine": expected_tuple[1],
+                                "surface_id": expected_tuple[2],
+                            },
+                            "live": {
+                                "authoring_surface": observed_tuple[0],
+                                "engine": observed_tuple[1],
+                                "surface_id": observed_tuple[2],
+                            },
                             "unavailable_reason": live_surface.get(
                                 "unavailable_reason"
                             ),
@@ -3448,9 +3740,18 @@ def make_provider_tool_runner(
             "vibescript.delete_output",
             "vibescript.delete_program",
         }:
+            source_workbench = active_workbench
+            if isinstance(turn_surface, dict) and share_authoring_surface(
+                str(turn_surface.get("workbench") or ""),
+                active_workbench,
+            ):
+                # Keep compatibility calls without an explicit domain bound to
+                # the turn-start default.  Changing ribbons is presentation,
+                # not permission to redirect a source write mid-turn.
+                source_workbench = str(turn_surface.get("workbench") or "")
             payload = _run_universal_vibescript_tool(
                 service,
-                active_workbench,
+                source_workbench,
                 tool_name,
                 args,
                 component_catalog=(
@@ -3470,8 +3771,8 @@ def make_provider_tool_runner(
                 progress_callback=progress_callback,
             )
             if tool_name in source_lifecycle_tools:
-                refresh_error = refresh_editable_sources(active_workbench)
-                apply_source_lifecycle_result(tool_name, payload, active_workbench)
+                refresh_error = refresh_editable_sources(source_workbench)
+                apply_source_lifecycle_result(tool_name, payload, source_workbench)
                 if refresh_error:
                     payload.setdefault("warnings", []).append(
                         {
@@ -3612,12 +3913,12 @@ def make_provider_tool_runner(
             return completed
 
         live_surface = dict(completed.get("provider_tool_surface") or {})
-        expected_tuple = (
+        expected_tuple = _surface_authorization_tuple(
             str(turn_surface.get("workbench") or ""),
             str(turn_surface.get("engine") or ""),
             str(turn_surface.get("surface_id") or ""),
         )
-        live_tuple = (
+        live_tuple = _surface_authorization_tuple(
             str(live_surface.get("workbench") or ""),
             str(live_surface.get("engine") or ""),
             str(live_surface.get("surface_id") or ""),
@@ -3671,7 +3972,12 @@ def make_provider_tool_runner(
         else:
             refreshed_sources = completed.get("editable_sources")
             if isinstance(refreshed_sources, Mapping):
-                editable_sources_state["prepared"] = dict(refreshed_sources)
+                rebased_sources = _rebase_unified_source_index(
+                    refreshed_sources,
+                    str(turn_surface.get("workbench") or ""),
+                )
+                completed["editable_sources"] = rebased_sources
+                editable_sources_state["prepared"] = rebased_sources
         return completed
 
     run.provider_update = provider_update

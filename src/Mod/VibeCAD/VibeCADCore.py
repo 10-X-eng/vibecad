@@ -69,6 +69,8 @@ _PRIVATE_SCRIPTED_ROLES = frozenset(
     {"implementation", "publication_target", "parameters"}
 )
 _CONVERSATION_WRITE_LOCK = threading.RLock()
+_MAX_VIBESCRIPT_REFERENCE_CACHE_ENTRIES = 8
+_MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES = 256 * 1024 * 1024
 
 
 def _slug_filename(value: str) -> str:
@@ -207,7 +209,165 @@ class VibeCADService:
         self._project_store = VibeCADProjectStore(self._local_session_id)
         self._steering_messages: list[dict[str, Any]] = []
         self._steering_sequence = 0
+        self._vibescript_reference_cache_lock = threading.RLock()
+        self._vibescript_reference_snapshots: dict[
+            tuple[str, str], dict[str, Any]
+        ] = {}
         self._register_core_tools()
+
+    @staticmethod
+    def _vibescript_object_identity(obj: Any) -> tuple[str, str]:
+        document = getattr(obj, "Document", None)
+        return (
+            str(getattr(document, "Uid", "") or ""),
+            str(getattr(obj, "Name", "") or ""),
+        )
+
+    @classmethod
+    def _vibescript_reference_dependencies(
+        cls, obj: Any
+    ) -> frozenset[tuple[str, str]]:
+        dependencies: list[Any] = [obj]
+        dependencies.extend(list(getattr(obj, "OutListRecursive", []) or []))
+        linked = getattr(obj, "LinkedObject", None)
+        if linked is not None:
+            dependencies.append(linked)
+            dependencies.extend(
+                list(getattr(linked, "OutListRecursive", []) or [])
+            )
+        return frozenset(
+            identity
+            for identity in (
+                cls._vibescript_object_identity(candidate)
+                for candidate in dependencies
+            )
+            if all(identity)
+        )
+
+    def capture_vibescript_reference_shape(self, obj: Any) -> dict[str, Any]:
+        """Detach or reuse one exact source Shape for an isolated build.
+
+        Cache validity is event-driven: any change to the source or one of its
+        native dependencies invalidates the entry. No geometric fingerprints or
+        approximate comparisons decide whether reuse is safe.
+        """
+
+        identity = self._vibescript_object_identity(obj)
+        if not all(identity):
+            raise RuntimeError("A VibeScript reference has no stable document identity.")
+        with self._vibescript_reference_cache_lock:
+            cached = self._vibescript_reference_snapshots.pop(identity, None)
+            if cached is not None:
+                self._vibescript_reference_snapshots[identity] = cached
+                return {
+                    "detached_shape": cached["detached_shape"],
+                    "cache_token": str(cached["cache_token"]),
+                    "artifact": cached.get("artifact"),
+                    "cache_hit": True,
+                }
+
+        shape = getattr(obj, "Shape", None)
+        if shape is None:
+            raise RuntimeError("A VibeScript reference does not expose a Shape.")
+        detached = shape.copy()
+        entry = {
+            "detached_shape": detached,
+            "cache_token": uuid.uuid4().hex,
+            "dependencies": self._vibescript_reference_dependencies(obj),
+            "artifact": None,
+        }
+        with self._vibescript_reference_cache_lock:
+            self._vibescript_reference_snapshots[identity] = entry
+            while (
+                len(self._vibescript_reference_snapshots)
+                > _MAX_VIBESCRIPT_REFERENCE_CACHE_ENTRIES
+            ):
+                oldest = next(iter(self._vibescript_reference_snapshots))
+                self._vibescript_reference_snapshots.pop(oldest, None)
+        return {
+            "detached_shape": detached,
+            "cache_token": str(entry["cache_token"]),
+            "artifact": None,
+            "cache_hit": False,
+        }
+
+    def store_vibescript_reference_artifact(
+        self, cache_token: str, artifact: dict[str, Any]
+    ) -> None:
+        """Attach exact serialized BREP evidence to its live snapshot token."""
+
+        payload = artifact.get("brep_bytes")
+        if not isinstance(payload, bytes) or not payload:
+            return
+        if len(payload) > _MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES:
+            return
+        with self._vibescript_reference_cache_lock:
+            target = next(
+                (
+                    entry
+                    for entry in self._vibescript_reference_snapshots.values()
+                    if str(entry.get("cache_token") or "") == cache_token
+                ),
+                None,
+            )
+            if target is None:
+                return
+            while True:
+                retained_bytes = 0
+                for entry in self._vibescript_reference_snapshots.values():
+                    if entry is target:
+                        continue
+                    cached = entry.get("artifact")
+                    cached_bytes = (
+                        cached.get("brep_bytes")
+                        if isinstance(cached, dict)
+                        else None
+                    )
+                    if isinstance(cached_bytes, bytes):
+                        retained_bytes += len(cached_bytes)
+                if (
+                    retained_bytes + len(payload)
+                    <= _MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES
+                ):
+                    break
+                evicted = False
+                for entry in self._vibescript_reference_snapshots.values():
+                    if entry is target or entry.get("artifact") is None:
+                        continue
+                    entry["artifact"] = None
+                    evicted = True
+                    break
+                if not evicted:
+                    # payload alone was bounded above, so this is defensive.
+                    if len(payload) <= _MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES:
+                        break
+            target["artifact"] = dict(artifact)
+
+    def invalidate_vibescript_reference_snapshots(self, obj: Any) -> None:
+        """Invalidate every cached source that depends on ``obj`` exactly."""
+
+        identity = self._vibescript_object_identity(obj)
+        if not all(identity):
+            return
+        with self._vibescript_reference_cache_lock:
+            stale = [
+                key
+                for key, entry in self._vibescript_reference_snapshots.items()
+                if identity in entry.get("dependencies", ())
+            ]
+            for key in stale:
+                self._vibescript_reference_snapshots.pop(key, None)
+
+    def clear_vibescript_reference_snapshots(self, document_uid: str) -> None:
+        clean_uid = str(document_uid or "")
+        with self._vibescript_reference_cache_lock:
+            stale = [
+                key
+                for key in self._vibescript_reference_snapshots
+                if not clean_uid or key[0] == clean_uid
+            ]
+            for key in stale:
+                self._vibescript_reference_snapshots.pop(key, None)
 
     @property
     def registry(self) -> ToolRegistry:

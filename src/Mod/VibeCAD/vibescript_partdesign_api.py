@@ -1000,7 +1000,9 @@ class PartDesignDomainAPI:
     ) -> DomainValue:
         """Place one linked occurrence from an ``available_components`` reference.
 
-        The source remains the reusable definition; editing it updates the occurrence.
+        Editing the source updates the occurrence. Placement is ``[x,y,z]`` or
+        position plus quaternion/axis-angle. Use this—not
+        ``from_object``/``transform``/``publish``—for reusable parts.
         """
 
         return component_value(
@@ -1019,7 +1021,10 @@ class PartDesignDomainAPI:
         *,
         labels: Sequence[str] | None = None,
     ) -> tuple[DomainValue, ...]:
-        """Place repeated lightweight occurrences of one reusable component."""
+        """Place repeated lightweight occurrences of one reusable component.
+
+        Placements use ``api.component`` forms. Source BREP is linked, not rebuilt.
+        """
 
         return instance_values(
             self.domain,

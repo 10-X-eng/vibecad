@@ -16,6 +16,30 @@ _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 _MAX_DOCUMENT_PATH_LENGTH = 2048
 
 
+def component_placement_contract() -> dict[str, Any]:
+    """Return the exact public placement vocabulary used by every domain.
+
+    Keep this description beside the validator so ``read_api`` cannot drift
+    away from the values the worker accepts.
+    """
+
+    return {
+        "forms": {
+            "translation": "[x,y,z] millimetres",
+            "quaternion": "{'position':[x,y,z], 'rotation':[x,y,z,w]}",
+            "axis_angle": (
+                "{'position':[x,y,z], 'axis':[x,y,z], 'angle_degrees':n}"
+            ),
+        },
+        "allowed_keys": ["position", "rotation", "axis", "angle_degrees"],
+        "defaults": "position=[0,0,0], rotation=[0,0,0,1]",
+        "rule": (
+            "Use rotation alone, or axis with angle_degrees. Frames and 4x4 "
+            "matrices are invalid."
+        ),
+    }
+
+
 def _error(operation: str, parameter: str, reason: str, value: Any = None) -> ValueError:
     suffix = "" if value is None else f"; received {value!r}"
     return ValueError(f"api.{operation}: {parameter} {reason}{suffix}.")

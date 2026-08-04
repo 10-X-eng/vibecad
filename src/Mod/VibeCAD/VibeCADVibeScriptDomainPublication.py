@@ -12929,7 +12929,10 @@ class _PartDesignShapeCarrier:
             or item["name"]
         )
         self.Shape = item["detached_shape"]
-        self.Placement = App.Placement()
+        # OCC stores rigid transforms in the TopoShape location. Assigning that
+        # Shape to Part::Feature extracts local geometry, so the carrier must
+        # expose the same placement separately or publication drops it.
+        self.Placement = App.Placement(self.Shape.Placement)
         self.ViewObject = None
 
     def getGlobalPlacement(self) -> Any:
@@ -13288,6 +13291,86 @@ def _update_partdesign_component_occurrence(
         "component_link",
         _definition(item),
     )
+
+
+def _migrate_partdesign_output_representation(
+    doc: Any,
+    root: Any,
+    published: Any,
+    prepared: Mapping[str, Any],
+    item: Mapping[str, Any],
+) -> dict[str, list[str]]:
+    """Convert one stable App::Link between occurrence and shape publication.
+
+    FreeCAD defers object deletion until transaction commit. Deleting and
+    recreating an App::Link under the same name inside that transaction can
+    therefore return the pending-deletion occurrence with its old LinkedObject.
+    Keep the public link and swap only its private target instead.
+    """
+
+    output_name = str(item["name"])
+    if str(getattr(published, "TypeId", "") or "") != "App::Link":
+        raise RuntimeError(
+            f"Part Design output {output_name!r} cannot migrate representation "
+            f"because its native carrier is {getattr(published, 'TypeId', '')!r}, "
+            "not App::Link."
+        )
+    wants_component = str(item.get("type") or "") == "component_link"
+    created: list[str] = []
+    removed: list[str] = []
+    deferred_remove: list[str] = []
+    if wants_component:
+        target_name = str(
+            getattr(published, scripted_publication.PROP_IMPLEMENTATION, "") or ""
+        )
+        target = doc.getObject(target_name) if target_name else None
+        if target is not None:
+            deferred_remove.append(str(target.Name))
+        _add_string_property(
+            published,
+            PROP_OUTPUT_TYPE,
+            "Declared VibeScript output type.",
+        )
+        setattr(published, PROP_OUTPUT_TYPE, "component_link")
+        return {
+            "created": created,
+            "removed": removed,
+            "deferred_remove": deferred_remove,
+        }
+
+    target = doc.addObject(
+        "Part::Feature",
+        f"{_internal_name(prepared, output_name)}_Source",
+    )
+    if target is None:
+        raise RuntimeError(
+            f"FreeCAD did not create a shape target for output {output_name!r}."
+        )
+    scripted_publication.tag_object(
+        target,
+        role=scripted_publication.ROLE_PUBLICATION_TARGET,
+        engine="vibescript:partdesign",
+        model_id=str(prepared["program_id"]),
+        output_key=output_name,
+        revision=str(prepared["revision"]),
+    )
+    root.addObject(target)
+    target_view = getattr(target, "ViewObject", None)
+    if target_view is not None and hasattr(target_view, "Visibility"):
+        target_view.Visibility = False
+    scripted_publication.ensure_string_property(
+        published, scripted_publication.PROP_IMPLEMENTATION
+    )
+    setattr(published, scripted_publication.PROP_IMPLEMENTATION, str(target.Name))
+    import FreeCAD as App
+
+    published.Placement = App.Placement()
+    created.append(str(target.Name))
+    return {
+        "created": created,
+        "removed": removed,
+        "deferred_remove": deferred_remove,
+    }
 
 
 def _partdesign_history_reference(
@@ -15046,6 +15129,42 @@ def _publish_partdesign_design_candidate(
                 uses,
             )
 
+    # A stable VibeScript result key is the public identity. Its App::Link can
+    # change between a lightweight occurrence and a shape publication when the
+    # source contract is deliberately edited. Convert it only when no foreign
+    # object references its current representation.
+    replacement_names: list[str] = []
+    replacement_internal = [
+        *([root] if root is not None else []),
+        *existing_values,
+    ]
+    for candidate in existing_shape_publications:
+        target = scripted_publication.publication_target(candidate, root)
+        if target is not None and target not in replacement_internal:
+            replacement_internal.append(target)
+    for item in items:
+        name = str(item["name"])
+        published = publications.get(name)
+        if published is None:
+            continue
+        wants_component = str(item.get("type") or "") == "component_link"
+        has_component = _is_partdesign_component_occurrence(published)
+        if wants_component == has_component:
+            continue
+        uses = scripted_publication.external_reference_uses(
+            doc,
+            [published],
+            internal_objects=replacement_internal,
+        )
+        if uses:
+            raise _reference_error(
+                f"Cannot change Part Design VibeScript output {name!r} between "
+                "a shape publication and a linked occurrence while downstream "
+                "objects reference its current native carrier",
+                uses,
+            )
+        replacement_names.append(name)
+
     # Older documents stored each accepted worker feature graph in a generated
     # Body under the program root. Replace that implementation exactly once;
     # stable public links remain the downstream compatibility boundary.
@@ -15094,6 +15213,7 @@ def _publish_partdesign_design_candidate(
     removed_implementation: list[str] = []
     created_bodies: list[str] = []
     ownership_repairs: list[dict[str, str]] = []
+    deferred_representation_targets: list[str] = []
     try:
         if hasattr(doc, "openTransaction"):
             doc.openTransaction(
@@ -15136,6 +15256,20 @@ def _publish_partdesign_design_candidate(
                     root,
                     publications.pop(name),
                 )
+            )
+        items_by_name = {str(item["name"]): item for item in items}
+        for name in replacement_names:
+            migration = _migrate_partdesign_output_representation(
+                doc,
+                root,
+                publications[name],
+                prepared,
+                items_by_name[name],
+            )
+            created.extend(migration["created"])
+            removed.extend(migration["removed"])
+            deferred_representation_targets.extend(
+                migration["deferred_remove"]
             )
         if legacy_targets:
             removed_implementation.extend(
@@ -15257,6 +15391,15 @@ def _publish_partdesign_design_candidate(
                         published,
                         prepared,
                         item,
+                    )
+                if name in replacement_names:
+                    scripted_publication.ensure_string_property(
+                        published, scripted_publication.PROP_IMPLEMENTATION
+                    )
+                    setattr(
+                        published,
+                        scripted_publication.PROP_IMPLEMENTATION,
+                        "",
                     )
                 if created_occurrence:
                     # api.component creates one placed occurrence of a reusable
@@ -15395,6 +15538,12 @@ def _publish_partdesign_design_candidate(
             revision=revision,
             preflight=reference_preflight,
         )
+        for target_name in deferred_representation_targets:
+            target = doc.getObject(target_name)
+            if target is None:
+                continue
+            doc.removeObject(target_name)
+            removed.append(target_name)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False

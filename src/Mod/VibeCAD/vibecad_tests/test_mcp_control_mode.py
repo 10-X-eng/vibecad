@@ -340,3 +340,25 @@ def test_connection_configuration_contains_auth_without_persisting_token_in_stat
     configuration = controller.connection_configuration()
     assert "private-token" not in json.dumps(status)
     assert configuration["headers"] == {"Authorization": "Bearer private-token"}
+
+
+def test_model_and_assembly_do_not_emit_a_false_mcp_surface_change() -> None:
+    class Generation:
+        def __init__(self) -> None:
+            self.value = 0
+            self.lock = threading.Lock()
+
+        def get_lock(self):
+            return self.lock
+
+    controller = mcp.VibeCADControlModeController()
+    generation = Generation()
+    with controller._lock:
+        controller._surface_generation = generation
+
+    controller.notify_tool_surface_changed("PartDesignWorkbench")
+    assert generation.value == 1
+    controller.notify_tool_surface_changed("AssemblyWorkbench")
+    assert generation.value == 1
+    controller.notify_tool_surface_changed("MeshWorkbench")
+    assert generation.value == 2

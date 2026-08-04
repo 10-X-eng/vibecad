@@ -3622,6 +3622,11 @@ class _VibeCADDocumentObserver:
         document = getattr(obj, "Document", None)
         if document is not None and bool(getattr(document, "Restoring", False)):
             return
+        # Reference snapshots are valid only while the source and every native
+        # dependency remain unchanged. Invalidate before stale propagation so a
+        # rebuild can never reuse the pre-change detached BREP.
+        if document is not None:
+            get_service().invalidate_vibescript_reference_snapshots(obj)
         try:
             from VibeCADVibeScriptDomainPublication import (
                 mark_programs_stale_from_source,
@@ -3643,6 +3648,9 @@ class _VibeCADDocumentObserver:
 
     def slotDeletedDocument(self, doc) -> None:
         document_key = _document_storage_key(doc)
+        get_service().clear_vibescript_reference_snapshots(
+            str(getattr(doc, "Uid", "") or "")
+        )
         _legacy_architecture_warning_documents.discard(document_key)
         _pending_document_render_refreshes.discard(document_key)
         _sketch_close_continuation_controller.clear_for_document(document_key)
@@ -4043,11 +4051,10 @@ def show_assistant_for_active_workbench() -> None:
 
 
 def _on_workbench_activated(workbench_name: str) -> None:
-    del workbench_name
     try:
         from VibeCADMCP import get_control_mode_controller
 
-        get_control_mode_controller().notify_tool_surface_changed()
+        get_control_mode_controller().notify_tool_surface_changed(workbench_name)
     except Exception as exc:
         _warn(f"VibeCAD MCP tool-surface refresh failed: {exc}")
     try:
@@ -4085,6 +4092,15 @@ def _connect_workbench_activation() -> None:
         main_window = Gui.getMainWindow()
         main_window.workbenchActivated.connect(_on_workbench_activated)
         _workbench_activation_connected = True
+        active_workbench = getattr(Gui, "activeWorkbench", None)
+        try:
+            active = active_workbench() if callable(active_workbench) else None
+        except Exception:
+            active = None
+        if active is not None and callable(getattr(active, "name", None)):
+            from VibeCADMCP import get_control_mode_controller
+
+            get_control_mode_controller().notify_tool_surface_changed(active.name())
     except Exception as exc:
         _warn(f"VibeCAD AI assistant could not watch workbench activation: {exc}")
 

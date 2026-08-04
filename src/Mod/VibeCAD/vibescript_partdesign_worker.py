@@ -437,7 +437,7 @@ def _candidate_object_name(body: Any, kind: str, identity: str) -> str:
 def _shape_bounds_diagnostic(shape: Any) -> dict[str, list[float]] | None:
     if shape is None or bool(getattr(shape, "isNull", lambda: True)()):
         return None
-    bounds = getattr(shape, "BoundBox", None)
+    bounds = _optimal_shape_bounds(shape)
     if bounds is None:
         return None
     return {
@@ -449,6 +449,20 @@ def _shape_bounds_diagnostic(shape: Any) -> dict[str, list[float]] | None:
             float(bounds.ZLength),
         ],
     }
+
+
+def _optimal_shape_bounds(shape: Any) -> Any | None:
+    """Return OCC geometric bounds without tolerance or mesh inflation."""
+
+    optimal = getattr(shape, "optimalBoundingBox", None)
+    if callable(optimal):
+        try:
+            return optimal(False, False)
+        except (AttributeError, RuntimeError, TypeError):
+            # Older OCC/FreeCAD builds may expose the method with a different
+            # binding. Their native BoundBox remains the compatibility path.
+            pass
+    return getattr(shape, "BoundBox", None)
 
 
 def _profile_from_feature(feature: Any) -> Any | None:
@@ -2577,7 +2591,15 @@ def _evaluate_measurement_checks(
             "edge_count": float(facts["edges"]),
         }
         if quantity.startswith("bounds_"):
-            bounds = shape.BoundBox
+            bounds = _optimal_shape_bounds(shape)
+            if bounds is None:
+                raise PartDesignCandidateError(
+                    f"api.measure {quantity} could not derive geometric bounds.",
+                    details={
+                        "stage": "measurement_geometry",
+                        "quantity": quantity,
+                    },
+                )
             values.update(
                 {
                     "bounds_min_x_mm": float(bounds.XMin),

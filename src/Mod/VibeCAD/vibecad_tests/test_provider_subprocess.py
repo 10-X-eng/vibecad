@@ -473,8 +473,10 @@ def test_instructions_include_vibescript_guidance_only_in_vibescript_mode() -> N
     assembly_guidance = provider._vibescript_authoring_instruction(
         _vibescript_mode_context("AssemblyWorkbench", "assembly")
     )
-    assert "cross-section stays constant" not in assembly_guidance
-    assert "cross-section genuinely changes" not in assembly_guidance
+    assert "VIBESCRIPT MODEL + ASSEMBLY AUTHORING" in assembly_guidance
+    assert "cross-section stays constant" in assembly_guidance
+    assert "cross-section genuinely changes" in assembly_guidance
+    assert "occurrences, joints, mechanisms, and simulations" in assembly_guidance
 
     for other_context in (
         {},

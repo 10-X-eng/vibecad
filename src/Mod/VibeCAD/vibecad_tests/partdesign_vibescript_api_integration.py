@@ -2699,6 +2699,182 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
             App.closeDocument(active_document.Name)
 
 
+def _exercise_component_shape_migration(root: Path, pack) -> dict:
+    """Keep one result key while deliberately changing its native carrier."""
+
+    import FreeCAD as App
+    import Part
+    from pathlib import Path as LocalPath
+
+    document = App.newDocument("PartDesignComponentShapeMigration")
+    source = document.addObject("Part::Feature", "ReusableMotor")
+    source.Shape = Part.makeBox(8, 6, 4)
+    document.recompute()
+    service = _Service(document, root)
+    reference_schema = {
+        "type": "object",
+        "x-vibecad-reference": True,
+        "properties": {
+            "document_uid": {"type": "string"},
+            "object_name": {"type": "string"},
+        },
+        "required": ["document_uid", "object_name"],
+        "additionalProperties": False,
+    }
+    input_schema = {
+        "type": "object",
+        "properties": {"motor": reference_schema},
+        "required": ["motor"],
+        "additionalProperties": False,
+    }
+    inputs = {
+        "motor": {
+            "document_uid": str(document.Uid),
+            "object_name": str(source.Name),
+        }
+    }
+    base_capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": service.provider_document_revision(),
+        "document_objects": [
+            {
+                "name": str(source.Name),
+                "label": str(source.Label),
+                "type_id": str(source.TypeId),
+            }
+        ],
+        "surface": resolve_modeling_surface(
+            "PartDesignWorkbench", "vibescript"
+        ).summary(),
+        "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    component_source = (
+        "motor = api.component(inputs['motor'], placement=[1,2,3], label='Motor')\n"
+        "result = {'Asset': motor}\n"
+    )
+    try:
+        prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="create_program",
+                arguments={
+                    "program_name": "Carrier migration",
+                    "source": component_source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": [
+                        {"name": "Asset", "type": "component_link"}
+                    ],
+                },
+            ),
+            service,
+        )
+        stable_name = accepted["live_outputs"]["Asset"]["object_name"]
+        occurrence = document.getObject(stable_name)
+        assert occurrence.LinkedObject is source
+
+        shape_source = (
+            "source = api.from_object(inputs['motor'], output_type='solid')\n"
+            "moved = api.transform(source, translation=[12,0,0])\n"
+            "result = {'Asset': api.publish(moved, label='Moved motor')}\n"
+        )
+        _prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="reconfigure_program",
+                arguments={
+                    "program_id": prepared["program_id"],
+                    "expected_revision": accepted["working_revision"],
+                    "source": shape_source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": [{"name": "Asset", "type": "solid"}],
+                },
+            ),
+            service,
+        )
+        shape_name = accepted["live_outputs"]["Asset"]["object_name"]
+        published = document.getObject(shape_name)
+        assert published is not None
+        assert str(getattr(published, PROP_OUTPUT_TYPE, "")) == "solid"
+        assert getattr(published, "LinkedObject", None) is not source
+        observed_bounds = (
+            float(published.Shape.BoundBox.XMin),
+            float(published.Shape.BoundBox.XMax),
+        )
+        implementation_name = str(
+            getattr(published, "VibeCADImplementationObject", "") or ""
+        )
+        implementation = document.getObject(implementation_name)
+        migration_diagnostic = {
+            "initial_name": stable_name,
+            "shape_name": shape_name,
+            "published_type": str(published.TypeId),
+            "published_output_type": str(getattr(published, PROP_OUTPUT_TYPE, "")),
+            "linked_object": str(
+                getattr(getattr(published, "LinkedObject", None), "Name", "") or ""
+            ),
+            "placement": [
+                float(published.Placement.Base.x),
+                float(published.Placement.Base.y),
+                float(published.Placement.Base.z),
+            ],
+            "implementation": implementation_name,
+            "implementation_bounds": (
+                [
+                    float(implementation.Shape.BoundBox.XMin),
+                    float(implementation.Shape.BoundBox.XMax),
+                ]
+                if implementation is not None
+                else None
+            ),
+        }
+        assert math.isclose(
+            observed_bounds[0], 12.0, abs_tol=1.0e-7
+        ), {"bounds": observed_bounds, **migration_diagnostic}
+        assert math.isclose(
+            observed_bounds[1], 20.0, abs_tol=1.0e-7
+        ), observed_bounds
+
+        returned_source = component_source.replace("[1,2,3]", "[4,5,6]")
+        _prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="reconfigure_program",
+                arguments={
+                    "program_id": prepared["program_id"],
+                    "expected_revision": accepted["working_revision"],
+                    "source": returned_source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": [
+                        {"name": "Asset", "type": "component_link"}
+                    ],
+                },
+            ),
+            service,
+        )
+        restored_name = accepted["live_outputs"]["Asset"]["object_name"]
+        restored = document.getObject(restored_name)
+        assert restored is not None
+        assert restored.LinkedObject is source
+        assert restored.Placement.Base == App.Vector(4, 5, 6)
+        return {
+            "component_output_name": stable_name,
+            "shape_output_name": shape_name,
+            "restored_component_output_name": restored_name,
+            "component_to_shape_preserved_transform": True,
+            "shape_to_component_preserved_result_key": True,
+        }
+    finally:
+        App.closeDocument(document.Name)
+
+
 def _exercise_topology_publication(root: Path, pack) -> dict:
     """Prove non-solid Part Design outputs retain their exact live type metadata."""
 
@@ -3558,6 +3734,7 @@ def main() -> int:
             pack,
         )
         component_occurrence = _exercise_component_occurrence(root, pack)
+        component_shape_migration = _exercise_component_shape_migration(root, pack)
         lifecycle = _exercise_lifecycle(root, pack)
         provider_source_lifecycle = _exercise_provider_failed_source_lifecycle(
             root,
@@ -3581,6 +3758,7 @@ def main() -> int:
                     "direct_solid_label": direct_solid_label,
                     "saved_source_compatibility": saved_source_compatibility,
                     "component_occurrence": component_occurrence,
+                    "component_shape_migration": component_shape_migration,
                     "lifecycle": lifecycle,
                     "provider_source_lifecycle": provider_source_lifecycle,
                 },

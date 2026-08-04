@@ -216,6 +216,89 @@ def test_provider_update_keeps_the_turn_surface_frozen_after_workbench_change(
     assert "vibescript_domain" not in updated
 
 
+def test_provider_update_keeps_model_assembly_authoring_live_across_ribbons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = _scripted_context()
+    initial_surface = dict(initial["provider_tool_surface"])
+    initial_schemas = list(initial["provider_tool_schemas"])
+    next_context = {
+        **initial,
+        "workbench": "AssemblyWorkbench",
+        "provider_tool_surface": {
+            **initial_surface,
+            "workbench": "AssemblyWorkbench",
+            "domain": "assembly",
+        },
+        "modeling_surface": {
+            "workbench": "AssemblyWorkbench",
+            "engine": "vibescript",
+            "domain": "assembly",
+            "surface_id": initial_surface["surface_id"],
+        },
+        "editable_sources": {
+            "schema": "vibecad-editable-sources-v1",
+            "domain": "assembly",
+            "workbench": "AssemblyWorkbench",
+            "authoring_domains": ["partdesign", "assembly"],
+            "sources": [
+                {
+                    "source_id": "b" * 32,
+                    "domain": "assembly",
+                }
+            ],
+            "all_sources": [
+                {
+                    "source_id": "a" * 32,
+                    "domain": "partdesign",
+                },
+                {
+                    "source_id": "b" * 32,
+                    "domain": "assembly",
+                },
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        session,
+        "_build_context_for_provider",
+        lambda *_args: next_context,
+    )
+
+    runner = session.make_provider_tool_runner(
+        object(),
+        tool_trace=[],
+        progress_callback=None,
+        cancellation_check=None,
+        steering_check=None,
+        question_callback=None,
+        turn_surface=initial_surface,
+        turn_schemas=initial_schemas,
+        turn_modeling_surface={
+            "workbench": "PartDesignWorkbench",
+            "engine": "vibescript",
+            "domain": "partdesign",
+            "surface_id": initial_surface["surface_id"],
+        },
+    )
+
+    updated = runner.provider_update()
+
+    assert updated["provider_tool_surface"] == initial_surface
+    assert updated["provider_tool_schemas"] == initial_schemas
+    assert updated["workbench"] == "PartDesignWorkbench"
+    assert updated["modeling_surface"].get("invalidated") is not True
+    assert updated["editable_sources"]["authoring_domains"] == [
+        "partdesign",
+        "assembly",
+    ]
+    assert updated["editable_sources"]["domain"] == "partdesign"
+    assert updated["editable_sources"]["workbench"] == "PartDesignWorkbench"
+    assert [
+        item["source_id"] for item in updated["editable_sources"]["sources"]
+    ] == ["a" * 32]
+
+
 def test_codex_dynamic_tools_reject_malformed_or_extended_snapshots() -> None:
     malformed = _part_vibescript_context()
     malformed["provider_tool_schemas"][0]["parameters"] = {"type": "string"}

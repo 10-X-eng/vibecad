@@ -15,13 +15,14 @@ import pytest
 REPO = Path(__file__).resolve().parents[4]
 VIBECAD = REPO / "src" / "Mod" / "VibeCAD"
 FASTENERS = REPO / "src" / "Mod" / "Fasteners"
-PINNED_REVISION = "79a06dc067b57ebc89532be835704eb2af5da96c"
+PINNED_REVISION = "9a09ec46bf5bff87231fce007e1da53610b30854"
+PINNED_SOURCE = "https://github.com/10-X-eng/FreeCAD_FastenersWB"
 
 
 def test_fasteners_is_an_exact_pinned_dependency_with_provenance() -> None:
     modules = (REPO / ".gitmodules").read_text(encoding="utf-8")
     assert "[submodule \"src/Mod/Fasteners\"]" in modules
-    assert "https://github.com/shaise/FreeCAD_FastenersWB.git" in modules
+    assert f"{PINNED_SOURCE}.git" in modules
     provenance = json.loads(
         (VIBECAD / "fasteners-provenance.json").read_text(encoding="utf-8")
     )
@@ -30,7 +31,7 @@ def test_fasteners_is_an_exact_pinned_dependency_with_provenance() -> None:
         "module": "Fasteners",
         "version": "0.5.64",
         "revision": PINNED_REVISION,
-        "source": "https://github.com/shaise/FreeCAD_FastenersWB",
+        "source": PINNED_SOURCE,
         "license": "GPL-2.0-or-later",
         "license_file": "../Fasteners/LICENSE",
     }
