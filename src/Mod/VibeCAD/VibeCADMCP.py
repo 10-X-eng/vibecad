@@ -754,6 +754,13 @@ def _mcp_server_process_main(
                 port=port,
                 log_level="warning",
                 access_log=False,
+                # The MCP child runs windowless (pythonw.exe on Windows), so
+                # sys.stdout/sys.stderr are None and uvicorn's default
+                # dictConfig fails with "Unable to configure formatter
+                # 'default'" before the server ever binds. Status already
+                # travels over the status pipe, so no console logging is
+                # needed here.
+                log_config=None,
             )
         )
 
