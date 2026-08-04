@@ -565,11 +565,17 @@ class TestFeatureTimeline(unittest.TestCase):
     def test_fixed_document_history_strip_order_state_and_selection(self):
         main_window = Gui.getMainWindow()
         workspace = main_window.findChild(QtGui.QWidget, "VibeCADWorkspace")
+        viewport_canvas = main_window.findChild(
+            QtGui.QWidget,
+            "VibeCADViewportCanvas",
+        )
         mdi_area = main_window.findChild(QtGui.QMdiArea)
 
         self.assertIsNotNone(workspace)
+        self.assertIsNotNone(viewport_canvas)
         self.assertIs(self.timeline_widget.parent(), workspace)
-        self.assertIs(mdi_area.parent(), workspace)
+        self.assertIs(viewport_canvas.parent(), workspace)
+        self.assertIs(mdi_area.parent(), viewport_canvas)
         self.assertEqual(self.timeline_widget.minimumHeight(), 56)
         self.assertEqual(self.timeline_widget.maximumHeight(), 56)
         self.assertEqual(
@@ -631,7 +637,7 @@ class TestFeatureTimeline(unittest.TestCase):
             "redundant History label",
         )
         for object_name in (
-            "VibeCADFeatureTimelineStart",
+            "VibeCADFeatureTimelineRecompute",
             "VibeCADFeatureTimelinePrevious",
             "VibeCADFeatureTimelineNext",
             "VibeCADFeatureTimelineEnd",
@@ -767,9 +773,9 @@ class TestFeatureTimeline(unittest.TestCase):
             _object_items(self.timeline)[self.first.Name].icon()
         )
 
+        self.assertTrue(_has_colored_pixel(visible_pixels))
         self.assertTrue(_is_grayscale(hidden_pixels))
-        if _has_colored_pixel(visible_pixels):
-            self.assertNotEqual(hidden_pixels, visible_pixels)
+        self.assertNotEqual(hidden_pixels, visible_pixels)
 
     def test_long_history_rebuild_reveals_current_state_marker(self):
         Gui.Selection.clearSelection()
@@ -1036,8 +1042,8 @@ class TestFeatureTimeline(unittest.TestCase):
         next_button = self.timeline_widget.findChild(
             QtGui.QToolButton, "VibeCADFeatureTimelineNext"
         )
-        start_button = self.timeline_widget.findChild(
-            QtGui.QToolButton, "VibeCADFeatureTimelineStart"
+        recompute_button = self.timeline_widget.findChild(
+            QtGui.QToolButton, "VibeCADFeatureTimelineRecompute"
         )
         end_button = self.timeline_widget.findChild(
             QtGui.QToolButton, "VibeCADFeatureTimelineEnd"
@@ -1088,12 +1094,24 @@ class TestFeatureTimeline(unittest.TestCase):
                 and _marker_position(self.timeline) == 5
             )
         )
-        start_button.click()
+        self.second.touch()
         self.assertTrue(
             _wait_until(
-                lambda: self.body.Tip is None
-                and _marker_position(self.timeline) == 0
-            )
+                lambda: "Touched" in self.second.State
+                and recompute_button.isEnabled()
+            ),
+            "A dirty document must expose the native recompute action",
+        )
+        recompute_button.click()
+        self.assertTrue(
+            _wait_until(lambda: "Touched" not in self.second.State),
+            "The History recompute control did not recompute the document",
+        )
+        self.assertIs(self.body.Tip, self.second)
+        self.assertEqual(
+            _marker_position(self.timeline),
+            5,
+            "Recompute must not move the document-history boundary",
         )
         end_button.click()
         self.assertTrue(
@@ -5011,11 +5029,17 @@ class TestFeatureTimeline(unittest.TestCase):
             "History before the task is accepted",
         )
 
-        # Exercise the slots directly as well as their disabled controls.
-        # Guarding only the widget state would still leave queued signals able
-        # to commit the native task's pending transaction.
+        recompute_button = self.timeline_widget.findChild(
+            QtGui.QToolButton,
+            "VibeCADFeatureTimelineRecompute",
+        )
+        self.assertIsNotNone(recompute_button)
+        self.assertFalse(recompute_button.isEnabled())
+
+        # Exercise the history-navigation slots directly as well as their
+        # disabled controls. Guarding only the widget state would still leave
+        # queued signals able to commit the native task's pending transaction.
         for object_name in (
-            "VibeCADFeatureTimelineStart",
             "VibeCADFeatureTimelinePrevious",
             "VibeCADFeatureTimelineNext",
             "VibeCADFeatureTimelineEnd",

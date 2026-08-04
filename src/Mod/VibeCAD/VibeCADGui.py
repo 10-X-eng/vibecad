@@ -157,8 +157,11 @@ class _QuestionWaiter:
 _assistant_run_controller = _AssistantRunController()
 _assistant_run_thread: threading.Thread | None = None
 _intent_memory_rebuild_thread: threading.Thread | None = None
+_intent_memory_rebuild_cancel_event = threading.Event()
 _document_thread_invoker: Any | None = None
 _pending_question_waiter: _QuestionWaiter | None = None
+_control_modes_initialized = False
+_control_mode_shutdown_connected = False
 
 
 def _is_intent_memory_rebuild_active() -> bool:
@@ -208,6 +211,77 @@ def _dispatch_to_document_thread(operation: Any) -> Any:
     if request.error is not None:
         raise request.error
     return request.result
+
+
+def _internal_agent_allowed() -> bool:
+    from VibeCADMCP import internal_agent_allowed
+
+    return internal_agent_allowed()
+
+
+def _control_mode_snapshot() -> dict[str, Any]:
+    from VibeCADMCP import get_control_mode_controller
+
+    return get_control_mode_controller().snapshot()
+
+
+def _cancel_internal_agent_for_mcp() -> None:
+    def cancel() -> None:
+        _assistant_run_controller.request_cancel()
+        _intent_memory_rebuild_cancel_event.set()
+        _cancel_question_round()
+
+    _dispatch_to_document_thread(cancel)
+
+
+def _initialize_control_modes() -> None:
+    """Bind the single control-mode state machine to the live Qt host once."""
+
+    global _control_modes_initialized, _control_mode_shutdown_connected
+    _ensure_document_thread_invoker()
+    from PySide import QtWidgets
+    from VibeCADMCP import get_control_mode_controller
+    from VibeCADPreferences import load_settings, set_mcp_enabled
+
+    controller = get_control_mode_controller()
+
+    def handle_event(event: dict[str, Any]) -> None:
+        def apply() -> None:
+            if event.get("rollback_preference"):
+                set_mcp_enabled(False)
+            dock = _find_dock()
+            if dock is not None and _assistant_panel_is_built(dock):
+                _render_assistant_run_state(dock)
+
+        try:
+            _dispatch_to_document_thread(apply)
+        except Exception as exc:
+            _warn(f"VibeCAD control-mode UI refresh failed: {exc}")
+
+    if not _control_modes_initialized:
+        controller.configure_host(
+            document_thread_dispatch=_dispatch_to_document_thread,
+            internal_active=lambda: (
+                _is_assistant_run_active() or _is_intent_memory_rebuild_active()
+            ),
+            cancel_internal=_cancel_internal_agent_for_mcp,
+            question_callback=lambda questions: _request_user_answers(
+                questions,
+                lambda: not get_control_mode_controller().snapshot().get(
+                    "mcp_enabled", False
+                ),
+            ),
+            event_callback=handle_event,
+        )
+        _control_modes_initialized = True
+    if not _control_mode_shutdown_connected:
+        application = QtWidgets.QApplication.instance()
+        if application is not None:
+            application.aboutToQuit.connect(
+                lambda: get_control_mode_controller().shutdown(wait=False)
+            )
+            _control_mode_shutdown_connected = True
+    controller.request_mcp_enabled(load_settings().mcp_enabled)
 
 
 class _SketchCloseContinuationController:
@@ -1138,6 +1212,10 @@ def apply_modeling_preferences() -> None:
         refresh_scripted_model_editor()
     except Exception as exc:
         _warn(f"VibeCAD scripted editor preference refresh failed: {exc}")
+    try:
+        _initialize_control_modes()
+    except Exception as exc:
+        _warn(f"VibeCAD MCP preference update failed: {exc}")
 
 
 def _clear_conversation_transients(dock: Any) -> None:
@@ -2098,6 +2176,34 @@ def _install_prompt_paste_filter(prompt: Any) -> None:
     prompt.setProperty("VibePasteFilterInstalled", True)
 
 
+def _install_prompt_submit_filter(prompt: Any) -> None:
+    """Submit the assistant composer on exactly Shift+Enter."""
+
+    try:
+        from PySide import QtCore
+    except Exception:
+        return
+
+    class _SubmitFilter(QtCore.QObject):
+        def eventFilter(self, obj: Any, event: Any) -> bool:  # noqa: N802 (Qt API)
+            try:
+                if (
+                    event.type() == QtCore.QEvent.KeyPress
+                    and event.key() in {QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter}
+                    and event.modifiers() == QtCore.Qt.ShiftModifier
+                ):
+                    _run_prompt_from_panel()
+                    return True
+            except Exception as exc:
+                _warn(f"VibeCAD prompt submit handling failed: {exc}")
+            return False
+
+    submit_filter = _SubmitFilter(prompt)
+    prompt.installEventFilter(submit_filter)
+    prompt._vibecad_submit_filter = submit_filter
+    prompt.setProperty("VibeSubmitFilterInstalled", True)
+
+
 def _update_composer_button_presentation(
     container: Any,
     *,
@@ -2141,9 +2247,9 @@ def _apply_composer_button_presentation(
         "VibeSend": (
             "Steer" if is_busy else "Send",
             (
-                "Steer the current CAD run"
+                "Steer the current CAD run (Shift+Enter)"
                 if is_busy
-                else "Send this message to VibeCAD"
+                else "Send this message to VibeCAD (Shift+Enter)"
             ),
         ),
         "VibeStop": (
@@ -2333,6 +2439,11 @@ def _document_persistence_state() -> dict[str, Any]:
 def rebuild_intent_memory_async() -> dict[str, Any]:
     """Start a non-blocking full Intent Memory rebuild for the active project."""
     global _intent_memory_rebuild_thread
+    if not _internal_agent_allowed():
+        return {
+            "started": False,
+            "error": "Intent Memory rebuild is disabled while MCP controls VibeCAD.",
+        }
     if _is_assistant_run_active():
         return {"started": False, "error": "Wait for the active CAD run to finish."}
     if (
@@ -2350,6 +2461,7 @@ def rebuild_intent_memory_async() -> dict[str, Any]:
             ),
         }
     service = get_service()
+    _intent_memory_rebuild_cancel_event.clear()
     _set_status_line("Rebuilding Intent Memory...")
 
     def progress(event: dict[str, Any]) -> None:
@@ -2362,6 +2474,7 @@ def rebuild_intent_memory_async() -> dict[str, Any]:
             result = rebuild_intent_memory(
                 service=service,
                 progress_callback=progress,
+                cancellation_check=_intent_memory_rebuild_cancel_event.is_set,
                 document_thread_dispatch=_dispatch_to_document_thread,
             )
         except Exception as exc:
@@ -2374,6 +2487,7 @@ def rebuild_intent_memory_async() -> dict[str, Any]:
             else:
                 message = "Intent Memory has no conversation turns to compile."
         finally:
+            _intent_memory_rebuild_cancel_event.clear()
             _intent_memory_rebuild_thread = None
         _dispatch_to_document_thread(lambda: _set_status_line(message))
 
@@ -2390,6 +2504,8 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     if dock is None:
         return
     busy = _is_assistant_run_active()
+    control = _control_mode_snapshot()
+    internal_available = bool(control.get("internal_agent_enabled"))
     persistence = _document_persistence_state()
     document_ready = bool(persistence.get("enabled"))
     pending_sketch = _sketch_close_continuation_controller.snapshot()
@@ -2410,21 +2526,25 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     composer_buttons = _find_child("QWidget", "VibeComposerButtons", dock)
 
     if send_button is not None:
-        send_button.setEnabled(busy or document_ready)
+        send_button.setEnabled(internal_available and (busy or document_ready))
     if stop_button is not None:
         stop_button.setEnabled(busy)
     if attach_button is not None:
-        attach_button.setEnabled(document_ready and not busy)
+        attach_button.setEnabled(internal_available and document_ready and not busy)
     if attach_image_button is not None:
-        attach_image_button.setEnabled(document_ready and not busy)
+        attach_image_button.setEnabled(
+            internal_available and document_ready and not busy
+        )
     if reference_chips is not None:
-        reference_chips.setEnabled(document_ready and not busy)
+        reference_chips.setEnabled(internal_available and document_ready and not busy)
     if conversation_selector is not None:
-        conversation_selector.setEnabled(document_ready and not busy)
+        conversation_selector.setEnabled(
+            internal_available and document_ready and not busy
+        )
     if new_conversation is not None:
-        new_conversation.setEnabled(document_ready and not busy)
+        new_conversation.setEnabled(internal_available and document_ready and not busy)
     if prompt_starters is not None:
-        prompt_starters.setEnabled(document_ready and not busy)
+        prompt_starters.setEnabled(internal_available and document_ready and not busy)
     if interaction_mode is not None:
         try:
             supports_plan = get_service().provider_name() in {"openai", "chatgpt"}
@@ -2432,7 +2552,9 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
             supports_plan = False
         if not supports_plan and interaction_mode.currentData() == "plan":
             interaction_mode.setCurrentIndex(0)
-        interaction_mode.setEnabled(document_ready and not busy and supports_plan)
+        interaction_mode.setEnabled(
+            internal_available and document_ready and not busy and supports_plan
+        )
         interaction_mode.setToolTip(
             (
                 "Build can change the active document; Plan inspects it without "
@@ -2447,8 +2569,12 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
             busy=busy,
         )
     if prompt_box is not None:
-        prompt_box.setReadOnly(not busy and not document_ready)
-        if busy:
+        prompt_box.setReadOnly(
+            not internal_available or (not busy and not document_ready)
+        )
+        if not internal_available:
+            placeholder = "VibeCAD is controlled by an external MCP client."
+        elif busy:
             placeholder = "Steer the current CAD run..."
         elif document_ready:
             placeholder = "Message VibeCAD..."
@@ -2458,7 +2584,18 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
                 or "Save this VibeCAD document to enable VibeCAD."
             )
         prompt_box.setPlaceholderText(placeholder)
-    if busy:
+    if not internal_available:
+        state = str(control.get("state") or "")
+        if state == "starting_mcp":
+            status_text = "Starting external MCP control..."
+        elif state == "stopping_mcp":
+            status_text = "Stopping external MCP control..."
+        else:
+            status_text = (
+                "External MCP control is active at "
+                f"{control.get('endpoint') or 'the configured local endpoint'}."
+            )
+    elif busy:
         status_text = text or ""
     elif not document_ready:
         status_text = str(
@@ -2544,6 +2681,9 @@ def _execute_assistant_run(
     interaction_mode: str = "build",
 ) -> None:
     global _assistant_run_thread
+    if not _internal_agent_allowed():
+        _render_assistant_run_state(dock)
+        return
     if _is_assistant_run_active():
         _warn("VibeCAD refused to start a second provider loop while one is active.")
         return
@@ -2721,6 +2861,9 @@ def _execute_assistant_run(
 
 
 def _start_sketch_close_continuation(event: dict[str, Any]) -> None:
+    if not _internal_agent_allowed():
+        _sketch_close_continuation_controller.clear()
+        return
     if _is_assistant_run_active() or _is_intent_memory_rebuild_active():
         _warn(
             "VibeCAD ignored a sketch-close continuation while another run was active."
@@ -2780,6 +2923,9 @@ def _run_prompt_from_panel() -> None:
         return
     prompt_box = _find_child("QPlainTextEdit", "VibePrompt", dock)
     if prompt_box is None:
+        return
+    if not _internal_agent_allowed():
+        _render_assistant_run_state(dock)
         return
 
     service = get_service()
@@ -3720,6 +3866,7 @@ def _build_panel_widget():
         QtWidgets.QSizePolicy.Expanding,
     )
     _install_prompt_paste_filter(prompt)
+    _install_prompt_submit_filter(prompt)
     composer_layout.addWidget(prompt)
 
     composer_buttons = QtWidgets.QWidget(composer)
@@ -3772,7 +3919,7 @@ def _build_panel_widget():
     send_button.setObjectName("VibeSend")
     send_button.setIcon(QtGui.QIcon(_icon_path(ICON_SEND)))
     send_button.setIconSize(icon_size)
-    send_button.setToolTip("Send this message to VibeCAD")
+    send_button.setToolTip("Send this message to VibeCAD (Shift+Enter)")
     send_button.setDefault(True)
     send_button.clicked.connect(_run_prompt_from_panel)
 
@@ -3898,6 +4045,12 @@ def show_assistant_for_active_workbench() -> None:
 def _on_workbench_activated(workbench_name: str) -> None:
     del workbench_name
     try:
+        from VibeCADMCP import get_control_mode_controller
+
+        get_control_mode_controller().notify_tool_surface_changed()
+    except Exception as exc:
+        _warn(f"VibeCAD MCP tool-surface refresh failed: {exc}")
+    try:
         from PySide import QtCore
     except Exception:
         return
@@ -3964,9 +4117,14 @@ class AskAICommand(_BaseCommand):
     pixmap = ICON_SEND
 
     def IsActive(self) -> bool:
-        return bool(_document_persistence_state().get("enabled"))
+        return _internal_agent_allowed() and bool(
+            _document_persistence_state().get("enabled")
+        )
 
     def Activated(self) -> None:
+        if not _internal_agent_allowed():
+            _show_panel()
+            return
         if not _require_saved_document():
             _show_panel()
             return
@@ -4293,6 +4451,7 @@ def ensure_commands_registered() -> None:
     register_startup_assistant()
     _connect_document_observer()
     _apply_startup_context_debug_preferences()
+    _initialize_control_modes()
     if _commands_registered:
         _connect_workbench_activation()
         return

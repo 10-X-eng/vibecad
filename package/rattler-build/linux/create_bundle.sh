@@ -116,6 +116,8 @@ EOF
         anthropic \
         keyring \
         jsonschema \
+        mcp \
+        mcp_types \
         secretstorage \
         keyring.backends.SecretService; do
         if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "import importlib; importlib.import_module('${dependency}'); print('${dependency} import ok')"; then

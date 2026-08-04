@@ -430,9 +430,11 @@ def main() -> int:
             "options",
         )
         index = catalog_index()
-        assert index["upstream_standard_count"] == 224
-        assert len(index["standards"]) == 222
-        assert len({row["standard"] for row in index["standards"]}) == 222
+        assert index["upstream_standard_count"] == 227
+        assert len(index["standards"]) == 225
+        standards = {row["standard"] for row in index["standards"]}
+        assert len(standards) == 225
+        assert {"PEMIUTA", "PEMIUTB", "PEMIUTC"}.issubset(standards)
         assert {
             item["standard"]
             for item in index["excluded_upstream_standards"]

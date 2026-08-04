@@ -353,12 +353,18 @@ def choose_provider(
             skills_enabled=service.codex_skills_enabled(),
         )
     if provider_name == "anthropic":
+        intent_memory_model = getattr(service, "intent_memory_model", None)
         return AnthropicProvider(
             model=service.provider_model(),
             api_key=service.provider_api_key(),
             reasoning_effort=service.provider_reasoning_effort(),
             base_url=service.provider_base_url(),
             web_search_enabled=service.web_search_enabled(),
+            compaction_model=(
+                intent_memory_model()
+                if callable(intent_memory_model)
+                else service.provider_model()
+            ),
         )
     raise ProviderUnavailable(f"Unsupported provider: {provider_name}")
 
@@ -1368,9 +1374,9 @@ def _run_domain_vibescript_tool(
             },
             "repair_rule": (
                 "Read the source when its text or latest revision is uncertain, then "
-                "repair the smallest exact cause. Use vibescript.edit_source for "
-                "source-only changes, vibescript.set_inputs for value-only changes, and "
-                "vibescript.reconfigure_program only for contract or declared-output changes."
+                "repair the smallest exact cause. Use vibescript.edit_source for code and "
+                "include changed inputs, schema, or output declarations in that same call. "
+                "Use vibescript.set_inputs only for a value-only patch."
             ),
         }
 
@@ -2612,14 +2618,18 @@ def _run_universal_vibescript_tool(
                 observed={"exception_type": exc.__class__.__name__},
             )
     if tool_name == "vibescript.edit_source":
+        domain_arguments = {
+            "program_id": str(args["source_id"]),
+            "expected_revision": str(args["expected_revision"]),
+            "source": str(args["source"]),
+        }
+        for name in ("input_schema", "inputs", "expected_outputs"):
+            if name in args:
+                domain_arguments[name] = args[name]
         result = _run_domain_vibescript_tool(
             domain_service,
             f"vibescript.{pack.domain}.edit_source",
-            {
-                "program_id": str(args["source_id"]),
-                "expected_revision": str(args["expected_revision"]),
-                "source": str(args["source"]),
-            },
+            domain_arguments,
             document_thread_dispatch=document_thread_dispatch,
             cancellation_check=cancellation_check,
             progress_callback=progress_callback,
@@ -2908,6 +2918,7 @@ def make_provider_tool_runner(
     turn_component_catalog: Mapping[str, Any] | None = None,
     turn_editable_sources: Mapping[str, Any] | None = None,
     interaction_mode: str = "build",
+    provider_calls_allowed: bool = True,
 ):
     clean_interaction_mode = normalize_interaction_mode(interaction_mode)
     frozen_schemas = json.loads(json.dumps(turn_schemas or []))
@@ -3284,6 +3295,19 @@ def make_provider_tool_runner(
                 )
             return finalize(payload)
         if tool_name == "conversation.review_design":
+            if not provider_calls_allowed:
+                return finalize(
+                    tool_failure(
+                        tool_name,
+                        "PROVIDER_CALL_DISABLED",
+                        "precondition",
+                        (
+                            "This controller supplies CAD tools only and cannot "
+                            "start a VibeCAD model or provider."
+                        ),
+                        requested=args,
+                    )
+                )
             from VibeCADDesignReview import run_design_review
 
             review_context = _build_context_for_provider(
@@ -3670,6 +3694,9 @@ def _run_session_turn(
     document_thread_dispatch: DocumentThreadDispatch | None,
     interaction_mode: str,
 ) -> VibeCADResponse:
+    from VibeCADMCP import require_internal_agent
+
+    require_internal_agent()
     clean_prompt = str(prompt or "").strip()
     if not clean_prompt:
         raise ValueError("Prompt cannot be empty.")
@@ -3922,6 +3949,9 @@ def rebuild_intent_memory(
     document_thread_dispatch: DocumentThreadDispatch | None = None,
 ) -> dict[str, Any]:
     """Recompile durable intent from all persisted project conversations."""
+    from VibeCADMCP import require_internal_agent
+
+    require_internal_agent()
     active_service = service or _on_document_thread(
         document_thread_dispatch, get_service
     )

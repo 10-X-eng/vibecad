@@ -92,6 +92,7 @@ public:
 
     PartDesign::Feature* getShownFeature() const;
     Gui::ViewProvider* getShownViewProvider() const;
+    std::vector<Gui::ViewProvider::LinkChild3D> claimLinkChildren3D() const override;
 
     /** Check whether objects can be added to the view provider by drag and drop */
     bool canDropObjects() const override;

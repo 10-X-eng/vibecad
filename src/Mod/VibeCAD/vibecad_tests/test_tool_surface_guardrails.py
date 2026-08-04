@@ -575,6 +575,7 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "vibescript.reconfigure_program",
         "vibescript.delete_output",
         "vibescript.delete_program",
+        "vibescript.delete_object",
     )
     surface = resolve_modeling_surface("PartDesignWorkbench", "vibescript")
     names = session._surface_tool_names(

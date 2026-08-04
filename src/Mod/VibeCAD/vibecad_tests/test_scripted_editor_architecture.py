@@ -9,6 +9,8 @@ from pathlib import Path
 
 import VibeCADVibeScriptDomains as domains
 import VibeCADVibeScriptDomainRuntime as runtime
+import VibeCADScriptedEditor as editor
+from VibeCADScriptedEditor import _diagnostic_detail_text
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -88,6 +90,67 @@ def test_editor_is_vibescript_only_with_three_human_actions() -> None:
     assert "self._start_vibescript_apply()" in source
     assert "self._adopt_failed_vibescript_revision(result)" in source
     assert 'captured["allow_unchanged_revision"] = True' in session
+    assert "itemDoubleClicked.connect(" in source
+    assert 'setObjectName("VibeScriptedDiagnosticDetail")' in source
+    assert 'setObjectName("VibeScriptedDiagnosticDetailText")' in source
+
+
+def test_editor_formats_complete_build_error_details() -> None:
+    payload = {
+        "error": "VibeScript domain execution was cancelled.",
+        "failure_code": "RUN_CANCELLED",
+        "failure_stage": "external_process",
+        "observed": {
+            "cancelled_by": "host",
+            "termination_reason": "host_cancellation_request",
+            "returncode": -15,
+        },
+    }
+    detail = _diagnostic_detail_text(payload)
+    assert detail.startswith("VibeScript domain execution was cancelled.")
+    assert "Failure code: RUN_CANCELLED" in detail
+    assert "Failure stage: external_process" in detail
+    assert '"cancelled_by": "host"' in detail
+    assert '"termination_reason": "host_cancellation_request"' in detail
+
+
+def test_same_document_refresh_cannot_cancel_an_active_editor_job(
+    monkeypatch,
+) -> None:
+    document = type("Document", (), {"Name": "Model", "Uid": "document-1"})()
+    service = type(
+        "Service",
+        (),
+        {
+            "modeling_engine": staticmethod(lambda: "vibescript"),
+            "active_workbench_name": staticmethod(lambda: "PartDesignWorkbench"),
+            "_active_document": staticmethod(lambda: document),
+        },
+    )()
+    resolution = type(
+        "Resolution",
+        (),
+        {"domain": "partdesign", "available": True},
+    )()
+    monkeypatch.setattr(editor, "get_service", lambda: service)
+    monkeypatch.setattr(
+        editor,
+        "resolve_modeling_surface",
+        lambda _workbench, _engine: resolution,
+    )
+
+    controller = object.__new__(editor.ScriptedEditorController)
+    controller.editor_active = True
+    controller.engine = "vibescript"
+    controller.domain = "partdesign"
+    controller.document_uid = "document-1"
+    controller.busy = True
+    refreshes: list[str] = []
+    controller._start_vibescript_model_refresh = refreshes.append
+
+    controller.refresh("program-1")
+
+    assert refreshes == []
 
 
 def test_editor_delete_lifecycle_accepts_a_failed_source_only_program(

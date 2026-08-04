@@ -1073,7 +1073,6 @@ class VibeCADService:
 
             corner_points = [
                 (0, 0),
-                (max(0, width - 1), 0),
                 (0, max(0, height - 1)),
                 (max(0, width - 1), max(0, height - 1)),
             ]
@@ -1102,6 +1101,12 @@ class VibeCADService:
             for y_index in range(y_steps):
                 y = int(round(y_index * (height - 1) / max(1, y_steps - 1)))
                 for x_index in range(x_steps):
+                    # The navigation cube is a viewport overlay, not model
+                    # evidence. It occupies this same normalized corner in the
+                    # framebuffer and otherwise makes an empty capture look
+                    # non-empty.
+                    if x_index >= int(0.79 * x_steps) and y_index <= int(0.26 * y_steps):
+                        continue
                     x = int(round(x_index * (width - 1) / max(1, x_steps - 1)))
                     color = QtGui.QColor(image.pixel(x, y))
                     red = color.red()

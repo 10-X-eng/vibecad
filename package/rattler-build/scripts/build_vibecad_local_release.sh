@@ -50,7 +50,7 @@ fi
 
 "${freecadcmd_executable}" --safe-mode --version
 "${freecadcmd_executable}" --safe-mode -c \
-    "import importlib.util, anthropic, jsonschema, keyring; assert importlib.util.find_spec('openai') is None; assert importlib.util.find_spec('agents') is None; print('VibeCAD Python dependencies import ok')"
+    "import importlib.util, anthropic, jsonschema, keyring, mcp, mcp_types; assert importlib.util.find_spec('openai') is None; assert importlib.util.find_spec('agents') is None; print('VibeCAD Python dependencies import ok')"
 "${freecadcmd_executable}" --safe-mode -c \
     "from VibeCADProvider import _provider_subprocess_smoke; _provider_subprocess_smoke(); print('VibeCAD provider subprocess smoke ok')"
 "${freecadcmd_executable}" --safe-mode -c \

@@ -42,6 +42,7 @@ private:
         App::DocumentObject* obj,
         const std::map<std::string, Base::Color>& colors
     ) override;
+    void setObjectVisible(App::DocumentObject* obj, bool visible) override;
 };
 
 }  // namespace ImportGui

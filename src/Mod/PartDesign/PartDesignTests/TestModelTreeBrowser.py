@@ -935,6 +935,105 @@ class TestModelTreeBrowser(unittest.TestCase):
             "operation from the native Body timeline.",
         )
 
+    def test_virtual_component_occurrence_selects_its_root_object_identity(self):
+        occurrence = self.document.addObject(
+            "App::Link",
+            "VirtualMountedOccurrence",
+        )
+        occurrence.Label = "Mounted Blade Occurrence"
+        occurrence.LinkedObject = self.vibe_body
+        occurrence.addProperty(
+            "App::PropertyString",
+            "VibeCADVibeScriptOutputType",
+            "VibeCAD Publication",
+        )
+        occurrence.VibeCADVibeScriptOutputType = "component_link"
+        occurrence.addProperty(
+            "App::PropertyString",
+            "VibeCADTimelineRole",
+            "VibeCAD History",
+        )
+        occurrence.VibeCADTimelineRole = "internal"
+        self.vibe_component.addProperty(
+            "App::PropertyLinkList",
+            "VibeCADPartDesignComponentOccurrences",
+            "VibeCAD Publication",
+        )
+        self.vibe_component.VibeCADPartDesignComponentOccurrences = [occurrence]
+        self.document.recompute()
+
+        def occurrence_item():
+            tree, document_item = self._tree_and_document_item()
+            component = _child(document_item, self.vibe_component.Label)
+            components = _child(component, "Components", BROWSER_FOLDER_TYPE)
+            item = _child(components, occurrence.Label)
+            return (
+                tree,
+                document_item,
+                component,
+                components,
+                item,
+            ) if tree is not None and item is not None else None
+
+        observed = _wait_until(occurrence_item)
+        self.assertIsNotNone(observed, self._snapshot())
+        self.assertNotIn(occurrence, self.vibe_component.Group)
+
+        def select_live_occurrence_item():
+            observed_item = occurrence_item()
+            if observed_item is None:
+                return False
+            tree, document_item, component, components, item = observed_item
+            try:
+                Gui.Selection.clearSelection()
+                for ancestor in (document_item, component, components):
+                    if not ancestor.isExpanded():
+                        tree.expandItem(ancestor)
+                        return False
+                tree.scrollToItem(item)
+                tree.setFocus()
+                position = tree.visualItemRect(item).center()
+                global_position = tree.viewport().mapToGlobal(position)
+                for event_type, buttons in (
+                    (QtCore.QEvent.MouseButtonPress, QtCore.Qt.LeftButton),
+                    (QtCore.QEvent.MouseButtonRelease, QtCore.Qt.NoButton),
+                ):
+                    event = QtGui.QMouseEvent(
+                        event_type,
+                        QtCore.QPointF(position),
+                        QtCore.QPointF(global_position),
+                        QtCore.Qt.LeftButton,
+                        buttons,
+                        QtCore.Qt.NoModifier,
+                    )
+                    QtGui.QApplication.sendEvent(tree.viewport(), event)
+            except RuntimeError:
+                # The projected browser can replace rows while processing a
+                # queued document update. Reacquire that row before retrying.
+                return False
+            selections = Gui.Selection.getSelectionEx(
+                self.document.Name,
+                Gui.Selection.ResolveMode.NoResolve,
+            )
+            return (
+                len(selections) == 1
+                and selections[0].Object == occurrence
+                and not selections[0].SubElementNames
+            )
+
+        self.assertTrue(
+            _wait_until(select_live_occurrence_item),
+            self._snapshot(),
+        )
+
+        selections = Gui.Selection.getSelectionEx(
+            self.document.Name,
+            Gui.Selection.ResolveMode.NoResolve,
+        )
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(selections[0].Object, occurrence)
+        self.assertEqual(tuple(selections[0].SubElementNames), ())
+
     def test_folder_context_action_survives_browser_rebuild(self):
         tree, document_item = self._tree_and_document_item()
         component = _child(document_item, "Browser Component")
@@ -1560,7 +1659,7 @@ class TestModelTreeBrowser(unittest.TestCase):
         Gui.Control.activeTaskDialog().accept()
         assert_tip_restored()
 
-    def test_link_occurrence_visibility_does_not_hide_shared_body(self):
+    def test_link_occurrence_and_definition_visibility_are_independent(self):
         assembly = self.document.addObject(
             "App::Part",
             "VisibilityOccurrenceAssembly",
@@ -1603,6 +1702,44 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertTrue(second.Visibility)
         self.assertTrue(self.vibe_body.Visibility)
         self.assertTrue(self.vibe_result.Visibility)
+
+        # A reusable definition is not an implicit occurrence at its authoring
+        # origin. Hiding that definition must not disable either independently
+        # visible App::Link occurrence that consumes its final Body shape.
+        self.vibe_body.Visibility = False
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: (
+                    not self.vibe_body.Visibility
+                    and not self.vibe_result.Visibility
+                    and first.Visibility
+                    and second.Visibility
+                    and _primitive_counts(first)[0] > 0
+                    and _primitive_counts(second)[0] > 0
+                    and _is_in_active_scene(first)
+                    and _is_in_active_scene(second)
+                )
+            ),
+            (
+                self.vibe_body.Visibility,
+                self.vibe_result.Visibility,
+                first.Visibility,
+                second.Visibility,
+                _primitive_counts(first),
+                _primitive_counts(second),
+                _is_in_active_scene(first),
+                _is_in_active_scene(second),
+                getattr(first, "ShowElement", None),
+                tuple(getattr(obj, "Name", "") for obj in first.ElementList),
+                tuple(first.VisibilityList),
+            ),
+        )
+        self.vibe_body.Visibility = True
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: self.vibe_body.Visibility and self.vibe_result.Visibility
+            )
+        )
 
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(

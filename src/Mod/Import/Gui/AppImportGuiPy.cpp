@@ -175,6 +175,7 @@ private:
             options.setItem("reduceObjects", Py::Boolean(stepSettings.reduceObjects));
             options.setItem("showProgress", Py::Boolean(stepSettings.showProgress));
             options.setItem("expandCompound", Py::Boolean(stepSettings.expandCompound));
+            options.setItem("importSolidBodies", Py::Boolean(stepSettings.importSolidBodies));
             options.setItem("mode", Py::Long(stepSettings.mode));
             options.setItem("codePage", Py::Long(stepSettings.codePage));
         }
@@ -189,8 +190,9 @@ private:
         PyObject* importHidden = Py_None;
         PyObject* merge = Py_None;
         PyObject* useLinkGroup = Py_None;
+        PyObject* importSolidBodies = Py_None;
         int mode = -1;
-        static const std::array<const char*, 8> kwd_list {
+        static const std::array<const char*, 9> kwd_list {
             "name",
             "docName",
             "options",
@@ -198,12 +200,13 @@ private:
             "merge",
             "useLinkGroup",
             "mode",
+            "importSolidBodies",
             nullptr
         };
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "et|sO!O!O!O!i",
+                "et|sO!O!O!O!iO!",
                 kwd_list,
                 "utf-8",
                 &Name,
@@ -216,7 +219,9 @@ private:
                 &merge,
                 &PyBool_Type,
                 &useLinkGroup,
-                &mode
+                &mode,
+                &PyBool_Type,
+                &importSolidBodies
             )) {
             throw Py::Exception();
         }
@@ -240,6 +245,9 @@ private:
             hApp->NewDocument(TCollection_ExtendedString("MDTV-CAF"), hDoc);
             ImportOCAFGui ocaf(hDoc, pcDoc, file.fileNamePure());
             ocaf.setImportOptions(ImportOCAFGui::customImportOptions());
+            if (!file.hasExtension({"stp", "step"})) {
+                ocaf.setImportSolidBodies(false);
+            }
 
             Base::TimeTracker tracker("Import Step");
 
@@ -290,6 +298,11 @@ private:
                     if (options.hasKey("expandCompound")) {
                         ocaf.setExpandCompound(
                             static_cast<bool>(Py::Boolean(options.getItem("expandCompound")))
+                        );
+                    }
+                    if (options.hasKey("importSolidBodies")) {
+                        ocaf.setImportSolidBodies(
+                            static_cast<bool>(Py::Boolean(options.getItem("importSolidBodies")))
                         );
                     }
                     if (options.hasKey("mode")) {
@@ -369,6 +382,9 @@ private:
             }
             if (useLinkGroup != Py_None) {
                 ocaf.setUseLinkGroup(Base::asBoolean(useLinkGroup));
+            }
+            if (importSolidBodies != Py_None) {
+                ocaf.setImportSolidBodies(Base::asBoolean(importSolidBodies));
             }
             if (mode >= 0) {
                 ocaf.setMode(mode);

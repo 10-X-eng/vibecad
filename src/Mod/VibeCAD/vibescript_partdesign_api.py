@@ -45,6 +45,15 @@ _QUERY_FIELDS = frozenset(
         "max_distance",
     }
 )
+_PUBLIC_QUERY_FIELD_ALIASES = {
+    "radius_mm": "radius",
+    "radius_tolerance_mm": "radius_tolerance",
+    "min_area_mm2": "min_area",
+    "max_area_mm2": "max_area",
+    "min_length_mm": "min_length",
+    "max_length_mm": "max_length",
+    "max_distance_mm": "max_distance",
+}
 _SKETCH_EXPORTS = SketcherDomainAPI.exported_names
 _PUBLISHABLE_TYPES = ("solid", "shell", "face", "wire", "compound")
 _PUBLIC_OUTPUT_TYPES = (*_PUBLISHABLE_TYPES, "component_link")
@@ -638,11 +647,56 @@ def _selection(
         if not allow_all_edges or set(clean) != {"type"}:
             raise _error(operation, "selection", "all_edges is not valid here", value)
         return {"type": "all_edges"}
-    if mode != "query" or not set(clean) <= _QUERY_FIELDS:
+    if mode != "query":
         raise _error(
             operation,
             "selection",
             "must be a geometric query; transient FaceN/EdgeN names are forbidden",
+            value,
+        )
+    for public_name, stored_name in _PUBLIC_QUERY_FIELD_ALIASES.items():
+        if public_name not in clean:
+            continue
+        if stored_name in clean:
+            raise _error(
+                operation,
+                "selection",
+                f"must not provide both {public_name} and {stored_name}",
+                value,
+            )
+        clean[stored_name] = clean.pop(public_name)
+    if "angle_tolerance_degrees" in clean:
+        tolerance = clean.pop("angle_tolerance_degrees")
+        targets = [
+            name
+            for vector, name in (
+                ("normal", "normal_tolerance_degrees"),
+                ("direction", "direction_tolerance_degrees"),
+            )
+            if vector in clean
+        ]
+        if not targets:
+            raise _error(
+                operation,
+                "selection.angle_tolerance_degrees",
+                "requires normal or direction",
+            )
+        for target in targets:
+            if target in clean:
+                raise _error(
+                    operation,
+                    "selection",
+                    f"must not provide both angle_tolerance_degrees and {target}",
+                    value,
+                )
+            clean[target] = tolerance
+    unsupported = sorted(set(clean) - _QUERY_FIELDS)
+    if unsupported:
+        raise _error(
+            operation,
+            "selection",
+            "has unsupported fields "
+            f"{unsupported}; use the arguments documented by api.find_subelements",
             value,
         )
     kind = str(clean.get("element_type") or "")

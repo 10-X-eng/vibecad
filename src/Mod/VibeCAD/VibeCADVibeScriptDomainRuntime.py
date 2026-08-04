@@ -2165,11 +2165,15 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                         }
                     ],
                 )
-            if (
-                manifest.get("migration_required")
-                and operation != "reconfigure_program"
-            ):
-                action = f"vibescript.{pack.domain}.reconfigure_program"
+            complete_contract_replacement = operation == "reconfigure_program" or (
+                operation == "edit_source"
+                and all(
+                    name in arguments
+                    for name in ("input_schema", "inputs", "expected_outputs")
+                )
+            )
+            if manifest.get("migration_required") and not complete_contract_replacement:
+                action = "vibescript.edit_source"
                 _raise(
                     tool_name,
                     "PROGRAM_RECONFIGURATION_REQUIRED",
@@ -2194,6 +2198,10 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                     required_changes=[
                         {
                             "tool": action,
+                            "arguments": {
+                                "source_id": program_id,
+                                "expected_revision": base_revision,
+                            },
                             "expected_revision": base_revision,
                             "replace": [
                                 "source",
@@ -2211,6 +2219,27 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             expected_outputs = manifest.get("expected_outputs")
             if operation == "edit_source":
                 source = str(arguments.get("source") or "")
+                if "inputs" in arguments:
+                    inputs = arguments.get("inputs")
+                    input_schema = (
+                        arguments.get("input_schema")
+                        if "input_schema" in arguments
+                        else contracts.synchronize_input_schema(
+                            dict(input_schema or {}),
+                            dict(inputs or {}),
+                        )
+                    )
+                elif "input_schema" in arguments:
+                    input_schema = arguments.get("input_schema")
+                if "expected_outputs" in arguments:
+                    expected_outputs = arguments.get("expected_outputs")
+                if complete_contract_replacement:
+                    for key in (
+                        "migration_required",
+                        "migration_reason",
+                        "migration_action",
+                    ):
+                        manifest.pop(key, None)
             elif operation == "set_inputs":
                 inputs = _merge_patch(dict(inputs or {}), arguments.get("patch"))
             elif operation == "reconfigure_program":
@@ -16656,16 +16685,15 @@ class DeclarativeDomainAdapter:
                 ),
                 "mutation_selection": {
                     "edit_source": (
-                        "Use only for exact source-text changes while input_schema, inputs, "
-                        "and expected_outputs stay unchanged."
+                        "Use for code edits. Include changed inputs, input_schema, or "
+                        "expected_outputs in the same call."
                     ),
                     "set_inputs": (
                         "Use only for an RFC 7396 value patch while source, input_schema, "
                         "and expected_outputs stay unchanged."
                     ),
                     "reconfigure_program": (
-                        "Use when source, input_schema, inputs, or expected_outputs must be "
-                        "replaced together; do not use it for a source-only or value-only edit."
+                        "Compatibility alias for edit_source."
                     ),
                 },
                 "revision_rule": (
@@ -16780,14 +16808,13 @@ class DeclarativeDomainAdapter:
                 "mutation_selection": {
                     "source_only": "vibescript.edit_source",
                     "input_values_only": f"vibescript.{self.pack.domain}.set_inputs",
-                    "contract_or_outputs": (
-                        f"vibescript.{self.pack.domain}.reconfigure_program"
-                    ),
+                    "contract_or_outputs": "vibescript.edit_source",
                 },
                 "instruction": (
-                    "Replace the complete program contract with the domain-qualified "
-                    "reconfigure_program tool. The prior accepted live objects remain "
-                    "available until a valid v2 candidate is accepted."
+                    "Replace the complete program contract with vibescript.edit_source, "
+                    "including input_schema, inputs, and expected_outputs in the same call. "
+                    "The prior accepted live objects remain available until a valid v2 "
+                    "candidate is accepted."
                     if migration_required
                     else "If this candidate is not accepted, use latest_candidate.failure and "
                     "the accepted contract as the repair baseline, then make the narrowest "
@@ -22274,7 +22301,7 @@ class TechDrawDomainAdapter(DeclarativeDomainAdapter):
                     "Create each independent view or orthographic projection group once; use a projection group for related front/top/side views and view for one orientation such as isometric.",
                     "When projected EdgeN/VertexN/FaceN names are not already known, first accept a template + view/projection + page discovery revision without dimensions.",
                     "Inspect the accepted view's dimension_reference_inventory, including the exact projection direction, geometry type, visibility, 2D coordinates, and source mapping.",
-                    "Use reconfigure_program to add dimensions and their expected_outputs atomically, copying exact inventory names; never guess a projected index on complex geometry.",
+                    "Use edit_source to add dimensions and their expected_outputs atomically, copying exact inventory names; never guess a projected index on complex geometry.",
                     "Add bounded annotations, compose every returned non-page value into exactly one page, and keep projection/page conventions identical.",
                     "After acceptance, inspect raw_value/display_text and page membership, then use a screenshot for overlap, clipping, title-block, and human drafting review.",
                 ],

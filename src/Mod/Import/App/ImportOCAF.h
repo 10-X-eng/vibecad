@@ -64,6 +64,9 @@ public:
     void loadShapes();
     void setMerge(bool);
 
+protected:
+    virtual App::DocumentObject* finishShape(Part::Feature* part);
+
 private:
     void loadShapes(
         const TDF_Label& label,

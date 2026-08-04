@@ -783,7 +783,14 @@ def resolve_frame_objects(
     if frame_mode == "all":
         if object_names:
             return _invalid("object_names requires frame='objects'.")
-        return {"ok": True, "object_names": model_display_target_names(document)}
+        return {
+            "ok": True,
+            "object_names": [
+                name
+                for name in model_display_target_names(document)
+                if bool(document.getObject(name).ViewObject.Visibility)
+            ],
+        }
 
     if frame_mode == "active_sketch":
         sketch = service._get_sketch()
@@ -1075,6 +1082,7 @@ def temporarily_isolate_objects(
     object_names: list[str],
 ) -> Iterator[None]:
     keep = _visible_container_closure(document, object_names)
+    preserve = _linked_render_support_names(document, object_names) - keep
     snapshots: list[tuple[Any, bool]] = []
     for obj in list(document.Objects):
         view_object = getattr(obj, "ViewObject", None)
@@ -1082,7 +1090,11 @@ def temporarily_isolate_objects(
             continue
         visible = bool(view_object.Visibility)
         snapshots.append((view_object, visible))
-        desired = obj.Name in keep
+        # App::Link owns the occurrence's visibility, but its view provider may
+        # still consume the linked definition's currently enabled Body Tip or
+        # group children. Preserve those implementation switches without
+        # showing the definition container itself in the isolated scene.
+        desired = visible if obj.Name in preserve else obj.Name in keep
         if visible != desired:
             view_object.Visibility = desired
     try:
@@ -1173,6 +1185,47 @@ def _visible_container_closure(document: Any, object_names: list[str]) -> set[st
             keep.add(parent_name)
             pending.append(parent)
     return keep
+
+
+def _linked_render_support_names(document: Any, object_names: list[str]) -> set[str]:
+    """Return definition children whose presentation an isolated Link consumes.
+
+    A linked occurrence and its definition are separate visible objects.  The
+    definition root must stay hidden during an occurrence-only capture, while
+    the definition's active Body Tip or visible group members retain their
+    existing presentation state so the Link can render its delegated scene.
+    """
+
+    support: set[str] = set()
+    visited: set[int] = set()
+
+    def retain_children(target: Any) -> None:
+        if target is None or id(target) in visited:
+            return
+        visited.add(id(target))
+        type_id = str(getattr(target, "TypeId", "") or "")
+        if type_id == "PartDesign::Body":
+            tip = getattr(target, "Tip", None)
+            tip_name = str(getattr(tip, "Name", "") or "")
+            if tip_name:
+                support.add(tip_name)
+            return
+        members = list(getattr(target, "Group", []) or [])
+        for member in members:
+            member_name = str(getattr(member, "Name", "") or "")
+            if member_name:
+                support.add(member_name)
+            retain_children(member)
+
+    for name in object_names:
+        occurrence = document.getObject(name)
+        if occurrence is None:
+            continue
+        target = getattr(occurrence, "LinkedObject", None)
+        if target is None:
+            continue
+        retain_children(target)
+    return support
 
 
 def _has_finite_shape_bounds(obj: Any) -> bool:

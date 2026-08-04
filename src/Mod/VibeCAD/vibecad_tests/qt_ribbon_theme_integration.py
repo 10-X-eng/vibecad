@@ -910,6 +910,131 @@ def _key_click(widget, key):
     )
 
 
+def _mouse_drag(widget, start, delta):
+    application = QtWidgets.QApplication.instance()
+    end = start + delta
+    global_start = widget.mapToGlobal(start)
+    global_end = global_start + delta
+    for event_type, local_pos, global_pos, button, buttons in (
+        (
+            QtCore.QEvent.MouseButtonPress,
+            start,
+            global_start,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.LeftButton,
+        ),
+        (
+            QtCore.QEvent.MouseMove,
+            end,
+            global_end,
+            QtCore.Qt.NoButton,
+            QtCore.Qt.LeftButton,
+        ),
+        (
+            QtCore.QEvent.MouseButtonRelease,
+            end,
+            global_end,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.NoButton,
+        ),
+    ):
+        application.sendEvent(
+            widget,
+            QtGui.QMouseEvent(
+                event_type,
+                QtCore.QPointF(local_pos),
+                QtCore.QPointF(global_pos),
+                button,
+                buttons,
+                QtCore.Qt.NoModifier,
+            ),
+        )
+
+
+def _assert_model_browser_resizes(main_window, separate_tree_dock):
+    browser_host = main_window.findChild(
+        QtWidgets.QWidget,
+        "VibeCADModelBrowserHost",
+    )
+    viewport_canvas = main_window.findChild(
+        QtWidgets.QWidget,
+        "VibeCADViewportCanvas",
+    )
+    browser_resize_handle = main_window.findChild(
+        QtWidgets.QWidget,
+        "VibeCADModelBrowserResizeHandle",
+    )
+    assert browser_host is not None
+    assert viewport_canvas is not None
+    assert browser_resize_handle is not None
+    assert separate_tree_dock.parentWidget() is browser_host
+    assert browser_host.parentWidget() is viewport_canvas
+    assert browser_resize_handle.parentWidget() is browser_host
+    assert browser_host.width() >= 288
+    assert browser_resize_handle.cursor().shape() == QtCore.Qt.SizeHorCursor
+    assert not any(
+        isinstance(parent, QtWidgets.QSplitter)
+        for parent in (
+            separate_tree_dock.parentWidget(),
+            browser_host.parentWidget(),
+        )
+    )
+
+    browser_width_parameters = App.ParamGet(
+        "User parameter:BaseApp/Preferences/MainWindow"
+    )
+    initial_browser_width = browser_host.width()
+    resize_delta = (
+        40 if initial_browser_width + 104 < viewport_canvas.width() else -40
+    )
+    _mouse_drag(
+        browser_resize_handle,
+        browser_resize_handle.rect().center(),
+        QtCore.QPoint(resize_delta, 0),
+    )
+    _process_events()
+    resized_browser_width = browser_host.width()
+    assert resized_browser_width == initial_browser_width + resize_delta
+    assert browser_width_parameters.GetInt(
+        "ModelBrowserWidth",
+        0,
+    ) == resized_browser_width
+
+    _mouse_drag(
+        browser_resize_handle,
+        browser_resize_handle.rect().center(),
+        QtCore.QPoint(-resize_delta, 0),
+    )
+    _process_events()
+    assert browser_host.width() == initial_browser_width
+    assert browser_width_parameters.GetInt(
+        "ModelBrowserWidth",
+        0,
+    ) == initial_browser_width
+
+    _mouse_drag(
+        browser_resize_handle,
+        browser_resize_handle.rect().center(),
+        QtCore.QPoint(-viewport_canvas.width(), 0),
+    )
+    _process_events()
+    assert browser_host.width() == 288
+    assert browser_width_parameters.GetInt("ModelBrowserWidth", 0) == 288
+    if initial_browser_width != 288:
+        _mouse_drag(
+            browser_resize_handle,
+            browser_resize_handle.rect().center(),
+            QtCore.QPoint(initial_browser_width - 288, 0),
+        )
+        _process_events()
+        assert browser_host.width() == initial_browser_width
+        assert browser_width_parameters.GetInt(
+            "ModelBrowserWidth",
+            0,
+        ) == initial_browser_width
+    return initial_browser_width
+
+
 def _assert_visible_inside(widget, ancestor):
     assert widget is not None and widget.isVisible()
     top_left = widget.mapTo(ancestor, QtCore.QPoint(0, 0))
@@ -981,6 +1106,7 @@ def _run():
     secondary_document = None
     secondary_name = None
     initial_mode = None
+    exit_code = 0
     sentinel = App.ParamGet(
         "User parameter:BaseApp/Preferences/Mod/Sketcher/VibeCADRibbonSmoke"
     )
@@ -993,6 +1119,40 @@ def _run():
         main_window.resize(1440, 900)
         main_window.show()
         _process_events()
+
+        expected_browser_width = os.environ.get(
+            "VIBECAD_EXPECT_MODEL_BROWSER_WIDTH"
+        )
+        if expected_browser_width:
+            browser_host = main_window.findChild(
+                QtWidgets.QWidget,
+                "VibeCADModelBrowserHost",
+            )
+            assert browser_host is not None
+            assert browser_host.width() == int(expected_browser_width)
+            print(
+                "VIBECAD_MODEL_BROWSER_WIDTH_RESTORED "
+                f"width={browser_host.width()}",
+                flush=True,
+            )
+            return
+
+        if os.environ.get("VIBECAD_VERIFY_MODEL_BROWSER_RESIZE_ONLY"):
+            separate_tree_dock = main_window.findChild(
+                QtWidgets.QDockWidget,
+                "Std_TreeView",
+            )
+            assert separate_tree_dock is not None
+            initial_browser_width = _assert_model_browser_resizes(
+                main_window,
+                separate_tree_dock,
+            )
+            print(
+                "VIBECAD_MODEL_BROWSER_RESIZE_GUI_OK "
+                f"minimum=288 restored={initial_browser_width}",
+                flush=True,
+            )
+            return
 
         if os.environ.get("VIBECAD_VERIFY_SAVED_COMBINED_BROWSER"):
             saved_tree = main_window.findChild(
@@ -1228,25 +1388,7 @@ def _run():
                 separate_tree_dock.features()
                 == QtWidgets.QDockWidget.NoDockWidgetFeatures
             )
-            browser_host = main_window.findChild(
-                QtWidgets.QWidget,
-                "VibeCADModelBrowserHost",
-            )
-            viewport_canvas = main_window.findChild(
-                QtWidgets.QWidget,
-                "VibeCADViewportCanvas",
-            )
-            assert browser_host is not None
-            assert viewport_canvas is not None
-            assert separate_tree_dock.parentWidget() is browser_host
-            assert browser_host.parentWidget() is viewport_canvas
-            assert not any(
-                isinstance(parent, QtWidgets.QSplitter)
-                for parent in (
-                    separate_tree_dock.parentWidget(),
-                    browser_host.parentWidget(),
-                )
-            )
+            _assert_model_browser_resizes(main_window, separate_tree_dock)
 
             def assert_tree_rendered():
                 for _ in range(3):

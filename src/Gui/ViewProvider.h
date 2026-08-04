@@ -271,6 +271,20 @@ public:
      */
     virtual std::vector<App::DocumentObject*> claimChildren3D() const;
 
+    /** Describe the child presentation consumed by an App::Link.
+     *
+     * Most containers expose the same children and preserve each child's
+     * current visibility. A provider may instead expose its stable result
+     * child with independent visibility so hiding the definition does not
+     * erase linked occurrences.
+     */
+    struct LinkChild3D
+    {
+        App::DocumentObject* object {nullptr};
+        bool overrideVisibility {false};
+    };
+    virtual std::vector<LinkChild3D> claimLinkChildren3D() const;
+
     /** @name Selection handling
      * This group of methods do the selection handling.
      * Here you can define how the selection for your ViewProfider

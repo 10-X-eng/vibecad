@@ -5647,6 +5647,12 @@ void DocumentItem::rebuildModelBrowser()
     };
 
     auto logicalItem = [&](App::DocumentObject* object, DocumentObjectItem* fallback) {
+        if (!object) {
+            // A virtual category may visually place a document-root object
+            // below a component. Null is an explicit root selection identity,
+            // not a request to borrow that visual component as a subname parent.
+            return static_cast<DocumentObjectItem*>(nullptr);
+        }
         const auto proxyIt = proxies.find(object);
         return proxyIt == proxies.end() ? fallback : proxyIt->second;
     };
@@ -6280,6 +6286,18 @@ void DocumentItem::rebuildModelBrowser()
         TreeWidget::tr("Sketches"),
         "Sketcher_NewSketch",
         rootSketches
+    );
+
+    const auto rootOccurrences =
+        componentRoleEntries(nullptr, Role::AssemblyOccurrence);
+    renderCategory(
+        this,
+        nullptr,
+        nullptr,
+        "components",
+        TreeWidget::tr("Components"),
+        "Geoassembly",
+        rootOccurrences
     );
 
     const auto rootReferences = componentRoleEntries(nullptr, Role::Reference);

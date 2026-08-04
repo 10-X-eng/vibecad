@@ -1616,11 +1616,20 @@ result = {
         assert body.Tip.CurrentState.Operation is operation
         assert list(operation.ProgramOutputKeys) == ["UtilityBlade"]
         assert list(operation.ProgramOutputTypes) == ["solid"]
-        assert not [
+        root_object = next(
+            obj for obj in document.Objects if role_of(obj) == ROLE_MODEL
+        )
+        restored_sketches = [
             obj
             for obj in document.Objects
             if obj.TypeId == "Sketcher::SketchObject"
         ]
+        assert [str(obj.Label) for obj in restored_sketches] == [
+            "Lower Face Blade Sketch",
+            "Cutting Edge Blade Sketch",
+            "Upper Face Blade Sketch",
+        ]
+        assert all(obj in list(root_object.Group) for obj in restored_sketches)
         document.recompute()
         assert body.Shape.isValid() and body.Shape.Volume > 0.0
         published = document.getObject(stable_output)
@@ -1630,20 +1639,23 @@ result = {
             1.0e-7,
             abs(published.Shape.Volume) * 1.0e-9,
         )
-        root_object = next(
-            obj for obj in document.Objects if role_of(obj) == ROLE_MODEL
-        )
         document.openTransaction("Remove VibeScript Design operation")
         removed = PartDesign.removeDesignOperation(operation)
         document.commitTransaction()
         assert removed == [body_name]
         assert document.getObject(native["operation_object"]) is None
         assert document.getObject(body_name) is None
-        assert not [
+        retained_sketches = [
             obj
             for obj in document.Objects
             if obj.TypeId == "Sketcher::SketchObject"
         ]
+        assert [str(obj.Label) for obj in retained_sketches] == [
+            "Lower Face Blade Sketch",
+            "Cutting Edge Blade Sketch",
+            "Upper Face Blade Sketch",
+        ]
+        assert all(obj in list(root_object.Group) for obj in retained_sketches)
 
         repair = _capture(
             {
@@ -1681,11 +1693,17 @@ result = {
         assert repaired_body is not None
         assert repaired_body.Tip.TypeId == "PartDesign::DesignBodyPublication"
         assert repaired_body.Tip.CurrentState.Operation is repaired_operation
-        assert not [
+        repaired_sketches = [
             obj
             for obj in document.Objects
             if obj.TypeId == "Sketcher::SketchObject"
         ]
+        assert [str(obj.Label) for obj in repaired_sketches] == [
+            "Lower Face Blade Sketch",
+            "Cutting Edge Blade Sketch",
+            "Upper Face Blade Sketch",
+        ]
+        assert all(obj in list(root_object.Group) for obj in repaired_sketches)
         document.recompute()
         assert repaired_body.Shape.isValid()
         portable = decode_document_program_contract(
@@ -1880,10 +1898,11 @@ def _assert_partdesign_timeline_graph(
         abs(published.Shape.Volume) * 1.0e-9,
     )
 
-    # Worker-side Pad/Pocket/Sketch objects are an execution detail. The
-    # editable source program is the one semantic History operation, and only
-    # its stable physical Body result is retained in the authoring document.
-    generated_legacy_features = [
+    # The source program remains one semantic History operation, while its
+    # validated native graph is retained under its source component. Sketches
+    # therefore remain visible in the model browser without becoming duplicate
+    # timeline operations or competing viewport solids.
+    restored_source_features = [
         obj
         for obj in document.Objects
         if obj.TypeId
@@ -1895,7 +1914,24 @@ def _assert_partdesign_timeline_graph(
         and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
         == program_id
     ]
-    assert generated_legacy_features == []
+    restored_sketches = [
+        obj
+        for obj in restored_source_features
+        if obj.TypeId == "Sketcher::SketchObject"
+    ]
+    restored_solids = [
+        obj
+        for obj in restored_source_features
+        if obj.TypeId in {"PartDesign::Pad", "PartDesign::Pocket"}
+    ]
+    assert len(restored_sketches) == 2
+    assert all(int(obj.GeometryCount) > 0 for obj in restored_sketches)
+    assert all(
+        not obj.Shape.isNull() and obj.Shape.isValid()
+        for obj in restored_solids
+    )
+    assert all(obj in list(root.Group) for obj in restored_source_features)
+    assert all(obj not in timeline_operations for obj in restored_source_features)
 
     pack = get_vibescript_pack("PartDesignWorkbench")
     assert pack is not None
@@ -2276,18 +2312,6 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         identity,
     )
     assert "through_all=True" in str(reopened_graph["source"])
-    assert not [
-        obj
-        for obj in reopened.Objects
-        if obj.TypeId
-        in {
-            "Sketcher::SketchObject",
-            "PartDesign::Pad",
-            "PartDesign::Pocket",
-        }
-        and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
-        == program_id
-    ]
     reopened_consumers = [reopened.getObject(name) for name in consumer_names]
     assert all(item is not None for item in reopened_consumers)
     _assert_consumers(reopened, reopened_consumers, reopened_published)
@@ -2540,6 +2564,8 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
         assert occurrence.TypeId == "App::Link"
         assert occurrence.LinkedObject is source
         assert occurrence.Placement.Base == App.Vector(0, 0, 0)
+        assert source.Visibility is False
+        assert occurrence.Visibility is True
 
         import Assembly
 
@@ -2555,6 +2581,8 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
             App.Vector(37, 4, 2),
             App.Rotation(App.Vector(0, 0, 1), 15),
         )
+        source.Visibility = True
+        occurrence.Visibility = False
         label_edit = initial_source.replace("Motor occurrence", "Drive motor")
         _prepared, _publication, accepted = _run_candidate(
             _capture(
@@ -2569,8 +2597,13 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
             service,
         )
         assert document.getObject(occurrence_name) is occurrence
+        assert source.Visibility is True
+        assert occurrence.Visibility is False
         assert math.isclose(occurrence.Placement.Base.x, 37.0, abs_tol=1.0e-9)
         assert math.isclose(occurrence.Placement.Base.y, 4.0, abs_tol=1.0e-9)
+
+        source.Visibility = False
+        occurrence.Visibility = True
 
         moved_source = label_edit.replace(
             "inputs['motor'], label=",
@@ -2615,6 +2648,8 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
         assert reopened_source is not None
         assert reopened_occurrence.LinkedObject is reopened_source
         assert reopened_occurrence.Placement.Base == App.Vector(0, 0, 0)
+        assert reopened_source.Visibility is False
+        assert reopened_occurrence.Visibility is True
 
         reopened_service = _Service(reopened, root)
         delete_capture = _capture(
@@ -2657,6 +2692,7 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
             "assembly_containment_survived_rebuild": True,
             "save_reopen_preserved_link": True,
             "deletion_preserved_definition": True,
+            "definition_and_occurrence_visibility_are_independent": True,
         }
     finally:
         if str(active_document.Name) in App.listDocuments():
@@ -3127,13 +3163,25 @@ def _exercise_direct_solid_adoption_label(root: Path, pack) -> dict:
         assert publication["live_outputs"]["Part"]["partdesign_data"][
             "tip_label"
         ] == "Finished Direct Loft"
-        assert not [
+        restored_features = [
             obj
             for obj in document.Objects
             if obj.TypeId == "PartDesign::Feature"
             and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
             == str(_prepared["program_id"])
         ]
+        assert any(
+            str(obj.Label) == "Finished Direct Loft"
+            for obj in restored_features
+        )
+        root_object = next(
+            obj
+            for obj in document.Objects
+            if role_of(obj) == ROLE_MODEL
+            and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+            == str(_prepared["program_id"])
+        )
+        assert all(obj in list(root_object.Group) for obj in restored_features)
         published = document.getObject(
             accepted["live_outputs"]["Part"]["object_name"]
         )
@@ -3245,11 +3293,20 @@ def _exercise_saved_source_compatibility(root: Path, pack) -> dict:
         )
         assert operation is not None
         assert body.Tip.CurrentState.Operation is operation
-        assert not [
+        restored_pads = [
             obj
             for obj in document.Objects
             if obj.TypeId == "PartDesign::Pad"
         ]
+        assert len(restored_pads) == 1
+        source_root = next(
+            obj
+            for obj in document.Objects
+            if role_of(obj) == ROLE_MODEL
+            and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+            == program_id
+        )
+        assert restored_pads[0] in list(source_root.Group)
         assert publication["live_outputs"]["Part"]["partdesign_data"][
             "feature_count"
         ] >= 1

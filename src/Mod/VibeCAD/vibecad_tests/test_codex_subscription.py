@@ -667,12 +667,17 @@ def test_choose_provider_enables_web_search_for_api_providers(
         def codex_skills_enabled(self) -> bool:
             return False
 
+        def intent_memory_model(self) -> str:
+            return "memory-model"
+
     selected = session.choose_provider(_Service())
     assert isinstance(selected, provider_type)
     assert selected.web_search_enabled is True
     if provider_name == "openai":
         assert selected.auth_mode == "api_key"
         assert selected.api_key == "test-key"
+    else:
+        assert selected.compaction_model == "memory-model"
 
 
 def test_plan_surface_excludes_document_mutation_tools(

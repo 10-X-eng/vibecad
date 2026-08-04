@@ -235,6 +235,11 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         "source",
     ]
     assert "replacements" not in edit["parameters"]["properties"]
+    assert {
+        "input_schema",
+        "inputs",
+        "expected_outputs",
+    } <= set(edit["parameters"]["properties"])
     delete_output = universal["vibescript.delete_output"]
     assert delete_output["parameters"]["required"] == [
         "source_id",
@@ -253,6 +258,7 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
     )
     for write_name in (
         "vibescript.create_program",
+        "vibescript.edit_source",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
         "vibescript.delete_output",
@@ -268,7 +274,7 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
             for spec in domains.domain_tool_specs(pack)
         }
         assert "Change only input values" in specs["set_inputs"]["description"]
-        assert "contracts must change" in specs["reconfigure_program"]["description"]
+        assert "Compatibility alias" in specs["reconfigure_program"]["description"]
 
         adapter = domains.get_domain_adapter(pack.domain)
         assert adapter is not None
@@ -488,7 +494,7 @@ def test_inspect_program_returns_machine_readable_model_state() -> None:
         "mutation_selection": {
             "source_only": "vibescript.edit_source",
             "input_values_only": "vibescript.assembly.set_inputs",
-            "contract_or_outputs": "vibescript.assembly.reconfigure_program",
+            "contract_or_outputs": "vibescript.edit_source",
         },
         "instruction": (
             "The accepted contract is current; verify domain-specific live evidence."
@@ -1085,7 +1091,9 @@ def test_universal_edit_source_maps_to_the_active_domain_with_complete_code(
         {
             "source_id": "a" * 32,
             "expected_revision": "b" * 64,
-            "source": "result = {'Body': api.box(1, 2, 3)}",
+            "source": "result = {'Renamed': api.box(inputs['x'], 2, 3)}",
+            "inputs": {"x": 1.0},
+            "expected_outputs": [{"name": "Renamed", "type": "solid"}],
         },
         editable_sources={
             "sources": [
@@ -1107,7 +1115,9 @@ def test_universal_edit_source_maps_to_the_active_domain_with_complete_code(
         "arguments": {
             "program_id": "a" * 32,
             "expected_revision": "b" * 64,
-            "source": "result = {'Body': api.box(1, 2, 3)}",
+            "source": "result = {'Renamed': api.box(inputs['x'], 2, 3)}",
+            "inputs": {"x": 1.0},
+            "expected_outputs": [{"name": "Renamed", "type": "solid"}],
         },
     }
     assert result["source_id"] == "a" * 32
@@ -2485,7 +2495,7 @@ def test_schema_v1_migrates_to_partdesign_without_relocation(tmp_path: Path) -> 
     assert migrated["artifact_directory"] == str(v1_directory)
     assert migrated["expected_outputs"] == [{"name": "Body", "type": "solid"}]
     assert migrated["migration_required"] is True
-    assert migrated["migration_action"] == "vibescript.partdesign.reconfigure_program"
+    assert migrated["migration_action"] == "vibescript.edit_source"
 
     v1_directory.mkdir(parents=True)
     (v1_directory / "model.py").write_text("result = {}\n", encoding="utf-8")
@@ -6490,7 +6500,10 @@ def test_gui_document_observer_marks_vibescript_dependencies_stale(monkeypatch) 
     assert refreshed == [True]
 
 
-def test_dependency_invalidation_ignores_group_recompute_notification() -> None:
+@pytest.mark.parametrize("property_name", ["_GroupTouched", "ShowInTree", "Visibility"])
+def test_dependency_invalidation_ignores_presentation_notifications(
+    property_name: str,
+) -> None:
     import VibeCADVibeScriptDomainPublication as publication
 
     class Source:
@@ -6500,7 +6513,99 @@ def test_dependency_invalidation_ignores_group_recompute_notification() -> None:
                 "A derived group recompute must not inspect dependents"
             )
 
-    assert publication.mark_programs_stale_from_source(Source(), "_GroupTouched") == []
+    assert publication.mark_programs_stale_from_source(Source(), property_name) == []
+
+
+def test_occurrence_screenshot_isolation_hides_definition_but_preserves_body_tip() -> None:
+    from tool_impl.service import core_set_view
+
+    class View:
+        def __init__(self, visible: bool = True):
+            self.Visibility = visible
+
+    class Object:
+        def __init__(self, name: str, type_id: str):
+            self.Name = name
+            self.TypeId = type_id
+            self.ViewObject = View()
+            self.Tip = None
+            self.Group = []
+            self.LinkedObject = None
+
+        def getParentGeoFeatureGroup(self):
+            return None
+
+        def getParentGroup(self):
+            return None
+
+    tip = Object("ImportedFeature", "Part::Feature")
+    definition = Object("ImportedBody", "PartDesign::Body")
+    definition.Tip = tip
+    occurrence = Object("PlacedMotor", "App::Link")
+    occurrence.LinkedObject = definition
+    unrelated = Object("OtherBody", "PartDesign::Body")
+    objects = [tip, definition, occurrence, unrelated]
+
+    class Document:
+        Objects = objects
+
+        @staticmethod
+        def getObject(name):
+            return next((obj for obj in objects if obj.Name == name), None)
+
+    with core_set_view.temporarily_isolate_objects(Document(), [occurrence.Name]):
+        assert occurrence.ViewObject.Visibility is True
+        assert definition.ViewObject.Visibility is False
+        assert tip.ViewObject.Visibility is True
+        assert unrelated.ViewObject.Visibility is False
+
+    assert all(obj.ViewObject.Visibility is True for obj in objects)
+
+
+def test_all_screenshot_frame_uses_current_visibility_without_unhiding_models() -> None:
+    from tool_impl.service import core_set_view
+
+    class Bounds:
+        XMin = YMin = ZMin = 0.0
+        XMax = YMax = ZMax = 1.0
+
+    class Shape:
+        BoundBox = Bounds()
+
+        @staticmethod
+        def isNull():
+            return False
+
+    class Object:
+        def __init__(self, name: str, visible: bool):
+            self.Name = name
+            self.TypeId = "PartDesign::Body"
+            self.Shape = Shape()
+            self.ViewObject = type("View", (), {"Visibility": visible})()
+
+        def getParentGeoFeatureGroup(self):
+            return None
+
+    visible = Object("VisibleBody", True)
+    hidden = Object("HiddenBody", False)
+    objects = [visible, hidden]
+
+    class Document:
+        Objects = objects
+
+        @staticmethod
+        def getObject(name):
+            return next((obj for obj in objects if obj.Name == name), None)
+
+    resolved = core_set_view.resolve_frame_objects(
+        object(),
+        Document(),
+        object(),
+        "all",
+        None,
+    )
+    assert resolved == {"ok": True, "object_names": ["VisibleBody"]}
+    assert hidden.ViewObject.Visibility is False
 
 
 def test_gui_document_observer_ignores_properties_restored_from_file(

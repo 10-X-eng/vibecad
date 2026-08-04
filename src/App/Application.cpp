@@ -3313,6 +3313,20 @@ void Application::recomputeWorker()
             if (!request.documentName.empty()) {
                 _recomputeDocumentsInProgress.erase(request.documentName);
                 _recomputeStateChanged.notify_all();
+
+                const std::string completedDocumentName = request.documentName;
+                lock.unlock();
+                auto notifyFinished = [this, completedDocumentName]() {
+                    signalRecomputeRequestFinished(completedDocumentName);
+                };
+                if (App::MainThreadSignalConfig::hasHooks()
+                    && !App::MainThreadSignalConfig::isMainThread()) {
+                    App::MainThreadSignalConfig::invoke(std::move(notifyFinished), false);
+                }
+                else {
+                    notifyFinished();
+                }
+                lock.lock();
             }
         }
     }

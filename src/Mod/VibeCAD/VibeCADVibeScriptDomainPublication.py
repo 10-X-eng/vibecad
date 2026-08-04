@@ -1279,11 +1279,12 @@ def mark_programs_stale_from_source(source: Any, property_name: str) -> list[str
     if (
         not changed_property
         or changed_property.startswith("VibeCAD")
-        or changed_property == "_GroupTouched"
+        or changed_property in {"_GroupTouched", "ShowInTree", "Visibility"}
     ):
         # GroupExtension emits _GroupTouched every time it executes. Actual
-        # membership edits emit Group separately, so this derived recompute
-        # notification is never evidence that an accepted input changed.
+        # membership edits emit Group separately. ShowInTree and Visibility
+        # are presentation choices. None changes the captured geometry or
+        # contract consumed by a VibeScript input.
         return []
     label_only = changed_property == "Label"
     marked: list[str] = []
@@ -13449,12 +13450,13 @@ def _verify_partdesign_history_body(
 
 def _set_view_visibility(obj: Any, visible: bool) -> bool:
     view = getattr(obj, "ViewObject", None)
-    if view is None or not hasattr(view, "Visibility"):
+    target = view if view is not None and hasattr(view, "Visibility") else obj
+    if not hasattr(target, "Visibility"):
         return False
     desired = bool(visible)
-    if bool(view.Visibility) == desired:
+    if bool(target.Visibility) == desired:
         return False
-    view.Visibility = desired
+    target.Visibility = desired
     return True
 
 
@@ -14018,6 +14020,11 @@ def _materialize_partdesign_native_history(
     root: Any,
     prepared: Mapping[str, Any],
     validated: Mapping[str, Any],
+    *,
+    existing_bodies: Mapping[str, Any] | None = None,
+    preserve_existing_tips: bool = False,
+    internalize_restored_objects: bool = False,
+    build_timeline_blocks: bool = True,
 ) -> dict[str, Any]:
     history = validated.get("partdesign_native_history")
     if not isinstance(history, Mapping):
@@ -14034,41 +14041,65 @@ def _materialize_partdesign_native_history(
     for body_specification in list(history.get("outputs") or []):
         object_specs = list(body_specification.get("objects") or [])
         output_name = str(body_specification["output_name"])
-        body = doc.addObject(
-            "PartDesign::Body",
-            str(body_specification["body_name"]),
+        if existing_bodies is not None and output_name not in existing_bodies:
+            # The Design-global publisher creates physical Bodies only for
+            # api.body solid outputs. Standalone publish outputs retain their
+            # stable publication boundary and do not gain a synthetic Body.
+            continue
+        body = (
+            existing_bodies.get(output_name)
+            if existing_bodies is not None
+            else None
         )
+        existing_tip = getattr(body, "Tip", None) if body is not None else None
         if body is None:
-            raise RuntimeError(
-                f"FreeCAD did not restore the native Body for {output_name!r}."
+            body = doc.addObject(
+                "PartDesign::Body",
+                str(body_specification["body_name"]),
             )
-        body.Label = str(body_specification["body_label"])
-        created_objects.append(body)
-        provisional_query = getattr(
-            doc,
-            "isProvisionallyEnrolledInTimelineByCurrentTransaction",
-            None,
-        )
-        classify_internal = getattr(
-            doc,
-            "classifyProvisionalTimelineInternalObject",
-            None,
-        )
-        if (
-            callable(provisional_query)
-            and provisional_query(body)
-            and callable(classify_internal)
-        ):
-            classify_internal(body)
-        root.addObject(body)
+            if body is None:
+                raise RuntimeError(
+                    f"FreeCAD did not restore the native Body for {output_name!r}."
+                )
+            body.Label = str(body_specification["body_label"])
+            created_objects.append(body)
+            provisional_query = getattr(
+                doc,
+                "isProvisionallyEnrolledInTimelineByCurrentTransaction",
+                None,
+            )
+            classify_internal = getattr(
+                doc,
+                "classifyProvisionalTimelineInternalObject",
+                None,
+            )
+            if (
+                callable(provisional_query)
+                and provisional_query(body)
+                and callable(classify_internal)
+            ):
+                classify_internal(body)
+            root.addObject(body)
+        elif str(getattr(body, "TypeId", "") or "") != "PartDesign::Body":
+            raise RuntimeError(
+                f"Existing Part Design output {output_name!r} is not a Body."
+            )
 
         objects: dict[str, Any] = {}
         for specification in object_specs:
             original_name = str(specification["name"])
-            obj = body.newObject(
-                str(specification["type_id"]),
-                original_name,
-            )
+            if existing_bodies is None:
+                obj = body.newObject(
+                    str(specification["type_id"]),
+                    original_name,
+                )
+            else:
+                obj = doc.addObject(
+                    str(specification["type_id"]),
+                    original_name,
+                )
+                if obj is not None:
+                    root.addObject(obj)
             if obj is None:
                 raise RuntimeError(
                     f"FreeCAD did not restore native history object {original_name!r}."
@@ -14082,6 +14113,23 @@ def _materialize_partdesign_native_history(
                 )
             created_objects.append(obj)
             objects[original_name] = obj
+            if internalize_restored_objects:
+                provisional_query = getattr(
+                    doc,
+                    "isProvisionallyEnrolledInTimelineByCurrentTransaction",
+                    None,
+                )
+                classify_internal = getattr(
+                    doc,
+                    "classifyProvisionalTimelineInternalObject",
+                    None,
+                )
+                if (
+                    callable(provisional_query)
+                    and provisional_query(obj)
+                    and callable(classify_internal)
+                ):
+                    classify_internal(obj)
 
         for specification in object_specs:
             original_name = str(specification["name"])
@@ -14128,16 +14176,29 @@ def _materialize_partdesign_native_history(
 
                 install_fastener_view_provider(obj)
 
+            scripted_publication.tag_object(
+                obj,
+                role=scripted_publication.ROLE_IMPLEMENTATION,
+                engine="vibescript:partdesign",
+                model_id=program_id,
+                output_key=output_name,
+                revision=revision,
+            )
         tip_name = str(body_specification.get("tip_name") or "")
-        if tip_name and tip_name in objects:
+        if preserve_existing_tips and existing_tip is not None:
+            body.Tip = existing_tip
+        elif tip_name and tip_name in objects:
             body.Tip = objects[tip_name]
         tip = getattr(body, "Tip", None)
         tip_shape = getattr(tip, "Shape", None)
         if (
-            str(body_specification.get("representation") or "") != "body"
-            or tip_shape is None
-            or tip_shape.isNull()
-            or not tip_shape.isValid()
+            not (preserve_existing_tips and existing_tip is not None)
+            and (
+                str(body_specification.get("representation") or "") != "body"
+                or tip_shape is None
+                or tip_shape.isNull()
+                or not tip_shape.isValid()
+            )
         ):
             accepted = body.newObject(
                 "PartDesign::Feature",
@@ -14196,13 +14257,16 @@ def _materialize_partdesign_native_history(
             body.Tip is not candidate for candidate in authored_objects
         ):
             authored_objects.append(body.Tip)
-        timeline_blocks[output_name] = _partdesign_timeline_blocks(
-            authored_objects,
-            output_name=output_name,
-        )
+        if build_timeline_blocks:
+            timeline_blocks[output_name] = _partdesign_timeline_blocks(
+                authored_objects,
+                output_name=output_name,
+            )
 
     for body_specification in list(history.get("outputs") or []):
         output_name = str(body_specification["output_name"])
+        if existing_bodies is not None and output_name not in existing_bodies:
+            continue
         body = bodies.get(output_name)
         if body is None:
             raise RuntimeError(
@@ -14814,6 +14878,26 @@ def _partdesign_body_output(item: Mapping[str, Any]) -> bool:
     )
 
 
+def _partdesign_source_evidence(root: Any, program_id: str) -> list[Any]:
+    """Return exact worker-native objects retained under one source root."""
+
+    if root is None:
+        return []
+    return [
+        obj
+        for obj in list(getattr(root, "Group", []) or [])
+        if PROP_PARTDESIGN_HISTORY_KEY in _properties(obj)
+        and str(
+            getattr(obj, scripted_publication.PROP_ENGINE, "") or ""
+        )
+        == "vibescript:partdesign"
+        and str(
+            getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+        )
+        == program_id
+    ]
+
+
 def _publish_partdesign_design_candidate(
     service: Any,
     prepared: Mapping[str, Any],
@@ -14844,6 +14928,22 @@ def _publish_partdesign_design_candidate(
         if operation is None
         else {}
     )
+    previous_source_evidence = _partdesign_source_evidence(root, program_id)
+    source_evidence_uses = _external_uses(
+        doc,
+        previous_source_evidence,
+        [
+            *previous_source_evidence,
+            *([root] if root is not None else []),
+            *([operation] if operation is not None else []),
+        ],
+    )
+    if source_evidence_uses:
+        raise _reference_error(
+            "Cannot regenerate Part Design source evidence while downstream "
+            "objects reference it; reference the published Body instead",
+            source_evidence_uses,
+        )
 
     previous_presentation = {
         name: _preflight_partdesign_presentation(obj)
@@ -15014,6 +15114,13 @@ def _publish_partdesign_design_candidate(
             created.append(str(root.Name))
         root.Label = str(prepared["program_name"])
         _tag_partdesign_root(root, prepared)
+        if previous_source_evidence:
+            removed_implementation.extend(
+                _remove_objects_dependency_order(
+                    doc,
+                    previous_source_evidence,
+                )
+            )
         # Component occurrences are top-level History operations. Temporarily
         # remove the root's semantic LinkList while the native Design
         # operation replaces its own resources, otherwise the timeline sees a
@@ -15101,6 +15208,16 @@ def _publish_partdesign_design_candidate(
             str(item["name"]): body
             for item, body in zip(body_items, bodies)
         }
+        restored_native_history = _materialize_partdesign_native_history(
+            doc,
+            root,
+            prepared,
+            validated,
+            existing_bodies=bodies_by_output,
+            preserve_existing_tips=True,
+            internalize_restored_objects=True,
+            build_timeline_blocks=False,
+        )
         for item in items:
             name = str(item["name"])
             output_type = str(item["type"])
@@ -15116,6 +15233,7 @@ def _publish_partdesign_design_candidate(
                 )
             published = publications.get(name)
             if output_type == "component_link":
+                created_occurrence = published is None
                 if published is None:
                     published = _create_partdesign_component_occurrence(
                         doc,
@@ -15140,7 +15258,21 @@ def _publish_partdesign_design_candidate(
                         prepared,
                         item,
                     )
-                _set_view_visibility(published, True)
+                if created_occurrence:
+                    # api.component creates one placed occurrence of a reusable
+                    # definition. The definition is not an implicit second
+                    # occurrence at its authoring origin. Users can still show
+                    # it explicitly, and later builds preserve both independent
+                    # visibility choices.
+                    target = getattr(published, "LinkedObject", None)
+                    if target is not None:
+                        if id(target) not in rollback_targets:
+                            rollback_targets[id(target)] = target
+                            rollback_states.append(
+                                _material_target_snapshot(target)
+                            )
+                        _set_view_visibility(target, False)
+                    _set_view_visibility(published, True)
                 continue
             carrier = _PartDesignShapeCarrier(item)
             if published is None:
@@ -15359,10 +15491,18 @@ def _publish_partdesign_design_candidate(
             "strategy": "design_program_operation",
             "operation_object": str(operation.Name),
             "body_objects": body_objects,
-            "created_objects": created_bodies,
+            "created_objects": [
+                *created_bodies,
+                *list(restored_native_history.get("created_objects") or []),
+            ],
+            "restored_source_objects": list(
+                restored_native_history.get("created_objects") or []
+            ),
             "retired_objects": removed_implementation,
             "ownership_repairs": ownership_repairs,
-            "artifact_sha256": "",
+            "artifact_sha256": str(
+                restored_native_history.get("artifact_sha256") or ""
+            ),
         },
         "downstream_references": downstream,
         "recompute_deferred": True,
@@ -17045,6 +17185,20 @@ def _delete_partdesign_design_program(
             "Body outputs."
         )
 
+    source_evidence = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if PROP_PARTDESIGN_HISTORY_KEY in _properties(obj)
+        and str(
+            getattr(obj, scripted_publication.PROP_ENGINE, "") or ""
+        )
+        == "vibescript:partdesign"
+        and str(
+            getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+        )
+        == program_id
+    ]
+
     contained: list[Any] = []
     contained_ids: set[int] = set()
 
@@ -17061,6 +17215,17 @@ def _delete_partdesign_design_program(
 
     for body in bodies:
         collect_contained(body)
+    body_origin_objects: list[Any] = []
+    for body in bodies:
+        origin = getattr(body, "Origin", None)
+        if origin is None:
+            continue
+        body_origin_objects.append(origin)
+        body_origin_objects.extend(
+            feature
+            for feature in list(getattr(origin, "OriginFeatures", []) or [])
+            if feature is not None
+        )
     states = [
         obj
         for obj in list(getattr(doc, "Objects", []) or [])
@@ -17070,11 +17235,14 @@ def _delete_partdesign_design_program(
     ]
     private_objects = [
         *([root] if root is not None else []),
+        *list(getattr(root, "Group", []) or []),
         *list(getattr(root, "OutListRecursive", []) or []),
         *publications.values(),
         operation,
         *states,
         *contained,
+        *body_origin_objects,
+        *source_evidence,
     ]
     internal: list[Any] = []
     internal_ids: set[int] = set()
@@ -17121,6 +17289,11 @@ def _delete_partdesign_design_program(
         if hasattr(doc, "openTransaction"):
             doc.openTransaction("Delete Part Design VibeScript program")
             transaction_open = True
+        # Source evidence can reference output Body origin planes and earlier
+        # source features. Remove that exact, program-tagged graph before the
+        # operation removes its Bodies, including when a damaged document has
+        # already lost the source App::Part root.
+        _remove_objects_dependency_order(doc, source_evidence)
         for published in list(publications.values()):
             _delete_partdesign_publication(
                 doc,

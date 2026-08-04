@@ -114,6 +114,8 @@ CHECKS: dict[str, Callable[[Path], None]] = {
     "anthropic": _check_module("anthropic"),
     "keyring": _check_module("keyring"),
     "jsonschema": _check_module("jsonschema"),
+    "mcp": _check_module("mcp"),
+    "mcp-types": _check_module("mcp_types"),
     "macos-keyring": _check_macos_keyring,
     "removed-openai-sdk": _check_removed_openai_sdk,
     "pivy": _check_pivy,

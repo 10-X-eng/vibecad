@@ -176,7 +176,7 @@ run_freecad_runtime_check() {
 }
 
 echo "Running isolated VibeCAD macOS runtime smoke tests..."
-for check in python anthropic keyring jsonschema macos-keyring removed-openai-sdk; do
+for check in python anthropic keyring jsonschema mcp mcp-types macos-keyring removed-openai-sdk; do
     run_standalone_runtime_check "${check}"
 done
 
@@ -185,7 +185,7 @@ if ! "${conda_env}/bin/freecadcmd" --safe-mode --version; then
     exit 1
 fi
 for check in \
-    python pivy anthropic keyring jsonschema macos-keyring removed-openai-sdk \
+    python pivy anthropic keyring jsonschema mcp mcp-types macos-keyring removed-openai-sdk \
     provider-subprocess codex; do
     run_freecad_runtime_check "${check}"
 done

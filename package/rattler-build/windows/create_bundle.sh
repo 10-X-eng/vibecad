@@ -272,7 +272,7 @@ if ! "$SIGN_DIR/FreeCADCmd.exe" --safe-mode --version; then
   echo "VibeCAD portable command-line launcher smoke test failed."
   exit 1
 fi
-if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "import importlib.util, anthropic, keyring, jsonschema; import keyring.backends.Windows; assert importlib.util.find_spec('openai') is None; assert importlib.util.find_spec('agents') is None; print('VibeCAD Python dependencies and OS keyring backend import ok')"; then
+if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "import importlib.util, anthropic, keyring, jsonschema, mcp, mcp_types; import keyring.backends.Windows; assert importlib.util.find_spec('openai') is None; assert importlib.util.find_spec('agents') is None; print('VibeCAD Python dependencies and OS keyring backend import ok')"; then
   echo "VibeCAD Python dependency/keyring smoke test failed; the Windows bundle is incomplete."
   exit 1
 fi

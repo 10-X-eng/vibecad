@@ -55,6 +55,7 @@
 #include <Mod/Part/App/FeatureCompound.h>
 #include <Mod/Part/App/Interface.h>
 #include <Mod/Part/App/OCAF/ImportExportSettings.h>
+#include <Mod/PartDesign/App/Body.h>
 
 #include "ImportOCAF2.h"
 
@@ -93,6 +94,12 @@ ImportOCAF2::ImportOCAF2(Handle(TDocStd_Document) hDoc, App::Document* doc, cons
 
 ImportOCAF2::~ImportOCAF2() = default;
 
+App::DocumentObject* ImportOCAF2::ImportLegacy::finishShape(Part::Feature* part)
+{
+    return myParent.options.importSolidBodies ? myParent.adoptSolidFeature(part)
+                                              : static_cast<App::DocumentObject*>(part);
+}
+
 ImportOCAFOptions ImportOCAF2::customImportOptions()
 {
     Part::OCAF::ImportExportSettings settings;
@@ -105,6 +112,7 @@ ImportOCAFOptions ImportOCAF2::customImportOptions()
     defaultOptions.reduceObjects = settings.getReduceObjects();
     defaultOptions.showProgress = settings.getShowProgress();
     defaultOptions.expandCompound = settings.getExpandCompound();
+    defaultOptions.importSolidBodies = settings.getImportSolidBodies();
     defaultOptions.mode = static_cast<int>(settings.getImportMode());
 
     auto hGrp = App::GetApplication().GetParameterGroupByPath(
@@ -192,10 +200,19 @@ void ImportOCAF2::setObjectName(Info& info, TDF_Label label)
     }
     else {
         auto linked = info.obj->getLinkedObject(false);
-        if (!linked || linked == info.obj) {
-            return;
+        if (linked && linked != info.obj) {
+            info.obj->Label.setValue(linked->Label.getValue());
         }
-        info.obj->Label.setValue(linked->Label.getValue());
+        else if (!default_name.empty()) {
+            info.obj->Label.setValue(default_name.c_str());
+        }
+    }
+    if (info.importedFeature) {
+        const std::string objectLabel = info.obj->Label.getStrValue();
+        const std::string importLabel = objectLabel.empty()
+            ? std::string("Imported STEP")
+            : std::string("Imported STEP: ") + objectLabel;
+        info.importedFeature->Label.setValue(importLabel.c_str());
     }
 }
 
@@ -250,7 +267,7 @@ App::DocumentObject* ImportOCAF2::expandShape(App::Document* doc, TDF_Label labe
 
     std::vector<App::DocumentObject*> objs;
 
-    if (shape.ShapeType() == TopAbs_COMPOUND) {
+    if (shape.ShapeType() == TopAbs_COMPOUND || shape.ShapeType() == TopAbs_COMPSOLID) {
         for (TopoDS_Iterator it(shape, Standard_False, Standard_False); it.More(); it.Next()) {
             TDF_Label childLabel;
             if (!label.IsNull()) {
@@ -276,8 +293,39 @@ App::DocumentObject* ImportOCAF2::expandShape(App::Document* doc, TDF_Label labe
     Info info;
     info.obj = nullptr;
     createObject(doc, label, shape, info, false);
+    setObjectName(info, label);
     return info.obj;
 }
+
+namespace
+{
+
+bool isPureSingleSolid(const Part::TopoShape& shape)
+{
+    if (shape.isNull()) {
+        return false;
+    }
+
+    const TopoDS_Shape& occtShape = shape.getShape();
+    const int solidCount = occtShape.ShapeType() == TopAbs_SOLID
+        ? 1
+        : shape.countSubShapes(TopAbs_SOLID);
+    if (solidCount != 1) {
+        return false;
+    }
+
+    // A Body is one connected solid, not a compound which happens to contain
+    // one solid alongside loose shells, faces, wires, edges, or vertices.
+    // Preserve mixed topology as a standalone Part feature so no STEP data is
+    // silently discarded or mislabeled as a solid.
+    return !TopExp_Explorer(occtShape, TopAbs_SHELL, TopAbs_SOLID).More()
+        && !TopExp_Explorer(occtShape, TopAbs_FACE, TopAbs_SHELL).More()
+        && !TopExp_Explorer(occtShape, TopAbs_WIRE, TopAbs_FACE).More()
+        && !TopExp_Explorer(occtShape, TopAbs_EDGE, TopAbs_WIRE).More()
+        && !TopExp_Explorer(occtShape, TopAbs_VERTEX, TopAbs_EDGE).More();
+}
+
+}  // namespace
 
 bool ImportOCAF2::createObject(
     App::Document* doc,
@@ -370,12 +418,13 @@ bool ImportOCAF2::createObject(
     }
 
     Part::Feature* feature;
+    PartDesign::Body* solidBody = nullptr;
 
     if (newDoc && (options.mode == ObjectPerDoc || options.mode == ObjectPerDir)) {
         doc = getDocument(doc, label);
     }
 
-    if (options.expandCompound
+    if ((options.expandCompound || options.importSolidBodies)
         && (tshape.countSubShapes(TopAbs_SOLID) > 1
             || (!tshape.countSubShapes(TopAbs_SOLID) && tshape.countSubShapes(TopAbs_SHELL) > 1))) {
         feature = dynamic_cast<Part::Feature*>(expandShape(doc, label, shape));
@@ -384,6 +433,12 @@ bool ImportOCAF2::createObject(
     else {
         feature = doc->addObject<Part::Feature>(tshape.shapeName().c_str());
         feature->Shape.setValue(shape);
+        if (options.importSolidBodies) {
+            solidBody = dynamic_cast<PartDesign::Body*>(adoptSolidFeature(feature));
+        }
+        if (solidBody) {
+            info.importedFeature = feature;
+        }
     }
     applyFaceColors(feature, {info.faceColor});
     applyEdgeColors(feature, {info.edgeColor});
@@ -394,9 +449,39 @@ bool ImportOCAF2::createObject(
         applyEdgeColors(feature, edgeColors);
     }
 
-    info.propPlacement = &feature->Placement;
-    info.obj = feature;
+    info.propPlacement = solidBody ? &solidBody->Placement : &feature->Placement;
+    info.obj = solidBody ? static_cast<App::DocumentObject*>(solidBody)
+                         : static_cast<App::DocumentObject*>(feature);
     return true;
+}
+
+App::DocumentObject* ImportOCAF2::adoptSolidFeature(Part::Feature* feature)
+{
+    if (!feature || !isPureSingleSolid(feature->Shape.getShape())) {
+        return feature;
+    }
+
+    App::Document* doc = feature->getDocument();
+    const std::string objectLabel = feature->Label.getStrValue();
+    auto body = doc->addObject<PartDesign::Body>("Body");
+    body->addObject(feature);
+
+    const std::string importLabel = objectLabel.empty()
+        ? std::string("Imported STEP")
+        : std::string("Imported STEP: ") + objectLabel;
+    feature->Label.setValue(importLabel.c_str());
+    body->Label.setValue(objectLabel.c_str());
+
+    const int transactionId = doc->getBookedTransactionID();
+    if (transactionId != App::NullTransaction
+        && App::GetApplication().transactionIsActive(transactionId)
+        && doc->isProvisionallyEnrolledInTimelineByCurrentTransaction(body)) {
+        // The imported B-rep is the user-visible History operation; its Body
+        // is the stable output resource, matching other Body-creating VibeCAD
+        // operations.
+        doc->classifyProvisionalTimelineInternalObject(body);
+    }
+    return body;
 }
 
 App::Document* ImportOCAF2::getDocument(App::Document* doc, TDF_Label label)
@@ -508,8 +593,14 @@ App::DocumentObject* ImportOCAF2::loadShapes()
 {
     if (!options.useLinkGroup) {
         ImportLegacy legacy(*this);
-        legacy.setMerge(options.merge);
+        // A multi-solid STEP cannot be represented by one Design Body. Split
+        // it into exact solid leaves before adoption; disabling this option
+        // retains the legacy merged Part::Feature behavior.
+        legacy.setMerge(options.importSolidBodies ? false : options.merge);
         legacy.loadShapes();
+        if (options.importSolidBodies) {
+            pDocument->recompute();
+        }
         return nullptr;
     }
 
@@ -659,7 +750,8 @@ App::DocumentObject* ImportOCAF2::loadShape(
     TDF_Label label,
     const TopoDS_Shape& shape,
     bool baseOnly,
-    bool newDoc
+    bool newDoc,
+    bool occurrence
 )
 {
     if (shape.IsNull()) {
@@ -699,7 +791,11 @@ App::DocumentObject* ImportOCAF2::loadShape(
     auto info = it->second;
     getColor(shape, info, true);
 
-    if (shuoColors.empty() && info.free && doc == info.obj->getDocument()) {
+    const bool reusableDefinition = options.importSolidBodies && occurrence
+        && (info.obj->isDerivedFrom<PartDesign::Body>()
+            || info.obj->isDerivedFrom<App::LinkGroup>());
+    if (shuoColors.empty() && info.free && doc == info.obj->getDocument()
+        && !reusableDefinition) {
         it->second.free = false;
         auto name = getLabelName(label);
         if (info.faceColor != it->second.faceColor || info.edgeColor != it->second.edgeColor
@@ -719,6 +815,16 @@ App::DocumentObject* ImportOCAF2::loadShape(
         setPlacement(info.propPlacement, shape);
         myNames.emplace(label, info.obj->getNameInDocument());
         return info.obj;
+    }
+
+    if (reusableDefinition && info.free) {
+        // Keep one exact Body definition at its authored origin and represent
+        // every assembly occurrence with a Link. This gives AI and human
+        // assembly tools one reusable component plus an explicit occurrence
+        // for every placement, including the first one.
+        it->second.free = false;
+        info.free = false;
+        setObjectVisible(info.obj, false);
     }
 
     auto link = doc->addObject<App::Link>("Link");
@@ -776,7 +882,14 @@ bool ImportOCAF2::createAssembly(
         if (!childLabel.IsNull() && !options.importHidden && !aColorTool->IsVisible(childLabel)) {
             continue;
         }
-        auto obj = loadShape(doc, childLabel, childShape, options.reduceObjects);
+        auto obj = loadShape(
+            doc,
+            childLabel,
+            childShape,
+            options.reduceObjects,
+            true,
+            true
+        );
         if (!obj) {
             continue;
         }
@@ -821,7 +934,14 @@ bool ImportOCAF2::createAssembly(
             ++i;
             auto& childInfo = childrenMap[child];
             if (childInfo.plas.size() == 1) {
-                child = loadShape(doc, childInfo.labels.front(), childInfo.shape);
+                child = loadShape(
+                    doc,
+                    childInfo.labels.front(),
+                    childInfo.shape,
+                    false,
+                    true,
+                    true
+                );
                 getSHUOColors(childInfo.labels.front(), shuoColors, true);
                 continue;
             }

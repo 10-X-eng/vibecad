@@ -251,10 +251,6 @@ def run(
                 stack.enter_context(
                     core_set_view.temporarily_isolate_objects(document, frame_names)
                 )
-            elif resolved_frame == "all" and frame_names:
-                temporarily_shown_objects = stack.enter_context(
-                    core_set_view.temporarily_show_objects(document, frame_names)
-                )
             if annotation_mode == "clean" and active_sketch is not None:
                 annotations_excluded = stack.enter_context(
                     core_set_view.temporarily_detach_sketch_annotations(view)

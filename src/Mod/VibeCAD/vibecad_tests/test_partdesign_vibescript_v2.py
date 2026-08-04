@@ -1088,6 +1088,48 @@ def test_partdesign_rejects_cross_domain_graphs_and_transient_topology_names() -
         )
 
 
+def test_geometric_selection_accepts_find_subelements_public_units() -> None:
+    api = PartDesignDomainAPI(
+        PartDesignDomainAPI.exported_names,
+        OUTPUT_TYPES,
+    )
+    base = api.extrude(
+        api.sketch([api.circle([0, 0], 5)]),
+        5,
+        operation="add_material",
+    )
+    result = api.fillet(
+        base,
+        {
+            "type": "query",
+            "element_type": "edge",
+            "expected_count": 1,
+            "geometry_type": "Circle",
+            "radius_mm": 5.0,
+            "radius_tolerance_mm": 0.01,
+            "near_point": [5.0, 0.0, 0.0],
+            "max_distance_mm": 1.0,
+        },
+        0.5,
+    )
+    selection = result.arguments[1]
+    assert selection["radius"] == 5.0
+    assert selection["radius_tolerance"] == 0.01
+    assert selection["max_distance"] == 1.0
+
+    with pytest.raises(ValueError, match="unsupported fields.*mystery"):
+        api.fillet(
+            base,
+            {
+                "type": "query",
+                "element_type": "edge",
+                "expected_count": 1,
+                "mystery": 1,
+            },
+            0.5,
+        )
+
+
 def test_v1_saved_data_migrates_to_a_non_executable_v2_view(tmp_path: Path) -> None:
     directory = _write_v1_program(tmp_path)
     migrated = domains.migrate_program_manifest(
@@ -1100,7 +1142,7 @@ def test_v1_saved_data_migrates_to_a_non_executable_v2_view(tmp_path: Path) -> N
     assert migrated["domain"] == "partdesign"
     assert migrated["artifact_directory"] == str(directory)
     assert migrated["migration_required"] is True
-    assert migrated["migration_action"] == ("vibescript.partdesign.reconfigure_program")
+    assert migrated["migration_action"] == "vibescript.edit_source"
     assert migrated["accepted_revision"] == "saved-v1-revision"
     assert migrated["live_outputs"]["Part"]["object_name"] == "SavedPartResult"
 
@@ -1130,7 +1172,11 @@ def test_v1_source_cannot_edit_set_inputs_or_execute(tmp_path: Path) -> None:
         )
         assert failure.value.payload["retry"]["required_changes"] == [
             {
-                "tool": "vibescript.partdesign.reconfigure_program",
+                "tool": "vibescript.edit_source",
+                "arguments": {
+                    "source_id": PROGRAM_ID,
+                    "expected_revision": "saved-v1-revision",
+                },
                 "expected_revision": "saved-v1-revision",
                 "replace": [
                     "source",
@@ -1141,6 +1187,56 @@ def test_v1_source_cannot_edit_set_inputs_or_execute(tmp_path: Path) -> None:
             }
         ]
     assert not (tmp_path / "vibescript" / PROGRAM_ID / "program.json").exists()
+
+
+def test_edit_source_atomically_updates_inputs_schema_and_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = (
+        "profile = api.sketch([api.circle([0,0], inputs['radius'])])\n"
+        "feature = api.extrude(profile, inputs['height'], operation='add_material')\n"
+        "result = {'Part': api.body(feature)}\n"
+    )
+    _directory, revision = _write_v2_program(tmp_path, source)
+    updated = source.replace(
+        "result = {'Part': api.body(feature)}",
+        "result = {'RenamedPart': api.body(feature, label=inputs['label'])}",
+    )
+    monkeypatch.setattr(runtime, "_freecadcmd", lambda _home: Path("/FreeCADCmd"))
+    prepared = runtime.prepare_candidate(
+        _capture(
+            tmp_path,
+            operation="edit_source",
+            arguments={
+                "program_id": PROGRAM_ID,
+                "expected_revision": revision,
+                "source": updated,
+                "inputs": {
+                    "radius": 4.0,
+                    "height": 5.0,
+                    "label": "Updated part",
+                },
+                "expected_outputs": [
+                    {"name": "RenamedPart", "type": "solid"}
+                ],
+            },
+        )
+    )
+
+    assert prepared["source"] == updated
+    assert prepared["inputs"]["label"] == "Updated part"
+    assert prepared["input_schema"]["properties"]["label"] == {
+        "type": "string",
+    }
+    assert prepared["input_schema"]["properties"]["radius"] == {
+        "type": "number",
+        "exclusiveMinimum": 0,
+    }
+    assert prepared["expected_outputs"] == [
+        {"name": "RenamedPart", "type": "solid"}
+    ]
+    runtime.abandon_prepared_candidate(prepared)
 
 
 def test_reconfigure_stages_v2_in_the_existing_saved_program_directory(

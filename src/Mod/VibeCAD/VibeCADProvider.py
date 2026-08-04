@@ -33,6 +33,9 @@ MAX_PROVIDER_COMPLETE_READ_BYTES = 2 * 1024 * 1024
 MAX_PROVIDER_RESULT_TOP_LEVEL_FIELDS = 256
 MAX_PROVIDER_INSTRUCTIONS_BYTES = 8 * 1024
 DEFAULT_ANTHROPIC_MAX_TOKENS = 8192
+ANTHROPIC_TURN_COMPACTION_MAX_TOKENS = 4096
+ANTHROPIC_TURN_COMPACTION_MAX_INPUT_BYTES = 32 * 1024
+ANTHROPIC_TURN_COMPACTION_MAX_ATTEMPTS = 2
 PROVIDER_STREAM_DELTA_FLUSH_SECONDS = 0.075
 ANTHROPIC_THINKING_BUDGETS = {
     "minimal": 1024,
@@ -56,6 +59,17 @@ VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical design engineer
 CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Treat explicit user constraints as requirements. A correction changes only the named geometry; preserve the existing architecture, identity, and history unless replacement or redesign was requested. Build editable, parametric geometry meeting function, dimensions, fit, manufacturability, and appearance. Default to catalog fasteners. Decide unspecified details; ask only if a choice changes function or geometry.
 
 Use only active-workbench tools and exact state returned in the current context or by a tool; never guess names, references, revisions, or API members. Fix failures before dependent features; never repeat an unchanged failure. Before claiming completion, verify requested dimensions, topology, interfaces, clearances, assembly retention, service motion, manufacturability, and appearance; capture the viewport for visual judgment. Never claim work or verification not performed."""
+
+
+ANTHROPIC_TURN_COMPACTION_INSTRUCTIONS = """You compact one unfinished VibeCAD agent turn.
+
+Call commit_turn_compaction exactly once. Preserve the current user request,
+explicit requirements and rejected directions, completed CAD actions and their
+observed results, live artifact identities and revisions, the blocking failure,
+and the next concrete action. Be concise and factual. Do not solve the CAD task.
+Do not invent state. Omit hidden reasoning, narration, apologies, raw source,
+schemas, geometry arrays, screenshots, catalog inventories, and repeated logs.
+The supplied packet has already removed those deterministic or noisy values."""
 
 
 def _vibescript_surface_active(context: dict[str, Any]) -> bool:
@@ -118,8 +132,9 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
         "Source receives immutable doc and api values plus validated inputs. Outputs "
         "keep stable names and must use these types: "
         + ", ".join(pack.output_types)
-        + ". Reuse existing source. Use vibescript.set_inputs for values and "
-        "vibescript.reconfigure_program only when schema or outputs change."
+        + ". Reuse existing source. Use vibescript.set_inputs for a value-only change; "
+        "otherwise use vibescript.edit_source and include any changed inputs, input_schema, "
+        "or expected_outputs in the same call."
     )
 
 
@@ -147,6 +162,11 @@ def _provider_instructions(context: dict[str, Any]) -> str:
 def _provider_option(context: dict[str, Any], name: str) -> bool:
     options = context.get("_vibecad_provider_options")
     return bool(options.get(name)) if isinstance(options, dict) else False
+
+
+def _provider_option_value(context: dict[str, Any], name: str) -> Any:
+    options = context.get("_vibecad_provider_options")
+    return options.get(name) if isinstance(options, dict) else None
 
 
 def _anthropic_system_blocks(context: dict[str, Any]) -> list[dict[str, Any]]:
@@ -977,6 +997,7 @@ class AnthropicProvider(BaseProvider):
         max_turns: int | None = None,
         base_url: str | None = None,
         web_search_enabled: bool = False,
+        compaction_model: str | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key
@@ -985,6 +1006,7 @@ class AnthropicProvider(BaseProvider):
         self.max_turns = max_turns
         self.base_url = base_url
         self.web_search_enabled = bool(web_search_enabled)
+        self.compaction_model = str(compaction_model or model).strip() or model
 
     def run(
         self,
@@ -998,6 +1020,7 @@ class AnthropicProvider(BaseProvider):
             provider_context = dict(context)
             provider_context["_vibecad_provider_options"] = {
                 "web_search_enabled": self.web_search_enabled,
+                "compaction_model": self.compaction_model,
             }
             return _run_provider_subprocess(
                 prompt=prompt,
@@ -2670,6 +2693,417 @@ def _is_retryable_anthropic_stream_error(
     return any(token in text for token in retry_tokens)
 
 
+def _bounded_compaction_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    marker = "\n...[omitted from compaction input]...\n"
+    remaining = max(0, limit - len(marker))
+    head = remaining // 2
+    return text[:head] + marker + text[-(remaining - head) :]
+
+
+def _bounded_compaction_value(value: Any, *, depth: int = 0) -> Any:
+    """Bound small semantic values without forwarding provider-sized payloads."""
+
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _bounded_compaction_text(value, 1200)
+    if depth >= 3:
+        if isinstance(value, dict):
+            return {"omitted_mapping_entries": len(value)}
+        if isinstance(value, (list, tuple)):
+            return {"omitted_list_items": len(value)}
+        return str(type(value).__name__)
+    if isinstance(value, dict):
+        items = list(value.items())
+        bounded = {
+            str(key): _bounded_compaction_value(item, depth=depth + 1)
+            for key, item in items[:16]
+        }
+        if len(items) > 16:
+            bounded["omitted_mapping_entries"] = len(items) - 16
+        return bounded
+    if isinstance(value, (list, tuple)):
+        bounded = [
+            _bounded_compaction_value(item, depth=depth + 1)
+            for item in list(value)[:12]
+        ]
+        if len(value) > 12:
+            bounded.append({"omitted_list_items": len(value) - 12})
+        return bounded
+    return _bounded_compaction_text(value, 240)
+
+
+def _anthropic_prompt_compaction_context(prompt: str) -> dict[str, Any]:
+    """Extract conversation intent while excluding deterministic CAD state."""
+
+    text = str(prompt or "")
+    recent_marker = "RECENT_CONVERSATION_JSON\n"
+    recent_end = "\nEND_RECENT_CONVERSATION_JSON\n\n"
+    conversation: list[dict[str, str]] = []
+    current_request = text
+    if recent_marker in text and recent_end in text:
+        recent_text = text.split(recent_marker, 1)[1].split(recent_end, 1)[0]
+        try:
+            recent_payload = json.loads(recent_text)
+        except Exception:
+            recent_payload = {}
+        if isinstance(recent_payload, dict):
+            for item in list(recent_payload.get("turns") or [])[-6:]:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role") or "").strip().lower()
+                content = str(item.get("content") or "").strip()
+                if role in {"user", "assistant"} and content:
+                    conversation.append(
+                        {
+                            "role": role,
+                            "content": _bounded_compaction_text(content, 1600),
+                        }
+                    )
+        request_section = text.split(recent_end, 1)[1]
+        if "\n" in request_section:
+            _section_name, current_request = request_section.split("\n", 1)
+        else:
+            current_request = request_section
+    return {
+        "current_request": _bounded_compaction_text(current_request, 8000),
+        "recent_conversation": conversation,
+    }
+
+
+_COMPACTION_ARGUMENT_KEYS = {
+    "source_id",
+    "program_id",
+    "reference",
+    "references",
+    "object",
+    "object_name",
+    "object_names",
+    "expected_revision",
+    "operation",
+    "query",
+    "names",
+    "groups",
+    "inputs",
+    "expected_outputs",
+    "frame",
+    "camera",
+}
+
+_COMPACTION_RESULT_KEYS = {
+    "ok",
+    "error",
+    "failure_code",
+    "failure_stage",
+    "cancelled",
+    "retry_same_call",
+    "created",
+    "updated",
+    "changed",
+    "deleted",
+    "operation",
+    "document",
+    "object",
+    "object_name",
+    "assembly",
+    "program_id",
+    "source_id",
+    "working_revision",
+    "accepted_revision",
+    "current_revision",
+    "revision",
+    "model_state",
+    "affected_outputs",
+    "expected_outputs",
+    "transaction",
+    "verification",
+    "requested",
+    "observed",
+}
+
+
+def _anthropic_compaction_tool_event(
+    tool_name: str,
+    arguments: Any,
+    result: Any,
+) -> dict[str, Any]:
+    safe_arguments = arguments if isinstance(arguments, dict) else {}
+    argument_summary = {
+        key: _bounded_compaction_value(value)
+        for key, value in safe_arguments.items()
+        if key in _COMPACTION_ARGUMENT_KEYS
+    }
+    if "source" in safe_arguments:
+        source = str(safe_arguments.get("source") or "")
+        argument_summary["source"] = {
+            "omitted": "readable_source_text",
+            "characters": len(source),
+        }
+    if "input_schema" in safe_arguments:
+        argument_summary["input_schema"] = {
+            "omitted": "readable_input_schema"
+        }
+
+    def project_result(value: Any, depth: int = 0) -> dict[str, Any]:
+        if not isinstance(value, dict) or depth >= 3:
+            return {}
+        projected = {
+            str(key): _bounded_compaction_value(item)
+            for key, item in value.items()
+            if key in _COMPACTION_RESULT_KEYS
+        }
+        for container_key in ("result", "diagnostic"):
+            nested = project_result(value.get(container_key), depth + 1)
+            if nested:
+                projected[container_key] = nested
+        return projected
+
+    return {
+        "tool": str(tool_name or "unknown"),
+        "arguments": argument_summary,
+        "result": project_result(result),
+    }
+
+
+def _anthropic_turn_compaction_packet(
+    *,
+    prompt: str,
+    tool_events: list[dict[str, Any]],
+    assistant_progress: list[str],
+    previous_compaction: dict[str, Any] | None,
+    generation: int,
+) -> dict[str, Any]:
+    packet = {
+        "trigger": "assistant_output_budget_exhausted",
+        "generation": generation,
+        **_anthropic_prompt_compaction_context(prompt),
+        "assistant_visible_progress": [
+            _bounded_compaction_text(item, 1600)
+            for item in assistant_progress[-4:]
+            if str(item or "").strip()
+        ],
+        "cad_tool_events": list(tool_events[-24:]),
+    }
+    if previous_compaction:
+        packet["previous_compaction"] = _bounded_compaction_value(
+            previous_compaction
+        )
+
+    def packet_bytes() -> int:
+        return len(
+            json.dumps(
+                packet, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        )
+
+    while (
+        packet_bytes() > ANTHROPIC_TURN_COMPACTION_MAX_INPUT_BYTES
+        and len(packet["recent_conversation"]) > 2
+    ):
+        packet["recent_conversation"].pop(0)
+    while (
+        packet_bytes() > ANTHROPIC_TURN_COMPACTION_MAX_INPUT_BYTES
+        and len(packet["cad_tool_events"]) > 8
+    ):
+        packet["cad_tool_events"].pop(0)
+    while (
+        packet_bytes() > ANTHROPIC_TURN_COMPACTION_MAX_INPUT_BYTES
+        and packet["assistant_visible_progress"]
+    ):
+        packet["assistant_visible_progress"].pop(0)
+    if packet_bytes() > ANTHROPIC_TURN_COMPACTION_MAX_INPUT_BYTES:
+        packet["current_request"] = _bounded_compaction_text(
+            packet["current_request"], 3000
+        )
+        packet.pop("previous_compaction", None)
+    if packet_bytes() > ANTHROPIC_TURN_COMPACTION_MAX_INPUT_BYTES:
+        raise RuntimeError(
+            "Bounded Anthropic turn-compaction packet exceeded its fixed byte limit."
+        )
+    return packet
+
+
+def _anthropic_turn_compaction_tool() -> dict[str, Any]:
+    string_list = {
+        "type": "array",
+        "items": {"type": "string", "maxLength": 1200},
+        "maxItems": 32,
+    }
+    return {
+        "name": "commit_turn_compaction",
+        "description": "Commit the concise state required to continue this turn.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "current_request": {"type": "string", "maxLength": 6000},
+                "requirements": string_list,
+                "completed_actions": string_list,
+                "live_artifacts": string_list,
+                "open_issues": string_list,
+                "next_action": {"type": "string", "maxLength": 1600},
+            },
+            "required": [
+                "current_request",
+                "requirements",
+                "completed_actions",
+                "live_artifacts",
+                "open_issues",
+                "next_action",
+            ],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _anthropic_compact_turn_in_thread(
+    *,
+    anthropic_module: Any,
+    client_kwargs: dict[str, Any],
+    model: str,
+    packet: dict[str, Any],
+    debug_context: dict[str, Any],
+    base_url: str | None,
+    generation: int,
+) -> dict[str, Any]:
+    """Run a tool-less, bounded compaction request outside the provider loop thread."""
+
+    tool = _anthropic_turn_compaction_tool()
+    request = {
+        "model": model,
+        "max_tokens": ANTHROPIC_TURN_COMPACTION_MAX_TOKENS,
+        "system": ANTHROPIC_TURN_COMPACTION_INSTRUCTIONS,
+        "messages": [
+            {
+                "role": "user",
+                "content": json.dumps(
+                    packet,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            }
+        ],
+        "tools": [tool],
+        "tool_choice": {"type": "tool", "name": tool["name"]},
+    }
+    _capture_outbound_request(
+        debug_context,
+        provider="anthropic",
+        sdk_call="Anthropic.messages.create.turn_compaction",
+        turn=generation,
+        request=request,
+        base_url=base_url,
+    )
+    result: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            response = anthropic_module.Anthropic(
+                **dict(client_kwargs)
+            ).messages.create(**request)
+            calls = [
+                block
+                for block in list(getattr(response, "content", []) or [])
+                if _anthropic_block_type(block) == "tool_use"
+            ]
+            if len(calls) != 1:
+                raise RuntimeError(
+                    "Anthropic turn compaction did not return exactly one "
+                    "structured state call."
+                )
+            call = calls[0]
+            call_name = getattr(call, "name", None) or _object_payload(call).get(
+                "name"
+            )
+            if str(call_name or "") != tool["name"]:
+                raise RuntimeError("Anthropic turn compaction called the wrong tool.")
+            value = getattr(call, "input", None)
+            if value is None:
+                value = _object_payload(call).get("input")
+            if not isinstance(value, dict):
+                raise RuntimeError("Anthropic turn compaction returned invalid state.")
+            result.append(_json_safe(value))
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(
+        target=worker,
+        name="VibeCAD-Anthropic-Turn-Compaction",
+        daemon=True,
+    )
+    thread.start()
+    while thread.is_alive():
+        thread.join(0.05)
+    if errors:
+        raise RuntimeError(
+            "Anthropic turn compaction failed: " + _short_provider_error(errors[0])
+        ) from errors[0]
+    if len(result) != 1:
+        raise RuntimeError("Anthropic turn compaction returned no state.")
+    return result[0]
+
+
+def _anthropic_compaction_resume_state(context: dict[str, Any]) -> dict[str, Any]:
+    """Keep only live pointers that the continuing model cannot safely guess."""
+
+    state: dict[str, Any] = {}
+    for key in ("workbench", "modeling_surface", "document", "selection"):
+        value = context.get(key)
+        if value not in (None, "", [], {}):
+            state[key] = _bounded_compaction_value(value)
+    editable = context.get("editable_sources")
+    if isinstance(editable, dict):
+        source_keys = {
+            "source_id",
+            "program_id",
+            "name",
+            "program_name",
+            "label",
+            "current_revision",
+            "working_revision",
+            "accepted_revision",
+            "status",
+            "model_state",
+            "affected_outputs",
+            "expected_outputs",
+        }
+        source_pointers = []
+        for source in list(editable.get("sources") or [])[:64]:
+            if not isinstance(source, dict):
+                continue
+            source_pointers.append(
+                {
+                    key: _bounded_compaction_value(value)
+                    for key, value in source.items()
+                    if key in source_keys
+                }
+            )
+        state["editable_source_pointers"] = source_pointers
+    return state
+
+
+def _anthropic_compaction_resume_message(
+    compaction: dict[str, Any], context: dict[str, Any]
+) -> str:
+    return json.dumps(
+        {
+            "instruction": (
+                "Continue the same unfinished request from this compacted state. "
+                "Use read tools for omitted source, geometry, API, or catalog data."
+            ),
+            "compacted_turn": compaction,
+            "live_state": _anthropic_compaction_resume_state(context),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _anthropic_child_main(
     conn,
     prompt: str,
@@ -2701,6 +3135,9 @@ def _anthropic_child_main(
     try:
         live_context = dict(context)
         web_search_enabled = _provider_option(live_context, "web_search_enabled")
+        compaction_model = str(
+            _provider_option_value(live_context, "compaction_model") or model
+        ).strip() or model
 
         def build_tool_surface(
             surface_context: dict[str, Any],
@@ -2743,6 +3180,10 @@ def _anthropic_child_main(
                 ),
             }
         ]
+        tool_events: list[dict[str, Any]] = []
+        assistant_progress: list[str] = []
+        previous_compaction: dict[str, Any] | None = None
+        compaction_count = 0
 
         client_kwargs: dict[str, Any] = {"max_retries": 2}
         if api_key:
@@ -2940,6 +3381,69 @@ def _anthropic_child_main(
                     "content": _anthropic_assistant_request_content(content_blocks),
                 }
             )
+            if response_text.strip():
+                assistant_progress.append(response_text.strip())
+            if response.stop_reason == "max_tokens":
+                if compaction_count >= ANTHROPIC_TURN_COMPACTION_MAX_ATTEMPTS:
+                    raise RuntimeError(
+                        "Anthropic exhausted its output budget after "
+                        f"{compaction_count} compacted continuations."
+                    )
+                compaction_count += 1
+                packet = _anthropic_turn_compaction_packet(
+                    prompt=prompt,
+                    tool_events=tool_events,
+                    assistant_progress=assistant_progress,
+                    previous_compaction=previous_compaction,
+                    generation=compaction_count,
+                )
+                packet_bytes = len(
+                    json.dumps(
+                        packet,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                _send_child_progress(
+                    conn,
+                    {
+                        "event": "anthropic_turn_compaction_started",
+                        "turn": turn,
+                        "generation": compaction_count,
+                        "model": compaction_model,
+                        "input_bytes": packet_bytes,
+                    },
+                )
+                previous_compaction = _anthropic_compact_turn_in_thread(
+                    anthropic_module=anthropic,
+                    client_kwargs=client_kwargs,
+                    model=compaction_model,
+                    packet=packet,
+                    debug_context=live_context,
+                    base_url=base_url,
+                    generation=compaction_count,
+                )
+                messages = [
+                    {
+                        "role": "user",
+                        "content": _anthropic_compaction_resume_message(
+                            previous_compaction, live_context
+                        ),
+                    }
+                ]
+                _send_child_progress(
+                    conn,
+                    {
+                        "event": "anthropic_turn_compaction_completed",
+                        "turn": turn,
+                        "generation": compaction_count,
+                        "model": compaction_model,
+                        "resumed_message_count": len(messages),
+                    },
+                )
+                turn += 1
+                continue
             if response.stop_reason == "pause_turn":
                 turn += 1
                 continue
@@ -3040,6 +3544,13 @@ def _anthropic_child_main(
                     visual_repin_blocks.extend(
                         _anthropic_inspected_image_content(result)
                     )
+                tool_events.append(
+                    _anthropic_compaction_tool_event(
+                        tool_name or str(getattr(block, "name", "") or "unknown"),
+                        getattr(block, "input", None) or {},
+                        result,
+                    )
+                )
                 visible_result = (
                     _provider_visible_tool_result(result)
                     if isinstance(result, dict)

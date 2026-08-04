@@ -44,7 +44,7 @@ import importlib
 import importlib.util
 import sys
 
-for module_name in ("anthropic", "keyring", "jsonschema"):
+for module_name in ("anthropic", "keyring", "jsonschema", "mcp", "mcp_types"):
     importlib.import_module(module_name)
 
 if sys.platform == "win32":

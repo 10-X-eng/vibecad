@@ -5587,7 +5587,7 @@ def migrate_program_manifest(
                 "accepted live objects remain available, but this source cannot execute "
                 "in the v2 domain runtime."
             ),
-            "migration_action": "vibescript.partdesign.reconfigure_program",
+            "migration_action": "vibescript.edit_source",
         }
     else:
         raise ValueError("Unsupported VibeScript program manifest schema.")
@@ -6051,10 +6051,12 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.edit_source",
             "description": (
-                "Replace one existing source with complete updated VibeScript code, "
-                "then validate and publish every affected output. Read the source first, "
-                "keep its source_id, pass the returned current revision as "
-                "expected_revision, and send the entire updated source."
+                "Update one existing VibeScript program, then build and publish it. "
+                "Always send the complete source. Inputs, their schema, and output "
+                "declarations are optional and retain their current values when omitted; "
+                "include the changed fields in this same call when the code adds, removes, "
+                "or renames them. When inputs are supplied without input_schema, VibeCAD "
+                "preserves existing constraints and adds exact schemas for new values."
             ),
             "parameters": {
                 "type": "object",
@@ -6062,6 +6064,9 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     "source_id": source_id,
                     "expected_revision": revision,
                     "source": source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": outputs,
                 },
                 "required": ["source_id", "expected_revision", "source"],
                 "additionalProperties": False,
@@ -6099,8 +6104,8 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.reconfigure_program",
             "description": (
-                "Replace one source, input schema, inputs, and output declarations "
-                "together when its contract must change."
+                "Compatibility alias for replacing one source, input schema, inputs, "
+                "and output declarations together. New callers should use edit_source."
             ),
             "parameters": {
                 "type": "object",
@@ -6318,8 +6323,8 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
             pack,
             "reconfigure_program",
             description=(
-                f"Replace a {pack.title} program's source, input schema, inputs, and "
-                "output declarations together. Use when any of those contracts must change."
+                f"Compatibility alias for editing a {pack.title} program. New callers "
+                "should use vibescript.edit_source."
             ),
             properties={
                 "program_id": program_id,

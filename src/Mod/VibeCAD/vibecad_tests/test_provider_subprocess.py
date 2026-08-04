@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from types import SimpleNamespace
 
@@ -210,6 +211,225 @@ def test_anthropic_empty_completion_returns_explicit_error(monkeypatch) -> None:
     assert connection.closed
 
 
+def test_anthropic_turn_compaction_packet_excludes_deterministic_payloads() -> None:
+    prompt = (
+        "VIBECAD_CONTEXT_JSON\n"
+        '{"active_state":{"raw_geometry":"DO_NOT_SEND_CAD_STATE"}}\n'
+        "END_VIBECAD_CONTEXT_JSON\n\n"
+        "RECENT_CONVERSATION_JSON\n"
+        '{"turns":[{"role":"user","content":"Keep the mounting datum."}],'
+        '"omitted_turn_count":0,"truncated_turn_count":0}\n'
+        "END_RECENT_CONVERSATION_JSON\n\n"
+        "CURRENT_USER_MESSAGE\nRebuild the bracket with native features."
+    )
+    event = provider._anthropic_compaction_tool_event(
+        "vibescript.edit_source",
+        {
+            "source_id": "source-1",
+            "expected_revision": "revision-1",
+            "source": "DO_NOT_SEND_SOURCE = 'raw source text'",
+            "input_schema": {"DO_NOT_SEND_SCHEMA": True},
+        },
+        {
+            "ok": False,
+            "failure_code": "BUILD_FAILED",
+            "error": "Pocket removed no material.",
+            "stdout": "DO_NOT_SEND_LOG",
+            "vibecad_state_after": {"DO_NOT_SEND_STATE": True},
+        },
+    )
+
+    packet = provider._anthropic_turn_compaction_packet(
+        prompt=prompt,
+        tool_events=[event],
+        assistant_progress=["I inspected the mounting face."],
+        previous_compaction=None,
+        generation=1,
+    )
+    encoded = json.dumps(packet, sort_keys=True)
+
+    assert "Rebuild the bracket with native features." in encoded
+    assert "Keep the mounting datum." in encoded
+    assert "Pocket removed no material." in encoded
+    assert "DO_NOT_SEND_CAD_STATE" not in encoded
+    assert "DO_NOT_SEND_SOURCE" not in encoded
+    assert "raw source text" not in encoded
+    assert "DO_NOT_SEND_SCHEMA" not in encoded
+    assert "DO_NOT_SEND_LOG" not in encoded
+    assert "DO_NOT_SEND_STATE" not in encoded
+    assert (
+        len(encoded.encode("utf-8"))
+        <= provider.ANTHROPIC_TURN_COMPACTION_MAX_INPUT_BYTES
+    )
+
+
+def test_anthropic_turn_compaction_runs_on_its_named_worker_thread() -> None:
+    calls: list[dict[str, object]] = []
+
+    class _Messages:
+        @staticmethod
+        def create(**request):
+            calls.append(
+                {
+                    "request": request,
+                    "thread": provider.threading.current_thread().name,
+                }
+            )
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        name="commit_turn_compaction",
+                        input={
+                            "current_request": "Continue.",
+                            "requirements": [],
+                            "completed_actions": [],
+                            "live_artifacts": [],
+                            "open_issues": [],
+                            "next_action": "Continue.",
+                        },
+                    )
+                ],
+                stop_reason="tool_use",
+            )
+
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(messages=_Messages())
+    )
+    result = provider._anthropic_compact_turn_in_thread(
+        anthropic_module=anthropic_module,
+        client_kwargs={"api_key": "test-key"},
+        model="memory-model",
+        packet={"current_request": "Continue."},
+        debug_context={},
+        base_url=None,
+        generation=1,
+    )
+
+    assert result["next_action"] == "Continue."
+    assert len(calls) == 1
+    assert calls[0]["thread"] == "VibeCAD-Anthropic-Turn-Compaction"
+    request = calls[0]["request"]
+    assert request["model"] == "memory-model"
+    assert request["tool_choice"] == {
+        "type": "tool",
+        "name": "commit_turn_compaction",
+    }
+
+
+class _SequenceAnthropicMessages:
+    def __init__(self, responses: list[object]) -> None:
+        self.responses = iter(responses)
+
+    def stream(self, **_kwargs):
+        response = next(self.responses)
+
+        class _Stream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def __iter__(self):
+                return iter(())
+
+            @staticmethod
+            def get_final_message():
+                return response
+
+        return _Stream()
+
+
+def test_anthropic_thinking_only_max_tokens_compacts_and_continues(
+    monkeypatch,
+) -> None:
+    responses = [
+        SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="thinking",
+                    thinking="private reasoning must not become compaction input",
+                    signature="signed",
+                )
+            ],
+            stop_reason="max_tokens",
+        ),
+        SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="Finished cleanly.")],
+            stop_reason="end_turn",
+        ),
+    ]
+    messages = _SequenceAnthropicMessages(responses)
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(messages=messages),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    compaction_calls: list[dict[str, object]] = []
+
+    def compact(**kwargs):
+        compaction_calls.append(kwargs)
+        return {
+            "current_request": "Inspect the selected model.",
+            "requirements": [],
+            "completed_actions": [],
+            "live_artifacts": [],
+            "open_issues": [],
+            "next_action": "Return the result.",
+        }
+
+    monkeypatch.setattr(provider, "_anthropic_compact_turn_in_thread", compact)
+    connection = _CollectingConnection()
+
+    provider._anthropic_child_main(
+        connection,
+        "Inspect the selected model.",
+        {
+            "provider_tool_schemas": [],
+            "_vibecad_provider_options": {
+                "compaction_model": "memory-model"
+            },
+        },
+        "interactive-model",
+        "test-key",
+        None,
+        1.0,
+        2,
+        False,
+    )
+
+    terminal = [
+        message
+        for message in connection.messages
+        if message.get("type") in {"done", "error"}
+    ]
+    assert terminal == [
+        {"type": "done", "final_output": "Finished cleanly.", "raw": None}
+    ]
+    assert len(compaction_calls) == 1
+    assert compaction_calls[0]["model"] == "memory-model"
+    packet_text = json.dumps(compaction_calls[0]["packet"])
+    assert "private reasoning" not in packet_text
+    progress_events = [
+        message.get("event", {})
+        for message in connection.messages
+        if message.get("type") == "progress"
+    ]
+    assert any(
+        event.get("event") == "anthropic_turn_compaction_started"
+        for event in progress_events
+    )
+    assert any(
+        event.get("event") == "anthropic_turn_compaction_completed"
+        for event in progress_events
+    )
+    assert connection.closed
+
+
 def _vibescript_mode_context(
     workbench: str = "PartDesignWorkbench",
     domain: str = "partdesign",
@@ -339,7 +559,8 @@ def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> N
         assert "vibescript.read_placement" in instruction
         assert "vibescript.edit_source" in instruction
         assert "set_inputs" in instruction
-        assert "reconfigure_program" in instruction
+        assert "reconfigure_program" not in instruction
+        assert "expected_outputs" in instruction
         assert "one editable part or program" in instruction
         assert "before writing the first program" not in instruction
         assert "after success" not in instruction
