@@ -408,6 +408,7 @@ bool isVisibleTimelineOperation(
         case Role::Sketch:
         case Role::Feature:
         case Role::Geometry:
+        case Role::VibeCADOutput:
         case Role::Reference:
             return true;
         case Role::Construction:

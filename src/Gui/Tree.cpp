@@ -56,6 +56,7 @@
 #include <App/AutoTransaction.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <App/Link.h>
+#include <App/PropertyStandard.h>
 #include <App/SuppressibleExtension.h>
 
 #include "Tree.h"
@@ -116,6 +117,35 @@ static bool isOnlyNameColumnDisplayed()
 static bool isSelectionCheckBoxesEnabled()
 {
     return TreeParams::getCheckBoxesSelection();
+}
+
+static bool isVibeCADCreatedObject(const App::DocumentObject* object)
+{
+    if (!object) {
+        return false;
+    }
+    const auto* role = dynamic_cast<const App::PropertyString*>(
+        object->getPropertyByName("VibeCADScriptedRole")
+    );
+    return role && !role->getStrValue().empty();
+}
+
+static QString vibeCADProvenanceToolTip(
+    const App::DocumentObject* object,
+    const QString& toolTip = {}
+)
+{
+    if (!isVibeCADCreatedObject(object)) {
+        return toolTip;
+    }
+    const QString provenance = QApplication::translate(
+        "TreeWidget",
+        "Created by VibeCAD"
+    );
+    if (toolTip.contains(provenance)) {
+        return toolTip;
+    }
+    return toolTip.isEmpty() ? provenance : provenance + QLatin1Char('\n') + toolTip;
 }
 
 void TreeParams::onItemBackgroundChanged()
@@ -330,8 +360,12 @@ public:
 
     void slotChangeToolTip(const QString& tip)
     {
+        const QString decorated = vibeCADProvenanceToolTip(
+            viewObject ? viewObject->getObject() : nullptr,
+            tip
+        );
         for (auto item : items) {
-            item->setToolTip(0, tip);
+            item->setToolTip(0, decorated);
         }
     }
 
@@ -6151,6 +6185,25 @@ void DocumentItem::rebuildModelBrowser()
             sketches
         );
 
+        const auto vibeCADOutputs = filterBucket(
+            findBucket(
+                entriesByComponentRole,
+                RoleContextKey {componentEntry.object, Role::VibeCADOutput}
+            ),
+            [](const Entry& entry) {
+                return !entry.bodyRepresentation;
+            }
+        );
+        renderCategory(
+            componentItem,
+            componentItem,
+            componentEntry.object,
+            "vibecad-outputs",
+            TreeWidget::tr("VibeCAD Outputs"),
+            "vibecad",
+            vibeCADOutputs
+        );
+
         const auto references = componentRoleEntries(componentEntry.object, Role::Reference);
         renderReferences(
             componentItem,
@@ -6298,6 +6351,25 @@ void DocumentItem::rebuildModelBrowser()
         TreeWidget::tr("Components"),
         "Geoassembly",
         rootOccurrences
+    );
+
+    const auto rootVibeCADOutputs = filterBucket(
+        findBucket(
+            entriesByComponentRole,
+            RoleContextKey {nullptr, Role::VibeCADOutput}
+        ),
+        [](const Entry& entry) {
+            return !entry.bodyRepresentation;
+        }
+    );
+    renderCategory(
+        this,
+        nullptr,
+        nullptr,
+        "vibecad-outputs",
+        TreeWidget::tr("VibeCAD Outputs"),
+        "vibecad",
+        rootVibeCADOutputs
     );
 
     const auto rootReferences = componentRoleEntries(nullptr, Role::Reference);
@@ -8334,6 +8406,10 @@ DocumentObjectItem::DocumentObjectItem(
     }
     setFlags(flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
     setCheckState(false);
+    setToolTip(
+        0,
+        vibeCADProvenanceToolTip(object() ? object()->getObject() : nullptr)
+    );
 
     myData->insertItem(this);
     ++countItems;
@@ -8493,6 +8569,21 @@ enum Status
 // Overlays are static icons that may need to be initialized
 void DocumentObjectItem::setIconOverlays(int currentStatus, QPixmap& overlays) const
 {
+    if (isVibeCADCreatedObject(object() ? object()->getObject() : nullptr)) {
+        static QPixmap pxVibeCAD;
+        if (pxVibeCAD.isNull()) {
+            pxVibeCAD = Gui::BitmapFactory().pixmapFromSvg(
+                "vibecad-tree-overlay",
+                QSize(10, 10)
+            );
+        }
+        overlays = BitmapFactory().merge(
+            overlays,
+            pxVibeCAD,
+            BitmapFactoryInst::BottomLeft
+        );
+    }
+
     if (currentStatus & Status::Hidden) {
         static QPixmap pxHidden;
         if (pxHidden.isNull()) {

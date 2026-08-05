@@ -645,6 +645,72 @@ class TestModelTreeBrowser(unittest.TestCase):
             if item.type() == BROWSER_FOLDER_TYPE:
                 self.assertFalse(item.icon(0).isNull(), item.text(0))
 
+    def test_vibecad_outputs_are_badged_and_not_classified_as_references(self):
+        model_id = "browser-target-backed-publication"
+        target = self.document.addObject(
+            "Part::Feature",
+            "VibeGeneratedHousingTarget",
+        )
+        target.Label = "Generated Housing Target"
+        target.Shape = Part.makeCylinder(3, 8)
+        self.vibe_component.addObject(target)
+        _tag_scripted_object(
+            target,
+            role="publication_target",
+            model_id=model_id,
+            output_key="GeneratedHousing",
+        )
+
+        output = self.document.addObject(
+            "App::Link",
+            "VibeGeneratedHousing",
+        )
+        output.Label = "Generated Housing"
+        output.LinkedObject = (
+            self.vibe_component,
+            f"{target.Name}.",
+        )
+        output.LinkTransform = True
+        _tag_scripted_object(
+            output,
+            role="publication",
+            model_id=model_id,
+            output_key="GeneratedHousing",
+        )
+        self.document.recompute()
+
+        def generated_output_items():
+            _tree, document_item = self._tree_and_document_item()
+            component = _child(document_item, self.vibe_component.Label)
+            category = _child(
+                component,
+                "VibeCAD Outputs",
+                BROWSER_FOLDER_TYPE,
+            )
+            generated = _child(category, output.Label)
+            references = _child(
+                component,
+                "References",
+                BROWSER_FOLDER_TYPE,
+            )
+            values = (document_item, component, category, generated, references)
+            return values if all(value is not None for value in values) else None
+
+        observed = _wait_until(generated_output_items)
+        self.assertIsNotNone(observed, self._snapshot())
+        document_item, vibe_component, category, generated, references = observed
+        self.assertIsNone(_child(references, output.Label))
+        self.assertFalse(category.icon(0).isNull())
+        self.assertIn("Created by VibeCAD", generated.toolTip(0))
+        self.assertIn("Created by VibeCAD", vibe_component.toolTip(0))
+
+        manual_component = _child(document_item, self.component.Label)
+        self.assertNotIn("Created by VibeCAD", manual_component.toolTip(0))
+        self.assertNotEqual(
+            vibe_component.icon(0).cacheKey(),
+            manual_component.icon(0).cacheKey(),
+        )
+
     def test_assembly_structure_is_visible_without_history_duplication_folders(self):
         assembly = self.document.addObject(
             "Assembly::AssemblyObject",

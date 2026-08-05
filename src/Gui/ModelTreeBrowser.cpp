@@ -532,6 +532,9 @@ ModelTreeBrowserProjection::Role ModelTreeBrowserProjection::classify(
             return Role::AssemblyOperation;
         }
     }
+    if (publishedOutput) {
+        return Role::VibeCADOutput;
+    }
     if (isReference(object)) {
         return Role::Reference;
     }
@@ -546,9 +549,6 @@ ModelTreeBrowserProjection::Role ModelTreeBrowserProjection::classify(
     if (object->hasExtension(App::GroupExtension::getExtensionClassTypeId())
         && !object->hasExtension(App::GeoFeatureGroupExtension::getExtensionClassTypeId())) {
         return Role::Group;
-    }
-    if (publishedOutput) {
-        return Role::Geometry;
     }
     if (ownership.body) {
         return Role::Feature;
