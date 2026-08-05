@@ -918,3 +918,60 @@ Live MCP verification on the rebuilt application:
   response now identifies the workbench that covers the complete request and
   states the required switch instead of leaving the caller to infer it from a
   flat name inventory.
+
+### Toggle-clamp continuation audit on 2026-08-05
+
+The saved clamp was reopened after the tool-quality checkpoint and exercised
+only through MCP.
+
+1. The source inventory again exposed native `object_name` values, persistence
+   prefixes, and duplicate-label `001` suffixes for every output. Selecting a
+   program requires only its readable program path, status, authored output
+   names/labels, and read action. Native identities should remain in an
+   explicitly detailed read.
+2. `assembly.list_structure` counted `Restore_BOM` as a mechanism component,
+   reporting six components for the actual five placed mechanical occurrences.
+   It also returned the same objects in `children`, `component_children`, and
+   `joint_children`, plus internal model IDs. Default structure should report
+   one normalized component/joint graph; raw native hierarchy belongs behind
+   diagnostics.
+3. Passing a preset camera as a string to `core.capture_view_screenshot` failed
+   because the schema requires an object, but the failure did not provide a
+   copy-ready valid camera form.
+4. Omitting `object_names` while using `core.set_view(frame='objects')` returned
+   approximately every document object—including origins, planes, internal
+   BodyState objects, and publications—as candidates. The requested
+   `show_objects` already contained the exact five usable targets. The error
+   should either use those same targets for framing or return one short
+   correction, not the entire document inventory.
+5. A successful `core.set_view` repeated requested, normalized, before/after,
+   per-stage, per-object visibility, camera, framing, viewport, and final fields.
+   The decision-complete result is: success, five shown/framed objects, effective
+   camera, and elapsed time. Detailed stage evidence should be opt-in.
+6. Exact-object screenshot capture is a good happy path: it returned the image,
+   five targets, size, elapsed time, and a compact blank/layout check.
+7. Rebuilding the retained nine-component candidate remained at the generic
+   `phase='worker'` for every status read beyond 170 seconds. The operation
+   status did not expose the worker's graph, solve, simulation, collision, or
+   serialization subphase, so the new internal progress evidence is still not
+   reaching the caller during a real long build.
+8. Direct inspection of the crash-safe progress record disproved the initial
+   reference-loading diagnosis: reference setup took 0.42 seconds, components
+   took 0.22 seconds, and the worker then stopped at joint 7 of 9,
+   `SpindleLock`, while consuming one CPU core continuously. Native
+   `setJointConnectors()` was auto-solving the incomplete graph after every
+   joint even though VibeScript explicitly solves the completed graph later.
+   Candidate construction must suppress those intermediate solves.
+9. The public operation status remained at its old generic `worker` event while
+   the crash-safe worker record precisely identified
+   `assembly_joint_construction`, 6/9 completed, and `SpindleLock`. The existing
+   inner progress poller is not updating the operation projection seen by MCP.
+10. The same 300-second preference is used as a wall deadline and a CPU-time
+    limit. A timeout result must distinguish a stalled graph node from healthy
+    continued progress; merely raising the limit would preserve the runaway
+    native solve and make the experience worse.
+11. An `edit_source` call that intentionally removed the `Simulation` output
+    but omitted the optional `expected_outputs` field returned an accurate
+    output-contract mismatch, then recommended `build_program`. That recovery
+    call cannot succeed with unchanged source and declarations. The correction
+    should say to repeat `edit_source` once with the complete new output list.

@@ -15,6 +15,7 @@ import traceback
 from types import MappingProxyType
 from typing import Any
 
+from VibeCADAssemblySolverPolicy import set_joint_connectors_without_auto_solve
 from vibescript_domain_api import DomainValue, create_domain_api
 import vibescript_worker_progress as worker_progress
 
@@ -737,7 +738,11 @@ def _assembly_worker_validation(
             "App::FeaturePython", f"CandidateJoint{joint_count}"
         )
         JointObject.Joint(joint, JointObject.JointTypes.index(native_type))
-        joint.Proxy.setJointConnectors(joint, references)
+        set_joint_connectors_without_auto_solve(
+            joint,
+            references,
+            preserve_placements=components.values(),
+        )
         joint_count += 1
     document.recompute()
     solver_code = int(assembly.solve(False))

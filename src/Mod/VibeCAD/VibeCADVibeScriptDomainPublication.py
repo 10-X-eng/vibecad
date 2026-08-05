@@ -3853,15 +3853,10 @@ def _configure_joint(
 ) -> None:
     """Apply precomputed joint state with native auto-solve temporarily disabled."""
 
-    import Preferences
+    from VibeCADAssemblySolverPolicy import suspend_joint_autosolve
 
-    preferences = Preferences.preferences()
-    previous = bool(preferences.GetBool("SolveInJointCreation", True))
-    preferences.SetBool("SolveInJointCreation", False)
-    try:
+    with suspend_joint_autosolve():
         _configure_joint_while_suspended(obj, item, outputs, prepared)
-    finally:
-        preferences.SetBool("SolveInJointCreation", previous)
 
 
 def _configure_assembly_motion(

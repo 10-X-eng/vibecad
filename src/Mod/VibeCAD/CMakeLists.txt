@@ -47,6 +47,7 @@ set(VibeCAD_Scripts
     vibescript_assembly_worker.py
     VibeCADAssemblyHierarchy.py
     VibeCADAssemblyBOM.py
+    VibeCADAssemblySolverPolicy.py
     vibescript_domain_api.py
     vibescript_domain_worker.py
     vibescript_component_api.py

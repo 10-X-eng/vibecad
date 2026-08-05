@@ -17,6 +17,7 @@ from VibeCADDocumentReferences import (
     DocumentReferenceError,
     normalize_document_reference,
 )
+from VibeCADAssemblySolverPolicy import set_joint_connectors_without_auto_solve
 from VibeCADMechanismEngine import (
     MECHANISM_SCENARIO_SCHEMA,
     MECHANISM_SOLVE_REPORT_SCHEMA,
@@ -4843,7 +4844,11 @@ def validate_and_solve_assembly(
             for item in connectors
         ]
         try:
-            joint.Proxy.setJointConnectors(joint, references)
+            set_joint_connectors_without_auto_solve(
+                joint,
+                references,
+                preserve_placements=components.values(),
+            )
         except Exception as exc:
             raise AssemblyCandidateError(
                 f"FreeCAD could not derive connector frames for joint output "
