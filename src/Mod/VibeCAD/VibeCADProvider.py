@@ -62,7 +62,7 @@ VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical design engineer
 
 CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Treat explicit user constraints as requirements. A correction changes only the named geometry; preserve the existing architecture, identity, and history unless replacement or redesign was requested. Build editable, parametric geometry meeting function, dimensions, fit, manufacturability, and appearance. Default to catalog fasteners. Decide unspecified details; ask only if a choice changes function or geometry.
 
-Use only the tools exposed for this turn and exact state returned in the current context or by a tool; never guess names, references, revisions, or API members. Fix failures before dependent features; never repeat an unchanged failure. Before claiming completion, verify requested dimensions, topology, interfaces, clearances, assembly retention, service motion, manufacturability, and appearance; capture the viewport for visual judgment. Never claim work or verification not performed."""
+Use only the tools exposed for this turn and exact state returned in the current context or by a tool; never guess names, references, revisions, or API members. Fix failures before dependent features; never repeat an unchanged failure. Hide source bodies when reviewing assembly occurrences. Before claiming completion, verify requested dimensions, topology, interfaces, clearances, assembly retention, service motion, manufacturability, and appearance; capture the viewport for visual judgment. Never claim work or verification not performed."""
 
 
 ANTHROPIC_TURN_COMPACTION_INSTRUCTIONS = """You compact one unfinished VibeCAD agent turn.
@@ -121,16 +121,16 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
             "presentation only. For a new source, pass domain='partdesign' to "
             "vibescript.create_program for part geometry or domain='assembly' for "
             "occurrences, joints, mechanisms, and simulations. Read the matching API "
-            "with vibescript.read_api(domain=...). Existing sources route by source_id "
-            "without a workbench switch.\n"
+            "with vibescript.read_api(domain=...). Existing sources route by their "
+            "human-readable program reference without a workbench switch.\n"
             f"PARTS: {part_pack.instructions}\n"
             f"ASSEMBLIES: {assembly_pack.instructions}\n"
             "Use definitions in available_components with api.component or "
             "api.instances; search only when the needed item is absent or needs more "
             "metadata. editable_sources.all_sources lists both domains; each item is "
-            "one editable part or program, including failed and unbuilt code. Read "
-            "its exact source_id with "
-            "vibescript.read_source before editing, send the complete updated source "
+            "one editable part or program, including failed and unbuilt code. Copy its "
+            "program reference into vibescript.read_source before editing, then send "
+            "the complete updated source "
             "and revision to vibescript.edit_source, and use "
             "vibescript.build_program only to rebuild unchanged code. Source receives "
             "immutable doc and api values plus validated inputs. Reuse existing source. "
@@ -156,7 +156,7 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
         f"Write CAD only through the active {pack.title} VibeScript API. "
         f"{pack.instructions}{component_instruction}\n\n"
         "Each editable_sources item is one editable part or program, including failed "
-        "and unbuilt code. Read its exact source_id with vibescript.read_source before "
+        "and unbuilt code. Copy its program reference into vibescript.read_source before "
         "editing; send the complete updated source and returned revision to "
         "vibescript.edit_source. Use vibescript.build_program to rebuild unchanged code. "
         "Use vibescript.read_geometry on an exact object reference before depending on "
@@ -1694,11 +1694,92 @@ def _model_visible_context(
         "view_screenshot",
         "reference_images",
     )
-    return {
+    result = {
         key: _json_safe(context[key])
         for key in sections
         if key in context and context[key] not in (None, "", [], {})
     }
+    editable = result.get("editable_sources")
+    if isinstance(editable, dict):
+        result["editable_sources"] = _provider_visible_editable_sources(editable)
+    components = result.get("available_components")
+    if isinstance(components, dict):
+        cleaned_components = dict(components)
+        cleaned_components["components"] = [
+            _provider_visible_component(item)
+            for item in list(components.get("components") or [])
+            if isinstance(item, dict)
+        ]
+        result["available_components"] = cleaned_components
+    return result
+
+
+def _provider_visible_program_source(source: dict[str, Any]) -> dict[str, Any]:
+    """Expose one editable source by readable identity, never persistence UUID."""
+
+    allowed = (
+        "program",
+        "source_kind",
+        "domain",
+        "workbench",
+        "label",
+        "status",
+        "affected_outputs",
+        "latest_candidate",
+        "error",
+        "read_tool",
+        "read_arguments",
+        "build_tool",
+        "build_arguments",
+        "edit_tool",
+        "edit_target_arguments",
+        "delete_output_tool",
+        "delete_program_tool",
+        "delete_target_arguments",
+    )
+    return {
+        key: source[key]
+        for key in allowed
+        if key in source and source[key] not in (None, "", [], {})
+    }
+
+
+def _provider_visible_editable_sources(editable: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        key: value
+        for key, value in editable.items()
+        if key not in {"sources", "all_sources", "component_sources"}
+    }
+    for key in ("sources", "all_sources"):
+        if key in editable:
+            result[key] = [
+                _provider_visible_program_source(source)
+                for source in list(editable.get(key) or [])
+                if isinstance(source, dict)
+            ]
+    if "component_sources" in editable:
+        result["component_sources"] = [
+            {
+                key: value
+                for key, value in source.items()
+                if key not in {"source_id", "program_id", "document_uid"}
+            }
+            for source in list(editable.get("component_sources") or [])
+            if isinstance(source, dict)
+        ]
+    return result
+
+
+def _provider_visible_component(component: dict[str, Any]) -> dict[str, Any]:
+    result = dict(component)
+    authoring = result.get("authoring_source")
+    if isinstance(authoring, dict):
+        result["authoring_source"] = {
+            key: value
+            for key, value in authoring.items()
+            if key not in {"source_id", "program_id", "document_uid"}
+        }
+    return result
 
 
 def _provider_function_name(tool_name: str) -> str:
@@ -1876,10 +1957,35 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
 
     visible = dict(result)
     visible.pop("_vibecad_image_attachment", None)
+    source_lifecycle = bool(
+        visible.pop("_vibecad_source_lifecycle_result", False)
+    )
+    source_read = bool(visible.pop("_vibecad_source_read_result", False))
+    geometry_request = visible.pop("_vibecad_geometry_read_request", None)
     complete_read = bool(
         visible.pop("_vibecad_complete_source_result", False)
         or visible.pop("_vibecad_complete_api_result", False)
     )
+    visible = _provider_hide_internal_program_ids(visible)
+    if source_lifecycle:
+        visible = _provider_visible_source_lifecycle_result(visible)
+    elif isinstance(visible.get("result"), dict) and bool(
+        visible["result"].pop("_vibecad_source_lifecycle_result", False)
+    ):
+        # Background writes retain the exact raw result in the process-local
+        # operation manager, but their terminal read must pass through the same
+        # concise provider projection as a synchronous source write. Without
+        # this, one collision summary is repeated through candidate outputs,
+        # publication metadata, and live outputs until useful data crosses the
+        # provider byte boundary.
+        visible["result"] = _provider_visible_source_lifecycle_result(
+            visible["result"]
+        )
+    elif source_read:
+        visible = _provider_visible_source_read_result(visible)
+    elif isinstance(geometry_request, dict):
+        visible = _provider_visible_geometry_read_result(visible, geometry_request)
+    visible = _provider_compact_terminal_operation(visible)
     safe = _json_safe(visible)
     encoded = json.dumps(
         safe,
@@ -1906,7 +2012,11 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
         "updated",
         "changed",
         "deleted",
+        "operation_succeeded",
         "operation",
+        "result",
+        "next_action",
+        "next_actions",
         "document",
         "object",
         "object_name",
@@ -1945,8 +2055,17 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
 
     while _provider_json_bytes(projected) > result_limit:
         candidates = []
+        protected_fields = {
+            "ok",
+            "operation",
+            "operation_succeeded",
+            "result",
+            "next_action",
+            "next_actions",
+            "vibecad_result_boundary",
+        }
         for key, value in projected.items():
-            if key in {"ok", "vibecad_result_boundary"}:
+            if key in protected_fields:
                 continue
             if isinstance(value, dict) and value.get("_vibecad_value_omitted") is True:
                 continue
@@ -1962,16 +2081,553 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
         boundary["omitted_top_level_field_count"] = omitted_count
 
     if _provider_json_bytes(projected) > result_limit:
-        # This is reachable only for a pathological mapping with enormous key
-        # overhead. Keep the operation verdict and the fixed-size boundary.
-        projected = {
-            **({"ok": safe["ok"]} if "ok" in safe else {}),
-            "vibecad_result_boundary": {
+        # A pathological protected value (normally an unbounded native error)
+        # must not erase the terminal verdict. Return a fixed-shape operation
+        # summary with the exact failure code, revision, and recovery calls.
+        # This is more useful than replacing ``result`` wholesale with a byte
+        # boundary marker: the model can still make the correct next call.
+        projected = _provider_minimal_terminal_result(
+            safe,
+            boundary={
                 **boundary,
                 "omitted_top_level_field_count": len(safe),
             },
-        }
+        )
     return projected
+
+
+def _provider_minimal_terminal_result(
+    result: dict[str, Any],
+    *,
+    boundary: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve an actionable terminal verdict under pathological payloads."""
+
+    operation = result.get("operation")
+    nested = result.get("result")
+    if not isinstance(operation, dict) or not isinstance(nested, dict):
+        return {
+            **({"ok": result["ok"]} if "ok" in result else {}),
+            "vibecad_result_boundary": boundary,
+        }
+
+    compact_operation = {
+        key: operation[key]
+        for key in ("status", "tool")
+        if operation.get(key) not in (None, "")
+    }
+    compact_nested = {
+        key: nested[key]
+        for key in (
+            "ok",
+            "failure_code",
+            "failure_stage",
+            "cancelled",
+            "retry_same_call",
+            "program",
+            "revision",
+            "working_revision",
+            "accepted_revision",
+            "state",
+            "validation_scope",
+            "next_action",
+            "next_actions",
+        )
+        if nested.get(key) not in (None, "", [], {})
+    }
+    if nested.get("error") not in (None, ""):
+        encoded_error = str(nested["error"]).encode("utf-8", errors="replace")
+        compact_nested["error"] = (
+            str(nested["error"])
+            if len(encoded_error) <= 2048
+            else "The exact failure diagnostic exceeded the provider response limit."
+        )
+        if len(encoded_error) > 2048:
+            compact_nested["error_boundary"] = {
+                "utf8_bytes": len(encoded_error),
+                "sha256": hashlib.sha256(encoded_error).hexdigest(),
+            }
+    return {
+        **({"ok": result["ok"]} if "ok" in result else {}),
+        **(
+            {"operation_succeeded": result["operation_succeeded"]}
+            if "operation_succeeded" in result
+            else {}
+        ),
+        "operation": compact_operation,
+        "result": compact_nested,
+        "vibecad_result_boundary": boundary,
+    }
+
+
+def _provider_hide_internal_program_ids(value: Any) -> Any:
+    """Remove persistence UUIDs from provider results while preserving readable targets."""
+
+    if isinstance(value, dict):
+        return {
+            key: _provider_hide_internal_program_ids(item)
+            for key, item in value.items()
+            if key not in {"source_id", "program_id"}
+        }
+    if isinstance(value, list):
+        return [_provider_hide_internal_program_ids(item) for item in value]
+    return value
+
+
+def _provider_compact_output(name: str, value: Any) -> dict[str, Any]:
+    output = dict(value) if isinstance(value, dict) else {}
+    compact = {
+        "name": str(name),
+        **{
+            key: output[key]
+            for key in (
+                "label",
+                "output_type",
+                "derived_state",
+                "visible",
+                "reference",
+            )
+            if output.get(key) not in (None, "", [], {})
+        },
+    }
+    facts = output.get("facts")
+    if isinstance(facts, dict):
+        compact_facts = {
+            key: facts[key]
+            for key in (
+                "shape_type",
+                "valid",
+                "solid_count",
+                "shell_count",
+                "face_count",
+                "edge_count",
+                "vertex_count",
+                "volume_mm3",
+                "area_mm2",
+                "bounds_mm",
+            )
+            if facts.get(key) not in (None, "", [], {})
+        }
+        if compact_facts:
+            compact["geometry"] = compact_facts
+    assembly_data = output.get("assembly_data")
+    validation_scope = output.get("validation_scope")
+    if validation_scope is None and isinstance(assembly_data, dict):
+        validation_scope = assembly_data.get("validation_scope")
+    if isinstance(validation_scope, dict):
+        compact["validation_scope"] = dict(validation_scope)
+    collision = (
+        assembly_data.get("collision_summary")
+        if isinstance(assembly_data, dict)
+        else None
+    )
+    if isinstance(collision, dict):
+        compact["collision_summary"] = {
+            key: collision[key]
+            for key in (
+                "status",
+                "analysis_complete",
+                "collision_free",
+                "evaluated_frame_count",
+                "colliding_frame_count",
+                "colliding_pair_count",
+                "first_collision",
+                "warning_count",
+                "warnings",
+            )
+            if collision.get(key) not in (None, "", [], {})
+            or key in {"collision_free", "analysis_complete"}
+        }
+    return compact
+
+
+def _provider_compact_failure_details(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    fields = (
+        "stage",
+        "status",
+        "solver_code",
+        "solver_verdict",
+        "joint_output",
+        "joint_type",
+        "component_output",
+        "simulation_output",
+        "frame_index",
+        "iteration",
+        "latest_residual",
+        "correction",
+    )
+    result = {
+        key: value[key]
+        for key in fields
+        if value.get(key) not in (None, "", [], {})
+    }
+    issues = value.get("issues")
+    if isinstance(issues, list) and issues:
+        result["issues"] = [
+            _provider_compact_failure_details(item)
+            for item in issues[:8]
+            if isinstance(item, dict)
+        ]
+        if len(issues) > 8:
+            result["issues_omitted"] = len(issues) - 8
+    return result
+
+
+def _provider_compact_observed(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result = {
+        key: value[key]
+        for key in (
+            "exception_type",
+            "domain_failure_stage",
+            "termination_reason",
+            "limit_reached",
+            "returncode",
+            "elapsed_seconds",
+            "cancelled_by",
+            "accepted_live_outputs_preserved",
+            "partial_candidate_outputs_published",
+        )
+        if value.get(key) not in (None, "", [], {})
+    }
+    progress = value.get("worker_progress")
+    if isinstance(progress, dict):
+        result["worker_progress"] = {
+            key: progress[key]
+            for key in (
+                "domain",
+                "phase",
+                "current_output",
+                "phase_elapsed_seconds",
+                "elapsed_seconds",
+                "item_progress",
+                "current_graph_node",
+                "last_completed_graph_node",
+                "completed",
+                "failure",
+            )
+            if key in progress
+        }
+    details = _provider_compact_failure_details(value.get("details"))
+    if details:
+        result["details"] = details
+    return result
+
+
+def _provider_visible_source_lifecycle_result(
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Return one concise source-write verdict with exact next actions."""
+
+    program = str(result.get("program") or "")
+    revision = str(
+        result.get("working_revision")
+        or result.get("current_revision")
+        or result.get("next_write_expected_revision")
+        or ""
+    )
+    compact: dict[str, Any] = {
+        key: result[key]
+        for key in (
+            "ok",
+            "tool",
+            "requested_action",
+            "failure_code",
+            "failure_stage",
+            "error",
+            "cancelled",
+            "retry_same_call",
+            "created",
+            "updated",
+            "changed",
+            "deleted",
+            "source_deleted",
+            "deleted_output",
+            "cad_objects_removed",
+            "artifacts_deleted",
+            "warnings",
+            "phase_timings_seconds",
+            "lifecycle_elapsed_seconds",
+        )
+        if result.get(key) not in (None, "", [], {})
+    }
+    if program:
+        compact["program"] = program
+    if revision:
+        compact["revision"] = revision
+
+    if isinstance(result.get("outputs"), list):
+        live_outputs = (
+            result.get("live_outputs")
+            if isinstance(result.get("live_outputs"), dict)
+            else {}
+        )
+        public_outputs = []
+        for index, value in enumerate(result["outputs"]):
+            if not isinstance(value, dict):
+                continue
+            name = str(value.get("name") or value.get("output_name") or index)
+            live = live_outputs.get(name)
+            combined = dict(live) if isinstance(live, dict) else {}
+            combined.update(value)
+            public_outputs.append(_provider_compact_output(name, combined))
+        compact["outputs"] = public_outputs
+    else:
+        raw_outputs = result.get("live_outputs")
+        if isinstance(raw_outputs, dict):
+            compact["outputs"] = [
+                _provider_compact_output(str(name), value)
+                for name, value in sorted(
+                    raw_outputs.items(), key=lambda item: str(item[0])
+                )
+            ]
+
+    for output in list(compact.get("outputs") or []):
+        if not isinstance(output, dict):
+            continue
+        validation_scope = output.get("validation_scope")
+        if isinstance(validation_scope, dict):
+            compact["validation_scope"] = dict(validation_scope)
+            break
+
+    model_state = result.get("model_state")
+    if isinstance(model_state, dict):
+        state = {
+            key: model_state[key]
+            for key in (
+                "status",
+                "accepted_is_current",
+                "accepted_live_state_preserved",
+            )
+            if model_state.get(key) not in (None, "", [], {})
+        }
+        if state:
+            compact["state"] = state
+
+    for key in ("verification", "recovery"):
+        if result.get(key) not in (None, "", [], {}):
+            compact[key] = result[key]
+    required_changes = result.get("required_changes")
+    if isinstance(required_changes, list) and required_changes:
+        compact["required_changes"] = required_changes[:8]
+        if len(required_changes) > 8:
+            compact["required_changes_omitted"] = len(required_changes) - 8
+    if result.get("ok") is not True and isinstance(result.get("observed"), dict):
+        observed = _provider_compact_observed(result["observed"])
+        if observed:
+            compact["observed"] = observed
+
+    if program:
+        actions: list[dict[str, Any]] = [
+            {
+                "tool": "vibescript.read_source",
+                "arguments": {"program": program, "include_logs": False},
+            }
+        ]
+        if revision:
+            actions.append(
+                {
+                    "tool": "vibescript.build_program",
+                    "arguments": {
+                        "program": program,
+                        "expected_revision": revision,
+                    },
+                }
+            )
+        compact["next_actions"] = actions
+    return compact
+
+
+def _provider_compact_terminal_operation(
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep one invariant terminal verdict below the provider byte boundary."""
+
+    operation = result.get("operation")
+    nested = result.get("result")
+    if (
+        not isinstance(operation, dict)
+        or str(operation.get("status") or "") == "running"
+        or not isinstance(nested, dict)
+    ):
+        return result
+    compact_nested = {
+        key: nested[key]
+        for key in (
+            "ok",
+            "tool",
+            "requested_action",
+            "failure_code",
+            "failure_stage",
+            "error",
+            "cancelled",
+            "retry_same_call",
+            "created",
+            "updated",
+            "changed",
+            "deleted",
+            "program",
+            "revision",
+            "working_revision",
+            "accepted_revision",
+            "state",
+            "model_state",
+            "outputs",
+            "warnings",
+            "phase_timings_seconds",
+            "lifecycle_elapsed_seconds",
+            "validation_scope",
+            "next_action",
+            "next_actions",
+        )
+        if nested.get(key) not in (None, "", [], {})
+    }
+    if nested.get("ok") is not True:
+        observed = _provider_compact_observed(nested.get("observed"))
+        if observed:
+            compact_nested["observed"] = observed
+        required_changes = nested.get("required_changes")
+        if isinstance(required_changes, list) and required_changes:
+            compact_nested["required_changes"] = required_changes[:8]
+    compact = dict(result)
+    compact["result"] = compact_nested
+    return compact
+
+
+def _provider_visible_source_read_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Return source code, its concise state, and the exact legal next actions."""
+
+    revision = str(result.get("current_revision") or "")
+    compact = {
+        key: result[key]
+        for key in (
+            "ok",
+            "program",
+            "source",
+            "source_range",
+            "expected_outputs",
+        )
+        if result.get(key) not in (None, "", [], {})
+    }
+    if revision:
+        compact["revision"] = revision
+    input_schema = result.get("input_schema")
+    inputs = result.get("inputs")
+    schema_properties = (
+        dict(input_schema.get("properties") or {})
+        if isinstance(input_schema, dict)
+        else {}
+    )
+    if inputs or schema_properties:
+        compact["input_schema"] = input_schema
+        compact["inputs"] = inputs
+    affected = [
+        dict(value)
+        for value in list(result.get("affected_outputs") or [])
+        if isinstance(value, dict)
+    ]
+    if affected:
+        compact["outputs"] = affected
+    model_state = result.get("model_state")
+    if isinstance(model_state, dict):
+        state = {
+            key: model_state[key]
+            for key in ("status",)
+            if model_state.get(key) not in (None, "", [], {})
+        }
+        if model_state.get("accepted_is_current") is False:
+            state["accepted_is_current"] = False
+        if (
+            model_state.get("accepted_is_current") is False
+            and "accepted_live_state_preserved" in model_state
+        ):
+            state["accepted_live_state_preserved"] = bool(
+                model_state["accepted_live_state_preserved"]
+            )
+        accepted_revision = str(result.get("accepted_revision") or "")
+        if accepted_revision and accepted_revision != revision:
+            state["accepted_revision"] = accepted_revision
+        if state:
+            compact["state"] = state
+    latest = result.get("latest_candidate")
+    if isinstance(latest, dict) and latest.get("failure"):
+        compact["latest_failure"] = latest["failure"]
+    actions = []
+    for key in ("edit_source", "build_program"):
+        action = result.get(key)
+        if isinstance(action, dict):
+            actions.append(action)
+    if actions:
+        compact["next_actions"] = actions
+    return compact
+
+
+def _provider_visible_geometry_read_result(
+    result: dict[str, Any],
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    geometry = dict(result.get("geometry") or {})
+    for key in ("face_details", "edge_details"):
+        if not request.get("include_subelements"):
+            geometry.pop(key, None)
+    if not request.get("queries"):
+        geometry.pop("query_results", None)
+    geometry = {
+        key: value
+        for key, value in geometry.items()
+        if value not in (None, "", [], {})
+        and key not in {"subelement_detail_limit", "subelement_details_truncated"}
+    }
+    reference = dict(result.get("reference") or {})
+    raw_object = dict(result.get("object") or {})
+    obj = {
+        "reference": reference,
+        **{
+            key: raw_object[key]
+            for key in ("label", "type", "visible")
+            if raw_object.get(key) not in (None, "", [], {})
+        },
+    }
+    compact: dict[str, Any] = {
+        "ok": bool(result.get("ok")),
+        "object": obj,
+        "geometry": geometry,
+    }
+    placement = dict(result.get("placement") or {})
+    matrix = placement.get("matrix_4x4_row_major")
+    identity = [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    if matrix and list(matrix) != identity:
+        compact["placement"] = placement
+    shape_revision = result.get("shape_revision")
+    if isinstance(shape_revision, dict) and shape_revision.get("shape_hash") is not None:
+        compact["selection_revision"] = {
+            "shape_hash": shape_revision["shape_hash"],
+            "rule": "Read geometry again after this object's topology changes.",
+        }
+    execution = result.get("execution")
+    if isinstance(execution, dict) and execution.get("elapsed_seconds") is not None:
+        compact["elapsed_seconds"] = execution["elapsed_seconds"]
+    return compact
 
 
 def _provider_json_bytes(value: Any) -> int:
@@ -2810,8 +3466,7 @@ def _anthropic_prompt_compaction_context(prompt: str) -> dict[str, Any]:
 
 
 _COMPACTION_ARGUMENT_KEYS = {
-    "source_id",
-    "program_id",
+    "program",
     "reference",
     "references",
     "object",
@@ -2844,8 +3499,7 @@ _COMPACTION_RESULT_KEYS = {
     "object",
     "object_name",
     "assembly",
-    "program_id",
-    "source_id",
+    "program",
     "working_revision",
     "accepted_revision",
     "current_revision",
@@ -3093,8 +3747,7 @@ def _anthropic_compaction_resume_state(context: dict[str, Any]) -> dict[str, Any
     editable = context.get("editable_sources")
     if isinstance(editable, dict):
         source_keys = {
-            "source_id",
-            "program_id",
+            "program",
             "name",
             "program_name",
             "label",

@@ -20,6 +20,7 @@ import mimetypes
 import os
 from pathlib import Path
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -38,6 +39,31 @@ MCP_TOKEN_BYTES = 32
 
 READ_WORKBENCH_TOOL = "vibecad.read_workbench"
 SWITCH_WORKBENCH_TOOL = "vibecad.switch_workbench"
+RECOVER_DOCUMENTS_TOOL = "vibecad.recover_documents"
+MANAGE_DOCUMENT_TOOL = "vibecad.manage_document"
+VIBESCRIPT_READ_OPERATION_TOOL = "vibescript.read_operation"
+
+
+def _bind_mcp_listener(host: str, port: int) -> socket.socket:
+    """Reserve the MCP endpoint before uvicorn starts its event loop."""
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((host, int(port)))
+        listener.listen(2048)
+        listener.setblocking(False)
+        listener.set_inheritable(False)
+    except OSError as exc:
+        listener.close()
+        raise RuntimeError(
+            f"MCP endpoint http://{host}:{port}{MCP_PATH} is unavailable; "
+            "another VibeCAD instance may already be using it."
+        ) from exc
+    return listener
 
 
 def _mcp_keyring_module() -> Any | None:
@@ -52,7 +78,11 @@ def _valid_mcp_token(value: Any) -> str:
     token = str(value or "").strip()
     if len(token) < 40:
         return ""
-    if any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in token):
+    if any(
+        character
+        not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        for character in token
+    ):
         return ""
     return token
 
@@ -160,12 +190,78 @@ def controller_tool_schemas() -> list[dict[str, Any]]:
                         "type": "string",
                         "minLength": 1,
                         "description": (
-                            "Exact workbench name returned by "
-                            "vibecad.read_workbench."
+                            "Exact workbench name returned by vibecad.read_workbench."
                         ),
                     }
                 },
                 "required": ["workbench"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": RECOVER_DOCUMENTS_TOOL,
+            "description": (
+                "Complete VibeCAD's pending native document recovery and close "
+                "the startup recovery dialog. Returns each document's exact "
+                "native recovery status; does nothing when recovery is not pending."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": MANAGE_DOCUMENT_TOOL,
+            "description": (
+                "List, create, open, activate, save, or close VibeCAD documents. "
+                "Paths must be absolute .FCStd files. New creates and immediately "
+                "saves a clean document at a path that does not exist. Open reuses "
+                "an already-open physical file. Save never overwrites a different "
+                "file unless overwrite=true. Close never discards modifications "
+                "unless discard_changes=true."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "new", "open", "activate", "save", "close"],
+                        "description": "Exact document operation.",
+                    },
+                    "document": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "Exact internal document name returned by action=list. "
+                            "Optional for save, which defaults to the active document."
+                        ),
+                    },
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "Absolute .FCStd path. Required for new and open and for "
+                            "saving a document that has no file; optional Save As "
+                            "target."
+                        ),
+                    },
+                    "overwrite": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Allow save to replace a different existing file."
+                        ),
+                    },
+                    "discard_changes": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Allow close to discard unsaved modifications."
+                        ),
+                    },
+                },
+                "required": ["action"],
                 "additionalProperties": False,
             },
         },
@@ -307,7 +403,10 @@ class _HostToolSession:
         if self._runner is not None and signature == self._runner_signature:
             return self._runner
 
-        from VibeCADSession import _build_context_for_provider, make_provider_tool_runner
+        from VibeCADSession import (
+            _build_context_for_provider,
+            make_provider_tool_runner,
+        )
 
         service = self._get_service()
         context = _build_context_for_provider(
@@ -454,6 +553,469 @@ class _HostToolSession:
             # MCP switches, avoiding duplicate list-change notifications.
         return result
 
+    def _recover_documents(self) -> dict[str, Any]:
+        def recover() -> dict[str, Any]:
+            from PySide import QtWidgets
+
+            dialog = next(
+                (
+                    widget
+                    for widget in QtWidgets.QApplication.topLevelWidgets()
+                    if str(widget.objectName()) == "Gui::Dialog::DocumentRecovery"
+                    and widget.isVisible()
+                ),
+                None,
+            )
+            if dialog is None:
+                return {
+                    "ok": True,
+                    "recovery_pending": False,
+                    "documents": [],
+                }
+
+            tree = dialog.findChild(QtWidgets.QTreeWidget, "treeWidget")
+            buttons = dialog.findChild(QtWidgets.QDialogButtonBox, "buttonBox")
+            if tree is None or buttons is None:
+                return {
+                    "ok": False,
+                    "failure_code": "RECOVERY_DIALOG_CONTRACT_MISMATCH",
+                    "failure_stage": "native_ui",
+                    "error": (
+                        "The native document recovery dialog is missing its "
+                        "document list or action buttons."
+                    ),
+                }
+            start_or_finish = buttons.button(QtWidgets.QDialogButtonBox.Ok)
+            cancel = buttons.button(QtWidgets.QDialogButtonBox.Cancel)
+            if start_or_finish is None or cancel is None:
+                return {
+                    "ok": False,
+                    "failure_code": "RECOVERY_DIALOG_CONTRACT_MISMATCH",
+                    "failure_stage": "native_ui",
+                    "error": (
+                        "The native document recovery dialog is missing Start "
+                        "Recovery, Finish, or Cancel."
+                    ),
+                }
+
+            # The native dialog is deliberately two-stage. Cancel remains enabled
+            # until Start Recovery has run, then the same OK button becomes Finish.
+            if cancel.isEnabled():
+                start_or_finish.click()
+                QtWidgets.QApplication.processEvents()
+
+            documents = []
+            for index in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(index)
+                documents.append(
+                    {
+                        "document": str(item.text(0) or ""),
+                        "status": str(item.text(1) or ""),
+                        **(
+                            {"detail": str(item.toolTip(1))}
+                            if str(item.toolTip(1) or "").strip()
+                            else {}
+                        ),
+                    }
+                )
+
+            if dialog.isVisible():
+                start_or_finish.click()
+                QtWidgets.QApplication.processEvents()
+            if dialog.isVisible():
+                return {
+                    "ok": False,
+                    "failure_code": "RECOVERY_DIALOG_REMAINED_OPEN",
+                    "failure_stage": "native_ui",
+                    "error": (
+                        "Document recovery finished, but the native recovery "
+                        "dialog did not close."
+                    ),
+                    "documents": documents,
+                }
+            return {
+                "ok": True,
+                "recovery_pending": True,
+                "documents": documents,
+            }
+
+        return self._dispatch(recover)
+
+    def _manage_document(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        action = str(arguments.get("action") or "").strip()
+        if action not in {"list", "new", "open", "activate", "save", "close"}:
+            return {
+                "ok": False,
+                "failure_code": "DOCUMENT_ACTION_INVALID",
+                "failure_stage": "schema",
+                "error": ("action must be list, new, open, activate, save, or close."),
+            }
+
+        def manage() -> dict[str, Any]:
+            import FreeCAD as App
+            import FreeCADGui as Gui
+            from PySide import QtWidgets
+
+            def summary(document: Any) -> dict[str, Any]:
+                gui_document = Gui.getDocument(str(document.Name))
+                return {
+                    "document": str(document.Name),
+                    "label": str(document.Label),
+                    "path": str(document.FileName or ""),
+                    "active": document is getattr(App, "ActiveDocument", None),
+                    "modified": bool(
+                        getattr(gui_document, "Modified", False)
+                        if gui_document is not None
+                        else False
+                    ),
+                    "object_count": len(list(document.Objects)),
+                }
+
+            def all_documents() -> list[dict[str, Any]]:
+                return [
+                    summary(document)
+                    for _name, document in sorted(App.listDocuments().items())
+                ]
+
+            def path_conflicts() -> list[dict[str, Any]]:
+                documents_by_path: dict[Path, list[Any]] = {}
+                for document in App.listDocuments().values():
+                    raw = str(document.FileName or "").strip()
+                    if not raw:
+                        continue
+                    documents_by_path.setdefault(
+                        Path(raw).expanduser().resolve(), []
+                    ).append(document)
+                return [
+                    {
+                        "path": str(path),
+                        "documents": [
+                            str(document.Name)
+                            for document in sorted(
+                                documents, key=lambda item: str(item.Name)
+                            )
+                        ],
+                    }
+                    for path, documents in sorted(
+                        documents_by_path.items(), key=lambda item: str(item[0])
+                    )
+                    if len(documents) > 1
+                ]
+
+            def documents_at_path(
+                path: Path, *, excluding: Any | None = None
+            ) -> list[Any]:
+                matches = []
+                for document in App.listDocuments().values():
+                    if document is excluding:
+                        continue
+                    raw = str(document.FileName or "").strip()
+                    if raw and Path(raw).expanduser().resolve() == path:
+                        matches.append(document)
+                return matches
+
+            def requested_document(*, active_default: bool = False) -> Any | None:
+                name = str(arguments.get("document") or "").strip()
+                if not name and active_default:
+                    return getattr(App, "ActiveDocument", None)
+                return App.listDocuments().get(name) if name else None
+
+            def checked_path(
+                *, must_exist: bool
+            ) -> tuple[Path | None, dict[str, Any] | None]:
+                raw = str(arguments.get("path") or "").strip()
+                if not raw:
+                    return None, {
+                        "ok": False,
+                        "failure_code": "DOCUMENT_PATH_REQUIRED",
+                        "failure_stage": "schema",
+                        "error": "path is required for this document operation.",
+                    }
+                candidate = Path(raw).expanduser()
+                if not candidate.is_absolute():
+                    return None, {
+                        "ok": False,
+                        "failure_code": "DOCUMENT_PATH_NOT_ABSOLUTE",
+                        "failure_stage": "schema",
+                        "error": "path must be an absolute .FCStd path.",
+                    }
+                candidate = candidate.resolve()
+                if candidate.suffix.casefold() != ".fcstd":
+                    return None, {
+                        "ok": False,
+                        "failure_code": "DOCUMENT_PATH_NOT_FCSTD",
+                        "failure_stage": "schema",
+                        "error": "path must identify a .FCStd document.",
+                    }
+                if must_exist and not candidate.is_file():
+                    return None, {
+                        "ok": False,
+                        "failure_code": "DOCUMENT_NOT_FOUND",
+                        "failure_stage": "precondition",
+                        "error": f"No .FCStd document exists at {candidate}.",
+                    }
+                if not must_exist and not candidate.parent.is_dir():
+                    return None, {
+                        "ok": False,
+                        "failure_code": "DOCUMENT_DIRECTORY_NOT_FOUND",
+                        "failure_stage": "precondition",
+                        "error": f"Save directory does not exist: {candidate.parent}.",
+                    }
+                return candidate, None
+
+            if action == "list":
+                documents = all_documents()
+                return {
+                    "ok": True,
+                    "document_count": len(documents),
+                    "documents": documents,
+                    "path_conflicts": path_conflicts(),
+                }
+
+            if action in {"new", "open"}:
+                recovery_pending = any(
+                    str(widget.objectName()) == "Gui::Dialog::DocumentRecovery"
+                    and widget.isVisible()
+                    for widget in QtWidgets.QApplication.topLevelWidgets()
+                )
+                if recovery_pending:
+                    return {
+                        "ok": False,
+                        "failure_code": "DOCUMENT_RECOVERY_PENDING",
+                        "failure_stage": "precondition",
+                        "error": (
+                            "Call vibecad.recover_documents before opening another "
+                            "document."
+                        ),
+                    }
+                path, failure = checked_path(must_exist=action == "open")
+                if failure is not None:
+                    return failure
+                assert path is not None
+                matching_documents = documents_at_path(path)
+                if action == "open" and matching_documents:
+                    document = matching_documents[0]
+                    App.setActiveDocument(str(document.Name))
+                    return {
+                        "ok": True,
+                        "already_open": True,
+                        "opened": summary(document),
+                    }
+                if action == "new":
+                    if path.exists():
+                        return {
+                            "ok": False,
+                            "failure_code": "DOCUMENT_ALREADY_EXISTS",
+                            "failure_stage": "precondition",
+                            "error": (
+                                f"A document already exists at {path}. Use action=open "
+                                "or choose a new path."
+                            ),
+                            "path": str(path),
+                        }
+                    if matching_documents:
+                        return {
+                            "ok": False,
+                            "failure_code": "DOCUMENT_PATH_ALREADY_OPEN",
+                            "failure_stage": "precondition",
+                            "error": (
+                                "An open document already claims the requested path."
+                            ),
+                            "path": str(path),
+                            "documents": [
+                                summary(document) for document in matching_documents
+                            ],
+                        }
+                    internal_name = (
+                        "".join(
+                            character
+                            if character.isalnum() or character == "_"
+                            else "_"
+                            for character in path.stem
+                        ).strip("_")
+                        or "Untitled"
+                    )
+                    document = App.newDocument(internal_name)
+                    if document is None:
+                        return {
+                            "ok": False,
+                            "failure_code": "DOCUMENT_CREATE_FAILED",
+                            "failure_stage": "native_call",
+                            "error": "VibeCAD could not create a new document.",
+                        }
+                    try:
+                        document.Label = path.stem
+                        document.saveAs(str(path))
+                        gui_document = Gui.getDocument(str(document.Name))
+                        if gui_document is not None:
+                            gui_document.Modified = False
+                        App.setActiveDocument(str(document.Name))
+                    except Exception:
+                        name = str(document.Name)
+                        if name in App.listDocuments():
+                            App.closeDocument(name)
+                        raise
+                    return {
+                        "ok": True,
+                        "created": summary(document),
+                        "save_completed": True,
+                    }
+                document = App.openDocument(str(path))
+                if document is None:
+                    return {
+                        "ok": False,
+                        "failure_code": "DOCUMENT_OPEN_FAILED",
+                        "failure_stage": "native_call",
+                        "error": f"VibeCAD could not open {path}.",
+                    }
+                App.setActiveDocument(str(document.Name))
+                return {
+                    "ok": True,
+                    "already_open": False,
+                    "opened": summary(document),
+                }
+
+            document = requested_document(active_default=action == "save")
+            if document is None:
+                return {
+                    "ok": False,
+                    "failure_code": "DOCUMENT_NOT_OPEN",
+                    "failure_stage": "precondition",
+                    "error": (
+                        "Pass an exact open document name returned by action=list."
+                    ),
+                    "documents": all_documents(),
+                }
+
+            if action == "activate":
+                App.setActiveDocument(str(document.Name))
+                return {"ok": True, "activated": summary(document)}
+
+            if action == "save":
+                raw_path = str(arguments.get("path") or "").strip()
+                if raw_path:
+                    path, failure = checked_path(must_exist=False)
+                    if failure is not None:
+                        return failure
+                    assert path is not None
+                    current = str(document.FileName or "").strip()
+                    current_path = (
+                        Path(current).expanduser().resolve() if current else None
+                    )
+                    claimed_by = documents_at_path(path, excluding=document)
+                    if claimed_by:
+                        return {
+                            "ok": False,
+                            "failure_code": "DOCUMENT_PATH_OPEN_BY_ANOTHER_DOCUMENT",
+                            "failure_stage": "precondition",
+                            "error": (
+                                "Another open document already claims the save target. "
+                                "Save one document to a distinct path before continuing."
+                            ),
+                            "path": str(path),
+                            "documents": [summary(item) for item in claimed_by],
+                        }
+                    if (
+                        path.exists()
+                        and path != current_path
+                        and not bool(arguments.get("overwrite", False))
+                    ):
+                        return {
+                            "ok": False,
+                            "failure_code": "DOCUMENT_SAVE_TARGET_EXISTS",
+                            "failure_stage": "precondition",
+                            "error": (
+                                "The Save As target already exists. Pass "
+                                "overwrite=true only when replacing it is intended."
+                            ),
+                            "path": str(path),
+                        }
+                    document.saveAs(str(path))
+                elif str(document.FileName or "").strip():
+                    current_path = Path(str(document.FileName)).expanduser().resolve()
+                    claimed_by = documents_at_path(current_path, excluding=document)
+                    if claimed_by:
+                        return {
+                            "ok": False,
+                            "failure_code": "DOCUMENT_PATH_OPEN_BY_ANOTHER_DOCUMENT",
+                            "failure_stage": "precondition",
+                            "error": (
+                                "Another open document claims this physical path. "
+                                "Save one document to a distinct path before continuing."
+                            ),
+                            "path": str(current_path),
+                            "documents": [summary(item) for item in claimed_by],
+                        }
+                    document.save()
+                else:
+                    return {
+                        "ok": False,
+                        "failure_code": "DOCUMENT_PATH_REQUIRED",
+                        "failure_stage": "precondition",
+                        "error": "An unsaved document requires an absolute Save As path.",
+                    }
+                # App::Document.save() does not clear Gui::Document's modified
+                # flag. The native GUI Save command does this explicitly after
+                # a successful write; MCP must use the same completion contract.
+                gui_document = Gui.getDocument(str(document.Name))
+                if gui_document is not None:
+                    gui_document.Modified = False
+                return {
+                    "ok": True,
+                    "save_completed": True,
+                    "saved": summary(document),
+                }
+
+            gui_document = Gui.getDocument(str(document.Name))
+            if gui_document is not None and getattr(gui_document, "InEditInfo", None):
+                return {
+                    "ok": False,
+                    "failure_code": "NATIVE_TASK_ACTIVE",
+                    "failure_stage": "precondition",
+                    "error": "Close or cancel the active native task before closing its document.",
+                }
+            active_transaction = App.getActiveTransaction()
+            if active_transaction and int(active_transaction[1] or 0) > 0:
+                return {
+                    "ok": False,
+                    "failure_code": "TRANSACTION_ACTIVE",
+                    "failure_stage": "precondition",
+                    "error": "Finish the active CAD transaction before closing a document.",
+                    "transaction": str(active_transaction[0] or ""),
+                }
+            modified = bool(
+                getattr(gui_document, "Modified", False)
+                if gui_document is not None
+                else False
+            )
+            if modified and not bool(arguments.get("discard_changes", False)):
+                return {
+                    "ok": False,
+                    "failure_code": "DOCUMENT_HAS_UNSAVED_CHANGES",
+                    "failure_stage": "precondition",
+                    "error": (
+                        "Save the document first, or pass discard_changes=true "
+                        "to close it without saving."
+                    ),
+                    "document": summary(document),
+                }
+            name = str(document.Name)
+            App.closeDocument(name)
+            if name in App.listDocuments():
+                return {
+                    "ok": False,
+                    "failure_code": "DOCUMENT_CLOSE_REJECTED",
+                    "failure_stage": "native_call",
+                    "error": (
+                        "FreeCAD rejected the document close; a native lock or "
+                        "dependent document may still own it."
+                    ),
+                    "document": name,
+                }
+            return {"ok": True, "closed_document": name, "documents": all_documents()}
+
+        return self._dispatch(manage)
+
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == READ_WORKBENCH_TOOL:
             return {"result": self._read_workbench(), "image_attachment": None}
@@ -462,10 +1024,33 @@ class _HostToolSession:
                 "result": self._switch_workbench(arguments),
                 "image_attachment": None,
             }
+        if name == RECOVER_DOCUMENTS_TOOL:
+            return {
+                "result": self._recover_documents(),
+                "image_attachment": None,
+            }
+        if name == MANAGE_DOCUMENT_TOOL:
+            return {
+                "result": self._manage_document(arguments),
+                "image_attachment": None,
+            }
+
+        # Operation state is process-local and condition-protected. Requiring a
+        # fresh document/surface snapshot here would queue a status-only read
+        # behind the exact long CAD work it is meant to observe.
+        if name == "vibescript.read_operation" and self._runner is not None:
+            return self._visible_provider_result(
+                self._runner(name, json.dumps(arguments, ensure_ascii=True))
+            )
 
         snapshot = self._live_surface()
         runner = self._runner_for(snapshot)
         raw = runner(name, json.dumps(arguments, ensure_ascii=True))
+        return self._visible_provider_result(raw)
+
+    def _visible_provider_result(self, raw: Any) -> dict[str, Any]:
+        """Normalize one internal runner result for the MCP wire."""
+
         if not isinstance(raw, dict):
             raw = {"ok": False, "error": "VibeCAD tool returned no object result."}
         attachment = raw.get("_vibecad_image_attachment")
@@ -502,14 +1087,140 @@ class _ServerHostProxy:
                 }
             )
             response = self._connection.recv()
-            if not isinstance(response, dict) or response.get("request_id") != request_id:
-                raise RuntimeError("VibeCAD MCP host bridge returned an invalid response.")
+            if (
+                not isinstance(response, dict)
+                or response.get("request_id") != request_id
+            ):
+                raise RuntimeError(
+                    "VibeCAD MCP host bridge returned an invalid response."
+                )
             if not response.get("ok"):
-                raise RuntimeError(str(response.get("error") or "MCP host bridge failed."))
+                raise RuntimeError(
+                    str(response.get("error") or "MCP host bridge failed.")
+                )
             payload = response.get("payload")
             if not isinstance(payload, dict):
                 raise RuntimeError("VibeCAD MCP host bridge returned no payload.")
             return payload
+
+
+class _ServerOperationStatusCache:
+    """Keep zero-wait operation reads independent of host CAD work.
+
+    The host remains authoritative. A zero-wait read returns the most recent
+    exact host result immediately and refreshes it in one daemon thread. This
+    matters during GUI-thread publication: even a status-only pipe request can
+    otherwise sit behind Python/C++ finalization after the source mutation has
+    already returned its operation handle.
+    """
+
+    def __init__(self, proxy: _ServerHostProxy, shutdown_event: Any) -> None:
+        self._proxy = proxy
+        self._shutdown_event = shutdown_event
+        self._lock = threading.Lock()
+        self._payloads: dict[str, dict[str, Any]] = {}
+        self._refreshing: set[str] = set()
+
+    @staticmethod
+    def _operation_id(payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        result = payload.get("result")
+        operation = result.get("operation") if isinstance(result, dict) else None
+        return (
+            str(operation.get("operation_id") or "")
+            if isinstance(operation, dict)
+            else ""
+        )
+
+    @staticmethod
+    def _operation_running(payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        result = payload.get("result")
+        operation = result.get("operation") if isinstance(result, dict) else None
+        return bool(
+            isinstance(operation, dict)
+            and str(operation.get("status") or "") == "running"
+        )
+
+    @staticmethod
+    def _copy_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        result = payload.get("result")
+        attachment = payload.get("image_attachment")
+        return {
+            "result": dict(result) if isinstance(result, dict) else result,
+            "image_attachment": (
+                dict(attachment) if isinstance(attachment, dict) else attachment
+            ),
+        }
+
+    def _remember(self, payload: dict[str, Any]) -> None:
+        operation_id = self._operation_id(payload)
+        if not operation_id:
+            return
+        with self._lock:
+            self._payloads[operation_id] = self._copy_payload(payload)
+
+    def _refresh(self, operation_id: str) -> None:
+        try:
+            if bool(self._shutdown_event.is_set()):
+                return
+            payload = self._proxy.request(
+                "call_tool",
+                name=VIBESCRIPT_READ_OPERATION_TOOL,
+                arguments={"operation_id": operation_id, "wait_seconds": 0},
+            )
+            self._remember(payload)
+        except (BrokenPipeError, EOFError, OSError, RuntimeError):
+            pass
+        finally:
+            with self._lock:
+                self._refreshing.discard(operation_id)
+
+    def _refresh_async(self, operation_id: str) -> None:
+        with self._lock:
+            if operation_id in self._refreshing:
+                return
+            self._refreshing.add(operation_id)
+        threading.Thread(
+            target=self._refresh,
+            args=(operation_id,),
+            name=f"VibeCAD-MCP-Operation-{operation_id}",
+            daemon=True,
+        ).start()
+
+    def request(self, method: str, **parameters: Any) -> dict[str, Any]:
+        name = str(parameters.get("name") or "")
+        arguments = parameters.get("arguments")
+        operation_id = (
+            str(arguments.get("operation_id") or "")
+            if isinstance(arguments, dict)
+            else ""
+        )
+        wait_seconds = (
+            float(arguments.get("wait_seconds", 0) or 0)
+            if isinstance(arguments, dict)
+            else 0.0
+        )
+        if (
+            method == "call_tool"
+            and name == VIBESCRIPT_READ_OPERATION_TOOL
+            and operation_id
+            and wait_seconds <= 0
+        ):
+            with self._lock:
+                cached = self._payloads.get(operation_id)
+                payload = self._copy_payload(cached) if cached is not None else None
+            if payload is not None:
+                if self._operation_running(payload):
+                    self._refresh_async(operation_id)
+                return payload
+
+        payload = self._proxy.request(method, **parameters)
+        if method == "call_tool":
+            self._remember(payload)
+        return payload
 
 
 def _attachment_content(attachment: dict[str, Any] | None) -> Any | None:
@@ -534,6 +1245,20 @@ def _attachment_content(attachment: dict[str, Any] | None) -> Any | None:
     return ImageContent(data=data, mimeType=mime_type)
 
 
+async def _terminate_mcp_http_sessions(server: Any) -> None:
+    """Finish every persistent MCP response before stopping its ASGI host."""
+
+    manager = server.session_manager
+    transports = list(manager._server_instances.values())
+    for transport in transports:
+        try:
+            await transport.terminate()
+        except Exception:
+            # Uvicorn still owns the final request cancellation. Continue
+            # closing the other sessions instead of stranding their streams.
+            pass
+
+
 class _BearerTokenMiddleware:
     def __init__(self, app: Any, token: str) -> None:
         self._app = app
@@ -549,9 +1274,7 @@ class _BearerTokenMiddleware:
         }
         authorization = headers.get("authorization", "")
         supplied = (
-            authorization[7:]
-            if authorization.lower().startswith("bearer ")
-            else ""
+            authorization[7:] if authorization.lower().startswith("bearer ") else ""
         )
         if not supplied or not hmac.compare_digest(supplied, self._token):
             body = b'{"error":"invalid_token","error_description":"Authentication required"}'
@@ -608,6 +1331,7 @@ def _mcp_server_process_main(
     """Run only MCP/HTTP concerns in the isolated child process."""
 
     status_lock = threading.Lock()
+    listener: socket.socket | None = None
 
     def emit(event: dict[str, Any]) -> None:
         try:
@@ -617,6 +1341,8 @@ def _mcp_server_process_main(
             pass
 
     try:
+        import multiprocessing
+
         from mcp.server import NotificationOptions, Server
         from mcp.server.subscriptions import (
             InMemorySubscriptionBus,
@@ -627,7 +1353,19 @@ def _mcp_server_process_main(
         from mcp_types import CallToolResult, ListToolsResult, TextContent, Tool
         import uvicorn
 
+        try:
+            listener = _bind_mcp_listener(host, port)
+        except RuntimeError as exc:
+            emit(
+                {
+                    "event": "error",
+                    "failure_code": "MCP_ENDPOINT_UNAVAILABLE",
+                    "error": str(exc),
+                }
+            )
+            return
         proxy = _ServerHostProxy(host_connection)
+        bridge = _ServerOperationStatusCache(proxy, shutdown_event)
 
         subscriptions = InMemorySubscriptionBus()
 
@@ -676,7 +1414,7 @@ def _mcp_server_process_main(
             async def _list_tools(self, ctx: Any, params: Any) -> Any:
                 del params
                 self._remember_session(ctx.session)
-                payload = await asyncio.to_thread(proxy.request, "list_tools")
+                payload = await asyncio.to_thread(bridge.request, "list_tools")
                 tools = []
                 for schema in payload.get("tools") or []:
                     if not isinstance(schema, dict):
@@ -693,7 +1431,7 @@ def _mcp_server_process_main(
             async def _call_tool(self, ctx: Any, params: Any) -> Any:
                 self._remember_session(ctx.session)
                 payload = await asyncio.to_thread(
-                    proxy.request,
+                    bridge.request,
                     "call_tool",
                     name=str(params.name),
                     arguments=dict(params.arguments or {}),
@@ -734,6 +1472,12 @@ def _mcp_server_process_main(
                 for identity in stale_sessions:
                     self._client_sessions.pop(identity, None)
 
+            async def terminate_http_sessions(self) -> None:
+                """Close persistent response streams before uvicorn exits."""
+
+                await _terminate_mcp_http_sessions(self)
+                self._client_sessions.clear()
+
         server = VibeCADProtocolServer()
         security = TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
@@ -769,10 +1513,30 @@ def _mcp_server_process_main(
                 log_config=None,
             )
         )
+        parent_process = multiprocessing.parent_process()
+
+        def host_process_alive() -> bool:
+            if parent_process is None:
+                return True
+            try:
+                return bool(parent_process.is_alive())
+            except (AssertionError, OSError):
+                return False
 
         async def run() -> None:
-            serve_task = asyncio.create_task(uvicorn_server.serve())
+            assert listener is not None
+            serve_task = asyncio.create_task(uvicorn_server.serve(sockets=[listener]))
             observed_generation = int(surface_generation.value)
+            sessions_terminated = False
+
+            async def request_shutdown() -> None:
+                nonlocal sessions_terminated
+                if sessions_terminated:
+                    return
+                sessions_terminated = True
+                await server.terminate_http_sessions()
+                uvicorn_server.should_exit = True
+
             while not serve_task.done():
                 if uvicorn_server.started:
                     emit(
@@ -784,13 +1548,16 @@ def _mcp_server_process_main(
                     )
                     break
                 if shutdown_event.is_set():
-                    uvicorn_server.should_exit = True
+                    await request_shutdown()
+                    break
+                if not host_process_alive():
+                    await request_shutdown()
                     break
                 await asyncio.sleep(0.05)
 
             while not serve_task.done():
-                if shutdown_event.is_set():
-                    uvicorn_server.should_exit = True
+                if shutdown_event.is_set() or not host_process_alive():
+                    await request_shutdown()
                 current_generation = int(surface_generation.value)
                 if current_generation != observed_generation:
                     observed_generation = current_generation
@@ -814,6 +1581,11 @@ def _mcp_server_process_main(
             }
         )
     finally:
+        if listener is not None:
+            try:
+                listener.close()
+            except OSError:
+                pass
         try:
             host_connection.close()
         except Exception:
@@ -855,6 +1627,7 @@ class VibeCADControlModeController:
         self._bridge_thread: threading.Thread | None = None
         self._monitor_thread: threading.Thread | None = None
         self._start_thread: threading.Thread | None = None
+        self._application_shutting_down = False
 
     def configure_host(
         self,
@@ -862,9 +1635,7 @@ class VibeCADControlModeController:
         document_thread_dispatch: Callable[[Callable[[], Any]], Any],
         internal_active: Callable[[], bool],
         cancel_internal: Callable[[], None],
-        question_callback: Callable[
-            [list[dict[str, Any]]], list[dict[str, Any]]
-        ]
+        question_callback: Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
         | None = None,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
@@ -1212,13 +1983,17 @@ class VibeCADControlModeController:
         self._monitor_thread.start()
 
     @staticmethod
-    def _host_bridge_loop(connection: Any, process: Any, session: _HostToolSession) -> None:
+    def _host_bridge_loop(
+        connection: Any, process: Any, session: _HostToolSession
+    ) -> None:
         try:
             while process.is_alive() or connection.poll(0.1):
                 if not connection.poll(0.1):
                     continue
                 request = connection.recv()
-                request_id = request.get("request_id") if isinstance(request, dict) else None
+                request_id = (
+                    request.get("request_id") if isinstance(request, dict) else None
+                )
                 try:
                     if not isinstance(request, dict):
                         raise RuntimeError("Invalid MCP host request.")
@@ -1294,7 +2069,10 @@ class VibeCADControlModeController:
             # path has returned from its current call. Cancellation-aware tools
             # return promptly; a non-interruptible native call is allowed to
             # finish rather than overlap a newly enabled controller.
-            bridge.join()
+            if self._application_shutting_down:
+                bridge.join(timeout=MCP_STOP_TIMEOUT_SECONDS)
+            else:
+                bridge.join()
         try:
             status_connection.close()
         except Exception:
@@ -1313,10 +2091,12 @@ class VibeCADControlModeController:
             )
             self._fail_start(transition_id, message)
         self._finish_process(process)
+        try:
+            process.close()
+        except (AttributeError, ValueError):
+            pass
 
-    def _handle_server_event(
-        self, transition_id: int, event: dict[str, Any]
-    ) -> None:
+    def _handle_server_event(self, transition_id: int, event: dict[str, Any]) -> None:
         name = str(event.get("event") or "")
         if name == "listening":
             with self._lock:
@@ -1348,9 +2128,18 @@ class VibeCADControlModeController:
             self._fail_start(
                 transition_id,
                 str(event.get("error") or "MCP server failed."),
+                rollback_preference=(
+                    str(event.get("failure_code") or "") != "MCP_ENDPOINT_UNAVAILABLE"
+                ),
             )
 
-    def _fail_start(self, transition_id: int, message: str) -> None:
+    def _fail_start(
+        self,
+        transition_id: int,
+        message: str,
+        *,
+        rollback_preference: bool = True,
+    ) -> None:
         with self._lock:
             if transition_id != self._transition_id:
                 return
@@ -1367,7 +2156,10 @@ class VibeCADControlModeController:
                 self._tool_cancellation.set()
             if self._shutdown_event is not None:
                 self._shutdown_event.set()
-        self._emit("mcp_error", rollback_preference=True)
+        self._emit(
+            "mcp_error",
+            rollback_preference=rollback_preference,
+        )
 
     def _finish_process(self, process: Any) -> None:
         restart = False
@@ -1433,6 +2225,7 @@ class VibeCADControlModeController:
             # process and bridge still shut down, but no worker is allowed to
             # synchronously wait on a UI refresh during application teardown.
             self._event_callback = None
+            self._application_shutting_down = True
         self.request_mcp_enabled(False)
         start = self._start_thread
         if wait and start is not None and start is not threading.current_thread():

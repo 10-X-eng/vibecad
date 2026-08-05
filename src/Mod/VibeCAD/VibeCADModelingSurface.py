@@ -35,6 +35,7 @@ FASTENER_CATALOG_TOOL = "fastener_catalog.search"
 COMPONENT_CATALOG_TOOL = "component_catalog.search"
 COMPONENT_INTERFACE_TOOL = "component.publish_interface"
 ASSEMBLY_PLAYBACK_TOOL = "assembly.play_simulation"
+ASSEMBLY_STOP_PLAYBACK_TOOL = "assembly.stop_simulation"
 MATERIAL_CATALOG_TOOL = "material_catalog.search"
 MODEL_ASSEMBLY_WORKBENCHES = frozenset(
     {"PartDesignWorkbench", "AssemblyWorkbench"}
@@ -46,6 +47,7 @@ SHARED_CONTEXT_TOOLS = frozenset(
         COMPONENT_CATALOG_TOOL,
         COMPONENT_INTERFACE_TOOL,
         ASSEMBLY_PLAYBACK_TOOL,
+        ASSEMBLY_STOP_PLAYBACK_TOOL,
         MATERIAL_CATALOG_TOOL,
     }
 )
@@ -90,6 +92,7 @@ def _core_tool_names(workbench: str | None) -> tuple[str, ...]:
         names.add(COMPONENT_INTERFACE_TOOL)
     if unified or workbench == "AssemblyWorkbench":
         names.add(ASSEMBLY_PLAYBACK_TOOL)
+        names.add(ASSEMBLY_STOP_PLAYBACK_TOOL)
     if unified or workbench in MATERIAL_CATALOG_WORKBENCHES:
         names.add(MATERIAL_CATALOG_TOOL)
     return tuple(sorted(names))

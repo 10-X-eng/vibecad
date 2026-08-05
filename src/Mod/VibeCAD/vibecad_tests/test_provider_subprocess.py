@@ -463,6 +463,10 @@ def test_instructions_include_vibescript_guidance_only_in_vibescript_mode() -> N
         in provider.VIBECAD_SYSTEM_INSTRUCTIONS
     )
     assert "assembly retention" in provider.VIBECAD_SYSTEM_INSTRUCTIONS
+    assert (
+        "Hide source bodies when reviewing assembly occurrences."
+        in provider.VIBECAD_SYSTEM_INSTRUCTIONS
+    )
     assert guidance
     assert guidance in instructions
     assert "api.extrude" in guidance
@@ -583,8 +587,154 @@ def test_complete_source_reads_are_not_cut_down_to_the_normal_tool_result_limit(
     )
 
     assert visible["source"] == source
+    assert "source_id" not in visible
     assert "vibecad_result_boundary" not in visible
     assert "_vibecad_complete_source_result" not in visible
+
+
+def test_source_write_result_is_compact_readable_and_actionable() -> None:
+    visible = provider._provider_visible_tool_result(
+        {
+            "ok": True,
+            "source_id": "a" * 32,
+            "program_id": "a" * 32,
+            "program": "Design/partdesign/Motor Mount",
+            "working_revision": "b" * 64,
+            "live_outputs": {
+                "Mount": {
+                    "label": "Motor Mount",
+                    "object_name": "VibePartdesign_Mount",
+                    "type_id": "PartDesign::Body",
+                    "facts": {
+                        "shape_type": "Solid",
+                        "solid_count": 1,
+                        "face_count": 10,
+                        "edge_count": 24,
+                        "volume_mm3": 1234.5,
+                        "face_details": [{"index": index} for index in range(100)],
+                        "edge_details": [{"index": index} for index in range(200)],
+                    },
+                }
+            },
+            "outputs": [{"name": "Mount", "duplicate": True}],
+            "model_state": {"status": "accepted", "accepted_is_current": True},
+            "_vibecad_source_lifecycle_result": True,
+        }
+    )
+
+    assert visible == {
+        "ok": True,
+        "program": "Design/partdesign/Motor Mount",
+        "revision": "b" * 64,
+        "outputs": [
+                {
+                    "name": "Mount",
+                    "label": "Motor Mount",
+                    "geometry": {
+                    "shape_type": "Solid",
+                    "solid_count": 1,
+                    "face_count": 10,
+                    "edge_count": 24,
+                    "volume_mm3": 1234.5,
+                },
+            }
+        ],
+        "state": {"status": "accepted", "accepted_is_current": True},
+        "next_actions": [
+            {
+                "tool": "vibescript.read_source",
+                "arguments": {
+                    "program": "Design/partdesign/Motor Mount",
+                    "include_logs": False,
+                },
+            },
+            {
+                "tool": "vibescript.build_program",
+                "arguments": {
+                    "program": "Design/partdesign/Motor Mount",
+                    "expected_revision": "b" * 64,
+                },
+            },
+        ],
+    }
+
+
+def test_background_source_result_is_compacted_once_with_collision_signal() -> None:
+    collision = {
+        "status": "complete",
+        "analysis_complete": True,
+        "collision_free": False,
+        "evaluated_frame_count": 61,
+        "colliding_frame_count": 8,
+        "colliding_pair_count": 2,
+        "first_collision": {
+            "first_component": "Base",
+            "second_component": "Arm",
+            "frame_index": 1,
+            "time_s": 0.0,
+        },
+        "pairs": [
+            {
+                "first_component": "Base",
+                "second_component": "Arm",
+                "intervals": [{"frame": index, "payload": "x" * 1000}],
+            }
+            for index in range(100)
+        ],
+        "warning_count": 0,
+        "warnings": [],
+    }
+    visible = provider._provider_visible_tool_result(
+        {
+            "ok": True,
+            "operation": {
+                "operation_id": "operation-1",
+                "status": "succeeded",
+            },
+            "operation_succeeded": True,
+            "result": {
+                "ok": True,
+                "program": "Robot/assembly/Arm",
+                "working_revision": "c" * 64,
+                "live_outputs": {
+                    "MotionDemo": {
+                        "object_name": "VibeAssembly_MotionDemo",
+                        "output_type": "simulation",
+                        "assembly_data": {"collision_summary": collision},
+                    }
+                },
+                "outputs": [
+                    {
+                        "name": "MotionDemo",
+                        "assembly_data": {"collision_summary": collision},
+                    }
+                ],
+                "_vibecad_source_lifecycle_result": True,
+            },
+        }
+    )
+
+    assert visible["operation"] == {
+        "operation_id": "operation-1",
+        "status": "succeeded",
+    }
+    assert visible["operation_succeeded"] is True
+    terminal = visible["result"]
+    assert terminal["program"] == "Robot/assembly/Arm"
+    assert terminal["revision"] == "c" * 64
+    assert len(terminal["outputs"]) == 1
+    assert terminal["outputs"][0]["collision_summary"] == {
+        "status": "complete",
+        "analysis_complete": True,
+        "collision_free": False,
+        "evaluated_frame_count": 61,
+        "colliding_frame_count": 8,
+        "colliding_pair_count": 2,
+        "first_collision": collision["first_collision"],
+        "warning_count": 0,
+    }
+    assert "pairs" not in json.dumps(terminal)
+    assert "payload" not in json.dumps(terminal)
 
 
 def test_partdesign_vibescript_guidance_defaults_to_native_editable_history() -> None:
@@ -669,6 +819,8 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
         "sources": [
             {
                 "source_id": "a" * 32,
+                "program": "Design/part/Body Source",
+                "status": "accepted",
                 "current_revision": "b" * 64,
                 "affected_outputs": [],
             }
@@ -697,7 +849,17 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
     assert "vibescript_domain" not in context
     assert "partdesign" not in context
     visible = provider._model_visible_context(context)
-    assert visible["editable_sources"] == editable_sources
+    assert visible["editable_sources"] == {
+        "schema": "vibecad-editable-sources-v1",
+        "domain": "part",
+        "sources": [
+            {
+                "program": "Design/part/Body Source",
+                "status": "accepted",
+            }
+        ],
+    }
+    assert "source_id" not in json.dumps(visible)
     assert "vibescript_domain" not in visible
 
 

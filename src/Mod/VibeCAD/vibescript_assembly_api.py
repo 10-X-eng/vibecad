@@ -111,9 +111,8 @@ def explicit_connector_compatibility(
         else ""
         for contract in retained
     ]
-    if any(compatibility) and (
-        not all(compatibility) or len(set(compatibility)) != 1
-    ):
+    declared_compatibility = [value for value in compatibility if value]
+    if len(set(declared_compatibility)) > 1:
         return {
             "ok": False,
             "joint_type": kind,
@@ -1107,8 +1106,11 @@ class AssemblyDomainAPI:
         Set ``flexible=True`` only for an authenticated native Assembly source;
         its internal joints and stable occurrence paths then participate in the
         parent solve. A flexible occurrence cannot be grounded.
-        Reuse the returned variable in connectors and return it exactly once as
-        a ``component_link`` output.
+        Reuse the returned variable in connectors. In a mapped
+        ``api.assembly({...}, {...})``, the assembly owns the occurrence and it
+        does not need a separate result output. Return it as a
+        ``component_link`` only when the occurrence itself is a required public
+        output.
         """
 
         operation = "component"
@@ -1206,7 +1208,7 @@ class AssemblyDomainAPI:
         nominal_thread: str,
         *,
         length_mm: float | None = None,
-        model_thread: bool = False,
+        model_thread: bool = True,
         left_handed: bool = False,
         options: Mapping[str, Any] | None = None,
         placement: Sequence[float] | Mapping[str, Sequence[float]] | None = None,
@@ -1217,8 +1219,9 @@ class AssemblyDomainAPI:
 
         Pass values returned by fastener_catalog.search. No nearest standard,
         thread, length, or option is substituted. Use the returned occurrence
-        directly in api.connector and api.assembly. Set model_thread=True for
-        real helical thread geometry; False uses the lightweight envelope.
+        directly in api.connector and api.assembly. Real helical thread geometry
+        is the default; set model_thread=False only for a deliberate lightweight
+        envelope.
         """
 
         operation = "fastener"
@@ -1541,7 +1544,9 @@ class AssemblyDomainAPI:
         ``require_solved=True`` rejects and retains a candidate when FreeCAD
         reports conflicts, redundancy, malformed constraints, or no grounded
         component.  Set it false only when intentionally publishing a diagnostic
-        snapshot of a non-solved graph.
+        snapshot of a non-solved graph. A solved result proves joint-constraint
+        consistency only. It does not prove collision clearance, usable motion,
+        retention, manufacturability, hardware access, or correct operation.
         """
 
         operation = "solve"

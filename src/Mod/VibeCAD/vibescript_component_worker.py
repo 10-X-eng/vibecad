@@ -95,6 +95,11 @@ def validate_component_definition(
     rotation = list(placement.get("rotation") or [])
     if len(position) != 3 or len(rotation) != 4:
         raise ValueError(f"Component output {output_name!r} has malformed placement dimensions.")
+    interfaces = properties.get("interfaces") or {}
+    if not isinstance(interfaces, Mapping):
+        raise ValueError(
+            f"Component output {output_name!r} interfaces must be an object."
+        )
     data = {
         "schema": "vibecad-component-occurrence-v1",
         "source": dict(reference),
@@ -106,4 +111,6 @@ def validate_component_definition(
         "placement_authored": bool(properties.get("placement_authored")),
         "label": str(properties.get("label") or output_name),
     }
+    if interfaces:
+        data["interface_declarations"] = dict(interfaces)
     return payload, data

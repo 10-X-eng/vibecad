@@ -52,6 +52,7 @@ _VIBESCRIPT_PROPERTY_NAMES = frozenset(
         "VibeCADVibeScriptOutputName",
         "VibeCADVibeScriptOutputType",
         "VibeCADVibeScriptProgramId",
+        "VibeCADVibeScriptProgramLabel",
         "VibeCADVibeScriptRevision",
     }
 )
@@ -70,6 +71,14 @@ _SAVED_NATIVE_LCS_TYPES = frozenset(
         "App::LocalCoordinateSystem",
         "PartDesign::CoordinateSystem",
         "Part::LocalCoordinateSystem",
+    }
+)
+_INTERNAL_LIVE_COMPONENT_TYPES = frozenset(
+    {
+        # Native timeline/state carriers can own a Shape for rollback or
+        # presentation, but they are not manufactured component definitions.
+        "PartDesign::DesignBodyState",
+        "PartDesign::DesignScriptOperation",
     }
 )
 
@@ -144,6 +153,38 @@ def _inside_partdesign_body(obj: Any) -> bool:
     )
 
 
+def _authored_component_label(source_document: Any, obj: Any) -> str:
+    """Return the human-authored label rather than a hidden carrier suffix."""
+
+    fallback = str(getattr(obj, "Label", "") or "")
+    if (
+        str(getattr(obj, "VibeCADScriptedRole", "") or "") != "publication"
+        or str(getattr(obj, "VibeCADVibeScriptDomain", "") or "")
+        != "partdesign"
+    ):
+        return fallback
+    try:
+        import VibeCADScriptedPublication as publication
+
+        program_id = str(getattr(obj, publication.PROP_MODEL_ID, "") or "")
+        output_name = str(getattr(obj, publication.PROP_OUTPUT_KEY, "") or "")
+        matches = [
+            candidate
+            for candidate in list(getattr(source_document, "Objects", []) or [])
+            if str(getattr(candidate, "TypeId", "") or "")
+            == "PartDesign::Body"
+            and str(getattr(candidate, publication.PROP_MODEL_ID, "") or "")
+            == program_id
+            and str(getattr(candidate, publication.PROP_OUTPUT_KEY, "") or "")
+            == output_name
+        ]
+    except Exception:
+        return fallback
+    if len(matches) != 1:
+        return fallback
+    return str(getattr(matches[0], "Label", "") or fallback)
+
+
 def _native_lcs_candidates(owner_document: Any, component: Any) -> list[dict[str, Any]]:
     """Return exact direct LCS identities without assigning semantic meaning."""
 
@@ -191,6 +232,8 @@ def _live_component_candidate(
     obj: Any,
 ) -> dict[str, Any] | None:
     type_id = str(getattr(obj, "TypeId", "") or "")
+    if type_id in _INTERNAL_LIVE_COMPONENT_TYPES:
+        return None
     scripted_role = str(getattr(obj, "VibeCADScriptedRole", "") or "")
     reusable_occurrence = (
         type_id == "App::Link"
@@ -244,7 +287,7 @@ def _live_component_candidate(
             or ""
         ),
         "object_name": str(getattr(obj, "Name", "") or ""),
-        "label": str(getattr(obj, "Label", "") or ""),
+        "label": _authored_component_label(source_document, obj),
         "type_id": type_id,
         "kind": "occurrence" if reusable_occurrence else "definition",
         "source": "open_document",
@@ -271,6 +314,15 @@ def _live_component_candidate(
             source_pack = None
         candidate["authoring_source"] = {
             "source_id": program_id,
+            "program": "/".join(
+                (
+                    str(getattr(source_document, "Name", "") or ""),
+                    domain,
+                    str(
+                        getattr(obj, "VibeCADVibeScriptProgramLabel", "") or ""
+                    ),
+                )
+            ),
             "domain": domain,
             "output_name": str(
                 getattr(obj, "VibeCADVibeScriptOutputName", "") or ""
@@ -693,6 +745,13 @@ def _saved_document_candidates(
                 source_pack = None
             item["authoring_source"] = {
                 "source_id": values["VibeCADVibeScriptProgramId"],
+                "program": "/".join(
+                    (
+                        document_label,
+                        domain,
+                        values.get("VibeCADVibeScriptProgramLabel", ""),
+                    )
+                ),
                 "domain": domain,
                 "output_name": values.get("VibeCADVibeScriptOutputName", ""),
                 "document_uid": document_uid,
@@ -960,39 +1019,42 @@ def search_prepared_component_catalog(
     if clean_detail == "references":
         requested_page = [_component_reference_result(item) for item in requested_page]
 
-    errors = [
+    all_errors = [
         dict(item)
         for item in list(prepared.get("errors") or [])
         if isinstance(item, Mapping)
     ]
+    errors = (
+        [
+            item
+            for item in all_errors
+            if str(item.get("document_path") or "") == clean_document_path
+        ]
+        if clean_document_path
+        else []
+    )
 
     def result_for(page: list[dict[str, Any]]) -> dict[str, Any]:
         next_offset = offset + len(page) if offset + len(page) < len(matches) else None
-        return {
+        result = {
             "query": clean_query,
-            "document_path": clean_document_path,
             "detail": clean_detail,
-            "offset": offset,
-            "limit": limit,
-            "page_byte_limit": MAX_COMPONENT_SEARCH_RESPONSE_BYTES,
-            "page_byte_limited": len(page) < len(requested_page),
-            "project_file_search_available": bool(
-                prepared.get("project_file_search_available")
-            ),
-            "saved_documents_scanned": int(
-                prepared.get("saved_documents_scanned") or 0
-            ),
-            "saved_documents_skipped": int(
-                prepared.get("saved_documents_skipped") or 0
-            ),
-            "search_truncated": bool(prepared.get("search_truncated")),
             "match_count": len(matches),
             "returned_count": len(page),
-            "matches_truncated": next_offset is not None,
             "next_offset": next_offset,
             "matches": page,
-            "errors": errors,
         }
+        if clean_document_path:
+            result["document_path"] = clean_document_path
+        if offset:
+            result["offset"] = offset
+        if len(page) < len(requested_page):
+            result["page_byte_limited"] = True
+        if bool(prepared.get("search_truncated")):
+            result["catalog_scan_truncated"] = True
+        if errors:
+            result["errors"] = errors
+        return result
 
     page: list[dict[str, Any]] = []
     for candidate in requested_page:
@@ -1083,12 +1145,14 @@ def component_inventory(
         }
         for candidate in found["matches"]
     ]
-    return {
+    inventory = {
         "schema": "vibecad-available-components-v1",
         "component_count": int(found["match_count"]),
         "components_included": len(components),
-        "components_truncated": bool(found["matches_truncated"]),
-        "project_file_search_available": bool(found["project_file_search_available"]),
+        "components_truncated": found.get("next_offset") is not None,
+        "project_file_search_available": bool(
+            prepared.get("project_file_search_available")
+        ),
         "components": components,
         "usage": (
             "Use a definition reference with api.component or api.instances. Reuse an "
@@ -1100,6 +1164,15 @@ def component_inventory(
             "than limit so its complete matches array remains provider-safe."
         ),
     }
+    skipped = int(prepared.get("saved_documents_skipped") or 0)
+    if skipped:
+        inventory["catalog_health"] = (
+            f"{skipped} unrelated saved document"
+            f"{' was' if skipped == 1 else 's were'} not indexed. Exact searches "
+            "for those files return their diagnostics; normal component searches "
+            "are unaffected."
+        )
+    return inventory
 
 
 def search_component_catalog(

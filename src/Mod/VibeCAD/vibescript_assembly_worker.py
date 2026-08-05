@@ -26,8 +26,14 @@ from VibeCADMechanismEngine import (
     mechanism_scenario_sha256,
     normalize_mechanism_static_check,
     normalize_mechanism_scenario,
+    solver_validation_scope,
 )
-from VibeCADMechanismGeometry import measure_static_mechanism_pairs
+from VibeCADMechanismGeometry import (
+    evaluate_dynamic_collisions,
+    measure_static_mechanism_pairs,
+    summarize_dynamic_collision_frames,
+)
+import vibescript_worker_progress as worker_progress
 from vibescript_assembly_api import explicit_connector_compatibility
 from vibescript_domain_api import DomainValue
 from vibescript_part_worker import (
@@ -754,6 +760,7 @@ def configure_assembly_references(root: Path, entries: list[dict[str, Any]]) -> 
     configure_part_references(root, entries)
     metadata: dict[tuple[str, str], Mapping[str, Any]] = {}
     hierarchies: dict[tuple[str, str], Mapping[str, Any]] = {}
+    facts_by_digest: dict[str, dict[str, Any]] = {}
     for index, raw in enumerate(entries):
         if not isinstance(raw, dict):
             raise ValueError(f"document_references[{index}] must be an object.")
@@ -761,10 +768,26 @@ def configure_assembly_references(root: Path, entries: list[dict[str, Any]]) -> 
             str(raw.get("document_uid") or ""),
             str(raw.get("object_name") or ""),
         )
-        shape = detached_reference_shape(
-            {"document_uid": key[0], "object_name": key[1]}
-        )
-        facts = part_shape_facts(shape, max_subelements=32)
+        brep_digest = str(raw.get("brep_sha256") or "")
+        facts = facts_by_digest.get(brep_digest)
+        if facts is None:
+            shape = detached_reference_shape(
+                {"document_uid": key[0], "object_name": key[1]}
+            )
+            # configure_part_references already authenticated the digest,
+            # imported the BREP, and performed the expensive validity check.
+            # Assembly only needs invariant topology counts here; recomputing
+            # mass properties and subelement classifications doubled imported
+            # component setup time without strengthening the contract.
+            facts = {
+                "null": bool(shape.isNull()),
+                "valid": True,
+                "solids": len(list(getattr(shape, "Solids", []) or [])),
+                "faces": len(list(getattr(shape, "Faces", []) or [])),
+                "edges": len(list(getattr(shape, "Edges", []) or [])),
+                "vertices": len(list(getattr(shape, "Vertexes", []) or [])),
+            }
+            facts_by_digest[brep_digest] = facts
         if facts["null"] or not facts["valid"] or int(facts["solids"]) < 1:
             raise ValueError(
                 f"Assembly component reference {key[1]!r} must contain at least "
@@ -819,6 +842,7 @@ def configure_assembly_references(root: Path, entries: list[dict[str, Any]]) -> 
                     raw.get("source_program_domain") or ""
                 ),
                 "source_revision": str(raw.get("source_revision") or ""),
+                "brep_sha256": brep_digest,
                 "transient_topology": bool(raw.get("transient_topology")),
                 "requires_semantic_interfaces": bool(
                     raw.get("requires_semantic_interfaces")
@@ -1567,6 +1591,37 @@ def _placement_fact(placement: Any) -> dict[str, Any]:
         ],
         "rotation_angle_degrees": math.degrees(float(placement.Rotation.Angle)),
         "matrix": _placement_matrix(placement),
+    }
+
+
+def _placement_delta(initial: Any, solved: Any) -> dict[str, Any]:
+    """Describe exactly how far the native solver moved one component seed."""
+
+    translation = [float(solved.Base[index] - initial.Base[index]) for index in range(3)]
+    initial_quaternion = [float(value) for value in initial.Rotation.Q]
+    solved_quaternion = [float(value) for value in solved.Rotation.Q]
+    initial_magnitude = math.sqrt(sum(value * value for value in initial_quaternion))
+    solved_magnitude = math.sqrt(sum(value * value for value in solved_quaternion))
+    if initial_magnitude <= 1.0e-15 or solved_magnitude <= 1.0e-15:
+        raise AssemblyCandidateError(
+            "The native Assembly solver returned a zero-length placement quaternion.",
+            details={"stage": "native_solver_placement_delta"},
+        )
+    dot = abs(
+        sum(
+            initial_quaternion[index]
+            * solved_quaternion[index]
+            / (initial_magnitude * solved_magnitude)
+            for index in range(4)
+        )
+    )
+    rotation_degrees = math.degrees(2.0 * math.acos(max(-1.0, min(1.0, dot))))
+    return {
+        "translation_mm": translation,
+        "translation_distance_mm": math.sqrt(
+            sum(value * value for value in translation)
+        ),
+        "rotation_degrees": rotation_degrees,
     }
 
 
@@ -2347,6 +2402,32 @@ def _static_mechanism_geometry(
                 "verification_output": str(check["id"]),
             },
         ) from exc
+
+
+def _collision_definition_key(
+    metadata: Mapping[str, Any] | None,
+    component_data: Mapping[str, Any] | None,
+) -> str:
+    """Return the authenticated BREP identity for one collision component."""
+
+    definition_key = (
+        str(metadata.get("brep_sha256") or "")
+        if isinstance(metadata, Mapping)
+        else ""
+    )
+    if len(definition_key) == 64:
+        return definition_key
+    source_brep = (
+        component_data.get("source_brep")
+        if isinstance(component_data, Mapping)
+        else None
+    )
+    if (
+        isinstance(source_brep, Mapping)
+        and str(source_brep.get("artifact_kind") or "") == "brep"
+    ):
+        definition_key = str(source_brep.get("artifact_sha256") or "")
+    return definition_key
 
 
 def _mechanism_scenario_contract(
@@ -3140,6 +3221,53 @@ def _execute_native_bom(
     }
 
 
+def _fixed_collision_pairs(
+    components: Mapping[str, Any],
+    joint_data: Mapping[str, Mapping[str, Any]],
+) -> list[tuple[str, str]]:
+    """Return every pair in a rigid group defined by exact fixed joints."""
+
+    names = list(components)
+    parent = {name: name for name in names}
+
+    def root(name: str) -> str:
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    for data in joint_data.values():
+        if str(data.get("kind") or "") != "fixed" or bool(
+            data.get("suppressed")
+        ):
+            continue
+        connected = [
+            str(item.get("component_output") or "")
+            for item in list(data.get("connectors") or [])
+            if isinstance(item, Mapping)
+        ]
+        if (
+            len(connected) != 2
+            or connected[0] not in parent
+            or connected[1] not in parent
+        ):
+            continue
+        first_root = root(connected[0])
+        second_root = root(connected[1])
+        if first_root != second_root:
+            parent[second_root] = first_root
+
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        groups.setdefault(root(name), []).append(name)
+    return [
+        (first, second)
+        for members in groups.values()
+        for index, first in enumerate(members)
+        for second in members[index + 1 :]
+    ]
+
+
 def _execute_native_simulation(
     *,
     document: Any,
@@ -3152,9 +3280,12 @@ def _execute_native_simulation(
     joint_objects: Mapping[str, Any],
     joint_data: Mapping[str, Mapping[str, Any]],
     components: Mapping[str, Any],
+    component_source_metadata: Mapping[str, Mapping[str, Any]],
+    component_data: Mapping[str, Mapping[str, Any]],
     artifact_root: Path,
     outputs_by_name: Mapping[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    worker_progress.set_phase("simulation_setup", output=simulation_output)
     properties = _properties(simulation_value, "simulation")
     simulation_group = assembly.newObject(
         "Assembly::SimulationGroup", "CandidateSimulations"
@@ -3212,6 +3343,10 @@ def _execute_native_simulation(
     }
     try:
         try:
+            worker_progress.set_phase(
+                "simulation_native_solve",
+                output=simulation_output,
+            )
             native_code = int(assembly.generateSimulation(simulation))
         except Exception as exc:
             raise AssemblyCandidateError(
@@ -3270,7 +3405,17 @@ def _execute_native_simulation(
         start_time = float(properties["start_time_s"])
         end_time = float(properties["end_time_s"])
         time_step = float(properties["time_step_s"])
+        worker_progress.set_phase(
+            "simulation_frame_capture",
+            output=simulation_output,
+        )
         for frame_index in range(frame_count):
+            worker_progress.set_item_progress(
+                "frame",
+                completed=frame_index,
+                total=frame_count,
+                current=str(frame_index),
+            )
             update_result = assembly.updateForFrame(frame_index)
             # The generated Python binding currently reports successful native
             # frame application as None even though the C++ method uses a status
@@ -3300,6 +3445,9 @@ def _execute_native_simulation(
                     },
                 }
             )
+        worker_progress.set_item_progress(
+            "frame", completed=frame_count, total=frame_count
+        )
     finally:
         for name, placement in saved_placements.items():
             components[name].Placement = placement
@@ -3328,6 +3476,122 @@ def _execute_native_simulation(
                 },
             )
 
+    worker_progress.set_phase(
+        "simulation_collision",
+        output=simulation_output,
+    )
+    collision_warnings: list[dict[str, str]] = []
+    try:
+        collision_shapes = {}
+        collision_definition_keys = {}
+        for name, component in components.items():
+            source = getattr(component, "LinkedObject", None)
+            shape = getattr(source, "Shape", None)
+            if shape is None:
+                raise RuntimeError(
+                    f"Simulation component {name!r} has no source shape for "
+                    "collision evaluation"
+                )
+            collision_shapes[name] = shape
+            metadata = component_source_metadata.get(name)
+            definition_key = _collision_definition_key(
+                metadata,
+                component_data.get(name),
+            )
+            if len(definition_key) != 64:
+                raise RuntimeError(
+                    f"Simulation component {name!r} has no authenticated shape "
+                    "identity for collision evaluation"
+                )
+            collision_definition_keys[name] = definition_key
+        # Components in the same exact fixed-joint closure are one rigid unit
+        # for motion analysis. Their intentional mating geometry cannot develop
+        # a new dynamic interference, so do not repeat that pair at every frame.
+        # Every pair across distinct rigid units remains eligible, including
+        # imported geometry and modeled fasteners.
+        fixed_group_pairs = _fixed_collision_pairs(components, joint_data)
+
+        def report_collision_progress(event: str, frame_index: int, total: int) -> None:
+            graph_id = f"frame-{frame_index}-of-{total}"
+            if event == "started":
+                worker_progress.graph_started("collision", graph_id)
+            else:
+                worker_progress.graph_completed("collision", graph_id)
+
+        def report_collision_pair_progress(
+            event: str,
+            frame_index: int,
+            frame_total: int,
+            first: str,
+            second: str,
+            pair_index: int,
+            pair_total: int,
+        ) -> None:
+            if frame_index == 0:
+                graph_type = "collision_containment"
+                graph_id = (
+                    f"all-{frame_total}-frames:"
+                    f"pair-{pair_index}-of-{pair_total}:"
+                    f"{first}--{second}"
+                )
+            else:
+                graph_type = "collision_surface"
+                graph_id = (
+                    f"frame-{frame_index}-of-{frame_total}:"
+                    f"pair-{pair_index}-of-{pair_total}:"
+                    f"{first}--{second}"
+                )
+            if event == "started":
+                worker_progress.graph_started(graph_type, graph_id)
+            else:
+                worker_progress.graph_completed(graph_type, graph_id)
+
+        collision_trace = evaluate_dynamic_collisions(
+            collision_shapes,
+            frames,
+            definition_keys=collision_definition_keys,
+            excluded_pairs=fixed_group_pairs,
+            progress_callback=report_collision_progress,
+            pair_progress_callback=report_collision_pair_progress,
+        )
+    except Exception as exc:
+        collision_warnings.append(
+            {
+                "code": "COLLISION_ANALYSIS_INCOMPLETE",
+                "stage": "simulation_collision",
+                "message": (
+                    f"{type(exc).__name__}: {exc}"
+                )[:2048],
+            }
+        )
+        unevaluated_frames = [
+            {
+                "frame_index": frame_index,
+                "nominal_time_s": frame.get("nominal_time_s"),
+                "collisions": [],
+            }
+            for frame_index, frame in enumerate(frames[1:], start=1)
+        ]
+        collision_trace = {
+            "summary": summarize_dynamic_collision_frames(
+                list(components),
+                unevaluated_frames,
+                evaluation_warnings=collision_warnings,
+            ),
+            "frames": unevaluated_frames,
+            "evaluation": {
+                "analysis_complete": False,
+                "warning_count": len(collision_warnings),
+            },
+        }
+    worker_progress.set_phase("simulation_serialization", output=simulation_output)
+    collision_frames = {
+        int(item["frame_index"]): list(item["collisions"])
+        for item in collision_trace["frames"]
+    }
+    for frame in frames:
+        frame["collisions"] = collision_frames.get(int(frame["frame_index"]), [])
+
     trace = {
         "schema": _SIMULATION_TRACE_SCHEMA,
         "assembly_output": assembly_output,
@@ -3342,6 +3606,8 @@ def _execute_native_simulation(
             "frames_per_second": int(properties["frames_per_second"]),
         },
         "motion_observations": observations,
+        "collision_summary": collision_trace["summary"],
+        "collision_warnings": collision_warnings,
         "frames": frames,
     }
     encoded = json.dumps(
@@ -3373,6 +3639,7 @@ def _execute_native_simulation(
         "frame_count": len(frames),
         "pose_count": len(frames) * len(components),
         "motion_observations": observations,
+        "collision_summary": collision_trace["summary"],
         "artifact_schema": _SIMULATION_TRACE_SCHEMA,
         "artifact_sha256": digest,
         "artifact_bytes": len(encoded),
@@ -3921,6 +4188,25 @@ def _diagnostics_conflict(diagnostics: Mapping[str, Any]) -> bool:
     )
 
 
+def _diagnostics_reject_solution(diagnostics: Mapping[str, Any]) -> bool:
+    """Return whether native diagnostics invalidate a successful solve.
+
+    FreeCAD reports direction constraints repeated by a mechanically valid
+    closed kinematic loop as redundant even when the solver returns code 0
+    and every residual is satisfied.  Redundancy remains visible in the
+    diagnostic payload, but it is not a conflict and must not force authors
+    to replace real revolute pivots with physically false relief joints.
+    """
+
+    return any(
+        bool(diagnostics.get(name))
+        for name in (
+            "has_conflicts",
+            "has_malformed_constraints",
+        )
+    )
+
+
 def _frame_z_axis(frame: Mapping[str, Any]) -> tuple[float, float, float]:
     matrix = list(frame.get("matrix") or [])
     if len(matrix) != 16:
@@ -3997,6 +4283,67 @@ def _coupled_joint_issues(
                     ),
                 }
             )
+    return issues
+
+
+def _preflight_coupled_joint_structure(
+    joint_values: list[DomainValue],
+    *,
+    component_outputs: Mapping[int, str],
+    joint_outputs: Mapping[int, str],
+) -> list[dict[str, Any]]:
+    """Reject structurally incomplete coupled joints before native construction."""
+
+    def component_names(value: DomainValue) -> list[str]:
+        names: list[str] = []
+        for connector in value.arguments:
+            if not isinstance(connector, DomainValue) or not connector.arguments:
+                continue
+            name = component_outputs.get(id(connector.arguments[0]))
+            if name is not None:
+                names.append(name)
+        return names
+
+    sliders = [
+        (joint_outputs[id(value)], component_names(value))
+        for value in joint_values
+        if str(_properties(value, "joint").get("kind") or "") == "slider"
+        and not bool(_properties(value, "joint").get("suppressed"))
+    ]
+    issues: list[dict[str, Any]] = []
+    for value in joint_values:
+        properties = _properties(value, "joint")
+        kind = str(properties.get("kind") or "")
+        if kind not in {"rack_pinion", "screw"} or bool(
+            properties.get("suppressed")
+        ):
+            continue
+        components = component_names(value)
+        compatible = [
+            slider_name
+            for slider_name, slider_components in sliders
+            if set(components).intersection(slider_components)
+        ]
+        if compatible:
+            continue
+        issues.append(
+            {
+                "code": "missing_slider",
+                "joint_output": joint_outputs[id(value)],
+                "joint_type": kind,
+                "component_outputs": components,
+                "available_slider_outputs": [name for name, _items in sliders],
+                "requirement": (
+                    "FreeCAD's native RackPinion and Screw joints require a "
+                    "non-suppressed Slider joint sharing the translating component."
+                ),
+                "suggestion": (
+                    "Create api.joint('slider', ...) on the translating component, "
+                    "include it in api.assembly, and align its connector +Z axis with "
+                    "the coupled joint."
+                ),
+            }
+        )
     return issues
 
 
@@ -4099,7 +4446,33 @@ def validate_and_solve_assembly(
     }
     joint_values = list(assembly_properties.get("joints") or [])
     bom_sources = _bom_component_sources(component_values, component_outputs)
+    diagnostics_properties = _properties(diagnostics_value, "solve")
+    require_solved = bool(diagnostics_properties.get("require_solved", True))
 
+    worker_progress.set_phase("assembly_graph_preflight", output=assembly_output)
+    preflight_issues = (
+        _preflight_coupled_joint_structure(
+            joint_values,
+            component_outputs=component_outputs,
+            joint_outputs=joint_outputs,
+        )
+        if require_solved
+        else []
+    )
+    if preflight_issues:
+        first_issue = preflight_issues[0]
+        raise AssemblyCandidateError(
+            f"Joint output {first_issue['joint_output']!r} is not a functional "
+            f"{first_issue['joint_type']} graph: {first_issue['requirement']} "
+            f"{first_issue['suggestion']}",
+            details={
+                "stage": "joint_dependency_preflight",
+                "status": "failed",
+                "issues": preflight_issues,
+            },
+        )
+
+    worker_progress.set_phase("assembly_component_construction", output=assembly_output)
     assembly = document.addObject("Assembly::AssemblyObject", "CandidateAssembly")
     if assembly is None:
         raise AssemblyCandidateError(
@@ -4115,10 +4488,17 @@ def validate_and_solve_assembly(
     component_sources: dict[str, dict[str, str]] = {}
     component_source_metadata: dict[str, Mapping[str, Any]] = {}
     component_reconstructions: dict[str, dict[str, Any] | None] = {}
+    component_initial_placements: dict[str, Any] = {}
     grounded_outputs: list[str] = []
     pending_grounding: list[tuple[int, str, Any]] = []
     component_data: dict[str, dict[str, Any]] = {}
     for index, value in enumerate(component_values):
+        worker_progress.set_item_progress(
+            "component",
+            completed=index,
+            total=len(component_values),
+            current=component_outputs[id(value)],
+        )
         output_name = component_outputs[id(value)]
         if value.operation not in {"component", "fastener"}:
             raise AssemblyCandidateError(
@@ -4317,6 +4697,7 @@ def validate_and_solve_assembly(
             context=f"component output {output_name!r} placement",
         )
         component.Placement = initial
+        component_initial_placements[output_name] = initial.copy()
         if str(getattr(component, "TypeId", "") or "") == "Assembly::AssemblyLink":
             component.Rigid = not flexible
         components[output_name] = component
@@ -4368,6 +4749,9 @@ def validate_and_solve_assembly(
                 }
             )
 
+    worker_progress.set_item_progress(
+        "component", completed=len(component_values), total=len(component_values)
+    )
     # Native AssemblyLinks synchronize their generated children and internal
     # joints in the worker before any model-authored connector is resolved.
     document.recompute()
@@ -4375,8 +4759,6 @@ def validate_and_solve_assembly(
         ground = joint_group.newObject("App::FeaturePython", f"Ground{ground_index}")
         JointObject.GroundedJoint(ground, component)
 
-    diagnostics_properties = _properties(diagnostics_value, "solve")
-    require_solved = bool(diagnostics_properties.get("require_solved", True))
     if require_solved and not grounded_outputs:
         raise AssemblyCandidateError(
             "api.solve requires at least one grounded component; create the fixed "
@@ -4394,8 +4776,15 @@ def validate_and_solve_assembly(
 
     joint_data: dict[str, dict[str, Any]] = {}
     joint_objects: dict[str, Any] = {}
+    worker_progress.set_phase("assembly_joint_construction", output=assembly_output)
     for index, value in enumerate(joint_values):
         output_name = joint_outputs[id(value)]
+        worker_progress.set_item_progress(
+            "joint",
+            completed=index,
+            total=len(joint_values),
+            current=output_name,
+        )
         if value.operation != "joint" or len(value.arguments) != 2:
             raise AssemblyCandidateError(
                 f"Joint output {output_name!r} must come from api.joint."
@@ -4533,6 +4922,10 @@ def validate_and_solve_assembly(
             "native_readback": _joint_readback(joint, kind),
         }
 
+    worker_progress.set_item_progress(
+        "joint", completed=len(joint_values), total=len(joint_values)
+    )
+
     joint_dependency_issues = _coupled_joint_issues(joint_data)
     if require_solved and joint_dependency_issues:
         first_issue = joint_dependency_issues[0]
@@ -4550,6 +4943,7 @@ def validate_and_solve_assembly(
     def evaluate_native_solve(
         _scenario: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        worker_progress.set_phase("assembly_static_solve", output=diagnostics_output)
         document.recompute()
         native_solver_code = int(assembly.solve(False))
         document.recompute()
@@ -4577,7 +4971,7 @@ def validate_and_solve_assembly(
         status = (
             "solved"
             if native_solver_code == 0
-            and not _diagnostics_conflict(native)
+            and not _diagnostics_reject_solution(native)
             and not joint_dependency_issues
             else "failed"
         )
@@ -4607,6 +5001,13 @@ def validate_and_solve_assembly(
     solver_verdict = str(solve_report["solver_verdict"])
     native_diagnostics = dict(solve_report["native_diagnostics"])
     component_placements = dict(solve_report["component_placements"])
+    component_placement_deltas = {
+        name: _placement_delta(
+            component_initial_placements[name],
+            components[name].Placement,
+        )
+        for name in components
+    }
     component_occurrence_states = {
         name: list(solve_report["component_occurrences"][name])
         for name, reconstruction in component_reconstructions.items()
@@ -4621,20 +5022,29 @@ def validate_and_solve_assembly(
         "joint_count": len(joint_values),
         "grounded_components": grounded_outputs,
         "component_placements": component_placements,
+        "component_placement_deltas": component_placement_deltas,
         "component_occurrence_counts": {
             name: len(items) for name, items in component_occurrence_states.items()
         },
         "joint_outputs": list(joint_data),
         "joint_dependency_issues": joint_dependency_issues,
         "require_solved": require_solved,
+        "validation_scope": solver_validation_scope(
+            constraints_consistent=(
+                solve_report["status"] == "solved"
+                and solver_code == 0
+                and not _diagnostics_reject_solution(native_diagnostics)
+                and not joint_dependency_issues
+            )
+        ),
     }
     if require_solved and (
-        solver_code != 0 or _diagnostics_conflict(native_diagnostics)
+        solver_code != 0 or _diagnostics_reject_solution(native_diagnostics)
     ):
         raise AssemblyCandidateError(
             f"The isolated native Assembly solver rejected the graph with "
             f"{solver_verdict} (code {solver_code}). Inspect details for conflicting, "
-            "redundant, malformed, or ungrounded constraints.",
+            "malformed, or ungrounded constraints.",
             details={"stage": "native_solver", **diagnostics},
         )
 
@@ -4718,6 +5128,8 @@ def validate_and_solve_assembly(
             joint_objects=joint_objects,
             joint_data=joint_data,
             components=components,
+            component_source_metadata=component_source_metadata,
+            component_data=component_data,
             artifact_root=artifact_root,
             outputs_by_name=by_name,
         )
@@ -4817,6 +5229,9 @@ def validate_and_solve_assembly(
         ]
     for output_name, data in component_data.items():
         data["solved_placement"] = component_placements[output_name]
+        data["authored_to_solved_delta"] = component_placement_deltas[
+            output_name
+        ]
         if output_name in component_occurrence_states:
             data["solved_occurrences"] = component_occurrence_states[output_name]
         by_name[output_name]["assembly_data"] = data
@@ -4839,11 +5254,13 @@ def validate_and_solve_assembly(
         "grounded_components": solve_report["grounded_components"],
         "native_diagnostics": solve_report["native_diagnostics"],
         "component_placements": solve_report["component_placements"],
+        "component_placement_deltas": component_placement_deltas,
         "component_occurrence_counts": {
             name: len(items) for name, items in component_occurrence_states.items()
         },
         "joint_dependency_issues": solve_report["joint_dependency_issues"],
         "internal_member_outputs": internal_names,
+        "validation_scope": diagnostics["validation_scope"],
     }
     if simulation_summary is not None:
         result["simulation"] = simulation_summary

@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import json
+import threading
 import time
 from typing import Any, Callable
 
@@ -110,8 +111,249 @@ MAX_PROVIDER_TOOL_SCHEMAS_JSON_BYTES = 128 * 1024
 # well below the provider wire limit.
 # The stable Model+Assembly surface is intentionally complete and remains well
 # below the provider's 128 KiB hard bound.  Keep a tighter product budget while
-# allowing its exact 23 compact contracts without dynamic schema swapping.
+# allowing its exact compact contracts without dynamic schema swapping.
 MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 32 * 1024
+VIBESCRIPT_READ_OPERATION_TOOL = "vibescript.read_operation"
+VIBESCRIPT_BACKGROUND_SOURCE_TOOLS = frozenset(
+    {
+        "vibescript.create_program",
+        "vibescript.build_program",
+        "vibescript.edit_source",
+        "vibescript.set_inputs",
+        "vibescript.reconfigure_program",
+        "vibescript.delete_output",
+        "vibescript.delete_program",
+    }
+)
+_MAX_RETAINED_VIBESCRIPT_OPERATIONS = 32
+
+
+class _VibeScriptOperationManager:
+    """One process-local lifecycle for long VibeScript source mutations."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._operations: dict[str, dict[str, Any]] = {}
+        self._active_operation_id: str | None = None
+        self._next_operation_number = 1
+
+    @staticmethod
+    def _summary(operation: Mapping[str, Any]) -> dict[str, Any]:
+        now = time.monotonic()
+        summary = {
+            "operation_id": str(operation["operation_id"]),
+            "status": str(operation.get("status") or "running"),
+            "tool": str(operation["tool"]),
+            "target": str(operation.get("target") or ""),
+            "elapsed_seconds": round(
+                float(operation.get("finished_at") or now)
+                - float(operation["started_at"]),
+                4,
+            ),
+        }
+        progress = operation.get("progress")
+        if isinstance(progress, Mapping) and progress:
+            progress_summary = dict(progress)
+            if summary["status"] != "running":
+                # The terminal tool_call_completed event carries the same full
+                # payload returned below as result. Keep only its lifecycle
+                # signal here so source, diagnostics, and geometry are emitted
+                # exactly once.
+                progress_summary.pop("result", None)
+            summary["progress"] = progress_summary
+        return summary
+
+    @staticmethod
+    def _target(tool_name: str, arguments: Mapping[str, Any]) -> str:
+        return str(
+            arguments.get("program")
+            or arguments.get("program_name")
+            or arguments.get("output_name")
+            or tool_name
+        ).strip()
+
+    def active(self) -> dict[str, Any] | None:
+        with self._condition:
+            operation = (
+                self._operations.get(self._active_operation_id)
+                if self._active_operation_id is not None
+                else None
+            )
+            return self._summary(operation) if operation is not None else None
+
+    def record_progress(self, operation_id: str, event: Mapping[str, Any]) -> None:
+        with self._condition:
+            operation = self._operations.get(operation_id)
+            if operation is None or operation.get("status") != "running":
+                return
+            operation["progress"] = dict(event)
+            operation["progress_updated_at"] = time.monotonic()
+            self._condition.notify_all()
+
+    def _finish(
+        self,
+        operation_id: str,
+        execute: Callable[[str], dict[str, Any]],
+    ) -> None:
+        try:
+            result = execute(operation_id)
+            if not isinstance(result, dict):
+                result = {
+                    "ok": False,
+                    "failure_code": "VIBESCRIPT_OPERATION_NO_RESULT",
+                    "failure_stage": "operation",
+                    "error": "The VibeScript mutation returned no object result.",
+                }
+        except BaseException as exc:
+            result = {
+                "ok": False,
+                "failure_code": "VIBESCRIPT_OPERATION_EXCEPTION",
+                "failure_stage": "operation",
+                "error": f"{exc.__class__.__name__}: {exc}",
+            }
+        with self._condition:
+            operation = self._operations.get(operation_id)
+            if operation is not None:
+                operation.update(
+                    {
+                        "status": (
+                            "succeeded" if bool(result.get("ok")) else "failed"
+                        ),
+                        "finished_at": time.monotonic(),
+                        "result": result,
+                    }
+                )
+            if self._active_operation_id == operation_id:
+                self._active_operation_id = None
+            removable = [
+                key
+                for key, value in self._operations.items()
+                if value.get("status") != "running"
+            ]
+            for key in removable[
+                : max(
+                    0,
+                    len(self._operations) - _MAX_RETAINED_VIBESCRIPT_OPERATIONS,
+                )
+            ]:
+                self._operations.pop(key, None)
+            self._condition.notify_all()
+
+    def start(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        execute: Callable[[str], dict[str, Any]],
+    ) -> dict[str, Any]:
+        with self._condition:
+            if self._active_operation_id is not None:
+                active = self._operations.get(self._active_operation_id)
+                return {
+                    "ok": False,
+                    "failure_code": "VIBESCRIPT_OPERATION_ACTIVE",
+                    "failure_stage": "precondition",
+                    "error": (
+                        "Another VibeScript mutation is still running. Read "
+                        "that operation before starting a conflicting CAD call."
+                    ),
+                    "active_operation": (
+                        self._summary(active)
+                        if active is not None
+                        else {"operation_id": self._active_operation_id}
+                    ),
+                    "next_action": {
+                        "tool": VIBESCRIPT_READ_OPERATION_TOOL,
+                        "arguments": {
+                            "operation_id": self._active_operation_id,
+                            "wait_seconds": 30,
+                        },
+                    },
+                }
+            operation_id = f"operation-{self._next_operation_number}"
+            self._next_operation_number += 1
+            operation = {
+                "operation_id": operation_id,
+                "status": "running",
+                "tool": tool_name,
+                "target": self._target(tool_name, arguments),
+                "started_at": time.monotonic(),
+                "progress": {"event": "queued"},
+            }
+            self._operations[operation_id] = operation
+            self._active_operation_id = operation_id
+            response = {
+                "ok": True,
+                "operation": self._summary(operation),
+                "next_action": {
+                    "tool": VIBESCRIPT_READ_OPERATION_TOOL,
+                    "arguments": {
+                        "operation_id": operation_id,
+                        "wait_seconds": 30,
+                    },
+                },
+            }
+        threading.Thread(
+            target=self._finish,
+            args=(operation_id, execute),
+            name=f"VibeCAD-VibeScript-{operation_id}",
+            daemon=True,
+        ).start()
+        return response
+
+    def read(self, operation_id: str, wait_seconds: float = 0.0) -> dict[str, Any]:
+        with self._condition:
+            operation = self._operations.get(operation_id)
+            if operation is None:
+                return {
+                    "ok": False,
+                    "failure_code": "VIBESCRIPT_OPERATION_NOT_FOUND",
+                    "failure_stage": "precondition",
+                    "error": f"Unknown VibeScript operation: {operation_id}.",
+                    "known_operation_ids": list(self._operations),
+                }
+            if operation.get("status") == "running" and wait_seconds > 0:
+                progress_stamp = operation.get("progress_updated_at")
+                deadline = time.monotonic() + wait_seconds
+                while operation.get("status") == "running":
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._condition.wait(remaining)
+                    if operation.get("status") != "running":
+                        break
+                    if operation.get("progress_updated_at") != progress_stamp:
+                        break
+            summary = self._summary(operation)
+            result = operation.get("result")
+
+        payload: dict[str, Any] = {"ok": True, "operation": summary}
+        if summary["status"] == "running":
+            payload["next_action"] = {
+                "tool": VIBESCRIPT_READ_OPERATION_TOOL,
+                "arguments": {
+                    "operation_id": operation_id,
+                    "wait_seconds": 30,
+                },
+            }
+        elif isinstance(result, Mapping):
+            payload["operation_succeeded"] = bool(result.get("ok"))
+            payload["result"] = dict(result)
+        return payload
+
+
+def _vibescript_operation_manager(
+    service: VibeCADService,
+) -> _VibeScriptOperationManager:
+    manager = getattr(service, "_vibecad_vibescript_operations", None)
+    if not isinstance(manager, _VibeScriptOperationManager):
+        manager = _VibeScriptOperationManager()
+        try:
+            setattr(service, "_vibecad_vibescript_operations", manager)
+        except (AttributeError, TypeError):
+            # Lightweight immutable test doubles do not retain cross-runner
+            # state; the real VibeCAD service does.
+            pass
+    return manager
 
 
 @dataclass(frozen=True)
@@ -962,7 +1204,7 @@ def _complete_context_for_provider(context: Mapping[str, Any]) -> dict[str, Any]
         completed["available_components"] = inventory
         editable = completed.get("editable_sources")
         if isinstance(editable, Mapping):
-            component_sources: dict[tuple[str, str], dict[str, Any]] = {}
+            component_sources: dict[tuple[str, str, str, str], dict[str, Any]] = {}
             for component in list(inventory.get("components") or []):
                 if not isinstance(component, Mapping):
                     continue
@@ -971,21 +1213,26 @@ def _complete_context_for_provider(context: Mapping[str, Any]) -> dict[str, Any]
                     continue
                 source_id = str(authoring.get("source_id") or "")
                 output_name = str(authoring.get("output_name") or "")
-                if not source_id:
+                program = authoring.get("program")
+                if not source_id or not str(program or ""):
                     continue
-                item = dict(authoring)
+                item = {
+                    key: value
+                    for key, value in dict(authoring).items()
+                    if key not in {"source_id", "document_uid", "current_revision"}
+                }
                 item["read_source"] = {
                     "tool": "vibescript.read_source",
-                    "arguments": {"source_id": source_id, "include_logs": False},
+                    "arguments": {"program": str(program), "include_logs": False},
                 }
                 item["read_api"] = {
                     "tool": "vibescript.read_api",
-                    "arguments": {"source_id": source_id},
+                    "arguments": {"program": str(program)},
                 }
                 item["edit_source"] = {
                     "tool": "vibescript.edit_source",
                     "target_arguments": {
-                        "source_id": source_id,
+                        "program": str(program),
                         **(
                             {"expected_revision": str(authoring["current_revision"])}
                             if authoring.get("current_revision")
@@ -993,12 +1240,13 @@ def _complete_context_for_provider(context: Mapping[str, Any]) -> dict[str, Any]
                         ),
                     },
                 }
-                component_sources[(source_id, output_name)] = item
+                document, domain, name = _program_reference_key(program)
+                component_sources[(document, domain, name, output_name)] = item
             updated_editable = dict(editable)
             updated_editable["component_sources"] = list(component_sources.values())
             updated_editable["component_source_count"] = len(component_sources)
             updated_editable["component_source_rule"] = (
-                "Read and edit a component through its exact source_id. The source's "
+                "Read and edit a component through its exact program reference. The source's "
                 "owning workbench and open document are selected automatically; the "
                 "visible Assembly workbench does not change."
             )
@@ -1492,6 +1740,7 @@ def _run_domain_vibescript_tool(
         prepare_delete,
         restore_prepared_delete,
         retain_candidate,
+        _worker_progress,
     )
 
     lifecycle_started = time.monotonic()
@@ -1534,6 +1783,79 @@ def _run_domain_vibescript_tool(
         )
         return payload
 
+    def run_worker_with_progress(
+        adapter: Any,
+        prepared: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Execute one worker while publishing changed crash-safe progress."""
+
+        stopped = threading.Event()
+        last_encoded = ""
+
+        def publish_current() -> None:
+            nonlocal last_encoded
+            progress = _worker_progress(prepared)
+            if not isinstance(progress, Mapping):
+                return
+            compact = {
+                key: progress[key]
+                for key in (
+                    "schema",
+                    "domain",
+                    "phase",
+                    "current_output",
+                    "phase_elapsed_seconds",
+                    "elapsed_seconds",
+                    "item_progress",
+                    "current_graph_node",
+                    "last_completed_graph_node",
+                    "completed",
+                    "failure",
+                )
+                if key in progress
+            }
+            timings = progress.get("graph_timings")
+            if isinstance(timings, list):
+                compact["completed_graph_node_count"] = len(timings) + int(
+                    progress.get("graph_timings_omitted") or 0
+                )
+            encoded = json.dumps(
+                compact,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if encoded == last_encoded:
+                return
+            last_encoded = encoded
+            _emit(
+                progress_callback,
+                {
+                    "event": "vibescript_domain_worker_progress",
+                    **compact,
+                },
+            )
+
+        def poll() -> None:
+            while not stopped.wait(0.2):
+                publish_current()
+
+        poller = threading.Thread(
+            target=poll,
+            name="VibeCAD-VibeScript-worker-progress",
+            daemon=True,
+        )
+        poller.start()
+        try:
+            return adapter.execute_candidate(
+                prepared,
+                cancellation_check=cancellation_check,
+            )
+        finally:
+            stopped.set()
+            poller.join(timeout=1.0)
+            publish_current()
+
     def candidate_model_state(prepared: Mapping[str, Any]) -> dict[str, Any]:
         program_id = str(prepared["program_id"])
         working_revision = str(prepared["revision"])
@@ -1573,6 +1895,9 @@ def _run_domain_vibescript_tool(
             {
                 "program_id": program_id,
                 "source_id": program_id,
+                "program_name": str(prepared["program_name"]),
+                "domain": str(prepared["pack"].domain),
+                "workbench": str(prepared["pack"].workbench),
                 "working_revision": revision,
                 "next_write_expected_revision": revision,
                 "failed_candidate": {
@@ -1671,10 +1996,7 @@ def _run_domain_vibescript_tool(
         )
         execution = run_phase(
             "worker",
-            lambda: adapter.execute_candidate(
-                prepared,
-                cancellation_check=cancellation_check,
-            ),
+            lambda: run_worker_with_progress(adapter, prepared),
         )
         if execution.get("ok") is not True:
             return retain_failed_candidate(execution, prepared, status="failed")
@@ -1854,7 +2176,7 @@ def _read_source_payload(
     *,
     line_start: int | None = None,
     line_end: int | None = None,
-    include_logs: bool = True,
+    include_logs: bool = False,
     log_tail_lines: int | None = None,
 ) -> dict[str, Any]:
     if inspected.get("ok") is not True:
@@ -1895,25 +2217,74 @@ def _read_source_payload(
         returned_source = "".join(source_lines[start - 1 : end])
     else:
         returned_source = complete_source
+    expected_output_names = {
+        str(item.get("name") or "")
+        for item in list(program.get("expected_outputs") or [])
+        if isinstance(item, Mapping) and str(item.get("name") or "")
+    }
+
+    def output_is_visible(value: Mapping[str, Any], name: str = "") -> bool:
+        if include_logs:
+            return True
+        output_name = str(value.get("name") or name)
+        if expected_output_names:
+            return output_name in expected_output_names
+        return value.get("internal") is not True
+
+    def compact_output(value: Mapping[str, Any], name: str = "") -> dict[str, Any]:
+        output_name = str(value.get("name") or name)
+        result = {
+            key: item
+            for key, item in {
+                "name": output_name,
+                "label": str(value.get("label") or ""),
+                "output_type": str(value.get("output_type") or ""),
+                "visible": value.get("visible"),
+                "derived_state": str(value.get("derived_state") or ""),
+                "stale_reason": str(value.get("stale_reason") or ""),
+                "reference": value.get("reference"),
+            }.items()
+            if item not in (None, "", [], {})
+        }
+        validation_scope = None
+        assembly_data = value.get("assembly_data")
+        if isinstance(assembly_data, Mapping):
+            validation_scope = assembly_data.get("validation_scope")
+        accepted_state = value.get("accepted_state")
+        if validation_scope is None and isinstance(accepted_state, Mapping):
+            validation = accepted_state.get("validation")
+            if isinstance(validation, Mapping):
+                validation_scope = validation.get("validation_scope")
+        if isinstance(validation_scope, Mapping):
+            result["validation_scope"] = dict(validation_scope)
+        if include_logs:
+            for key in ("object_name", "type_id", "source_revision", "internal"):
+                item = value.get(key)
+                if item not in (None, "", [], {}):
+                    result[key] = item
+        return result
+
     raw_outputs = program.get("live_outputs")
     affected_outputs = []
     live_state = program.get("live_state")
     if isinstance(live_state, Mapping) and isinstance(live_state.get("outputs"), list):
         affected_outputs = [
-            dict(value)
+            compact_output(value)
             for value in live_state["outputs"]
             if isinstance(value, Mapping)
             and str(value.get("name") or "")
             and str(value.get("object_name") or "")
+            and output_is_visible(value)
         ]
     elif isinstance(raw_outputs, Mapping):
         affected_outputs = [
-            {"name": str(name), **dict(value)}
+            compact_output(value, str(name))
             for name, value in sorted(
                 raw_outputs.items(),
                 key=lambda item: str(item[0]),
             )
             if isinstance(value, Mapping)
+            and output_is_visible(value, str(name))
         ]
     result = {
         "ok": True,
@@ -1955,12 +2326,32 @@ def _read_source_payload(
         },
         "_vibecad_complete_source_result": not ranged,
     }
-    for key in (
-        "latest_candidate",
-        "migration_required",
-        "migration_reason",
-        "migration_action",
-    ):
+    latest_candidate = program.get("latest_candidate")
+    if isinstance(latest_candidate, Mapping):
+        candidate = {
+            key: latest_candidate[key]
+            for key in ("status", "revision")
+            if latest_candidate.get(key) not in (None, "")
+        }
+        failure = latest_candidate.get("failure")
+        if isinstance(failure, Mapping):
+            candidate["failure"] = _source_diagnostic_value(
+                {
+                    key: failure[key]
+                    for key in (
+                        "failure_code",
+                        "failure_stage",
+                        "error",
+                        "observed",
+                    )
+                    if failure.get(key) not in (None, "", [], {})
+                },
+                include_logs=include_logs,
+                log_tail_lines=log_tail_lines,
+            )
+        if candidate:
+            result["latest_candidate"] = candidate
+    for key in ("migration_required", "migration_reason", "migration_action"):
         if program.get(key) not in (None, "", [], {}):
             result[key] = _source_diagnostic_value(
                 program[key],
@@ -1969,12 +2360,84 @@ def _read_source_payload(
             )
     model_state = inspected.get("model_state")
     if isinstance(model_state, Mapping):
-        result["model_state"] = _source_diagnostic_value(
-            model_state,
-            include_logs=include_logs,
-            log_tail_lines=log_tail_lines,
-        )
+        compact_state = {
+            key: model_state[key]
+            for key in (
+                "status",
+                "candidate_status",
+                "accepted_is_current",
+                "accepted_live_state_preserved",
+            )
+            if model_state.get(key) not in (None, "", [], {})
+        }
+        if compact_state:
+            result["model_state"] = compact_state
     return result
+
+
+def _read_source_index_payload(
+    editable_sources: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return a compact, human-readable program inventory without internal ids."""
+
+    if not isinstance(editable_sources, Mapping):
+        return {
+            "ok": True,
+            "program_count": 0,
+            "programs": [],
+            "usage": "Create a program, or open the document that owns it.",
+        }
+    raw_sources = list(
+        editable_sources.get("all_sources")
+        or editable_sources.get("sources")
+        or []
+    )
+    programs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for source in raw_sources:
+        if not isinstance(source, Mapping):
+            continue
+        program = source.get("program")
+        if not isinstance(program, str):
+            continue
+        key = _program_reference_key(program)
+        if not all(key) or key in seen:
+            continue
+        seen.add(key)
+        programs.append(
+            {
+                "program": program,
+                "status": str(source.get("status") or ""),
+                "outputs": [
+                    {
+                        name: value
+                        for name, value in dict(output).items()
+                        if name in {"name", "label", "object_name", "type_id", "visible"}
+                    }
+                    for output in list(source.get("affected_outputs") or [])
+                    if isinstance(output, Mapping)
+                ],
+                "read_source": {
+                    "tool": "vibescript.read_source",
+                    "arguments": {
+                        "program": program,
+                        "include_logs": False,
+                    },
+                },
+            }
+        )
+    programs.sort(
+        key=lambda item: _program_reference_key(item["program"])
+    )
+    return {
+        "ok": True,
+        "program_count": len(programs),
+        "programs": programs,
+        "usage": (
+            "Choose the program by document, domain, and name, then copy its "
+            "read_source action. No persistent internal id is needed."
+        ),
+    }
 
 
 def _filtered_api_payload(
@@ -2001,6 +2464,41 @@ def _filtered_api_payload(
     unknown_names = sorted(set(names) - set(by_name))
     unknown_groups = sorted(set(groups) - set(api_groups))
     if unknown_names or unknown_groups:
+        active_workbench = str(result.get("workbench") or "")
+        alternate_surfaces = []
+        for candidate in vibescript_domains.VIBESCRIPT_WORKBENCH_PACKS.values():
+            if candidate.workbench == active_workbench:
+                continue
+            candidate_names = set(candidate.api_exports)
+            candidate_groups = set(vibescript_domains.api_groups(candidate))
+            matched_names = sorted(set(unknown_names).intersection(candidate_names))
+            matched_groups = sorted(
+                set(unknown_groups).intersection(candidate_groups)
+            )
+            if matched_names or matched_groups:
+                alternate_surfaces.append(
+                    {
+                        "domain": candidate.domain,
+                        "workbench": candidate.workbench,
+                        "matching_names": matched_names,
+                        "matching_groups": matched_groups,
+                    }
+                )
+        complete_surfaces = [
+            candidate
+            for candidate in alternate_surfaces
+            if set(candidate["matching_names"]) == set(unknown_names)
+            and set(candidate["matching_groups"]) == set(unknown_groups)
+        ]
+        if complete_surfaces:
+            alternate_surfaces = complete_surfaces
+        required_changes = []
+        if len(alternate_surfaces) == 1:
+            alternate = alternate_surfaces[0]
+            required_changes.append(
+                "Switch to "
+                f"{alternate['workbench']} and retry this read unchanged."
+            )
         return tool_failure(
             tool_name,
             "API_FILTER_UNKNOWN",
@@ -2013,6 +2511,8 @@ def _filtered_api_payload(
                 "available_names": list(by_name),
                 "available_groups": list(api_groups),
             },
+            candidates=alternate_surfaces,
+            required_changes=required_changes,
         )
     if not names and not groups:
         result["_vibecad_complete_api_result"] = True
@@ -2027,15 +2527,7 @@ def _filtered_api_payload(
             "ok",
             "domain",
             "workbench",
-            "program_schema",
-            "accepted_output_types",
-            "source_globals",
-            "result_contract",
             "units",
-            "evaluation_model",
-            "model_operating_contract",
-            "source_value_contract",
-            "source_global_contracts",
         )
         if key in result
     }
@@ -2044,7 +2536,10 @@ def _filtered_api_payload(
             "runtime_exports": [by_name[name] for name in ordered_names],
             "selected_names": ordered_names,
             "selected_groups": groups,
-            "api_groups": api_groups,
+            "selected_group_members": {
+                group: api_groups[group] for group in groups
+            },
+            "available_groups": list(api_groups),
             "read_more": {
                 "tool": "vibescript.read_api",
                 "arguments": {"names": ["exact_callable_name"]},
@@ -2072,8 +2567,33 @@ class _VibeScriptSourceTarget:
     document_uid: str
     document_name: str
     document_path: str
+    program_name: str
     current_revision: str
     output_names: tuple[str, ...]
+
+
+def _program_reference(
+    *,
+    document_name: str,
+    domain: str,
+    program_name: str,
+) -> str:
+    """Return the exact provider-facing identity of one editable program."""
+
+    return "/".join(
+        (
+            str(document_name or ""),
+            str(domain or ""),
+            str(program_name or ""),
+        )
+    )
+
+
+def _program_reference_key(value: Any) -> tuple[str, str, str]:
+    parts = str(value or "").split("/", 2)
+    if len(parts) != 3:
+        return "", "", ""
+    return parts[0].strip(), parts[1].strip().lower(), parts[2].strip()
 
 
 class _SourceTargetError(RuntimeError):
@@ -2179,6 +2699,42 @@ def _catalog_source_records(
     return records
 
 
+def _catalog_program_records(
+    component_catalog: Mapping[str, Any] | None,
+    program: str,
+) -> list[dict[str, Any]]:
+    """Return exact catalog records for one provider-facing program reference."""
+
+    if not isinstance(component_catalog, Mapping):
+        return []
+    requested = _program_reference_key(program)
+    records: list[dict[str, Any]] = []
+    for candidate in list(component_catalog.get("candidates") or []):
+        if not isinstance(candidate, Mapping):
+            continue
+        authoring = candidate.get("authoring_source")
+        if not isinstance(authoring, Mapping):
+            continue
+        candidate_program = authoring.get("program")
+        if not isinstance(candidate_program, str):
+            candidate_program = _program_reference(
+                document_name=str(authoring.get("document_name") or ""),
+                domain=str(authoring.get("domain") or ""),
+                program_name=str(authoring.get("program_name") or ""),
+            )
+        if _program_reference_key(candidate_program) != requested:
+            continue
+        records.append(
+            {
+                "source": str(candidate.get("source") or ""),
+                "reference": dict(candidate.get("reference") or {}),
+                "authoring_source": dict(authoring),
+                "label": str(candidate.get("label") or ""),
+            }
+        )
+    return records
+
+
 def _editable_source_record(
     editable_sources: Mapping[str, Any] | None,
     source_id: str,
@@ -2209,6 +2765,130 @@ def _editable_source_record(
             observed={"source_id": source_id, "source_count": len(matches)},
         )
     return matches[0] if matches else None
+
+
+def _editable_program_record(
+    editable_sources: Mapping[str, Any] | None,
+    program: str,
+) -> dict[str, Any] | None:
+    if not isinstance(editable_sources, Mapping):
+        return None
+    requested = _program_reference_key(program)
+    raw_sources = list(editable_sources.get("sources") or [])
+    raw_sources.extend(list(editable_sources.get("all_sources") or []))
+    matches: dict[tuple[str, str], dict[str, Any]] = {}
+    for candidate in raw_sources:
+        if not isinstance(candidate, Mapping):
+            continue
+        candidate_program = candidate.get("program")
+        if not isinstance(candidate_program, str):
+            continue
+        if _program_reference_key(candidate_program) != requested:
+            continue
+        key = (
+            str(candidate.get("domain") or ""),
+            str(candidate.get("source_id") or ""),
+        )
+        matches[key] = dict(candidate)
+    if len(matches) > 1:
+        raise _SourceTargetError(
+            "PROGRAM_REFERENCE_AMBIGUOUS",
+            "The program reference matches more than one editable program.",
+            observed={"program": program, "match_count": len(matches)},
+        )
+    return next(iter(matches.values())) if matches else None
+
+
+def _resolve_vibescript_program_target(
+    service: VibeCADService,
+    active_pack: Any,
+    program: str,
+    component_catalog: Mapping[str, Any] | None,
+    editable_sources: Mapping[str, Any] | None = None,
+) -> _VibeScriptSourceTarget:
+    """Resolve one readable program reference to its internal persistent id."""
+
+    document_name, domain, program_name = _program_reference_key(program)
+    if not document_name or not domain or not program_name:
+        raise _SourceTargetError(
+            "PROGRAM_REFERENCE_INVALID",
+            "A program reference requires document, domain, and name.",
+            observed={"program": program},
+        )
+    editable_record = _editable_program_record(editable_sources, program)
+    catalog_records = _catalog_program_records(component_catalog, program)
+    internal_ids = {
+        str(value or "").strip().lower()
+        for value in [
+            editable_record.get("source_id") if editable_record else "",
+            *[
+                record["authoring_source"].get("source_id")
+                for record in catalog_records
+            ],
+        ]
+        if str(value or "").strip()
+    }
+
+    if not internal_ids:
+        try:
+            import FreeCAD as App
+
+            documents = list(App.listDocuments().values())
+        except Exception:
+            documents = [service._active_document()]
+        for document in documents:
+            if document is None or str(getattr(document, "Name", "") or "") != document_name:
+                continue
+            for obj in list(getattr(document, "Objects", []) or []):
+                if (
+                    str(getattr(obj, vibescript_domains.PROP_PROGRAM_DOMAIN, "") or "")
+                    .strip()
+                    .lower()
+                    != domain
+                    or str(
+                        getattr(obj, vibescript_domains.PROP_PROGRAM_LABEL, "") or ""
+                    ).strip()
+                    != program_name
+                ):
+                    continue
+                internal_id = str(
+                    getattr(obj, vibescript_domains.PROP_PROGRAM_ID, "") or ""
+                ).strip().lower()
+                if internal_id:
+                    internal_ids.add(internal_id)
+
+    if len(internal_ids) != 1:
+        raise _SourceTargetError(
+            "PROGRAM_NOT_FOUND" if not internal_ids else "PROGRAM_REFERENCE_AMBIGUOUS",
+            (
+                "No editable program matches this reference."
+                if not internal_ids
+                else "The program reference resolves to multiple persistent programs."
+            ),
+            observed={
+                "program": program,
+                "match_count": len(internal_ids),
+            },
+        )
+    target = _resolve_vibescript_source_target(
+        service,
+        active_pack,
+        next(iter(internal_ids)),
+        component_catalog,
+        editable_sources,
+    )
+    actual = _program_reference(
+        document_name=target.document_name,
+        domain=target.pack.domain,
+        program_name=target.program_name,
+    )
+    if _program_reference_key(actual) != (document_name, domain, program_name):
+        raise _SourceTargetError(
+            "PROGRAM_REFERENCE_STALE",
+            "The program was renamed or moved after this reference was read.",
+            observed={"requested": program, "current": actual},
+        )
+    return target
 
 
 def _resolve_vibescript_source_target(
@@ -2284,10 +2964,14 @@ def _resolve_vibescript_source_target(
                 {
                     "document": document,
                     "pack": pack,
+                    "labels": set(),
                     "revisions": set(),
                     "outputs": set(),
                 },
             )
+            label = str(
+                getattr(obj, vibescript_domains.PROP_PROGRAM_LABEL, "") or ""
+            ).strip()
             revision = str(
                 getattr(obj, vibescript_domains.PROP_PROGRAM_REVISION, "") or ""
             ).strip().lower()
@@ -2296,6 +2980,8 @@ def _resolve_vibescript_source_target(
             ).strip()
             if revision:
                 candidate["revisions"].add(revision)
+            if label:
+                candidate["labels"].add(label)
             if output_name:
                 candidate["outputs"].add(output_name)
 
@@ -2313,6 +2999,13 @@ def _resolve_vibescript_source_target(
         )
     if candidates:
         (document_uid, _domain), candidate = next(iter(candidates.items()))
+        labels = sorted(candidate["labels"])
+        if len(labels) != 1:
+            raise _SourceTargetError(
+                "SOURCE_NAME_CONFLICT",
+                "The editable program has no single human-readable name.",
+                observed={"program_names": labels},
+            )
         revisions = sorted(candidate["revisions"])
         if len(revisions) > 1:
             raise _SourceTargetError(
@@ -2328,6 +3021,7 @@ def _resolve_vibescript_source_target(
             document_uid=document_uid,
             document_name=str(getattr(document, "Name", "") or ""),
             document_path=str(getattr(document, "FileName", "") or ""),
+            program_name=labels[0],
             current_revision=revisions[0] if revisions else "",
             output_names=tuple(sorted(candidate["outputs"])),
         )
@@ -2391,6 +3085,7 @@ def _resolve_vibescript_source_target(
             document_uid=active_uid,
             document_name=str(getattr(active_document, "Name", "") or ""),
             document_path=str(getattr(active_document, "FileName", "") or ""),
+            program_name=str(editable_record.get("label") or ""),
             current_revision=str(
                 editable_record.get("current_revision") or ""
             ).strip(),
@@ -2420,11 +3115,12 @@ def _resolve_vibescript_source_target(
 
 def _source_target_payload(target: _VibeScriptSourceTarget) -> dict[str, Any]:
     return {
-        "source_id": target.source_id,
-        "domain": str(target.pack.domain),
+        "program": _program_reference(
+            document_name=target.document_name,
+            domain=target.pack.domain,
+            program_name=target.program_name,
+        ),
         "workbench": str(target.pack.workbench),
-        "document_uid": target.document_uid,
-        "document_name": target.document_name,
         "document_path": target.document_path,
         "current_revision": target.current_revision,
         "affected_outputs": list(target.output_names),
@@ -2454,25 +3150,33 @@ def _run_universal_vibescript_tool(
         )
     target: _VibeScriptSourceTarget | None = None
     pack = active_pack
-    source_id = str(args.get("source_id") or "").strip().lower()
+    program = args.get("program")
     requested_domain = str(args.get("domain") or "").strip().lower()
-    if source_id and requested_domain:
+    if program is not None and not isinstance(program, str):
+        return tool_failure(
+            tool_name,
+            "PROGRAM_REFERENCE_INVALID",
+            "schema",
+            "program must be the exact document/domain/name reference returned by read_source.",
+            requested=args,
+        )
+    if isinstance(program, str) and requested_domain:
         return tool_failure(
             tool_name,
             "SOURCE_TARGET_AMBIGUOUS",
             "schema",
-            "Pass source_id for an existing program or domain for a new program/API, not both.",
+            "Pass program for an existing source or domain for a new source/API, not both.",
             requested=args,
-            required_changes=[{"remove_one_of": ["source_id", "domain"]}],
+            required_changes=[{"remove_one_of": ["program", "domain"]}],
         )
-    if source_id:
+    if isinstance(program, str):
         try:
             target = _on_document_thread(
                 document_thread_dispatch,
-                lambda: _resolve_vibescript_source_target(
+                lambda: _resolve_vibescript_program_target(
                     service,
                     active_pack,
-                    source_id,
+                    program,
                     component_catalog,
                     editable_sources,
                 ),
@@ -2525,14 +3229,37 @@ def _run_universal_vibescript_tool(
         domain_service = service
 
     def finish_source_write(result: dict[str, Any]) -> dict[str, Any]:
-        if target is None:
+        if target is not None:
+            target_payload = _source_target_payload(target)
+        else:
+            document = domain_service._active_document()
+            target_payload = {
+                "program": _program_reference(
+                    document_name=str(getattr(document, "Name", "") or ""),
+                    domain=pack.domain,
+                    program_name=str(
+                        result.get("program_name")
+                        or args.get("program_name")
+                        or ""
+                    ),
+                ),
+                "workbench": str(pack.workbench),
+                "document_path": str(getattr(document, "FileName", "") or ""),
+                "current_revision": str(result.get("working_revision") or ""),
+                "affected_outputs": sorted(
+                    str(name) for name in dict(result.get("live_outputs") or {})
+                ),
+            }
+        if not _program_reference_key(target_payload["program"])[2]:
             return result
-        target_payload = _source_target_payload(target)
         if result.get("working_revision"):
             target_payload["current_revision"] = str(result["working_revision"])
+        result["program"] = str(target_payload["program"])
         result["source_target"] = target_payload
+        result["_vibecad_source_lifecycle_result"] = True
         active_document = service._active_document()
-        if result.get("ok") is True and active_document is not target.document:
+        target_document = target.document if target is not None else document
+        if result.get("ok") is True and active_document is not target_document:
             try:
                 _on_document_thread(
                     document_thread_dispatch,
@@ -2595,10 +3322,12 @@ def _run_universal_vibescript_tool(
                     "include_subelements": bool(args.get("include_subelements")),
                 },
             )
-            return complete_geometry_read(
+            payload = complete_geometry_read(
                 captured,
                 cancellation_check=cancellation_check,
             )
+            payload["_vibecad_geometry_read_request"] = dict(args)
+            return payload
         except GeometryInspectionError as exc:
             return tool_failure(
                 tool_name,
@@ -2648,7 +3377,9 @@ def _run_universal_vibescript_tool(
             complete_inspection,
         )
 
-        source_id = str(args["source_id"])
+        if target is None:
+            return _read_source_index_payload(editable_sources)
+        source_id = target.source_id
         try:
             captured = _on_document_thread(
                 document_thread_dispatch,
@@ -2662,11 +3393,32 @@ def _run_universal_vibescript_tool(
                 complete_inspection(captured),
                 line_start=args.get("line_start"),
                 line_end=args.get("line_end"),
-                include_logs=bool(args.get("include_logs", True)),
+                include_logs=bool(args.get("include_logs", False)),
                 log_tail_lines=args.get("log_tail_lines"),
             )
             if target is not None:
                 payload["source_target"] = _source_target_payload(target)
+            payload["program"] = str(payload["source_target"]["program"])
+            payload.pop("source_id", None)
+            payload.pop("program_id", None)
+            payload["edit_source"] = {
+                "tool": "vibescript.edit_source",
+                "target_arguments": {
+                    "program": str(payload["program"]),
+                    "expected_revision": str(payload.get("current_revision") or ""),
+                },
+                "source_argument": (
+                    "Pass the complete updated source text returned by this read."
+                ),
+            }
+            payload["build_program"] = {
+                "tool": "vibescript.build_program",
+                "arguments": {
+                    "program": str(payload["program"]),
+                    "expected_revision": str(payload.get("current_revision") or ""),
+                },
+            }
+            payload["_vibecad_source_read_result"] = True
             return payload
         except DomainRuntimeFailure as exc:
             return exc.payload
@@ -2686,6 +3438,14 @@ def _run_universal_vibescript_tool(
             complete_inspection,
         )
 
+        if target is None:
+            return tool_failure(
+                tool_name,
+                "PROGRAM_REFERENCE_REQUIRED",
+                "schema",
+                "Select the owning program by document, domain, and name.",
+                requested=args,
+            )
         requested_output = str(args["output_name"])
         try:
             captured = _on_document_thread(
@@ -2693,7 +3453,7 @@ def _run_universal_vibescript_tool(
                 lambda: capture_inspection_state(
                     domain_service,
                     f"vibescript.{pack.domain}.inspect_program",
-                    str(args["source_id"]),
+                    target.source_id,
                 ),
             )
             inspected = complete_inspection(captured)
@@ -2741,7 +3501,7 @@ def _run_universal_vibescript_tool(
                 if str(item.get("name") or "") != requested_output
             ]
             domain_args = {
-                "program_id": str(args["source_id"]),
+                "program_id": target.source_id,
                 "expected_revision": expected_revision,
                 "source": str(args["source"]),
                 "input_schema": dict(program.get("input_schema") or {}),
@@ -2784,10 +3544,19 @@ def _run_universal_vibescript_tool(
     }
     operation = universal_domain_operations.get(tool_name)
     if operation is not None:
+        if operation != "create_program" and target is None:
+            return tool_failure(
+                tool_name,
+                "PROGRAM_REFERENCE_REQUIRED",
+                "schema",
+                "Select one program by document, domain, and name.",
+                requested=args,
+            )
         domain_args = dict(args)
         domain_args.pop("domain", None)
-        if "source_id" in domain_args:
-            domain_args["program_id"] = str(domain_args.pop("source_id"))
+        domain_args.pop("program", None)
+        if target is not None:
+            domain_args["program_id"] = target.source_id
         qualified_name = f"vibescript.{pack.domain}.{operation}"
         result = _run_domain_vibescript_tool(
             domain_service,
@@ -2809,7 +3578,15 @@ def _run_universal_vibescript_tool(
             complete_inspection,
         )
 
-        source_id = str(args["source_id"])
+        if target is None:
+            return tool_failure(
+                tool_name,
+                "PROGRAM_REFERENCE_REQUIRED",
+                "schema",
+                "Select one program by document, domain, and name.",
+                requested=args,
+            )
+        source_id = target.source_id
         expected_revision = str(args["expected_revision"])
         try:
             captured = _on_document_thread(
@@ -2843,7 +3620,7 @@ def _run_universal_vibescript_tool(
                         {
                             "tool": "vibescript.read_source",
                             "arguments": {
-                                "source_id": source_id,
+                                "program": _source_target_payload(target)["program"],
                                 "include_logs": False,
                             },
                         }
@@ -2880,8 +3657,16 @@ def _run_universal_vibescript_tool(
                 observed={"exception_type": exc.__class__.__name__},
             )
     if tool_name == "vibescript.edit_source":
+        if target is None:
+            return tool_failure(
+                tool_name,
+                "PROGRAM_REFERENCE_REQUIRED",
+                "schema",
+                "Select one program by document, domain, and name.",
+                requested=args,
+            )
         domain_arguments = {
-            "program_id": str(args["source_id"]),
+            "program_id": target.source_id,
             "expected_revision": str(args["expected_revision"]),
             "source": str(args["source"]),
         }
@@ -3183,6 +3968,20 @@ def make_provider_tool_runner(
     provider_calls_allowed: bool = True,
 ):
     clean_interaction_mode = normalize_interaction_mode(interaction_mode)
+    operation_manager = _vibescript_operation_manager(service)
+    operation_local = threading.local()
+    caller_progress_callback = progress_callback
+
+    def routed_progress(event: dict[str, Any]) -> None:
+        operation_id = str(
+            getattr(operation_local, "operation_id", "") or ""
+        )
+        if operation_id:
+            operation_manager.record_progress(operation_id, event)
+        if caller_progress_callback is not None:
+            caller_progress_callback(event)
+
+    progress_callback = routed_progress
     frozen_schemas = json.loads(json.dumps(turn_schemas or []))
     frozen_modeling_surface = json.loads(json.dumps(turn_modeling_surface or {}))
     component_catalog_state: dict[str, Any] = {
@@ -3274,6 +4073,14 @@ def make_provider_tool_runner(
         target_pack = vibescript_domains.get_vibescript_pack_for_domain(domain)
         if target_pack is None:
             return
+        program_reference = str(
+            target.get("program") or payload.get("program") or ""
+        )
+        _document_name, _program_domain, program_name = _program_reference_key(
+            program_reference
+        )
+        if not program_name:
+            return
         sources = [
             dict(item)
             for item in list(current.get("sources") or [])
@@ -3334,6 +4141,8 @@ def make_provider_tool_runner(
             "source_kind": "vibescript_program",
             "domain": domain,
             "workbench": str(target_pack.workbench),
+            "label": program_name,
+            "program": program_reference,
             "current_revision": revision,
             "status": "accepted" if payload.get("ok") is True else "build_failed",
             "affected_outputs": affected_outputs,
@@ -3343,15 +4152,15 @@ def make_provider_tool_runner(
             "delete_output_tool": "vibescript.delete_output",
             "delete_program_tool": "vibescript.delete_program",
             "build_arguments": {
-                "source_id": source_id,
+                "program": program_reference,
                 "expected_revision": revision,
             },
             "edit_target_arguments": {
-                "source_id": source_id,
+                "program": program_reference,
                 "expected_revision": revision,
             },
             "delete_target_arguments": {
-                "source_id": source_id,
+                "program": program_reference,
                 "expected_revision": revision,
                 "reason": "Remove this source and its owned outputs.",
             },
@@ -3382,17 +4191,32 @@ def make_provider_tool_runner(
 
         def finalize(payload: dict[str, Any]) -> dict[str, Any]:
             nonlocal args, tool
+            source_lifecycle_result = bool(
+                payload.get("_vibecad_source_lifecycle_result")
+            )
+            operation_started = (
+                tool_name in VIBESCRIPT_BACKGROUND_SOURCE_TOOLS
+                and isinstance(payload.get("operation"), Mapping)
+                and payload["operation"].get("status") == "running"
+            )
             if not bool(payload.get("ok")):
                 payload = normalize_tool_failure(tool_name, args, payload)
+                if source_lifecycle_result:
+                    # Failure normalization deliberately rebuilds the public
+                    # failure contract. Retain this internal projection marker
+                    # so terminal background reads still receive the concise
+                    # source lifecycle envelope and its exact recovery calls.
+                    payload["_vibecad_source_lifecycle_result"] = True
             else:
-                if tool is not None and tool.safety in {
+                if not operation_started and tool is not None and tool.safety in {
                     SafetyLevel.SAFE_WRITE,
                     SafetyLevel.WRITE,
                 }:
                     component_catalog_state["dirty"] = True
-                if tool_name not in {
+                if not operation_started and tool_name not in {
                     "vibescript.read_source",
                     "vibescript.read_api",
+                    VIBESCRIPT_READ_OPERATION_TOOL,
                 }:
                     _on_document_thread(
                         document_thread_dispatch,
@@ -3402,6 +4226,9 @@ def make_provider_tool_runner(
             trace_payload.pop("_vibecad_image_attachment", None)
             trace_payload.pop("_vibecad_complete_source_result", None)
             trace_payload.pop("_vibecad_complete_api_result", None)
+            trace_payload.pop("_vibecad_source_lifecycle_result", None)
+            trace_payload.pop("_vibecad_source_read_result", None)
+            trace_payload.pop("_vibecad_geometry_read_request", None)
             trace_result = _trace_result(trace_payload)
             trace = {
                 "tool_name": tool_name,
@@ -3436,6 +4263,78 @@ def make_provider_tool_runner(
                     cancelled=True,
                 )
             )
+        executing_background = bool(
+            getattr(operation_local, "executing", False)
+        )
+        if not executing_background:
+            preflight_args, preflight_error = _parse_arguments(arguments_json)
+            if tool_name == VIBESCRIPT_READ_OPERATION_TOOL:
+                if preflight_error:
+                    return finalize(
+                        tool_failure(
+                            tool_name,
+                            "INVALID_TOOL_ARGUMENTS_JSON",
+                            "schema",
+                            preflight_error,
+                            requested={"arguments_json": arguments_json},
+                            observed={"expected": "JSON object"},
+                        )
+                    )
+                args = dict(preflight_args or {})
+                try:
+                    tool = service.registry.get(tool_name)
+                except KeyError:
+                    return finalize(
+                        tool_failure(
+                            tool_name,
+                            "UNKNOWN_TOOL",
+                            "surface",
+                            f"Unknown VibeCAD tool: {tool_name}",
+                            requested=args,
+                        )
+                    )
+                try:
+                    tool.spec.validate_arguments(args)
+                except ToolArgumentValidationError as exc:
+                    return finalize(exc.payload)
+                return finalize(
+                    operation_manager.read(
+                        str(args["operation_id"]),
+                        float(args.get("wait_seconds", 0) or 0),
+                    )
+                )
+            active_operation = operation_manager.active()
+            if active_operation is not None:
+                args = dict(preflight_args or {})
+                payload = tool_failure(
+                    tool_name,
+                    "VIBESCRIPT_OPERATION_ACTIVE",
+                    "precondition",
+                    (
+                        "A VibeScript mutation is still running. Read its "
+                        "operation status before calling another CAD tool."
+                    ),
+                    requested=args,
+                    observed={"active_operation": active_operation},
+                    required_changes=[
+                        {
+                            "tool": VIBESCRIPT_READ_OPERATION_TOOL,
+                            "arguments": {
+                                "operation_id": active_operation["operation_id"],
+                                "wait_seconds": 30,
+                            },
+                        }
+                    ],
+                )
+                payload["active_operation"] = active_operation
+                payload["next_action"] = {
+                    "tool": VIBESCRIPT_READ_OPERATION_TOOL,
+                    "arguments": {
+                        "operation_id": active_operation["operation_id"],
+                        "wait_seconds": 30,
+                    },
+                }
+                return finalize(payload)
         live_surface = _on_document_thread(
             document_thread_dispatch,
             lambda: _live_provider_surface_state(service, clean_interaction_mode),
@@ -3537,6 +4436,25 @@ def make_provider_tool_runner(
             tool.spec.validate_arguments(args)
         except ToolArgumentValidationError as exc:
             return finalize(exc.payload)
+        if not executing_background:
+            if tool_name in VIBESCRIPT_BACKGROUND_SOURCE_TOOLS:
+
+                def execute_background(operation_id: str) -> dict[str, Any]:
+                    operation_local.executing = True
+                    operation_local.operation_id = operation_id
+                    try:
+                        return run(tool_name, arguments_json)
+                    finally:
+                        operation_local.operation_id = ""
+                        operation_local.executing = False
+
+                return finalize(
+                    operation_manager.start(
+                        tool_name,
+                        args,
+                        execute_background,
+                    )
+                )
         if tool_name == "conversation.ask_user":
             questions = args.get("questions")
             assert isinstance(questions, list) and questions

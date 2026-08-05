@@ -16,6 +16,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import threading
 
 MODULE_ROOT = Path(__file__).resolve().parent.parent
 if str(MODULE_ROOT) not in sys.path:
@@ -25,12 +26,16 @@ from VibeCADComponentCatalog import (  # noqa: E402
     capture_component_catalog,
     search_captured_component_catalog,
 )
+from VibeCADCore import VibeCADService  # noqa: E402
 from VibeCADMechanismGeometry import (  # noqa: E402
+    DYNAMIC_COLLISION_TRACE_SCHEMA,
     MechanismGeometryError,
     STATIC_MECHANISM_EVIDENCE_SCHEMA,
     STATIC_PAIR_EVIDENCE_SCHEMA,
+    evaluate_dynamic_collisions,
     measure_static_component_pairs,
     measure_static_mechanism_pairs,
+    summarize_dynamic_collision_frames,
 )
 from VibeCADModelingSurface import resolve_modeling_surface  # noqa: E402
 from VibeCADVibeScriptDomainPublication import (  # noqa: E402
@@ -195,6 +200,32 @@ class _Service:
         return None
 
 
+class _ReferenceCaptureService(_Service):
+    """Use the production event-cache methods in a bounded native fixture."""
+
+    _vibescript_object_identity = staticmethod(
+        VibeCADService._vibescript_object_identity
+    )
+    _vibescript_reference_dependencies = (
+        VibeCADService._vibescript_reference_dependencies
+    )
+    capture_vibescript_reference_shape = (
+        VibeCADService.capture_vibescript_reference_shape
+    )
+    store_vibescript_reference_artifact = (
+        VibeCADService.store_vibescript_reference_artifact
+    )
+
+    def __init__(self, document, project_root: Path) -> None:
+        super().__init__(document, project_root)
+        self._vibescript_reference_cache_lock = threading.RLock()
+        self._vibescript_reference_snapshots = {}
+
+    @staticmethod
+    def active_workbench_name() -> str:
+        return "PartDesignWorkbench"
+
+
 def _document_objects(document) -> list[dict[str, str]]:
     return [
         {
@@ -320,6 +351,18 @@ def _exercise_worker_result_tamper_rejection(
             "validation_summary",
             changed_summary,
             "validation field 'component_placements' is inconsistent",
+        )
+    )
+
+    changed_delta = copy.deepcopy(execution)
+    output(changed_delta, "Arm")["assembly_data"][
+        "authored_to_solved_delta"
+    ]["translation_distance_mm"] += 1.0
+    cases.append(
+        (
+            "placement_delta",
+            changed_delta,
+            "authored-to-solved delta.translation_distance_mm disagrees",
         )
     )
 
@@ -724,11 +767,12 @@ def _exercise_coupled_joint_dependencies(root: Path, pack) -> dict[str, int]:
                 [_worker_output(name, value) for name, value in result.items()],
             )
         except AssemblyCandidateError as exc:
-            assert exc.details["stage"] == "joint_dependency"
+            assert exc.details["stage"] == "joint_dependency_preflight"
             issue = exc.details["issues"][0]
-            assert issue["code"] == "missing_collinear_slider"
+            assert issue["code"] == "missing_slider"
             assert issue["joint_output"] == "Coupling"
             assert "api.joint('slider'" in issue["suggestion"]
+            assert invalid_document.Objects == []
         else:
             raise AssertionError("A required RackPinion Slider dependency was omitted.")
     finally:
@@ -1062,6 +1106,277 @@ def _simulation_source(formula: str = "initialValue + pi/2*time") -> str:
     )
 
 
+def _collision_frames(
+    placements: list[tuple[list[float], list[float]]],
+) -> list[dict]:
+    return [
+        {
+            "frame_index": index,
+            "frame_kind": "input" if index == 0 else "solver_output",
+            "nominal_time_s": None if index == 0 else float(index - 1),
+            "component_placements": {
+                "First": {
+                    "position_mm": first,
+                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+                "Second": {
+                    "position_mm": second,
+                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+            },
+        }
+        for index, (first, second) in enumerate(placements)
+    ]
+
+
+def _exercise_dynamic_collision_geometry() -> dict:
+    """Prove collisions, clear poses, and compact trace intervals."""
+
+    import Part
+    from VibeCADMechanismGeometry import _disjoint_surface_job_batches
+
+    surface_jobs = [
+        (1, "A", "B"),
+        (2, "A", "C"),
+        (3, "B", "C"),
+        (4, "C", "D"),
+        (5, "A", "D"),
+        (6, "B", "D"),
+    ]
+    surface_batches = _disjoint_surface_job_batches(surface_jobs)
+    assert [job for batch in surface_batches for job in batch] != []
+    assert sorted(
+        job for batch in surface_batches for job in batch
+    ) == surface_jobs
+    assert all(
+        len({name for _index, first, second in batch for name in (first, second)})
+        == 2 * len(batch)
+        for batch in surface_batches
+    )
+
+    first = Part.makeBox(10, 10, 10)
+    second = Part.makeBox(10, 10, 10)
+    clear = [0.0, 0.0, 0.0], [30.0, 0.0, 0.0]
+    overlap = [0.0, 0.0, 0.0], [5.0, 0.0, 0.0]
+    result = evaluate_dynamic_collisions(
+        {"First": first, "Second": second},
+        _collision_frames([clear, clear, overlap, overlap, clear]),
+    )
+    summary = result["summary"]
+    assert summary["schema"] == DYNAMIC_COLLISION_TRACE_SCHEMA
+    assert summary["status"] == "complete"
+    assert summary["collision_mesh_linear_deflection_mm"] == 0.05
+    assert summary["collision_mesh_angular_deflection_radians"] == 0.5
+    assert summary["collision_free"] is False
+    assert summary["evaluated_frame_count"] == 4
+    assert summary["colliding_frame_count"] == 2
+    assert summary["colliding_pair_count"] == 1
+    pair = summary["pairs"][0]
+    assert pair["first_collision_frame"] == 2
+    assert pair["last_collision_frame"] == 3
+    assert pair["maximum_interference_volume_mm3"] == 0.0
+    assert pair["interference_volume_complete"] is False
+    assert len(pair["intervals"]) == 1
+    interval = pair["intervals"][0]
+    assert interval["first_frame"] == 2
+    assert interval["first_time_s"] == 1.0
+    assert interval["last_frame"] == 3
+    assert interval["last_time_s"] == 2.0
+    assert interval["maximum_interference_volume_mm3"] == 0.0
+    assert interval["interference_volume_complete"] is False
+    assert interval["worst_frame"] == 2
+    assert interval["worst_time_s"] == 1.0
+    clear_result = evaluate_dynamic_collisions(
+        {"First": first, "Second": second},
+        _collision_frames([clear, clear, clear]),
+    )["summary"]
+    assert clear_result["collision_free"] is True
+    assert clear_result["colliding_pair_count"] == 0
+    nested_clear_result = evaluate_dynamic_collisions(
+        {
+            "First": Part.makeCylinder(10.0, 10.0).cut(
+                Part.makeCylinder(8.0, 10.0)
+            ),
+            "Second": Part.makeCylinder(5.0, 10.0),
+        },
+        _collision_frames([clear, clear]),
+    )["summary"]
+    assert nested_clear_result["analysis_complete"] is True
+    assert nested_clear_result["collision_free"] is True
+    warning_summary = summarize_dynamic_collision_frames(
+        ["First", "Second"],
+        [
+            {
+                "frame_index": 1,
+                "nominal_time_s": 0.0,
+                "collisions": [],
+            }
+        ],
+        evaluation_warnings=[
+            {
+                "code": "COLLISION_ANALYSIS_INCOMPLETE",
+                "stage": "simulation_collision",
+                "message": "Injected geometry-engine failure",
+            }
+        ],
+    )
+    assert warning_summary["status"] == "incomplete"
+    assert warning_summary["analysis_complete"] is False
+    assert warning_summary["collision_free"] is False
+    assert warning_summary["warning_count"] == 1
+    shared_definition_result = evaluate_dynamic_collisions(
+        {"First": first.copy(), "Second": first.copy()},
+        _collision_frames([clear, clear, overlap]),
+        definition_keys={
+            "First": "shared-test-definition",
+            "Second": "shared-test-definition",
+        },
+    )
+    assert shared_definition_result["summary"]["collision_free"] is False
+    assert (
+        shared_definition_result["evaluation"]["unique_collision_mesh_count"]
+        == 1
+    )
+    rigid_result = evaluate_dynamic_collisions(
+        {"First": first, "Second": second},
+        _collision_frames(
+            [
+                clear,
+                overlap,
+                ([100.0, 0.0, 0.0], [105.0, 0.0, 0.0]),
+            ]
+        ),
+        rigid_pairs=[("First", "Second")],
+    )
+    assert rigid_result["summary"]["colliding_frame_count"] == 2
+    assert rigid_result["evaluation"]["rigid_pair_count"] == 1
+    assert rigid_result["evaluation"]["surface_proximity_count"] == 1
+    excluded_result = evaluate_dynamic_collisions(
+        {"First": first, "Second": second},
+        _collision_frames([clear, overlap, overlap]),
+        excluded_pairs=[("First", "Second")],
+    )
+    assert excluded_result["summary"]["collision_free"] is True
+    assert excluded_result["evaluation"]["excluded_pair_count"] == 1
+    assert excluded_result["evaluation"]["exact_common_count"] == 0
+    contained_result = evaluate_dynamic_collisions(
+        {"First": first, "Second": Part.makeSphere(2.0)},
+        _collision_frames(
+            [
+                ([0.0, 0.0, 0.0], [30.0, 0.0, 0.0]),
+                ([0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            ]
+        ),
+    )
+    assert contained_result["summary"]["collision_free"] is False
+    assert contained_result["summary"]["interference_volume_complete"] is False
+    assert contained_result["evaluation"]["containment_collision_count"] == 1
+    assert contained_result["evaluation"]["exact_common_count"] == 0
+
+    with tempfile.TemporaryDirectory(prefix="vibecad-collision-step-") as directory:
+        step_path = Path(directory) / "imported-collision-shape.step"
+        second.exportStep(str(step_path))
+        imported = Part.read(str(step_path))
+        imported_result = evaluate_dynamic_collisions(
+            {"First": first, "Second": imported},
+            _collision_frames(
+                [
+                    ([0.0, 0.0, 0.0], [30.0, 0.0, 0.0]),
+                    ([0.0, 0.0, 0.0], [5.0, 0.0, 0.0]),
+                ]
+            ),
+        )
+    assert imported_result["summary"]["collision_free"] is False
+    assert imported_result["summary"]["colliding_pair_count"] == 1
+    assert imported_result["summary"]["interference_volume_complete"] is False
+    assert imported_result["evaluation"]["surface_proximity_count"] == 1
+    return {
+        "colliding_pair": [pair["first_component"], pair["second_component"]],
+        "first_collision_frame": pair["first_collision_frame"],
+        "maximum_interference_volume_mm3": pair["maximum_interference_volume_mm3"],
+        "collision_free_control": True,
+        "fixed_pair_evaluated_once": True,
+        "fixed_group_pair_excluded": True,
+        "exact_containment_shortcut": True,
+        "imported_step_collision_detected": True,
+    }
+
+
+def _exercise_exact_link_reference_capture(root: Path) -> dict:
+    """Prove repeated App::Link occurrences share one exact staged definition."""
+
+    import Part
+
+    document = App.newDocument("VibeScriptExactLinkReferenceCapture")
+    source = document.addObject("Part::Feature", "ImportedMotorDefinition")
+    source.Shape = Part.makeBox(56.95, 56.95, 105.7)
+    links = []
+    for index, placement in enumerate(
+        (
+            App.Placement(App.Vector(0.0, 0.0, 0.0), App.Rotation()),
+            App.Placement(
+                App.Vector(75.0, 20.0, 130.0),
+                App.Rotation(App.Vector(0.0, 1.0, 0.0), 90.0),
+            ),
+            App.Placement(
+                App.Vector(-40.0, 15.0, 260.0),
+                App.Rotation(App.Vector(1.0, 0.0, 0.0), -35.0),
+            ),
+        ),
+        start=1,
+    ):
+        link = document.addObject("App::Link", f"MotorOccurrence{index}")
+        link.LinkedObject = source
+        link.LinkTransform = True
+        link.Placement = placement
+        links.append(link)
+    document.recompute()
+
+    pack = get_vibescript_pack("PartDesignWorkbench")
+    assert pack is not None
+    service = _ReferenceCaptureService(document, root)
+    prepared = {
+        "pack": pack,
+        "program_id": "exact-link-reference-probe",
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": "assembly-production-revision",
+        "surface": resolve_modeling_surface(
+            "PartDesignWorkbench", "vibescript"
+        ).summary(),
+        "reference_requirements": [
+            {
+                "document_uid": str(document.Uid),
+                "object_name": str(link.Name),
+            }
+            for link in links
+        ],
+    }
+    snapshots = capture_reference_inputs(service, prepared)
+    assert len(snapshots) == 3
+    assert len({item["_reference_cache_token"] for item in snapshots}) == 1
+    assert all(
+        item["detached_shape"] is snapshots[0]["detached_shape"]
+        for item in snapshots[1:]
+    )
+    assert math.isclose(
+        float(snapshots[0]["detached_shape"].Volume),
+        float(source.Shape.Volume),
+        rel_tol=1.0e-12,
+        abs_tol=1.0e-12,
+    )
+    for link, snapshot in zip(links, snapshots, strict=True):
+        assert snapshot["_reference_shape_placement_matrix"] == (
+            _placement_matrix_values(link.Shape.Placement)
+        )
+    App.closeDocument(document.Name)
+    return {
+        "occurrence_count": len(links),
+        "shared_definition_count": 1,
+        "exact_native_placement_count": len(snapshots),
+    }
+
+
 def _exercise_simulation_lifecycle(root: Path, pack) -> dict:
     """Create, regenerate, retain, reopen, and delete a native kinematic trace."""
 
@@ -1124,6 +1439,13 @@ def _exercise_simulation_lifecycle(root: Path, pack) -> dict:
     assert summary["native_code"] == 0
     assert summary["frame_count"] == 7
     assert summary["pose_count"] == 14
+    collision = summary["collision_summary"]
+    assert collision["status"] == "complete"
+    assert collision["collision_free"] is False
+    assert collision["colliding_pair_count"] == 1
+    assert collision["colliding_frame_count"] == 6
+    assert collision["worst_collision"]["maximum_interference_volume_mm3"] == 0.0
+    assert collision["worst_collision"]["interference_volume_complete"] is False
     observation = summary["motion_observations"][0]
     assert observation["motion_output"] == "Drive"
     assert observation["joint_output"] == "Hinge"
@@ -1173,6 +1495,11 @@ def _exercise_simulation_lifecycle(root: Path, pack) -> dict:
     assert list(simulation.Group) == [drive]
     assert simulation.VibeCADFrameCount == 7
     assert simulation.VibeCADPoseCount == 14
+    assert simulation.VibeCADCollisionFree is False
+    assert simulation.VibeCADCollidingPairCount == 1
+    assert simulation.VibeCADCollidingFrameCount == 6
+    assert simulation.VibeCADInterferenceVolumeComplete is False
+    assert float(simulation.VibeCADWorstInterferenceVolume.Value) == 0.0
     assert len(json.loads(simulation.VibeCADSimulationTracePreview)) == 3
     retained_trace = (
         Path(accepted["attempt_directory"])
@@ -1308,6 +1635,8 @@ def _exercise_simulation_lifecycle(root: Path, pack) -> dict:
     assert reopened_drive.Formula == "initialValue + pi*time"
     assert list(reopened_simulation.Group) == [reopened_drive]
     assert len(json.loads(reopened_simulation.VibeCADSimulationTracePreview)) == 3
+    assert reopened_simulation.VibeCADCollisionFree is False
+    assert reopened_simulation.VibeCADCollidingPairCount == 1
 
     reopened_base = {
         **base_capture,
@@ -1340,6 +1669,8 @@ def _exercise_simulation_lifecycle(root: Path, pack) -> dict:
         "program_id": prepared["program_id"],
         "frame_count": summary["frame_count"],
         "pose_count": summary["pose_count"],
+        "collision_free": collision["collision_free"],
+        "colliding_pair_count": collision["colliding_pair_count"],
         "initial_rotation_degrees": observation[
             "maximum_relative_rotation_degrees"
         ],
@@ -1916,9 +2247,47 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     assert execution["assembly_validation"]["solver_code"] == 0
     assert execution["assembly_validation"]["joint_count"] == 2
     assert execution["assembly_validation"]["grounded_components"] == ["Base"]
+    solver_scope = execution["assembly_validation"]["validation_scope"]
+    assert solver_scope["scope"] == "joint_constraint_consistency"
+    assert solver_scope["constraints_consistent"] is True
+    assert solver_scope["mechanical_operation_verified"] is False
+    assert "collision clearance" in solver_scope["advisory"]
+    assert publication["live_outputs"]["Diagnostics"]["assembly_data"][
+        "validation_scope"
+    ] == solver_scope
+    assert accepted["live_outputs"]["Diagnostics"]["assembly_data"][
+        "validation_scope"
+    ] == solver_scope
+    placement_deltas = execution["assembly_validation"][
+        "component_placement_deltas"
+    ]
+    assert set(placement_deltas) == {"Base", "Arm", "Module"}
+    assert placement_deltas["Base"] == {
+        "translation_mm": [0.0, 0.0, 0.0],
+        "translation_distance_mm": 0.0,
+        "rotation_degrees": 0.0,
+    }
+    assert placement_deltas["Module"]["translation_mm"] == [
+        -40.0,
+        0.0,
+        0.0,
+    ]
+    assert placement_deltas["Module"]["translation_distance_mm"] == 40.0
+    assert next(
+        item
+        for item in execution["outputs"]
+        if item["name"] == "Module"
+    )["assembly_data"]["authored_to_solved_delta"] == placement_deltas[
+        "Module"
+    ]
     resolved = {item["object_name"]: item for item in prepared["resolved_references"]}
-    assert abs(resolved["SourceBase"]["facts"]["volume_mm3"] - 2560.0) < 1.0e-7
-    assert resolved["SourceArm"]["facts"]["volume_mm3"] > 800.0
+    for source_name in ("SourceBase", "SourceArm", "NativeSubassembly"):
+        facts = resolved[source_name]["facts"]
+        assert facts["solids"] >= 1
+        assert facts["subelement_detail_limit"] == 0
+        assert "volume_mm3" not in facts
+        assert "face_details" not in facts
+        assert "edge_details" not in facts
     assert resolved["NativeSubassembly"]["source_kind"] == "assembly"
     assert resolved["NativeSubassembly"]["reference_contract_sha256"]
 
@@ -1945,6 +2314,7 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     diagnostic_payload = json.loads(diagnostics.VibeCADSolverDiagnostics)
     assert diagnostic_payload["native"]["available"] is True
     assert diagnostic_payload["component_count"] == 3
+    assert diagnostic_payload["validation_scope"] == solver_scope
     dependency_anchor = next(
         obj
         for obj in document.Objects
@@ -3356,13 +3726,15 @@ def _exercise_catalog_fastener_lifecycle(root: Path, pack) -> dict:
         [
             "bolt_a = api.fastener('ISO4762', 'M6', length_mm=inputs['length_mm'], model_thread=inputs['model_thread'], grounded=True, label='Bolt A')",
             "bolt_b = api.fastener('ISO4762', 'M6', length_mm=inputs['length_mm'], model_thread=inputs['model_thread'], placement=[0, 0, 25], label='Bolt B')",
-            "axis_a = api.connector(bolt_a, {'type':'published_interface','interface_name':'thread_axis'})",
+            "axis_a = api.connector(bolt_a, 'origin')",
             "axis_b = api.connector(bolt_b, {'type':'published_interface','interface_name':'thread_axis'})",
-            "fixed = api.joint('fixed', axis_a, axis_b, label='Fastener Fixture')",
+            "fixed = api.joint('revolute', axis_a, axis_b, label='Fastener Fixture')",
             "model = api.assembly([bolt_a, bolt_b], [fixed], label='Fastener Assembly')",
             "diagnostics = api.solve(model)",
+            "drive = api.motion(fixed, 'initialValue + pi/4*time', label='Fastener Drive')",
+            "simulation = api.simulation(model, [drive], start_time_s=0, end_time_s=0.1, time_step_s=0.05, label='Fastener Simulation')",
             "bill = api.bill_of_materials(model, columns=['name', 'quantity', {'property':'PartNumber','heading':'Part Number'}], label='Fastener BOM')",
-            "result = {'Model':model, 'BoltA':bolt_a, 'BoltB':bolt_b, 'Fixed':fixed, 'Bill':bill, 'Diagnostics':diagnostics}",
+            "result = {'Model':model, 'BoltA':bolt_a, 'BoltB':bolt_b, 'Fixed':fixed, 'Drive':drive, 'Simulation':simulation, 'Bill':bill, 'Diagnostics':diagnostics}",
         ]
     )
     expected_outputs = [
@@ -3370,6 +3742,8 @@ def _exercise_catalog_fastener_lifecycle(root: Path, pack) -> dict:
         {"name": "BoltA", "type": "component_link"},
         {"name": "BoltB", "type": "component_link"},
         {"name": "Fixed", "type": "joint"},
+        {"name": "Drive", "type": "motion"},
+        {"name": "Simulation", "type": "simulation"},
         {"name": "Bill", "type": "bom"},
         {"name": "Diagnostics", "type": "solver_diagnostics"},
     ]
@@ -3425,12 +3799,25 @@ def _exercise_catalog_fastener_lifecycle(root: Path, pack) -> dict:
     assert worker_outputs["BoltA"]["assembly_data"]["source"] == worker_outputs[
         "BoltB"
     ]["assembly_data"]["source"]
-    connectors = worker_outputs["Fixed"]["assembly_data"]["connectors"]
-    assert [item["semantic_selection"]["interface_name"] for item in connectors] == [
-        "thread_axis",
-        "thread_axis",
+    collision_summary = worker_outputs["Simulation"]["assembly_data"][
+        "collision_summary"
     ]
-    assert all(item["interface_frame"] is not None for item in connectors)
+    assert collision_summary["status"] == "complete", collision_summary
+    assert collision_summary["analysis_complete"] is True
+    from vibescript_assembly_worker import _collision_definition_key
+
+    for name in ("BoltA", "BoltB"):
+        data = worker_outputs[name]["assembly_data"]
+        assert _collision_definition_key(
+            data["source_contract"],
+            data,
+        ) == data["source_brep"]["artifact_sha256"]
+    connectors = worker_outputs["Fixed"]["assembly_data"]["connectors"]
+    assert connectors[0]["geometry_type"] == "component_origin"
+    assert connectors[0]["semantic_selection"] is None
+    assert connectors[0]["interface_frame"] is None
+    assert connectors[1]["semantic_selection"]["interface_name"] == "thread_axis"
+    assert connectors[1]["interface_frame"] is not None
     bill_data = worker_outputs["Bill"]["assembly_data"]
     assert bill_data["row_count"] == 1
     assert bill_data["rows"][0]["quantity"] == 2
@@ -3457,6 +3844,21 @@ def _exercise_catalog_fastener_lifecycle(root: Path, pack) -> dict:
     assert all(source.TypeId == "Part::FeaturePython" for source in fastener_sources)
     assert all(len(source.Shape.Solids) == 1 for source in fastener_sources)
     assert all(bool(source.Thread) is True for source in fastener_sources)
+    fastener_collisions = evaluate_dynamic_collisions(
+        {
+            "First": fastener_sources[0].Shape,
+            "Second": fastener_sources[1].Shape,
+        },
+        _collision_frames(
+            [
+                ([0.0, 0.0, 0.0], [30.0, 0.0, 0.0]),
+                ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            ]
+        ),
+    )["summary"]
+    assert fastener_collisions["collision_free"] is False
+    assert fastener_collisions["colliding_pair_count"] == 1
+    assert fastener_collisions["interference_volume_complete"] is False
     import UtilsAssembly
 
     timeline = document.getObject("VibeCADTimeline")
@@ -3479,6 +3881,22 @@ def _exercise_catalog_fastener_lifecycle(root: Path, pack) -> dict:
         assert UtilsAssembly.isTimelineOperationActive(source) is False
         timeline.Position = link_index + 1
         assert UtilsAssembly.isTimelineOperationActive(source) is True
+        if "VibeCADTimelineEditor" not in link.PropertiesList:
+            link.addProperty(
+                "App::PropertyLinkHidden",
+                "VibeCADTimelineEditor",
+                "Timeline",
+                "Implementation object which edits this standard component",
+                attr=16,
+                hidden=True,
+                locked=True,
+            )
+        link.setPropertyStatus(
+            "VibeCADTimelineEditor",
+            ("Hidden", "LockDynamic", "NoRecompute"),
+        )
+        link.setEditorMode("VibeCADTimelineEditor", 2)
+        link.VibeCADTimelineEditor = source
     timeline.Position = len(timeline.Operations)
     real_thread_edges = [len(source.Shape.Edges) for source in fastener_sources]
     assert len(
@@ -3527,6 +3945,7 @@ def _exercise_catalog_fastener_lifecycle(root: Path, pack) -> dict:
         assert source in edited_sources
         assert source.VibeCADTimelineRole == "resource"
         assert source.VibeCADTimelineOwner is link
+        assert link.VibeCADTimelineEditor is source
 
     restore_threads = _candidate_capture(
         base_capture,
@@ -3560,6 +3979,9 @@ def _exercise_catalog_fastener_lifecycle(root: Path, pack) -> dict:
     assert all(bool(source.Thread) is True for source in threaded_sources)
     assert min(len(source.Shape.Edges) for source in threaded_sources) > max(
         simple_edges
+    )
+    assert all(
+        link.VibeCADTimelineEditor is link.LinkedObject for link in bolt_links
     )
 
     save_path = root / "catalog-fastener-assembly.FCStd"
@@ -3637,6 +4059,7 @@ def _exercise_catalog_fastener_lifecycle(root: Path, pack) -> dict:
         "bom_quantity": 2,
         "semantic_interface": "thread_axis",
         "native_thread_toggle_changes_brep": True,
+        "collision_geometry_supported": True,
         "stable_outputs": identities,
     }
 
@@ -3672,7 +4095,7 @@ def _exercise_portable_external_instances(root: Path, pack) -> dict:
         document_path="parts/bracket.FCStd",
         limit=10,
     )
-    assert catalog["errors"] == []
+    assert catalog.get("errors", []) == []
     assert catalog["match_count"] == 1
     reference = dict(catalog["matches"][0]["reference"])
     assert reference == {
@@ -4486,6 +4909,8 @@ def main() -> int:
         bom_autogenerate_boundary = _exercise_native_bom_autogenerate_boundary(root)
         bom = _exercise_bom_lifecycle(root, pack)
         catalog_fasteners = _exercise_catalog_fastener_lifecycle(root, pack)
+        dynamic_collision_geometry = _exercise_dynamic_collision_geometry()
+        exact_link_reference_capture = _exercise_exact_link_reference_capture(root)
         portable_external_instances = _exercise_portable_external_instances(
             root,
             pack,
@@ -4514,6 +4939,8 @@ def main() -> int:
                 "bom_autogenerate_boundary": bom_autogenerate_boundary,
                 "bom": bom,
                 "catalog_fasteners": catalog_fasteners,
+                "dynamic_collision_geometry": dynamic_collision_geometry,
+                "exact_link_reference_capture": exact_link_reference_capture,
                 "portable_external_instances": portable_external_instances,
                 "model_occurrence_adoption": model_occurrence_adoption,
                 "static_geometry_evidence": static_geometry_evidence,

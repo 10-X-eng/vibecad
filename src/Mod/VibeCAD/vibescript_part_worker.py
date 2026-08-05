@@ -41,6 +41,53 @@ _NESTED_SHAPE_RESOLVER: ContextVar[
     Callable[[dict[str, Any]], Any] | None
 ] = ContextVar("vibescript_part_nested_shape_resolver", default=None)
 
+_MATRIX_FIELDS = (
+    "A11",
+    "A12",
+    "A13",
+    "A14",
+    "A21",
+    "A22",
+    "A23",
+    "A24",
+    "A31",
+    "A32",
+    "A33",
+    "A34",
+    "A41",
+    "A42",
+    "A43",
+    "A44",
+)
+
+
+def _reference_placement(value: Any, *, context: str) -> Any:
+    import FreeCAD as App
+
+    if (
+        not isinstance(value, list)
+        or len(value) != 16
+        or any(isinstance(item, bool) for item in value)
+    ):
+        raise ValueError(f"{context} must contain exactly 16 finite numbers.")
+    try:
+        values = [float(item) for item in value]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{context} must contain exactly 16 finite numbers.") from exc
+    if any(not math.isfinite(item) for item in values):
+        raise ValueError(f"{context} must contain exactly 16 finite numbers.")
+    matrix = App.Matrix()
+    for name, number in zip(_MATRIX_FIELDS, values, strict=True):
+        setattr(matrix, name, number)
+    placement = App.Placement(matrix)
+    observed = placement.toMatrix()
+    if any(
+        abs(float(getattr(observed, name)) - number) > 1.0e-9
+        for name, number in zip(_MATRIX_FIELDS, values, strict=True)
+    ):
+        raise ValueError(f"{context} must describe a rigid placement matrix.")
+    return placement
+
 
 def configure_part_references(root: Path, entries: list[dict[str, Any]]) -> None:
     """Load and authenticate host-staged BREP snapshots for one worker request."""
@@ -49,6 +96,7 @@ def configure_part_references(root: Path, entries: list[dict[str, Any]]) -> None
 
     resolved_root = Path(root).resolve()
     shapes: dict[tuple[str, str], Any] = {}
+    shapes_by_digest: dict[str, Any] = {}
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise ValueError(f"document_references[{index}] must be an object.")
@@ -69,14 +117,29 @@ def configure_part_references(root: Path, entries: list[dict[str, Any]]) -> None
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
         expected_digest = str(entry.get("brep_sha256") or "")
-        if digest.hexdigest() != expected_digest:
+        observed_digest = digest.hexdigest()
+        if observed_digest != expected_digest:
             raise ValueError(
                 f"document_references[{index}] BREP SHA-256 does not match the host snapshot."
             )
-        shape = Part.Shape()
-        shape.importBrep(str(path))
-        if shape.isNull() or not shape.isValid():
-            raise ValueError(f"document_references[{index}] is not a valid BREP shape.")
+        base_shape = shapes_by_digest.get(observed_digest)
+        if base_shape is None:
+            base_shape = Part.Shape()
+            base_shape.importBrep(str(path))
+            if base_shape.isNull() or not base_shape.isValid():
+                raise ValueError(
+                    f"document_references[{index}] is not a valid BREP shape."
+                )
+            shapes_by_digest[observed_digest] = base_shape
+        placement_matrix = entry.get("shape_placement_matrix")
+        if placement_matrix is None:
+            shape = base_shape
+        else:
+            shape = base_shape.copy()
+            shape.Placement = _reference_placement(
+                placement_matrix,
+                context=f"document_references[{index}].shape_placement_matrix",
+            )
         expected_shape_type = str(entry.get("shape_type") or "")
         if expected_shape_type and str(shape.ShapeType) != expected_shape_type:
             raise ValueError(
@@ -188,8 +251,14 @@ def part_shape_facts(
     shape: Any,
     *,
     max_subelements: int = MAX_SUBELEMENT_FACTS,
+    assume_valid: bool = False,
 ) -> dict[str, Any]:
-    """Return bounded, JSON-safe topology facts for model inspection and selectors."""
+    """Return bounded, JSON-safe topology facts for model inspection and selectors.
+
+    ``assume_valid`` is reserved for trusted worker paths that performed an
+    exact validity check immediately before this call. Public inspection paths
+    keep the validating default.
+    """
 
     detail_limit = max(0, min(int(max_subelements), MAX_SUBELEMENT_FACTS))
     bounds = shape.BoundBox
@@ -198,7 +267,7 @@ def part_shape_facts(
     edges = list(getattr(shape, "Edges", []) or [])
     return {
         "shape_type": str(getattr(shape, "ShapeType", "") or ""),
-        "valid": bool(shape.isValid()),
+        "valid": True if assume_valid else bool(shape.isValid()),
         "null": bool(shape.isNull()),
         "solids": len(list(getattr(shape, "Solids", []) or [])),
         "shells": len(list(getattr(shape, "Shells", []) or [])),
@@ -227,6 +296,53 @@ def part_shape_facts(
         "subelement_detail_limit": detail_limit,
         "subelement_details_truncated": bool(
             len(faces) > detail_limit or len(edges) > detail_limit
+        ),
+    }
+
+
+def part_shape_reference_facts(
+    shape: Any,
+    *,
+    assume_valid: bool = False,
+) -> dict[str, Any]:
+    """Return exact topology identity without expensive inspection details.
+
+    Assembly needs authenticated BREP identity, topology counts, and bounds for
+    source validation and collision broad phase. It does not consume mass
+    properties or per-face/per-edge descriptions, which are intentionally left
+    to ``read_geometry``. Avoiding those calculations is especially important
+    for imported STEP components with thousands of surfaces.
+    """
+
+    def count(element: str, attribute: str) -> int:
+        method = getattr(shape, "countElement", None)
+        if callable(method):
+            return int(method(element))
+        return len(list(getattr(shape, attribute, []) or []))
+
+    element_counts = {
+        "solids": count("Solid", "Solids"),
+        "shells": count("Shell", "Shells"),
+        "faces": count("Face", "Faces"),
+        "wires": count("Wire", "Wires"),
+        "edges": count("Edge", "Edges"),
+        "vertices": count("Vertex", "Vertexes"),
+    }
+    bounds = shape.BoundBox
+    return {
+        "shape_type": str(getattr(shape, "ShapeType", "") or ""),
+        "valid": True if assume_valid else bool(shape.isValid()),
+        "null": bool(shape.isNull()),
+        **element_counts,
+        "bounds_center_mm": [
+            float((bounds.XMin + bounds.XMax) / 2.0),
+            float((bounds.YMin + bounds.YMax) / 2.0),
+            float((bounds.ZMin + bounds.ZMax) / 2.0),
+        ],
+        "bounds_mm": _bounds_fact(shape),
+        "subelement_detail_limit": 0,
+        "subelement_details_truncated": bool(
+            element_counts["faces"] or element_counts["edges"]
         ),
     }
 

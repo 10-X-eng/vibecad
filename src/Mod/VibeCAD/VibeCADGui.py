@@ -278,7 +278,7 @@ def _initialize_control_modes() -> None:
         application = QtWidgets.QApplication.instance()
         if application is not None:
             application.aboutToQuit.connect(
-                lambda: get_control_mode_controller().shutdown(wait=False)
+                lambda: get_control_mode_controller().shutdown(wait=True)
             )
             _control_mode_shutdown_connected = True
     controller.request_mcp_enabled(load_settings().mcp_enabled)
@@ -3299,6 +3299,21 @@ def _migrate_standard_fastener_timeline_resources(document: Any) -> bool:
         return False
 
 
+def _migrate_partdesign_component_timeline_resources(document: Any) -> bool:
+    """Remove legacy component-registry links from the modeling graph."""
+
+    try:
+        from VibeCADVibeScriptDomainPublication import (
+            migrate_partdesign_component_occurrence_links,
+        )
+
+        result = migrate_partdesign_component_occurrence_links(document)
+        return bool(result.get("migrated_programs"))
+    except Exception as exc:
+        _warn(f"VibeCAD Part Design component migration failed: {exc}")
+        return False
+
+
 def _refresh_assistant_for_document_change() -> None:
     document = App.ActiveDocument
     if document is not None:
@@ -3307,10 +3322,12 @@ def _refresh_assistant_for_document_change() -> None:
             from VibeCADVibeScriptDomainPublication import (
                 compact_persisted_input_snapshots,
                 migrate_assembly_dependency_anchors,
+                migrate_partdesign_component_occurrence_links,
             )
 
             compact_persisted_input_snapshots(document)
             migrate_assembly_dependency_anchors(document)
+            migrate_partdesign_component_occurrence_links(document)
         except Exception as exc:
             _warn(f"VibeCAD input-snapshot compaction failed: {exc}")
     try:
@@ -3482,6 +3499,10 @@ def _schedule_document_render_after_restore(document: Any) -> None:
                     _migrate_standard_fastener_timeline_resources(live_document)
                     or presentation_changed
                 )
+                presentation_changed = (
+                    _migrate_partdesign_component_timeline_resources(live_document)
+                    or presentation_changed
+                )
                 resource_migration_complete = True
             if not presentation_complete:
                 presentation_changed = (
@@ -3622,15 +3643,23 @@ class _VibeCADDocumentObserver:
         document = getattr(obj, "Document", None)
         if document is not None and bool(getattr(document, "Restoring", False)):
             return
+        try:
+            from VibeCADVibeScriptDomainPublication import (
+                source_property_affects_vibescript_snapshot,
+            )
+
+            if not source_property_affects_vibescript_snapshot(property_name):
+                return
+        except Exception as exc:
+            _warn(f"VibeCAD VibeScript dependency filter failed: {exc}")
+            return
         # Reference snapshots are valid only while the source and every native
         # dependency remain unchanged. Invalidate before stale propagation so a
         # rebuild can never reuse the pre-change detached BREP.
         if document is not None:
             get_service().invalidate_vibescript_reference_snapshots(obj)
         try:
-            from VibeCADVibeScriptDomainPublication import (
-                mark_programs_stale_from_source,
-            )
+            from VibeCADVibeScriptDomainPublication import mark_programs_stale_from_source
 
             marked = mark_programs_stale_from_source(obj, str(property_name or ""))
         except Exception as exc:

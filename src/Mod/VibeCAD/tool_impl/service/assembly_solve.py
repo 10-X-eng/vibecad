@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADMechanismEngine import solver_validation_scope
 from VibeCADTransactions import run_freecad_transaction
 
 from . import domain_runtime
@@ -18,7 +19,8 @@ TOOL_SPEC = {
         "component to satisfy the current joints, and report the solver "
         "verdict (solved, over-constrained, conflicting, no grounded "
         "component) plus the resulting component placements. Run this after "
-        "editing joints or component placements outside the joint tools."
+        "editing joints or component placements outside the joint tools. A "
+        "solved verdict proves constraint consistency, not proper mechanical operation."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
@@ -86,12 +88,20 @@ def run(service: Any, assembly_name: str) -> dict[str, Any]:
             for child in native_components
         }
         diagnostics = domain_runtime.assembly_solver_diagnostics(target_assembly)
+        constraints_consistent = (
+            solver_code == 0
+            and not diagnostics.get("has_conflicts")
+            and not diagnostics.get("has_malformed_constraints")
+        )
         return {
             "document": active.Name,
             "assembly": target_assembly.Name,
             "solver_code": solver_code,
             "solver_verdict": domain_runtime.assembly_solver_verdict(solver_code),
             "solver_diagnostics": diagnostics,
+            "validation_scope": solver_validation_scope(
+                constraints_consistent=constraints_consistent
+            ),
             "component_placements_before": placements_before,
             "component_placements_after": placements,
             "component_placement_deltas": _placement_deltas(placements_before, placements),
@@ -109,8 +119,6 @@ def run(service: Any, assembly_name: str) -> dict[str, Any]:
                 "name": "solver_result",
                 "ok": int(result.get("solver_code", -1)) == 0
                 and not diagnostics.get("has_conflicts")
-                and not diagnostics.get("has_redundancies")
-                and not diagnostics.get("has_partial_redundancies")
                 and not diagnostics.get("has_malformed_constraints"),
                 "solver_code": result.get("solver_code"),
                 "diagnostics": diagnostics,
@@ -128,9 +136,9 @@ def run(service: Any, assembly_name: str) -> dict[str, Any]:
         transaction,
         extra={"operation": "solve", "mutation": mutation},
         next_action=(
-            "Verify the returned component placements or capture a screenshot; "
-            "if the verdict is not 'solved', fix the reported joint problem "
-            "before adding more joints."
+            "A solved verdict proves only joint-constraint consistency. Verify "
+            "collision/clearance and motion over the operating range before claiming "
+            "proper mechanical operation; otherwise fix the reported joint problem."
         ),
     )
     return envelope

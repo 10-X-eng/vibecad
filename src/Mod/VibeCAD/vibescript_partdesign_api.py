@@ -996,19 +996,23 @@ class PartDesignDomainAPI:
         source: Mapping[str, str],
         *,
         placement: Sequence[float] | Mapping[str, Any] | None = None,
+        interfaces: Mapping[str, Any] | None = None,
         label: str = "",
     ) -> DomainValue:
         """Place one linked occurrence from an ``available_components`` reference.
 
         Editing the source updates the occurrence. Placement is ``[x,y,z]`` or
         position plus quaternion/axis-angle. Use this—not
-        ``from_object``/``transform``/``publish``—for reusable parts.
+        ``from_object``/``transform``/``publish``—for reusable parts. Use
+        ``interfaces`` to publish explicit origin/frame connectors on an imported
+        component without copying its BREP.
         """
 
         return component_value(
             self.domain,
             source,
             placement=placement,
+            interfaces=interfaces or {},
             label=label,
         )
 
@@ -1020,6 +1024,7 @@ class PartDesignDomainAPI:
         ],
         *,
         labels: Sequence[str] | None = None,
+        interfaces: Mapping[str, Any] | None = None,
     ) -> tuple[DomainValue, ...]:
         """Place repeated lightweight occurrences of one reusable component.
 
@@ -1031,6 +1036,7 @@ class PartDesignDomainAPI:
             source,
             placements,
             labels=labels,
+            interfaces=interfaces or {},
         )
 
     def _from_sketcher(self, value: DomainValue) -> DomainValue:
@@ -1151,7 +1157,7 @@ class PartDesignDomainAPI:
         nominal_thread: str,
         *,
         length_mm: float | None = None,
-        model_thread: bool = False,
+        model_thread: bool = True,
         left_handed: bool = False,
         options: Mapping[str, Any] | None = None,
         label: str = "",
@@ -1159,9 +1165,9 @@ class PartDesignDomainAPI:
         """Create one exact catalog fastener as a native parametric Body feature.
 
         Use the published standard, size/thread token, and a catalog length.
-        Set model_thread=True to generate real helical thread geometry; False
-        generates the lightweight unthreaded envelope. No nearest-size
-        substitution is performed.
+        Real helical thread geometry is the default; set model_thread=False only
+        for a deliberate lightweight envelope. No nearest-size substitution is
+        performed.
         """
 
         if not isinstance(model_thread, bool):
@@ -3259,11 +3265,9 @@ class PartDesignDomainAPI:
     ) -> DomainValue:
         """Publish one connected solid as a stable parametric Design Body.
 
-        Pass the final feature; a standalone solid is accepted only when it can
-        become one native feature. Source edits retain the Body identity. Attach checks,
-        material, appearance, and named interfaces here. Interface names are local to
-        this output, so reusable parts may each publish the same clear name such as
-        RotationAxis or MountingFace. Assembly connectors require explicit metadata;
+        Pass the final feature. Source edits retain Body identity. Attach checks,
+        material, appearance, and interfaces here. Interface names are local to this
+        output and reusable across parts. Assembly connectors require explicit metadata;
         never infer compatibility from shape.
         """
 

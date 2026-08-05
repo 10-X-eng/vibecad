@@ -955,11 +955,13 @@ class TestModelTreeBrowser(unittest.TestCase):
         )
         occurrence.VibeCADTimelineRole = "internal"
         self.vibe_component.addProperty(
-            "App::PropertyLinkList",
-            "VibeCADPartDesignComponentOccurrences",
+            "App::PropertyStringList",
+            "VibeCADPartDesignComponentOccurrenceNames",
             "VibeCAD Publication",
         )
-        self.vibe_component.VibeCADPartDesignComponentOccurrences = [occurrence]
+        self.vibe_component.VibeCADPartDesignComponentOccurrenceNames = [
+            occurrence.Name
+        ]
         self.document.recompute()
 
         def occurrence_item():

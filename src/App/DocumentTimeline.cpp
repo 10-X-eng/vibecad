@@ -195,6 +195,150 @@ bool isStructuralTimelineLink(const DocumentObject* object, const DocumentObject
     return object && object->isTimelineStructuralChild(dependency);
 }
 
+bool stableTopologicallyOrderSemanticBlocks(
+    const Document* document,
+    std::vector<DocumentObject*>& operations,
+    std::vector<bool>& visibility,
+    std::vector<bool>& suppression,
+    const long position
+)
+{
+    if (!document || operations.size() != visibility.size()
+        || operations.size() != suppression.size()) {
+        throw Base::RuntimeError(
+            "Semantic History dependency ordering received mismatched state"
+        );
+    }
+
+    std::vector<const DocumentObject*> roots;
+    std::vector<std::vector<std::size_t>> blocks;
+    std::unordered_map<const DocumentObject*, std::size_t> rootIndices;
+    roots.reserve(operations.size());
+    blocks.reserve(operations.size());
+    rootIndices.reserve(operations.size());
+    for (std::size_t index = 0; index < operations.size(); ++index) {
+        const auto* root = semanticOperationRoot(operations[index], document);
+        if (!root) {
+            throw Base::RuntimeError(
+                "Semantic History dependency ordering found a malformed operation"
+            );
+        }
+        const auto existing = rootIndices.find(root);
+        if (existing == rootIndices.end()) {
+            rootIndices.emplace(root, roots.size());
+            roots.push_back(root);
+            blocks.push_back({index});
+            continue;
+        }
+        if (existing->second + 1 != roots.size()) {
+            throw Base::RuntimeError(
+                "Semantic History dependency ordering found a crossing block"
+            );
+        }
+        blocks[existing->second].push_back(index);
+    }
+
+    std::vector<std::vector<std::size_t>> consumers(roots.size());
+    std::vector<std::size_t> indegree(roots.size(), 0);
+    std::unordered_set<std::string> edges;
+    edges.reserve(operations.size());
+    for (std::size_t consumerIndex = 0; consumerIndex < roots.size(); ++consumerIndex) {
+        for (const auto operationIndex : blocks[consumerIndex]) {
+            const auto* operation = operations[operationIndex];
+            std::vector<const DocumentObject*> pending {operation};
+            std::unordered_set<const DocumentObject*> visited {operation};
+            while (!pending.empty()) {
+                const auto* current = pending.back();
+                pending.pop_back();
+                for (const auto* dependency : current->getOutList()) {
+                    if (!dependency || !document->containsObject(dependency)
+                        || dependency->getDocument() != document
+                        || isStructuralTimelineLink(current, dependency)
+                        || !visited.insert(dependency).second) {
+                        continue;
+                    }
+                    const auto* dependencyRoot = semanticOperationRoot(dependency, document);
+                    if (!dependencyRoot) {
+                        throw Base::RuntimeError(
+                            "Semantic History dependency ordering found a malformed dependency"
+                        );
+                    }
+                    const auto dependencyPosition = rootIndices.find(dependencyRoot);
+                    if (dependencyRoot != roots[consumerIndex]
+                        && dependencyPosition != rootIndices.end()) {
+                        const std::string edge = std::to_string(dependencyPosition->second) + ":"
+                            + std::to_string(consumerIndex);
+                        if (edges.insert(edge).second) {
+                            consumers[dependencyPosition->second].push_back(consumerIndex);
+                            ++indegree[consumerIndex];
+                        }
+                    }
+                    pending.push_back(dependency);
+                }
+            }
+        }
+    }
+
+    std::vector<std::size_t> orderedRoots;
+    std::vector<bool> emitted(roots.size(), false);
+    orderedRoots.reserve(roots.size());
+    while (orderedRoots.size() != roots.size()) {
+        std::size_t next = roots.size();
+        for (std::size_t index = 0; index < roots.size(); ++index) {
+            if (!emitted[index] && indegree[index] == 0) {
+                next = index;
+                break;
+            }
+        }
+        if (next == roots.size()) {
+            throw Base::RuntimeError(
+                "Semantic History dependency ordering detected a cycle"
+            );
+        }
+        emitted[next] = true;
+        orderedRoots.push_back(next);
+        for (const auto consumer : consumers[next]) {
+            if (indegree[consumer] == 0) {
+                throw Base::RuntimeError(
+                    "Semantic History dependency ordering has inconsistent edges"
+                );
+            }
+            --indegree[consumer];
+        }
+    }
+
+    bool changed = false;
+    for (std::size_t index = 0; index < orderedRoots.size(); ++index) {
+        changed = changed || orderedRoots[index] != index;
+    }
+    if (!changed) {
+        return false;
+    }
+    if (position != static_cast<long>(operations.size())) {
+        throw Base::RuntimeError(
+            "Semantic History dependencies cannot be rebased across the active marker"
+        );
+    }
+
+    std::vector<DocumentObject*> reorderedOperations;
+    std::vector<bool> reorderedVisibility;
+    std::vector<bool> reorderedSuppression;
+    reorderedOperations.reserve(operations.size());
+    reorderedVisibility.reserve(visibility.size());
+    reorderedSuppression.reserve(suppression.size());
+    for (const auto rootIndex : orderedRoots) {
+        for (const auto operationIndex : blocks[rootIndex]) {
+            reorderedOperations.push_back(operations[operationIndex]);
+            reorderedVisibility.push_back(visibility[operationIndex]);
+            reorderedSuppression.push_back(suppression[operationIndex]);
+        }
+    }
+    operations = std::move(reorderedOperations);
+    visibility = std::move(reorderedVisibility);
+    suppression = std::move(reorderedSuppression);
+    return true;
+}
+
 bool ownerChainContains(const DocumentObject* object, const DocumentObject* candidate) noexcept
 {
     std::unordered_set<const DocumentObject*> visited;
@@ -6480,8 +6624,13 @@ void DocumentTimeline::finalizeProvisionalOperationBlock(
                 if (dependencyRoot != candidateRoot && dependencyOrder != rootOrder.end()
                     && dependencyOrder->second > candidateOrder->second) {
                     throw Base::RuntimeError(
-                        "Finalizing the block would place a dependency after "
-                        "its consumer"
+                        std::string("Finalizing History consumer '")
+                        + candidate->getNameInDocument() + "' (semantic root '"
+                        + candidateRoot->getNameInDocument() + "', index "
+                        + std::to_string(candidateOrder->second) + ") before dependency '"
+                        + dependency->getNameInDocument() + "' (semantic root '"
+                        + dependencyRoot->getNameInDocument() + "', index "
+                        + std::to_string(dependencyOrder->second) + ")"
                     );
                 }
                 pending.push_back(dependency);
@@ -8024,6 +8173,14 @@ void DocumentTimeline::finalizeProvisionalOperationResourceReconciliation(
         );
     }
 
+    stableTopologicallyOrderSemanticBlocks(
+        document,
+        finalOperations,
+        finalVisibilityValues,
+        finalSuppressionValues,
+        finalPosition
+    );
+
     struct FinalBlock
     {
         std::size_t begin {std::numeric_limits<std::size_t>::max()};
@@ -8138,7 +8295,15 @@ void DocumentTimeline::finalizeProvisionalOperationResourceReconciliation(
                 const auto dependencyOrder = rootOrder.find(dependencyRoot);
                 if (dependencyRoot != candidateRoot && dependencyOrder != rootOrder.end()
                     && dependencyOrder->second > candidateOrder->second) {
-                    throw Base::RuntimeError("A final resource dependency follows its consumer");
+                    throw Base::RuntimeError(
+                        std::string("Final History consumer '")
+                        + candidate->getNameInDocument() + "' (semantic root '"
+                        + candidateRoot->getNameInDocument() + "', index "
+                        + std::to_string(candidateOrder->second) + ") precedes dependency '"
+                        + dependency->getNameInDocument() + "' (semantic root '"
+                        + dependencyRoot->getNameInDocument() + "', index "
+                        + std::to_string(dependencyOrder->second) + ")"
+                    );
                 }
                 pending.push_back(dependency);
             }
@@ -8494,6 +8659,23 @@ void DocumentTimeline::finalizeProvisionalOperationResourceReconciliation(
             });
         }
     );
+    for (auto& provenance : _provisionalTransactionCreations) {
+        if (provenance.transactionId != transactionId) {
+            continue;
+        }
+        std::erase_if(
+            provenance.objects,
+            [&newResourceSet](const TimelineObjectIdentity& identity) {
+                return std::ranges::any_of(
+                    newResourceSet,
+                    [&identity](const DocumentObject* candidate) {
+                        return candidate && identity.objectId == candidate->getID()
+                            && identity.objectName == candidate->getNameInDocument();
+                    }
+                );
+            }
+        );
+    }
     _stagedResourceReconciliations.clear();
 }
 

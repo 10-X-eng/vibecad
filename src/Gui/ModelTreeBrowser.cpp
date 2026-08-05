@@ -232,13 +232,32 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
         if (!isComponent(object)) {
             continue;
         }
-        const auto* occurrences = dynamic_cast<const App::PropertyLinkList*>(
-            object->getPropertyByName("VibeCADPartDesignComponentOccurrences")
+        std::vector<App::DocumentObject*> occurrences;
+        const auto* occurrenceNames = dynamic_cast<const App::PropertyStringList*>(
+            object->getPropertyByName("VibeCADPartDesignComponentOccurrenceNames")
         );
-        if (!occurrences) {
-            continue;
+        if (occurrenceNames) {
+            App::Document* document = object->getDocument();
+            const auto& names = occurrenceNames->getValues();
+            occurrences.reserve(names.size());
+            for (const std::string& name : names) {
+                if (document) {
+                    occurrences.push_back(document->getObject(name.c_str()));
+                }
+            }
         }
-        for (auto* occurrence : occurrences->getValues()) {
+        else if (const auto* legacyOccurrences =
+                     dynamic_cast<const App::PropertyLinkList*>(
+                         object->getPropertyByName(
+                             "VibeCADPartDesignComponentOccurrences"
+                         )
+                     )) {
+            // Compatibility for documents loaded before the Python migration
+            // runs. New documents keep this property empty so it cannot create
+            // forward modeling dependencies.
+            occurrences = legacyOccurrences->getValues();
+        }
+        for (auto* occurrence : occurrences) {
             if (!occurrence) {
                 continue;
             }

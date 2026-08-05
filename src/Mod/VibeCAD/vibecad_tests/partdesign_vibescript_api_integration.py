@@ -51,12 +51,16 @@ from VibeCADVibeScriptDomains import (  # noqa: E402
     program_revision,
 )
 from VibeCADVibeScriptDomainPublication import (  # noqa: E402
+    PROP_INPUT_OBJECTS,
     PROP_OUTPUT_TYPE,
+    PROP_PARTDESIGN_COMPONENT_OCCURRENCES,
+    PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES,
     PROP_PARTDESIGN_MATERIAL_BASELINE,
     _delete_partdesign_program,
     _material_target_snapshot,
     _restore_material_target_snapshots,
     _set_physical_material_preserving_view,
+    migrate_partdesign_component_occurrence_links,
     publish_candidate,
 )
 from vibescript_domain_api import create_domain_api  # noqa: E402
@@ -901,9 +905,34 @@ def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
         "document_uid": "partdesign-api-fixture",
         "object_name": "MotorDefinition",
     }
-    occurrence = api.component(component_reference, placement=[1, 2, 3])
-    repeated = api.instances(component_reference, [[0, 0, 0], [10, 0, 0]])
+    component_interfaces = {
+        "Mount": {
+            "selection": {
+                "type": "frame",
+                "origin": [0, 0, 0],
+                "axis_direction": [0, 0, 1],
+                "x_direction": [1, 0, 0],
+            },
+            "connector": {
+                "kind": "frame",
+                "allowed_joints": ["fixed"],
+                "compatibility": "FIXTURE_MOUNT",
+            },
+        }
+    }
+    occurrence = api.component(
+        component_reference,
+        placement=[1, 2, 3],
+        interfaces=component_interfaces,
+    )
+    repeated = api.instances(
+        component_reference,
+        [[0, 0, 0], [10, 0, 0]],
+        interfaces=component_interfaces,
+    )
     assert occurrence.output_type == "component_link"
+    assert occurrence.to_payload()["properties"]["interfaces"] == component_interfaces
+    assert repeated[0].to_payload()["properties"]["interfaces"] == component_interfaces
     assert len(repeated) == 2
     covered.update({"component", "instances"})
     missing = set(pack.api_exports) - covered
@@ -1412,6 +1441,38 @@ result = {'SupportedBoss': api.body(feature, label='Supported boss body')}
         body_name = publication["native_history"]["body_objects"]["SupportedBoss"]
         body = document.getObject(body_name)
         assert body is not None
+        assert body.Label == "Supported boss body"
+        assert publication["live_outputs"]["SupportedBoss"]["label"] == (
+            "Supported boss body"
+        )
+        inspected_live = next(
+            item
+            for item in _live_programs(document, "partdesign")
+            if item["program_id"] == str(prepared["program_id"])
+        )
+        inspected_output = next(
+            item
+            for item in inspected_live["outputs"]
+            if item["name"] == "SupportedBoss"
+        )
+        assert inspected_output["label"] == "Supported boss body"
+        from VibeCADComponentCatalog import _live_component_candidate
+
+        catalog_output = _live_component_candidate(
+            document,
+            document,
+            document.getObject(
+                accepted["live_outputs"]["SupportedBoss"]["object_name"]
+            ),
+        )
+        assert catalog_output is not None
+        assert catalog_output["label"] == "Supported boss body"
+        assert all(
+            _live_component_candidate(document, document, obj) is None
+            for obj in document.Objects
+            if str(getattr(obj, "TypeId", "") or "")
+            == "PartDesign::DesignBodyState"
+        )
         assert body.Tip is not None
         assert body.Tip.TypeId == "PartDesign::DesignBodyPublication"
         sketch_evidence = publication["live_outputs"]["SupportedBoss"][
@@ -2537,12 +2598,19 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
         }
     }
     initial_source = (
-        "motor = api.component(inputs['motor'], label='Motor occurrence')\n"
+        "motor = api.component(inputs['motor'], interfaces={\n"
+        "    'Mount': {\n"
+        "        'selection': {'type':'frame', 'origin':[0,0,0], "
+        "'axis_direction':[0,0,1], 'x_direction':[1,0,0]},\n"
+        "        'connector': {'kind':'frame', 'allowed_joints':['fixed'], "
+        "'compatibility':'FIXTURE_MOUNT'},\n"
+        "    },\n"
+        "}, label='Motor occurrence')\n"
         "result = {'Motor': motor}\n"
     )
     active_document = document
     try:
-        prepared, _publication, accepted = _run_candidate(
+        prepared, publication, accepted = _run_candidate(
             _capture(
                 base_capture,
                 operation="create_program",
@@ -2558,6 +2626,11 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
             ),
             service,
         )
+        assert prepared["reference_capture_mode"] == "component_identity"
+        assert all(
+            item.get("artifact_kind") == "component_identity"
+            for item in prepared["resolved_references"]
+        )
         occurrence_name = accepted["live_outputs"]["Motor"]["object_name"]
         occurrence = document.getObject(occurrence_name)
         assert occurrence is not None
@@ -2566,6 +2639,95 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
         assert occurrence.Placement.Base == App.Vector(0, 0, 0)
         assert source.Visibility is False
         assert occurrence.Visibility is True
+        mount_interface = publication["interfaces"]["_outputs"]["Motor"]["Mount"]
+        assert mount_interface["connector"] == {
+            "kind": "frame",
+            "allowed_joints": ["fixed"],
+            "compatibility": "FIXTURE_MOUNT",
+        }
+        assert mount_interface["resolved"]["connector_frame"]["origin_mm"] == [
+            0.0,
+            0.0,
+            0.0,
+        ]
+
+        program_root = next(
+            obj
+            for obj in document.Objects
+            if str(getattr(obj, "VibeCADVibeScriptProgramId", "") or "")
+            == str(prepared["program_id"])
+            and str(getattr(obj, "TypeId", "") or "") == "App::Part"
+        )
+        assert list(
+            getattr(program_root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, []) or []
+        ) == []
+        assert list(
+            getattr(
+                program_root,
+                PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES,
+                [],
+            )
+            or []
+        ) == [occurrence_name]
+
+        # Recreate the original persisted representation and prove migration
+        # removes its forward dependency before an unrelated later program is
+        # finalized. This is the exact failure that previously poisoned every
+        # Model or Assembly publication after api.component().
+        program_root.removeProperty(PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES)
+        setattr(
+            program_root,
+            PROP_PARTDESIGN_COMPONENT_OCCURRENCES,
+            [occurrence],
+        )
+        migration = migrate_partdesign_component_occurrence_links(document)
+        assert migration["migrated_programs"] == [str(program_root.Name)]
+        assert list(
+            getattr(program_root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, []) or []
+        ) == []
+        assert list(
+            getattr(
+                program_root,
+                PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES,
+                [],
+            )
+            or []
+        ) == [occurrence_name]
+
+        independent_source = (
+            "profile = api.sketch([api.circle([0, 0], 2)], "
+            "label='Independent profile')\n"
+            "feature = api.extrude(profile, 3, operation='add_material', "
+            "label='Independent pad')\n"
+            "result = {'Independent': api.body(feature, "
+            "label='Independent body')}\n"
+        )
+        _independent_prepared, _independent_publication, independent_accepted = (
+            _run_candidate(
+                _capture(
+                    base_capture,
+                    operation="create_program",
+                    arguments={
+                        "program_name": "Independent later body",
+                        "source": independent_source,
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": False,
+                        },
+                        "inputs": {},
+                        "expected_outputs": [
+                            {"name": "Independent", "type": "solid"}
+                        ],
+                    },
+                ),
+                service,
+            )
+        )
+        independent_name = independent_accepted["live_outputs"]["Independent"][
+            "object_name"
+        ]
+        assert document.getObject(independent_name) is not None
 
         import Assembly
 
@@ -2606,8 +2768,8 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
         occurrence.Visibility = True
 
         moved_source = label_edit.replace(
-            "inputs['motor'], label=",
-            "inputs['motor'], placement=[0, 0, 0], label=",
+            "inputs['motor'], interfaces=",
+            "inputs['motor'], placement=[0, 0, 0], interfaces=",
         )
         _prepared, _publication, accepted = _run_candidate(
             _capture(
@@ -2630,6 +2792,15 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
         )
         assert candidate["kind"] == "occurrence"
         assert candidate["reference"]["object_name"] == occurrence_name
+        assert candidate["published_interfaces"] == ["Mount"]
+        assert candidate["interfaces"][0]["connector"] == {
+            "kind": "frame",
+            "allowed_joints": ["fixed"],
+            "compatibility": "FIXTURE_MOUNT",
+        }
+        resolved_mount = resolve_interface(service, occurrence, "Mount")
+        assert resolved_mount["publication"] is occurrence
+        assert resolved_mount["connector_frame"]["origin_mm"] == [0.0, 0.0, 0.0]
         mechanism.removeObject(occurrence)
         assert mechanism not in list(occurrence.InList)
         document.removeObject(mechanism.Name)
@@ -2693,10 +2864,131 @@ def _exercise_component_occurrence(root: Path, pack) -> dict:
             "save_reopen_preserved_link": True,
             "deletion_preserved_definition": True,
             "definition_and_occurrence_visibility_are_independent": True,
+            "later_program_survived_component_occurrence_registry": True,
         }
     finally:
         if str(active_document.Name) in App.listDocuments():
             App.closeDocument(active_document.Name)
+
+
+def _exercise_external_component_occurrence(root: Path, pack) -> dict:
+    """Publish and reopen one portable occurrence of a saved external Body."""
+
+    import FreeCAD as App
+    import Part
+    from pathlib import Path as LocalPath
+
+    source_path = root / "external-motor.FCStd"
+    target_path = root / "external-motor-assembly.FCStd"
+    source_document = App.newDocument("ExternalMotorDefinition")
+    target_document = None
+    reopened = None
+    try:
+        motor = source_document.addObject("PartDesign::Body", "MotorBody")
+        feature = motor.newObject("PartDesign::Feature", "ImportedSolid")
+        feature.Shape = Part.makeBox(20, 10, 8)
+        motor.Tip = feature
+        source_document.recompute()
+        source_document.saveAs(str(source_path))
+
+        target_document = App.newDocument("ExternalMotorDesign")
+        target_document.saveAs(str(target_path))
+        service = _Service(target_document, root)
+        base_capture = {
+            "pack": pack,
+            "project_root": str(root),
+            "document_name": str(target_document.Name),
+            "document_uid": str(target_document.Uid),
+            "document_revision": service.provider_document_revision(),
+            "document_objects": [],
+            "surface": resolve_modeling_surface(
+                "PartDesignWorkbench", "vibescript"
+            ).summary(),
+            "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+            "timeout_seconds": 60.0,
+            "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+        }
+        reference_schema = {
+            "type": "object",
+            "x-vibecad-reference": True,
+            "properties": {
+                "document_uid": {"type": "string"},
+                "object_name": {"type": "string"},
+                "document_path": {"type": "string"},
+            },
+            "required": ["document_uid", "object_name"],
+            "additionalProperties": False,
+        }
+        source = (
+            "motor = api.component(inputs['motor'], placement=[10,20,30], "
+            "label='External motor')\n"
+            "result = {'Motor': motor}\n"
+        )
+        prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="create_program",
+                arguments={
+                    "program_name": "External motor occurrence",
+                    "source": source,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"motor": reference_schema},
+                        "required": ["motor"],
+                        "additionalProperties": False,
+                    },
+                    "inputs": {
+                        "motor": {
+                            "document_uid": str(source_document.Uid),
+                            "object_name": str(motor.Name),
+                            "document_path": source_path.name,
+                        }
+                    },
+                    "expected_outputs": [
+                        {"name": "Motor", "type": "component_link"}
+                    ],
+                },
+            ),
+            service,
+        )
+        occurrence_name = accepted["live_outputs"]["Motor"]["object_name"]
+        occurrence = target_document.getObject(occurrence_name)
+        assert occurrence is not None
+        assert occurrence.LinkedObject is motor
+        assert occurrence.Placement.Base == App.Vector(10, 20, 30)
+        assert occurrence.getTypeIdOfProperty(PROP_INPUT_OBJECTS) == (
+            "App::PropertyXLinkList"
+        )
+        assert list(getattr(occurrence, PROP_INPUT_OBJECTS, []) or []) == [motor]
+        target_uid = str(target_document.Uid)
+        source_uid = str(source_document.Uid)
+        target_document.recompute()
+        target_document.save()
+
+        App.closeDocument(target_document.Name)
+        target_document = None
+        App.closeDocument(source_document.Name)
+        reopened = App.openDocument(str(target_path))
+        assert str(reopened.Uid) == target_uid
+        reopened_occurrence = reopened.getObject(occurrence_name)
+        assert reopened_occurrence is not None
+        reopened_motor = reopened_occurrence.LinkedObject
+        assert reopened_motor is not None
+        assert str(reopened_motor.Document.Uid) == source_uid
+        assert str(reopened_motor.Name) == "MotorBody"
+        assert reopened_occurrence.Placement.Base == App.Vector(10, 20, 30)
+        return {
+            "program_id": str(prepared["program_id"]),
+            "portable_document_path": source_path.name,
+            "cross_document_input_property": "App::PropertyXLinkList",
+            "save_reopen_preserved_external_link": True,
+        }
+    finally:
+        paths = {str(source_path.resolve()), str(target_path.resolve())}
+        for name, document in list(App.listDocuments().items()):
+            file_name = str(getattr(document, "FileName", "") or "")
+            if file_name and str(LocalPath(file_name).resolve()) in paths:
+                App.closeDocument(name)
 
 
 def _exercise_component_shape_migration(root: Path, pack) -> dict:
@@ -3560,69 +3852,83 @@ def _exercise_provider_failed_source_lifecycle(root: Path, pack) -> dict:
             "sources": [],
         },
     )
+
+    def run_source_operation(tool_name, arguments):
+        started = runner(tool_name, json.dumps(arguments))
+        assert started["ok"] is True, started
+        operation_id = started["operation"]["operation_id"]
+        while True:
+            status = runner(
+                "vibescript.read_operation",
+                json.dumps(
+                    {
+                        "operation_id": operation_id,
+                        "wait_seconds": 60,
+                    }
+                ),
+            )
+            if status["operation"]["status"] == "running":
+                continue
+            return status["result"]
+
     try:
-        created = runner(
+        created = run_source_operation(
             "vibescript.create_program",
-            json.dumps(
-                {
-                    "program_name": "Failed Source Lifecycle",
-                    "source": failed_source,
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                    "inputs": {},
-                    "expected_outputs": [{"name": "Result", "type": "solid"}],
-                }
-            ),
+            {
+                "program_name": "Failed Source Lifecycle",
+                "source": failed_source,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                "inputs": {},
+                "expected_outputs": [{"name": "Result", "type": "solid"}],
+            },
         )
         assert created["ok"] is False, created
-        assert "source_id" in created, created
-        source_id = str(created["source_id"])
+        program = str(created["program"])
         failed_revision = str(created["working_revision"])
-        assert len(source_id) == 32
+        assert program == (
+            "PartDesignProviderSourceLifecycle/partdesign/Failed Source Lifecycle"
+        )
         assert len(failed_revision) == 64
 
         read_failed = runner(
             "vibescript.read_source",
-            json.dumps({"source_id": source_id, "include_logs": False}),
+            json.dumps({"program": program, "include_logs": False}),
         )
         assert read_failed["ok"] is True, read_failed
         assert read_failed["source"] == failed_source
         assert read_failed["current_revision"] == failed_revision
 
-        edited = runner(
+        edited = run_source_operation(
             "vibescript.edit_source",
-            json.dumps(
-                {
-                    "source_id": source_id,
-                    "expected_revision": failed_revision,
-                    "source": valid_source,
-                }
-            ),
+            {
+                "program": program,
+                "expected_revision": failed_revision,
+                "source": valid_source,
+            },
         )
         assert edited["ok"] is True, edited
         accepted_revision = str(edited["working_revision"])
         assert accepted_revision != failed_revision
         assert document.getObject(edited["live_outputs"]["Result"]["object_name"])
 
-        deleted = runner(
+        deleted = run_source_operation(
             "vibescript.delete_program",
-            json.dumps(
-                {
-                    "source_id": source_id,
-                    "expected_revision": accepted_revision,
-                    "reason": "Complete the provider source lifecycle integration test.",
-                }
-            ),
+            {
+                "program": program,
+                "expected_revision": accepted_revision,
+                "reason": "Complete the provider source lifecycle integration test.",
+            },
         )
         assert deleted["ok"] is True, deleted
         missing = runner(
             "vibescript.read_source",
-            json.dumps({"source_id": source_id, "include_logs": False}),
+            json.dumps({"program": program, "include_logs": False}),
         )
-        assert missing["failure_code"] == "SOURCE_NOT_FOUND", missing
+        assert missing["failure_code"] == "PROGRAM_NOT_FOUND", missing
         return {
             "failed_source_read": True,
             "same_source_edited": True,
@@ -3734,6 +4040,10 @@ def main() -> int:
             pack,
         )
         component_occurrence = _exercise_component_occurrence(root, pack)
+        external_component_occurrence = _exercise_external_component_occurrence(
+            root,
+            pack,
+        )
         component_shape_migration = _exercise_component_shape_migration(root, pack)
         lifecycle = _exercise_lifecycle(root, pack)
         provider_source_lifecycle = _exercise_provider_failed_source_lifecycle(
@@ -3758,6 +4068,7 @@ def main() -> int:
                     "direct_solid_label": direct_solid_label,
                     "saved_source_compatibility": saved_source_compatibility,
                     "component_occurrence": component_occurrence,
+                    "external_component_occurrence": external_component_occurrence,
                     "component_shape_migration": component_shape_migration,
                     "lifecycle": lifecycle,
                     "provider_source_lifecycle": provider_source_lifecycle,

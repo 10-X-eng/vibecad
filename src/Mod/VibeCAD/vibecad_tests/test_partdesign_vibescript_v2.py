@@ -117,7 +117,9 @@ def test_reference_snapshot_cache_reuses_only_unchanged_dependencies() -> None:
         Uid = "document-uid"
 
     class Shape:
-        def copy(self):
+        def copy(self, copy_geometry=True, copy_mesh=False):
+            assert copy_geometry is False
+            assert copy_mesh is False
             detached = object()
             copies.append(detached)
             return detached
@@ -360,7 +362,8 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     )
     assert "Do not use api.loft as a shortcut" in operation_selection
     assert "subtractive" not in exports["loft"]["signature"]
-    assert "standalone solid is accepted only" in exports["body"]["description"]
+    assert "one connected solid" in exports["body"]["description"]
+    assert "stable parametric Design Body" in exports["body"]["description"]
 
 
 def test_semantic_interface_frame_is_explicit_and_orthonormal() -> None:

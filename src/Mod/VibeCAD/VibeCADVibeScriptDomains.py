@@ -90,6 +90,7 @@ LIFECYCLE_OPERATIONS: tuple[str, ...] = (
 
 UNIVERSAL_SOURCE_OPERATIONS: tuple[str, ...] = (
     "read_source",
+    "read_operation",
     "read_api",
     "read_geometry",
     "read_placement",
@@ -664,7 +665,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "solved placements, structured solver diagnostics, and worker-generated "
         "kinematic simulations, exploded views, flexible source hierarchies, and "
         "authenticated native bills of materials. Component geometry remains in its "
-        "authoring source; read or edit that exact source_id instead of rebuilding it "
+        "authoring source; read or edit its exact program reference instead of rebuilding it "
         "inside Assembly. Use assembly.play_simulation on a published simulation when "
         "GUI playback is requested.",
         (
@@ -1176,6 +1177,8 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
     )
     grouped_api = api_groups(pack) if pack is not None else {}
     sources = []
+    document = dict(completed.get("document") or {})
+    document_name = str(document.get("name") or "")
     for program in list(completed.get("programs") or []):
         if not isinstance(program, Mapping):
             continue
@@ -1194,17 +1197,28 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
             .strip()
             .lower()[:128]
         )
+        program_reference = "/".join(
+            (
+                document_name,
+                domain,
+                str(program.get("label") or "")[:240],
+            )
+        )
         source = {
             "source_id": source_id,
             "source_kind": "vibescript_program",
             "domain": domain,
             "workbench": str(completed.get("workbench") or ""),
             "label": str(program.get("label") or "")[:240],
+            "program": program_reference,
             "current_revision": revision,
             "status": _editable_source_status(program),
             "affected_outputs": _editable_source_outputs(program),
             "read_tool": "vibescript.read_source",
-            "read_arguments": {"source_id": source_id, "include_logs": False},
+            "read_arguments": {
+                "program": program_reference,
+                "include_logs": False,
+            },
             "build_tool": "vibescript.build_program",
             "edit_tool": "vibescript.edit_source",
             "delete_output_tool": "vibescript.delete_output",
@@ -1215,15 +1229,15 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
             source["accepted_revision"] = accepted_revision
         if re.fullmatch(r"[0-9a-f]{64}", revision):
             source["build_arguments"] = {
-                "source_id": source_id,
+                "program": source["program"],
                 "expected_revision": revision,
             }
             source["edit_target_arguments"] = {
-                "source_id": source_id,
+                "program": source["program"],
                 "expected_revision": revision,
             }
             source["delete_target_arguments"] = {
-                "source_id": source_id,
+                "program": source["program"],
                 "expected_revision": revision,
                 "reason": "Remove this source and its owned outputs.",
             }
@@ -1262,7 +1276,7 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
             "delete_output": "vibescript.delete_output",
             "delete_program": "vibescript.delete_program",
             "edit_source_arguments": [
-                "source_id",
+                "program",
                 "expected_revision",
                 "source",
             ],
@@ -5218,6 +5232,24 @@ def program_revision_with_references(
                 )
             dependencies.append(dependency)
             continue
+        if item.get("artifact_kind") == "component_identity":
+            dependency["artifact_kind"] = "component_identity"
+            dependency["type_id"] = str(item.get("type_id") or "")
+            if item.get("reference_contract_sha256"):
+                dependency["reference_contract_sha256"] = str(
+                    item.get("reference_contract_sha256") or ""
+                )
+            if (
+                not dependency["document_uid"]
+                or not dependency["object_name"]
+                or not dependency["type_id"]
+            ):
+                raise ValueError(
+                    "Resolved component identities require document, object, and "
+                    "native type identity."
+                )
+            dependencies.append(dependency)
+            continue
         brep_digest = str(item.get("brep_sha256") or "")
         mesh_digest = str(item.get("mesh_sha256") or "")
         if bool(brep_digest) == bool(mesh_digest):
@@ -5254,6 +5286,10 @@ def program_revision_with_references(
                 item.get("artifact_kind") != "points_asc"
                 or not re.fullmatch(r"[0-9a-f]{64}", item["points_sha256"])
             )
+        )
+        or (
+            item.get("artifact_kind") == "component_identity"
+            and not item.get("type_id")
         )
         for item in dependencies
         if item.get("reference_kind") != "point_artifact"
@@ -5636,10 +5672,13 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             {pack.domain for pack in VIBESCRIPT_WORKBENCH_PACKS.values()}
         ),
     )
-    source_id = _property_schema(
-        "Exact source_id from editable_sources or a VibeScript write result.",
+    program = _property_schema(
+        "Exact human-readable document/domain/name returned by read_source, for "
+        "example test9/partdesign/Motor Mount. Copy it unchanged.",
         type="string",
-        pattern="^[0-9a-f]{32}$",
+        minLength=5,
+        maxLength=300,
+        pattern="^[^/]+/[^/]+/[^/]+$",
     )
     revision = _property_schema(
         "Exact current_revision from editable_sources or working_revision from the latest write.",
@@ -5792,15 +5831,14 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.read_source",
             "description": (
-                "Read one saved editable source in the active workbench, including a "
-                "failed or not-yet-built source with no live outputs. Omit line_start "
-                "and line_end for the complete editable source; use a line range only "
-                "for a focused reread. Set include_logs=false for concise build state."
+                "List editable programs when program is omitted; otherwise read its "
+                "saved source and current state. A line range narrows the source. "
+                "Set include_logs=true only for raw diagnostics and native identities."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "line_start": _property_schema(
                         "Optional 1-based first source line to return.",
                         type="integer",
@@ -5813,9 +5851,10 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     ),
                     "include_logs": _property_schema(
                         "Include raw candidate stdout, stderr, traceback, and progress logs. "
-                        "Omit or set true for the compatibility-complete response; set false "
-                        "when only the failure summary and recovery action are needed.",
+                        "The default false returns authored outputs, failure summary, and exact "
+                        "recovery actions without internal implementation objects.",
                         type="boolean",
+                        default=False,
                     ),
                     "log_tail_lines": _property_schema(
                         "When raw logs are included, keep only this many final lines per log.",
@@ -5824,7 +5863,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                         maximum=1000,
                     ),
                 },
-                "required": ["source_id"],
+                "required": [],
                 "additionalProperties": False,
             },
             "safety": "READ",
@@ -5833,9 +5872,39 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "edit_modes": ["none", "sketch"],
         },
         {
+            "name": "vibescript.read_operation",
+            "description": (
+                "Read a background source mutation by its returned operation_id. "
+                "Reports live progress while running and the compact terminal "
+                "outcome when finished."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation_id": _property_schema(
+                        "Exact readable operation id returned by the source mutation.",
+                        type="string",
+                        pattern="^operation-[1-9][0-9]*$",
+                    ),
+                    "wait_seconds": _property_schema(
+                        "Wait up to this many seconds for progress or completion; zero reads immediately.",
+                        type="number",
+                        minimum=0,
+                        maximum=60,
+                    ),
+                },
+                "required": ["operation_id"],
+                "additionalProperties": False,
+            },
+            "safety": "READ",
+            "contextual": True,
+            "requires_document": False,
+            "edit_modes": ["none", "sketch"],
+        },
+        {
             "name": "vibescript.read_api",
             "description": (
-                "Read one exact VibeScript API. Pass source_id for an existing "
+                "Read one exact VibeScript API. Pass program for an existing "
                 "program or domain when planning a new one; do not pass both. Model "
                 "and Assembly APIs are available without switching the visible ribbon. "
                 "Omitting both keeps the visible ribbon's compatibility default. Pass "
@@ -5844,7 +5913,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "domain": domain,
                     "names": _property_schema(
                         "Exact api callable names to read, such as sketch, constraint, or extrude.",
@@ -6014,7 +6083,8 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                 "domain='assembly' for occurrences, joints, mechanisms, and "
                 "simulations. Use only when no editable_sources entry owns the "
                 "requested output. Omitting domain keeps the visible ribbon's "
-                "compatibility default."
+                "compatibility default. This starts in the background; follow "
+                "the returned operation_id with vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
@@ -6049,15 +6119,17 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "name": "vibescript.build_program",
             "description": (
                 "Build and publish the saved source unchanged. Use after a failed, "
-                "cancelled, or validated-unpublished attempt."
+                "cancelled, or validated-unpublished attempt. This starts in the "
+                "background; follow the returned operation_id with "
+                "vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                 },
-                "required": ["source_id", "expected_revision"],
+                "required": ["program", "expected_revision"],
                 "additionalProperties": False,
             },
             "safety": "SAFE_WRITE",
@@ -6073,19 +6145,21 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                 "declarations are optional and retain their current values when omitted; "
                 "include the changed fields in this same call when the code adds, removes, "
                 "or renames them. When inputs are supplied without input_schema, VibeCAD "
-                "preserves existing constraints and adds exact schemas for new values."
+                "preserves existing constraints and adds exact schemas for new values. "
+                "This starts in the background; follow the returned operation_id "
+                "with vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                     "source": source,
                     "input_schema": input_schema,
                     "inputs": inputs,
                     "expected_outputs": outputs,
                 },
-                "required": ["source_id", "expected_revision", "source"],
+                "required": ["program", "expected_revision", "source"],
                 "additionalProperties": False,
             },
             "safety": "SAFE_WRITE",
@@ -6097,12 +6171,14 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "name": "vibescript.set_inputs",
             "description": (
                 "Change only input values for one saved source, then rebuild it. "
-                "Source and output declarations remain unchanged."
+                "Source and output declarations remain unchanged. This starts in "
+                "the background; follow the returned operation_id with "
+                "vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                     "patch": _property_schema(
                         "RFC 7396 input merge patch; null removes an optional input.",
@@ -6110,7 +6186,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                         minProperties=1,
                     ),
                 },
-                "required": ["source_id", "expected_revision", "patch"],
+                "required": ["program", "expected_revision", "patch"],
                 "additionalProperties": False,
             },
             "safety": "SAFE_WRITE",
@@ -6122,12 +6198,14 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "name": "vibescript.reconfigure_program",
             "description": (
                 "Compatibility alias for replacing one source, input schema, inputs, "
-                "and output declarations together. New callers should use edit_source."
+                "and output declarations together. New callers should use edit_source. "
+                "This starts in the background; follow the returned operation_id "
+                "with vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                     "source": source,
                     "input_schema": input_schema,
@@ -6135,7 +6213,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     "expected_outputs": outputs,
                 },
                 "required": [
-                    "source_id",
+                    "program",
                     "expected_revision",
                     "source",
                     "input_schema",
@@ -6156,12 +6234,14 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                 "outputs. Read the source first and send the complete revised source "
                 "without the deleted result key. The guarded rebuild removes the live "
                 "Body or other output and its owned publication and History state. Use "
-                "delete_program when the source has only one output."
+                "delete_program when the source has only one output. This starts in "
+                "the background; follow the returned operation_id with "
+                "vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                     "output_name": _property_schema(
                         "Exact output name from read_source expected_outputs.",
@@ -6177,7 +6257,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     ),
                 },
                 "required": [
-                    "source_id",
+                    "program",
                     "expected_revision",
                     "output_name",
                     "source",
@@ -6196,12 +6276,13 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                 "Delete one saved source and everything it owns. Pass the source's "
                 "delete_target_arguments from editable_sources directly; another read "
                 "is not required. A failed source with no outputs deletes only its saved "
-                "source and build artifacts."
+                "source and build artifacts. This starts in the background; follow "
+                "the returned operation_id with vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                     "reason": _property_schema(
                         "Why the source and outputs should be removed.",
@@ -6210,7 +6291,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                         maxLength=500,
                     ),
                 },
-                "required": ["source_id", "expected_revision", "reason"],
+                "required": ["program", "expected_revision", "reason"],
                 "additionalProperties": False,
             },
             "safety": "SAFE_WRITE",

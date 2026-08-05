@@ -294,7 +294,13 @@ class TopoShape(ComplexGeoData):
         ...
 
     @constmethod
-    def common(self, tools: Tuple[TopoShape, ...], tolerance: float = 0.0, /) -> TopoShape:
+    def common(
+        self,
+        tools: Tuple[TopoShape, ...],
+        tolerance: float = 0.0,
+        validateInputs: bool = True,
+        /,
+    ) -> TopoShape:
         """
         Intersection of this and a given (list of) topo shape.
         common(tool) -> Shape
@@ -305,6 +311,10 @@ class TopoShape(ComplexGeoData):
         - Fuzzy Boolean operations (global tolerance for a Boolean operation)
         - Support of multiple arguments for a single Boolean operation (s1 AND (s2 OR s3))
         - Parallelization of Boolean Operations algorithm
+
+        Set validateInputs=False only when both detached shapes were already
+        validated and have not changed. This avoids repeating an expensive
+        full BREP validity pass for transient analysis.
 
         OCC 6.9.0 or later is required.
         """
@@ -981,6 +991,22 @@ class TopoShape(ComplexGeoData):
         isInside(point, tolerance, checkFace) => Boolean
         --
         checkFace indicates if the point lying directly on a face is considered to be inside or not
+        """
+        ...
+
+    @constmethod
+    def classifyInside(
+        self,
+        points: List[Vector],
+        tolerance: float,
+        checkFace: bool,
+        /,
+    ) -> List[bool]:
+        """
+        Classifies multiple points with one loaded solid classifier.
+        classifyInside(points, tolerance, checkFace) => list[bool]
+        --
+        checkFace indicates if points directly on a face are considered inside
         """
         ...
 

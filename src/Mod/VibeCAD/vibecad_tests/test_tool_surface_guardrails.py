@@ -567,6 +567,7 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
 
     expected = (
         "assembly.play_simulation",
+        "assembly.stop_simulation",
         "component.publish_interface",
         "component_catalog.search",
         "conversation.ask_user",
@@ -576,6 +577,7 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "fastener_catalog.search",
         "material_catalog.search",
         "vibescript.read_source",
+        "vibescript.read_operation",
         "vibescript.read_api",
         "vibescript.read_geometry",
         "vibescript.read_placement",
@@ -619,6 +621,7 @@ def test_model_and_assembly_share_one_stable_provider_contract() -> None:
     assert {
         "assembly.list_structure",
         "assembly.play_simulation",
+        "assembly.stop_simulation",
         "material_catalog.search",
         "vibescript.create_program",
         "vibescript.edit_source",
@@ -860,7 +863,7 @@ def test_universal_source_tools_are_the_only_model_facing_vibescript_reads(
     edit = specs["vibescript.edit_source"][0]
     assert edit.safety == SafetyLevel.SAFE_WRITE
     assert edit.parameters["required"] == [
-        "source_id",
+        "program",
         "expected_revision",
         "source",
     ]

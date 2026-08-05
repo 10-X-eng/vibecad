@@ -101,8 +101,13 @@ _NATIVE_HISTORY_TRANSIENT_PROPERTIES = {
 def configure_partdesign_references(root: Path, entries: list[dict[str, Any]]) -> None:
     """Authenticate the same detached references for profile and shape readers."""
 
-    configure_part_references(root, entries)
-    configure_sketcher_references(root, entries)
+    geometry_entries = [
+        entry
+        for entry in entries
+        if str(entry.get("artifact_kind") or "brep") != "component_identity"
+    ]
+    configure_part_references(root, geometry_entries)
+    configure_sketcher_references(root, geometry_entries)
 
 
 def _payload(value: Any, *, context: str) -> dict[str, Any]:
@@ -2464,9 +2469,12 @@ def _resolved_interfaces(
     document: Any,
     shape: Any,
     raw: Any,
+    *,
+    context: str = "api.body",
+    frame_only: bool = False,
 ) -> dict[str, dict[str, Any]]:
     if not isinstance(raw, Mapping):
-        raise PartDesignCandidateError("api.body interfaces must be an object.")
+        raise PartDesignCandidateError(f"{context} interfaces must be an object.")
     result: dict[str, dict[str, Any]] = {}
     for name, definition in raw.items():
         if not isinstance(definition, Mapping):
@@ -2474,6 +2482,12 @@ def _resolved_interfaces(
         selection = definition.get("selection")
         if not isinstance(selection, Mapping):
             raise PartDesignCandidateError(f"Interface {name!r} has no selection.")
+        if frame_only and selection.get("type") not in {"origin", "frame"}:
+            raise PartDesignCandidateError(
+                f"{context} interface {name!r} must use an explicit origin or "
+                "frame selection; linked components do not copy source BREP for "
+                "topology queries."
+            )
         if selection.get("type") in {"origin", "frame"}:
             subelements: list[str] = []
             geometry: list[dict[str, Any]] = []
@@ -2919,6 +2933,13 @@ def validate_and_build_partdesign(
                     str(exc),
                     details={"stage": "component_occurrence", "output": name},
                 ) from exc
+            component_data["interfaces"] = _resolved_interfaces(
+                document,
+                None,
+                component_data.pop("interface_declarations", {}),
+                context="api.component",
+                frame_only=True,
+            )
             outputs.append(
                 {
                     "name": name,

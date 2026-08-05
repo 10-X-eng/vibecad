@@ -269,7 +269,11 @@ class VibeCADService:
         shape = getattr(obj, "Shape", None)
         if shape is None:
             raise RuntimeError("A VibeScript reference does not expose a Shape.")
-        detached = shape.copy()
+        # Capture an independent topology wrapper over immutable authoritative
+        # BREP geometry. Sharing the geometry avoids a costly deep copy of
+        # thousands of imported surfaces; display triangulation is not copied
+        # into the worker artifact and never participates in its identity.
+        detached = shape.copy(False, False)
         entry = {
             "detached_shape": detached,
             "cache_token": uuid.uuid4().hex,
@@ -3535,6 +3539,54 @@ class VibeCADService:
                 joints.extend(list(getattr(child, "Group", []) or []))
         return joints
 
+    def _assembly_component_objects(self, assembly: Any) -> list[Any]:
+        children = list(getattr(assembly, "Group", []) or [])
+        joint_names = {
+            getattr(joint, "Name", None)
+            for joint in self._assembly_joint_objects(assembly)
+        }
+        linked_target_ids = {
+            id(target)
+            for child in children
+            for target in [getattr(child, "LinkedObject", None)]
+            if target is not None
+        }
+        resource_output_types = {
+            "bom",
+            "check",
+            "dependency_anchor",
+            "exploded_view",
+            "joint",
+            "measurement",
+            "motion",
+            "simulation",
+            "solver_diagnostics",
+        }
+        components = []
+        for child in children:
+            type_id = str(getattr(child, "TypeId", "") or "")
+            if type_id in {
+                "Assembly::JointGroup",
+                "Assembly::BomGroup",
+                "Assembly::ViewGroup",
+                "Assembly::SimulationGroup",
+            }:
+                continue
+            if getattr(child, "Name", None) in joint_names:
+                continue
+            if id(child) in linked_target_ids:
+                # FreeCAD may expose a linked definition beside its occurrence
+                # when walking an Assembly group. The occurrence is the one
+                # independently placed mechanism component.
+                continue
+            output_type = str(
+                getattr(child, "VibeCADVibeScriptOutputType", "") or ""
+            ).strip()
+            if output_type in resource_output_types:
+                continue
+            components.append(child)
+        return components
+
     def _assembly_child_counts(self, assembly: Any) -> dict[str, int]:
         counts = {
             "components": 0,
@@ -3544,10 +3596,6 @@ class VibeCADService:
             "bom_groups": 0,
             "view_groups": 0,
             "simulation_groups": 0,
-        }
-        joint_names = {
-            getattr(joint, "Name", None)
-            for joint in self._assembly_joint_objects(assembly)
         }
         for child in list(getattr(assembly, "Group", []) or []):
             type_id = getattr(child, "TypeId", "")
@@ -3564,34 +3612,14 @@ class VibeCADService:
                 counts["view_groups"] += 1
             elif type_id == "Assembly::SimulationGroup":
                 counts["simulation_groups"] += 1
-            elif getattr(child, "Name", None) in joint_names:
-                # App::Part-style groups list nested members recursively; joint
-                # objects already counted through their JointGroup are not
-                # components.
-                continue
-            else:
-                counts["components"] += 1
+        counts["components"] = len(self._assembly_component_objects(assembly))
         return counts
 
     def _assembly_component_children(self, assembly: Any) -> list[dict[str, Any]]:
-        components = []
-        joint_names = {
-            getattr(joint, "Name", None)
-            for joint in self._assembly_joint_objects(assembly)
-        }
-        for child in list(getattr(assembly, "Group", []) or []):
-            type_id = getattr(child, "TypeId", "")
-            if type_id in {
-                "Assembly::JointGroup",
-                "Assembly::BomGroup",
-                "Assembly::ViewGroup",
-                "Assembly::SimulationGroup",
-            }:
-                continue
-            if getattr(child, "Name", None) in joint_names:
-                continue
-            components.append(self._object_summary(child))
-        return components
+        return [
+            self._object_summary(child)
+            for child in self._assembly_component_objects(assembly)
+        ]
 
     @staticmethod
     def _joint_reference_summary(reference: Any) -> dict[str, Any] | None:

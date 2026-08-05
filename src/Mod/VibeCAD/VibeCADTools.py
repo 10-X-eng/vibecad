@@ -149,6 +149,8 @@ def normalize_tool_failure(
     else:
         observed = dict(observed)
     continuation_keys = (
+        "program",
+        "source_target",
         "program_id",
         "source_id",
         "working_revision",

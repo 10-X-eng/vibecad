@@ -26,6 +26,7 @@ set(VibeCAD_Scripts
     VibeCADMCP.py
     VibeCADModelingSurface.py
     VibeCADNativeTransaction.py
+    VibeCADObjectDeletion.py
     VibeCADPreferences.py
     VibeCADPromptStarters.py
     VibeCADProvider.py

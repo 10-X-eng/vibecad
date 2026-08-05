@@ -94,6 +94,7 @@ TOOL_MODULE_NAMES = (
     "assembly_create_joint",
     "assembly_solve",
     "assembly_play_simulation",
+    "assembly_stop_simulation",
     "techdraw_list_pages",
     "techdraw_create_page",
     "techdraw_add_view",

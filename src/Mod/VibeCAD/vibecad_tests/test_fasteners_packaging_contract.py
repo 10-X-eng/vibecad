@@ -132,7 +132,7 @@ def test_fastener_apis_expose_one_native_thread_boolean() -> None:
     ):
         parameter = inspect.signature(method).parameters["model_thread"]
         assert parameter.annotation in {bool, "bool"}
-        assert parameter.default is False
+        assert parameter.default is True
 
 
 def test_catalog_rejects_a_shadowing_user_installed_module(

@@ -45,8 +45,12 @@ from VibeCADMechanismEngine import (
     normalize_mechanism_solve_report,
     normalize_mechanism_static_check,
     normalize_mechanism_verification_report,
+    solver_validation_scope,
 )
-from VibeCADMechanismGeometry import measure_static_mechanism_pairs
+from VibeCADMechanismGeometry import (
+    measure_static_mechanism_pairs,
+    summarize_dynamic_collision_frames,
+)
 from VibeCADTools import tool_failure
 import VibeCADVibeScriptDomains as contracts
 from vibescript_domain_api import create_domain_api
@@ -104,6 +108,29 @@ _ASSEMBLY_SIMULATION_TRACE_SCHEMA = "vibecad-assembly-simulation-trace-v1"
 _MAX_ASSEMBLY_SIMULATION_TRACE_BYTES = 64 * 1024 * 1024
 _ASSEMBLY_EXPLODED_VIEW_SCHEMA = "vibecad-assembly-exploded-view-v1"
 _MAX_ASSEMBLY_HIERARCHY_JSON_BYTES = 8 * 1024 * 1024
+_PLACEMENT_MATRIX_FIELDS = (
+    "A11",
+    "A12",
+    "A13",
+    "A14",
+    "A21",
+    "A22",
+    "A23",
+    "A24",
+    "A31",
+    "A32",
+    "A33",
+    "A34",
+    "A41",
+    "A42",
+    "A43",
+    "A44",
+)
+
+
+def _placement_matrix_values(placement: Any) -> list[float]:
+    matrix = placement.toMatrix()
+    return [float(getattr(matrix, name)) for name in _PLACEMENT_MATRIX_FIELDS]
 
 # Worker attempts are deliberately self-contained.  Keep this manifest exact:
 # staging an unrelated domain implementation would weaken the same-domain
@@ -615,6 +642,8 @@ def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
             "derived_state": str(getattr(obj, "VibeCADDerivedState", "") or ""),
             "stale_reason": str(getattr(obj, "VibeCADStaleReason", "") or ""),
             "source_revision": str(getattr(obj, "VibeCADSourceRevision", "") or ""),
+            "internal": str(getattr(obj, "VibeCADTimelineRole", "") or "")
+            == "internal",
         }
         if domain == "assembly":
             output.update(_assembly_live_output_state(obj))
@@ -640,6 +669,19 @@ def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
                     body["object_name"],
                 ),
             )
+            body_labels = {
+                body["output_name"]: body["label"]
+                for body in bodies
+                if body["output_name"] and body["label"]
+            }
+            for output in item["outputs"]:
+                authored_label = body_labels.get(str(output.get("name") or ""))
+                if authored_label:
+                    # Part Design publishes a hidden stable App::Link beside
+                    # the visible native Body. FreeCAD may suffix that link's
+                    # duplicate label with "001"; source inspection describes
+                    # the authored Body, not the hidden carrier.
+                    output["label"] = authored_label
             item["native_history"] = {
                 "available": len(operations) == 1,
                 "strategy": "design_program_operation",
@@ -849,11 +891,14 @@ def _validate_stable_references(
         raise ValueError(f"{path} has an invalid stable reference: {exc}") from exc
     document_uid = clean["document_uid"]
     object_name = clean["object_name"]
-    if str(
-        getattr(captured.get("pack"), "domain", "") or ""
-    ) == "assembly" and document_uid != str(captured.get("document_uid") or ""):
+    domain = str(getattr(captured.get("pack"), "domain", "") or "")
+    if domain in {"partdesign", "assembly", "robot"} and document_uid != str(
+        captured.get("document_uid") or ""
+    ):
         # External identities are authenticated on the document thread during
-        # capture.  A portable path may load the saved source document there.
+        # capture. A portable path may load the saved source document there.
+        # These are the three domains whose capture path deliberately supports
+        # reusable component definitions without copying their topology.
         return
     if document_uid != str(captured.get("document_uid") or ""):
         raise ValueError(f"{path} refers to a different document uid.")
@@ -987,6 +1032,37 @@ def _input_references(value: Any) -> list[dict[str, str]]:
             f"A program may reference at most {_MAX_REFERENCE_SHAPES} document objects."
         )
     return result
+
+
+def _partdesign_reference_capture_mode(
+    source: str,
+    expected_outputs: Sequence[Mapping[str, Any]],
+) -> str:
+    """Choose exact identity capture only for pure linked-occurrence programs."""
+
+    if not expected_outputs or any(
+        str(output.get("type") or "") != "component_link"
+        for output in expected_outputs
+    ):
+        return "geometry"
+    tree = ast.parse(
+        str(source or ""),
+        filename="<vibecad-partdesign-vibescript>",
+        mode="exec",
+    )
+    api_members = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "api"
+    }
+    if api_members and api_members <= {"component", "instances"}:
+        # These APIs publish native App::Link occurrences. Their exact source
+        # object identity is the contract; they neither read nor copy source
+        # topology. Any geometry-reading API keeps the full BREP path.
+        return "component_identity"
+    return "geometry"
 
 
 def _input_point_artifacts(value: Any) -> list[str]:
@@ -1508,13 +1584,53 @@ def capture_reference_inputs(
             raise RuntimeError(
                 f"{prepared['pack'].title} input reference {object_name!r} has a null Shape."
             )
+        shape_capture_object = obj
+        shape_placement_matrix = None
+        linked_object = getattr(obj, "LinkedObject", None)
+        linked_shape = getattr(linked_object, "Shape", None)
+        if linked_shape is not None:
+            try:
+                if not bool(linked_shape.isNull()):
+                    # isPartner is OCCT's exact shared-TShape test: unlike isSame,
+                    # it deliberately ignores only top-level Location and
+                    # Orientation. Matching Orientation then proves that this
+                    # App::Link is its linked definition under exactly the native
+                    # Shape placement returned by FreeCAD. Stage the definition
+                    # once and replace its placement in the worker for each
+                    # occurrence. No geometric fingerprint or tolerance decides
+                    # whether definitions may be shared.
+                    if bool(shape.isPartner(linked_shape)) and (
+                        str(getattr(shape, "Orientation", ""))
+                        == str(getattr(linked_shape, "Orientation", ""))
+                    ):
+                        shape_capture_object = linked_object
+                        shape_placement_matrix = _placement_matrix_values(
+                            shape.Placement
+                        )
+            except Exception:
+                shape_capture_object = obj
+                shape_placement_matrix = None
+        if prepared.get("reference_capture_mode") == "component_identity":
+            reference_contract = _assembly_reference_contract(service, obj)
+            snapshots.append(
+                {
+                    **dict(reference),
+                    "label": str(getattr(obj, "Label", "") or ""),
+                    "type_id": type_id,
+                    "shape_type": str(getattr(shape, "ShapeType", "") or ""),
+                    "reference_artifact_kind": "component_identity",
+                    "snapshot_index": index,
+                    **reference_contract,
+                }
+            )
+            continue
         cache_token = ""
         cached_artifact = None
         artifact_store = None
         capture_cached = getattr(service, "capture_vibescript_reference_shape", None)
         try:
             if callable(capture_cached):
-                cached = capture_cached(obj)
+                cached = capture_cached(shape_capture_object)
                 detached = cached["detached_shape"]
                 cache_token = str(cached.get("cache_token") or "")
                 cached_artifact = cached.get("artifact")
@@ -1575,6 +1691,11 @@ def capture_reference_inputs(
                 "reference_artifact_kind": "brep",
                 "detached_shape": detached,
                 "snapshot_index": index,
+                **(
+                    {"_reference_shape_placement_matrix": shape_placement_matrix}
+                    if shape_placement_matrix is not None
+                    else {}
+                ),
                 **(
                     {
                         "_reference_cache_token": cache_token,
@@ -1720,6 +1841,7 @@ def finalize_candidate(
         prepared.get("resolved_point_artifacts") or []
     )
     total_bytes = 0
+    staged_breps_by_cache_token: dict[str, dict[str, Any]] = {}
     try:
         if requirements:
             reference_root = staging / "references"
@@ -1778,7 +1900,23 @@ def finalize_candidate(
                         ).encode("utf-8")
                     ).hexdigest()
                 artifact_kind = str(snapshot.get("reference_artifact_kind") or "brep")
-                if artifact_kind == "points_asc":
+                if artifact_kind == "component_identity":
+                    if prepared["pack"].domain != "partdesign":
+                        raise ValueError(
+                            f"Referenced object {key[1]!r} produced a component "
+                            f"identity for domain {prepared['pack'].domain!r}."
+                        )
+                    metadata = {
+                        "document_uid": key[0],
+                        "object_name": key[1],
+                        "label": str(snapshot.get("label") or ""),
+                        "type_id": str(snapshot.get("type_id") or ""),
+                        "shape_type": str(snapshot.get("shape_type") or ""),
+                        "artifact_kind": "component_identity",
+                        **reference_contract,
+                    }
+                    worker_reference = dict(metadata)
+                elif artifact_kind == "points_asc":
                     if prepared["pack"].domain not in {
                         "points",
                         "reverse_engineering",
@@ -1956,92 +2094,184 @@ def finalize_candidate(
                         **reference_contract,
                     }
                 elif artifact_kind == "brep":
-                    from vibescript_part_worker import part_shape_facts
+                    from vibescript_part_worker import (
+                        part_shape_facts,
+                        part_shape_reference_facts,
+                    )
 
                     shape = snapshot.get("detached_shape")
-                    if shape is None or shape.isNull() or not shape.isValid():
+                    if shape is None or shape.isNull():
                         raise ValueError(
                             f"Referenced object {key[1]!r} did not produce a valid "
                             "detached Shape."
                         )
-                    relative = Path("references") / f"reference-{index:03d}.brep"
-                    target = staging / relative
-                    cached_artifact = snapshot.get("_reference_cached_artifact")
-                    cached_bytes = (
-                        cached_artifact.get("brep_bytes")
-                        if isinstance(cached_artifact, Mapping)
+                    shape_type = str(getattr(shape, "ShapeType", "") or "")
+                    cache_token = str(
+                        snapshot.get("_reference_cache_token") or ""
+                    )
+                    staged = (
+                        staged_breps_by_cache_token.get(cache_token)
+                        if cache_token
                         else None
                     )
-                    cached_facts = (
-                        cached_artifact.get("facts")
-                        if isinstance(cached_artifact, Mapping)
-                        else None
-                    )
-                    cached_digest = (
-                        str(cached_artifact.get("brep_sha256") or "")
-                        if isinstance(cached_artifact, Mapping)
-                        else ""
-                    )
-                    cached_shape_type = (
-                        str(cached_artifact.get("shape_type") or "")
-                        if isinstance(cached_artifact, Mapping)
-                        else ""
-                    )
-                    reuse_artifact = (
-                        isinstance(cached_bytes, bytes)
-                        and bool(cached_bytes)
-                        and isinstance(cached_facts, Mapping)
-                        and len(cached_digest) == 64
-                        and cached_shape_type
-                        == str(getattr(shape, "ShapeType", "") or "")
-                    )
-                    if reuse_artifact:
-                        target.write_bytes(cached_bytes)
+                    if staged is not None:
+                        if staged["shape_type"] != shape_type:
+                            raise ValueError(
+                                f"Referenced object {key[1]!r} changed the shape "
+                                "behind its shared cache identity."
+                            )
+                        relative = Path(str(staged["artifact_path"]))
+                        target = staging / relative
+                        digest = str(staged["brep_sha256"])
+                        facts = dict(staged["facts"])
+                        brep_bytes = int(staged["brep_bytes"])
                     else:
-                        shape.exportBrep(str(target))
-                    if not target.is_file() or target.stat().st_size <= 0:
-                        raise RuntimeError(
-                            f"Could not serialize referenced object {key[1]!r} as BREP."
+                        # Assembly's isolated worker authenticates and validates
+                        # every staged BREP before it can solve or publish. Do
+                        # not run the same expensive OCCT validity traversal on
+                        # the GUI-side snapshot first, especially for imported
+                        # STEP definitions with thousands of surfaces.
+                        if (
+                            prepared["pack"].domain != "assembly"
+                            and not shape.isValid()
+                        ):
+                            raise ValueError(
+                                f"Referenced object {key[1]!r} did not produce a "
+                                "valid detached Shape."
+                            )
+                        relative = (
+                            Path("references") / f"reference-{index:03d}.brep"
                         )
-                    total_bytes += target.stat().st_size
-                    if total_bytes > _MAX_REFERENCE_BREP_BYTES:
-                        raise ValueError(
-                            "Referenced shapes exceed the 256 MiB detached-input limit."
+                        target = staging / relative
+                        cached_artifact = snapshot.get(
+                            "_reference_cached_artifact"
                         )
-                    if reuse_artifact:
-                        digest = cached_digest
-                        facts = dict(cached_facts)
-                    else:
-                        digest = _sha256_file(target)
-                        facts = part_shape_facts(
-                            shape,
-                            max_subelements=_MAX_REFERENCE_FACT_SUBELEMENTS,
+                        cached_bytes = (
+                            cached_artifact.get("brep_bytes")
+                            if isinstance(cached_artifact, Mapping)
+                            else None
                         )
-                        artifact_store = snapshot.get("_reference_artifact_store")
-                        cache_token = str(
-                            snapshot.get("_reference_cache_token") or ""
+                        cached_facts = (
+                            cached_artifact.get("facts")
+                            if isinstance(cached_artifact, Mapping)
+                            else None
                         )
-                        if callable(artifact_store) and cache_token:
+                        cached_digest = (
+                            str(cached_artifact.get("brep_sha256") or "")
+                            if isinstance(cached_artifact, Mapping)
+                            else ""
+                        )
+                        cached_shape_type = (
+                            str(cached_artifact.get("shape_type") or "")
+                            if isinstance(cached_artifact, Mapping)
+                            else ""
+                        )
+                        cached_facts_profile = (
+                            str(cached_artifact.get("facts_profile") or "full")
+                            if isinstance(cached_artifact, Mapping)
+                            else ""
+                        )
+                        reuse_artifact = (
+                            isinstance(cached_bytes, bytes)
+                            and bool(cached_bytes)
+                            and len(cached_digest) == 64
+                            and cached_shape_type == shape_type
+                            and cached_artifact.get("includes_triangulation")
+                            is False
+                        )
+                        if reuse_artifact:
+                            target.write_bytes(cached_bytes)
+                        else:
+                            shape.exportBrep(str(target))
+                        if not target.is_file() or target.stat().st_size <= 0:
+                            raise RuntimeError(
+                                f"Could not serialize referenced object {key[1]!r} "
+                                "as BREP."
+                            )
+                        brep_bytes = int(target.stat().st_size)
+                        total_bytes += brep_bytes
+                        if total_bytes > _MAX_REFERENCE_BREP_BYTES:
+                            raise ValueError(
+                                "Referenced shapes exceed the 256 MiB "
+                                "detached-input limit."
+                            )
+                        digest = (
+                            cached_digest
+                            if reuse_artifact
+                            else _sha256_file(target)
+                        )
+                        reusable_full_facts = (
+                            isinstance(cached_facts, Mapping)
+                            and cached_facts_profile == "full"
+                        )
+                        if prepared["pack"].domain == "assembly":
+                            facts = part_shape_reference_facts(
+                                shape,
+                                assume_valid=True,
+                            )
+                            facts_profile = "assembly_reference"
+                        elif reuse_artifact and reusable_full_facts:
+                            facts = dict(cached_facts)
+                            facts_profile = "full"
+                        else:
+                            facts = part_shape_facts(
+                                shape,
+                                max_subelements=_MAX_REFERENCE_FACT_SUBELEMENTS,
+                                assume_valid=True,
+                            )
+                            facts_profile = "full"
+                        artifact_store = snapshot.get(
+                            "_reference_artifact_store"
+                        )
+                        should_store = (
+                            not reuse_artifact
+                            or (
+                                facts_profile == "full"
+                                and not reusable_full_facts
+                            )
+                        )
+                        if callable(artifact_store) and cache_token and should_store:
                             artifact_store(
                                 cache_token,
                                 {
-                                    "brep_bytes": target.read_bytes(),
-                                    "brep_sha256": digest,
-                                    "shape_type": str(
-                                        getattr(shape, "ShapeType", "") or ""
+                                    "brep_bytes": (
+                                        cached_bytes
+                                        if reuse_artifact
+                                        else target.read_bytes()
                                     ),
+                                    "brep_sha256": digest,
+                                    "shape_type": shape_type,
                                     "facts": dict(facts),
+                                    "facts_profile": facts_profile,
+                                    "includes_triangulation": False,
                                 },
                             )
+                        if cache_token:
+                            staged_breps_by_cache_token[cache_token] = {
+                                "artifact_path": str(relative),
+                                "brep_sha256": digest,
+                                "brep_bytes": brep_bytes,
+                                "shape_type": shape_type,
+                                "facts": dict(facts),
+                            }
                     metadata = {
                         "document_uid": key[0],
                         "object_name": key[1],
                         "label": str(snapshot.get("label") or ""),
                         "type_id": str(snapshot.get("type_id") or ""),
-                        "shape_type": str(getattr(shape, "ShapeType", "") or ""),
+                        "shape_type": shape_type,
                         "brep_sha256": digest,
-                        "brep_bytes": int(target.stat().st_size),
+                        "brep_bytes": brep_bytes,
                         "facts": facts,
+                        **(
+                            {
+                                "shape_placement_matrix": list(
+                                    snapshot["_reference_shape_placement_matrix"]
+                                )
+                            }
+                            if "_reference_shape_placement_matrix" in snapshot
+                            else {}
+                        ),
                         **reference_contract,
                     }
                     if prepared["pack"].domain in {
@@ -2061,6 +2291,15 @@ def finalize_candidate(
                         "label": metadata["label"],
                         "type_id": metadata["type_id"],
                         "facts": facts,
+                        **(
+                            {
+                                "shape_placement_matrix": list(
+                                    snapshot["_reference_shape_placement_matrix"]
+                                )
+                            }
+                            if "_reference_shape_placement_matrix" in snapshot
+                            else {}
+                        ),
                         **reference_contract,
                     }
                     if prepared["pack"].domain in {
@@ -2438,6 +2677,14 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             }
             else []
         )
+        reference_capture_mode = (
+            _partdesign_reference_capture_mode(
+                clean["source"],
+                clean["expected_outputs"],
+            )
+            if pack.domain == "partdesign"
+            else "geometry"
+        )
         point_artifact_ids = (
             _input_point_artifacts(clean["inputs"])
             if pack.domain in {"points", "reverse_engineering"}
@@ -2508,6 +2755,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "material_targets": list(captured.get("material_targets") or []),
             "surface": dict(captured["surface"]),
             "reference_requirements": reference_requirements,
+            "reference_capture_mode": reference_capture_mode,
             "point_artifact_ids": point_artifact_ids,
             "resolved_point_artifacts": resolved_point_artifacts,
             "worker_request": request,
@@ -2646,6 +2894,20 @@ def execute_candidate(
             "DOMAIN_MEMORY_LIMIT_EXCEEDED",
             "external_process",
             "VibeScript domain execution exceeded its memory limit.",
+            observed={
+                **process,
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
+            },
+        )
+    if process.get("cpu_exceeded"):
+        return _failure(
+            str(prepared["tool_name"]),
+            "DOMAIN_CPU_LIMIT_EXCEEDED",
+            "external_process",
+            "VibeScript domain execution exhausted its isolated CPU-time limit.",
             observed={
                 **process,
                 "accepted_live_outputs_preserved": bool(
@@ -6480,6 +6742,67 @@ def _assembly_close_numbers(
     return actual
 
 
+def _assembly_placement_delta(
+    initial: Mapping[str, Any],
+    solved: Mapping[str, Any],
+    value: Any,
+    label: str,
+) -> dict[str, Any]:
+    """Reauthorize an exact authored-to-solved Assembly placement delta."""
+
+    fields = {
+        "translation_mm",
+        "translation_distance_mm",
+        "rotation_degrees",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError(
+            f"{label} must contain exactly translation_mm, "
+            "translation_distance_mm, and rotation_degrees."
+        )
+    initial_native = _assembly_native_placement_from_matrix(
+        initial["matrix"], f"{label} initial matrix"
+    )
+    solved_native = _assembly_native_placement_from_matrix(
+        solved["matrix"], f"{label} solved matrix"
+    )
+    expected_translation = [
+        float(solved_native.Base[index] - initial_native.Base[index])
+        for index in range(3)
+    ]
+    translation = _assembly_close_numbers(
+        value.get("translation_mm"),
+        expected_translation,
+        f"{label}.translation_mm",
+    )
+    expected_distance = math.sqrt(sum(number * number for number in expected_translation))
+    distance = _assembly_close_numbers(
+        [value.get("translation_distance_mm")],
+        [expected_distance],
+        f"{label}.translation_distance_mm",
+    )[0]
+    initial_quaternion = [float(number) for number in initial_native.Rotation.Q]
+    solved_quaternion = [float(number) for number in solved_native.Rotation.Q]
+    dot = abs(
+        sum(
+            initial_quaternion[index] * solved_quaternion[index]
+            for index in range(4)
+        )
+    )
+    expected_rotation = math.degrees(2.0 * math.acos(max(-1.0, min(1.0, dot))))
+    rotation = _assembly_close_numbers(
+        [value.get("rotation_degrees")],
+        [expected_rotation],
+        f"{label}.rotation_degrees",
+        absolute_tolerance=1.0e-7,
+    )[0]
+    return {
+        "translation_mm": translation,
+        "translation_distance_mm": distance,
+        "rotation_degrees": rotation,
+    }
+
+
 def _assembly_validate_placement_fact(
     value: Any,
     expected: Any,
@@ -8351,6 +8674,7 @@ def _validate_assembly_execution(
     }
     grounded_set: set[str] = set()
     component_placements: dict[str, dict[str, Any]] = {}
+    component_placement_deltas: dict[str, dict[str, Any]] = {}
     component_sources: dict[str, dict[str, Any]] = {}
     component_metadata: dict[str, dict[str, Any]] = {}
     for item in components:
@@ -8626,6 +8950,12 @@ def _validate_assembly_execution(
         solved = _assembly_placement_fact(
             data.get("solved_placement"),
             f"Component output {name!r} solved placement",
+        )
+        component_placement_deltas[name] = _assembly_placement_delta(
+            initial,
+            solved,
+            data.get("authored_to_solved_delta"),
+            f"Component output {name!r} authored-to-solved delta",
         )
         if (
             _finite_matrix(
@@ -9329,6 +9659,8 @@ def _validate_assembly_execution(
             "motion_outputs",
             "parameters",
             "motion_observations",
+            "collision_summary",
+            "collision_warnings",
             "frames",
         }:
             raise ValueError(f"{context} has the wrong schema fields.")
@@ -9362,6 +9694,7 @@ def _validate_assembly_execution(
                 "frame_kind",
                 "nominal_time_s",
                 "component_placements",
+                "collisions",
             }:
                 raise ValueError(f"{context} frame {frame_index} is malformed.")
             expected_kind = "input" if frame_index == 0 else "solver_output"
@@ -9377,6 +9710,9 @@ def _validate_assembly_execution(
                 or raw_frame.get("nominal_time_s") != expected_time
                 or not isinstance(placements, dict)
                 or set(placements) != set(component_names)
+                or not isinstance(raw_frame.get("collisions"), list)
+                or len(raw_frame["collisions"])
+                > (len(component_names) * (len(component_names) - 1)) // 2
             ):
                 raise ValueError(
                     f"{context} frame {frame_index} changed its schedule or components."
@@ -9391,6 +9727,7 @@ def _validate_assembly_execution(
                         )
                         for name in component_names
                     },
+                    "collisions": list(raw_frame["collisions"]),
                 }
             )
         observations = _assembly_motion_observations(
@@ -9399,6 +9736,30 @@ def _validate_assembly_execution(
         if trace.get("motion_observations") != observations:
             raise ValueError(
                 f"{context} motion observations do not match its component poses."
+            )
+        # The version-bound external worker performs the expensive OCCT common
+        # operations away from the GUI thread. The host authenticates its trace
+        # artifact and component inputs, validates every pair record below, and
+        # independently derives the complete summary from those frame records.
+        expected_collision_summary = summarize_dynamic_collision_frames(
+            component_names,
+            [
+                {
+                    "frame_index": int(frame["frame_index"]),
+                    "nominal_time_s": frame["nominal_time_s"],
+                    "collisions": list(frame["collisions"]),
+                }
+                for frame in frames[1:]
+            ],
+            evaluation_warnings=trace.get("collision_warnings"),
+        )
+        if (
+            trace.get("collision_summary") != expected_collision_summary
+            or frames[0]["collisions"] != []
+        ):
+            raise ValueError(
+                f"{context} collision summary does not match its authenticated "
+                "per-frame exact evidence."
             )
         for observation in observations:
             change = (
@@ -9420,6 +9781,7 @@ def _validate_assembly_execution(
             "frame_count": len(frames),
             "pose_count": len(frames) * len(component_names),
             "motion_observations": observations,
+            "collision_summary": expected_collision_summary,
             "artifact_schema": _ASSEMBLY_SIMULATION_TRACE_SCHEMA,
             "artifact_sha256": artifact_digest,
             "artifact_bytes": artifact_bytes,
@@ -9464,6 +9826,10 @@ def _validate_assembly_execution(
         raise ValueError(
             "The Assembly diagnostics solved placements do not match component outputs."
         )
+    if diagnostics.get("component_placement_deltas") != component_placement_deltas:
+        raise ValueError(
+            "The Assembly diagnostics placement deltas do not match component outputs."
+        )
     expected_occurrence_counts = {
         name: int(data.get("occurrence_path_count", 0))
         for name, data in component_metadata.items()
@@ -9482,12 +9848,10 @@ def _validate_assembly_execution(
     native = diagnostics.get("native")
     if not isinstance(native, dict):
         raise ValueError("The Assembly diagnostics have no native solver report.")
-    conflicts = any(
+    invalid_solution = any(
         bool(native.get(name))
         for name in (
             "has_conflicts",
-            "has_redundancies",
-            "has_partial_redundancies",
             "has_malformed_constraints",
         )
     )
@@ -9533,7 +9897,7 @@ def _validate_assembly_execution(
         raise ValueError("The Assembly diagnostics report undeclared BOM outputs.")
     expected_status = (
         "solved"
-        if solver_code == 0 and not conflicts and not dependency_issues
+        if solver_code == 0 and not invalid_solution and not dependency_issues
         else "failed"
     )
     if diagnostics.get("status") != expected_status:
@@ -9556,13 +9920,25 @@ def _validate_assembly_execution(
         )
     if require_solved and (
         solver_code != 0
-        or conflicts
+        or invalid_solution
         or dependency_issues
         or diagnostics.get("status") != "solved"
     ):
         raise ValueError(
             "The Assembly worker claimed a required solution without a clean native "
             "solver result."
+        )
+    expected_solver_scope = solver_validation_scope(
+        constraints_consistent=(
+            expected_status == "solved"
+            and solver_code == 0
+            and not invalid_solution
+            and not expected_dependency_issues
+        )
+    )
+    if diagnostics.get("validation_scope") != expected_solver_scope:
+        raise ValueError(
+            "The Assembly diagnostics misstate what the native solver validated."
         )
     mechanism_scenario = _assembly_shared_mechanism_scenario(
         assembly_item=assembly_item,
@@ -9630,11 +10006,13 @@ def _validate_assembly_execution(
         "grounded_components": grounded,
         "native_diagnostics": native,
         "component_placements": component_placements,
+        "component_placement_deltas": component_placement_deltas,
         "component_occurrence_counts": expected_occurrence_counts,
         "joint_dependency_issues": expected_dependency_issues,
         "internal_member_outputs": [
             str(item["name"]) for item in outputs if item.get("internal") is True
         ],
+        "validation_scope": expected_solver_scope,
     }
     if simulation_summary is not None:
         expected_validation["simulation"] = simulation_summary
@@ -15885,14 +16263,17 @@ def validate_candidate(
             "robot",
         }:
             data = item.get("component_data")
-            if not isinstance(data, Mapping) or set(data) != {
+            required_component_fields = {
                 "schema",
                 "source",
                 "source_metadata",
                 "placement",
                 "placement_authored",
                 "label",
-            }:
+            }
+            if pack.domain == "partdesign":
+                required_component_fields.add("interfaces")
+            if not isinstance(data, Mapping) or set(data) != required_component_fields:
                 raise ValueError(
                     f"Component output {declaration['name']!r} has malformed validation evidence."
                 )
@@ -15931,6 +16312,12 @@ def validate_candidate(
             if type(data.get("placement_authored")) is not bool:
                 raise ValueError(
                     f"Component output {declaration['name']!r} placement authorship is malformed."
+                )
+            if pack.domain == "partdesign" and not isinstance(
+                data.get("interfaces"), Mapping
+            ):
+                raise ValueError(
+                    f"Component output {declaration['name']!r} interfaces are malformed."
                 )
         elif output_type == "mesh" and pack.domain != "fem":
             if item.get("artifact_kind") == "mesh_bms":
@@ -16767,7 +17154,7 @@ class DeclarativeDomainAdapter:
                         "and expected_outputs stay unchanged."
                     ),
                     "reconfigure_program": (
-                        "Compatibility alias for edit_source."
+                        "Alias: edit_source."
                     ),
                 },
                 "revision_rule": (
@@ -16787,6 +17174,7 @@ class DeclarativeDomainAdapter:
                         "properties": {
                             "document_uid": {"type": "string"},
                             "object_name": {"type": "string"},
+                            "document_path": {"type": "string"},
                         },
                         "required": ["document_uid", "object_name"],
                         "additionalProperties": False,
@@ -17675,14 +18063,10 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
         description["api_details"] = {
             "component": {
                 "placement": component_placement_contract(),
-                "definition_rule": (
-                    "One lightweight link for imported/reusable parts; do not copy their "
-                    "BREP to place them."
+                "interfaces": (
+                    "Explicit import origin/frame connectors use api.body's schema; "
+                    "BREP queries are unavailable."
                 ),
-            },
-            "instances": {
-                "placement": "Same as api_details.component.placement.",
-                "definition_rule": "Repeated links; the source BREP is not copied.",
             },
             "constraint": {
                 "kinds": sorted(_CONSTRAINT_KINDS),
@@ -17865,7 +18249,10 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     "Use only option keys and exact defaults/allowed values returned for the "
                     "selected standard and nominal_thread. The catalog response is the option schema."
                 ),
-                "threads": "model_thread is a boolean; true builds real helical thread geometry.",
+                "threads": (
+                    "Real helical thread geometry is the default. Set "
+                    "model_thread=False only for a deliberate lightweight envelope."
+                ),
             },
             "appearance": {
                 "display_mode": {
@@ -22884,7 +23271,8 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "instruction": (
                             "Use api.solve(model) for accepted production geometry. Use "
                             "require_solved=False only when the user explicitly wants a "
-                            "diagnostic snapshot of an incomplete or conflicting mechanism."
+                            "diagnostic snapshot of an incomplete or conflicting mechanism. "
+                            "Solved proves joint consistency only, never proper operation."
                         ),
                     },
                     {
@@ -23571,6 +23959,12 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                     "or derive a connector from nearby geometry."
                 ),
                 "axis_rule": "Connector local +Z is the joint axis.",
+                "offset_rule": (
+                    "offset is expressed in the complete local connector frame and is "
+                    "applied after the selected or published interface frame. For example, "
+                    "offset=[0,0,10] moves 10 mm along that connector's local +Z joint "
+                    "axis, not necessarily global +Z."
+                ),
                 "contract_rule": (
                     "allowed_joints and compatibility are explicit authored contracts. "
                     "Compatibility tokens must match exactly; otherwise the native joint "
@@ -23592,7 +23986,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "Required and non-zero for rack_pinion; sign selects direction."
                     ),
                     "thread_pitch_mm": (
-                        "Required and non-zero for screw; sign selects handedness/direction."
+                        "Required and non-zero for screw; sign selects handedness/direction. "
+                        "A non-suppressed collinear slider sharing the translating component "
+                        "must also be included in api.assembly."
                     ),
                     "radius1_mm/radius2_mm": (
                         "Both are required and positive for gears and belt."

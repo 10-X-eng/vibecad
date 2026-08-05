@@ -7,6 +7,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from VibeCADMechanismEngine import solver_validation_scope
 from VibeCADTransactions import run_freecad_transaction
 import VibeCADReferenceContracts as reference_contracts
 
@@ -330,6 +331,11 @@ def run(
         solver_code = int(target_assembly.solve(False))
         active.recompute()
         solver_diagnostics = domain_runtime.assembly_solver_diagnostics(target_assembly)
+        constraints_consistent = (
+            solver_code == 0
+            and not solver_diagnostics.get("has_conflicts")
+            and not solver_diagnostics.get("has_malformed_constraints")
+        )
         return {
             "document": active.Name,
             "assembly": target_assembly.Name,
@@ -348,6 +354,9 @@ def run(
             "solver_code": solver_code,
             "solver_verdict": domain_runtime.assembly_solver_verdict(solver_code),
             "solver_diagnostics": solver_diagnostics,
+            "validation_scope": solver_validation_scope(
+                constraints_consistent=constraints_consistent
+            ),
             "component_placements_before": placements_before,
             "component_placements_after": {
                 parsed["component_name"]: {
@@ -381,8 +390,6 @@ def run(
                 "name": "solver_result",
                 "ok": int(result.get("solver_code", -1)) == 0
                 and not diagnostics.get("has_conflicts")
-                and not diagnostics.get("has_redundancies")
-                and not diagnostics.get("has_partial_redundancies")
                 and not diagnostics.get("has_malformed_constraints"),
                 "solver_code": result.get("solver_code"),
                 "diagnostics": diagnostics,
@@ -400,8 +407,9 @@ def run(
         transaction,
         extra={"operation": f"create_{kind}_joint", "mutation": mutation},
         next_action=(
-            "Check solver_verdict and the returned component placements, then "
-            "add the next joint or run assembly.solve."
+            "Check solver_verdict and placements. A solved verdict proves only "
+            "joint-constraint consistency; verify collision/clearance and motion "
+            "before claiming proper operation."
         ),
     )
     return envelope

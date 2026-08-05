@@ -57,6 +57,9 @@ PROP_MECHANISM_STATIC_CHECK = "VibeCADMechanismStaticCheck"
 PROP_MECHANISM_VERIFICATION_REPORT = "VibeCADMechanismVerificationReport"
 PROP_PARTDESIGN_HISTORY_KEY = "VibeCADPartDesignHistoryKey"
 PROP_PARTDESIGN_COMPONENT_OCCURRENCES = "VibeCADPartDesignComponentOccurrences"
+PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES = (
+    "VibeCADPartDesignComponentOccurrenceNames"
+)
 PROP_COMPONENT_AUTHORED_PLACEMENT = "VibeCADComponentAuthoredPlacement"
 PROP_ASSEMBLY_ADOPTED_OUTPUTS = "VibeCADAssemblyAdoptedOutputs"
 PROP_ASSEMBLY_ADOPTED_OCCURRENCES = "VibeCADAssemblyAdoptedOccurrences"
@@ -305,6 +308,47 @@ def _add_string_property(obj: Any, name: str, description: str) -> None:
 def _add_property(obj: Any, property_type: str, name: str, description: str) -> None:
     if name not in _properties(obj):
         obj.addProperty(property_type, name, "VibeCAD", description)
+
+
+def _ensure_input_link_property(
+    obj: Any,
+    property_type: str,
+    description: str,
+) -> None:
+    """Keep accepted input links capable of representing their exact documents."""
+
+    if PROP_INPUT_OBJECTS not in _properties(obj):
+        obj.addProperty(
+            property_type,
+            PROP_INPUT_OBJECTS,
+            "VibeCAD",
+            description,
+        )
+        return
+    current_type = str(obj.getTypeIdOfProperty(PROP_INPUT_OBJECTS) or "")
+    if current_type == property_type:
+        return
+    if (
+        current_type == "App::PropertyLinkList"
+        and property_type == "App::PropertyXLinkList"
+    ):
+        previous = list(getattr(obj, PROP_INPUT_OBJECTS, []) or [])
+        if not obj.removeProperty(PROP_INPUT_OBJECTS):
+            raise RuntimeError(
+                f"Could not upgrade {PROP_INPUT_OBJECTS!r} for cross-document inputs."
+            )
+        obj.addProperty(
+            property_type,
+            PROP_INPUT_OBJECTS,
+            "VibeCAD",
+            description,
+        )
+        setattr(obj, PROP_INPUT_OBJECTS, previous)
+        return
+    raise RuntimeError(
+        f"{PROP_INPUT_OBJECTS!r} has unsupported type {current_type!r}; "
+        f"expected {property_type!r}."
+    )
 
 
 def _hide_property(obj: Any, name: str) -> None:
@@ -1122,20 +1166,28 @@ def _set_metadata(
         ),
     )
     _hide_property(obj, contracts.PROP_PROGRAM_CONTRACT)
-    input_link_property_type = (
-        "App::PropertyXLinkList"
-        if prepared["pack"].domain == "assembly"
-        and output_type == _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE
-        else "App::PropertyLinkList"
-    )
-    _add_property(
-        obj,
-        input_link_property_type,
-        PROP_INPUT_OBJECTS,
-        "Live document objects snapshotted as inputs for this accepted output.",
-    )
     document = getattr(obj, "Document", None)
     resolved_references = list(prepared.get("resolved_references") or [])
+    document_uid = str(getattr(document, "Uid", "") or "")
+    has_external_input = any(
+        str(reference.get("document_uid") or "")
+        and str(reference.get("document_uid") or "") != document_uid
+        for reference in resolved_references
+    )
+    input_link_property_type = (
+        "App::PropertyXLinkList"
+        if has_external_input
+        or (
+            prepared["pack"].domain == "assembly"
+            and output_type == _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE
+        )
+        else "App::PropertyLinkList"
+    )
+    _ensure_input_link_property(
+        obj,
+        input_link_property_type,
+        "Live document objects snapshotted as inputs for this accepted output.",
+    )
     targets = []
     snapshots = []
     for reference in resolved_references:
@@ -1272,19 +1324,31 @@ def _set_metadata(
     setattr(obj, reference_contracts.PROP_SOURCE_REVISION, str(prepared["revision"]))
 
 
+def source_property_affects_vibescript_snapshot(property_name: str) -> bool:
+    """Return whether one native property notification changes source semantics."""
+
+    changed_property = str(property_name or "")
+    return not (
+        not changed_property
+        or changed_property.startswith("VibeCAD")
+        or changed_property
+        in {
+            "_GroupTouched",
+            "_LinkTouched",
+            "ShowInTree",
+            "Visibility",
+        }
+    )
+
+
 def mark_programs_stale_from_source(source: Any, property_name: str) -> list[str]:
     """Mark v2 outputs stale when a linked native snapshot source changes."""
 
     changed_property = str(property_name or "")
-    if (
-        not changed_property
-        or changed_property.startswith("VibeCAD")
-        or changed_property in {"_GroupTouched", "ShowInTree", "Visibility"}
-    ):
-        # GroupExtension emits _GroupTouched every time it executes. Actual
-        # membership edits emit Group separately. ShowInTree and Visibility
-        # are presentation choices. None changes the captured geometry or
-        # contract consumed by a VibeScript input.
+    if not source_property_affects_vibescript_snapshot(changed_property):
+        # Group and Link extensions emit their private touched properties while
+        # executing and restoring. Actual membership, placement, geometry, and
+        # published-contract edits emit their own properties separately.
         return []
     label_only = changed_property == "Label"
     marked: list[str] = []
@@ -2985,6 +3049,16 @@ def _prepare_assembly_fastener_sources(
                     is replaced_source
                 ):
                     candidate.LinkedObject = source
+                    if (
+                        "VibeCADTimelineEditor" in _properties(candidate)
+                        and getattr(
+                            candidate,
+                            "VibeCADTimelineEditor",
+                            None,
+                        )
+                        is replaced_source
+                    ):
+                        candidate.VibeCADTimelineEditor = source
             owned = [
                 candidate for candidate in owned if candidate is not replaced_source
             ]
@@ -3474,6 +3548,22 @@ def _configure_adopted_assembly_component(
         obj.Placement = _placement(
             properties.get("placement") or properties.get("position")
         )
+
+
+def _configure_new_assembly_presentation(
+    assembly: Any,
+    items: list[Mapping[str, Any]],
+    outputs: Mapping[str, Any],
+) -> None:
+    """Give a new Assembly one visible occurrence set without overriding edits."""
+
+    _set_view_visibility(assembly, True)
+    for item in items:
+        if str(item.get("type") or "") != "component_link":
+            continue
+        occurrence = outputs.get(str(item.get("name") or ""))
+        if occurrence is not None:
+            _set_view_visibility(occurrence, True)
 
 
 def _configure_component_grounding(
@@ -4095,6 +4185,68 @@ def _configure_assembly_simulation(
             "VibeCADTraceSHA256",
             str(data["artifact_sha256"]),
             "SHA-256 of the retained complete native simulation trace.",
+        ),
+    ):
+        _add_property(obj, property_type, name, description)
+        setattr(obj, name, value)
+    collision = data.get("collision_summary")
+    if (
+        not isinstance(collision, Mapping)
+        or collision.get("status") not in {"complete", "incomplete"}
+    ):
+        raise RuntimeError(
+            "An Assembly simulation has no authenticated collision summary."
+        )
+    for property_type, name, value, description in (
+        (
+            "App::PropertyBool",
+            "VibeCADCollisionAnalysisComplete",
+            bool(collision.get("analysis_complete", True)),
+            "True when every requested component pair and simulation frame was evaluated for collision.",
+        ),
+        (
+            "App::PropertyBool",
+            "VibeCADCollisionFree",
+            bool(collision["collision_free"]),
+            "True when no component collision is detected in any simulated frame.",
+        ),
+        (
+            "App::PropertyInteger",
+            "VibeCADCollisionWarningCount",
+            int(collision.get("warning_count", 0)),
+            "Number of authenticated warnings produced by automatic collision analysis.",
+        ),
+        (
+            "App::PropertyInteger",
+            "VibeCADCollidingPairCount",
+            int(collision["colliding_pair_count"]),
+            "Number of component pairs that collide during the simulation.",
+        ),
+        (
+            "App::PropertyInteger",
+            "VibeCADCollidingFrameCount",
+            int(collision["colliding_frame_count"]),
+            "Number of simulated frames containing at least one interference.",
+        ),
+        (
+            "App::PropertyBool",
+            "VibeCADInterferenceVolumeComplete",
+            bool(collision.get("interference_volume_complete", True)),
+            "True only when exact common volume was measured for every collision; false for bounded collision-mesh or strict-containment detection.",
+        ),
+        (
+            "App::PropertyVolume",
+            "VibeCADWorstInterferenceVolume",
+            (
+                0.0
+                if collision["worst_collision"] is None
+                else float(
+                    collision["worst_collision"][
+                        "maximum_interference_volume_mm3"
+                    ]
+                )
+            ),
+            "Largest measured common volume; zero when detected collisions were not volume-measured.",
         ),
     ):
         _add_property(obj, property_type, name, description)
@@ -12354,6 +12506,9 @@ def _assembly_model_evidence(item: Mapping[str, Any]) -> dict[str, Any] | None:
             "occurrence_paths_truncated": len(paths) > 256,
             "occurrence_paths_omitted": max(0, len(paths) - 256),
             "solved_placement": dict(data.get("solved_placement") or {}),
+            "authored_to_solved_delta": dict(
+                data.get("authored_to_solved_delta") or {}
+            ),
             "solved_occurrences": states,
             "solved_occurrences_truncated": len(raw_states) > len(states),
             "solved_occurrences_omitted": max(0, len(raw_states) - len(states)),
@@ -12486,7 +12641,21 @@ def _assembly_model_evidence(item: Mapping[str, Any]) -> dict[str, Any] | None:
             ),
         }
     if output_type in {"assembly", "solver_diagnostics", "motion", "simulation"}:
-        return dict(data)
+        evidence = dict(data)
+        if output_type == "solver_diagnostics":
+            diagnostics = item.get("diagnostics")
+            validation_scope = (
+                diagnostics.get("validation_scope")
+                if isinstance(diagnostics, Mapping)
+                else None
+            )
+            if isinstance(validation_scope, Mapping):
+                # This is authenticated against the native solver result before
+                # publication. Keep the solver's deliberately narrow claim in
+                # every durable source/result view instead of reducing a clean
+                # constraint solve to the misleading word "accepted".
+                evidence["validation_scope"] = dict(validation_scope)
+        return evidence
     if output_type == "exploded_view":
         return {
             key: data.get(key)
@@ -13073,10 +13242,11 @@ def _partdesign_interface_table(
     for item in list(validated.get("outputs") or []):
         output_name = str(item["name"])
         published = publications[output_name]
-        data = item.get("partdesign_data")
-        if str(item.get("type") or "") == "component_link":
-            outputs[output_name] = {}
-            continue
+        data = (
+            item.get("component_data")
+            if str(item.get("type") or "") == "component_link"
+            else item.get("partdesign_data")
+        )
         if not isinstance(data, Mapping):
             raise RuntimeError(
                 f"Part Design output {output_name!r} has no interface evidence."
@@ -13130,20 +13300,149 @@ def _partdesign_interface_table(
 
 
 def _partdesign_component_occurrences(root: Any) -> list[Any]:
-    if PROP_PARTDESIGN_COMPONENT_OCCURRENCES not in _properties(root):
+    properties = _properties(root)
+    occurrences: list[Any]
+    if PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES in properties:
+        names = [
+            str(name or "")
+            for name in list(
+                getattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES, []) or []
+            )
+        ]
+        if any(not name or "." in name for name in names):
+            raise RuntimeError(
+                f"Part Design program {root.Name!r} has malformed component-"
+                "occurrence names."
+            )
+        if len(set(names)) != len(names):
+            raise RuntimeError(
+                f"Part Design program {root.Name!r} lists a component occurrence "
+                "more than once."
+            )
+        document = getattr(root, "Document", None)
+        occurrences = [
+            document.getObject(name) if document is not None else None
+            for name in names
+        ]
+        if any(occurrence is None for occurrence in occurrences):
+            missing = [
+                name
+                for name, occurrence in zip(names, occurrences)
+                if occurrence is None
+            ]
+            raise RuntimeError(
+                f"Part Design program {root.Name!r} references missing component "
+                f"occurrence(s): {', '.join(missing)}."
+            )
+    elif PROP_PARTDESIGN_COMPONENT_OCCURRENCES in properties:
+        # Compatibility with the first component-occurrence documents. The
+        # migration below converts these live links to stable object names so
+        # an earlier program root never gains forward History dependencies on
+        # its later, independently placed occurrences.
+        occurrences = list(
+            getattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, []) or []
+        )
+    else:
         return []
-    return list(getattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, []) or [])
+
+    program_id = str(getattr(root, contracts.PROP_PROGRAM_ID, "") or "")
+    for occurrence in occurrences:
+        if not _is_partdesign_component_occurrence(occurrence):
+            raise RuntimeError(
+                f"Part Design program {root.Name!r} references an invalid "
+                "component occurrence."
+            )
+        occurrence_program_id = str(
+            getattr(occurrence, contracts.PROP_PROGRAM_ID, "") or ""
+        )
+        if program_id and occurrence_program_id != program_id:
+            raise RuntimeError(
+                f"Part Design program {root.Name!r} cannot own component "
+                f"occurrence {occurrence.Name!r} from another VibeScript program."
+            )
+    return occurrences
 
 
 def _set_partdesign_component_occurrences(root: Any, occurrences: list[Any]) -> None:
+    occurrences = list(occurrences)
+    program_id = str(getattr(root, contracts.PROP_PROGRAM_ID, "") or "")
+    if len({id(occurrence) for occurrence in occurrences}) != len(occurrences):
+        raise RuntimeError(
+            "One component occurrence cannot appear more than once in a Part "
+            "Design program."
+        )
+    for occurrence in occurrences:
+        if not _is_partdesign_component_occurrence(occurrence):
+            raise RuntimeError("Part Design component-occurrence metadata is invalid.")
+        occurrence_program_id = str(
+            getattr(occurrence, contracts.PROP_PROGRAM_ID, "") or ""
+        )
+        if program_id and occurrence_program_id != program_id:
+            raise RuntimeError(
+                f"Component occurrence {occurrence.Name!r} belongs to another "
+                "VibeScript program."
+            )
+    _add_property(
+        root,
+        "App::PropertyStringList",
+        PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES,
+        "Stable object names of top-level reusable component occurrences owned "
+        "by this Design program.",
+    )
     _add_property(
         root,
         "App::PropertyLinkList",
         PROP_PARTDESIGN_COMPONENT_OCCURRENCES,
-        "Top-level reusable component occurrences owned by this Design program.",
+        "Legacy component-occurrence links retained for document compatibility.",
     )
-    setattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, list(occurrences))
+    setattr(
+        root,
+        PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES,
+        [str(occurrence.Name) for occurrence in occurrences],
+    )
+    # A normal PropertyLinkList participates in the modeling dependency graph.
+    # Keeping later top-level occurrences here makes every subsequent History
+    # operation invalid. Preserve the legacy property surface, but never store
+    # ownership metadata as live modeling links.
+    setattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, [])
+    _hide_property(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES)
     _hide_property(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES)
+
+
+def migrate_partdesign_component_occurrence_links(doc: Any) -> dict[str, Any]:
+    """Replace legacy forward dependency links with exact object-name metadata."""
+
+    migrated: list[str] = []
+    for root in list(getattr(doc, "Objects", []) or []):
+        properties = _properties(root)
+        if PROP_PARTDESIGN_COMPONENT_OCCURRENCES not in properties:
+            continue
+        if (
+            str(getattr(root, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+            != "partdesign"
+        ):
+            continue
+        legacy = list(
+            getattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, []) or []
+        )
+        has_names = PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES in properties
+        if has_names:
+            named = _partdesign_component_occurrences(root)
+            if legacy and [str(item.Name) for item in legacy] != [
+                str(item.Name) for item in named
+            ]:
+                raise RuntimeError(
+                    f"Part Design program {root.Name!r} has conflicting legacy "
+                    "and current component-occurrence metadata."
+                )
+            occurrences = named
+        else:
+            occurrences = legacy
+        if not legacy and has_names:
+            continue
+        _set_partdesign_component_occurrences(root, occurrences)
+        migrated.append(str(root.Name))
+    return {"migrated_programs": migrated}
 
 
 def _is_partdesign_component_occurrence(obj: Any) -> bool:
@@ -15594,13 +15893,32 @@ def _publish_partdesign_design_candidate(
         name = str(item["name"])
         output_type = str(item["type"])
         published = publications[name]
+        partdesign_data = dict(item.get("partdesign_data") or {})
+        component_data = dict(item.get("component_data") or {})
+        authored_label = str(
+            (
+                component_data.get("label")
+                if output_type == "component_link"
+                else partdesign_data.get("body_label")
+            )
+            or published.Label
+        )
         row = {
             "object_name": str(published.Name),
-            "label": str(published.Label),
+            # The stable hidden App::Link can receive FreeCAD's duplicate-label
+            # suffix because the visible native Body already owns the authored
+            # label. Tool results describe the authored output, not that hidden
+            # carrier's presentation detail.
+            "label": authored_label,
             "type_id": str(published.TypeId),
             "output_type": output_type,
             "facts": dict(item.get("facts") or {}),
-            "partdesign_data": dict(item.get("partdesign_data") or {}),
+            "partdesign_data": partdesign_data,
+            **(
+                {"component_data": component_data}
+                if component_data
+                else {}
+            ),
             "derived_state": str(
                 getattr(
                     published,
@@ -16080,6 +16398,11 @@ def publish_candidate(
         raise RuntimeError(
             "The document changed while the domain worker ran; regenerate on the live state."
         )
+    # Older Part Design component programs stored top-level occurrences in a
+    # normal LinkList on their earlier program root. Repair that bookkeeping
+    # before any domain finalizes another History operation; otherwise the
+    # legacy forward dependency invalidates unrelated Model and Assembly work.
+    migrate_partdesign_component_occurrence_links(doc)
     domain = str(prepared["pack"].domain)
     if domain not in _TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN:
         raise RuntimeError(
@@ -16846,6 +17169,12 @@ def publish_candidate(
             _set_assembly_adopted_occurrences(
                 assembly_dependency_anchor,
                 assembly_adoptions,
+            )
+        if assembly is not None and any(obj is assembly for obj in created):
+            _configure_new_assembly_presentation(
+                assembly,
+                list(validated["outputs"]),
+                outputs,
             )
         unreconciled_fastener_source_identities = [
             identity

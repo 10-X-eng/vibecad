@@ -72,6 +72,7 @@
 #include <App/StringHasherPy.h>
 #include <Base/FileInfo.h>
 #include <Base/GeometryPyCXX.h>
+#include <Base/Interpreter.h>
 #include <Base/MatrixPy.h>
 #include <Base/PyWrapParseTupleAndKeywords.h>
 #include <Base/Rotation.h>
@@ -796,7 +797,36 @@ PyObject* TopoShapePy::multiFuse(PyObject* args, PyObject* keywds) const
 
 PyObject* TopoShapePy::common(PyObject* args) const
 {
-    return makeShape(Part::OpCodes::Common, *getTopoShapePtr(), args);
+    double tol = 0.0;
+    PyObject* pcObj;
+    PyObject* validateInputs = Py_True;
+    if (!PyArg_ParseTuple(args, "O|dO!", &pcObj, &tol, &PyBool_Type, &validateInputs)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        std::vector<TopoShape> shapes;
+        shapes.push_back(*getTopoShapePtr());
+        getPyShapes(pcObj, shapes);
+        if (!Base::asBoolean(validateInputs)) {
+            std::vector<TopoDS_Shape> tools;
+            tools.reserve(shapes.size() - 1);
+            for (auto it = shapes.begin() + 1; it != shapes.end(); ++it) {
+                tools.push_back(it->getShape());
+            }
+            return Py::new_reference_to(
+                shape2pyshape(TopoShape(getTopoShapePtr()->common(tools, tol)))
+            );
+        }
+        return Py::new_reference_to(shape2pyshape(TopoShape().makeElementBoolean(
+            Part::OpCodes::Common,
+            shapes,
+            nullptr,
+            tol,
+            ElementMapPolicy::Propagate
+        )));
+    }
+    PY_CATCH_OCC
 }
 
 PyObject* TopoShapePy::section(PyObject* args) const
@@ -2106,6 +2136,61 @@ PyObject* TopoShapePy::isInside(PyObject* args) const
     }
 }
 
+PyObject* TopoShapePy::classifyInside(PyObject* args) const
+{
+    PyObject* points;
+    double tolerance;
+    PyObject* checkFace = Py_False;
+    if (!PyArg_ParseTuple(args, "OdO!", &points, &tolerance, &PyBool_Type, &checkFace)) {
+        return nullptr;
+    }
+
+    try {
+        const TopoDS_Shape& shape = getTopoShapePtr()->getShape();
+        if (shape.IsNull()) {
+            PyErr_SetString(PartExceptionOCCError, "Cannot handle null shape");
+            return nullptr;
+        }
+        if (shape.ShapeType() == TopAbs_VERTEX || shape.ShapeType() == TopAbs_EDGE
+            || shape.ShapeType() == TopAbs_WIRE || shape.ShapeType() == TopAbs_FACE) {
+            PyErr_SetString(
+                PartExceptionOCCError,
+                "classifyInside requires a solid, compsolid, or solid compound"
+            );
+            return nullptr;
+        }
+
+        Py::Sequence sequence(points);
+        BRepClass3d_SolidClassifier classifier(shape);
+        Py::List results;
+        for (Py::Sequence::iterator it = sequence.begin(); it != sequence.end(); ++it) {
+            if (!PyObject_TypeCheck((*it).ptr(), &Base::VectorPy::Type)) {
+                PyErr_SetString(PyExc_TypeError, "classifyInside points must be Vectors");
+                return nullptr;
+            }
+            const Base::Vector3d point = static_cast<Base::VectorPy*>((*it).ptr())->value();
+            classifier.Perform(gp_Pnt(point.x, point.y, point.z), tolerance);
+            bool inside = classifier.State() == TopAbs_IN;
+            if (Base::asBoolean(checkFace) && classifier.IsOnAFace()) {
+                inside = true;
+            }
+            results.append(Py::Boolean(inside));
+        }
+        return Py::new_reference_to(results);
+    }
+    catch (const Py::Exception&) {
+        return nullptr;
+    }
+    catch (const Standard_Failure& e) {
+        PyErr_SetString(PartExceptionOCCError, e.GetMessageString());
+        return nullptr;
+    }
+    catch (const std::exception& e) {
+        PyErr_SetString(PartExceptionOCCError, e.what());
+        return nullptr;
+    }
+}
+
 PyObject* TopoShapePy::removeSplitter(PyObject* args) const
 {
     if (!PyArg_ParseTuple(args, "")) {
@@ -2370,20 +2455,30 @@ PyObject* TopoShapePy::proximity(PyObject* args) const
     }
 
     BRepExtrema_ShapeProximity proximity;
-    proximity.LoadShape1(s1);
-    proximity.LoadShape2(s2);
-    if (tol > 0.0) {
-        proximity.SetTolerance(tol);
+    Standard_Boolean isShape1Loaded;
+    Standard_Boolean isShape2Loaded;
+    {
+        Base::PyGILStateRelease releaser;
+        isShape1Loaded = proximity.LoadShape1(s1);
+        isShape2Loaded = proximity.LoadShape2(s2);
+        if (isShape1Loaded && isShape2Loaded) {
+            if (tol > 0.0) {
+                proximity.SetTolerance(tol);
+            }
+            proximity.Perform();
+        }
     }
-
-    proximity.Perform();
-    if (!proximity.IsDone()) {
+    if (!isShape1Loaded || !isShape2Loaded) {
         PyErr_SetString(
             PartExceptionOCCError,
-            "BRepExtrema_ShapeProximity failed, make sure the shapes are tessellated"
+            "BRepExtrema_ShapeProximity requires every face to be tessellated"
         );
         return nullptr;
     }
+    // In OCCT, IsDone() reports whether at least one triangle pair overlaps;
+    // it is false for a successful search that finds no overlap. Loading both
+    // shapes above is the actual initialization/error check. Empty overlap maps
+    // therefore represent a valid, collision-free result.
 
     Py::List overlappssindex1;
     Py::List overlappssindex2;

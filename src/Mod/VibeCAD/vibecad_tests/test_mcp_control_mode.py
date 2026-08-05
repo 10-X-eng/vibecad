@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 import sys
 import threading
 import time
@@ -52,6 +53,73 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("Timed out waiting for controller state.")
+
+
+def test_mcp_listener_collision_reports_one_actionable_failure() -> None:
+    first = mcp._bind_mcp_listener("127.0.0.1", 0)
+    try:
+        port = int(first.getsockname()[1])
+        try:
+            duplicate = mcp._bind_mcp_listener("127.0.0.1", port)
+        except RuntimeError as exc:
+            message = str(exc)
+            assert f"127.0.0.1:{port}" in message
+            assert "another VibeCAD instance" in message
+        else:
+            duplicate.close()
+            raise AssertionError("A second MCP listener unexpectedly claimed the port.")
+    finally:
+        first.close()
+
+
+def test_http_session_shutdown_terminates_every_persistent_response() -> None:
+    calls = []
+
+    class Transport:
+        def __init__(self, name: str, *, fails: bool = False) -> None:
+            self.name = name
+            self.fails = fails
+
+        async def terminate(self) -> None:
+            calls.append(self.name)
+            if self.fails:
+                raise RuntimeError("already closed")
+
+    server = SimpleNamespace(
+        session_manager=SimpleNamespace(
+            _server_instances={
+                "first": Transport("first", fails=True),
+                "second": Transport("second"),
+            }
+        )
+    )
+
+    asyncio.run(mcp._terminate_mcp_http_sessions(server))
+
+    assert calls == ["first", "second"]
+
+
+def test_application_shutdown_waits_for_mcp_lifecycle_threads() -> None:
+    joins = []
+
+    class LifecycleThread:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def join(self, timeout: float) -> None:
+            joins.append((self.name, timeout))
+
+    controller = mcp.VibeCADControlModeController()
+    controller._start_thread = LifecycleThread("start")
+    controller._monitor_thread = LifecycleThread("monitor")
+
+    controller.shutdown(wait=True)
+
+    assert controller._application_shutting_down is True
+    assert joins == [
+        ("start", mcp.MCP_START_TIMEOUT_SECONDS + 1.0),
+        ("monitor", mcp.MCP_STOP_TIMEOUT_SECONDS + 2.0),
+    ]
 
 
 def test_control_mode_state_machine_never_enables_both_controllers() -> None:
@@ -149,6 +217,28 @@ def test_start_failure_keeps_internal_agent_blocked_until_child_is_gone() -> Non
     assert recovered["last_error"] == "synthetic failure"
 
 
+def test_endpoint_collision_does_not_disable_persisted_mcp_preference() -> None:
+    events = []
+    controller = mcp.VibeCADControlModeController()
+    controller._event_callback = events.append
+    controller._transition_id = 3
+    controller._desired_mode = mcp.ControlMode.MCP
+    controller._state = mcp.ControllerState.STARTING_MCP
+
+    controller._handle_server_event(
+        3,
+        {
+            "event": "error",
+            "failure_code": "MCP_ENDPOINT_UNAVAILABLE",
+            "error": "another VibeCAD instance owns the endpoint",
+        },
+    )
+
+    assert controller.snapshot()["state"] == "internal"
+    assert events[-1]["event"] == "mcp_error"
+    assert events[-1]["rollback_preference"] is False
+
+
 def test_unconfigured_host_rejects_mcp_and_requests_preference_rollback() -> None:
     events = []
     controller = mcp.VibeCADControlModeController()
@@ -164,15 +254,15 @@ def test_unconfigured_host_rejects_mcp_and_requests_preference_rollback() -> Non
     assert events[-1]["rollback_preference"] is True
 
 
-def test_host_surface_is_exact_internal_schema_plus_two_controller_tools() -> None:
+def test_host_surface_is_exact_internal_schema_plus_controller_tools() -> None:
     schemas = [
         {
             "name": "vibescript.read_source",
             "description": "Read one exact source.",
             "parameters": {
                 "type": "object",
-                "properties": {"source_id": {"type": "string"}},
-                "required": ["source_id"],
+                "properties": {"program": {"type": "string"}},
+                "required": ["program"],
                 "additionalProperties": False,
             },
         },
@@ -206,9 +296,7 @@ def test_host_surface_is_exact_internal_schema_plus_two_controller_tools() -> No
         ),
     }
     with mock.patch.dict(sys.modules, modules):
-        session = mcp._HostToolSession(
-            lambda operation: operation(), threading.Event()
-        )
+        session = mcp._HostToolSession(lambda operation: operation(), threading.Event())
         listed = session.list_tools()
 
     listed_tools = listed["tools"]
@@ -216,7 +304,391 @@ def test_host_surface_is_exact_internal_schema_plus_two_controller_tools() -> No
     assert [item["name"] for item in listed_tools[len(schemas) :]] == [
         mcp.READ_WORKBENCH_TOOL,
         mcp.SWITCH_WORKBENCH_TOOL,
+        mcp.RECOVER_DOCUMENTS_TOOL,
+        mcp.MANAGE_DOCUMENT_TOOL,
     ]
+
+
+def test_manage_document_rejects_unknown_action_before_gui_dispatch() -> None:
+    dispatched = []
+    session = mcp._HostToolSession(
+        lambda operation: dispatched.append(operation), threading.Event()
+    )
+
+    result = session.call_tool(
+        mcp.MANAGE_DOCUMENT_TOOL,
+        {"action": "guess"},
+    )["result"]
+
+    assert result["ok"] is False
+    assert result["failure_code"] == "DOCUMENT_ACTION_INVALID"
+    assert dispatched == []
+
+
+def test_read_operation_uses_existing_runner_without_live_surface_refresh() -> None:
+    session = mcp._HostToolSession(lambda operation: operation(), threading.Event())
+    calls = []
+
+    def runner(name: str, arguments: str) -> dict:
+        calls.append((name, json.loads(arguments)))
+        return {
+            "ok": True,
+            "operation": {"operation_id": "operation-7", "status": "running"},
+        }
+
+    session._runner = runner
+    session._live_surface = mock.Mock(
+        side_effect=AssertionError("status reads must not refresh the live surface")
+    )
+    provider = SimpleNamespace(_provider_visible_tool_result=lambda result: result)
+    with mock.patch.dict(sys.modules, {"VibeCADProvider": provider}):
+        result = session.call_tool(
+            "vibescript.read_operation",
+            {"operation_id": "operation-7", "wait_seconds": 0},
+        )["result"]
+
+    assert result["ok"] is True
+    assert result["operation"]["status"] == "running"
+    assert calls == [
+        (
+            "vibescript.read_operation",
+            {"operation_id": "operation-7", "wait_seconds": 0},
+        )
+    ]
+    session._live_surface.assert_not_called()
+
+
+def test_zero_wait_mcp_operation_read_returns_cached_state_while_host_is_busy() -> None:
+    release_refresh = threading.Event()
+    refresh_started = threading.Event()
+
+    class Proxy:
+        def __init__(self) -> None:
+            self.status_calls = 0
+
+        def request(self, method: str, **parameters):
+            assert method == "call_tool"
+            if parameters["name"] == "vibescript.create_program":
+                return {
+                    "result": {
+                        "ok": True,
+                        "operation": {
+                            "operation_id": "operation-3",
+                            "status": "running",
+                            "progress": {"event": "queued"},
+                        },
+                    },
+                    "image_attachment": None,
+                }
+            assert parameters == {
+                "name": "vibescript.read_operation",
+                "arguments": {
+                    "operation_id": "operation-3",
+                    "wait_seconds": 0,
+                },
+            }
+            self.status_calls += 1
+            refresh_started.set()
+            assert release_refresh.wait(2.0)
+            return {
+                "result": {
+                    "ok": True,
+                    "operation": {
+                        "operation_id": "operation-3",
+                        "status": "succeeded",
+                    },
+                    "operation_succeeded": True,
+                    "result": {"ok": True, "accepted_revision": "a" * 64},
+                },
+                "image_attachment": None,
+            }
+
+    proxy = Proxy()
+    cache = mcp._ServerOperationStatusCache(proxy, threading.Event())
+    created = cache.request(
+        "call_tool",
+        name="vibescript.create_program",
+        arguments={},
+    )
+    assert created["result"]["operation"]["status"] == "running"
+
+    started = time.monotonic()
+    status = cache.request(
+        "call_tool",
+        name="vibescript.read_operation",
+        arguments={"operation_id": "operation-3", "wait_seconds": 0},
+    )
+    assert time.monotonic() - started < 0.1
+    assert status["result"]["operation"]["status"] == "running"
+    assert refresh_started.wait(1.0)
+
+    release_refresh.set()
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        status = cache.request(
+            "call_tool",
+            name="vibescript.read_operation",
+            arguments={"operation_id": "operation-3", "wait_seconds": 0},
+        )
+        if status["result"]["operation"]["status"] == "succeeded":
+            break
+        time.sleep(0.01)
+    assert status["result"]["operation"]["status"] == "succeeded"
+    assert proxy.status_calls == 1
+
+
+def test_manage_document_save_clears_native_gui_modified_state() -> None:
+    class Document:
+        Name = "Robot"
+        Label = "Robot"
+        FileName = "/tmp/Robot.FCStd"
+        Objects = [object()]
+
+        def __init__(self) -> None:
+            self.saved = False
+
+        def save(self) -> None:
+            self.saved = True
+
+    document = Document()
+    gui_document = SimpleNamespace(Modified=True)
+    app = SimpleNamespace(
+        ActiveDocument=document,
+        listDocuments=lambda: {document.Name: document},
+    )
+    gui = SimpleNamespace(
+        getDocument=lambda name: gui_document if name == document.Name else None
+    )
+    qt_widgets = SimpleNamespace(
+        QApplication=SimpleNamespace(topLevelWidgets=lambda: [])
+    )
+    with mock.patch.dict(
+        sys.modules,
+        {
+            "FreeCAD": app,
+            "FreeCADGui": gui,
+            "PySide": SimpleNamespace(QtWidgets=qt_widgets),
+        },
+    ):
+        session = mcp._HostToolSession(lambda operation: operation(), threading.Event())
+        result = session.call_tool(
+            mcp.MANAGE_DOCUMENT_TOOL,
+            {"action": "save", "document": document.Name},
+        )["result"]
+
+    assert result["ok"] is True
+    assert result["save_completed"] is True
+    assert result["saved"]["modified"] is False
+    assert document.saved is True
+    assert gui_document.Modified is False
+
+
+def test_manage_document_new_creates_named_saved_document(tmp_path: Path) -> None:
+    target = tmp_path / "Fresh Robot.FCStd"
+    documents = {}
+
+    class Document:
+        def __init__(self, name: str) -> None:
+            self.Name = name
+            self.Label = name
+            self.FileName = ""
+            self.Objects = []
+
+        def saveAs(self, path: str) -> None:
+            self.FileName = path
+            Path(path).touch()
+
+    gui_documents = {}
+    app = SimpleNamespace(ActiveDocument=None)
+
+    def new_document(name: str) -> Document:
+        document = Document(name)
+        documents[name] = document
+        gui_documents[name] = SimpleNamespace(Modified=True)
+        app.ActiveDocument = document
+        return document
+
+    def set_active_document(name: str) -> None:
+        app.ActiveDocument = documents[name]
+
+    app.listDocuments = lambda: documents
+    app.newDocument = new_document
+    app.setActiveDocument = set_active_document
+    app.closeDocument = lambda name: documents.pop(name, None)
+    gui = SimpleNamespace(getDocument=lambda name: gui_documents.get(name))
+    qt_widgets = SimpleNamespace(
+        QApplication=SimpleNamespace(topLevelWidgets=lambda: [])
+    )
+    with mock.patch.dict(
+        sys.modules,
+        {
+            "FreeCAD": app,
+            "FreeCADGui": gui,
+            "PySide": SimpleNamespace(QtWidgets=qt_widgets),
+        },
+    ):
+        session = mcp._HostToolSession(lambda operation: operation(), threading.Event())
+        result = session.call_tool(
+            mcp.MANAGE_DOCUMENT_TOOL,
+            {"action": "new", "path": str(target)},
+        )["result"]
+
+    assert result["ok"] is True
+    assert result["save_completed"] is True
+    assert result["created"] == {
+        "document": "Fresh_Robot",
+        "label": "Fresh Robot",
+        "path": str(target),
+        "active": True,
+        "modified": False,
+        "object_count": 0,
+    }
+    assert target.is_file()
+
+
+def test_manage_document_reports_duplicate_paths_and_rejects_ambiguous_save(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "Robot.FCStd"
+    target.touch()
+
+    class Document:
+        Label = "Robot"
+        FileName = str(target)
+        Objects = []
+
+        def __init__(self, name: str) -> None:
+            self.Name = name
+            self.saved = False
+
+        def save(self) -> None:
+            self.saved = True
+
+    first = Document("Robot")
+    second = Document("Robot001")
+    documents = {first.Name: first, second.Name: second}
+    gui_documents = {
+        first.Name: SimpleNamespace(Modified=True),
+        second.Name: SimpleNamespace(Modified=True),
+    }
+    app = SimpleNamespace(
+        ActiveDocument=first,
+        listDocuments=lambda: documents,
+    )
+    gui = SimpleNamespace(getDocument=lambda name: gui_documents.get(name))
+    qt_widgets = SimpleNamespace(
+        QApplication=SimpleNamespace(topLevelWidgets=lambda: [])
+    )
+    with mock.patch.dict(
+        sys.modules,
+        {
+            "FreeCAD": app,
+            "FreeCADGui": gui,
+            "PySide": SimpleNamespace(QtWidgets=qt_widgets),
+        },
+    ):
+        session = mcp._HostToolSession(lambda operation: operation(), threading.Event())
+        listed = session.call_tool(mcp.MANAGE_DOCUMENT_TOOL, {"action": "list"})[
+            "result"
+        ]
+        saved = session.call_tool(
+            mcp.MANAGE_DOCUMENT_TOOL,
+            {"action": "save", "document": first.Name},
+        )["result"]
+
+    assert listed["path_conflicts"] == [
+        {"path": str(target), "documents": ["Robot", "Robot001"]}
+    ]
+    assert saved["ok"] is False
+    assert saved["failure_code"] == "DOCUMENT_PATH_OPEN_BY_ANOTHER_DOCUMENT"
+    assert first.saved is False
+
+
+def test_recover_documents_runs_both_native_dialog_stages() -> None:
+    class Item:
+        def __init__(self) -> None:
+            self.values = ["Robot Arm", "Not yet recovered"]
+
+        def text(self, column: int) -> str:
+            return self.values[column]
+
+        def toolTip(self, _column: int) -> str:
+            return ""
+
+    class Button:
+        def __init__(self, callback=None, *, enabled: bool = True) -> None:
+            self.callback = callback
+            self.enabled = enabled
+
+        def click(self) -> None:
+            self.callback()
+
+        def isEnabled(self) -> bool:
+            return self.enabled
+
+    class Tree:
+        def topLevelItemCount(self) -> int:
+            return 1
+
+        def topLevelItem(self, _index: int) -> Item:
+            return item
+
+    class ButtonBox:
+        def button(self, role: int) -> Button:
+            return ok if role == QtWidgets.QDialogButtonBox.Ok else cancel
+
+    class Dialog:
+        visible = True
+        clicks = 0
+
+        def objectName(self) -> str:
+            return "Gui::Dialog::DocumentRecovery"
+
+        def isVisible(self) -> bool:
+            return self.visible
+
+        def findChild(self, _kind, name: str):
+            return tree if name == "treeWidget" else buttons
+
+    item = Item()
+    tree = Tree()
+    buttons = ButtonBox()
+    dialog = Dialog()
+    cancel = Button(enabled=True)
+
+    def accept() -> None:
+        dialog.clicks += 1
+        if dialog.clicks == 1:
+            item.values[1] = "Successfully recovered"
+            cancel.enabled = False
+        else:
+            dialog.visible = False
+
+    ok = Button(accept)
+    QtWidgets = SimpleNamespace(
+        QApplication=SimpleNamespace(
+            topLevelWidgets=lambda: [dialog],
+            processEvents=lambda: None,
+        ),
+        QTreeWidget=Tree,
+        QDialogButtonBox=SimpleNamespace(
+            Ok=1,
+            Cancel=2,
+        ),
+    )
+    with mock.patch.dict(
+        sys.modules,
+        {"PySide": SimpleNamespace(QtWidgets=QtWidgets)},
+    ):
+        session = mcp._HostToolSession(lambda operation: operation(), threading.Event())
+        result = session.call_tool(mcp.RECOVER_DOCUMENTS_TOOL, {})["result"]
+
+    assert result == {
+        "ok": True,
+        "recovery_pending": True,
+        "documents": [{"document": "Robot Arm", "status": "Successfully recovered"}],
+    }
+    assert dialog.clicks == 2
 
 
 def test_bearer_middleware_rejects_missing_token_and_accepts_exact_token() -> None:
@@ -332,7 +804,9 @@ def test_server_host_proxy_serializes_concurrent_requests() -> None:
     assert connection.maximum_active == 1
 
 
-def test_connection_configuration_contains_auth_without_persisting_token_in_status() -> None:
+def test_connection_configuration_contains_auth_without_persisting_token_in_status() -> (
+    None
+):
     controller = mcp.VibeCADControlModeController()
     with controller._lock:
         controller._token = "private-token"

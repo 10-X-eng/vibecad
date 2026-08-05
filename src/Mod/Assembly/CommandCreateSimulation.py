@@ -21,6 +21,7 @@
 #                                                                           *
 # **************************************************************************/
 
+import json
 import re
 import os
 import time
@@ -1173,6 +1174,23 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.cameraRestoreTimer.timeout.connect(self._restorePlaybackCamera)
 
         self.form = Gui.PySideUic.loadUi(":/panels/TaskAssemblyCreateSimulation.ui")
+        # Gui.Control.activeTaskDialog() exposes the C++ TaskDialog wrapper,
+        # not this Python panel.  Mark the actual task widget so shared tools
+        # can distinguish saved, read-only playback from every editable native
+        # Assembly task without relying on translated labels or widget layout.
+        self.form.setProperty(
+            "vibecadSavedAssemblySimulationPlayback",
+            self.playback_only,
+        )
+        if self.playback_only:
+            self.form.setProperty(
+                "vibecadSimulationDocumentUid",
+                str(getattr(self.doc, "Uid", "") or ""),
+            )
+            self.form.setProperty(
+                "vibecadSimulationObjectName",
+                str(simFeaturePy.Name),
+            )
         self.form.motionList.installEventFilter(self)
         self.setSpinboxPrecision(self.form.TimeStartSpinBox, 9)
         self.setSpinboxPrecision(self.form.TimeEndSpinBox, 9)
@@ -1230,8 +1248,14 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             int(self.simFeaturePy.ID),
             self.simFeaturePy,
         )
+        self.collisionSummary = self._readCollisionSummary()
+        self.collisionStatusLabel = QLabel(self.form.groupBox_player)
+        self.collisionStatusLabel.setWordWrap(True)
+        self.form.groupBox_player.layout().addWidget(self.collisionStatusLabel, 3, 0)
+        self.collisionStatusLabel.setVisible(self.collisionSummary is not None)
 
         self.setUiInitialValues()
+        self._updateCollisionStatus(int(self.form.frameSlider.value()))
 
         self.simFeaturePy.Proxy.setMotionsChangedCallback(self.onMotionsChanged)
 
@@ -1623,8 +1647,101 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.assembly.updateForFrame(val)
         self._applyPlaybackPresentation()
         self.form.FrameLabel.setText(translate("Assembly", "Frame" + " " + str(val)))
-        time = float(val * self.simFeaturePy.cTimeStepOutput)
-        self.form.FrameTimeLabel.setText(f"{time:.2f} s")
+        time = _simulationFrameTime(self.simFeaturePy, val)
+        self.form.FrameTimeLabel.setText(
+            translate("Assembly", "Input") if time is None else f"{time:.2f} s"
+        )
+        self._updateCollisionStatus(val)
+
+    def _readCollisionSummary(self):
+        encoded = str(
+            getattr(
+                self.simFeaturePy,
+                "VibeCADAssemblySimulationValidation",
+                "",
+            )
+            or ""
+        )
+        try:
+            validation = json.loads(encoded)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        summary = validation.get("collision_summary")
+        if (
+            not isinstance(summary, dict)
+            or summary.get("status") not in {"complete", "incomplete"}
+        ):
+            return None
+        return summary
+
+    def _updateCollisionStatus(self, frame):
+        summary = self.collisionSummary
+        label = self.collisionStatusLabel
+        if summary is None:
+            label.hide()
+            return
+        if not bool(summary.get("analysis_complete", True)):
+            warnings = [
+                item
+                for item in list(summary.get("warnings") or [])
+                if isinstance(item, dict)
+            ]
+            count = int(summary.get("warning_count", len(warnings)))
+            label.show()
+            label.setText(
+                translate("Assembly", "Collision analysis incomplete")
+                + (f" · {count} warning" if count == 1 else f" · {count} warnings")
+            )
+            label.setToolTip(
+                "\n".join(str(item.get("message") or "") for item in warnings)
+            )
+            label.setStyleSheet("color: #c27c0e; font-weight: 600;")
+            return
+        active = []
+        for pair in list(summary.get("pairs") or []):
+            if not isinstance(pair, dict):
+                continue
+            if any(
+                isinstance(interval, dict)
+                and int(interval.get("first_frame", -1))
+                <= int(frame)
+                <= int(interval.get("last_frame", -1))
+                for interval in list(pair.get("intervals") or [])
+            ):
+                active.append(pair)
+        label.show()
+        if active:
+            names = ", ".join(
+                f"{item.get('first_component')} ↔ {item.get('second_component')}"
+                for item in active[:2]
+            )
+            remainder = "" if len(active) <= 2 else f" +{len(active) - 2} more"
+            label.setText(
+                translate("Assembly", "Collision")
+                + f": {names}{remainder}"
+            )
+            label.setToolTip(
+                "\n".join(
+                    f"{item.get('first_component')} ↔ {item.get('second_component')}"
+                    for item in active
+                )
+            )
+            label.setStyleSheet("color: #dc3545; font-weight: 600;")
+        elif bool(summary.get("collision_free")):
+            label.setText(
+                translate("Assembly", "No collisions detected")
+                + f" · {int(summary.get('evaluated_frame_count', 0))} frames"
+            )
+            label.setToolTip("")
+            label.setStyleSheet("color: #2e8b57; font-weight: 600;")
+        else:
+            label.setText(
+                translate("Assembly", "No collision in this frame")
+                + " · "
+                + translate("Assembly", "collisions occur elsewhere")
+            )
+            label.setToolTip("")
+            label.setStyleSheet("color: #c27c0e; font-weight: 600;")
 
     def onFramesPerSecondChanged(self):
         if self.playback_only or not self._ownsLiveTaskContext():
@@ -1914,10 +2031,22 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         return True
 
 
+def _simulationFrameTime(simulation, frame):
+    """Return the solver time for a native frame, or None for the input snapshot."""
+
+    frame = int(frame)
+    if frame <= 0:
+        return None
+    return float(simulation.aTimeStart.Value) + (frame - 1) * float(
+        simulation.cTimeStepOutput.Value
+    )
+
+
 def openSimulation(
     simulation,
     *,
     autoplay=False,
+    time_seconds=None,
     presentation=None,
     hidden_components=(),
     camera="",
@@ -1969,10 +2098,29 @@ def openSimulation(
         # Apply transient presentation only after TaskView captures the launch
         # state that its common Cancel boundary restores.
         panel._activatePlaybackPresentation()
-        if autoplay:
+        if autoplay or time_seconds is not None:
             panel.runKinematics()
             if assembly.numberOfFrames() < 2:
                 raise RuntimeError("The simulation generated fewer than two frames")
+        if time_seconds is not None:
+            start_time = float(simulation.aTimeStart.Value)
+            time_step = float(simulation.cTimeStepOutput.Value)
+            if time_step <= 0:
+                raise RuntimeError("The simulation has no positive output time step")
+            last_frame = assembly.numberOfFrames() - 1
+            first_frame = 1
+            first_time = _simulationFrameTime(simulation, first_frame)
+            end_time = _simulationFrameTime(simulation, last_frame)
+            requested_time = float(time_seconds)
+            if requested_time < first_time or requested_time > end_time:
+                raise RuntimeError(
+                    "Requested playback time "
+                    f"{requested_time:g} s is outside the saved simulation range "
+                    f"{first_time:g}..{end_time:g} s"
+                )
+            requested_frame = round((requested_time - start_time) / time_step) + 1
+            panel.setFrameValue(requested_frame)
+        if autoplay:
             panel.animationTimerStartForward()
     except Exception:
         if dialog is not None:

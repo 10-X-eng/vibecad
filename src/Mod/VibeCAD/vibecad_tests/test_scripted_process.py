@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import signal
 import sys
 
 from VibeCADScriptedProcess import run_process
@@ -61,3 +62,28 @@ def test_worker_cancellation_reports_exact_actor_and_preserved_limit() -> None:
     assert result["limit_reached"] is None
     assert result["timeout_seconds"] == 7.0
     assert result["memory_limit_bytes"] == 123_456
+
+
+def test_worker_cpu_signal_reports_cpu_limit_instead_of_generic_exit() -> None:
+    if sys.platform == "win32" or not hasattr(signal, "SIGXCPU"):
+        return
+
+    result = run_process(
+        [
+            sys.executable,
+            "-c",
+            "import os, signal; os.kill(os.getpid(), signal.SIGXCPU)",
+        ],
+        cwd=Path.cwd(),
+        environment=dict(os.environ),
+        cancellation_check=None,
+        timeout_seconds=7.0,
+        memory_limit_bytes=0,
+    )
+
+    assert result["started"] is True
+    assert result["returncode"] == -int(signal.SIGXCPU)
+    assert result["cpu_exceeded"] is True
+    assert result["cancelled"] is False
+    assert result["termination_reason"] == "cpu_time_limit"
+    assert result["limit_reached"] == "cpu_seconds"
