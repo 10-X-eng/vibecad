@@ -62,6 +62,8 @@ The workflow:
 7. Creates a draft release, uploads the complete asset set, and publishes it
    only after all gates pass.
 8. Dispatches signed-channel promotion after the immutable release exists.
+9. Waits for independent TUF signing and GitHub Pages deployment, then requires
+   the live channel target's SHA-256 to match the immutable release manifest.
 
 Publishing is allowed only from the current `main` commit. The canonical tag
 and release must not already exist, and GitHub release immutability must be
@@ -81,7 +83,7 @@ Required GitHub Actions configuration:
 | `WINDOWS_AZURE_ENDPOINT` | Trusted Signing endpoint |
 | `WINDOWS_AZURE_SIGNING_ACCOUNT` | Trusted Signing account |
 | `WINDOWS_AZURE_CERTIFICATE_PROFILE` | Trusted Signing certificate profile |
-| `VIBECAD_UPDATES_TOKEN` | Fine-grained token allowed to dispatch the update metadata repository and the promotion workflow |
+| `VIBECAD_UPDATES_TOKEN` | Fine-grained token with Actions read/write on VibeCAD plus Actions read and repository-dispatch permission on the update metadata repository |
 
 Production signing is fail-closed: selecting publication without valid signing
 configuration, access to `10-X-eng/vibecad-updates`, or verifiable embedded
@@ -132,18 +134,19 @@ dispatch sent by `.github/workflows/vibecad-promote-update.yml`. The payload is:
 }
 ```
 
-The handler downloads the immutable release manifest, verifies the dispatched
-digest, and publishes it as `channels/preview.json` or
-`channels/stable.json`. TUF snapshot and timestamp metadata then commit the
-new channel state. Stable and preview should use separately delegated target
-roles so either channel can be frozen or revoked independently.
+The handler independently downloads the immutable release manifest, verifies
+the dispatched digest and GitHub release asset evidence, and publishes it as
+`channels/preview.json` or `channels/stable.json`. TUF targets, snapshot, and
+timestamp metadata then commit the new channel state. Promotions are monotonic
+within each channel, so stable and preview can be advanced or frozen
+independently without reusing a version/build identity.
 
 The initial root ceremony is deliberately not automated in this repository:
 
 1. Generate root keys on offline, access-controlled systems.
 2. Require a threshold greater than one for root metadata.
-3. Configure online timestamp/snapshot and delegated stable/preview signing
-   through the update repository, ideally using short-lived OIDC identities.
+3. Configure distinct online targets, snapshot, and timestamp keys through the
+   protected `vibecad-update-signing` environment.
 4. Record owner, backup, rotation, expiry, and emergency-revocation procedures.
 5. Copy only the signed public `root.json` to
    `src/Mod/VibeCAD/update-trust/root.json`.

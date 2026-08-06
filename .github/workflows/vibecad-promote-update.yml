@@ -1,4 +1,5 @@
 name: Promote VibeCAD Update
+run-name: "Promote update: ${{ inputs.release_tag }}"
 
 on:
   workflow_dispatch:
@@ -92,7 +93,7 @@ jobs:
             echo "manifest_url=${manifest_url}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Dispatch TUF target update
+      - name: Dispatch and verify TUF target publication
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.VIBECAD_UPDATES_TOKEN }}
@@ -107,6 +108,7 @@ jobs:
             echo "VIBECAD_UPDATES_TOKEN is required for TUF promotion." >&2
             exit 1
           fi
+          dispatch_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           jq -n \
             --arg event_type "vibecad-release-published" \
             --arg release_tag "${RELEASE_TAG}" \
@@ -127,3 +129,53 @@ jobs:
           gh api --method POST \
             "repos/10-X-eng/vibecad-updates/dispatches" \
             --input dispatch.json
+
+          update_run_id=""
+          expected_title="Update metadata: ${RELEASE_TAG}"
+          for _attempt in $(seq 1 360); do
+            runs_json="$(gh run list \
+              --repo 10-X-eng/vibecad-updates \
+              --workflow promote-release.yml \
+              --event repository_dispatch \
+              --limit 30 \
+              --json databaseId,displayTitle,createdAt)"
+            update_run_id="$(jq -r \
+              --arg title "${expected_title}" \
+              --arg started "${dispatch_started_at}" \
+              'map(select(.displayTitle == $title and .createdAt >= $started))
+               | sort_by(.createdAt) | last | .databaseId // empty' \
+              <<< "${runs_json}")"
+            if [[ -n "${update_run_id}" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ -z "${update_run_id}" ]]; then
+            echo "The signed metadata workflow did not start within 60 minutes." >&2
+            exit 1
+          fi
+          gh run watch "${update_run_id}" \
+            --repo 10-X-eng/vibecad-updates \
+            --exit-status
+
+          live_target="https://10-x-eng.github.io/vibecad-updates/targets/channels/${CHANNEL}.json"
+          for _attempt in $(seq 1 60); do
+            if curl \
+              --proto '=https' \
+              --tlsv1.2 \
+              --location \
+              --fail \
+              --silent \
+              --show-error \
+              --output live-channel.json \
+              "${live_target}"; then
+              live_sha256="$(sha256sum live-channel.json | cut -d ' ' -f 1)"
+              if [[ "${live_sha256}" == "${MANIFEST_SHA256}" ]]; then
+                echo "Verified live signed ${CHANNEL} target ${MANIFEST_SHA256}."
+                exit 0
+              fi
+            fi
+            sleep 10
+          done
+          echo "GitHub Pages did not serve the promoted manifest within ten minutes." >&2
+          exit 1

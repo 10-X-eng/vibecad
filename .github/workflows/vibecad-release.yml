@@ -97,7 +97,8 @@ jobs:
               fi
             done
             if ! GH_TOKEN="${VIBECAD_UPDATES_TOKEN}" gh api \
-              "repos/10-X-eng/vibecad-updates" >/dev/null; then
+              "repos/10-X-eng/vibecad-updates/actions/workflows/promote-release.yml" \
+              >/dev/null; then
               echo "The update token cannot access 10-X-eng/vibecad-updates." >&2
               exit 1
             fi
@@ -522,7 +523,36 @@ jobs:
             echo "VIBECAD_UPDATES_TOKEN is required to promote a published release." >&2
             exit 1
           fi
+          promotion_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run vibecad-promote-update.yml \
             --repo "${GITHUB_REPOSITORY}" \
             --ref "${GITHUB_DEFAULT_BRANCH:-main}" \
             -f release_tag="${RELEASE_TAG}"
+
+          promotion_run_id=""
+          expected_title="Promote update: ${RELEASE_TAG}"
+          for _attempt in $(seq 1 360); do
+            runs_json="$(gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow vibecad-promote-update.yml \
+              --event workflow_dispatch \
+              --limit 30 \
+              --json databaseId,displayTitle,createdAt)"
+            promotion_run_id="$(jq -r \
+              --arg title "${expected_title}" \
+              --arg started "${promotion_started_at}" \
+              'map(select(.displayTitle == $title and .createdAt >= $started))
+               | sort_by(.createdAt) | last | .databaseId // empty' \
+              <<< "${runs_json}")"
+            if [[ -n "${promotion_run_id}" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ -z "${promotion_run_id}" ]]; then
+            echo "The VibeCAD promotion workflow did not start within 60 minutes." >&2
+            exit 1
+          fi
+          gh run watch "${promotion_run_id}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --exit-status
