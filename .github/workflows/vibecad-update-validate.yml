@@ -1,0 +1,74 @@
+name: Validate VibeCAD Release and Updates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibecad-release-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate release and update contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: .github/requirements-update-validation.txt
+
+      - name: Install hash-locked trust dependencies
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          --require-hashes
+          --only-binary=:all:
+          --requirement .github/requirements-update-validation.txt
+
+      - name: Require the production TUF API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from importlib.metadata import version
+
+          from securesystemslib.signer import CryptoSigner
+          from tuf.api import exceptions
+          from tuf.api.metadata import Metadata, Root, Snapshot, Targets, Timestamp
+          from tuf.ngclient.fetcher import FetcherInterface
+
+          expected = {
+              "cryptography": "50.0.0",
+              "securesystemslib": "1.4.0",
+              "tuf": "7.0.0",
+          }
+          actual = {package: version(package) for package in expected}
+          if actual != expected:
+              raise SystemExit(f"Unexpected trust dependency versions: {actual!r}")
+          print(f"Validated production TUF API with {actual!r}")
+          PY
+
+      - name: Verify canonical version files
+        run: python src/Tools/sync_version.py --check
+
+      - name: Run release and update contract tests
+        run: >-
+          python -m unittest
+          src.Tools.tests.test_sync_version
+          src.Tools.tests.test_release_artifact_name
+          src.Tools.tests.test_windows_installer_version
+          src.Tools.tests.test_generate_update_manifest
+          src.Tools.tests.test_vibecad_update
