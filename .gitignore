@@ -26,6 +26,7 @@
 *.output
 *.pch
 *.pyc
+*.pyo
 *.vcproj
 # Ignore .db files created by Qt Designer when editing .ui files
 *.db
@@ -61,6 +62,9 @@ tags
 /CMakeUserPresets.json
 Testing
 compile_commands.json
+__pycache__/
+.pytest_cache/
+.ruff_cache/
 *.sublime-project
 *.sublime-workspace
 
@@ -71,7 +75,9 @@ tsupdate_stderr.log
 tsupdate_stdout.log
 # pixi environments
 *.egg-info
-.pixi
+.pixi/
+/.cache/
+/package/rattler-build/.download-cache/
 goals.md
 #explicitly ignore local env
 .env

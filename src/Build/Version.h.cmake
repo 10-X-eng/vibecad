@@ -5,6 +5,7 @@
 #define FCVersionName   "${PACKAGE_VERSION_NAME}"
 #define FCVersionPoint  "${PACKAGE_VERSION_PATCH}"
 #define FCVersionSuffix "${PACKAGE_VERSION_SUFFIX}"
+#define FCBuildVersion  "${PACKAGE_BUILD_VERSION}"
 // Displayed Copyright Year (i.e. build year)
 #define FCCopyrightYear ${PACKAGE_COPYRIGHT_YEAR}
 // test: $Format:Hash (%H), Date: %ci$

@@ -39,6 +39,8 @@ set(VibeCAD_Scripts
     VibeCADScriptedPublication.py
     VibeCADTools.py
     VibeCADTransactions.py
+    VibeCADUpdate.py
+    VibeCADUpdateGui.py
     VibeCADVibeScriptDomains.py
     VibeCADVibeScriptDomainRuntime.py
     VibeCADVibeScriptDomainPublication.py
@@ -105,6 +107,11 @@ set(VibeCAD_Resources
     vibecad-prompt-starters.svg
 )
 
+set(VibeCAD_UpdateTrustFiles)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/update-trust/root.json)
+    list(APPEND VibeCAD_UpdateTrustFiles update-trust/root.json)
+endif()
+
 set(VibeCAD_TestScripts)
 if(BUILD_TEST AND BUILD_GUI)
     list(APPEND VibeCAD_TestScripts
@@ -132,6 +139,7 @@ add_custom_target(VibeCADScripts ALL
         ${VibeCAD_Scripts}
         ${VibeCAD_ToolImplScripts}
         ${VibeCAD_Resources}
+        ${VibeCAD_UpdateTrustFiles}
         ${VibeCAD_TestScripts}
 )
 
@@ -144,6 +152,15 @@ fc_target_copy_resource(VibeCADScripts
     ${VibeCAD_TestScripts}
 )
 
+if(VibeCAD_UpdateTrustFiles)
+    file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/Mod/VibeCAD/update-trust)
+    fc_target_copy_resource(VibeCADScripts
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_BINARY_DIR}/Mod/VibeCAD
+        ${VibeCAD_UpdateTrustFiles}
+    )
+endif()
+
 install(
     FILES
         ${VibeCAD_Scripts}
@@ -151,6 +168,15 @@ install(
     DESTINATION
         Mod/VibeCAD
 )
+
+if(VibeCAD_UpdateTrustFiles)
+    install(
+        FILES
+            ${VibeCAD_UpdateTrustFiles}
+        DESTINATION
+            Mod/VibeCAD/update-trust
+    )
+endif()
 
 install(
     DIRECTORY

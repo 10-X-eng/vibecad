@@ -17,25 +17,13 @@ on:
           - arm64
           - x86_64
           - both
-      publish_release:
-        description: "Publish the successful macOS artifacts as a GitHub prerelease."
-        required: true
-        default: false
-        type: boolean
-      release_tag:
-        description: "Optional release tag. Leave empty for vibecad-macos-YYYYMMDD-SHA."
-        required: false
-        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: vibecad-macos-${{ inputs.source_ref }}-${{ inputs.architecture }}
   cancel-in-progress: false
-
-env:
-  UPLOAD_RELEASE: "false"
 
 jobs:
   prepare:
@@ -44,7 +32,7 @@ jobs:
     outputs:
       source_sha: ${{ steps.meta.outputs.source_sha }}
       build_tag: ${{ steps.meta.outputs.build_tag }}
-      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_title: ${{ steps.meta.outputs.release_title }}
       matrix: ${{ steps.meta.outputs.matrix }}
     steps:
       - name: Check out requested source
@@ -61,7 +49,6 @@ jobs:
         env:
           SOURCE_REF: ${{ inputs.source_ref }}
           ARCHITECTURE: ${{ inputs.architecture }}
-          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
 
@@ -71,14 +58,9 @@ jobs:
             exit 1
           fi
 
-          release_tag="${INPUT_RELEASE_TAG}"
-          if [[ -z "${release_tag}" ]]; then
-            release_tag="vibecad-macos-$(date -u +%Y%m%d)-${source_sha:0:12}"
-          fi
-          if [[ ! "${release_tag}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-            echo "Release tag contains unsupported characters: ${release_tag}" >&2
-            exit 1
-          fi
+          python src/Tools/sync_version.py --check
+          build_tag="$(python src/Tools/resolve_release_artifact_name.py . --component release-tag)"
+          release_title="$(python src/Tools/resolve_release_artifact_name.py . --component release-title)"
 
           arm64='{"target":"osx-arm64","runner":"macos-15","arch":"arm64"}'
           x86_64='{"target":"osx-64","runner":"macos-15-intel","arch":"x86_64"}'
@@ -99,18 +81,14 @@ jobs:
           esac
 
           echo "source_sha=${source_sha}" >> "${GITHUB_OUTPUT}"
-          echo "build_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
-          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "build_tag=${build_tag}" >> "${GITHUB_OUTPUT}"
+          echo "release_title=${release_title}" >> "${GITHUB_OUTPUT}"
           echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
 
           cat >> "${GITHUB_STEP_SUMMARY}" <<EOF
-          Source: ${SOURCE_REF} @ ${source_sha}
+          Build: ${release_title}
 
           Architecture: ${ARCHITECTURE}
-
-          Release tag: ${release_tag}
-
-          Publish release: ${{ inputs.publish_release }}
           EOF
 
   macos:
@@ -166,7 +144,11 @@ jobs:
           MACOS_DEPLOYMENT_TARGET: "12.0"
         run: |
           set -euo pipefail
-          pixi install -e default
+          if [[ -d .pixi/envs/default ]]; then
+            pixi reinstall -e default vibecad
+          else
+            pixi install -e default
+          fi
           pixi install -e package
 
       - name: Save ccache
@@ -212,7 +194,6 @@ jobs:
           BUILD_TAG: ${{ needs.prepare.outputs.build_tag }}
           MACOS_DEPLOYMENT_TARGET: "12.0"
           MACOS_SIGN_RELEASE: "false"
-          UPLOAD_RELEASE: "false"
         run: |
           set -euo pipefail
           pixi run -e package create_bundle
@@ -226,53 +207,3 @@ jobs:
           path: |
             package/rattler-build/osx/VibeCAD-*.dmg
             package/rattler-build/osx/VibeCAD-*.dmg-SHA256.txt
-
-  publish:
-    name: Publish macOS Prerelease
-    needs:
-      - prepare
-      - macos
-    if: ${{ inputs.publish_release }}
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: vibecad-macos-*
-          path: release-assets
-          merge-multiple: true
-
-      - name: Verify and publish macOS-only release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
-        run: |
-          set -euo pipefail
-
-          cd release-assets
-          for checksum in *-SHA256.txt; do
-            sha256sum --check "${checksum}"
-          done
-
-          mapfile -t assets < <(find . -maxdepth 1 -type f -print | sort)
-          if [[ "${#assets[@]}" -eq 0 ]]; then
-            echo "No macOS release assets were downloaded." >&2
-            exit 1
-          fi
-
-          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --clobber \
-              "${assets[@]}"
-          else
-            gh release create "${RELEASE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --target "${SOURCE_SHA}" \
-              --title "VibeCAD macOS ${RELEASE_TAG}" \
-              --notes "Unsigned VibeCAD macOS test builds. This release contains macOS artifacts only." \
-              --prerelease \
-              "${assets[@]}"
-          fi

@@ -41,6 +41,7 @@ ManifestDPIAware true
 
 # included NSIS files
 !include InstallOptions.nsh
+!include FileFunc.nsh
 !include LangFile.nsh
 !include Library.nsh
 !include LogicLib.nsh

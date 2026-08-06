@@ -42,7 +42,7 @@ The leading `./` is required when installing a local package with `apt`.
 
 ### Windows
 
-Download the Windows installer, run it, and launch VibeCAD from the Start menu. A portable archive is also available for installations that should not modify the system.
+Download the Windows installer, run it, and launch VibeCAD from the Start menu.
 
 SHA256 files are published beside release artifacts so downloads can be verified before installation.
 

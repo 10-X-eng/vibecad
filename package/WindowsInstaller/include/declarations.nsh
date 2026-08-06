@@ -77,5 +77,9 @@ Var Pointer
 Var Search
 Var StartmenuFolder
 Var String
+Var VibeCADUpdateBackupDir
+Var VibeCADUpdateFailedDir
+Var VibeCADUpdateInstallRoot
+Var VibeCADUpdateMode
 Var UserList
 Var LangName

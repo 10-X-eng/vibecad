@@ -4506,6 +4506,12 @@ def ensure_commands_registered() -> None:
     _connect_document_observer()
     _apply_startup_context_debug_preferences()
     _initialize_control_modes()
+    try:
+        import VibeCADUpdateGui
+
+        VibeCADUpdateGui.ensure_registered()
+    except Exception as exc:
+        _warn(f"VibeCAD update UI registration failed: {exc}")
     if _commands_registered:
         _connect_workbench_activation()
         return

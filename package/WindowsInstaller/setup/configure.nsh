@@ -16,6 +16,8 @@ Section -InstallData
   # Registry information
   WriteRegStr SHCTX ${APP_REGKEY} "" $INSTDIR
   WriteRegStr SHCTX ${APP_REGKEY} "Version" "${APP_VERSION_NUMBER}"
+  WriteRegStr SHCTX ${APP_REGKEY} "ReleaseVersion" "${APP_RELEASE_VERSION}"
+  WriteRegDWORD SHCTX ${APP_REGKEY} "Build" ${APP_VERSION_BUILD}
   
   # Start Menu shortcut
   SetOutPath "$INSTDIR\bin" # this is the folder in which the shortcut is executed

@@ -176,7 +176,7 @@ run_freecad_runtime_check() {
 }
 
 echo "Running isolated VibeCAD macOS runtime smoke tests..."
-for check in python anthropic keyring jsonschema mcp mcp-types macos-keyring removed-openai-sdk; do
+for check in python anthropic keyring jsonschema mcp mcp-types tuf macos-keyring removed-openai-sdk; do
     run_standalone_runtime_check "${check}"
 done
 
@@ -185,7 +185,7 @@ if ! "${conda_env}/bin/freecadcmd" --safe-mode --version; then
     exit 1
 fi
 for check in \
-    python pivy anthropic keyring jsonschema mcp mcp-types macos-keyring removed-openai-sdk \
+    python pivy anthropic keyring jsonschema mcp mcp-types tuf macos-keyring removed-openai-sdk \
     provider-subprocess codex; do
     run_freecad_runtime_check "${check}"
 done
@@ -237,17 +237,3 @@ fi
 
 # create hash
 sha256sum ${version_name}.dmg > ${version_name}.dmg-SHA256.txt
-
-if [[ "${UPLOAD_RELEASE:-false}" == "true" ]]; then
-    for attempt in 1 2 3 4 5; do
-        if gh release upload --clobber "${BUILD_TAG}" "${version_name}.dmg" "${version_name}.dmg-SHA256.txt"; then
-            break
-        fi
-        if [[ $attempt -eq 5 ]]; then
-            echo "Failed to upload release after 5 attempts" >&2
-            exit 1
-        fi
-        echo "Upload attempt $attempt failed, retrying in $((attempt * 10))s..."
-        sleep $((attempt * 10))
-    done
-fi

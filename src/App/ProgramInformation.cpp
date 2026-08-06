@@ -238,8 +238,12 @@ void ProgramInformation::getVersionInformation(
     const auto minor = getValueOrEmpty(mConfig, "BuildVersionMinor");
     const auto point = getValueOrEmpty(mConfig, "BuildVersionPoint");
     const auto suffix = getValueOrEmpty(mConfig, "BuildVersionSuffix");
-    const auto build = getValueOrEmpty(mConfig, "BuildRevision");
-    str << "Version: " << major << "." << minor << "." << point << suffix << "." << build;
+    const auto build = getValueOrEmpty(mConfig, "BuildVersion");
+    str << "Version: " << major << "." << minor << "." << point;
+    if (!suffix.empty()) {
+        str << "-" << suffix;
+    }
+    str << " (Build " << (build.empty() ? "0" : build) << ")";
 }
 
 void ProgramInformation::getBuildInformation(

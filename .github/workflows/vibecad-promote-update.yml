@@ -1,0 +1,129 @@
+name: Promote VibeCAD Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing immutable VibeCAD version/build release to promote."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibecad-update-promotion-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Verify and Promote Signed Channel Target
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out update validation code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          submodules: false
+
+      - name: Verify immutable release and manifest
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
+          if [[ "$(jq -r '.draft' <<< "${release_json}")" != "false" ]]; then
+            echo "Update promotion requires a published release." >&2
+            exit 1
+          fi
+          if [[ "$(jq -r '.immutable // false' <<< "${release_json}")" != "true" ]]; then
+            echo "Update promotion requires GitHub release immutability." >&2
+            exit 1
+          fi
+
+          mkdir -p dist
+          gh release download "${RELEASE_TAG}" \
+            --dir dist \
+            --pattern 'VibeCAD-update-*.json' \
+            --pattern 'VibeCAD-update-*.json-SHA256.txt'
+          mapfile -t manifests < <(find dist -maxdepth 1 -type f -name 'VibeCAD-update-*.json' -print)
+          if [[ "${#manifests[@]}" -ne 1 ]]; then
+            echo "Expected exactly one canonical update manifest." >&2
+            exit 1
+          fi
+          manifest="${manifests[0]}"
+          checksum="${manifest}-SHA256.txt"
+          if [[ ! -f "${checksum}" ]]; then
+            echo "The update manifest checksum is missing." >&2
+            exit 1
+          fi
+          (cd dist && sha256sum --check "$(basename "${checksum}")")
+
+          manifest_json="$(cat "${manifest}")"
+          channel="$(jq -r '.channel' <<< "${manifest_json}")"
+          manifest_tag="$(jq -r '.release_tag' <<< "${manifest_json}")"
+          if [[ "${channel}" != "stable" && "${channel}" != "preview" ]]; then
+            echo "Manifest has an invalid update channel: ${channel}" >&2
+            exit 1
+          fi
+          if [[ "${manifest_tag}" != "${RELEASE_TAG}" ]]; then
+            echo "Manifest release identity does not match ${RELEASE_TAG}." >&2
+            exit 1
+          fi
+          PYTHONPATH=src/Mod/VibeCAD python - "${manifest}" <<'PY'
+          import sys
+          from pathlib import Path
+          from VibeCADUpdate import parse_update_manifest
+
+          parse_update_manifest(Path(sys.argv[1]).read_bytes())
+          PY
+
+          manifest_name="$(basename "${manifest}")"
+          manifest_sha256="$(sha256sum "${manifest}" | cut -d ' ' -f 1)"
+          manifest_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${manifest_name}"
+          {
+            echo "channel=${channel}"
+            echo "manifest_name=${manifest_name}"
+            echo "manifest_sha256=${manifest_sha256}"
+            echo "manifest_url=${manifest_url}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Dispatch TUF target update
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.VIBECAD_UPDATES_TOKEN }}
+          CHANNEL: ${{ steps.release.outputs.channel }}
+          MANIFEST_NAME: ${{ steps.release.outputs.manifest_name }}
+          MANIFEST_SHA256: ${{ steps.release.outputs.manifest_sha256 }}
+          MANIFEST_URL: ${{ steps.release.outputs.manifest_url }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN}" ]]; then
+            echo "VIBECAD_UPDATES_TOKEN is required for TUF promotion." >&2
+            exit 1
+          fi
+          jq -n \
+            --arg event_type "vibecad-release-published" \
+            --arg release_tag "${RELEASE_TAG}" \
+            --arg channel "${CHANNEL}" \
+            --arg manifest_name "${MANIFEST_NAME}" \
+            --arg manifest_sha256 "${MANIFEST_SHA256}" \
+            --arg manifest_url "${MANIFEST_URL}" \
+            '{
+              event_type: $event_type,
+              client_payload: {
+                release_tag: $release_tag,
+                channel: $channel,
+                manifest_name: $manifest_name,
+                manifest_sha256: $manifest_sha256,
+                manifest_url: $manifest_url
+              }
+            }' > dispatch.json
+          gh api --method POST \
+            "repos/10-X-eng/vibecad-updates/dispatches" \
+            --input dispatch.json
