@@ -60,7 +60,11 @@ def run() -> None:
     from mcp.client.streamable_http import streamable_http_client
     import VibeCADGui
     from VibeCADMCP import get_control_mode_controller
-    from VibeCADPreferences import VibeCADPreferencesPage, load_settings, set_mcp_enabled
+    from VibeCADPreferences import (
+        VibeCADMCPPreferencesPage,
+        load_settings,
+        set_mcp_enabled,
+    )
 
     VibeCADGui.ensure_commands_registered()
     controller = get_control_mode_controller()
@@ -82,7 +86,7 @@ def run() -> None:
     preference_page = None
 
     try:
-        preference_page = VibeCADPreferencesPage()
+        preference_page = VibeCADMCPPreferencesPage()
         preference_page.loadSettings()
         preference_page.mcp_enabled.setChecked(True)
         preference_page.saveSettings()

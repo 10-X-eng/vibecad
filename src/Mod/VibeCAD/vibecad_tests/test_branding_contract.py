@@ -440,6 +440,11 @@ def test_vibecad_docks_use_native_standard_workbench_declarations() -> None:
     assert '"VibeCADContextDebugPanel"' in setup
     assert "Gui::DockWindowOption::VisibleTabbed" in setup
     assert "Gui::DockWindowOption::HiddenTabbed" in setup
+    context_debug_options = setup.rsplit('"VibeCADContextDebugPanel"', 1)[1].split(
+        ");", 1
+    )[0]
+    assert "Gui::DockWindowOption::HiddenTabbed" in context_debug_options
+    assert "Gui::DockWindowOption::VisibleTabbed" not in context_debug_options
 
     for relative_path in ROOT.glob("src/Mod/*/InitGui.py"):
         if relative_path.parent.name == "VibeCAD":
@@ -583,6 +588,48 @@ def test_hidden_context_debug_dock_performs_no_gui_thread_polling(monkeypatch) -
 
     assert timer.stop_calls == 1
     assert refreshed == []
+
+
+def test_enabling_context_debug_does_not_open_the_viewer(monkeypatch) -> None:
+    import VibeCADGui as panel
+
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide",
+        SimpleNamespace(QtCore=SimpleNamespace(QTimer=object)),
+    )
+    shown: list[bool] = []
+    monkeypatch.setattr(
+        panel,
+        "_context_debug_settings",
+        lambda: SimpleNamespace(context_debug_enabled=True),
+    )
+    monkeypatch.setattr(panel, "_find_context_debug_dock", lambda: None)
+    monkeypatch.setattr(panel, "show_context_debugger", lambda: shown.append(True))
+
+    panel.apply_context_debug_preferences()
+
+    assert shown == []
+
+
+def test_mcp_settings_have_a_dedicated_vibecad_preference_page() -> None:
+    preferences = _source("src/Mod/VibeCAD/VibeCADPreferences.py")
+    gui = _source("src/Mod/VibeCAD/VibeCADGui.py")
+    main_page = preferences.split("class VibeCADPreferencesPage:", 1)[1].split(
+        "class VibeCADMCPPreferencesPage:", 1
+    )[0]
+    mcp_page = preferences.split("class VibeCADMCPPreferencesPage:", 1)[1].split(
+        "class VibeCADPromptStartersPreferencesPage:", 1
+    )[0]
+
+    assert 'setWindowTitle("MCP")' in mcp_page
+    assert 'setObjectName("VibeCADPrefMCPEnabled")' in mcp_page
+    assert 'setObjectName("VibeCADPrefMCPEnabled")' not in main_page
+    assert "mcp_enabled=persisted.mcp_enabled" in main_page
+    registration = gui.split("def ensure_preferences_registered()", 1)[1].split(
+        "def ensure_commands_registered()", 1
+    )[0]
+    assert "VibeCADPreferences.VibeCADMCPPreferencesPage" in registration
 
 
 def test_python_workbench_dock_declarations_reach_dock_window_manager() -> None:

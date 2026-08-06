@@ -696,7 +696,8 @@ def apply_context_debug_preferences() -> None:
                 timer.stop()
             dock.hide()
         return
-    show_context_debugger()
+    if dock is not None:
+        _bind_context_debug_dock(dock)
 
 
 def _apply_startup_context_debug_preferences() -> None:
@@ -1204,18 +1205,23 @@ def _refresh_conversation_selector(dock: Any | None = None) -> None:
     selector.blockSignals(previous_blocked)
 
 
+def apply_mcp_preferences() -> None:
+    """Apply the persisted MCP control-mode preference."""
+    try:
+        _initialize_control_modes()
+    except Exception as exc:
+        _warn(f"VibeCAD MCP preference update failed: {exc}")
+
+
 def apply_modeling_preferences() -> None:
-    """Refresh the VibeScript editor after Preferences are applied."""
+    """Refresh modeling services after Preferences are applied."""
     try:
         from VibeCADScriptedEditor import refresh_scripted_model_editor
 
         refresh_scripted_model_editor()
     except Exception as exc:
         _warn(f"VibeCAD scripted editor preference refresh failed: {exc}")
-    try:
-        _initialize_control_modes()
-    except Exception as exc:
-        _warn(f"VibeCAD MCP preference update failed: {exc}")
+    apply_mcp_preferences()
 
 
 def _clear_conversation_transients(dock: Any) -> None:
@@ -4481,6 +4487,9 @@ def ensure_preferences_registered() -> None:
 
     Gui.addIconPath(str(Path(__file__).resolve().parent))
     Gui.addPreferencePage(VibeCADPreferences.VibeCADPreferencesPage, "VibeCAD")
+    Gui.addPreferencePage(
+        VibeCADPreferences.VibeCADMCPPreferencesPage, "VibeCAD"
+    )
     Gui.addPreferencePage(
         VibeCADPreferences.VibeCADPromptStartersPreferencesPage, "VibeCAD"
     )
