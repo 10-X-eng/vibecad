@@ -26,7 +26,7 @@ jobs:
       source_sha: ${{ steps.meta.outputs.source_sha }}
     steps:
       - name: Check out requested source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 1
@@ -54,7 +54,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.metadata.outputs.source_sha }}
           fetch-depth: 0
@@ -69,7 +69,7 @@ jobs:
 
       - name: Restore Pixi and Python caches
         id: cache-pixi-windows
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             package/rattler-build/.pixi
@@ -82,7 +82,7 @@ jobs:
             pixi-windows-
 
       - name: Restore ccache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}\ccache
           key: ccache-windows-${{ github.run_id }}-${{ github.run_attempt }}
@@ -106,7 +106,7 @@ jobs:
 
       - name: Save ccache
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}\ccache
           key: ccache-windows-${{ github.run_id }}-${{ github.run_attempt }}
@@ -125,7 +125,7 @@ jobs:
 
       - name: Save Pixi and Python caches
         if: always() && steps.cache-pixi-windows.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             package/rattler-build/.pixi
@@ -136,7 +136,7 @@ jobs:
           key: ${{ steps.cache-pixi-windows.outputs.cache-primary-key }}
 
       - name: Upload validation artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vibecad-windows-${{ needs.metadata.outputs.build_tag }}
           if-no-files-found: error

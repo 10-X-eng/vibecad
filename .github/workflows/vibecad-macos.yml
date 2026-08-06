@@ -36,7 +36,7 @@ jobs:
       matrix: ${{ steps.meta.outputs.matrix }}
     steps:
       - name: Check out requested source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 1
@@ -100,7 +100,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
           fetch-depth: 0
@@ -115,7 +115,7 @@ jobs:
 
       - name: Restore Pixi and runtime caches
         id: cache-pixi
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             package/rattler-build/.pixi
@@ -128,7 +128,7 @@ jobs:
             pixi-${{ matrix.target }}-
 
       - name: Restore ccache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -153,14 +153,14 @@ jobs:
 
       - name: Save ccache
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Save Pixi and runtime caches
         if: always() && steps.cache-pixi.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             package/rattler-build/.pixi
@@ -199,7 +199,7 @@ jobs:
           pixi run -e package create_bundle
 
       - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vibecad-macos-${{ matrix.arch }}
           if-no-files-found: error
