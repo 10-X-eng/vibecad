@@ -20,6 +20,7 @@ sys.path.insert(0, str(VIBECAD_MODULE_DIR))
 from VibeCADUpdate import (  # noqa: E402
     ReleaseIdentity,
     UpdateAsset,
+    UpdateError,
     UpdatePolicy,
     UpdateRelease,
     UpdateService,
@@ -207,8 +208,10 @@ class UpdateServiceTests(unittest.TestCase):
             hashlib.sha256(payload).hexdigest(),
         )
 
-    def test_cached_windows_installer_rechecks_authenticode(self) -> None:
-        payload = b"signed installer fixture"
+    def test_cached_windows_installer_uses_tuf_size_and_hash_without_authenticode(
+        self,
+    ) -> None:
+        payload = b"unsigned installer fixture"
         asset = self._windows_asset(payload)
         with tempfile.TemporaryDirectory() as temp_dir:
             update_dir = Path(temp_dir)
@@ -224,27 +227,25 @@ class UpdateServiceTests(unittest.TestCase):
             with mock.patch("VibeCADUpdate.verify_windows_authenticode") as verify:
                 result = service.download_asset(asset)
         self.assertEqual(result, cached)
-        verify.assert_called_once_with(cached)
+        verify.assert_not_called()
 
-    def test_rejected_cached_windows_installer_is_removed(self) -> None:
-        payload = b"unsigned installer fixture"
-        asset = self._windows_asset(payload)
+    def test_tampered_cached_windows_installer_is_not_reused(self) -> None:
+        asset = self._windows_asset(b"authorized installer fixture")
         with tempfile.TemporaryDirectory() as temp_dir:
             update_dir = Path(temp_dir)
             downloads = update_dir / "downloads"
             downloads.mkdir()
             cached = downloads / asset.name
-            cached.write_bytes(payload)
+            cached.write_bytes(b"tampered installer fixture")
             service = UpdateService(
                 ReleaseIdentity("26.3.1-RC3", 1),
                 UpdatePolicy(),
                 update_directory=update_dir,
             )
             with mock.patch(
-                "VibeCADUpdate.verify_windows_authenticode",
-                side_effect=UpdateTrustError("signature rejected"),
+                "urllib.request.urlopen", side_effect=OSError("offline fixture")
             ):
-                with self.assertRaisesRegex(UpdateTrustError, "signature rejected"):
+                with self.assertRaisesRegex(UpdateError, "could not start"):
                     service.download_asset(asset)
             exists = cached.exists()
         self.assertFalse(exists)

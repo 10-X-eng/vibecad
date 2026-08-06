@@ -56,8 +56,8 @@ The workflow:
 1. Resolves canonical metadata from `version.json` and verifies synchronization.
 2. Pins every job to the same source commit.
 3. Builds the Linux AppImage and Debian package and the Windows installer.
-4. Requires embedded Authenticode signatures on production Windows binaries.
-5. verifies package SHA-256 files and generates the strict update manifest.
+4. Verifies every package checksum and generates the strict update manifest.
+5. Verifies the manifest through the signed TUF publication path.
 6. Creates GitHub build-provenance attestations.
 7. Creates a draft release, uploads the complete asset set, and publishes it
    only after all gates pass.
@@ -77,19 +77,13 @@ Required GitHub Actions configuration:
 
 | Name | Purpose |
 | --- | --- |
-| `AZURE_CLIENT_ID` | OIDC identity used by Azure login |
-| `AZURE_TENANT_ID` | Azure tenant for code signing |
-| `AZURE_SUBSCRIPTION_ID` | Azure subscription for code signing |
-| `WINDOWS_AZURE_ENDPOINT` | Trusted Signing endpoint |
-| `WINDOWS_AZURE_SIGNING_ACCOUNT` | Trusted Signing account |
-| `WINDOWS_AZURE_CERTIFICATE_PROFILE` | Trusted Signing certificate profile |
 | `VIBECAD_UPDATES_TOKEN` | Fine-grained token with Actions read/write on VibeCAD plus Actions read and repository-dispatch permission on the update metadata repository |
 
-Production signing is fail-closed: selecting publication without valid signing
-configuration, access to `10-X-eng/vibecad-updates`, or verifiable embedded
-signatures fails the workflow before a release is published. Publication also
-requires the ceremony-produced `src/Mod/VibeCAD/update-trust/root.json`; a
-development build without that root never falls back to unsigned discovery.
+Production authorization is fail-closed: selecting publication without access
+to `10-X-eng/vibecad-updates`, the ceremony-produced
+`src/Mod/VibeCAD/update-trust/root.json`, and verifiable TUF metadata fails the
+workflow. A development build without that root never falls back to unsigned
+discovery.
 
 ## Release assets
 
@@ -172,8 +166,7 @@ The client:
 5. Selects only the native Windows installer or Linux AppImage for the current
    architecture.
 6. Resumes interrupted downloads with HTTP Range and ETag state.
-7. Verifies signed size and SHA-256; Windows also requires a valid embedded
-   Authenticode signature.
+7. Verifies the TUF-authorized size and SHA-256 before using the package.
 8. Stages installation on explicit request or, when policy allows, on exit.
 
 Windows updates run the installer silently after VibeCAD exits. The installer
@@ -233,8 +226,8 @@ Before publication:
    package validation suites.
 3. Run the release workflow with `publish_release=false` and smoke-test the
    downloaded Windows installer and Linux AppImage artifacts.
-4. Confirm Azure signing, release immutability, update-repository dispatch, TUF
-   role thresholds/expiry, and the packaged root.
+4. Confirm release immutability, update-repository dispatch, TUF role
+   thresholds/expiry, and the packaged root.
 5. Merge the exact candidate to `main` and run the workflow with publication
    enabled.
 6. Confirm every release asset/checksum/attestation and the signed stable or
@@ -256,10 +249,9 @@ Set-Location package/rattler-build
 $env:BUILD_TAG = & .\.pixi\envs\default\python.exe ..\..\src\Tools\resolve_release_artifact_name.py ..\.. --component release-tag
 $env:MAKE_INSTALLER = "true"
 $env:MAKE_PORTABLE_ARCHIVE = "false"
-$env:WINDOWS_SIGN_RELEASE = "0"
 pixi run -e package create_bundle
 ```
 
-Local packages are intentionally unsigned and cannot pass the production
-publication gate. They are suitable for local feature and installer-flow smoke
-tests only.
+Local and published packages are authorized by signed TUF metadata plus their
+exact size and SHA-256. No Microsoft account or Authenticode certificate is
+required to build, test, publish, download, or install an update.

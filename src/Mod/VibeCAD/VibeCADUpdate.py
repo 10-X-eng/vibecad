@@ -777,11 +777,9 @@ def _file_matches(path: Path, asset: UpdateAsset) -> bool:
 
 
 def _prepare_verified_asset(path: Path, asset: UpdateAsset) -> None:
-    """Apply the platform trust gate to both new and cached packages."""
+    """Apply platform preparation after TUF size and SHA-256 verification."""
 
-    if asset.platform == "windows" and asset.kind == "installer":
-        verify_windows_authenticode(path)
-    elif asset.platform == "linux" and asset.kind == "appimage":
+    if asset.platform == "linux" and asset.kind == "appimage":
         try:
             path.chmod(path.stat().st_mode | 0o111)
         except OSError as exc:
@@ -789,7 +787,12 @@ def _prepare_verified_asset(path: Path, asset: UpdateAsset) -> None:
 
 
 def verify_windows_authenticode(path: Path) -> None:
-    """Require a valid Authenticode signature using the Windows trust provider."""
+    """Verify Authenticode when explicitly requested by an external caller.
+
+    VibeCAD's updater authorizes packages through TUF metadata plus the exact
+    signed size and SHA-256.  Authenticode is optional defense in depth and is
+    not part of the default download gate.
+    """
 
     if os.name != "nt":
         return

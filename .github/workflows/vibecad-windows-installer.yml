@@ -118,7 +118,6 @@ jobs:
           BUILD_TAG: ${{ needs.metadata.outputs.build_tag }}
           MAKE_INSTALLER: "true"
           MAKE_PORTABLE_ARCHIVE: "false"
-          WINDOWS_SIGN_RELEASE: "0"
         run: |
           set -euo pipefail
           pixi run -e package create_bundle

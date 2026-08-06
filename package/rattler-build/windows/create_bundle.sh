@@ -215,69 +215,8 @@ for move_attempt in 1 2 3 4 5 6 7 8 9 10; do
   sleep "${move_attempt}"
 done
 
-
-# Sign the EXE, DLL, and PYD files (if we can access the Azure account for signing):
 set -euo pipefail
 SIGN_DIR="${version_name}"
-
-
-if [[ "${WINDOWS_SIGN_RELEASE:-0}" == "1" ]]; then
-  : "${WINDOWS_AZURE_ENDPOINT:?WINDOWS_AZURE_ENDPOINT is required for release signing}"
-  : "${WINDOWS_AZURE_CERTIFICATE_PROFILE:?WINDOWS_AZURE_CERTIFICATE_PROFILE is required for release signing}"
-  : "${WINDOWS_AZURE_SIGNING_ACCOUNT:?WINDOWS_AZURE_SIGNING_ACCOUNT is required for release signing}"
-  TENANT="$(az account show --query tenantId -o tsv)"
-  export AZURE_IDENTITY_DISABLE_WORKLOAD_IDENTITY=true
-  export AZURE_IDENTITY_DISABLE_MANAGED_IDENTITY=true
-  unset AZURE_IDENTITY_LOGGING_ENABLED
-
-  if ! az account get-access-token \
-      --tenant "$TENANT" \
-      --scope "https://codesigning.azure.net/.default" \
-      >/dev/null 2>&1;
-  then
-    echo "Release signing was required, but Azure Artifact Signing authentication failed." >&2
-    exit 1
-  fi
-  echo "Azure Artifact Signing access confirmed. Beginning signing process..."
-
-  shopt -s nullglob
-
-  FILES=(
-    "$SIGN_DIR"/*.exe
-    "$SIGN_DIR"/bin/*.exe
-    "$SIGN_DIR"/bin/*.dll
-    "$SIGN_DIR"/bin/*.pyd
-  )
-
-  count=0
-  total=${#FILES[@]}
-  if [[ "${total}" -eq 0 ]]; then
-    echo "Release signing was required, but no Windows binaries were found." >&2
-    exit 1
-  fi
-  echo "Signing $total files"
-  for f in "${FILES[@]}"; do
-    ((count+=1))
-    echo "Signing [$count/$total]: $f"
-    sign code artifact-signing \
-      --artifact-signing-endpoint "${WINDOWS_AZURE_ENDPOINT}" \
-      --artifact-signing-certificate-profile "${WINDOWS_AZURE_CERTIFICATE_PROFILE}" \
-      --artifact-signing-account "${WINDOWS_AZURE_SIGNING_ACCOUNT}" \
-      --timestamp-url https://timestamp.acs.microsoft.com \
-      --timestamp-digest sha256 \
-      "$f" >/dev/null 2>&1
-
-    # Output is redirected because Azure probes unused identity providers and
-    # prints misleading authentication failures before using the CLI identity.
-  done
-
-  # Independently verify the primary application signature before packaging it.
-  signtool verify -pa "$SIGN_DIR/bin/FreeCAD.exe"
-
-  echo "Signing completed."
-else
-  echo "Release signing was not requested."
-fi
 
 echo "Running VibeCAD command-line smoke test..."
 if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode --version; then
@@ -361,22 +300,6 @@ PY
         ../../WindowsInstaller/FreeCAD-installer.nsi
     mv ../../WindowsInstaller/${version_name}-installer.exe .
     echo "Created installer ${version_name}-installer.exe"
-
-    # See if we can sign the installer exe as well:
-    if [[ "${WINDOWS_SIGN_RELEASE:-0}" == "1" ]]; then
-      echo "Signing the installer..."
-      sign code artifact-signing \
-          --artifact-signing-endpoint "${WINDOWS_AZURE_ENDPOINT}" \
-          --artifact-signing-certificate-profile "${WINDOWS_AZURE_CERTIFICATE_PROFILE}" \
-          --artifact-signing-account "${WINDOWS_AZURE_SIGNING_ACCOUNT}" \
-          --timestamp-url https://timestamp.acs.microsoft.com \
-          --timestamp-digest sha256 \
-          ${version_name}-installer.exe >/dev/null 2>&1 \
-          || { echo "Signing the installer failed!"; exit 1; }
-      signtool verify -pa ${version_name}-installer.exe
-    else
-      echo "Release signing was not requested; leaving the installer unsigned."
-    fi
 
     sha256sum ${version_name}-installer.exe > ${version_name}-installer.exe-SHA256.txt
     rm -rf "${nsis_cpdir}"
