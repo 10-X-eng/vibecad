@@ -446,6 +446,21 @@ def published_object(value: Any) -> Any | None:
     linked = getattr(value, "LinkedObject", None)
     if publication.is_publication(linked):
         return linked
+    # A reusable Part Design/Robot component occurrence is itself the stable
+    # output carrier.  It intentionally links the vendor/native definition
+    # rather than a scripted publication, while its owning program root stores
+    # exact output-local interface frames.  Treat only that explicit managed
+    # contract as interface-bearing; ordinary App::Link objects remain links to
+    # their publication target as above.
+    if (
+        str(getattr(value, "TypeId", "") or "") == "App::Link"
+        and str(getattr(value, "VibeCADVibeScriptOutputType", "") or "")
+        == "component_link"
+        and str(getattr(value, "VibeCADVibeScriptDomain", "") or "")
+        in {"partdesign", "robot"}
+        and publication.role_of(value) == publication.ROLE_IMPLEMENTATION
+    ):
+        return value
     if publication.is_publication(value):
         return value
     objects = list(getattr(value, "Objects", []) or [])

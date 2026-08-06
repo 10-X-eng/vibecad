@@ -49,13 +49,19 @@ public:
         // Body states, publications, and other owned implementation objects
         // have no independent browser representation.
         Internal,
-        // Native Assembly structure remains visible in the model browser as
+        // Native component occurrences remain visible in the model browser as
         // present-state structure while the same objects retain their ordered
-        // creation/edit entries in History. Appending these values preserves
-        // every established Role numeric value for out-of-tree consumers.
+        // creation/edit entries in History. The established name is retained
+        // for source compatibility; it covers Model and Assembly occurrences.
+        // Appending these values preserves every established Role numeric value
+        // for out-of-tree consumers.
         AssemblyOccurrence,
         AssemblyMotion,
         AssemblyOperation,
+        // A stable VibeCAD shape publication without a native Body is a
+        // generated model output, not a user-authored reference. Appending
+        // this role preserves every established Role numeric value.
+        VibeCADOutput,
     };
 
     struct Entry

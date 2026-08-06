@@ -157,8 +157,11 @@ class _QuestionWaiter:
 _assistant_run_controller = _AssistantRunController()
 _assistant_run_thread: threading.Thread | None = None
 _intent_memory_rebuild_thread: threading.Thread | None = None
+_intent_memory_rebuild_cancel_event = threading.Event()
 _document_thread_invoker: Any | None = None
 _pending_question_waiter: _QuestionWaiter | None = None
+_control_modes_initialized = False
+_control_mode_shutdown_connected = False
 
 
 def _is_intent_memory_rebuild_active() -> bool:
@@ -208,6 +211,77 @@ def _dispatch_to_document_thread(operation: Any) -> Any:
     if request.error is not None:
         raise request.error
     return request.result
+
+
+def _internal_agent_allowed() -> bool:
+    from VibeCADMCP import internal_agent_allowed
+
+    return internal_agent_allowed()
+
+
+def _control_mode_snapshot() -> dict[str, Any]:
+    from VibeCADMCP import get_control_mode_controller
+
+    return get_control_mode_controller().snapshot()
+
+
+def _cancel_internal_agent_for_mcp() -> None:
+    def cancel() -> None:
+        _assistant_run_controller.request_cancel()
+        _intent_memory_rebuild_cancel_event.set()
+        _cancel_question_round()
+
+    _dispatch_to_document_thread(cancel)
+
+
+def _initialize_control_modes() -> None:
+    """Bind the single control-mode state machine to the live Qt host once."""
+
+    global _control_modes_initialized, _control_mode_shutdown_connected
+    _ensure_document_thread_invoker()
+    from PySide import QtWidgets
+    from VibeCADMCP import get_control_mode_controller
+    from VibeCADPreferences import load_settings, set_mcp_enabled
+
+    controller = get_control_mode_controller()
+
+    def handle_event(event: dict[str, Any]) -> None:
+        def apply() -> None:
+            if event.get("rollback_preference"):
+                set_mcp_enabled(False)
+            dock = _find_dock()
+            if dock is not None and _assistant_panel_is_built(dock):
+                _render_assistant_run_state(dock)
+
+        try:
+            _dispatch_to_document_thread(apply)
+        except Exception as exc:
+            _warn(f"VibeCAD control-mode UI refresh failed: {exc}")
+
+    if not _control_modes_initialized:
+        controller.configure_host(
+            document_thread_dispatch=_dispatch_to_document_thread,
+            internal_active=lambda: (
+                _is_assistant_run_active() or _is_intent_memory_rebuild_active()
+            ),
+            cancel_internal=_cancel_internal_agent_for_mcp,
+            question_callback=lambda questions: _request_user_answers(
+                questions,
+                lambda: not get_control_mode_controller().snapshot().get(
+                    "mcp_enabled", False
+                ),
+            ),
+            event_callback=handle_event,
+        )
+        _control_modes_initialized = True
+    if not _control_mode_shutdown_connected:
+        application = QtWidgets.QApplication.instance()
+        if application is not None:
+            application.aboutToQuit.connect(
+                lambda: get_control_mode_controller().shutdown(wait=True)
+            )
+            _control_mode_shutdown_connected = True
+    controller.request_mcp_enabled(load_settings().mcp_enabled)
 
 
 class _SketchCloseContinuationController:
@@ -622,7 +696,8 @@ def apply_context_debug_preferences() -> None:
                 timer.stop()
             dock.hide()
         return
-    show_context_debugger()
+    if dock is not None:
+        _bind_context_debug_dock(dock)
 
 
 def _apply_startup_context_debug_preferences() -> None:
@@ -1130,14 +1205,23 @@ def _refresh_conversation_selector(dock: Any | None = None) -> None:
     selector.blockSignals(previous_blocked)
 
 
+def apply_mcp_preferences() -> None:
+    """Apply the persisted MCP control-mode preference."""
+    try:
+        _initialize_control_modes()
+    except Exception as exc:
+        _warn(f"VibeCAD MCP preference update failed: {exc}")
+
+
 def apply_modeling_preferences() -> None:
-    """Refresh the VibeScript editor after Preferences are applied."""
+    """Refresh modeling services after Preferences are applied."""
     try:
         from VibeCADScriptedEditor import refresh_scripted_model_editor
 
         refresh_scripted_model_editor()
     except Exception as exc:
         _warn(f"VibeCAD scripted editor preference refresh failed: {exc}")
+    apply_mcp_preferences()
 
 
 def _clear_conversation_transients(dock: Any) -> None:
@@ -2098,6 +2182,34 @@ def _install_prompt_paste_filter(prompt: Any) -> None:
     prompt.setProperty("VibePasteFilterInstalled", True)
 
 
+def _install_prompt_submit_filter(prompt: Any) -> None:
+    """Submit the assistant composer on exactly Shift+Enter."""
+
+    try:
+        from PySide import QtCore
+    except Exception:
+        return
+
+    class _SubmitFilter(QtCore.QObject):
+        def eventFilter(self, obj: Any, event: Any) -> bool:  # noqa: N802 (Qt API)
+            try:
+                if (
+                    event.type() == QtCore.QEvent.KeyPress
+                    and event.key() in {QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter}
+                    and event.modifiers() == QtCore.Qt.ShiftModifier
+                ):
+                    _run_prompt_from_panel()
+                    return True
+            except Exception as exc:
+                _warn(f"VibeCAD prompt submit handling failed: {exc}")
+            return False
+
+    submit_filter = _SubmitFilter(prompt)
+    prompt.installEventFilter(submit_filter)
+    prompt._vibecad_submit_filter = submit_filter
+    prompt.setProperty("VibeSubmitFilterInstalled", True)
+
+
 def _update_composer_button_presentation(
     container: Any,
     *,
@@ -2141,9 +2253,9 @@ def _apply_composer_button_presentation(
         "VibeSend": (
             "Steer" if is_busy else "Send",
             (
-                "Steer the current CAD run"
+                "Steer the current CAD run (Shift+Enter)"
                 if is_busy
-                else "Send this message to VibeCAD"
+                else "Send this message to VibeCAD (Shift+Enter)"
             ),
         ),
         "VibeStop": (
@@ -2333,6 +2445,11 @@ def _document_persistence_state() -> dict[str, Any]:
 def rebuild_intent_memory_async() -> dict[str, Any]:
     """Start a non-blocking full Intent Memory rebuild for the active project."""
     global _intent_memory_rebuild_thread
+    if not _internal_agent_allowed():
+        return {
+            "started": False,
+            "error": "Intent Memory rebuild is disabled while MCP controls VibeCAD.",
+        }
     if _is_assistant_run_active():
         return {"started": False, "error": "Wait for the active CAD run to finish."}
     if (
@@ -2350,6 +2467,7 @@ def rebuild_intent_memory_async() -> dict[str, Any]:
             ),
         }
     service = get_service()
+    _intent_memory_rebuild_cancel_event.clear()
     _set_status_line("Rebuilding Intent Memory...")
 
     def progress(event: dict[str, Any]) -> None:
@@ -2362,6 +2480,7 @@ def rebuild_intent_memory_async() -> dict[str, Any]:
             result = rebuild_intent_memory(
                 service=service,
                 progress_callback=progress,
+                cancellation_check=_intent_memory_rebuild_cancel_event.is_set,
                 document_thread_dispatch=_dispatch_to_document_thread,
             )
         except Exception as exc:
@@ -2374,6 +2493,7 @@ def rebuild_intent_memory_async() -> dict[str, Any]:
             else:
                 message = "Intent Memory has no conversation turns to compile."
         finally:
+            _intent_memory_rebuild_cancel_event.clear()
             _intent_memory_rebuild_thread = None
         _dispatch_to_document_thread(lambda: _set_status_line(message))
 
@@ -2390,6 +2510,8 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     if dock is None:
         return
     busy = _is_assistant_run_active()
+    control = _control_mode_snapshot()
+    internal_available = bool(control.get("internal_agent_enabled"))
     persistence = _document_persistence_state()
     document_ready = bool(persistence.get("enabled"))
     pending_sketch = _sketch_close_continuation_controller.snapshot()
@@ -2410,21 +2532,25 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     composer_buttons = _find_child("QWidget", "VibeComposerButtons", dock)
 
     if send_button is not None:
-        send_button.setEnabled(busy or document_ready)
+        send_button.setEnabled(internal_available and (busy or document_ready))
     if stop_button is not None:
         stop_button.setEnabled(busy)
     if attach_button is not None:
-        attach_button.setEnabled(document_ready and not busy)
+        attach_button.setEnabled(internal_available and document_ready and not busy)
     if attach_image_button is not None:
-        attach_image_button.setEnabled(document_ready and not busy)
+        attach_image_button.setEnabled(
+            internal_available and document_ready and not busy
+        )
     if reference_chips is not None:
-        reference_chips.setEnabled(document_ready and not busy)
+        reference_chips.setEnabled(internal_available and document_ready and not busy)
     if conversation_selector is not None:
-        conversation_selector.setEnabled(document_ready and not busy)
+        conversation_selector.setEnabled(
+            internal_available and document_ready and not busy
+        )
     if new_conversation is not None:
-        new_conversation.setEnabled(document_ready and not busy)
+        new_conversation.setEnabled(internal_available and document_ready and not busy)
     if prompt_starters is not None:
-        prompt_starters.setEnabled(document_ready and not busy)
+        prompt_starters.setEnabled(internal_available and document_ready and not busy)
     if interaction_mode is not None:
         try:
             supports_plan = get_service().provider_name() in {"openai", "chatgpt"}
@@ -2432,7 +2558,9 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
             supports_plan = False
         if not supports_plan and interaction_mode.currentData() == "plan":
             interaction_mode.setCurrentIndex(0)
-        interaction_mode.setEnabled(document_ready and not busy and supports_plan)
+        interaction_mode.setEnabled(
+            internal_available and document_ready and not busy and supports_plan
+        )
         interaction_mode.setToolTip(
             (
                 "Build can change the active document; Plan inspects it without "
@@ -2447,8 +2575,12 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
             busy=busy,
         )
     if prompt_box is not None:
-        prompt_box.setReadOnly(not busy and not document_ready)
-        if busy:
+        prompt_box.setReadOnly(
+            not internal_available or (not busy and not document_ready)
+        )
+        if not internal_available:
+            placeholder = "VibeCAD is controlled by an external MCP client."
+        elif busy:
             placeholder = "Steer the current CAD run..."
         elif document_ready:
             placeholder = "Message VibeCAD..."
@@ -2458,7 +2590,18 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
                 or "Save this VibeCAD document to enable VibeCAD."
             )
         prompt_box.setPlaceholderText(placeholder)
-    if busy:
+    if not internal_available:
+        state = str(control.get("state") or "")
+        if state == "starting_mcp":
+            status_text = "Starting external MCP control..."
+        elif state == "stopping_mcp":
+            status_text = "Stopping external MCP control..."
+        else:
+            status_text = (
+                "External MCP control is active at "
+                f"{control.get('endpoint') or 'the configured local endpoint'}."
+            )
+    elif busy:
         status_text = text or ""
     elif not document_ready:
         status_text = str(
@@ -2544,6 +2687,9 @@ def _execute_assistant_run(
     interaction_mode: str = "build",
 ) -> None:
     global _assistant_run_thread
+    if not _internal_agent_allowed():
+        _render_assistant_run_state(dock)
+        return
     if _is_assistant_run_active():
         _warn("VibeCAD refused to start a second provider loop while one is active.")
         return
@@ -2621,10 +2767,23 @@ def _execute_assistant_run(
         terminal_status = ""
         if failure is not None:
             terminal_status = f"The CAD run failed: {failure}"
+            _append_conversation(
+                "System",
+                terminal_status,
+                persist=True,
+                metadata={"source": "provider_runtime_error"},
+            )
         elif response is not None:
             final_text = str(response.final_output or "").strip()
             if response.error:
                 terminal_status = final_text or str(response.error)
+                if terminal_status and not displayed_provider_texts:
+                    _append_conversation(
+                        "System",
+                        terminal_status,
+                        persist=True,
+                        metadata={"source": "provider_error"},
+                    )
             elif final_text and not displayed_provider_texts:
                 _append_conversation(
                     "VibeCAD",
@@ -2708,6 +2867,9 @@ def _execute_assistant_run(
 
 
 def _start_sketch_close_continuation(event: dict[str, Any]) -> None:
+    if not _internal_agent_allowed():
+        _sketch_close_continuation_controller.clear()
+        return
     if _is_assistant_run_active() or _is_intent_memory_rebuild_active():
         _warn(
             "VibeCAD ignored a sketch-close continuation while another run was active."
@@ -2767,6 +2929,9 @@ def _run_prompt_from_panel() -> None:
         return
     prompt_box = _find_child("QPlainTextEdit", "VibePrompt", dock)
     if prompt_box is None:
+        return
+    if not _internal_agent_allowed():
+        _render_assistant_run_state(dock)
         return
 
     service = get_service()
@@ -3140,6 +3305,21 @@ def _migrate_standard_fastener_timeline_resources(document: Any) -> bool:
         return False
 
 
+def _migrate_partdesign_component_timeline_resources(document: Any) -> bool:
+    """Remove legacy component-registry links from the modeling graph."""
+
+    try:
+        from VibeCADVibeScriptDomainPublication import (
+            migrate_partdesign_component_occurrence_links,
+        )
+
+        result = migrate_partdesign_component_occurrence_links(document)
+        return bool(result.get("migrated_programs"))
+    except Exception as exc:
+        _warn(f"VibeCAD Part Design component migration failed: {exc}")
+        return False
+
+
 def _refresh_assistant_for_document_change() -> None:
     document = App.ActiveDocument
     if document is not None:
@@ -3148,10 +3328,12 @@ def _refresh_assistant_for_document_change() -> None:
             from VibeCADVibeScriptDomainPublication import (
                 compact_persisted_input_snapshots,
                 migrate_assembly_dependency_anchors,
+                migrate_partdesign_component_occurrence_links,
             )
 
             compact_persisted_input_snapshots(document)
             migrate_assembly_dependency_anchors(document)
+            migrate_partdesign_component_occurrence_links(document)
         except Exception as exc:
             _warn(f"VibeCAD input-snapshot compaction failed: {exc}")
     try:
@@ -3323,6 +3505,10 @@ def _schedule_document_render_after_restore(document: Any) -> None:
                     _migrate_standard_fastener_timeline_resources(live_document)
                     or presentation_changed
                 )
+                presentation_changed = (
+                    _migrate_partdesign_component_timeline_resources(live_document)
+                    or presentation_changed
+                )
                 resource_migration_complete = True
             if not presentation_complete:
                 presentation_changed = (
@@ -3465,8 +3651,21 @@ class _VibeCADDocumentObserver:
             return
         try:
             from VibeCADVibeScriptDomainPublication import (
-                mark_programs_stale_from_source,
+                source_property_affects_vibescript_snapshot,
             )
+
+            if not source_property_affects_vibescript_snapshot(property_name):
+                return
+        except Exception as exc:
+            _warn(f"VibeCAD VibeScript dependency filter failed: {exc}")
+            return
+        # Reference snapshots are valid only while the source and every native
+        # dependency remain unchanged. Invalidate before stale propagation so a
+        # rebuild can never reuse the pre-change detached BREP.
+        if document is not None:
+            get_service().invalidate_vibescript_reference_snapshots(obj)
+        try:
+            from VibeCADVibeScriptDomainPublication import mark_programs_stale_from_source
 
             marked = mark_programs_stale_from_source(obj, str(property_name or ""))
         except Exception as exc:
@@ -3484,6 +3683,9 @@ class _VibeCADDocumentObserver:
 
     def slotDeletedDocument(self, doc) -> None:
         document_key = _document_storage_key(doc)
+        get_service().clear_vibescript_reference_snapshots(
+            str(getattr(doc, "Uid", "") or "")
+        )
         _legacy_architecture_warning_documents.discard(document_key)
         _pending_document_render_refreshes.discard(document_key)
         _sketch_close_continuation_controller.clear_for_document(document_key)
@@ -3707,6 +3909,7 @@ def _build_panel_widget():
         QtWidgets.QSizePolicy.Expanding,
     )
     _install_prompt_paste_filter(prompt)
+    _install_prompt_submit_filter(prompt)
     composer_layout.addWidget(prompt)
 
     composer_buttons = QtWidgets.QWidget(composer)
@@ -3759,7 +3962,7 @@ def _build_panel_widget():
     send_button.setObjectName("VibeSend")
     send_button.setIcon(QtGui.QIcon(_icon_path(ICON_SEND)))
     send_button.setIconSize(icon_size)
-    send_button.setToolTip("Send this message to VibeCAD")
+    send_button.setToolTip("Send this message to VibeCAD (Shift+Enter)")
     send_button.setDefault(True)
     send_button.clicked.connect(_run_prompt_from_panel)
 
@@ -3883,7 +4086,12 @@ def show_assistant_for_active_workbench() -> None:
 
 
 def _on_workbench_activated(workbench_name: str) -> None:
-    del workbench_name
+    try:
+        from VibeCADMCP import get_control_mode_controller
+
+        get_control_mode_controller().notify_tool_surface_changed(workbench_name)
+    except Exception as exc:
+        _warn(f"VibeCAD MCP tool-surface refresh failed: {exc}")
     try:
         from PySide import QtCore
     except Exception:
@@ -3919,6 +4127,15 @@ def _connect_workbench_activation() -> None:
         main_window = Gui.getMainWindow()
         main_window.workbenchActivated.connect(_on_workbench_activated)
         _workbench_activation_connected = True
+        active_workbench = getattr(Gui, "activeWorkbench", None)
+        try:
+            active = active_workbench() if callable(active_workbench) else None
+        except Exception:
+            active = None
+        if active is not None and callable(getattr(active, "name", None)):
+            from VibeCADMCP import get_control_mode_controller
+
+            get_control_mode_controller().notify_tool_surface_changed(active.name())
     except Exception as exc:
         _warn(f"VibeCAD AI assistant could not watch workbench activation: {exc}")
 
@@ -3951,9 +4168,14 @@ class AskAICommand(_BaseCommand):
     pixmap = ICON_SEND
 
     def IsActive(self) -> bool:
-        return bool(_document_persistence_state().get("enabled"))
+        return _internal_agent_allowed() and bool(
+            _document_persistence_state().get("enabled")
+        )
 
     def Activated(self) -> None:
+        if not _internal_agent_allowed():
+            _show_panel()
+            return
         if not _require_saved_document():
             _show_panel()
             return
@@ -4142,19 +4364,34 @@ def _selected_scripted_model_operation(
     program_id = str(getattr(operation, "ProgramId", "") or "")
     root_name = str(getattr(operation, "ProgramObjectName", "") or "")
     root = document.getObject(root_name) if root_name else None
-    if not program_id or root is None:
+    if not program_id:
         return None
     from VibeCADVibeScriptDomains import (
         PROP_PROGRAM_DOMAIN,
         PROP_PROGRAM_ID,
     )
 
-    if (
-        str(getattr(root, PROP_PROGRAM_ID, "") or "") != program_id
-        or str(getattr(root, PROP_PROGRAM_DOMAIN, "") or "")
-        != "partdesign"
-    ):
-        return None
+    if root is not None:
+        if (
+            str(getattr(root, PROP_PROGRAM_ID, "") or "") != program_id
+            or str(getattr(root, PROP_PROGRAM_DOMAIN, "") or "")
+            != "partdesign"
+        ):
+            return None
+    else:
+        # Recover an interrupted source deletion whose program container was
+        # removed before its native Design operation. The operation's own
+        # immutable ownership tags are sufficient to dispatch the exact
+        # lifecycle command; arbitrary History objects still cannot opt in.
+        if (
+            str(getattr(operation, "VibeCADScriptedRole", "") or "")
+            != "implementation"
+            or str(getattr(operation, "VibeCADScriptedEngine", "") or "")
+            != "vibescript:partdesign"
+            or str(getattr(operation, "VibeCADScriptedModelId", "") or "")
+            != program_id
+        ):
+            return None
     return operation
 
 
@@ -4251,6 +4488,9 @@ def ensure_preferences_registered() -> None:
     Gui.addIconPath(str(Path(__file__).resolve().parent))
     Gui.addPreferencePage(VibeCADPreferences.VibeCADPreferencesPage, "VibeCAD")
     Gui.addPreferencePage(
+        VibeCADPreferences.VibeCADMCPPreferencesPage, "VibeCAD"
+    )
+    Gui.addPreferencePage(
         VibeCADPreferences.VibeCADPromptStartersPreferencesPage, "VibeCAD"
     )
     Gui.addPreferencePage(VibeCADPreferences.VibeCADDebugPreferencesPage, "VibeCAD")
@@ -4265,6 +4505,13 @@ def ensure_commands_registered() -> None:
     register_startup_assistant()
     _connect_document_observer()
     _apply_startup_context_debug_preferences()
+    _initialize_control_modes()
+    try:
+        import VibeCADUpdateGui
+
+        VibeCADUpdateGui.ensure_registered()
+    except Exception as exc:
+        _warn(f"VibeCAD update UI registration failed: {exc}")
     if _commands_registered:
         _connect_workbench_activation()
         return

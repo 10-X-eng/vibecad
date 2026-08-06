@@ -576,6 +576,25 @@ class Document(PropertyContainer):
         """
         ...
 
+    def reorderTimelineOperationDependentClosureAfter(
+        self,
+        operation: DocumentObject,
+        target: DocumentObject,
+        /,
+    ) -> bool:
+        """
+        Move an operation and its dependent closure after a new dependency.
+
+        The caller must own the document's active transaction and the history
+        marker must be at the current end. Both objects resolve to their
+        complete semantic operation blocks. Every downstream operation that
+        depends on the moved operation follows it, preserving valid History.
+
+        Returns:
+            True when the order changed, or False when it already matched.
+        """
+        ...
+
     def adoptImportedTimelineOperations(
         self,
         objects: Sequence[DocumentObject],

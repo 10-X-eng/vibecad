@@ -51,6 +51,8 @@ Section "un.FreeCAD" un.SecUnProgramFiles
   # Application folder
   SetOutPath "$TEMP"
   RMDir /r "$INSTDIR"
+  RMDir /r "$INSTDIR.vibecad-rollback"
+  RMDir /r "$INSTDIR.vibecad-failed"
   
   # Registry keys and values
   DeleteRegKey SHCTX "${APP_REGKEY_SETUP}"

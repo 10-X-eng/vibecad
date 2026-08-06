@@ -116,6 +116,9 @@ EOF
         anthropic \
         keyring \
         jsonschema \
+        mcp \
+        mcp_types \
+        tuf \
         secretstorage \
         keyring.backends.SecretService; do
         if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "import importlib; importlib.import_module('${dependency}'); print('${dependency} import ok')"; then
@@ -148,20 +151,6 @@ make_appimage() {
       "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$(uname -m).AppImage"
     chmod a+x "${appimagetool_path}"
 
-    if [ "${UPLOAD_RELEASE}" == "true" ]; then
-        case "${BUILD_TAG}" in
-            *weekly*)
-                GH_UPDATE_TAG="weeklies"
-                ;;
-            *rc*)
-                GH_UPDATE_TAG="${BUILD_TAG}"
-                ;;
-            *)
-                GH_UPDATE_TAG="latest"
-                ;;
-        esac
-    fi
-
     echo -e "\nCreate the appimage"
     # export GPG_TTY=$(tty)
     # zstd compression level 19 (max "normal" level): the "ultra" level 22 roughly
@@ -178,18 +167,8 @@ make_appimage() {
 
     echo -e "\nCreate hash"
     sha256sum ${version_name}.AppImage > ${version_name}.AppImage-SHA256.txt
+    sha256sum ${version_name}.AppImage.zsync > ${version_name}.AppImage.zsync-SHA256.txt
 
-    if [ "${UPLOAD_RELEASE}" == "true" ]; then
-        gh release upload --clobber ${BUILD_TAG} "${version_name}.AppImage" "${version_name}.AppImage.zsync" "${version_name}.AppImage-SHA256.txt"
-        if [ "${GH_UPDATE_TAG}" == "weeklies" ]; then
-            generic_name="VibeCAD_weekly-Linux-$(uname -m)"
-            mv "${version_name}.AppImage" "${generic_name}.AppImage"
-            mv "${version_name}.AppImage.zsync" "${generic_name}.AppImage.zsync"
-            mv "${version_name}.AppImage-SHA256.txt" "${generic_name}.AppImage-SHA256.txt"
-            gh release create weeklies --prerelease | true
-            gh release upload --clobber weeklies "${generic_name}.AppImage" "${generic_name}.AppImage.zsync" "${generic_name}.AppImage-SHA256.txt"
-        fi
-    fi
 }
 
 # Phase dispatch. Defaults to the full pipeline so local invocations and other

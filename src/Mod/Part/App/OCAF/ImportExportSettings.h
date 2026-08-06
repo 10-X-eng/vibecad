@@ -100,6 +100,9 @@ public:
     void setExpandCompound(bool);
     bool getExpandCompound() const;
 
+    void setImportSolidBodies(bool);
+    bool getImportSolidBodies() const;
+
     void setShowProgress(bool);
     bool getShowProgress() const;
 

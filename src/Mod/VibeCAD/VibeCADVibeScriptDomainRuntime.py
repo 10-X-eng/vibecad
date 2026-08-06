@@ -45,8 +45,12 @@ from VibeCADMechanismEngine import (
     normalize_mechanism_solve_report,
     normalize_mechanism_static_check,
     normalize_mechanism_verification_report,
+    solver_validation_scope,
 )
-from VibeCADMechanismGeometry import measure_static_mechanism_pairs
+from VibeCADMechanismGeometry import (
+    measure_static_mechanism_pairs,
+    summarize_dynamic_collision_frames,
+)
 from VibeCADTools import tool_failure
 import VibeCADVibeScriptDomains as contracts
 from vibescript_domain_api import create_domain_api
@@ -104,12 +108,37 @@ _ASSEMBLY_SIMULATION_TRACE_SCHEMA = "vibecad-assembly-simulation-trace-v1"
 _MAX_ASSEMBLY_SIMULATION_TRACE_BYTES = 64 * 1024 * 1024
 _ASSEMBLY_EXPLODED_VIEW_SCHEMA = "vibecad-assembly-exploded-view-v1"
 _MAX_ASSEMBLY_HIERARCHY_JSON_BYTES = 8 * 1024 * 1024
+_PLACEMENT_MATRIX_FIELDS = (
+    "A11",
+    "A12",
+    "A13",
+    "A14",
+    "A21",
+    "A22",
+    "A23",
+    "A24",
+    "A31",
+    "A32",
+    "A33",
+    "A34",
+    "A41",
+    "A42",
+    "A43",
+    "A44",
+)
+
+
+def _placement_matrix_values(placement: Any) -> list[float]:
+    matrix = placement.toMatrix()
+    return [float(getattr(matrix, name)) for name in _PLACEMENT_MATRIX_FIELDS]
 
 # Worker attempts are deliberately self-contained.  Keep this manifest exact:
 # staging an unrelated domain implementation would weaken the same-domain
 # boundary even though the source sandbox cannot import arbitrary modules.
 _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
     "partdesign": (
+        "vibescript_component_api.py",
+        "vibescript_component_worker.py",
         "vibescript_partdesign_api.py",
         "vibescript_partdesign_worker.py",
         "vibescript_sketcher_api.py",
@@ -125,6 +154,7 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_part_worker.py",
     ),
     "assembly": (
+        "vibescript_component_api.py",
         "vibescript_assembly_api.py",
         "vibescript_assembly_worker.py",
         "vibescript_part_worker.py",
@@ -191,6 +221,8 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_points_worker.py",
     ),
     "robot": (
+        "vibescript_component_api.py",
+        "vibescript_component_worker.py",
         "vibescript_robot_api.py",
         "vibescript_robot_worker.py",
     ),
@@ -610,6 +642,8 @@ def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
             "derived_state": str(getattr(obj, "VibeCADDerivedState", "") or ""),
             "stale_reason": str(getattr(obj, "VibeCADStaleReason", "") or ""),
             "source_revision": str(getattr(obj, "VibeCADSourceRevision", "") or ""),
+            "internal": str(getattr(obj, "VibeCADTimelineRole", "") or "")
+            == "internal",
         }
         if domain == "assembly":
             output.update(_assembly_live_output_state(obj))
@@ -635,6 +669,19 @@ def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
                     body["object_name"],
                 ),
             )
+            body_labels = {
+                body["output_name"]: body["label"]
+                for body in bodies
+                if body["output_name"] and body["label"]
+            }
+            for output in item["outputs"]:
+                authored_label = body_labels.get(str(output.get("name") or ""))
+                if authored_label:
+                    # Part Design publishes a hidden stable App::Link beside
+                    # the visible native Body. FreeCAD may suffix that link's
+                    # duplicate label with "001"; source inspection describes
+                    # the authored Body, not the hidden carrier.
+                    output["label"] = authored_label
             item["native_history"] = {
                 "available": len(operations) == 1,
                 "strategy": "design_program_operation",
@@ -844,11 +891,14 @@ def _validate_stable_references(
         raise ValueError(f"{path} has an invalid stable reference: {exc}") from exc
     document_uid = clean["document_uid"]
     object_name = clean["object_name"]
-    if str(
-        getattr(captured.get("pack"), "domain", "") or ""
-    ) == "assembly" and document_uid != str(captured.get("document_uid") or ""):
+    domain = str(getattr(captured.get("pack"), "domain", "") or "")
+    if domain in {"partdesign", "assembly", "robot"} and document_uid != str(
+        captured.get("document_uid") or ""
+    ):
         # External identities are authenticated on the document thread during
-        # capture.  A portable path may load the saved source document there.
+        # capture. A portable path may load the saved source document there.
+        # These are the three domains whose capture path deliberately supports
+        # reusable component definitions without copying their topology.
         return
     if document_uid != str(captured.get("document_uid") or ""):
         raise ValueError(f"{path} refers to a different document uid.")
@@ -982,6 +1032,37 @@ def _input_references(value: Any) -> list[dict[str, str]]:
             f"A program may reference at most {_MAX_REFERENCE_SHAPES} document objects."
         )
     return result
+
+
+def _partdesign_reference_capture_mode(
+    source: str,
+    expected_outputs: Sequence[Mapping[str, Any]],
+) -> str:
+    """Choose exact identity capture only for pure linked-occurrence programs."""
+
+    if not expected_outputs or any(
+        str(output.get("type") or "") != "component_link"
+        for output in expected_outputs
+    ):
+        return "geometry"
+    tree = ast.parse(
+        str(source or ""),
+        filename="<vibecad-partdesign-vibescript>",
+        mode="exec",
+    )
+    api_members = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "api"
+    }
+    if api_members and api_members <= {"component", "instances"}:
+        # These APIs publish native App::Link occurrences. Their exact source
+        # object identity is the contract; they neither read nor copy source
+        # topology. Any geometry-reading API keeps the full BREP path.
+        return "component_identity"
+    return "geometry"
 
 
 def _input_point_artifacts(value: Any) -> list[str]:
@@ -1235,6 +1316,7 @@ def capture_reference_inputs(
         "fem",
         "cam",
         "techdraw",
+        "robot",
     }:
         return []
     from VibeCADModelingSurface import resolve_service_surface
@@ -1261,12 +1343,12 @@ def capture_reference_inputs(
     snapshots: list[dict[str, Any]] = []
     for index, reference in enumerate(requirements):
         object_name = str(reference["object_name"])
-        if domain == "assembly":
+        if domain in {"partdesign", "assembly", "robot"}:
             try:
                 obj = resolve_reference_target(
                     doc,
                     reference,
-                    f"Assembly input reference {object_name!r}",
+                    f"{prepared['pack'].title} input reference {object_name!r}",
                 )
             except DocumentReferenceError as exc:
                 raise RuntimeError(str(exc)) from exc
@@ -1277,17 +1359,19 @@ def capture_reference_inputs(
                 f"{prepared['pack'].title} input reference {object_name!r} "
                 "disappeared before capture."
             )
-        if domain == "assembly" and getattr(obj, "Document", None) is not doc:
+        if domain in {"partdesign", "assembly", "robot"} and getattr(
+            obj, "Document", None
+        ) is not doc:
             if not str(getattr(doc, "FileName", "") or "").strip():
                 raise RuntimeError(
-                    "External Assembly components require the Assembly document "
+                    f"External {prepared['pack'].title} components require the active document "
                     "to be saved before building."
                 )
             if not str(
                 getattr(getattr(obj, "Document", None), "FileName", "") or ""
             ).strip():
                 raise RuntimeError(
-                    f"External Assembly component {object_name!r} belongs to an "
+                    f"External component {object_name!r} belongs to an "
                     "unsaved source document."
                 )
         if domain in {
@@ -1303,6 +1387,7 @@ def capture_reference_inputs(
             "fem",
             "cam",
             "techdraw",
+            "robot",
         } and str(getattr(obj, contracts.PROP_PROGRAM_ID, "") or "") == str(
             prepared.get("program_id") or ""
         ):
@@ -1322,7 +1407,21 @@ def capture_reference_inputs(
             if str(getattr(obj, "TypeId", "") or "") == "App::Link":
                 import VibeCADReferenceContracts as reference_contracts
 
-                if reference_contracts.published_object(obj) is None:
+                managed_occurrence = (
+                    str(getattr(obj, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+                    in {"partdesign", "robot"}
+                    and str(
+                        getattr(obj, "VibeCADVibeScriptOutputType", "") or ""
+                    )
+                    == "component_link"
+                    and bool(
+                        str(getattr(obj, contracts.PROP_PROGRAM_ID, "") or "")
+                    )
+                )
+                if (
+                    reference_contracts.published_object(obj) is None
+                    and not managed_occurrence
+                ):
                     target = getattr(obj, "LinkedObject", None)
                     raise RuntimeError(
                         f"Assembly input reference {object_name!r} is a generic App::Link. "
@@ -1485,8 +1584,61 @@ def capture_reference_inputs(
             raise RuntimeError(
                 f"{prepared['pack'].title} input reference {object_name!r} has a null Shape."
             )
+        shape_capture_object = obj
+        shape_placement_matrix = None
+        linked_object = getattr(obj, "LinkedObject", None)
+        linked_shape = getattr(linked_object, "Shape", None)
+        if linked_shape is not None:
+            try:
+                if not bool(linked_shape.isNull()):
+                    # isPartner is OCCT's exact shared-TShape test: unlike isSame,
+                    # it deliberately ignores only top-level Location and
+                    # Orientation. Matching Orientation then proves that this
+                    # App::Link is its linked definition under exactly the native
+                    # Shape placement returned by FreeCAD. Stage the definition
+                    # once and replace its placement in the worker for each
+                    # occurrence. No geometric fingerprint or tolerance decides
+                    # whether definitions may be shared.
+                    if bool(shape.isPartner(linked_shape)) and (
+                        str(getattr(shape, "Orientation", ""))
+                        == str(getattr(linked_shape, "Orientation", ""))
+                    ):
+                        shape_capture_object = linked_object
+                        shape_placement_matrix = _placement_matrix_values(
+                            shape.Placement
+                        )
+            except Exception:
+                shape_capture_object = obj
+                shape_placement_matrix = None
+        if prepared.get("reference_capture_mode") == "component_identity":
+            reference_contract = _assembly_reference_contract(service, obj)
+            snapshots.append(
+                {
+                    **dict(reference),
+                    "label": str(getattr(obj, "Label", "") or ""),
+                    "type_id": type_id,
+                    "shape_type": str(getattr(shape, "ShapeType", "") or ""),
+                    "reference_artifact_kind": "component_identity",
+                    "snapshot_index": index,
+                    **reference_contract,
+                }
+            )
+            continue
+        cache_token = ""
+        cached_artifact = None
+        artifact_store = None
+        capture_cached = getattr(service, "capture_vibescript_reference_shape", None)
         try:
-            detached = shape.copy()
+            if callable(capture_cached):
+                cached = capture_cached(shape_capture_object)
+                detached = cached["detached_shape"]
+                cache_token = str(cached.get("cache_token") or "")
+                cached_artifact = cached.get("artifact")
+                artifact_store = getattr(
+                    service, "store_vibescript_reference_artifact", None
+                )
+            else:
+                detached = shape.copy()
         except Exception as exc:
             raise RuntimeError(
                 f"Could not detach Shape from {prepared['pack'].title} input "
@@ -1496,6 +1648,7 @@ def capture_reference_inputs(
             _assembly_reference_contract(service, obj)
             if domain
             in {
+                "partdesign",
                 "assembly",
                 "sketcher",
                 "surface",
@@ -1507,6 +1660,7 @@ def capture_reference_inputs(
                 "fem",
                 "cam",
                 "techdraw",
+                "robot",
             }
             else {}
         )
@@ -1537,6 +1691,20 @@ def capture_reference_inputs(
                 "reference_artifact_kind": "brep",
                 "detached_shape": detached,
                 "snapshot_index": index,
+                **(
+                    {"_reference_shape_placement_matrix": shape_placement_matrix}
+                    if shape_placement_matrix is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "_reference_cache_token": cache_token,
+                        "_reference_cached_artifact": cached_artifact,
+                        "_reference_artifact_store": artifact_store,
+                    }
+                    if cache_token
+                    else {}
+                ),
                 **(
                     {"assembly_hierarchy": assembly_hierarchy}
                     if assembly_hierarchy is not None
@@ -1673,6 +1841,7 @@ def finalize_candidate(
         prepared.get("resolved_point_artifacts") or []
     )
     total_bytes = 0
+    staged_breps_by_cache_token: dict[str, dict[str, Any]] = {}
     try:
         if requirements:
             reference_root = staging / "references"
@@ -1731,7 +1900,23 @@ def finalize_candidate(
                         ).encode("utf-8")
                     ).hexdigest()
                 artifact_kind = str(snapshot.get("reference_artifact_kind") or "brep")
-                if artifact_kind == "points_asc":
+                if artifact_kind == "component_identity":
+                    if prepared["pack"].domain != "partdesign":
+                        raise ValueError(
+                            f"Referenced object {key[1]!r} produced a component "
+                            f"identity for domain {prepared['pack'].domain!r}."
+                        )
+                    metadata = {
+                        "document_uid": key[0],
+                        "object_name": key[1],
+                        "label": str(snapshot.get("label") or ""),
+                        "type_id": str(snapshot.get("type_id") or ""),
+                        "shape_type": str(snapshot.get("shape_type") or ""),
+                        "artifact_kind": "component_identity",
+                        **reference_contract,
+                    }
+                    worker_reference = dict(metadata)
+                elif artifact_kind == "points_asc":
                     if prepared["pack"].domain not in {
                         "points",
                         "reverse_engineering",
@@ -1909,40 +2094,184 @@ def finalize_candidate(
                         **reference_contract,
                     }
                 elif artifact_kind == "brep":
-                    from vibescript_part_worker import part_shape_facts
+                    from vibescript_part_worker import (
+                        part_shape_facts,
+                        part_shape_reference_facts,
+                    )
 
                     shape = snapshot.get("detached_shape")
-                    if shape is None or shape.isNull() or not shape.isValid():
+                    if shape is None or shape.isNull():
                         raise ValueError(
                             f"Referenced object {key[1]!r} did not produce a valid "
                             "detached Shape."
                         )
-                    relative = Path("references") / f"reference-{index:03d}.brep"
-                    target = staging / relative
-                    shape.exportBrep(str(target))
-                    if not target.is_file() or target.stat().st_size <= 0:
-                        raise RuntimeError(
-                            f"Could not serialize referenced object {key[1]!r} as BREP."
-                        )
-                    total_bytes += target.stat().st_size
-                    if total_bytes > _MAX_REFERENCE_BREP_BYTES:
-                        raise ValueError(
-                            "Referenced shapes exceed the 256 MiB detached-input limit."
-                        )
-                    digest = _sha256_file(target)
-                    facts = part_shape_facts(
-                        shape,
-                        max_subelements=_MAX_REFERENCE_FACT_SUBELEMENTS,
+                    shape_type = str(getattr(shape, "ShapeType", "") or "")
+                    cache_token = str(
+                        snapshot.get("_reference_cache_token") or ""
                     )
+                    staged = (
+                        staged_breps_by_cache_token.get(cache_token)
+                        if cache_token
+                        else None
+                    )
+                    if staged is not None:
+                        if staged["shape_type"] != shape_type:
+                            raise ValueError(
+                                f"Referenced object {key[1]!r} changed the shape "
+                                "behind its shared cache identity."
+                            )
+                        relative = Path(str(staged["artifact_path"]))
+                        target = staging / relative
+                        digest = str(staged["brep_sha256"])
+                        facts = dict(staged["facts"])
+                        brep_bytes = int(staged["brep_bytes"])
+                    else:
+                        # Assembly's isolated worker authenticates and validates
+                        # every staged BREP before it can solve or publish. Do
+                        # not run the same expensive OCCT validity traversal on
+                        # the GUI-side snapshot first, especially for imported
+                        # STEP definitions with thousands of surfaces.
+                        if (
+                            prepared["pack"].domain != "assembly"
+                            and not shape.isValid()
+                        ):
+                            raise ValueError(
+                                f"Referenced object {key[1]!r} did not produce a "
+                                "valid detached Shape."
+                            )
+                        relative = (
+                            Path("references") / f"reference-{index:03d}.brep"
+                        )
+                        target = staging / relative
+                        cached_artifact = snapshot.get(
+                            "_reference_cached_artifact"
+                        )
+                        cached_bytes = (
+                            cached_artifact.get("brep_bytes")
+                            if isinstance(cached_artifact, Mapping)
+                            else None
+                        )
+                        cached_facts = (
+                            cached_artifact.get("facts")
+                            if isinstance(cached_artifact, Mapping)
+                            else None
+                        )
+                        cached_digest = (
+                            str(cached_artifact.get("brep_sha256") or "")
+                            if isinstance(cached_artifact, Mapping)
+                            else ""
+                        )
+                        cached_shape_type = (
+                            str(cached_artifact.get("shape_type") or "")
+                            if isinstance(cached_artifact, Mapping)
+                            else ""
+                        )
+                        cached_facts_profile = (
+                            str(cached_artifact.get("facts_profile") or "full")
+                            if isinstance(cached_artifact, Mapping)
+                            else ""
+                        )
+                        reuse_artifact = (
+                            isinstance(cached_bytes, bytes)
+                            and bool(cached_bytes)
+                            and len(cached_digest) == 64
+                            and cached_shape_type == shape_type
+                            and cached_artifact.get("includes_triangulation")
+                            is False
+                        )
+                        if reuse_artifact:
+                            target.write_bytes(cached_bytes)
+                        else:
+                            shape.exportBrep(str(target))
+                        if not target.is_file() or target.stat().st_size <= 0:
+                            raise RuntimeError(
+                                f"Could not serialize referenced object {key[1]!r} "
+                                "as BREP."
+                            )
+                        brep_bytes = int(target.stat().st_size)
+                        total_bytes += brep_bytes
+                        if total_bytes > _MAX_REFERENCE_BREP_BYTES:
+                            raise ValueError(
+                                "Referenced shapes exceed the 256 MiB "
+                                "detached-input limit."
+                            )
+                        digest = (
+                            cached_digest
+                            if reuse_artifact
+                            else _sha256_file(target)
+                        )
+                        reusable_full_facts = (
+                            isinstance(cached_facts, Mapping)
+                            and cached_facts_profile == "full"
+                        )
+                        if prepared["pack"].domain == "assembly":
+                            facts = part_shape_reference_facts(
+                                shape,
+                                assume_valid=True,
+                            )
+                            facts_profile = "assembly_reference"
+                        elif reuse_artifact and reusable_full_facts:
+                            facts = dict(cached_facts)
+                            facts_profile = "full"
+                        else:
+                            facts = part_shape_facts(
+                                shape,
+                                max_subelements=_MAX_REFERENCE_FACT_SUBELEMENTS,
+                                assume_valid=True,
+                            )
+                            facts_profile = "full"
+                        artifact_store = snapshot.get(
+                            "_reference_artifact_store"
+                        )
+                        should_store = (
+                            not reuse_artifact
+                            or (
+                                facts_profile == "full"
+                                and not reusable_full_facts
+                            )
+                        )
+                        if callable(artifact_store) and cache_token and should_store:
+                            artifact_store(
+                                cache_token,
+                                {
+                                    "brep_bytes": (
+                                        cached_bytes
+                                        if reuse_artifact
+                                        else target.read_bytes()
+                                    ),
+                                    "brep_sha256": digest,
+                                    "shape_type": shape_type,
+                                    "facts": dict(facts),
+                                    "facts_profile": facts_profile,
+                                    "includes_triangulation": False,
+                                },
+                            )
+                        if cache_token:
+                            staged_breps_by_cache_token[cache_token] = {
+                                "artifact_path": str(relative),
+                                "brep_sha256": digest,
+                                "brep_bytes": brep_bytes,
+                                "shape_type": shape_type,
+                                "facts": dict(facts),
+                            }
                     metadata = {
                         "document_uid": key[0],
                         "object_name": key[1],
                         "label": str(snapshot.get("label") or ""),
                         "type_id": str(snapshot.get("type_id") or ""),
-                        "shape_type": str(getattr(shape, "ShapeType", "") or ""),
+                        "shape_type": shape_type,
                         "brep_sha256": digest,
-                        "brep_bytes": int(target.stat().st_size),
+                        "brep_bytes": brep_bytes,
                         "facts": facts,
+                        **(
+                            {
+                                "shape_placement_matrix": list(
+                                    snapshot["_reference_shape_placement_matrix"]
+                                )
+                            }
+                            if "_reference_shape_placement_matrix" in snapshot
+                            else {}
+                        ),
                         **reference_contract,
                     }
                     if prepared["pack"].domain in {
@@ -1962,6 +2291,15 @@ def finalize_candidate(
                         "label": metadata["label"],
                         "type_id": metadata["type_id"],
                         "facts": facts,
+                        **(
+                            {
+                                "shape_placement_matrix": list(
+                                    snapshot["_reference_shape_placement_matrix"]
+                                )
+                            }
+                            if "_reference_shape_placement_matrix" in snapshot
+                            else {}
+                        ),
                         **reference_contract,
                     }
                     if prepared["pack"].domain in {
@@ -2140,11 +2478,15 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                         }
                     ],
                 )
-            if (
-                manifest.get("migration_required")
-                and operation != "reconfigure_program"
-            ):
-                action = f"vibescript.{pack.domain}.reconfigure_program"
+            complete_contract_replacement = operation == "reconfigure_program" or (
+                operation == "edit_source"
+                and all(
+                    name in arguments
+                    for name in ("input_schema", "inputs", "expected_outputs")
+                )
+            )
+            if manifest.get("migration_required") and not complete_contract_replacement:
+                action = "vibescript.edit_source"
                 _raise(
                     tool_name,
                     "PROGRAM_RECONFIGURATION_REQUIRED",
@@ -2169,6 +2511,10 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                     required_changes=[
                         {
                             "tool": action,
+                            "arguments": {
+                                "source_id": program_id,
+                                "expected_revision": base_revision,
+                            },
                             "expected_revision": base_revision,
                             "replace": [
                                 "source",
@@ -2186,6 +2532,27 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             expected_outputs = manifest.get("expected_outputs")
             if operation == "edit_source":
                 source = str(arguments.get("source") or "")
+                if "inputs" in arguments:
+                    inputs = arguments.get("inputs")
+                    input_schema = (
+                        arguments.get("input_schema")
+                        if "input_schema" in arguments
+                        else contracts.synchronize_input_schema(
+                            dict(input_schema or {}),
+                            dict(inputs or {}),
+                        )
+                    )
+                elif "input_schema" in arguments:
+                    input_schema = arguments.get("input_schema")
+                if "expected_outputs" in arguments:
+                    expected_outputs = arguments.get("expected_outputs")
+                if complete_contract_replacement:
+                    for key in (
+                        "migration_required",
+                        "migration_reason",
+                        "migration_action",
+                    ):
+                        manifest.pop(key, None)
             elif operation == "set_inputs":
                 inputs = _merge_patch(dict(inputs or {}), arguments.get("patch"))
             elif operation == "reconfigure_program":
@@ -2306,8 +2673,17 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                 "fem",
                 "cam",
                 "techdraw",
+                "robot",
             }
             else []
+        )
+        reference_capture_mode = (
+            _partdesign_reference_capture_mode(
+                clean["source"],
+                clean["expected_outputs"],
+            )
+            if pack.domain == "partdesign"
+            else "geometry"
         )
         point_artifact_ids = (
             _input_point_artifacts(clean["inputs"])
@@ -2379,6 +2755,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "material_targets": list(captured.get("material_targets") or []),
             "surface": dict(captured["surface"]),
             "reference_requirements": reference_requirements,
+            "reference_capture_mode": reference_capture_mode,
             "point_artifact_ids": point_artifact_ids,
             "resolved_point_artifacts": resolved_point_artifacts,
             "worker_request": request,
@@ -2517,6 +2894,20 @@ def execute_candidate(
             "DOMAIN_MEMORY_LIMIT_EXCEEDED",
             "external_process",
             "VibeScript domain execution exceeded its memory limit.",
+            observed={
+                **process,
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
+            },
+        )
+    if process.get("cpu_exceeded"):
+        return _failure(
+            str(prepared["tool_name"]),
+            "DOMAIN_CPU_LIMIT_EXCEEDED",
+            "external_process",
+            "VibeScript domain execution exhausted its isolated CPU-time limit.",
             observed={
                 **process,
                 "accepted_live_outputs_preserved": bool(
@@ -6351,6 +6742,67 @@ def _assembly_close_numbers(
     return actual
 
 
+def _assembly_placement_delta(
+    initial: Mapping[str, Any],
+    solved: Mapping[str, Any],
+    value: Any,
+    label: str,
+) -> dict[str, Any]:
+    """Reauthorize an exact authored-to-solved Assembly placement delta."""
+
+    fields = {
+        "translation_mm",
+        "translation_distance_mm",
+        "rotation_degrees",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError(
+            f"{label} must contain exactly translation_mm, "
+            "translation_distance_mm, and rotation_degrees."
+        )
+    initial_native = _assembly_native_placement_from_matrix(
+        initial["matrix"], f"{label} initial matrix"
+    )
+    solved_native = _assembly_native_placement_from_matrix(
+        solved["matrix"], f"{label} solved matrix"
+    )
+    expected_translation = [
+        float(solved_native.Base[index] - initial_native.Base[index])
+        for index in range(3)
+    ]
+    translation = _assembly_close_numbers(
+        value.get("translation_mm"),
+        expected_translation,
+        f"{label}.translation_mm",
+    )
+    expected_distance = math.sqrt(sum(number * number for number in expected_translation))
+    distance = _assembly_close_numbers(
+        [value.get("translation_distance_mm")],
+        [expected_distance],
+        f"{label}.translation_distance_mm",
+    )[0]
+    initial_quaternion = [float(number) for number in initial_native.Rotation.Q]
+    solved_quaternion = [float(number) for number in solved_native.Rotation.Q]
+    dot = abs(
+        sum(
+            initial_quaternion[index] * solved_quaternion[index]
+            for index in range(4)
+        )
+    )
+    expected_rotation = math.degrees(2.0 * math.acos(max(-1.0, min(1.0, dot))))
+    rotation = _assembly_close_numbers(
+        [value.get("rotation_degrees")],
+        [expected_rotation],
+        f"{label}.rotation_degrees",
+        absolute_tolerance=1.0e-7,
+    )[0]
+    return {
+        "translation_mm": translation,
+        "translation_distance_mm": distance,
+        "rotation_degrees": rotation,
+    }
+
+
 def _assembly_validate_placement_fact(
     value: Any,
     expected: Any,
@@ -8222,6 +8674,7 @@ def _validate_assembly_execution(
     }
     grounded_set: set[str] = set()
     component_placements: dict[str, dict[str, Any]] = {}
+    component_placement_deltas: dict[str, dict[str, Any]] = {}
     component_sources: dict[str, dict[str, Any]] = {}
     component_metadata: dict[str, dict[str, Any]] = {}
     for item in components:
@@ -8310,6 +8763,22 @@ def _validate_assembly_execution(
             raise ValueError(
                 f"Component output {name!r} source type metadata disagrees with "
                 "the authenticated host snapshot."
+            )
+        for field in (
+            "source_program_id",
+            "source_program_domain",
+            "source_revision",
+        ):
+            if str(data.get(field) or "") != str(resolved.get(field) or ""):
+                raise ValueError(
+                    f"Component output {name!r} {field} disagrees with the "
+                    "authenticated host snapshot."
+                )
+        if bool(data.get("placement_authored")) is not bool(
+            properties.get("placement_authored")
+        ):
+            raise ValueError(
+                f"Component output {name!r} placement authorship metadata was altered."
             )
         if (
             not isinstance(properties.get("grounded"), bool)
@@ -8481,6 +8950,12 @@ def _validate_assembly_execution(
         solved = _assembly_placement_fact(
             data.get("solved_placement"),
             f"Component output {name!r} solved placement",
+        )
+        component_placement_deltas[name] = _assembly_placement_delta(
+            initial,
+            solved,
+            data.get("authored_to_solved_delta"),
+            f"Component output {name!r} authored-to-solved delta",
         )
         if (
             _finite_matrix(
@@ -9184,6 +9659,8 @@ def _validate_assembly_execution(
             "motion_outputs",
             "parameters",
             "motion_observations",
+            "collision_summary",
+            "collision_warnings",
             "frames",
         }:
             raise ValueError(f"{context} has the wrong schema fields.")
@@ -9217,6 +9694,7 @@ def _validate_assembly_execution(
                 "frame_kind",
                 "nominal_time_s",
                 "component_placements",
+                "collisions",
             }:
                 raise ValueError(f"{context} frame {frame_index} is malformed.")
             expected_kind = "input" if frame_index == 0 else "solver_output"
@@ -9232,6 +9710,9 @@ def _validate_assembly_execution(
                 or raw_frame.get("nominal_time_s") != expected_time
                 or not isinstance(placements, dict)
                 or set(placements) != set(component_names)
+                or not isinstance(raw_frame.get("collisions"), list)
+                or len(raw_frame["collisions"])
+                > (len(component_names) * (len(component_names) - 1)) // 2
             ):
                 raise ValueError(
                     f"{context} frame {frame_index} changed its schedule or components."
@@ -9246,6 +9727,7 @@ def _validate_assembly_execution(
                         )
                         for name in component_names
                     },
+                    "collisions": list(raw_frame["collisions"]),
                 }
             )
         observations = _assembly_motion_observations(
@@ -9254,6 +9736,30 @@ def _validate_assembly_execution(
         if trace.get("motion_observations") != observations:
             raise ValueError(
                 f"{context} motion observations do not match its component poses."
+            )
+        # The version-bound external worker performs the expensive OCCT common
+        # operations away from the GUI thread. The host authenticates its trace
+        # artifact and component inputs, validates every pair record below, and
+        # independently derives the complete summary from those frame records.
+        expected_collision_summary = summarize_dynamic_collision_frames(
+            component_names,
+            [
+                {
+                    "frame_index": int(frame["frame_index"]),
+                    "nominal_time_s": frame["nominal_time_s"],
+                    "collisions": list(frame["collisions"]),
+                }
+                for frame in frames[1:]
+            ],
+            evaluation_warnings=trace.get("collision_warnings"),
+        )
+        if (
+            trace.get("collision_summary") != expected_collision_summary
+            or frames[0]["collisions"] != []
+        ):
+            raise ValueError(
+                f"{context} collision summary does not match its authenticated "
+                "per-frame exact evidence."
             )
         for observation in observations:
             change = (
@@ -9275,6 +9781,7 @@ def _validate_assembly_execution(
             "frame_count": len(frames),
             "pose_count": len(frames) * len(component_names),
             "motion_observations": observations,
+            "collision_summary": expected_collision_summary,
             "artifact_schema": _ASSEMBLY_SIMULATION_TRACE_SCHEMA,
             "artifact_sha256": artifact_digest,
             "artifact_bytes": artifact_bytes,
@@ -9319,6 +9826,10 @@ def _validate_assembly_execution(
         raise ValueError(
             "The Assembly diagnostics solved placements do not match component outputs."
         )
+    if diagnostics.get("component_placement_deltas") != component_placement_deltas:
+        raise ValueError(
+            "The Assembly diagnostics placement deltas do not match component outputs."
+        )
     expected_occurrence_counts = {
         name: int(data.get("occurrence_path_count", 0))
         for name, data in component_metadata.items()
@@ -9337,12 +9848,10 @@ def _validate_assembly_execution(
     native = diagnostics.get("native")
     if not isinstance(native, dict):
         raise ValueError("The Assembly diagnostics have no native solver report.")
-    conflicts = any(
+    invalid_solution = any(
         bool(native.get(name))
         for name in (
             "has_conflicts",
-            "has_redundancies",
-            "has_partial_redundancies",
             "has_malformed_constraints",
         )
     )
@@ -9388,7 +9897,7 @@ def _validate_assembly_execution(
         raise ValueError("The Assembly diagnostics report undeclared BOM outputs.")
     expected_status = (
         "solved"
-        if solver_code == 0 and not conflicts and not dependency_issues
+        if solver_code == 0 and not invalid_solution and not dependency_issues
         else "failed"
     )
     if diagnostics.get("status") != expected_status:
@@ -9411,13 +9920,25 @@ def _validate_assembly_execution(
         )
     if require_solved and (
         solver_code != 0
-        or conflicts
+        or invalid_solution
         or dependency_issues
         or diagnostics.get("status") != "solved"
     ):
         raise ValueError(
             "The Assembly worker claimed a required solution without a clean native "
             "solver result."
+        )
+    expected_solver_scope = solver_validation_scope(
+        constraints_consistent=(
+            expected_status == "solved"
+            and solver_code == 0
+            and not invalid_solution
+            and not expected_dependency_issues
+        )
+    )
+    if diagnostics.get("validation_scope") != expected_solver_scope:
+        raise ValueError(
+            "The Assembly diagnostics misstate what the native solver validated."
         )
     mechanism_scenario = _assembly_shared_mechanism_scenario(
         assembly_item=assembly_item,
@@ -9485,11 +10006,13 @@ def _validate_assembly_execution(
         "grounded_components": grounded,
         "native_diagnostics": native,
         "component_placements": component_placements,
+        "component_placement_deltas": component_placement_deltas,
         "component_occurrence_counts": expected_occurrence_counts,
         "joint_dependency_issues": expected_dependency_issues,
         "internal_member_outputs": [
             str(item["name"]) for item in outputs if item.get("internal") is True
         ],
+        "validation_scope": expected_solver_scope,
     }
     if simulation_summary is not None:
         expected_validation["simulation"] = simulation_summary
@@ -12069,7 +12592,7 @@ def _validate_definition_value(
                 # bundled catalog definition and generated BREP by
                 # _validate_assembly_execution before structured-data traversal.
                 return
-            if prepared["pack"].domain == "assembly":
+            if prepared["pack"].domain in {"partdesign", "assembly", "robot"}:
                 authenticated = next(
                     (
                         item
@@ -12083,7 +12606,7 @@ def _validate_definition_value(
                 )
                 if authenticated is None:
                     raise ValueError(
-                        f"{path} refers to an unauthenticated Assembly component."
+                        f"{path} refers to an unauthenticated reusable component."
                     )
                 if (
                     clean_reference.get("document_path")
@@ -12126,6 +12649,20 @@ def _validate_robot_execution(
         validate_and_build_robot,
         validate_robot_definition,
     )
+    from vibescript_component_worker import (
+        configure_component_references,
+        validate_component_definition,
+    )
+
+    configure_component_references(
+        [
+            dict(item)
+            for item in list(prepared.get("resolved_references") or [])
+            if isinstance(item, Mapping)
+            and item.get("document_uid")
+            and item.get("object_name")
+        ]
+    )
 
     validation = execution.get("robot_validation")
     if not isinstance(validation, dict):
@@ -12146,14 +12683,23 @@ def _validate_robot_execution(
     raw_result: dict[str, Any] = {}
     for item in outputs:
         name = str(item["name"])
-        definition = validate_robot_definition(
-            item.get("definition"),
-            expected_output_type=str(item["type"]),
-            require_domain_value=False,
-            context=f"outputs.{name}.definition",
-        )
+        if str(item["type"]) == "component_link":
+            definition, _component_data = validate_component_definition(
+                item.get("definition"),
+                domain="robot",
+                output_name=name,
+            )
+        else:
+            definition = validate_robot_definition(
+                item.get("definition"),
+                expected_output_type=str(item["type"]),
+                require_domain_value=False,
+                context=f"outputs.{name}.definition",
+            )
         item["definition"] = definition
         raw_result[name] = _inflate(definition)
+        if str(item["type"]) == "component_link":
+            continue
         data = item.get("robot_data")
         if not isinstance(data, dict):
             raise ValueError(f"Robot output {name!r} has no native readback.")
@@ -15384,7 +15930,11 @@ def _validate_partdesign_native_history(
         raise ValueError("Part Design native-history metadata is malformed.")
     if metadata.get("schema") != _PARTDESIGN_NATIVE_HISTORY_SCHEMA:
         raise ValueError("Part Design native-history schema is unsupported.")
-    expected_names = [str(item["name"]) for item in list(prepared["expected_outputs"])]
+    expected_names = [
+        str(item["name"])
+        for item in list(prepared["expected_outputs"])
+        if str(item.get("type") or "") != "component_link"
+    ]
     if metadata.get("outputs") != expected_names:
         raise ValueError("Part Design native history changed output identity.")
 
@@ -15708,6 +16258,67 @@ def validate_candidate(
                 item["partdesign_native_material"] = native_material
             item["facts"] = facts
             item["detached_shape"] = shape
+        elif output_type == "component_link" and pack.domain in {
+            "partdesign",
+            "robot",
+        }:
+            data = item.get("component_data")
+            required_component_fields = {
+                "schema",
+                "source",
+                "source_metadata",
+                "placement",
+                "placement_authored",
+                "label",
+            }
+            if pack.domain == "partdesign":
+                required_component_fields.add("interfaces")
+            if not isinstance(data, Mapping) or set(data) != required_component_fields:
+                raise ValueError(
+                    f"Component output {declaration['name']!r} has malformed validation evidence."
+                )
+            if data.get("schema") != "vibecad-component-occurrence-v1":
+                raise ValueError(
+                    f"Component output {declaration['name']!r} has an unsupported schema."
+                )
+            source = data.get("source")
+            placement = data.get("placement")
+            if not isinstance(source, Mapping) or not isinstance(placement, Mapping):
+                raise ValueError(
+                    f"Component output {declaration['name']!r} is missing source or placement."
+                )
+            key = (
+                str(source.get("document_uid") or ""),
+                str(source.get("object_name") or ""),
+            )
+            authenticated = {
+                (
+                    str(reference.get("document_uid") or ""),
+                    str(reference.get("object_name") or ""),
+                )
+                for reference in list(prepared.get("resolved_references") or [])
+                if isinstance(reference, Mapping)
+            }
+            if not all(key) or key not in authenticated:
+                raise ValueError(
+                    f"Component output {declaration['name']!r} source was not authenticated."
+                )
+            if set(placement) != {"position", "rotation"} or len(
+                list(placement.get("position") or [])
+            ) != 3 or len(list(placement.get("rotation") or [])) != 4:
+                raise ValueError(
+                    f"Component output {declaration['name']!r} placement is malformed."
+                )
+            if type(data.get("placement_authored")) is not bool:
+                raise ValueError(
+                    f"Component output {declaration['name']!r} placement authorship is malformed."
+                )
+            if pack.domain == "partdesign" and not isinstance(
+                data.get("interfaces"), Mapping
+            ):
+                raise ValueError(
+                    f"Component output {declaration['name']!r} interfaces are malformed."
+                )
         elif output_type == "mesh" and pack.domain != "fem":
             if item.get("artifact_kind") == "mesh_bms":
                 path = (staging / str(item.get("artifact_path") or "")).resolve()
@@ -16432,11 +17043,14 @@ def finish_delete(
 ) -> dict[str, Any]:
     trash = Path(str(prepared["trash_directory"]))
     shutil.rmtree(trash)
+    deleted_objects = list(publication.get("deleted_objects") or [])
     return {
         "ok": True,
         "program_id": str(prepared["program_id"]),
         "domain": prepared["pack"].domain,
-        "deleted_objects": list(publication.get("deleted_objects") or []),
+        "source_deleted": True,
+        "deleted_objects": deleted_objects,
+        "cad_objects_removed": len(deleted_objects),
         "reason": str(prepared["arguments"].get("reason") or ""),
         "artifacts_deleted": True,
     }
@@ -16524,23 +17138,23 @@ class DeclarativeDomainAdapter:
             "instructions": self.pack.instructions,
             "model_operating_contract": {
                 "context_first": (
-                    "Each editable_sources item is one part or program. Use its exact "
-                    "source_id with vibescript.read_source before changing that code. "
-                    "Use vibescript.read_api when an exact callable or signature is "
-                    "missing. Never invent source ids, revisions, or API calls."
+                    "Use editable_sources and vibescript.read_source before editing code. "
+                    "Use vibescript.read_api for exact signatures and "
+                    "vibescript.read_geometry for exact native or imported shape facts. "
+                    "vibescript.read_placement resolves planned frames. "
+                    "Never invent IDs, revisions, or API calls."
                 ),
                 "mutation_selection": {
                     "edit_source": (
-                        "Use only for exact source-text changes while input_schema, inputs, "
-                        "and expected_outputs stay unchanged."
+                        "Use for code edits. Include changed inputs, input_schema, or "
+                        "expected_outputs in the same call."
                     ),
                     "set_inputs": (
                         "Use only for an RFC 7396 value patch while source, input_schema, "
                         "and expected_outputs stay unchanged."
                     ),
                     "reconfigure_program": (
-                        "Use when source, input_schema, inputs, or expected_outputs must be "
-                        "replaced together; do not use it for a source-only or value-only edit."
+                        "Alias: edit_source."
                     ),
                 },
                 "revision_rule": (
@@ -16560,6 +17174,7 @@ class DeclarativeDomainAdapter:
                         "properties": {
                             "document_uid": {"type": "string"},
                             "object_name": {"type": "string"},
+                            "document_path": {"type": "string"},
                         },
                         "required": ["document_uid", "object_name"],
                         "additionalProperties": False,
@@ -16655,14 +17270,13 @@ class DeclarativeDomainAdapter:
                 "mutation_selection": {
                     "source_only": "vibescript.edit_source",
                     "input_values_only": f"vibescript.{self.pack.domain}.set_inputs",
-                    "contract_or_outputs": (
-                        f"vibescript.{self.pack.domain}.reconfigure_program"
-                    ),
+                    "contract_or_outputs": "vibescript.edit_source",
                 },
                 "instruction": (
-                    "Replace the complete program contract with the domain-qualified "
-                    "reconfigure_program tool. The prior accepted live objects remain "
-                    "available until a valid v2 candidate is accepted."
+                    "Replace the complete program contract with vibescript.edit_source, "
+                    "including input_schema, inputs, and expected_outputs in the same call. "
+                    "The prior accepted live objects remain available until a valid v2 "
+                    "candidate is accepted."
                     if migration_required
                     else "If this candidate is not accepted, use latest_candidate.failure and "
                     "the accepted contract as the repair baseline, then make the narrowest "
@@ -16745,8 +17359,8 @@ class PartDomainAdapter(DeclarativeDomainAdapter):
                     "guidance": (
                         "Use explicit indices for stable, intentional fillets, chamfers, and "
                         "thickness operations. Worker errors report the available index range. "
-                        "The domain context's document_shapes contains bounded, 1-based face and "
-                        "edge details plus copy-ready stable references. Re-inspect accepted "
+                        "vibescript.read_geometry returns bounded, 1-based face and edge "
+                        "details for an exact object reference. Re-inspect accepted "
                         "face_details and edge_details after every topology-changing regeneration "
                         "before reusing an index."
                     ),
@@ -16836,8 +17450,8 @@ class PartDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "operation_selection": {
                     "existing_document_shape": (
-                        "api.from_object; copy one stable reference from document_shapes "
-                        "context and declare the exact source topology type"
+                        "api.from_object; copy the exact reference used with "
+                        "vibescript.read_geometry and declare the source topology type"
                     ),
                     "analytic_or_regular_primitive": (
                         "the single matching primitive: api.box, api.wedge, api.plane, "
@@ -17084,6 +17698,7 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
 
     def describe_api(self) -> dict[str, Any]:
         from vibescript_assembly_api import JOINT_TYPES
+        from vibescript_component_api import component_placement_contract
 
         description = super().describe_api()
         description.update(
@@ -17097,34 +17712,27 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     "transparency": "integer percentage from 0 through 100",
                 },
                 "evaluation_model": (
-                    "API calls build an immutable graph regenerated from inputs. "
-                    "Publication updates one global History operation and retains "
-                    "each output Body identity by result key."
+                    "Calls build an immutable graph from inputs. Publication retains each "
+                    "Body or linked occurrence by result key."
                 ),
                 "authoring_priority": {
                     "default": (
-                        "Use api.sketch plus native feature operations for solids defined "
-                        "by planar profiles. The source code is the editable "
-                        "parametric definition."
+                        "Use api.sketch plus native feature operations for planar solids."
                     ),
                     "planar_profile_rule": (
-                        "Every planar feature profile is an api.sketch on a principal plane, "
-                        "an arbitrary placement, or a stable attached support; it is not a "
-                        "*_3d curve or api.wire."
+                        "Every planar feature profile is api.sketch on a principal, placed, "
+                        "or attached plane; never *_3d or api.wire."
                     ),
                     "direct_topology_exception": (
-                        "Use direct OCC topology only for nonplanar, imported, repair, "
-                        "standalone, or otherwise unrepresentable geometry."
+                        "Direct OCC is only for nonplanar, imported, repair, standalone, "
+                        "or unrepresentable geometry."
                     ),
                     "do_not_regress": (
-                        "Do not replace valid native history or clear sketch-and-feature "
-                        "intent with direct topology merely to shorten source or bypass a "
-                        "failing feature."
+                        "Do not replace valid native history to shorten source or bypass failure."
                     ),
                     "verification": (
-                        "A sketch-driven Body must report its sketches and feature "
-                        "types in accepted validation evidence; an empty sketch list means "
-                        "the intended native profile history was not built."
+                        "A sketch-driven Body reports sketches/features; an empty sketch list "
+                        "means native profile history was not built."
                     ),
                 },
                 "profile_contract": {
@@ -17185,56 +17793,44 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     "publication": (
                         "api.body publishes one connected solid as a stable Design "
                         "Body. api.publish publishes standalone solid, shell, face, "
-                        "wire, or compound topology."
+                        "wire, or compound topology. api.component and api.instances "
+                        "publish linked occurrences without copying source BREP."
                     ),
                 },
                 "operation_selection": {
                     "material_intent": (
-                        "extrude, revolve, loft, and sweep use operation='new_solid', "
-                        "'new_surface', 'add_material', or 'remove_material'. helix accepts "
-                        "only add_material or remove_material."
+                        "extrude/revolve/loft/sweep declare new_solid, new_surface, "
+                        "add_material, or remove_material; helix is add/remove only."
                     ),
                     "connected_boolean": (
-                        "api.boolean performs union, subtract, or intersect. A solid result must "
-                        "be exactly one connected solid."
+                        "api.boolean performs union, subtract, or intersect; a solid result "
+                        "must be connected."
                     ),
                     "disconnected_geometry": (
-                        "api.compound preserves separate shapes. Do not use disconnected shapes "
-                        "as additive Body features."
+                        "api.compound preserves separate shapes; it is not a Body feature."
                     ),
                     "stable_selection": (
-                        "api.find_subelements creates count-guarded geometric selections. Raw "
-                        "FaceN and EdgeN names are not stable across regeneration."
+                        "api.find_subelements is count-guarded; raw FaceN/EdgeN is unstable."
                     ),
                     "verification": (
-                        "api.measure declares dimensional or topology checks passed to api.body "
-                        "or api.publish."
+                        "api.measure declares checks passed to api.body or api.publish."
                     ),
                     "physical_material": (
-                        "api.material selects an exact catalog UUID and is passed as material= "
-                        "to api.body or api.publish."
+                        "api.material selects catalog material= for body/publish."
                     ),
                     "visible_appearance": (
-                        "api.appearance defines color, transparency, display mode, visibility, "
-                        "and selection state. RGB channels are 0-255. Pass it as appearance= "
-                        "to api.body or api.publish."
+                        "api.appearance defines appearance=; RGB is 0-255."
                     ),
                     "standard_hardware": (
-                        "Use fastener_catalog.search for exact standard, thread, length, and "
-                        "option values. Create catalog hardware with api.fastener; never draw "
-                        "a standard fastener from primitives. Use api.fastener_hole to derive "
-                        "clearance, tapped, counterbore, or countersink dimensions from that "
-                        "same returned fastener value."
+                        "Use fastener_catalog.search + api.fastener; never draw standard "
+                        "hardware. api.fastener_hole consumes that value."
                     ),
                     "publish": "api.body for one solid Body; api.publish for standalone topology",
                     "redundancy_contract": (
-                        "Use api.extrude for straight constant-cross-section additions and cuts, "
-                        "api.revolve for axial features, api.sweep when a profile follows a path, "
-                        "and api.loft only when the cross-section itself genuinely changes between "
-                        "section planes. Do not use api.loft as a shortcut for a wedge, dovetail, "
-                        "simple taper, or diagonal transition that api.sketch plus api.extrude, "
-                        "api.draft, api.chamfer, or a sketch cut expresses directly. Use "
-                        "api.boolean for union, subtraction, or intersection."
+                        "Use api.extrude for straight constant-cross-section; revolve for "
+                        "axial; sweep for paths; api.loft only when the cross-section itself "
+                        "genuinely changes. Do not use api.loft as a shortcut for "
+                        "sketch/extrude, draft, or chamfer. Use api.boolean to combine solids."
                     ),
                 },
                 "semantic_interfaces": {
@@ -17262,6 +17858,10 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "Call material_catalog.search with the required properties and pass one "
                         "returned api.material constructor unchanged; never invent a UUID."
                     ),
+                    "available_components": (
+                        "Definitions and placed occurrences are injected with explicit kind. "
+                        "Search only when the required item or detail is absent."
+                    ),
                 },
                 "workbench_handoffs": {
                     "sketcher": (
@@ -17273,21 +17873,19 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "here for standalone topology and repair."
                     ),
                     "assembly": (
-                        "Part Design authors one reusable component definition and publishes "
-                        "stable interfaces. Assembly consumes its reference from the injected "
-                        "available_components inventory, creates lightweight linked occurrences with "
-                        "api.component/api.instances, and owns joints, collision/clearance checks, "
-                        "solved motion, exploded views, and bills of materials. Use "
-                        "component_catalog.search only when the definition is not listed."
+                        "Place definitions from available_components with api.component or "
+                        "api.instances. Assembly adopts an existing occurrence reference in "
+                        "place, or creates an occurrence from a definition, then adds joints, "
+                        "motion, checks, views, and BOMs. Use component_catalog.search only "
+                        "when the item or required metadata is absent."
                     ),
                     "material": (
                         "Use api.material and api.appearance here; no Material workbench switch "
                         "is needed for a Part Design output."
                     ),
                     "rule": (
-                        "The active workbench determines the available API. Use this Part Design "
-                        "API for the complete part, and describe follow-on work only when the "
-                        "requested output belongs to another workbench."
+                        "The active workbench determines the available API. Use this API for "
+                        "part geometry and Model placements; use Assembly for joints."
                     ),
                 },
                 "error_contract": {
@@ -17355,27 +17953,24 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
         }
         axis_contract = {
             "body_feature": (
-                "H and X mean the sketch's local horizontal axis; V and Y mean its "
-                "local vertical axis; N and Z mean its local normal. These follow the "
-                "sketch placement and are not unconditional global axes."
+                "H/X = sketch-local horizontal, V/Y = local vertical, N/Z = local "
+                "normal. They follow sketch placement, not global axes."
             ),
             "standalone": (
-                "Use explicit origin plus non-zero direction: axis_origin/axis_direction "
-                "for revolve, center/axis_direction for polar_pattern, and "
-                "plane_origin/plane_normal for mirror."
+                "Use explicit global origin/direction: axis_origin/axis_direction "
+                "(revolve), center/axis_direction (polar_pattern), or "
+                "plane_origin/plane_normal (mirror)."
             ),
-            "vector_format": "[x, y, z] in global model coordinates",
+            "vector_format": "global [x,y,z]",
         }
         first_feature = {
             "native_body": (
-                "For the first native Body feature, use operation='add_material' with "
-                "base omitted. For every later addition or removal, pass the exact prior "
-                "feature as base."
+                "First Body feature: operation='add_material', omit base. Later "
+                "add/remove features: pass the exact prior feature as base."
             ),
             "standalone": (
-                "operation='new_solid' creates standalone topology. api.publish keeps it "
-                "standalone; api.body adopts it and promotes supported sketch extrusions, "
-                "revolutions, and lofts to native initial Body history."
+                "new_solid is standalone. api.publish keeps it standalone; api.body "
+                "promotes supported sketch extrusions/revolutions/lofts to Body history."
             ),
         }
         selector_schema = {
@@ -17384,21 +17979,19 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
             "expected_count": "positive exact cardinality",
             "optional_filters": {
                 "geometry_type": (
-                    "case-insensitive native analytic type. Edge values include Line, "
-                    "Circle, Ellipse, BezierCurve, and BSplineCurve; face values include "
-                    "Plane, Cylinder, Cone, Sphere, and Toroid"
+                    "Edge: Line|Circle|Ellipse|BezierCurve|BSplineCurve. Face: "
+                    "Plane|Cylinder|Cone|Sphere|Toroid (case-insensitive)"
                 ),
-                "normal": "face normal [x,y,z] plus normal_tolerance_degrees",
-                "direction": "edge tangent [x,y,z] plus direction_tolerance_degrees",
-                "radius": "analytic radius plus radius_tolerance",
-                "area": "min_area and/or max_area in mm^2",
-                "length": "min_length and/or max_length in mm",
-                "location": "near_point [x,y,z] plus max_distance in mm",
+                "normal": "normal [x,y,z] + normal_tolerance_degrees",
+                "direction": "tangent [x,y,z] + direction_tolerance_degrees",
+                "radius": "radius + radius_tolerance",
+                "area": "min_area/max_area mm^2",
+                "length": "min_length/max_length mm",
+                "location": "near_point [x,y,z] + max_distance mm",
             },
             "return": (
-                "A plain selector object consumed by topology operations, checks, and "
-                "semantic interfaces. It is not geometry and expected_count is rechecked "
-                "on every build."
+                "Selector for operations/checks/interfaces—not geometry. expected_count "
+                "is rechecked every build."
             ),
         }
         interface_schema = {
@@ -17468,6 +18061,13 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
             ),
         }
         description["api_details"] = {
+            "component": {
+                "placement": component_placement_contract(),
+                "interfaces": (
+                    "Explicit import origin/frame connectors use api.body's schema; "
+                    "BREP queries are unavailable."
+                ),
+            },
             "constraint": {
                 "kinds": sorted(_CONSTRAINT_KINDS),
                 "entity_selectors": {
@@ -17494,8 +18094,7 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
             "sketch": {
                 "principal_planes": ["XY", "XZ", "YZ"],
                 "parallel_offset": (
-                    "plane_offset_mm moves along the selected plane's local normal. "
-                    "z_offset_mm is the compatibility alias with identical behavior."
+                    "plane_offset_mm moves along local normal; z_offset_mm is its alias."
                 ),
                 "arbitrary_placement": {
                     "schema": {
@@ -17504,8 +18103,8 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "x_direction": [1, 0, 0],
                     },
                     "rule": (
-                        "Vectors are normalized; x_direction is projected into the plane "
-                        "and must not be parallel to normal. Do not combine with support."
+                        "Vectors normalize; x_direction projects into the plane and must not "
+                        "be parallel to normal. Do not combine with support."
                     ),
                 },
                 "attached_support": {
@@ -17520,25 +18119,27 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         },
                     },
                     "native_selection": (
-                        "A non-transient native source may instead use type='subelements' "
-                        "with one to four FaceN/EdgeN/VertexN names."
+                        "A stable native source may use type='subelements' with 1-4 "
+                        "FaceN/EdgeN/VertexN names."
                     ),
                     "map_mode": (
-                        "Required with support. Use the exact native mode for that support; "
-                        "FlatFace is valid for a planar face."
+                        "Required with support; FlatFace fits a planar face."
                     ),
                     "attachment_offset": (
-                        "{'position':[x,y,z], 'rotation':[x,y,z,w]}; quaternion is normalized"
+                        "{'position':[x,y,z], 'rotation':[x,y,z,w]}"
                     ),
                 },
                 "constraint_policy": (
-                    "Calculated source coordinates remain parametric inputs, but they do not "
-                    "remove native Sketcher degrees of freedom. Set require_fully_constrained "
-                    "only when downstream design intent requires a natively locked sketch."
+                    "Calculated coordinates do not remove Sketcher DoF. Set "
+                    "require_fully_constrained only when native locking is required."
                 ),
             },
             "find_subelements": selector_schema,
             "measure": {
+                "bounds_contract": (
+                    "bounds_* uses OCC optimal geometry without shape-tolerance inflation. "
+                    "Use check tolerance only for design allowance."
+                ),
                 "single_shape_quantities": [
                     "length_mm",
                     "area_mm2",
@@ -17560,15 +18161,22 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     "center_of_mass_z_mm",
                 ],
                 "pair_quantities": {
-                    "minimum_distance_mm": "requires other=shape",
+                    "minimum_distance_mm": (
+                        "Prefer api.minimum_distance. Extract targeted topology with "
+                        "api.subshape first; selection fields are invalid here."
+                    ),
                     "interference_volume_mm3": "requires other=shape",
                 },
+                "minimum_distance_example": (
+                    "a = api.subshape(first, 'face', selector_a); "
+                    "b = api.subshape(second, 'face', selector_b); "
+                    "check = api.minimum_distance(a, b, maximum=0.1)"
+                ),
                 "selected_quantities": {
                     "radius_mm": "requires one exact edge or face selector",
                     "diameter_mm": "requires one exact edge or face selector",
                     "minimum_wall_thickness_mm": (
-                        "requires selection and other_selection, each matching one "
-                        "non-touching opposing face on the same shape"
+                        "requires two one-face selectors on the same shape"
                     ),
                 },
                 "material_quantities": {
@@ -17582,15 +18190,16 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "inertia_zz_kg_mm2",
                     ],
                     "requirement": (
-                        "The measured shape must contain exactly one solid. Pass "
-                        "material=api.material(..., "
+                        "Requires one solid and api.material(..., "
                         "require_physical_properties=['Density'])."
                     ),
                 },
                 "evidence_rule": (
-                    "All values come from regenerated BREP topology. A helper line, face, "
-                    "or arithmetic value cannot certify another shape."
+                    "A check certifies only the regenerated BREP passed to it."
                 ),
+            },
+            "minimum_distance": {
+                "targeted_topology": "Extract faces or edges with api.subshape first."
             },
             "body": {
                 "interfaces": interface_schema,
@@ -17640,7 +18249,10 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     "Use only option keys and exact defaults/allowed values returned for the "
                     "selected standard and nominal_thread. The catalog response is the option schema."
                 ),
-                "threads": "model_thread is a boolean; true builds real helical thread geometry.",
+                "threads": (
+                    "Real helical thread geometry is the default. Set "
+                    "model_thread=False only for a deliberate lightweight envelope."
+                ),
             },
             "appearance": {
                 "display_mode": {
@@ -20917,13 +21529,19 @@ class RobotDomainAdapter(DeclarativeDomainAdapter):
                         "Assembly, a controller program, collision model, or dynamics model"
                     ),
                     "complete_robot_rule": (
-                        "Use this workbench for arm kinematics and motion evidence. A complete "
-                        "physical robot also needs geometry/components and joints in Part Design/"
-                        "Part/Assembly plus Material assignments; those are explicit human-mediated "
-                        "workbench handoffs, never hidden cross-workbench calls."
+                        "Place referenced equipment here with api.component/api.instances and "
+                        "author arm kinematics and paths. Assembly owns mechanical joints; Part "
+                        "Design owns component geometry."
                     ),
                 },
                 "operation_selection": {
+                    "component": (
+                        "Place one linked definition from available_components; return it under "
+                        "one stable output key."
+                    ),
+                    "instances": (
+                        "Place repeated linked occurrences of one definition without copied BREP."
+                    ),
                     "robot": (
                         "Start once per arm: choose built-in KUKA IR500 or six inline DH rows, "
                         "declare joint state/IK seed, world base, flange-to-tool transform, and home."
@@ -21218,22 +21836,22 @@ class RobotDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The active workbench determines the available API. Complete and verify "
-                        "the Robot graph here, then describe the work required for the next "
-                        "deliverable."
+                        "The active workbench determines the available API. Use Robot for "
+                        "equipment layout, arm kinematics, paths, and simulation. Referenced "
+                        "Part Design sources remain editable through universal source tools."
                     ),
                     "complete_robot": {
                         "Part Design/Part": "design link, housing, flange, end-effector, and fixture geometry",
                         "Assembly": (
-                            "create components, revolute joints, grounding, solved placements, and interference-ready structure"
+                            "adopt placed occurrences and add joints, grounding, solved motion, and checks"
                         ),
                         "Material": "assign physical materials and appearance to stable component references",
                         "FEM": "analyze link/tool/fixture strength using semantic geometry references",
                         "CAM": "manufacture robot parts and fixtures after geometry is accepted",
                     },
                     "unsupported_here": (
-                        "Robot does not author solids, assemblies, material cards, FEM loads, CAM toolpaths, "
-                        "controller files, or collision geometry, and it never invokes those hidden domains."
+                        "Robot does not author solids, assembly joints, material cards, FEM loads, "
+                        "CAM toolpaths, controller files, or collision geometry."
                     ),
                 },
                 "recommended_patterns": [
@@ -22147,7 +22765,7 @@ class TechDrawDomainAdapter(DeclarativeDomainAdapter):
                     "Create each independent view or orthographic projection group once; use a projection group for related front/top/side views and view for one orientation such as isometric.",
                     "When projected EdgeN/VertexN/FaceN names are not already known, first accept a template + view/projection + page discovery revision without dimensions.",
                     "Inspect the accepted view's dimension_reference_inventory, including the exact projection direction, geometry type, visibility, 2D coordinates, and source mapping.",
-                    "Use reconfigure_program to add dimensions and their expected_outputs atomically, copying exact inventory names; never guess a projected index on complex geometry.",
+                    "Use edit_source to add dimensions and their expected_outputs atomically, copying exact inventory names; never guess a projected index on complex geometry.",
                     "Add bounded annotations, compose every returned non-page value into exactly one page, and keep projection/page conventions identical.",
                     "After acceptance, inspect raw_value/display_text and page membership, then use a screenshot for overlap, clipping, title-block, and human drafting review.",
                 ],
@@ -22425,6 +23043,7 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
             JOINT_REQUIRED_PARAMETERS,
             JOINT_TYPES,
         )
+        from vibescript_component_api import component_placement_contract
 
         description = super().describe_api()
         description.update(
@@ -22466,7 +23085,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "Pass component sources through inputs. The host detaches each exact "
                         "Shape, hashes the BREP and semantic-interface contract into the "
                         "program revision, and marks accepted Assembly outputs stale if a "
-                        "source changes. Copy references from available_components. Use "
+                        "source changes. A definition reference creates a linked occurrence; "
+                        "an occurrence reference adopts that exact placed object in place. "
+                        "Copy references from available_components. Use "
                         "component_catalog.search only when the needed definition is omitted "
                         "from that bounded inventory or more catalog metadata is required. Its "
                         "optional document_path is portable relative "
@@ -22504,8 +23125,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "graph_contract": {
                     "component": (
-                        "Create one authored-source occurrence with api.component, or several "
-                        "occurrences of one source with api.instances. Create each exact "
+                        "Use api.component for one definition or existing occurrence. An "
+                        "existing Model/Robot occurrence is reused in place; a definition "
+                        "creates a link. Use api.instances for repeated definitions. Create exact "
                         "standard-hardware occurrence with api.fastener. Set "
                         "grounded=True on at least one fixed base and reuse that exact "
                         "variable in connectors."
@@ -22649,7 +23271,8 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "instruction": (
                             "Use api.solve(model) for accepted production geometry. Use "
                             "require_solved=False only when the user explicitly wants a "
-                            "diagnostic snapshot of an incomplete or conflicting mechanism."
+                            "diagnostic snapshot of an incomplete or conflicting mechanism. "
+                            "Solved proves joint consistency only, never proper operation."
                         ),
                     },
                     {
@@ -23147,10 +23770,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         ),
                     },
                     "boundary": (
-                        "Assembly VibeScript owns occurrences, connectors, joints, solve evidence, "
-                        "motion, exploded views, and BOMs. Component solids remain owned by their "
-                        "Part Design sources, which may be edited through the universal source "
-                        "tools without changing the visible workbench."
+                        "Assembly owns its new occurrences and all joints, solve evidence, motion, "
+                        "views, and BOMs. An adopted Model/Robot occurrence keeps its original "
+                        "program identity and is released, not deleted, when the Assembly is removed."
                     ),
                 },
                 "recommended_patterns": [
@@ -23298,9 +23920,11 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
         )
         description["api_details"] = {
             "component": {
+                "placement": component_placement_contract(),
                 "definition_rule": (
                     "The input reference identifies one authored reusable definition. "
-                    "The result is one lightweight native linked occurrence, not copied BREP. "
+                    "It creates one lightweight native link. If the reference itself is a "
+                    "Model/Robot occurrence, Assembly adopts that same object in place. "
                     "Every non-subassembly reference is one rigid mechanism body even when "
                     "its source Shape contains several solids."
                 ),
@@ -23317,6 +23941,7 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 ),
             },
             "instances": {
+                "placement": "Same as api_details.component.placement.",
                 "definition_rule": (
                     "Creates several lightweight native links to one authored definition. "
                     "It does not duplicate or recompute that definition's BREP."
@@ -23334,6 +23959,12 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                     "or derive a connector from nearby geometry."
                 ),
                 "axis_rule": "Connector local +Z is the joint axis.",
+                "offset_rule": (
+                    "offset is expressed in the complete local connector frame and is "
+                    "applied after the selected or published interface frame. For example, "
+                    "offset=[0,0,10] moves 10 mm along that connector's local +Z joint "
+                    "axis, not necessarily global +Z."
+                ),
                 "contract_rule": (
                     "allowed_joints and compatibility are explicit authored contracts. "
                     "Compatibility tokens must match exactly; otherwise the native joint "
@@ -23355,7 +23986,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "Required and non-zero for rack_pinion; sign selects direction."
                     ),
                     "thread_pitch_mm": (
-                        "Required and non-zero for screw; sign selects handedness/direction."
+                        "Required and non-zero for screw; sign selects handedness/direction. "
+                        "A non-suppressed collinear slider sharing the translating component "
+                        "must also be included in api.assembly."
                     ),
                     "radius1_mm/radius2_mm": (
                         "Both are required and positive for gears and belt."

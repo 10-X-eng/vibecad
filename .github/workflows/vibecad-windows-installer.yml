@@ -1,58 +1,62 @@
-name: VibeCAD Windows Installer
+name: VibeCAD Windows Build Validation
 
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: "Release tag to create or update. Leave empty for windows-build-YYYYMMDD-SHA."
-        required: false
+      source_ref:
+        description: "Branch, tag, or commit to validate."
+        required: true
+        default: "dev"
         type: string
-  push:
-    tags:
-      - "windows-build-*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: vibecad-windows-validation-${{ inputs.source_ref }}
+  cancel-in-progress: false
 
 jobs:
   metadata:
-    name: Resolve Metadata
+    name: Resolve Canonical Metadata
     runs-on: ubuntu-24.04
     outputs:
-      release_tag: ${{ steps.meta.outputs.release_tag }}
       build_tag: ${{ steps.meta.outputs.build_tag }}
+      release_title: ${{ steps.meta.outputs.release_title }}
+      source_sha: ${{ steps.meta.outputs.source_sha }}
     steps:
-      - name: Resolve release tag
+      - name: Check out requested source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          submodules: false
+
+      - name: Resolve version and build
         id: meta
         shell: bash
-        env:
-          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag || '' }}
         run: |
           set -euo pipefail
-
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            release_tag="${GITHUB_REF_NAME}"
-          elif [[ -n "${INPUT_RELEASE_TAG}" ]]; then
-            release_tag="${INPUT_RELEASE_TAG}"
-          else
-            short_sha="${GITHUB_SHA:0:12}"
-            release_tag="windows-build-$(date -u +%Y%m%d)-${short_sha}"
-          fi
-
-          build_tag="${release_tag//\//-}"
-          build_tag="${build_tag// /-}"
-
-          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
-          echo "build_tag=${build_tag}" >> "${GITHUB_OUTPUT}"
+          python src/Tools/sync_version.py --check
+          source_sha="$(git rev-parse --verify HEAD)"
+          build_tag="$(python src/Tools/resolve_release_artifact_name.py . --component release-tag)"
+          release_title="$(python src/Tools/resolve_release_artifact_name.py . --component release-title)"
+          {
+            echo "build_tag=${build_tag}"
+            echo "release_title=${release_title}"
+            echo "source_sha=${source_sha}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Validating ${release_title}" >> "${GITHUB_STEP_SUMMARY}"
 
   windows:
-    name: Build Windows Installer
+    name: Build Windows Bundle and Installer
     needs: metadata
     runs-on: windows-2022
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ needs.metadata.outputs.source_sha }}
           fetch-depth: 0
           submodules: recursive
 
@@ -65,7 +69,7 @@ jobs:
 
       - name: Restore Pixi and Python caches
         id: cache-pixi-windows
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             package/rattler-build/.pixi
@@ -77,25 +81,15 @@ jobs:
           restore-keys: |
             pixi-windows-
 
-      - name: Report Windows cache status
-        shell: bash
-        run: |
-          echo "cache-hit=${{ steps.cache-pixi-windows.outputs.cache-hit }}"
-          echo "matched-key=${{ steps.cache-pixi-windows.outputs.cache-matched-key }}"
-          echo "primary-key=${{ steps.cache-pixi-windows.outputs.cache-primary-key }}"
-
       - name: Restore ccache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}\ccache
-          # Rolling key: every run saves a fresh entry and restores the most recent
-          # prior one via restore-keys, so ccache updates each build. Shares the
-          # ccache-windows-* pool with the release workflow (identical win-64 recipe).
           key: ccache-windows-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ccache-windows-
 
-      - name: Build FreeCAD package environment
+      - name: Build package environment
         shell: bash
         working-directory: package/rattler-build
         env:
@@ -103,12 +97,16 @@ jobs:
           CCACHE_MAXSIZE: "2G"
         run: |
           set -euo pipefail
-          pixi install -e default
+          if [[ -d .pixi/envs/default ]]; then
+            pixi reinstall -e default vibecad
+          else
+            pixi install -e default
+          fi
           pixi install -e package
 
       - name: Save ccache
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}\ccache
           key: ccache-windows-${{ github.run_id }}-${{ github.run_attempt }}
@@ -119,7 +117,7 @@ jobs:
         env:
           BUILD_TAG: ${{ needs.metadata.outputs.build_tag }}
           MAKE_INSTALLER: "true"
-          UPLOAD_RELEASE: "false"
+          MAKE_PORTABLE_ARCHIVE: "false"
           WINDOWS_SIGN_RELEASE: "0"
         run: |
           set -euo pipefail
@@ -127,7 +125,7 @@ jobs:
 
       - name: Save Pixi and Python caches
         if: always() && steps.cache-pixi-windows.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             package/rattler-build/.pixi
@@ -137,44 +135,12 @@ jobs:
             ~\AppData\Local\pip\Cache
           key: ${{ steps.cache-pixi-windows.outputs.cache-primary-key }}
 
-      - name: Publish GitHub release
-        shell: bash
-        working-directory: package/rattler-build/windows
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
-        run: |
-          set -euo pipefail
-
-          mapfile -d '' release_files < <(
-            find . -maxdepth 1 -type f \
-              \( -name '*.7z' -o -name '*.exe' -o -name '*SHA256.txt' \) \
-              -print0
-          )
-          if [[ "${#release_files[@]}" -eq 0 ]]; then
-            echo "No Windows release assets were produced." >&2
-            exit 1
-          fi
-
-          cat > release-notes.md <<EOF
-          VibeCAD Windows build ${RELEASE_TAG}
-
-          Assets:
-          - Windows NSIS installer executable.
-          - Windows portable 7z bundle.
-          - SHA256 files for both packages.
-
-          This build includes the integrated VibeCAD workbench and VibeCAD themes.
-          EOF
-
-          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload --clobber "${RELEASE_TAG}" "${release_files[@]}"
-          else
-            gh release create "${RELEASE_TAG}" \
-              --target "${GITHUB_SHA}" \
-              --title "VibeCAD Windows ${RELEASE_TAG}" \
-              --prerelease \
-              --notes-file release-notes.md \
-              "${release_files[@]}"
-          fi
+      - name: Upload validation artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vibecad-windows-${{ needs.metadata.outputs.build_tag }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            package/rattler-build/windows/*.exe
+            package/rattler-build/windows/*-installer.exe-SHA256.txt

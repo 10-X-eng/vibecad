@@ -1009,7 +1009,7 @@ class _FastenerDialog:
 
         self.model_thread.setEnabled(bool(details["supports_model_thread"]))
         self.model_thread.setChecked(
-            bool(self._initial.get("model_thread"))
+            bool(self._initial.get("model_thread", True))
             if details["supports_model_thread"]
             else False
         )

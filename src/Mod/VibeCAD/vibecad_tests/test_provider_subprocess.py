@@ -4,6 +4,12 @@
 
 from __future__ import annotations
 
+import json
+import sys
+from types import SimpleNamespace
+
+import pytest
+
 import VibeCADProvider as provider
 import VibeCADSession as session
 
@@ -98,6 +104,332 @@ def test_clean_exit_drains_delayed_final_pipe_message(monkeypatch) -> None:
     assert 0.2 in context.parent_conn.poll_timeouts
 
 
+def test_linux_provider_uses_clean_spawn_instead_of_gui_process_fork() -> None:
+    if sys.platform != "linux":
+        pytest.skip("Linux-specific provider process contract")
+
+    python_executable = provider._provider_spawn_python_executable()
+    assert python_executable
+    assert "python" in python_executable.rsplit("/", 1)[-1].lower()
+    assert provider._provider_multiprocessing_context().get_start_method() == "spawn"
+
+
+def test_provider_stream_deltas_are_batched_before_gui_delivery() -> None:
+    now = [0.0]
+    events: list[dict[str, object]] = []
+    batcher = provider._ProviderStreamDeltaBatcher(
+        events.append,
+        provider="Anthropic",
+        turn=3,
+        flush_seconds=0.075,
+        clock=lambda: now[0],
+    )
+
+    for fragment in ("one", " ", "small", " ", "update"):
+        batcher.append("provider_reasoning_delta", fragment)
+    assert events == []
+
+    now[0] = 0.08
+    batcher.append("provider_reasoning_delta", ".")
+    batcher.append("provider_text_delta", "Result")
+    batcher.append("provider_text_delta", " ready")
+    batcher.flush()
+
+    assert events == [
+        {
+            "event": "provider_reasoning_delta",
+            "provider": "Anthropic",
+            "turn": 3,
+            "text": "one small update.",
+        },
+        {
+            "event": "provider_text_delta",
+            "provider": "Anthropic",
+            "turn": 3,
+            "text": "Result ready",
+        },
+    ]
+
+
+class _CollectingConnection:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, object]] = []
+        self.closed = False
+
+    def send(self, message: dict[str, object]) -> None:
+        self.messages.append(message)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _EmptyAnthropicStream:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def __iter__(self):
+        return iter(())
+
+    @staticmethod
+    def get_final_message():
+        return SimpleNamespace(content=[], stop_reason="end_turn")
+
+
+def test_anthropic_empty_completion_returns_explicit_error(monkeypatch) -> None:
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(
+            messages=SimpleNamespace(stream=lambda **_kwargs: _EmptyAnthropicStream())
+        ),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    connection = _CollectingConnection()
+
+    provider._anthropic_child_main(
+        connection,
+        "Inspect the selected model.",
+        {"provider_tool_schemas": []},
+        "test-model",
+        "test-key",
+        None,
+        1.0,
+        1,
+        False,
+    )
+
+    terminal = [
+        message for message in connection.messages if message.get("type") == "error"
+    ]
+    assert len(terminal) == 1
+    assert "without any user-visible text" in str(terminal[0]["error"])
+    assert connection.closed
+
+
+def test_anthropic_turn_compaction_packet_excludes_deterministic_payloads() -> None:
+    prompt = (
+        "VIBECAD_CONTEXT_JSON\n"
+        '{"active_state":{"raw_geometry":"DO_NOT_SEND_CAD_STATE"}}\n'
+        "END_VIBECAD_CONTEXT_JSON\n\n"
+        "RECENT_CONVERSATION_JSON\n"
+        '{"turns":[{"role":"user","content":"Keep the mounting datum."}],'
+        '"omitted_turn_count":0,"truncated_turn_count":0}\n'
+        "END_RECENT_CONVERSATION_JSON\n\n"
+        "CURRENT_USER_MESSAGE\nRebuild the bracket with native features."
+    )
+    event = provider._anthropic_compaction_tool_event(
+        "vibescript.edit_source",
+        {
+            "source_id": "source-1",
+            "expected_revision": "revision-1",
+            "source": "DO_NOT_SEND_SOURCE = 'raw source text'",
+            "input_schema": {"DO_NOT_SEND_SCHEMA": True},
+        },
+        {
+            "ok": False,
+            "failure_code": "BUILD_FAILED",
+            "error": "Pocket removed no material.",
+            "stdout": "DO_NOT_SEND_LOG",
+            "vibecad_state_after": {"DO_NOT_SEND_STATE": True},
+        },
+    )
+
+    packet = provider._anthropic_turn_compaction_packet(
+        prompt=prompt,
+        tool_events=[event],
+        assistant_progress=["I inspected the mounting face."],
+        previous_compaction=None,
+        generation=1,
+    )
+    encoded = json.dumps(packet, sort_keys=True)
+
+    assert "Rebuild the bracket with native features." in encoded
+    assert "Keep the mounting datum." in encoded
+    assert "Pocket removed no material." in encoded
+    assert "DO_NOT_SEND_CAD_STATE" not in encoded
+    assert "DO_NOT_SEND_SOURCE" not in encoded
+    assert "raw source text" not in encoded
+    assert "DO_NOT_SEND_SCHEMA" not in encoded
+    assert "DO_NOT_SEND_LOG" not in encoded
+    assert "DO_NOT_SEND_STATE" not in encoded
+    assert (
+        len(encoded.encode("utf-8"))
+        <= provider.ANTHROPIC_TURN_COMPACTION_MAX_INPUT_BYTES
+    )
+
+
+def test_anthropic_turn_compaction_runs_on_its_named_worker_thread() -> None:
+    calls: list[dict[str, object]] = []
+
+    class _Messages:
+        @staticmethod
+        def create(**request):
+            calls.append(
+                {
+                    "request": request,
+                    "thread": provider.threading.current_thread().name,
+                }
+            )
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        name="commit_turn_compaction",
+                        input={
+                            "current_request": "Continue.",
+                            "requirements": [],
+                            "completed_actions": [],
+                            "live_artifacts": [],
+                            "open_issues": [],
+                            "next_action": "Continue.",
+                        },
+                    )
+                ],
+                stop_reason="tool_use",
+            )
+
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(messages=_Messages())
+    )
+    result = provider._anthropic_compact_turn_in_thread(
+        anthropic_module=anthropic_module,
+        client_kwargs={"api_key": "test-key"},
+        model="memory-model",
+        packet={"current_request": "Continue."},
+        debug_context={},
+        base_url=None,
+        generation=1,
+    )
+
+    assert result["next_action"] == "Continue."
+    assert len(calls) == 1
+    assert calls[0]["thread"] == "VibeCAD-Anthropic-Turn-Compaction"
+    request = calls[0]["request"]
+    assert request["model"] == "memory-model"
+    assert request["tool_choice"] == {
+        "type": "tool",
+        "name": "commit_turn_compaction",
+    }
+
+
+class _SequenceAnthropicMessages:
+    def __init__(self, responses: list[object]) -> None:
+        self.responses = iter(responses)
+
+    def stream(self, **_kwargs):
+        response = next(self.responses)
+
+        class _Stream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def __iter__(self):
+                return iter(())
+
+            @staticmethod
+            def get_final_message():
+                return response
+
+        return _Stream()
+
+
+def test_anthropic_thinking_only_max_tokens_compacts_and_continues(
+    monkeypatch,
+) -> None:
+    responses = [
+        SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="thinking",
+                    thinking="private reasoning must not become compaction input",
+                    signature="signed",
+                )
+            ],
+            stop_reason="max_tokens",
+        ),
+        SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="Finished cleanly.")],
+            stop_reason="end_turn",
+        ),
+    ]
+    messages = _SequenceAnthropicMessages(responses)
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(messages=messages),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    compaction_calls: list[dict[str, object]] = []
+
+    def compact(**kwargs):
+        compaction_calls.append(kwargs)
+        return {
+            "current_request": "Inspect the selected model.",
+            "requirements": [],
+            "completed_actions": [],
+            "live_artifacts": [],
+            "open_issues": [],
+            "next_action": "Return the result.",
+        }
+
+    monkeypatch.setattr(provider, "_anthropic_compact_turn_in_thread", compact)
+    connection = _CollectingConnection()
+
+    provider._anthropic_child_main(
+        connection,
+        "Inspect the selected model.",
+        {
+            "provider_tool_schemas": [],
+            "_vibecad_provider_options": {
+                "compaction_model": "memory-model"
+            },
+        },
+        "interactive-model",
+        "test-key",
+        None,
+        1.0,
+        2,
+        False,
+    )
+
+    terminal = [
+        message
+        for message in connection.messages
+        if message.get("type") in {"done", "error"}
+    ]
+    assert terminal == [
+        {"type": "done", "final_output": "Finished cleanly.", "raw": None}
+    ]
+    assert len(compaction_calls) == 1
+    assert compaction_calls[0]["model"] == "memory-model"
+    packet_text = json.dumps(compaction_calls[0]["packet"])
+    assert "private reasoning" not in packet_text
+    progress_events = [
+        message.get("event", {})
+        for message in connection.messages
+        if message.get("type") == "progress"
+    ]
+    assert any(
+        event.get("event") == "anthropic_turn_compaction_started"
+        for event in progress_events
+    )
+    assert any(
+        event.get("event") == "anthropic_turn_compaction_completed"
+        for event in progress_events
+    )
+    assert connection.closed
+
+
 def _vibescript_mode_context(
     workbench: str = "PartDesignWorkbench",
     domain: str = "partdesign",
@@ -131,6 +463,10 @@ def test_instructions_include_vibescript_guidance_only_in_vibescript_mode() -> N
         in provider.VIBECAD_SYSTEM_INSTRUCTIONS
     )
     assert "assembly retention" in provider.VIBECAD_SYSTEM_INSTRUCTIONS
+    assert (
+        "Hide source bodies when reviewing assembly occurrences."
+        in provider.VIBECAD_SYSTEM_INSTRUCTIONS
+    )
     assert guidance
     assert guidance in instructions
     assert "api.extrude" in guidance
@@ -141,8 +477,10 @@ def test_instructions_include_vibescript_guidance_only_in_vibescript_mode() -> N
     assembly_guidance = provider._vibescript_authoring_instruction(
         _vibescript_mode_context("AssemblyWorkbench", "assembly")
     )
-    assert "cross-section stays constant" not in assembly_guidance
-    assert "cross-section genuinely changes" not in assembly_guidance
+    assert "VIBESCRIPT MODEL + ASSEMBLY AUTHORING" in assembly_guidance
+    assert "cross-section stays constant" in assembly_guidance
+    assert "cross-section genuinely changes" in assembly_guidance
+    assert "occurrences, joints, mechanisms, and simulations" in assembly_guidance
 
     for other_context in (
         {},
@@ -210,6 +548,8 @@ def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
     assert "validated inputs" in text
     assert "vibescript.read_source" in text
     assert "vibescript.read_api" in text
+    assert "vibescript.read_geometry" in text
+    assert "vibescript.read_placement" in text
     assert "complete updated source" in text
 
 
@@ -221,9 +561,12 @@ def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> N
     for instruction in (partdesign, assembly):
         assert "vibescript.read_source" in instruction
         assert "vibescript.read_api" in instruction
+        assert "vibescript.read_geometry" in instruction
+        assert "vibescript.read_placement" in instruction
         assert "vibescript.edit_source" in instruction
         assert "set_inputs" in instruction
-        assert "reconfigure_program" in instruction
+        assert "reconfigure_program" not in instruction
+        assert "expected_outputs" in instruction
         assert "one editable part or program" in instruction
         assert "before writing the first program" not in instruction
         assert "after success" not in instruction
@@ -244,8 +587,154 @@ def test_complete_source_reads_are_not_cut_down_to_the_normal_tool_result_limit(
     )
 
     assert visible["source"] == source
+    assert "source_id" not in visible
     assert "vibecad_result_boundary" not in visible
     assert "_vibecad_complete_source_result" not in visible
+
+
+def test_source_write_result_is_compact_readable_and_actionable() -> None:
+    visible = provider._provider_visible_tool_result(
+        {
+            "ok": True,
+            "source_id": "a" * 32,
+            "program_id": "a" * 32,
+            "program": "Design/partdesign/Motor Mount",
+            "working_revision": "b" * 64,
+            "live_outputs": {
+                "Mount": {
+                    "label": "Motor Mount",
+                    "object_name": "VibePartdesign_Mount",
+                    "type_id": "PartDesign::Body",
+                    "facts": {
+                        "shape_type": "Solid",
+                        "solid_count": 1,
+                        "face_count": 10,
+                        "edge_count": 24,
+                        "volume_mm3": 1234.5,
+                        "face_details": [{"index": index} for index in range(100)],
+                        "edge_details": [{"index": index} for index in range(200)],
+                    },
+                }
+            },
+            "outputs": [{"name": "Mount", "duplicate": True}],
+            "model_state": {"status": "accepted", "accepted_is_current": True},
+            "_vibecad_source_lifecycle_result": True,
+        }
+    )
+
+    assert visible == {
+        "ok": True,
+        "program": "Design/partdesign/Motor Mount",
+        "revision": "b" * 64,
+        "outputs": [
+                {
+                    "name": "Mount",
+                    "label": "Motor Mount",
+                    "geometry": {
+                    "shape_type": "Solid",
+                    "solid_count": 1,
+                    "face_count": 10,
+                    "edge_count": 24,
+                    "volume_mm3": 1234.5,
+                },
+            }
+        ],
+        "state": {"status": "accepted", "accepted_is_current": True},
+        "next_actions": [
+            {
+                "tool": "vibescript.read_source",
+                "arguments": {
+                    "program": "Design/partdesign/Motor Mount",
+                    "include_logs": False,
+                },
+            },
+            {
+                "tool": "vibescript.build_program",
+                "arguments": {
+                    "program": "Design/partdesign/Motor Mount",
+                    "expected_revision": "b" * 64,
+                },
+            },
+        ],
+    }
+
+
+def test_background_source_result_is_compacted_once_with_collision_signal() -> None:
+    collision = {
+        "status": "complete",
+        "analysis_complete": True,
+        "collision_free": False,
+        "evaluated_frame_count": 61,
+        "colliding_frame_count": 8,
+        "colliding_pair_count": 2,
+        "first_collision": {
+            "first_component": "Base",
+            "second_component": "Arm",
+            "frame_index": 1,
+            "time_s": 0.0,
+        },
+        "pairs": [
+            {
+                "first_component": "Base",
+                "second_component": "Arm",
+                "intervals": [{"frame": index, "payload": "x" * 1000}],
+            }
+            for index in range(100)
+        ],
+        "warning_count": 0,
+        "warnings": [],
+    }
+    visible = provider._provider_visible_tool_result(
+        {
+            "ok": True,
+            "operation": {
+                "operation_id": "operation-1",
+                "status": "succeeded",
+            },
+            "operation_succeeded": True,
+            "result": {
+                "ok": True,
+                "program": "Robot/assembly/Arm",
+                "working_revision": "c" * 64,
+                "live_outputs": {
+                    "MotionDemo": {
+                        "object_name": "VibeAssembly_MotionDemo",
+                        "output_type": "simulation",
+                        "assembly_data": {"collision_summary": collision},
+                    }
+                },
+                "outputs": [
+                    {
+                        "name": "MotionDemo",
+                        "assembly_data": {"collision_summary": collision},
+                    }
+                ],
+                "_vibecad_source_lifecycle_result": True,
+            },
+        }
+    )
+
+    assert visible["operation"] == {
+        "operation_id": "operation-1",
+        "status": "succeeded",
+    }
+    assert visible["operation_succeeded"] is True
+    terminal = visible["result"]
+    assert terminal["program"] == "Robot/assembly/Arm"
+    assert terminal["revision"] == "c" * 64
+    assert len(terminal["outputs"]) == 1
+    assert terminal["outputs"][0]["collision_summary"] == {
+        "status": "complete",
+        "analysis_complete": True,
+        "collision_free": False,
+        "evaluated_frame_count": 61,
+        "colliding_frame_count": 8,
+        "colliding_pair_count": 2,
+        "first_collision": collision["first_collision"],
+        "warning_count": 0,
+    }
+    assert "pairs" not in json.dumps(terminal)
+    assert "payload" not in json.dumps(terminal)
 
 
 def test_partdesign_vibescript_guidance_defaults_to_native_editable_history() -> None:
@@ -330,6 +819,8 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
         "sources": [
             {
                 "source_id": "a" * 32,
+                "program": "Design/part/Body Source",
+                "status": "accepted",
                 "current_revision": "b" * 64,
                 "affected_outputs": [],
             }
@@ -358,7 +849,17 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
     assert "vibescript_domain" not in context
     assert "partdesign" not in context
     visible = provider._model_visible_context(context)
-    assert visible["editable_sources"] == editable_sources
+    assert visible["editable_sources"] == {
+        "schema": "vibecad-editable-sources-v1",
+        "domain": "part",
+        "sources": [
+            {
+                "program": "Design/part/Body Source",
+                "status": "accepted",
+            }
+        ],
+    }
+    assert "source_id" not in json.dumps(visible)
     assert "vibescript_domain" not in visible
 
 

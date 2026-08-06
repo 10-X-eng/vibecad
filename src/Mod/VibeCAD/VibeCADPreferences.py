@@ -86,6 +86,7 @@ class VibeCADSettings:
     chatgpt_intent_memory_model: str = ""
     scripted_timeout_seconds: float = DEFAULT_SCRIPTED_TIMEOUT_SECONDS
     scripted_memory_limit_mb: int = DEFAULT_SCRIPTED_MEMORY_LIMIT_MB
+    mcp_enabled: bool = False
 
     @property
     def resolved_dotenv_path(self) -> Path | None:
@@ -185,6 +186,7 @@ def _positive_int(value: object, default: int) -> int:
 def load_settings() -> VibeCADSettings:
     pref = preferences()
     return VibeCADSettings(
+        mcp_enabled=pref.GetBool("MCPEnabled", False),
         use_online_provider=pref.GetBool("UseOnlineProvider", True),
         model=pref.GetString("Model", DEFAULT_MODEL) or DEFAULT_MODEL,
         dotenv_path=pref.GetString("DotenvPath", ""),
@@ -225,6 +227,7 @@ def load_debug_settings() -> VibeCADDebugSettings:
 
 def save_settings(settings: VibeCADSettings) -> None:
     pref = preferences()
+    pref.SetBool("MCPEnabled", bool(settings.mcp_enabled))
     pref.SetBool("UseOnlineProvider", bool(settings.use_online_provider))
     pref.SetString("Model", settings.model.strip() or DEFAULT_MODEL)
     pref.SetString("DotenvPath", settings.dotenv_path.strip())
@@ -273,6 +276,7 @@ def save_debug_settings(settings: VibeCADDebugSettings) -> None:
 
 def reset_settings() -> None:
     pref = preferences()
+    pref.RemBool("MCPEnabled")
     pref.RemBool("UseOnlineProvider")
     pref.RemString("Model")
     pref.RemString("DotenvPath")
@@ -293,6 +297,12 @@ def reset_settings() -> None:
     pref.RemInt("ScriptedMemoryLimitMB")
     pref.RemBool("ContextDebugEnabled")
     pref.RemString("ContextDebugDirectory")
+
+
+def set_mcp_enabled(enabled: bool) -> None:
+    """Persist a controller rollback without changing unrelated preferences."""
+
+    preferences().SetBool("MCPEnabled", bool(enabled))
 
 
 def configured_dotenv_path() -> Path | None:
@@ -544,6 +554,25 @@ class VibeCADPreferencesPage:
         refresh.setObjectName("VibeCADPrefRefreshAuth")
         refresh.clicked.connect(self._refresh_status)
         layout.addRow("", refresh)
+
+        self._control_mode_status_timer = QtCore.QTimer(self.form)
+        self._control_mode_status_timer.setInterval(500)
+        self._control_mode_status_timer.timeout.connect(
+            self._refresh_control_mode_availability
+        )
+        self._control_mode_status_timer.start()
+        self._refresh_control_mode_availability()
+
+    def _refresh_control_mode_availability(self) -> None:
+        try:
+            from VibeCADMCP import get_control_mode_controller
+
+            snapshot = get_control_mode_controller().snapshot()
+        except Exception:
+            return
+        self.rebuild_intent_memory.setEnabled(
+            bool(snapshot.get("internal_agent_enabled"))
+        )
 
     def _browse_dotenv(self) -> None:
         from PySide import QtWidgets
@@ -950,6 +979,7 @@ class VibeCADPreferencesPage:
     def _current_settings(self) -> VibeCADSettings:
         persisted = load_settings()
         return VibeCADSettings(
+            mcp_enabled=persisted.mcp_enabled,
             use_online_provider=self.use_online.isChecked(),
             model=self.model.currentText().strip() or DEFAULT_MODEL,
             dotenv_path=self.dotenv_path.text().strip(),
@@ -1058,6 +1088,165 @@ class VibeCADPreferencesPage:
         self.api_key.clear()
         self._update_provider_visibility()
         self._refresh_status()
+
+
+class VibeCADMCPPreferencesPage:
+    """Preferences and live connection details for external MCP control."""
+
+    def __init__(self, parent=None):
+        from PySide import QtCore, QtWidgets
+
+        self.form = QtWidgets.QWidget(parent)
+        self.form.setObjectName("VibeCADMCPPreferencesPage")
+        self.form.setWindowTitle("MCP")
+        layout = QtWidgets.QFormLayout(self.form)
+
+        self.mcp_enabled = QtWidgets.QCheckBox(self.form)
+        self.mcp_enabled.setObjectName("VibeCADPrefMCPEnabled")
+        self.mcp_enabled.setToolTip(
+            "Let an external MCP client control VibeCAD. The built-in agent is "
+            "disabled until MCP control is turned off."
+        )
+        layout.addRow("External MCP control", self.mcp_enabled)
+
+        self.mcp_state = QtWidgets.QLabel(self.form)
+        self.mcp_state.setObjectName("VibeCADPrefMCPState")
+        layout.addRow("MCP state", self.mcp_state)
+
+        self.mcp_endpoint = QtWidgets.QLabel(self.form)
+        self.mcp_endpoint.setObjectName("VibeCADPrefMCPEndpoint")
+        self.mcp_endpoint.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        layout.addRow("MCP endpoint", self.mcp_endpoint)
+
+        self.mcp_token = QtWidgets.QLineEdit(self.form)
+        self.mcp_token.setObjectName("VibeCADPrefMCPToken")
+        self.mcp_token.setReadOnly(True)
+        self.mcp_token.setPlaceholderText("Enable MCP to generate the bearer token")
+        self.mcp_token.setToolTip(
+            "Persistent MCP bearer token stored in the OS credential store. "
+            "Give it only to trusted local MCP clients."
+        )
+        layout.addRow("MCP bearer token", self.mcp_token)
+
+        self.mcp_connection = QtWidgets.QLabel(self.form)
+        self.mcp_connection.setObjectName("VibeCADPrefMCPConnection")
+        layout.addRow("MCP connection", self.mcp_connection)
+
+        self.mcp_error = QtWidgets.QLabel(self.form)
+        self.mcp_error.setObjectName("VibeCADPrefMCPError")
+        self.mcp_error.setWordWrap(True)
+        self.mcp_error.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        layout.addRow("MCP last error", self.mcp_error)
+
+        self.copy_mcp_configuration = QtWidgets.QPushButton(
+            "Copy connection JSON", self.form
+        )
+        self.copy_mcp_configuration.setObjectName(
+            "VibeCADPrefCopyMCPConfiguration"
+        )
+        self.copy_mcp_configuration.clicked.connect(
+            self._copy_mcp_connection_configuration
+        )
+        layout.addRow("", self.copy_mcp_configuration)
+
+        self.copy_mcp_token = QtWidgets.QPushButton("Copy bearer token", self.form)
+        self.copy_mcp_token.setObjectName("VibeCADPrefCopyMCPToken")
+        self.copy_mcp_token.clicked.connect(self._copy_mcp_token)
+        layout.addRow("", self.copy_mcp_token)
+
+        self.regenerate_mcp_token = QtWidgets.QPushButton(
+            "Regenerate bearer token", self.form
+        )
+        self.regenerate_mcp_token.setObjectName("VibeCADPrefRegenerateMCPToken")
+        self.regenerate_mcp_token.setToolTip(
+            "Replace the persistent token and restart MCP if it is active. "
+            "Existing clients must be updated."
+        )
+        self.regenerate_mcp_token.clicked.connect(self._regenerate_mcp_token)
+        layout.addRow("", self.regenerate_mcp_token)
+
+        self._mcp_status_timer = QtCore.QTimer(self.form)
+        self._mcp_status_timer.setInterval(500)
+        self._mcp_status_timer.timeout.connect(self._refresh_mcp_status)
+        self._mcp_status_timer.start()
+
+        self._refresh_mcp_status()
+
+    def _refresh_mcp_status(self) -> None:
+        try:
+            from VibeCADMCP import get_control_mode_controller
+
+            snapshot = get_control_mode_controller().snapshot(include_token=True)
+        except Exception as exc:
+            snapshot = {
+                "state": "unavailable",
+                "endpoint": "http://127.0.0.1:8765/mcp",
+                "connection_state": "unavailable",
+                "last_error": str(exc),
+                "token": "",
+                "token_available": False,
+            }
+        self.mcp_state.setText(str(snapshot.get("state") or "unknown"))
+        self.mcp_endpoint.setText(str(snapshot.get("endpoint") or ""))
+        self.mcp_connection.setText(
+            str(snapshot.get("connection_state") or "unknown")
+        )
+        self.mcp_error.setText(str(snapshot.get("last_error") or "None"))
+        token = str(snapshot.get("token") or "")
+        if self.mcp_token.text() != token:
+            self.mcp_token.setText(token)
+        self.copy_mcp_configuration.setEnabled(
+            bool(snapshot.get("token_available"))
+        )
+        self.copy_mcp_token.setEnabled(bool(token))
+        self.regenerate_mcp_token.setEnabled(
+            snapshot.get("state") in {"internal", "mcp"}
+            and not bool(snapshot.get("active_requests"))
+        )
+        if (
+            snapshot.get("connection_state") == "error"
+            and not preferences().GetBool("MCPEnabled", False)
+        ):
+            self.mcp_enabled.setChecked(False)
+
+    def _copy_mcp_connection_configuration(self) -> None:
+        import json
+        from PySide import QtWidgets
+        from VibeCADMCP import get_control_mode_controller
+
+        configuration = get_control_mode_controller().connection_configuration()
+        QtWidgets.QApplication.clipboard().setText(
+            json.dumps(configuration, indent=2, sort_keys=True)
+        )
+
+    def _copy_mcp_token(self) -> None:
+        from PySide import QtWidgets
+
+        QtWidgets.QApplication.clipboard().setText(self.mcp_token.text())
+
+    def _regenerate_mcp_token(self) -> None:
+        from VibeCADMCP import get_control_mode_controller
+
+        result = get_control_mode_controller().regenerate_mcp_token()
+        if not result.get("ok"):
+            self.mcp_error.setText(
+                str(result.get("error") or "Could not regenerate the MCP token.")
+            )
+        self._refresh_mcp_status()
+
+    def saveSettings(self) -> None:
+        set_mcp_enabled(self.mcp_enabled.isChecked())
+        try:
+            import VibeCADGui
+
+            VibeCADGui.apply_mcp_preferences()
+        except Exception as exc:
+            App.Console.PrintWarning(f"VibeCAD MCP preference update failed: {exc}\n")
+        self._refresh_mcp_status()
+
+    def loadSettings(self) -> None:
+        self.mcp_enabled.setChecked(load_settings().mcp_enabled)
+        self._refresh_mcp_status()
 
 
 class VibeCADPromptStartersPreferencesPage:

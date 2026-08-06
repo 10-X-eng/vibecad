@@ -25,6 +25,13 @@ MECHANISM_VERIFICATION_REPORT_SCHEMA = (
 )
 STATIC_MECHANISM_EVIDENCE_SCHEMA = "vibecad-mechanism-static-evidence-v1"
 
+SOLVER_VALIDATION_SCOPE = "joint_constraint_consistency"
+SOLVER_OPERATION_ADVISORY = (
+    "A solved joint graph proves only native constraint consistency. It does not "
+    "prove collision clearance, usable motion, retention, manufacturability, hardware "
+    "access, or correct mechanical operation."
+)
+
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _SUBELEMENT = re.compile(r"^(Face|Edge|Vertex)[1-9][0-9]*$")
 _INTERFACE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
@@ -64,6 +71,23 @@ _MAX_OCCURRENCES = 4096
 
 class MechanismContractError(ValueError):
     """An internal scenario or solve report violates the shared contract."""
+
+
+def solver_validation_scope(*, constraints_consistent: bool) -> dict[str, Any]:
+    """Describe exactly what a native Assembly solve did and did not establish."""
+
+    return {
+        "scope": SOLVER_VALIDATION_SCOPE,
+        "constraints_consistent": bool(constraints_consistent),
+        "mechanical_operation_verified": False,
+        "advisory": SOLVER_OPERATION_ADVISORY,
+        "required_evidence": [
+            "collision_and_clearance",
+            "motion_over_operating_range",
+            "retention_and_hardware_access",
+            "manufacturability",
+        ],
+    }
 
 
 def _error(path: str, message: str) -> MechanismContractError:

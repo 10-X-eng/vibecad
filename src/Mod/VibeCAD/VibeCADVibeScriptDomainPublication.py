@@ -56,6 +56,14 @@ PROP_MECHANISM_ASSEMBLY_OUTPUT = "VibeCADMechanismAssemblyOutput"
 PROP_MECHANISM_STATIC_CHECK = "VibeCADMechanismStaticCheck"
 PROP_MECHANISM_VERIFICATION_REPORT = "VibeCADMechanismVerificationReport"
 PROP_PARTDESIGN_HISTORY_KEY = "VibeCADPartDesignHistoryKey"
+PROP_PARTDESIGN_COMPONENT_OCCURRENCES = "VibeCADPartDesignComponentOccurrences"
+PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES = (
+    "VibeCADPartDesignComponentOccurrenceNames"
+)
+PROP_COMPONENT_AUTHORED_PLACEMENT = "VibeCADComponentAuthoredPlacement"
+PROP_ASSEMBLY_ADOPTED_OUTPUTS = "VibeCADAssemblyAdoptedOutputs"
+PROP_ASSEMBLY_ADOPTED_OCCURRENCES = "VibeCADAssemblyAdoptedOccurrences"
+PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES = "VibeCADAssemblyAdoptedOccurrenceNames"
 MATERIAL_OWNERSHIP_SCHEMA = "vibecad-material-ownership-v1"
 PARTDESIGN_PRESENTATION_OWNERSHIP_SCHEMA = (
     "vibecad-partdesign-presentation-ownership-v1"
@@ -302,6 +310,47 @@ def _add_property(obj: Any, property_type: str, name: str, description: str) -> 
         obj.addProperty(property_type, name, "VibeCAD", description)
 
 
+def _ensure_input_link_property(
+    obj: Any,
+    property_type: str,
+    description: str,
+) -> None:
+    """Keep accepted input links capable of representing their exact documents."""
+
+    if PROP_INPUT_OBJECTS not in _properties(obj):
+        obj.addProperty(
+            property_type,
+            PROP_INPUT_OBJECTS,
+            "VibeCAD",
+            description,
+        )
+        return
+    current_type = str(obj.getTypeIdOfProperty(PROP_INPUT_OBJECTS) or "")
+    if current_type == property_type:
+        return
+    if (
+        current_type == "App::PropertyLinkList"
+        and property_type == "App::PropertyXLinkList"
+    ):
+        previous = list(getattr(obj, PROP_INPUT_OBJECTS, []) or [])
+        if not obj.removeProperty(PROP_INPUT_OBJECTS):
+            raise RuntimeError(
+                f"Could not upgrade {PROP_INPUT_OBJECTS!r} for cross-document inputs."
+            )
+        obj.addProperty(
+            property_type,
+            PROP_INPUT_OBJECTS,
+            "VibeCAD",
+            description,
+        )
+        setattr(obj, PROP_INPUT_OBJECTS, previous)
+        return
+    raise RuntimeError(
+        f"{PROP_INPUT_OBJECTS!r} has unsupported type {current_type!r}; "
+        f"expected {property_type!r}."
+    )
+
+
 def _hide_property(obj: Any, name: str) -> None:
     setter = getattr(obj, "setEditorMode", None)
     if callable(setter):
@@ -488,6 +537,183 @@ def _configure_assembly_dependency_anchor(
         _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE,
         _definition(assembly_item),
     )
+
+
+def _assembly_adopted_occurrences(anchor: Any | None) -> dict[str, Any]:
+    """Read the exact Assembly-output mapping for borrowed Model occurrences."""
+
+    if anchor is None:
+        return {}
+    properties = _properties(anchor)
+    if PROP_ASSEMBLY_ADOPTED_OUTPUTS not in properties:
+        return {}
+    names = [
+        str(value or "")
+        for value in list(getattr(anchor, PROP_ASSEMBLY_ADOPTED_OUTPUTS, []) or [])
+    ]
+    if PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES in properties:
+        object_names = [
+            str(value or "")
+            for value in list(
+                getattr(anchor, PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES, []) or []
+            )
+        ]
+        document = getattr(anchor, "Document", None)
+        occurrences = [
+            document.getObject(object_name)
+            if document is not None and object_name
+            else None
+            for object_name in object_names
+        ]
+    elif PROP_ASSEMBLY_ADOPTED_OCCURRENCES in properties:
+        # Compatibility with the first occurrence-adoption documents. New
+        # documents store stable object names because a top-level resource link
+        # into an Assembly child is out of native PropertyXLink scope.
+        occurrences = list(
+            getattr(anchor, PROP_ASSEMBLY_ADOPTED_OCCURRENCES, []) or []
+        )
+    else:
+        return {}
+    if (
+        len(names) != len(occurrences)
+        or any(not name or "." in name for name in names)
+        or len(set(names)) != len(names)
+        or any(occurrence is None for occurrence in occurrences)
+        or len({id(occurrence) for occurrence in occurrences})
+        != len(occurrences)
+    ):
+        raise RuntimeError(
+            "Assembly borrowed-occurrence metadata is malformed."
+        )
+    return dict(zip(names, occurrences))
+
+
+def _set_assembly_adopted_occurrences(
+    anchor: Any,
+    occurrences: Mapping[str, Any],
+) -> None:
+    """Persist output identity without overwriting the borrowed object's owner."""
+
+    ordered = sorted((str(name), obj) for name, obj in occurrences.items())
+    if any(not name or "." in name or obj is None for name, obj in ordered):
+        raise RuntimeError("Assembly borrowed-occurrence mapping is invalid.")
+    if len({id(obj) for _name, obj in ordered}) != len(ordered):
+        raise RuntimeError(
+            "One existing occurrence cannot back multiple Assembly outputs. "
+            "Create another linked occurrence with api.component or api.instances."
+        )
+    _add_property(
+        anchor,
+        "App::PropertyStringList",
+        PROP_ASSEMBLY_ADOPTED_OUTPUTS,
+        "Assembly output names backed by existing Model occurrences.",
+    )
+    _add_property(
+        anchor,
+        "App::PropertyStringList",
+        PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES,
+        "Stable object names of existing occurrences adopted by this Assembly.",
+    )
+    setattr(anchor, PROP_ASSEMBLY_ADOPTED_OUTPUTS, [name for name, _obj in ordered])
+    setattr(
+        anchor,
+        PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES,
+        [str(obj.Name) for _name, obj in ordered],
+    )
+    if PROP_ASSEMBLY_ADOPTED_OCCURRENCES in _properties(anchor):
+        setattr(anchor, PROP_ASSEMBLY_ADOPTED_OCCURRENCES, [])
+    _hide_property(anchor, PROP_ASSEMBLY_ADOPTED_OUTPUTS)
+    _hide_property(anchor, PROP_ASSEMBLY_ADOPTED_OCCURRENCE_NAMES)
+    if PROP_ASSEMBLY_ADOPTED_OCCURRENCES in _properties(anchor):
+        _hide_property(anchor, PROP_ASSEMBLY_ADOPTED_OCCURRENCES)
+
+
+def _assembly_adoption_target(
+    doc: Any,
+    item: Mapping[str, Any],
+) -> Any | None:
+    """Return an existing local occurrence that Assembly must reuse in place."""
+
+    if (
+        str(item.get("type") or "") != "component_link"
+        or str(_definition(item).get("operation") or "") != "component"
+    ):
+        return None
+    data = item.get("assembly_data")
+    data = dict(data) if isinstance(data, Mapping) else {}
+    source = data.get("source")
+    if source is None:
+        source = _definition_argument(_definition(item), 0, "source")
+    target = _reference_target(
+        doc,
+        source,
+        f"output {item.get('name')} source",
+    )
+    if getattr(target, "Document", None) is not doc:
+        return None
+    properties = _properties(target)
+    if (
+        str(getattr(target, "TypeId", "") or "") != "App::Link"
+        or contracts.PROP_PROGRAM_ID not in properties
+        or contracts.PROP_PROGRAM_DOMAIN not in properties
+        or PROP_OUTPUT_TYPE not in properties
+        or str(getattr(target, PROP_OUTPUT_TYPE, "") or "") != "component_link"
+        or str(getattr(target, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+        not in {"partdesign", "robot"}
+    ):
+        return None
+    return target
+
+
+def _assembly_occurrence_containers(occurrence: Any) -> list[Any]:
+    return [
+        owner
+        for owner in list(getattr(occurrence, "InList", []) or [])
+        if str(getattr(owner, "TypeId", "") or "")
+        == "Assembly::AssemblyObject"
+    ]
+
+
+def _adopt_assembly_occurrence(
+    assembly: Any,
+    occurrence: Any,
+    *,
+    output_name: str,
+) -> None:
+    owners = _assembly_occurrence_containers(occurrence)
+    foreign = [owner for owner in owners if owner is not assembly]
+    if foreign:
+        raise RuntimeError(
+            f"Model occurrence {occurrence.Name!r} is already adopted by Assembly "
+            f"{foreign[0].Name!r}; one occurrence cannot belong to two mechanisms. "
+            "Create another linked occurrence with api.component or api.instances."
+        )
+    if not owners:
+        add_object = getattr(assembly, "addObject", None)
+        if not callable(add_object):
+            raise RuntimeError(
+                "The native Assembly container cannot adopt an existing occurrence."
+            )
+        add_object(occurrence)
+    if assembly not in _assembly_occurrence_containers(occurrence):
+        raise RuntimeError(
+            f"Assembly failed to adopt Model occurrence for output {output_name!r}."
+        )
+
+
+def _release_assembly_occurrence(assembly: Any, occurrence: Any) -> None:
+    if assembly not in _assembly_occurrence_containers(occurrence):
+        return
+    remove_object = getattr(assembly, "removeObject", None)
+    if not callable(remove_object):
+        raise RuntimeError(
+            "The native Assembly container cannot release a borrowed occurrence."
+        )
+    remove_object(occurrence)
+    if assembly in _assembly_occurrence_containers(occurrence):
+        raise RuntimeError(
+            f"Assembly failed to release borrowed occurrence {occurrence.Name!r}."
+        )
 
 
 def migrate_assembly_dependency_anchors(doc: Any) -> dict[str, Any]:
@@ -940,20 +1166,28 @@ def _set_metadata(
         ),
     )
     _hide_property(obj, contracts.PROP_PROGRAM_CONTRACT)
-    input_link_property_type = (
-        "App::PropertyXLinkList"
-        if prepared["pack"].domain == "assembly"
-        and output_type == _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE
-        else "App::PropertyLinkList"
-    )
-    _add_property(
-        obj,
-        input_link_property_type,
-        PROP_INPUT_OBJECTS,
-        "Live document objects snapshotted as inputs for this accepted output.",
-    )
     document = getattr(obj, "Document", None)
     resolved_references = list(prepared.get("resolved_references") or [])
+    document_uid = str(getattr(document, "Uid", "") or "")
+    has_external_input = any(
+        str(reference.get("document_uid") or "")
+        and str(reference.get("document_uid") or "") != document_uid
+        for reference in resolved_references
+    )
+    input_link_property_type = (
+        "App::PropertyXLinkList"
+        if has_external_input
+        or (
+            prepared["pack"].domain == "assembly"
+            and output_type == _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE
+        )
+        else "App::PropertyLinkList"
+    )
+    _ensure_input_link_property(
+        obj,
+        input_link_property_type,
+        "Live document objects snapshotted as inputs for this accepted output.",
+    )
     targets = []
     snapshots = []
     for reference in resolved_references:
@@ -1090,18 +1324,31 @@ def _set_metadata(
     setattr(obj, reference_contracts.PROP_SOURCE_REVISION, str(prepared["revision"]))
 
 
+def source_property_affects_vibescript_snapshot(property_name: str) -> bool:
+    """Return whether one native property notification changes source semantics."""
+
+    changed_property = str(property_name or "")
+    return not (
+        not changed_property
+        or changed_property.startswith("VibeCAD")
+        or changed_property
+        in {
+            "_GroupTouched",
+            "_LinkTouched",
+            "ShowInTree",
+            "Visibility",
+        }
+    )
+
+
 def mark_programs_stale_from_source(source: Any, property_name: str) -> list[str]:
     """Mark v2 outputs stale when a linked native snapshot source changes."""
 
     changed_property = str(property_name or "")
-    if (
-        not changed_property
-        or changed_property.startswith("VibeCAD")
-        or changed_property == "_GroupTouched"
-    ):
-        # GroupExtension emits _GroupTouched every time it executes. Actual
-        # membership edits emit Group separately, so this derived recompute
-        # notification is never evidence that an accepted input changed.
+    if not source_property_affects_vibescript_snapshot(changed_property):
+        # Group and Link extensions emit their private touched properties while
+        # executing and restoring. Actual membership, placement, geometry, and
+        # published-contract edits emit their own properties separately.
         return []
     label_only = changed_property == "Label"
     marked: list[str] = []
@@ -2802,6 +3049,16 @@ def _prepare_assembly_fastener_sources(
                     is replaced_source
                 ):
                     candidate.LinkedObject = source
+                    if (
+                        "VibeCADTimelineEditor" in _properties(candidate)
+                        and getattr(
+                            candidate,
+                            "VibeCADTimelineEditor",
+                            None,
+                        )
+                        is replaced_source
+                    ):
+                        candidate.VibeCADTimelineEditor = source
             owned = [
                 candidate for candidate in owned if candidate is not replaced_source
             ]
@@ -3191,9 +3448,26 @@ def _configure_component(
                 "Keep the mode or return the changed component under a new output name",
                 external,
             )
-    initial_placement = _placement(
-        properties.get("placement") or properties.get("position")
+    authored_placement = properties.get("placement") or properties.get("position")
+    authored_placement_state = {
+        "placement": authored_placement,
+        "placement_authored": bool(properties.get("placement_authored")),
+    }
+    encoded_authored_placement = json.dumps(
+        authored_placement_state,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     )
+    preserve_live_placement = (
+        prepared["pack"].domain in {"partdesign", "robot"}
+        and PROP_COMPONENT_AUTHORED_PLACEMENT in _properties(obj)
+        and str(getattr(obj, PROP_COMPONENT_AUTHORED_PLACEMENT, "") or "")
+        == encoded_authored_placement
+        and getattr(obj, "LinkedObject", None) is not None
+    )
+    initial_placement = _placement(authored_placement)
     obj.LinkedObject = target
     if is_assembly_link:
         if not was_linked or mode_changed:
@@ -3201,8 +3475,15 @@ def _configure_component(
             obj.Rigid = not flexible
     if item.get("solved_placement_matrix") is not None:
         obj.Placement = _placement_from_matrix(item["solved_placement_matrix"])
-    else:
+    elif not preserve_live_placement:
         obj.Placement = initial_placement
+    _add_string_property(
+        obj,
+        PROP_COMPONENT_AUTHORED_PLACEMENT,
+        "Last source-authored component placement; live solved placement may differ.",
+    )
+    setattr(obj, PROP_COMPONENT_AUTHORED_PLACEMENT, encoded_authored_placement)
+    _hide_property(obj, PROP_COMPONENT_AUTHORED_PLACEMENT)
     reference = _assembly_component_reference(prepared, item)
     descriptor = (
         reference.get("assembly_hierarchy")
@@ -3246,6 +3527,43 @@ def _configure_component(
                 list(local.get("matrix") or [])
             )
     return []
+
+
+def _configure_adopted_assembly_component(
+    obj: Any,
+    item: Mapping[str, Any],
+) -> None:
+    """Apply Assembly state without turning a borrowed link into a self-link."""
+
+    properties = _definition_properties(item)
+    if bool(properties.get("flexible")):
+        raise RuntimeError(
+            f"Borrowed Model occurrence {item['name']!r} cannot be flexible. "
+            "Flexible mode is only valid for a native subassembly definition."
+        )
+    solved = item.get("solved_placement_matrix")
+    if solved is not None:
+        obj.Placement = _placement_from_matrix(solved)
+    elif bool(properties.get("placement_authored")):
+        obj.Placement = _placement(
+            properties.get("placement") or properties.get("position")
+        )
+
+
+def _configure_new_assembly_presentation(
+    assembly: Any,
+    items: list[Mapping[str, Any]],
+    outputs: Mapping[str, Any],
+) -> None:
+    """Give a new Assembly one visible occurrence set without overriding edits."""
+
+    _set_view_visibility(assembly, True)
+    for item in items:
+        if str(item.get("type") or "") != "component_link":
+            continue
+        occurrence = outputs.get(str(item.get("name") or ""))
+        if occurrence is not None:
+            _set_view_visibility(occurrence, True)
 
 
 def _configure_component_grounding(
@@ -3535,15 +3853,10 @@ def _configure_joint(
 ) -> None:
     """Apply precomputed joint state with native auto-solve temporarily disabled."""
 
-    import Preferences
+    from VibeCADAssemblySolverPolicy import suspend_joint_autosolve
 
-    preferences = Preferences.preferences()
-    previous = bool(preferences.GetBool("SolveInJointCreation", True))
-    preferences.SetBool("SolveInJointCreation", False)
-    try:
+    with suspend_joint_autosolve():
         _configure_joint_while_suspended(obj, item, outputs, prepared)
-    finally:
-        preferences.SetBool("SolveInJointCreation", previous)
 
 
 def _configure_assembly_motion(
@@ -3867,6 +4180,68 @@ def _configure_assembly_simulation(
             "VibeCADTraceSHA256",
             str(data["artifact_sha256"]),
             "SHA-256 of the retained complete native simulation trace.",
+        ),
+    ):
+        _add_property(obj, property_type, name, description)
+        setattr(obj, name, value)
+    collision = data.get("collision_summary")
+    if (
+        not isinstance(collision, Mapping)
+        or collision.get("status") not in {"complete", "incomplete"}
+    ):
+        raise RuntimeError(
+            "An Assembly simulation has no authenticated collision summary."
+        )
+    for property_type, name, value, description in (
+        (
+            "App::PropertyBool",
+            "VibeCADCollisionAnalysisComplete",
+            bool(collision.get("analysis_complete", True)),
+            "True when every requested component pair and simulation frame was evaluated for collision.",
+        ),
+        (
+            "App::PropertyBool",
+            "VibeCADCollisionFree",
+            bool(collision["collision_free"]),
+            "True when no component collision is detected in any simulated frame.",
+        ),
+        (
+            "App::PropertyInteger",
+            "VibeCADCollisionWarningCount",
+            int(collision.get("warning_count", 0)),
+            "Number of authenticated warnings produced by automatic collision analysis.",
+        ),
+        (
+            "App::PropertyInteger",
+            "VibeCADCollidingPairCount",
+            int(collision["colliding_pair_count"]),
+            "Number of component pairs that collide during the simulation.",
+        ),
+        (
+            "App::PropertyInteger",
+            "VibeCADCollidingFrameCount",
+            int(collision["colliding_frame_count"]),
+            "Number of simulated frames containing at least one interference.",
+        ),
+        (
+            "App::PropertyBool",
+            "VibeCADInterferenceVolumeComplete",
+            bool(collision.get("interference_volume_complete", True)),
+            "True only when exact common volume was measured for every collision; false for bounded collision-mesh or strict-containment detection.",
+        ),
+        (
+            "App::PropertyVolume",
+            "VibeCADWorstInterferenceVolume",
+            (
+                0.0
+                if collision["worst_collision"] is None
+                else float(
+                    collision["worst_collision"][
+                        "maximum_interference_volume_mm3"
+                    ]
+                )
+            ),
+            "Largest measured common volume; zero when detected collisions were not volume-measured.",
         ),
     ):
         _add_property(obj, property_type, name, description)
@@ -8042,13 +8417,14 @@ def _restore_robot_exact_property(obj: Any, name: str, captured: Any) -> None:
 
 
 def _robot_rollback_states(objects: list[Any]) -> list[dict[str, Any]]:
-    """Capture every accepted Robot object except its transferable trajectory."""
+    """Capture every accepted Robot-domain output for exact rollback."""
 
     allowed = {
         "Robot::RobotObject",
         "Robot::TrajectoryObject",
         "Robot::TrajectoryDressUpObject",
         "App::FeaturePython",
+        "App::Link",
     }
     states = []
     for obj in objects:
@@ -9064,6 +9440,15 @@ def _configure_object(
         _configure_reverse_engineering(obj, item)
     elif prepared["pack"].domain == "inspection":
         _configure_inspection(doc, obj, item, outputs)
+    elif output_type == "component_link":
+        owned_resources = _configure_component(
+            doc,
+            obj,
+            item,
+            outputs,
+            prepared,
+            assembly_fastener_sources,
+        )
     elif prepared["pack"].domain == "robot":
         _configure_robot(obj, item, outputs, robot_trajectory_swaps)
     elif prepared["pack"].domain == "fem":
@@ -9074,15 +9459,6 @@ def _configure_object(
         obj.Shape = item["detached_shape"]
     elif output_type == "mesh":
         obj.Mesh = item["detached_mesh"]
-    elif output_type == "component_link":
-        owned_resources = _configure_component(
-            doc,
-            obj,
-            item,
-            outputs,
-            prepared,
-            assembly_fastener_sources,
-        )
     elif output_type == "joint":
         _configure_joint(obj, item, outputs, prepared)
     elif (
@@ -12125,6 +12501,9 @@ def _assembly_model_evidence(item: Mapping[str, Any]) -> dict[str, Any] | None:
             "occurrence_paths_truncated": len(paths) > 256,
             "occurrence_paths_omitted": max(0, len(paths) - 256),
             "solved_placement": dict(data.get("solved_placement") or {}),
+            "authored_to_solved_delta": dict(
+                data.get("authored_to_solved_delta") or {}
+            ),
             "solved_occurrences": states,
             "solved_occurrences_truncated": len(raw_states) > len(states),
             "solved_occurrences_omitted": max(0, len(raw_states) - len(states)),
@@ -12257,7 +12636,21 @@ def _assembly_model_evidence(item: Mapping[str, Any]) -> dict[str, Any] | None:
             ),
         }
     if output_type in {"assembly", "solver_diagnostics", "motion", "simulation"}:
-        return dict(data)
+        evidence = dict(data)
+        if output_type == "solver_diagnostics":
+            diagnostics = item.get("diagnostics")
+            validation_scope = (
+                diagnostics.get("validation_scope")
+                if isinstance(diagnostics, Mapping)
+                else None
+            )
+            if isinstance(validation_scope, Mapping):
+                # This is authenticated against the native solver result before
+                # publication. Keep the solver's deliberately narrow claim in
+                # every durable source/result view instead of reducing a clean
+                # constraint solve to the misleading word "accepted".
+                evidence["validation_scope"] = dict(validation_scope)
+        return evidence
     if output_type == "exploded_view":
         return {
             key: data.get(key)
@@ -12700,7 +13093,10 @@ class _PartDesignShapeCarrier:
             or item["name"]
         )
         self.Shape = item["detached_shape"]
-        self.Placement = App.Placement()
+        # OCC stores rigid transforms in the TopoShape location. Assigning that
+        # Shape to Part::Feature extracts local geometry, so the carrier must
+        # expose the same placement separately or publication drops it.
+        self.Placement = App.Placement(self.Shape.Placement)
         self.ViewObject = None
 
     def getGlobalPlacement(self) -> Any:
@@ -12741,7 +13137,7 @@ def _partdesign_program_root(doc: Any, program_id: str) -> Any | None:
 
 def _partdesign_publications(
     doc: Any,
-    root: Any,
+    root: Any | None,
     program_id: str,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {}
@@ -12752,15 +13148,21 @@ def _partdesign_publications(
         and str(getattr(obj, scripted_publication.PROP_MODEL_ID, "") or "")
         == program_id
     ]
-    candidates.extend(
-        obj
-        for obj in list(getattr(root, "Group", []) or [])
-        if obj not in candidates
-        and (
-            scripted_publication.is_publication(obj)
-            or "VibeCADVibeScriptOutputKey" in _properties(obj)
+    if root is not None:
+        candidates.extend(
+            obj
+            for obj in list(getattr(root, "Group", []) or [])
+            if obj not in candidates
+            and (
+                scripted_publication.is_publication(obj)
+                or "VibeCADVibeScriptOutputKey" in _properties(obj)
+            )
         )
-    )
+        candidates.extend(
+            obj
+            for obj in _partdesign_component_occurrences(root)
+            if obj not in candidates
+        )
     for obj in candidates:
         output_name = str(
             getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "")
@@ -12835,7 +13237,11 @@ def _partdesign_interface_table(
     for item in list(validated.get("outputs") or []):
         output_name = str(item["name"])
         published = publications[output_name]
-        data = item.get("partdesign_data")
+        data = (
+            item.get("component_data")
+            if str(item.get("type") or "") == "component_link"
+            else item.get("partdesign_data")
+        )
         if not isinstance(data, Mapping):
             raise RuntimeError(
                 f"Part Design output {output_name!r} has no interface evidence."
@@ -12886,6 +13292,379 @@ def _partdesign_interface_table(
         if len(definitions) == 1:
             table[name] = definitions[0]
     return table
+
+
+def _partdesign_component_occurrences(root: Any) -> list[Any]:
+    properties = _properties(root)
+    occurrences: list[Any]
+    if PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES in properties:
+        names = [
+            str(name or "")
+            for name in list(
+                getattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES, []) or []
+            )
+        ]
+        if any(not name or "." in name for name in names):
+            raise RuntimeError(
+                f"Part Design program {root.Name!r} has malformed component-"
+                "occurrence names."
+            )
+        if len(set(names)) != len(names):
+            raise RuntimeError(
+                f"Part Design program {root.Name!r} lists a component occurrence "
+                "more than once."
+            )
+        document = getattr(root, "Document", None)
+        occurrences = [
+            document.getObject(name) if document is not None else None
+            for name in names
+        ]
+        if any(occurrence is None for occurrence in occurrences):
+            missing = [
+                name
+                for name, occurrence in zip(names, occurrences)
+                if occurrence is None
+            ]
+            raise RuntimeError(
+                f"Part Design program {root.Name!r} references missing component "
+                f"occurrence(s): {', '.join(missing)}."
+            )
+    elif PROP_PARTDESIGN_COMPONENT_OCCURRENCES in properties:
+        # Compatibility with the first component-occurrence documents. The
+        # migration below converts these live links to stable object names so
+        # an earlier program root never gains forward History dependencies on
+        # its later, independently placed occurrences.
+        occurrences = list(
+            getattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, []) or []
+        )
+    else:
+        return []
+
+    program_id = str(getattr(root, contracts.PROP_PROGRAM_ID, "") or "")
+    for occurrence in occurrences:
+        if not _is_partdesign_component_occurrence(occurrence):
+            raise RuntimeError(
+                f"Part Design program {root.Name!r} references an invalid "
+                "component occurrence."
+            )
+        occurrence_program_id = str(
+            getattr(occurrence, contracts.PROP_PROGRAM_ID, "") or ""
+        )
+        if program_id and occurrence_program_id != program_id:
+            raise RuntimeError(
+                f"Part Design program {root.Name!r} cannot own component "
+                f"occurrence {occurrence.Name!r} from another VibeScript program."
+            )
+    return occurrences
+
+
+def _set_partdesign_component_occurrences(root: Any, occurrences: list[Any]) -> None:
+    occurrences = list(occurrences)
+    program_id = str(getattr(root, contracts.PROP_PROGRAM_ID, "") or "")
+    if len({id(occurrence) for occurrence in occurrences}) != len(occurrences):
+        raise RuntimeError(
+            "One component occurrence cannot appear more than once in a Part "
+            "Design program."
+        )
+    for occurrence in occurrences:
+        if not _is_partdesign_component_occurrence(occurrence):
+            raise RuntimeError("Part Design component-occurrence metadata is invalid.")
+        occurrence_program_id = str(
+            getattr(occurrence, contracts.PROP_PROGRAM_ID, "") or ""
+        )
+        if program_id and occurrence_program_id != program_id:
+            raise RuntimeError(
+                f"Component occurrence {occurrence.Name!r} belongs to another "
+                "VibeScript program."
+            )
+    _add_property(
+        root,
+        "App::PropertyStringList",
+        PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES,
+        "Stable object names of top-level reusable component occurrences owned "
+        "by this Design program.",
+    )
+    _add_property(
+        root,
+        "App::PropertyLinkList",
+        PROP_PARTDESIGN_COMPONENT_OCCURRENCES,
+        "Legacy component-occurrence links retained for document compatibility.",
+    )
+    setattr(
+        root,
+        PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES,
+        [str(occurrence.Name) for occurrence in occurrences],
+    )
+    # A normal PropertyLinkList participates in the modeling dependency graph.
+    # Keeping later top-level occurrences here makes every subsequent History
+    # operation invalid. Preserve the legacy property surface, but never store
+    # ownership metadata as live modeling links.
+    setattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, [])
+    _hide_property(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES)
+    _hide_property(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES)
+
+
+def migrate_partdesign_component_occurrence_links(doc: Any) -> dict[str, Any]:
+    """Replace legacy forward dependency links with exact object-name metadata."""
+
+    migrated: list[str] = []
+    for root in list(getattr(doc, "Objects", []) or []):
+        properties = _properties(root)
+        if PROP_PARTDESIGN_COMPONENT_OCCURRENCES not in properties:
+            continue
+        if (
+            str(getattr(root, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+            != "partdesign"
+        ):
+            continue
+        legacy = list(
+            getattr(root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, []) or []
+        )
+        has_names = PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES in properties
+        if has_names:
+            named = _partdesign_component_occurrences(root)
+            if legacy and [str(item.Name) for item in legacy] != [
+                str(item.Name) for item in named
+            ]:
+                raise RuntimeError(
+                    f"Part Design program {root.Name!r} has conflicting legacy "
+                    "and current component-occurrence metadata."
+                )
+            occurrences = named
+        else:
+            occurrences = legacy
+        if not legacy and has_names:
+            continue
+        _set_partdesign_component_occurrences(root, occurrences)
+        migrated.append(str(root.Name))
+    return {"migrated_programs": migrated}
+
+
+def _is_partdesign_component_occurrence(obj: Any) -> bool:
+    return (
+        str(getattr(obj, "TypeId", "") or "") == "App::Link"
+        and str(getattr(obj, PROP_OUTPUT_TYPE, "") or "") == "component_link"
+        and str(getattr(obj, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+        == "partdesign"
+    )
+
+
+def _delete_partdesign_publication(
+    doc: Any,
+    root: Any | None,
+    published: Any,
+) -> list[str]:
+    if not _is_partdesign_component_occurrence(published):
+        if root is not None:
+            try:
+                return scripted_publication.delete_publication(doc, root, published)
+            except scripted_publication.PublicationError:
+                # A prior interrupted deletion may have removed the program
+                # container or private shape target before its stable
+                # publication. Recover only objects carrying the same exact
+                # source ownership identity.
+                pass
+        program_id = str(
+            getattr(published, scripted_publication.PROP_MODEL_ID, "") or ""
+        )
+        deleted: list[str] = []
+        target_name = str(
+            getattr(published, scripted_publication.PROP_IMPLEMENTATION, "") or ""
+        )
+        target = doc.getObject(target_name) if target_name else None
+        if target is not None:
+            if (
+                scripted_publication.role_of(target)
+                != scripted_publication.ROLE_PUBLICATION_TARGET
+                or str(
+                    getattr(target, scripted_publication.PROP_MODEL_ID, "") or ""
+                )
+                != program_id
+            ):
+                raise RuntimeError(
+                    "A broken Part Design publication points at an object not "
+                    "owned by the same VibeScript source."
+                )
+            doc.removeObject(str(target.Name))
+            deleted.append(str(target.Name))
+        published_name = str(getattr(published, "Name", "") or "")
+        if published_name and doc.getObject(published_name) is not None:
+            doc.removeObject(published_name)
+            deleted.append(published_name)
+        return deleted
+    if root is None:
+        name = str(getattr(published, "Name", "") or "")
+        if name and doc.getObject(name) is not None:
+            doc.removeObject(name)
+            return [name]
+        return []
+    retained = [
+        item
+        for item in _partdesign_component_occurrences(root)
+        if item is not published
+    ]
+    _set_partdesign_component_occurrences(root, retained)
+    name = str(getattr(published, "Name", "") or "")
+    if name and doc.getObject(name) is not None:
+        return _remove_timeline_deletion(
+            doc,
+            _prepare_timeline_deletion(doc, [published]),
+        )
+    return []
+
+
+def _create_partdesign_component_occurrence(
+    doc: Any,
+    root: Any,
+    prepared: Mapping[str, Any],
+    item: Mapping[str, Any],
+) -> Any:
+    output_name = str(item["name"])
+    occurrence = doc.addObject(
+        "App::Link",
+        _internal_name(prepared, output_name),
+    )
+    if occurrence is None:
+        raise RuntimeError(
+            f"FreeCAD did not create component occurrence {output_name!r}."
+        )
+    scripted_publication.tag_object(
+        occurrence,
+        role=scripted_publication.ROLE_IMPLEMENTATION,
+        engine="vibescript:partdesign",
+        model_id=str(prepared["program_id"]),
+        output_key=output_name,
+        revision=str(prepared["revision"]),
+    )
+    _update_partdesign_component_occurrence(
+        doc,
+        root,
+        occurrence,
+        prepared,
+        item,
+    )
+    return occurrence
+
+
+def _update_partdesign_component_occurrence(
+    doc: Any,
+    root: Any,
+    occurrence: Any,
+    prepared: Mapping[str, Any],
+    item: Mapping[str, Any],
+) -> None:
+    output_name = str(item["name"])
+    if str(getattr(occurrence, "TypeId", "") or "") != "App::Link":
+        raise RuntimeError(
+            f"Stable component output {output_name!r} is not an App::Link."
+        )
+    previous_type = str(getattr(occurrence, PROP_OUTPUT_TYPE, "") or "")
+    if previous_type and previous_type != "component_link":
+        raise RuntimeError(
+            f"Stable output {output_name!r} cannot change from {previous_type!r} "
+            "to 'component_link'. Return the occurrence under a new output name."
+        )
+    _configure_component(doc, occurrence, item, {}, prepared)
+    occurrence.Label = str(
+        dict(item.get("component_data") or {}).get("label") or output_name
+    )
+    if hasattr(occurrence, "LinkTransform"):
+        occurrence.LinkTransform = True
+    scripted_publication.tag_object(
+        occurrence,
+        role=scripted_publication.ROLE_IMPLEMENTATION,
+        engine="vibescript:partdesign",
+        model_id=str(prepared["program_id"]),
+        output_key=output_name,
+        revision=str(prepared["revision"]),
+    )
+    _set_metadata(
+        occurrence,
+        prepared,
+        output_name,
+        "component_link",
+        _definition(item),
+    )
+
+
+def _migrate_partdesign_output_representation(
+    doc: Any,
+    root: Any,
+    published: Any,
+    prepared: Mapping[str, Any],
+    item: Mapping[str, Any],
+) -> dict[str, list[str]]:
+    """Convert one stable App::Link between occurrence and shape publication.
+
+    FreeCAD defers object deletion until transaction commit. Deleting and
+    recreating an App::Link under the same name inside that transaction can
+    therefore return the pending-deletion occurrence with its old LinkedObject.
+    Keep the public link and swap only its private target instead.
+    """
+
+    output_name = str(item["name"])
+    if str(getattr(published, "TypeId", "") or "") != "App::Link":
+        raise RuntimeError(
+            f"Part Design output {output_name!r} cannot migrate representation "
+            f"because its native carrier is {getattr(published, 'TypeId', '')!r}, "
+            "not App::Link."
+        )
+    wants_component = str(item.get("type") or "") == "component_link"
+    created: list[str] = []
+    removed: list[str] = []
+    deferred_remove: list[str] = []
+    if wants_component:
+        target_name = str(
+            getattr(published, scripted_publication.PROP_IMPLEMENTATION, "") or ""
+        )
+        target = doc.getObject(target_name) if target_name else None
+        if target is not None:
+            deferred_remove.append(str(target.Name))
+        _add_string_property(
+            published,
+            PROP_OUTPUT_TYPE,
+            "Declared VibeScript output type.",
+        )
+        setattr(published, PROP_OUTPUT_TYPE, "component_link")
+        return {
+            "created": created,
+            "removed": removed,
+            "deferred_remove": deferred_remove,
+        }
+
+    target = doc.addObject(
+        "Part::Feature",
+        f"{_internal_name(prepared, output_name)}_Source",
+    )
+    if target is None:
+        raise RuntimeError(
+            f"FreeCAD did not create a shape target for output {output_name!r}."
+        )
+    scripted_publication.tag_object(
+        target,
+        role=scripted_publication.ROLE_PUBLICATION_TARGET,
+        engine="vibescript:partdesign",
+        model_id=str(prepared["program_id"]),
+        output_key=output_name,
+        revision=str(prepared["revision"]),
+    )
+    root.addObject(target)
+    target_view = getattr(target, "ViewObject", None)
+    if target_view is not None and hasattr(target_view, "Visibility"):
+        target_view.Visibility = False
+    scripted_publication.ensure_string_property(
+        published, scripted_publication.PROP_IMPLEMENTATION
+    )
+    setattr(published, scripted_publication.PROP_IMPLEMENTATION, str(target.Name))
+    import FreeCAD as App
+
+    published.Placement = App.Placement()
+    created.append(str(target.Name))
+    return {
+        "created": created,
+        "removed": removed,
+        "deferred_remove": deferred_remove,
+    }
 
 
 def _partdesign_history_reference(
@@ -13048,12 +13827,13 @@ def _verify_partdesign_history_body(
 
 def _set_view_visibility(obj: Any, visible: bool) -> bool:
     view = getattr(obj, "ViewObject", None)
-    if view is None or not hasattr(view, "Visibility"):
+    target = view if view is not None and hasattr(view, "Visibility") else obj
+    if not hasattr(target, "Visibility"):
         return False
     desired = bool(visible)
-    if bool(view.Visibility) == desired:
+    if bool(target.Visibility) == desired:
         return False
-    view.Visibility = desired
+    target.Visibility = desired
     return True
 
 
@@ -13257,6 +14037,20 @@ def _create_native_body_for_publication(
 
     scripted_publication.tag_object(
         body,
+        role=scripted_publication.ROLE_IMPLEMENTATION,
+        engine="vibescript:partdesign",
+        model_id=str(
+            getattr(publication, scripted_publication.PROP_MODEL_ID, "") or ""
+        ),
+        output_key=str(
+            getattr(publication, scripted_publication.PROP_OUTPUT_KEY, "") or ""
+        ),
+        revision=str(
+            getattr(publication, scripted_publication.PROP_REVISION, "") or ""
+        ),
+    )
+    scripted_publication.tag_object(
+        result,
         role=scripted_publication.ROLE_IMPLEMENTATION,
         engine="vibescript:partdesign",
         model_id=str(
@@ -13603,6 +14397,11 @@ def _materialize_partdesign_native_history(
     root: Any,
     prepared: Mapping[str, Any],
     validated: Mapping[str, Any],
+    *,
+    existing_bodies: Mapping[str, Any] | None = None,
+    preserve_existing_tips: bool = False,
+    internalize_restored_objects: bool = False,
+    build_timeline_blocks: bool = True,
 ) -> dict[str, Any]:
     history = validated.get("partdesign_native_history")
     if not isinstance(history, Mapping):
@@ -13619,41 +14418,65 @@ def _materialize_partdesign_native_history(
     for body_specification in list(history.get("outputs") or []):
         object_specs = list(body_specification.get("objects") or [])
         output_name = str(body_specification["output_name"])
-        body = doc.addObject(
-            "PartDesign::Body",
-            str(body_specification["body_name"]),
+        if existing_bodies is not None and output_name not in existing_bodies:
+            # The Design-global publisher creates physical Bodies only for
+            # api.body solid outputs. Standalone publish outputs retain their
+            # stable publication boundary and do not gain a synthetic Body.
+            continue
+        body = (
+            existing_bodies.get(output_name)
+            if existing_bodies is not None
+            else None
         )
+        existing_tip = getattr(body, "Tip", None) if body is not None else None
         if body is None:
-            raise RuntimeError(
-                f"FreeCAD did not restore the native Body for {output_name!r}."
+            body = doc.addObject(
+                "PartDesign::Body",
+                str(body_specification["body_name"]),
             )
-        body.Label = str(body_specification["body_label"])
-        created_objects.append(body)
-        provisional_query = getattr(
-            doc,
-            "isProvisionallyEnrolledInTimelineByCurrentTransaction",
-            None,
-        )
-        classify_internal = getattr(
-            doc,
-            "classifyProvisionalTimelineInternalObject",
-            None,
-        )
-        if (
-            callable(provisional_query)
-            and provisional_query(body)
-            and callable(classify_internal)
-        ):
-            classify_internal(body)
-        root.addObject(body)
+            if body is None:
+                raise RuntimeError(
+                    f"FreeCAD did not restore the native Body for {output_name!r}."
+                )
+            body.Label = str(body_specification["body_label"])
+            created_objects.append(body)
+            provisional_query = getattr(
+                doc,
+                "isProvisionallyEnrolledInTimelineByCurrentTransaction",
+                None,
+            )
+            classify_internal = getattr(
+                doc,
+                "classifyProvisionalTimelineInternalObject",
+                None,
+            )
+            if (
+                callable(provisional_query)
+                and provisional_query(body)
+                and callable(classify_internal)
+            ):
+                classify_internal(body)
+            root.addObject(body)
+        elif str(getattr(body, "TypeId", "") or "") != "PartDesign::Body":
+            raise RuntimeError(
+                f"Existing Part Design output {output_name!r} is not a Body."
+            )
 
         objects: dict[str, Any] = {}
         for specification in object_specs:
             original_name = str(specification["name"])
-            obj = body.newObject(
-                str(specification["type_id"]),
-                original_name,
-            )
+            if existing_bodies is None:
+                obj = body.newObject(
+                    str(specification["type_id"]),
+                    original_name,
+                )
+            else:
+                obj = doc.addObject(
+                    str(specification["type_id"]),
+                    original_name,
+                )
+                if obj is not None:
+                    root.addObject(obj)
             if obj is None:
                 raise RuntimeError(
                     f"FreeCAD did not restore native history object {original_name!r}."
@@ -13667,6 +14490,23 @@ def _materialize_partdesign_native_history(
                 )
             created_objects.append(obj)
             objects[original_name] = obj
+            if internalize_restored_objects:
+                provisional_query = getattr(
+                    doc,
+                    "isProvisionallyEnrolledInTimelineByCurrentTransaction",
+                    None,
+                )
+                classify_internal = getattr(
+                    doc,
+                    "classifyProvisionalTimelineInternalObject",
+                    None,
+                )
+                if (
+                    callable(provisional_query)
+                    and provisional_query(obj)
+                    and callable(classify_internal)
+                ):
+                    classify_internal(obj)
 
         for specification in object_specs:
             original_name = str(specification["name"])
@@ -13713,16 +14553,29 @@ def _materialize_partdesign_native_history(
 
                 install_fastener_view_provider(obj)
 
+            scripted_publication.tag_object(
+                obj,
+                role=scripted_publication.ROLE_IMPLEMENTATION,
+                engine="vibescript:partdesign",
+                model_id=program_id,
+                output_key=output_name,
+                revision=revision,
+            )
         tip_name = str(body_specification.get("tip_name") or "")
-        if tip_name and tip_name in objects:
+        if preserve_existing_tips and existing_tip is not None:
+            body.Tip = existing_tip
+        elif tip_name and tip_name in objects:
             body.Tip = objects[tip_name]
         tip = getattr(body, "Tip", None)
         tip_shape = getattr(tip, "Shape", None)
         if (
-            str(body_specification.get("representation") or "") != "body"
-            or tip_shape is None
-            or tip_shape.isNull()
-            or not tip_shape.isValid()
+            not (preserve_existing_tips and existing_tip is not None)
+            and (
+                str(body_specification.get("representation") or "") != "body"
+                or tip_shape is None
+                or tip_shape.isNull()
+                or not tip_shape.isValid()
+            )
         ):
             accepted = body.newObject(
                 "PartDesign::Feature",
@@ -13754,6 +14607,14 @@ def _materialize_partdesign_native_history(
                 f"{output_name}.__accepted_result__",
             )
             _hide_property(accepted, PROP_PARTDESIGN_HISTORY_KEY)
+            scripted_publication.tag_object(
+                accepted,
+                role=scripted_publication.ROLE_IMPLEMENTATION,
+                engine="vibescript:partdesign",
+                model_id=program_id,
+                output_key=output_name,
+                revision=revision,
+            )
             body.Tip = accepted
         scripted_publication.tag_object(
             body,
@@ -13773,13 +14634,16 @@ def _materialize_partdesign_native_history(
             body.Tip is not candidate for candidate in authored_objects
         ):
             authored_objects.append(body.Tip)
-        timeline_blocks[output_name] = _partdesign_timeline_blocks(
-            authored_objects,
-            output_name=output_name,
-        )
+        if build_timeline_blocks:
+            timeline_blocks[output_name] = _partdesign_timeline_blocks(
+                authored_objects,
+                output_name=output_name,
+            )
 
     for body_specification in list(history.get("outputs") or []):
         output_name = str(body_specification["output_name"])
+        if existing_bodies is not None and output_name not in existing_bodies:
+            continue
         body = bodies.get(output_name)
         if body is None:
             raise RuntimeError(
@@ -14391,6 +15255,26 @@ def _partdesign_body_output(item: Mapping[str, Any]) -> bool:
     )
 
 
+def _partdesign_source_evidence(root: Any, program_id: str) -> list[Any]:
+    """Return exact worker-native objects retained under one source root."""
+
+    if root is None:
+        return []
+    return [
+        obj
+        for obj in list(getattr(root, "Group", []) or [])
+        if PROP_PARTDESIGN_HISTORY_KEY in _properties(obj)
+        and str(
+            getattr(obj, scripted_publication.PROP_ENGINE, "") or ""
+        )
+        == "vibescript:partdesign"
+        and str(
+            getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+        )
+        == program_id
+    ]
+
+
 def _publish_partdesign_design_candidate(
     service: Any,
     prepared: Mapping[str, Any],
@@ -14421,12 +15305,31 @@ def _publish_partdesign_design_candidate(
         if operation is None
         else {}
     )
+    previous_source_evidence = _partdesign_source_evidence(root, program_id)
+    source_evidence_uses = _external_uses(
+        doc,
+        previous_source_evidence,
+        [
+            *previous_source_evidence,
+            *([root] if root is not None else []),
+            *([operation] if operation is not None else []),
+        ],
+    )
+    if source_evidence_uses:
+        raise _reference_error(
+            "Cannot regenerate Part Design source evidence while downstream "
+            "objects reference it; reference the published Body instead",
+            source_evidence_uses,
+        )
 
     previous_presentation = {
         name: _preflight_partdesign_presentation(obj)
         for name, obj in publications.items()
+        if not _is_partdesign_component_occurrence(obj)
     }
     for item in items:
+        if str(item.get("type") or "") == "component_link":
+            continue
         output_name = str(item["name"])
         published = publications.get(output_name)
         if published is None:
@@ -14487,13 +15390,18 @@ def _publish_partdesign_design_candidate(
             )
 
     existing_values = list(publications.values())
+    existing_shape_publications = [
+        obj
+        for obj in existing_values
+        if not _is_partdesign_component_occurrence(obj)
+    ]
     reference_preflight = (
         reference_contracts.preflight_regeneration(
             service,
-            existing_values,
+            existing_shape_publications,
             model_root=root,
         )
-        if root is not None and existing_values
+        if root is not None and existing_shape_publications
         else None
     )
     desired = {str(item["name"]) for item in items}
@@ -14514,6 +15422,42 @@ def _publish_partdesign_design_candidate(
                 "while downstream objects reference it",
                 uses,
             )
+
+    # A stable VibeScript result key is the public identity. Its App::Link can
+    # change between a lightweight occurrence and a shape publication when the
+    # source contract is deliberately edited. Convert it only when no foreign
+    # object references its current representation.
+    replacement_names: list[str] = []
+    replacement_internal = [
+        *([root] if root is not None else []),
+        *existing_values,
+    ]
+    for candidate in existing_shape_publications:
+        target = scripted_publication.publication_target(candidate, root)
+        if target is not None and target not in replacement_internal:
+            replacement_internal.append(target)
+    for item in items:
+        name = str(item["name"])
+        published = publications.get(name)
+        if published is None:
+            continue
+        wants_component = str(item.get("type") or "") == "component_link"
+        has_component = _is_partdesign_component_occurrence(published)
+        if wants_component == has_component:
+            continue
+        uses = scripted_publication.external_reference_uses(
+            doc,
+            [published],
+            internal_objects=replacement_internal,
+        )
+        if uses:
+            raise _reference_error(
+                f"Cannot change Part Design VibeScript output {name!r} between "
+                "a shape publication and a linked occurrence while downstream "
+                "objects reference its current native carrier",
+                uses,
+            )
+        replacement_names.append(name)
 
     # Older documents stored each accepted worker feature graph in a generated
     # Body under the program root. Replace that implementation exactly once;
@@ -14549,8 +15493,9 @@ def _publish_partdesign_design_candidate(
     rollback_targets: dict[int, Any] = {}
     for obj in publications.values():
         rollback_targets[id(obj)] = obj
-        implementation = scripted_publication.publication_target(obj, root)
-        rollback_targets[id(implementation)] = implementation
+        if not _is_partdesign_component_occurrence(obj):
+            implementation = scripted_publication.publication_target(obj, root)
+            rollback_targets[id(implementation)] = implementation
     rollback_states = [
         _material_target_snapshot(obj)
         for obj in rollback_targets.values()
@@ -14562,6 +15507,7 @@ def _publish_partdesign_design_candidate(
     removed_implementation: list[str] = []
     created_bodies: list[str] = []
     ownership_repairs: list[dict[str, str]] = []
+    deferred_representation_targets: list[str] = []
     try:
         if hasattr(doc, "openTransaction"):
             doc.openTransaction(
@@ -14582,14 +15528,42 @@ def _publish_partdesign_design_candidate(
             created.append(str(root.Name))
         root.Label = str(prepared["program_name"])
         _tag_partdesign_root(root, prepared)
+        if previous_source_evidence:
+            removed_implementation.extend(
+                _remove_objects_dependency_order(
+                    doc,
+                    previous_source_evidence,
+                )
+            )
+        # Component occurrences are top-level History operations. Temporarily
+        # remove the root's semantic LinkList while the native Design
+        # operation replaces its own resources, otherwise the timeline sees a
+        # later occurrence as an implementation dependency of an earlier
+        # consumer. The exact LinkList is restored after all outputs update.
+        if _partdesign_component_occurrences(root):
+            _set_partdesign_component_occurrences(root, [])
 
         for name in retired_names:
             removed.extend(
-                scripted_publication.delete_publication(
+                _delete_partdesign_publication(
                     doc,
                     root,
                     publications.pop(name),
                 )
+            )
+        items_by_name = {str(item["name"]): item for item in items}
+        for name in replacement_names:
+            migration = _migrate_partdesign_output_representation(
+                doc,
+                root,
+                publications[name],
+                prepared,
+                items_by_name[name],
+            )
+            created.extend(migration["created"])
+            removed.extend(migration["removed"])
+            deferred_representation_targets.extend(
+                migration["deferred_remove"]
             )
         if legacy_targets:
             removed_implementation.extend(
@@ -14662,6 +15636,16 @@ def _publish_partdesign_design_candidate(
             str(item["name"]): body
             for item, body in zip(body_items, bodies)
         }
+        restored_native_history = _materialize_partdesign_native_history(
+            doc,
+            root,
+            prepared,
+            validated,
+            existing_bodies=bodies_by_output,
+            preserve_existing_tips=True,
+            internalize_restored_objects=True,
+            build_timeline_blocks=False,
+        )
         for item in items:
             name = str(item["name"])
             output_type = str(item["type"])
@@ -14675,8 +15659,59 @@ def _publish_partdesign_design_candidate(
                     output_key=name,
                     revision=revision,
                 )
-            carrier = _PartDesignShapeCarrier(item)
             published = publications.get(name)
+            if output_type == "component_link":
+                created_occurrence = published is None
+                if published is None:
+                    published = _create_partdesign_component_occurrence(
+                        doc,
+                        root,
+                        prepared,
+                        item,
+                    )
+                    publications[name] = published
+                    created.append(str(published.Name))
+                    rollback_targets[id(published)] = published
+                    rollback_states.append(
+                        _material_target_snapshot(
+                            published,
+                            required_after_abort=False,
+                        )
+                    )
+                else:
+                    _update_partdesign_component_occurrence(
+                        doc,
+                        root,
+                        published,
+                        prepared,
+                        item,
+                    )
+                if name in replacement_names:
+                    scripted_publication.ensure_string_property(
+                        published, scripted_publication.PROP_IMPLEMENTATION
+                    )
+                    setattr(
+                        published,
+                        scripted_publication.PROP_IMPLEMENTATION,
+                        "",
+                    )
+                if created_occurrence:
+                    # api.component creates one placed occurrence of a reusable
+                    # definition. The definition is not an implicit second
+                    # occurrence at its authoring origin. Users can still show
+                    # it explicitly, and later builds preserve both independent
+                    # visibility choices.
+                    target = getattr(published, "LinkedObject", None)
+                    if target is not None:
+                        if id(target) not in rollback_targets:
+                            rollback_targets[id(target)] = target
+                            rollback_states.append(
+                                _material_target_snapshot(target)
+                            )
+                        _set_view_visibility(target, False)
+                    _set_view_visibility(published, True)
+                continue
+            carrier = _PartDesignShapeCarrier(item)
             if published is None:
                 published = scripted_publication.create_publication(
                     doc,
@@ -14748,6 +15783,15 @@ def _publish_partdesign_design_candidate(
                 # operation but intentionally have no physical Body identity.
                 _set_view_visibility(published, True)
 
+        _set_partdesign_component_occurrences(
+            root,
+            [
+                publications[str(item["name"])]
+                for item in items
+                if str(item.get("type") or "") == "component_link"
+            ],
+        )
+
         ownership_repairs = _repair_partdesign_implementation_body_claims(
             doc,
             program_id,
@@ -14760,7 +15804,11 @@ def _publish_partdesign_design_candidate(
         )
         reference_contracts.validate_removed_interfaces(
             doc,
-            list(publications.values()),
+            [
+                obj
+                for obj in publications.values()
+                if not _is_partdesign_component_occurrence(obj)
+            ],
             program_id,
             reference_contracts.interface_identities(previous_interfaces),
             reference_contracts.interface_identities(interface_table),
@@ -14784,6 +15832,12 @@ def _publish_partdesign_design_candidate(
             revision=revision,
             preflight=reference_preflight,
         )
+        for target_name in deferred_representation_targets:
+            target = doc.getObject(target_name)
+            if target is None:
+                continue
+            doc.removeObject(target_name)
+            removed.append(target_name)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
@@ -14834,13 +15888,32 @@ def _publish_partdesign_design_candidate(
         name = str(item["name"])
         output_type = str(item["type"])
         published = publications[name]
+        partdesign_data = dict(item.get("partdesign_data") or {})
+        component_data = dict(item.get("component_data") or {})
+        authored_label = str(
+            (
+                component_data.get("label")
+                if output_type == "component_link"
+                else partdesign_data.get("body_label")
+            )
+            or published.Label
+        )
         row = {
             "object_name": str(published.Name),
-            "label": str(published.Label),
+            # The stable hidden App::Link can receive FreeCAD's duplicate-label
+            # suffix because the visible native Body already owns the authored
+            # label. Tool results describe the authored output, not that hidden
+            # carrier's presentation detail.
+            "label": authored_label,
             "type_id": str(published.TypeId),
             "output_type": output_type,
             "facts": dict(item.get("facts") or {}),
-            "partdesign_data": dict(item.get("partdesign_data") or {}),
+            "partdesign_data": partdesign_data,
+            **(
+                {"component_data": component_data}
+                if component_data
+                else {}
+            ),
             "derived_state": str(
                 getattr(
                     published,
@@ -14880,10 +15953,18 @@ def _publish_partdesign_design_candidate(
             "strategy": "design_program_operation",
             "operation_object": str(operation.Name),
             "body_objects": body_objects,
-            "created_objects": created_bodies,
+            "created_objects": [
+                *created_bodies,
+                *list(restored_native_history.get("created_objects") or []),
+            ],
+            "restored_source_objects": list(
+                restored_native_history.get("created_objects") or []
+            ),
             "retired_objects": removed_implementation,
             "ownership_repairs": ownership_repairs,
-            "artifact_sha256": "",
+            "artifact_sha256": str(
+                restored_native_history.get("artifact_sha256") or ""
+            ),
         },
         "downstream_references": downstream,
         "recompute_deferred": True,
@@ -15312,6 +16393,11 @@ def publish_candidate(
         raise RuntimeError(
             "The document changed while the domain worker ran; regenerate on the live state."
         )
+    # Older Part Design component programs stored top-level occurrences in a
+    # normal LinkList on their earlier program root. Repair that bookkeeping
+    # before any domain finalizes another History operation; otherwise the
+    # legacy forward dependency invalidates unrelated Model and Assembly work.
+    migrate_partdesign_component_occurrence_links(doc)
     domain = str(prepared["pack"].domain)
     if domain not in _TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN:
         raise RuntimeError(
@@ -15441,6 +16527,8 @@ def publish_candidate(
     created: list[Any] = []
     removed: list[str] = []
     assembly_dependency_anchor: Any | None = None
+    assembly_previous_adoptions: dict[str, Any] = {}
+    assembly_adoptions: dict[str, Any] = {}
     assembly_fastener_sources: dict[str, Any] = {}
     assembly_replaced_fastener_source_identities: list[tuple[str, int]] = []
     robot_trajectory_swaps: list[dict[str, Any]] = []
@@ -15457,7 +16545,34 @@ def publish_candidate(
         def ensure_output_object(item: Mapping[str, Any], owner: Any | None) -> Any:
             output_name = str(item["name"])
             output_type = str(item["type"])
+            adoption_target = (
+                _assembly_adoption_target(doc, item)
+                if prepared["pack"].domain == "assembly"
+                and owner is not None
+                else None
+            )
+            previous_adoption = assembly_previous_adoptions.get(output_name)
+            if previous_adoption is not None and adoption_target is not previous_adoption:
+                raise RuntimeError(
+                    f"Assembly output {output_name!r} already adopts Model occurrence "
+                    f"{previous_adoption.Name!r}. Keep that source or use a new output "
+                    "name for a different occurrence."
+                )
             obj = outputs.get(output_name) or existing.get(output_name)
+            if adoption_target is not None:
+                if obj is not None and obj is not adoption_target:
+                    raise RuntimeError(
+                        f"Assembly output {output_name!r} already owns a different native "
+                        "occurrence. Use a new output name when adopting an existing "
+                        "Model occurrence."
+                    )
+                obj = adoption_target
+                _adopt_assembly_occurrence(
+                    owner,
+                    obj,
+                    output_name=output_name,
+                )
+                assembly_adoptions[output_name] = obj
             if obj is None:
                 obj = _create_object(
                     doc,
@@ -15515,6 +16630,9 @@ def publish_candidate(
                     assembly_output,
                 )
                 created.append(assembly_dependency_anchor)
+            assembly_previous_adoptions = _assembly_adopted_occurrences(
+                assembly_dependency_anchor
+            )
         configure_order = list(validated["outputs"])
         if prepared["pack"].domain == "assembly":
             priority = {
@@ -15562,6 +16680,7 @@ def publish_candidate(
         for item in configure_order:
             output_name = str(item["name"])
             output_type = str(item["type"])
+            adopted_occurrence = False
             occurrence_reconciliation: dict[str, Any] | None = None
             occurrence_reconciliation_staged = False
             if prepared["pack"].domain == "assembly":
@@ -15610,6 +16729,7 @@ def publish_candidate(
                         for source in replaced_fastener_sources
                     )
                 obj = ensure_output_object(item, assembly)
+                adopted_occurrence = assembly_adoptions.get(output_name) is obj
             else:
                 # Create and configure each output in dependency order. Some
                 # native containers join History only when their members are
@@ -15670,23 +16790,27 @@ def publish_candidate(
                         ),
                     )
 
-            obj.Label = _label(item, output_name)
-            configured_resources = _configure_object(
-                doc,
-                obj,
-                item,
-                outputs,
-                prepared,
-                robot_trajectory_swaps,
-                assembly_fastener_sources,
-            )
-            _set_metadata(
-                obj,
-                prepared,
-                output_name,
-                str(item["type"]),
-                _definition(item),
-            )
+            if adopted_occurrence:
+                _configure_adopted_assembly_component(obj, item)
+                configured_resources = []
+            else:
+                obj.Label = _label(item, output_name)
+                configured_resources = _configure_object(
+                    doc,
+                    obj,
+                    item,
+                    outputs,
+                    prepared,
+                    robot_trajectory_swaps,
+                    assembly_fastener_sources,
+                )
+                _set_metadata(
+                    obj,
+                    prepared,
+                    output_name,
+                    str(item["type"]),
+                    _definition(item),
+                )
             if inspection_feature:
                 _freeze_inspection_feature(obj)
             if robot_dressup:
@@ -15751,6 +16875,34 @@ def publish_candidate(
 
             if output_type == "component_link":
                 import UtilsAssembly
+
+                if adopted_occurrence:
+                    grounding, retired_grounding = _configure_component_grounding(
+                        doc,
+                        obj,
+                        item,
+                        outputs,
+                        prepared,
+                    )
+                    removed.extend(retired_grounding)
+                    if grounding is not None:
+                        _mark_timeline_operation(
+                            grounding,
+                            context=(
+                                f"Assembly grounding operation for {output_name!r}"
+                            ),
+                        )
+                        if _is_current_transaction_timeline_object(doc, grounding):
+                            created.append(grounding)
+                            _publish_new_timeline_resource_block(
+                                doc,
+                                grounding,
+                                [],
+                                context=(
+                                    f"Assembly grounding operation for {output_name!r}"
+                                ),
+                            )
+                    continue
 
                 fastener_source = assembly_fastener_sources.get(output_name)
                 if fastener_source is not None and getattr(
@@ -16005,6 +17157,19 @@ def publish_candidate(
                 assembly_dependency_anchor,
                 prepared,
                 assembly_item,
+            )
+            for output_name, occurrence in assembly_previous_adoptions.items():
+                if output_name not in assembly_adoptions:
+                    _release_assembly_occurrence(assembly, occurrence)
+            _set_assembly_adopted_occurrences(
+                assembly_dependency_anchor,
+                assembly_adoptions,
+            )
+        if assembly is not None and any(obj is assembly for obj in created):
+            _configure_new_assembly_presentation(
+                assembly,
+                list(validated["outputs"]),
+                outputs,
             )
         unreconciled_fastener_source_identities = [
             identity
@@ -16468,7 +17633,7 @@ def _delete_techdraw_program(
 def _delete_partdesign_design_program(
     doc: Any,
     prepared: Mapping[str, Any],
-    root: Any,
+    root: Any | None,
     operation: Any,
 ) -> dict[str, Any]:
     """Delete one global VibeScript operation and every owned Body output."""
@@ -16492,6 +17657,48 @@ def _delete_partdesign_design_program(
             "The VibeScript Design operation lost one of its persistent "
             "Body outputs."
         )
+
+    source_evidence = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if PROP_PARTDESIGN_HISTORY_KEY in _properties(obj)
+        and str(
+            getattr(obj, scripted_publication.PROP_ENGINE, "") or ""
+        )
+        == "vibescript:partdesign"
+        and str(
+            getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+        )
+        == program_id
+    ]
+
+    contained: list[Any] = []
+    contained_ids: set[int] = set()
+
+    def collect_contained(obj: Any) -> None:
+        if id(obj) in contained_ids:
+            return
+        contained_ids.add(id(obj))
+        contained.append(obj)
+        group = getattr(obj, "Group", None)
+        if isinstance(group, (list, tuple)):
+            for child in group:
+                if child is not None:
+                    collect_contained(child)
+
+    for body in bodies:
+        collect_contained(body)
+    body_origin_objects: list[Any] = []
+    for body in bodies:
+        origin = getattr(body, "Origin", None)
+        if origin is None:
+            continue
+        body_origin_objects.append(origin)
+        body_origin_objects.extend(
+            feature
+            for feature in list(getattr(origin, "OriginFeatures", []) or [])
+            if feature is not None
+        )
     states = [
         obj
         for obj in list(getattr(doc, "Objects", []) or [])
@@ -16500,19 +17707,15 @@ def _delete_partdesign_design_program(
         == "PartDesign::DesignBodyState"
     ]
     private_objects = [
-        root,
+        *([root] if root is not None else []),
+        *list(getattr(root, "Group", []) or []),
         *list(getattr(root, "OutListRecursive", []) or []),
         *publications.values(),
         operation,
         *states,
-        *bodies,
-        *[
-            child
-            for body in bodies
-            for child in list(
-                getattr(body, "OutListRecursive", []) or []
-            )
-        ],
+        *contained,
+        *body_origin_objects,
+        *source_evidence,
     ]
     internal: list[Any] = []
     internal_ids: set[int] = set()
@@ -16537,25 +17740,77 @@ def _delete_partdesign_design_program(
         }
         for name, obj in publications.items()
     ]
+    deleted_names = {item["object_name"] for item in deleted}
+    deleted.extend(
+        {
+            "object_name": str(obj.Name),
+            "label": str(obj.Label),
+            "type_id": str(obj.TypeId),
+            "output_name": str(getattr(obj, scripted_publication.PROP_OUTPUT_KEY, "") or ""),
+        }
+        for obj in contained
+        if str(getattr(obj, "Name", "") or "")
+        not in deleted_names
+    )
+    contained_names = [
+        str(getattr(obj, "Name", "") or "")
+        for obj in contained
+        if str(getattr(obj, "Name", "") or "")
+    ]
     transaction_open = False
     try:
         if hasattr(doc, "openTransaction"):
             doc.openTransaction("Delete Part Design VibeScript program")
             transaction_open = True
+        # Source evidence can reference output Body origin planes and earlier
+        # source features. Remove that exact, program-tagged graph before the
+        # operation removes its Bodies, including when a damaged document has
+        # already lost the source App::Part root.
+        _remove_objects_dependency_order(doc, source_evidence)
         for published in list(publications.values()):
-            scripted_publication.delete_publication(
+            _delete_partdesign_publication(
                 doc,
                 root,
                 published,
             )
         PartDesign.removeDesignOperation(operation)
-        for child in reversed(list(getattr(root, "Group", []) or [])):
-            child_name = str(getattr(child, "Name", "") or "")
-            if child_name and doc.getObject(child_name) is not None:
+        # Native operation deletion owns the Bodies, but older Body layouts can
+        # leave an adopted result feature detached after their container is
+        # removed. Delete the exact captured containment closure and prove no
+        # source-owned native descendant survived before artifacts are purged.
+        for child_name in reversed(contained_names):
+            if doc.getObject(child_name) is not None:
                 doc.removeObject(child_name)
-        root_name = str(root.Name)
-        if doc.getObject(root_name) is not None:
-            doc.removeObject(root_name)
+        if root is not None:
+            for child in reversed(list(getattr(root, "Group", []) or [])):
+                child_name = str(getattr(child, "Name", "") or "")
+                if child_name and doc.getObject(child_name) is not None:
+                    doc.removeObject(child_name)
+            root_name = str(root.Name)
+            if doc.getObject(root_name) is not None:
+                doc.removeObject(root_name)
+        survivors = [
+            name for name in contained_names if doc.getObject(name) is not None
+        ]
+        survivors.extend(
+            str(getattr(obj, "Name", "") or "")
+            for obj in list(getattr(doc, "Objects", []) or [])
+            if (
+                str(getattr(obj, "ProgramId", "") or "") == program_id
+                or str(
+                    getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+                )
+                == program_id
+                or str(getattr(obj, contracts.PROP_PROGRAM_ID, "") or "")
+                == program_id
+            )
+        )
+        survivors = sorted({name for name in survivors if name})
+        if survivors:
+            raise RuntimeError(
+                "Part Design source deletion retained owned native objects: "
+                + ", ".join(survivors)
+            )
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
@@ -16576,8 +17831,6 @@ def _delete_partdesign_program(
 ) -> dict[str, Any]:
     program_id = str(prepared["program_id"])
     root = _partdesign_program_root(doc, program_id)
-    if root is None:
-        return {"ok": True, "deleted_objects": [], "recompute_deferred": True}
     operation = _partdesign_design_program_operation(doc, program_id)
     if operation is not None:
         return _delete_partdesign_design_program(
@@ -16586,6 +17839,44 @@ def _delete_partdesign_program(
             root,
             operation,
         )
+    if root is None:
+        publications = _partdesign_publications(doc, None, program_id)
+        if not publications:
+            return {"ok": True, "deleted_objects": [], "recompute_deferred": True}
+        deleted = [
+            {
+                "object_name": str(obj.Name),
+                "label": str(obj.Label),
+                "type_id": str(obj.TypeId),
+                "output_name": str(name),
+            }
+            for name, obj in publications.items()
+        ]
+        transaction_open = False
+        try:
+            if hasattr(doc, "openTransaction"):
+                doc.openTransaction("Delete orphaned Part Design VibeScript program")
+                transaction_open = True
+            for published in list(publications.values()):
+                _delete_partdesign_publication(doc, None, published)
+            survivors = _partdesign_publications(doc, None, program_id)
+            if survivors:
+                raise RuntimeError(
+                    "Part Design source deletion retained stable publications: "
+                    + ", ".join(sorted(str(obj.Name) for obj in survivors.values()))
+                )
+            if hasattr(doc, "commitTransaction") and transaction_open:
+                doc.commitTransaction()
+                transaction_open = False
+        except Exception:
+            if transaction_open and hasattr(doc, "abortTransaction"):
+                doc.abortTransaction()
+            raise
+        return {
+            "ok": True,
+            "deleted_objects": deleted,
+            "recompute_deferred": True,
+        }
     publications = _partdesign_publications(doc, root, program_id)
     internal = [
         root,
@@ -16712,6 +18003,24 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
     objects = _program_objects(
         doc, str(prepared["program_id"]), prepared["pack"].domain
     )
+    assembly_borrowed_occurrences: list[tuple[Any, Any]] = []
+    if prepared["pack"].domain == "assembly":
+        assembly_roots = [
+            obj
+            for obj in objects
+            if str(getattr(obj, "TypeId", "") or "")
+            == "Assembly::AssemblyObject"
+        ]
+        if len(assembly_roots) > 1:
+            raise RuntimeError(
+                "One Assembly VibeScript program cannot own multiple native Assembly roots."
+            )
+        if assembly_roots:
+            for anchor in objects:
+                for occurrence in _assembly_adopted_occurrences(anchor).values():
+                    assembly_borrowed_occurrences.append(
+                        (assembly_roots[0], occurrence)
+                    )
     timeline_deletion = _prepare_timeline_deletion(doc, objects)
     deletion_targets = list(timeline_deletion["delete_objects"])
     mesh_rollbacks = (
@@ -16791,6 +18100,8 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
             transaction_open = True
         if prepared["pack"].domain == "robot":
             robot_trajectories = _extract_robot_trajectories(objects)
+        for assembly, occurrence in assembly_borrowed_occurrences:
+            _release_assembly_occurrence(assembly, occurrence)
         _remove_timeline_deletion(doc, timeline_deletion)
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()

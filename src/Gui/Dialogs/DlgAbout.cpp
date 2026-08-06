@@ -211,7 +211,10 @@ void AboutDialog::setupLabels()
     QString minor = QString::fromStdString(config["BuildVersionMinor"]);
     QString point = QString::fromStdString(config["BuildVersionPoint"]);
     QString suffix = QString::fromStdString(config["BuildVersionSuffix"]);
-    QString build = QString::fromStdString(config["BuildRevision"]);
+    QString build = QString::fromStdString(config["BuildVersion"]);
+    if (build.isEmpty()) {
+        build = QString::fromStdString(config["BuildRevision"]);
+    }
     QString disda = QString::fromStdString(config["BuildRevisionDate"]);
     QString mturl = QString::fromStdString(config["MaintainerUrl"]);
 
@@ -233,7 +236,8 @@ void AboutDialog::setupLabels()
     QString version = ui->labelBuildVersion->text();
     version.replace(
         QStringLiteral("Unknown"),
-        QStringLiteral("%1.%2.%3%4").arg(major, minor, point, suffix)
+        suffix.isEmpty() ? QStringLiteral("%1.%2.%3").arg(major, minor, point)
+                         : QStringLiteral("%1.%2.%3-%4").arg(major, minor, point, suffix)
     );
     ui->labelBuildVersion->setText(version);
 

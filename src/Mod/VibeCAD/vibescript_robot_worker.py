@@ -983,13 +983,24 @@ def validate_and_build_robot(
     definitions: dict[str, dict[str, Any]] = {}
     keys: dict[str, str] = {}
     output_by_key: dict[str, tuple[str, str]] = {}
+    component_records: dict[str, dict[str, Any]] = {}
     for expected in expected_outputs:
         name = str(expected["name"])
-        definition = validate_robot_definition(
-            raw_result[name],
-            expected_output_type=str(expected["type"]),
-            context=f"result.{name}",
-        )
+        if str(expected["type"]) == "component_link":
+            from vibescript_component_worker import validate_component_definition
+
+            definition, component_data = validate_component_definition(
+                raw_result[name],
+                domain="robot",
+                output_name=name,
+            )
+        else:
+            definition = validate_robot_definition(
+                raw_result[name],
+                expected_output_type=str(expected["type"]),
+                context=f"result.{name}",
+            )
+            component_data = None
         key = _definition_key(definition)
         if key in output_by_key:
             raise _fail(
@@ -1001,8 +1012,10 @@ def validate_and_build_robot(
         definitions[name] = definition
         keys[name] = key
         output_by_key[key] = (name, str(expected["type"]))
+        if component_data is not None:
+            component_records[key] = {"data": component_data}
 
-    records: dict[str, dict[str, Any]] = {}
+    records: dict[str, dict[str, Any]] = dict(component_records)
     for index, expected in enumerate(expected_outputs):
         name = str(expected["name"])
         definition = definitions[name]
@@ -1092,6 +1105,26 @@ def validate_and_build_robot(
                 output=name,
             )
         data = dict(record["data"])
+        if output_type == "component_link":
+            item = {
+                "name": name,
+                "type": output_type,
+                "definition": definition,
+                "component_data": data,
+            }
+            _encoded(data)
+            outputs.append(item)
+            summaries.append(
+                {
+                    "name": name,
+                    "type": output_type,
+                    "operation": "component",
+                    "definition_sha256": keys[name],
+                    "artifact_sha256": "",
+                    "native_type": "App::Link",
+                }
+            )
+            continue
         item = {
             "name": name,
             "type": output_type,

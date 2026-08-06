@@ -34,23 +34,34 @@ These typically need to be modified for each FreeCAD release
 
 #--------------------------------
 # get version info from freecadcmd
-!system "${FILES_FREECAD}\bin\freecadcmd.exe --safe-mode $\"${__FILEDIR__}\write_version_nsh.py$\"" = 0
-!include "${__FILEDIR__}\version.nsh"
-!delfile "${__FILEDIR__}\version.nsh"
+!ifdef VIBECAD_VERSION_NSH
+    # Release validation can inject a generated, disposable version file so the
+    # NSIS script can be preprocessed without executing the packaged runtime.
+    !include "${VIBECAD_VERSION_NSH}"
+!else
+    # Use the bundled interpreter directly. freecadcmd accepts a Python file as
+    # an open-document argument and exits successfully without executing it.
+    !system "$\"${FILES_FREECAD}\bin\python.exe$\" $\"${__FILEDIR__}\write_version_nsh.py$\"" = 0
+    !include "${__FILEDIR__}\version.nsh"
+    !delfile "${__FILEDIR__}\version.nsh"
+!endif
 
-!define APP_VERSION_EMERGENCY "" # use "1" for an emergency release of FreeCAD otherwise ""
-	# alternatively you can use APP_VERSION_EMERGENCY for a custom suffix of the version number
-!define APP_EMERGENCY_DOT "" # use "." for an emergency release of FreeCAD otherwise ""
-!define APP_VERSION_BUILD 1 # Start with 1 for the installer releases of each version
+!define APP_VERSION_EMERGENCY "" # legacy emergency-release compatibility
+!define APP_EMERGENCY_DOT ""
 
-!define APP_VERSION "${APP_VERSION_MAJOR}.${APP_VERSION_MINOR}.${APP_VERSION_PATCH}${APP_EMERGENCY_DOT}${APP_VERSION_EMERGENCY}" # Version to display
+!if "${APP_VERSION_SUFFIX}" == ""
+    !define APP_RELEASE_VERSION "${APP_VERSION_MAJOR}.${APP_VERSION_MINOR}.${APP_VERSION_PATCH}"
+!else
+    !define APP_RELEASE_VERSION "${APP_VERSION_MAJOR}.${APP_VERSION_MINOR}.${APP_VERSION_PATCH}-${APP_VERSION_SUFFIX}"
+!endif
+!define APP_VERSION "${APP_RELEASE_VERSION} (Build ${APP_VERSION_BUILD})" # Version to display
 
 #--------------------------------
 # Installer file name
 # Typical names for the release are "FreeCAD-020-Installer-1.exe" etc.
 
 !ifndef ExeFile
-    !define ExeFile "${APP_NAME}_${APP_VERSION_MAJOR}.${APP_VERSION_MINOR}.${APP_VERSION_PATCH}${APP_VERSION_EMERGENCY}-Windows-x86_64-installer-${APP_VERSION_BUILD}.exe"
+    !define ExeFile "${APP_NAME}-${APP_RELEASE_VERSION}-build${APP_VERSION_BUILD}-Windows-x86_64-installer.exe"
 !endif
 
 #--------------------------------

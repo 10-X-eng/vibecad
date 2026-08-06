@@ -17,6 +17,7 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QByteArray>
+#include <QColor>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -86,16 +87,38 @@ QPixmap desaturatePixmap(const QPixmap& source)
     return QPixmap::fromImage(image);
 }
 
+QPixmap accentPixmap(const QPixmap& source)
+{
+    QImage image = source.toImage().convertToFormat(QImage::Format_ARGB32);
+    const QColor accent = QApplication::palette().color(QPalette::Active, QPalette::Link);
+    for (int y = 0; y < image.height(); ++y) {
+        auto* pixels = reinterpret_cast<QRgb*>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            const int alpha = qAlpha(pixels[x]);
+            if (alpha) {
+                pixels[x] = qRgba(accent.red(), accent.green(), accent.blue(), alpha);
+            }
+        }
+    }
+    return QPixmap::fromImage(image);
+}
+
 QIcon timelineObjectIcon(
     const QIcon& base,
     const App::DocumentObject* object,
     bool disabled,
-    bool owningBodyHidden
+    std::optional<bool> presentationVisible
 )
 {
     QPixmap pixmap = base.pixmap(QSize(22, 22), disabled ? QIcon::Disabled : QIcon::Normal);
-    if (owningBodyHidden) {
+    if (disabled || (presentationVisible.has_value() && !*presentationVisible)) {
         pixmap = desaturatePixmap(pixmap);
+    }
+    else {
+        // Most shipped CAD icons are monochrome. Tint active, visible history
+        // explicitly so gray has one reliable meaning instead of depending on
+        // the source artwork's original saturation.
+        pixmap = accentPixmap(pixmap);
     }
     const char* overlayName = nullptr;
     if (object && object->isError()) {
@@ -385,6 +408,7 @@ bool isVisibleTimelineOperation(
         case Role::Sketch:
         case Role::Feature:
         case Role::Geometry:
+        case Role::VibeCADOutput:
         case Role::Reference:
             return true;
         case Role::Construction:
@@ -578,18 +602,26 @@ App::DocumentObject* operationOwner(
     return entry->body ? entry->body : entry->component;
 }
 
-std::optional<bool> owningBodyVisibility(const App::DocumentObject* owner)
+std::optional<bool> timelinePresentationVisibility(
+    const App::DocumentObject* object,
+    const App::DocumentObject* owner
+)
 {
-    if (!ModelTreeBrowserProjection::isBody(owner) || !Gui::Application::Instance) {
+    if (!Gui::Application::Instance) {
         return std::nullopt;
     }
-    const auto* viewProvider = dynamic_cast<const Gui::ViewProviderDocumentObject*>(
-        Gui::Application::Instance->getViewProvider(owner)
-    );
-    if (!viewProvider || !viewProvider->canToggleVisibility()) {
-        return std::nullopt;
+    for (const auto* candidate : {owner, object}) {
+        if (!candidate) {
+            continue;
+        }
+        const auto* viewProvider = dynamic_cast<const Gui::ViewProviderDocumentObject*>(
+            Gui::Application::Instance->getViewProvider(candidate)
+        );
+        if (viewProvider && viewProvider->canToggleVisibility()) {
+            return viewProvider->isShow();
+        }
     }
-    return viewProvider->isShow();
+    return std::nullopt;
 }
 
 class TimelineApplyingGuard
@@ -922,7 +954,7 @@ FeatureTimeline::FeatureTimeline(QWidget* parent)
 
     auto makeNavigationButton = [this, layout](
                                     const QString& objectName,
-                                    QStyle::StandardPixmap icon,
+                                    const QIcon& icon,
                                     const QString& accessibleName,
                                     const QString& toolTip
                                 ) {
@@ -930,34 +962,37 @@ FeatureTimeline::FeatureTimeline(QWidget* parent)
         button->setObjectName(objectName);
         button->setAccessibleName(accessibleName);
         button->setToolTip(toolTip);
-        button->setIcon(style()->standardIcon(icon));
+        button->setIcon(icon);
         button->setAutoRaise(true);
         button->setFixedSize(24, 24);
         button->setEnabled(false);
         layout->addWidget(button);
         return button;
     };
-    startButton = makeNavigationButton(
-        QStringLiteral("VibeCADFeatureTimelineStart"),
-        QStyle::SP_MediaSkipBackward,
-        tr("Move current model state to start"),
-        tr("Move the current model state to the start of history")
+    recomputeButton = makeNavigationButton(
+        QStringLiteral("VibeCADFeatureTimelineRecompute"),
+        Gui::BitmapFactory().iconFromTheme(
+            "view-refresh",
+            style()->standardIcon(QStyle::SP_BrowserReload)
+        ),
+        tr("Recompute active document"),
+        tr("Recompute the active document")
     );
     previousButton = makeNavigationButton(
         QStringLiteral("VibeCADFeatureTimelinePrevious"),
-        QStyle::SP_MediaSeekBackward,
+        style()->standardIcon(QStyle::SP_MediaSeekBackward),
         tr("Move current model state to previous operation"),
         tr("Move the current model state to the previous operation")
     );
     nextButton = makeNavigationButton(
         QStringLiteral("VibeCADFeatureTimelineNext"),
-        QStyle::SP_MediaSeekForward,
+        style()->standardIcon(QStyle::SP_MediaSeekForward),
         tr("Move current model state to next operation"),
         tr("Move the current model state to the next operation")
     );
     endButton = makeNavigationButton(
         QStringLiteral("VibeCADFeatureTimelineEnd"),
-        QStyle::SP_MediaSkipForward,
+        style()->standardIcon(QStyle::SP_MediaSkipForward),
         tr("Move current model state to end"),
         tr("Move the current model state to the end of history")
     );
@@ -1052,10 +1087,28 @@ FeatureTimeline::FeatureTimeline(QWidget* parent)
         this,
         &FeatureTimeline::onTimelineContextMenu
     );
-    connect(startButton, &QToolButton::clicked, this, [this]() { navigateCurrentState(-2); });
+    connect(recomputeButton, &QToolButton::clicked, this, [this]() {
+        if (!canChangeHistory() || !Gui::Application::Instance) {
+            return;
+        }
+        auto& commandManager = Gui::Application::Instance->commandManager();
+        auto* command = commandManager.getCommandByName("Std_Refresh");
+        if (command && command->canInvoke()) {
+            commandManager.runCommandByName("Std_Refresh");
+        }
+    });
     connect(previousButton, &QToolButton::clicked, this, [this]() { navigateCurrentState(-1); });
     connect(nextButton, &QToolButton::clicked, this, [this]() { navigateCurrentState(1); });
     connect(endButton, &QToolButton::clicked, this, [this]() { navigateCurrentState(2); });
+
+    recomputeRequestFinishedConnection
+        = App::GetApplication().signalRecomputeRequestFinished.connect(
+            [this](const std::string& documentName) {
+                if (documentName == observedDocumentName) {
+                    scheduleRefresh();
+                }
+            }
+        );
 
     if (Gui::Application::Instance) {
         activeDocumentConnection = Gui::Application::Instance->signalActiveDocument.connect(
@@ -1185,7 +1238,7 @@ void FeatureTimeline::rebuild()
         // order, and recompute may replace generated results. Wait for the
         // corresponding stable/recomputed signal before resolving item names.
         timeline->setEnabled(false);
-        startButton->setEnabled(false);
+        recomputeButton->setEnabled(false);
         previousButton->setEnabled(false);
         nextButton->setEnabled(false);
         endButton->setEnabled(false);
@@ -1200,7 +1253,7 @@ void FeatureTimeline::rebuild()
 
     timeline->clear();
     timeline->setEnabled(false);
-    startButton->setEnabled(false);
+    recomputeButton->setEnabled(false);
     previousButton->setEnabled(false);
     nextButton->setEnabled(false);
     endButton->setEnabled(false);
@@ -1210,6 +1263,15 @@ void FeatureTimeline::rebuild()
         empty->setFlags(Qt::NoItemFlags);
         timeline->addItem(empty);
         return;
+    }
+
+    if (Gui::Application::Instance) {
+        auto* command = Gui::Application::Instance->commandManager().getCommandByName(
+            "Std_Refresh"
+        );
+        recomputeButton->setEnabled(
+            canChangeHistory() && command && command->canInvoke()
+        );
     }
 
     auto* controller = App::DocumentTimeline::get(document);
@@ -1287,7 +1349,6 @@ void FeatureTimeline::rebuild()
             return !visible.active && visible.block.end > position;
         }
     );
-    startButton->setEnabled(historyEnabled && position > 0);
     previousButton->setEnabled(historyEnabled && hasPrevious);
     nextButton->setEnabled(historyEnabled && hasNext);
     endButton->setEnabled(historyEnabled && position < static_cast<int>(operations.size()));
@@ -1334,7 +1395,8 @@ void FeatureTimeline::rebuild()
         const bool isCurrent = static_cast<int>(index) == lastActiveVisible;
         const bool afterPosition = !controller->isOperationActive(object);
         auto* owner = operationOwner(object, projection);
-        const std::optional<bool> bodyVisible = owningBodyVisibility(owner);
+        const std::optional<bool> presentationVisible =
+            timelinePresentationVisibility(object, owner);
         const QString label = objectLabel(object);
         const QString ownerLabel = owner && owner != object ? objectLabel(owner) : QString();
         const QString statusText = timelineStatusText(object);
@@ -1373,7 +1435,7 @@ void FeatureTimeline::rebuild()
                         icon,
                         object,
                         afterPosition,
-                        bodyVisible.has_value() && !*bodyVisible
+                        presentationVisible
                     )
                 );
             }
@@ -1390,10 +1452,12 @@ void FeatureTimeline::rebuild()
 
         const QString ownershipText = ownerLabel.isEmpty() ? QString()
                                                            : tr("\nPart: %1").arg(ownerLabel);
-        const QString visibilityText = !bodyVisible.has_value()
+        const bool bodyOwned = ModelTreeBrowserProjection::isBody(owner);
+        const QString visibilityLabel = bodyOwned ? tr("Body visibility") : tr("Visibility");
+        const QString visibilityText = !presentationVisible.has_value()
             ? QString()
-            : *bodyVisible ? tr("\nBody visibility: Visible")
-                           : tr("\nBody visibility: Hidden");
+            : *presentationVisible ? tr("\n%1: Visible").arg(visibilityLabel)
+                                   : tr("\n%1: Hidden").arg(visibilityLabel);
         if (afterPosition) {
             item->setForeground(palette().brush(QPalette::Disabled, QPalette::Text));
             item->setToolTip(

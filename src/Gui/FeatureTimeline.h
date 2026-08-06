@@ -117,7 +117,7 @@ private:
     bool itemBelongsToObservedDocument(const QListWidgetItem* item) const;
     App::Document* activeAppDocument() const;
 
-    QToolButton* startButton {};
+    QToolButton* recomputeButton {};
     QToolButton* previousButton {};
     QToolButton* nextButton {};
     QToolButton* endButton {};
@@ -134,6 +134,7 @@ private:
     fastsignals::scoped_connection activeViewConnection;
     fastsignals::scoped_connection renamedDocumentConnection;
     fastsignals::scoped_connection bookedTransactionConnection;
+    fastsignals::scoped_connection recomputeRequestFinishedConnection;
     fastsignals::scoped_connection stableDocumentConnection;
     fastsignals::scoped_connection changedObjectConnection;
     fastsignals::scoped_connection touchedObjectConnection;

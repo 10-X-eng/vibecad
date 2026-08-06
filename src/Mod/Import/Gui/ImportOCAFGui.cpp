@@ -114,3 +114,11 @@ void ImportOCAFGui::applyElementColors(
     }
     (void)colors;
 }
+
+void ImportOCAFGui::setObjectVisible(App::DocumentObject* obj, bool visible)
+{
+    auto* viewProvider = Gui::Application::Instance->getViewProvider(obj);
+    if (viewProvider) {
+        viewProvider->setVisible(visible);
+    }
+}

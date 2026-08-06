@@ -90,7 +90,10 @@ LIFECYCLE_OPERATIONS: tuple[str, ...] = (
 
 UNIVERSAL_SOURCE_OPERATIONS: tuple[str, ...] = (
     "read_source",
+    "read_operation",
     "read_api",
+    "read_geometry",
+    "read_placement",
     "create_program",
     "build_program",
     "edit_source",
@@ -98,6 +101,7 @@ UNIVERSAL_SOURCE_OPERATIONS: tuple[str, ...] = (
     "reconfigure_program",
     "delete_output",
     "delete_program",
+    "delete_object",
 )
 
 # These are discovery groups, not separate APIs.  They let an agent request the
@@ -188,7 +192,7 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "refine",
             ),
         ),
-        ("verification", ("find_subelements", "measure")),
+        ("verification", ("find_subelements", "measure", "minimum_distance")),
         ("materials_and_publication", ("material", "appearance", "body", "publish")),
     ),
     "assembly": (
@@ -427,12 +431,15 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "PartDesignWorkbench",
         "partdesign",
         "Part Design",
-        ("solid", "shell", "face", "wire", "compound"),
+        ("solid", "shell", "face", "wire", "compound", "component_link"),
         "Create editable native Body history from source-parametric features; the "
         "VibeScript source is its definition. Use "
         "api.sketch for planar feature profiles. Use api.extrude with "
         "operation='add_material' or 'remove_material' for straight additions and cuts "
-        "whose cross-section stays constant. Use api.loft only when the intended "
+        "whose cross-section stays constant. Always set Body-feature direction to "
+        "'along_normal', 'opposite_normal', or 'symmetric'; do not infer reverse. "
+        "XY uses [X,Y]/+Z, XZ uses [X,Z]/-Y, and YZ uses [Y,Z]/+X. "
+        "Use api.loft only when the intended "
         "cross-section genuinely changes between section planes. Set operation to "
         "new_solid, new_surface, add_material, or remove_material. Reserve line_3d, "
         "arc_3d, wire, and other direct OCC topology for nonplanar, imported, repair, "
@@ -450,6 +457,8 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "sphere",
             "torus",
             "fastener",
+            "component",
+            "instances",
             "point",
             "line",
             "arc",
@@ -507,6 +516,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "refine",
             "find_subelements",
             "measure",
+            "minimum_distance",
             "material",
             "appearance",
             "body",
@@ -655,7 +665,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "solved placements, structured solver diagnostics, and worker-generated "
         "kinematic simulations, exploded views, flexible source hierarchies, and "
         "authenticated native bills of materials. Component geometry remains in its "
-        "authoring source; read or edit that exact source_id instead of rebuilding it "
+        "authoring source; read or edit its exact program reference instead of rebuilding it "
         "inside Assembly. Use assembly.play_simulation on a published simulation when "
         "GUI playback is requested.",
         (
@@ -765,10 +775,18 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "RobotWorkbench",
         "robot",
         "Robot",
-        ("robot", "trajectory", "dressup", "simulation"),
-        "Define robots, waypoints, trajectories, dress-ups, and worker-computed "
-        "simulation diagnostics.",
-        ("robot", "waypoint", "trajectory", "dressup", "simulate"),
+        ("component_link", "robot", "trajectory", "dressup", "simulation"),
+        "Place reusable equipment, then define robots, waypoints, trajectories, "
+        "dress-ups, and worker-computed simulation diagnostics.",
+        (
+            "component",
+            "instances",
+            "robot",
+            "waypoint",
+            "trajectory",
+            "dressup",
+            "simulate",
+        ),
         production_ready=True,
     ),
     "FemWorkbench": _pack(
@@ -1159,6 +1177,8 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
     )
     grouped_api = api_groups(pack) if pack is not None else {}
     sources = []
+    document = dict(completed.get("document") or {})
+    document_name = str(document.get("name") or "")
     for program in list(completed.get("programs") or []):
         if not isinstance(program, Mapping):
             continue
@@ -1177,15 +1197,28 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
             .strip()
             .lower()[:128]
         )
+        program_reference = "/".join(
+            (
+                document_name,
+                domain,
+                str(program.get("label") or "")[:240],
+            )
+        )
         source = {
             "source_id": source_id,
             "source_kind": "vibescript_program",
+            "domain": domain,
+            "workbench": str(completed.get("workbench") or ""),
             "label": str(program.get("label") or "")[:240],
+            "program": program_reference,
             "current_revision": revision,
             "status": _editable_source_status(program),
             "affected_outputs": _editable_source_outputs(program),
             "read_tool": "vibescript.read_source",
-            "read_arguments": {"source_id": source_id, "include_logs": False},
+            "read_arguments": {
+                "program": program_reference,
+                "include_logs": False,
+            },
             "build_tool": "vibescript.build_program",
             "edit_tool": "vibescript.edit_source",
             "delete_output_tool": "vibescript.delete_output",
@@ -1196,16 +1229,17 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
             source["accepted_revision"] = accepted_revision
         if re.fullmatch(r"[0-9a-f]{64}", revision):
             source["build_arguments"] = {
-                "source_id": source_id,
+                "program": source["program"],
                 "expected_revision": revision,
             }
             source["edit_target_arguments"] = {
-                "source_id": source_id,
+                "program": source["program"],
                 "expected_revision": revision,
             }
             source["delete_target_arguments"] = {
-                "source_id": source_id,
+                "program": source["program"],
                 "expected_revision": revision,
+                "reason": "Remove this source and its owned outputs.",
             }
         candidate = _compact_editable_source_candidate(program)
         if candidate is not None:
@@ -1227,6 +1261,8 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
         "tools": {
             "read_source": "vibescript.read_source",
             "read_api": "vibescript.read_api",
+            "read_geometry": "vibescript.read_geometry",
+            "read_placement": "vibescript.read_placement",
             "read_api_arguments": {
                 "names": ["exact_callable_name"],
             },
@@ -1240,7 +1276,7 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
             "delete_output": "vibescript.delete_output",
             "delete_program": "vibescript.delete_program",
             "edit_source_arguments": [
-                "source_id",
+                "program",
                 "expected_revision",
                 "source",
             ],
@@ -5196,6 +5232,24 @@ def program_revision_with_references(
                 )
             dependencies.append(dependency)
             continue
+        if item.get("artifact_kind") == "component_identity":
+            dependency["artifact_kind"] = "component_identity"
+            dependency["type_id"] = str(item.get("type_id") or "")
+            if item.get("reference_contract_sha256"):
+                dependency["reference_contract_sha256"] = str(
+                    item.get("reference_contract_sha256") or ""
+                )
+            if (
+                not dependency["document_uid"]
+                or not dependency["object_name"]
+                or not dependency["type_id"]
+            ):
+                raise ValueError(
+                    "Resolved component identities require document, object, and "
+                    "native type identity."
+                )
+            dependencies.append(dependency)
+            continue
         brep_digest = str(item.get("brep_sha256") or "")
         mesh_digest = str(item.get("mesh_sha256") or "")
         if bool(brep_digest) == bool(mesh_digest):
@@ -5232,6 +5286,10 @@ def program_revision_with_references(
                 item.get("artifact_kind") != "points_asc"
                 or not re.fullmatch(r"[0-9a-f]{64}", item["points_sha256"])
             )
+        )
+        or (
+            item.get("artifact_kind") == "component_identity"
+            and not item.get("type_id")
         )
         for item in dependencies
         if item.get("reference_kind") != "point_artifact"
@@ -5565,7 +5623,7 @@ def migrate_program_manifest(
                 "accepted live objects remain available, but this source cannot execute "
                 "in the v2 domain runtime."
             ),
-            "migration_action": "vibescript.partdesign.reconfigure_program",
+            "migration_action": "vibescript.edit_source",
         }
     else:
         raise ValueError("Unsupported VibeScript program manifest schema.")
@@ -5605,10 +5663,22 @@ def _base_tool_spec(
 
 
 def universal_tool_specs() -> tuple[dict[str, Any], ...]:
-    source_id = _property_schema(
-        "Exact source_id from editable_sources or a VibeScript write result.",
+    domain = _property_schema(
+        "Exact authoring domain. Use partdesign for part geometry and assembly "
+        "for occurrences, joints, mechanisms, and simulations. Omit only to keep "
+        "the visible ribbon's compatibility default.",
         type="string",
-        pattern="^[0-9a-f]{32}$",
+        enum=sorted(
+            {pack.domain for pack in VIBESCRIPT_WORKBENCH_PACKS.values()}
+        ),
+    )
+    program = _property_schema(
+        "Exact human-readable document/domain/name returned by read_source, for "
+        "example test9/partdesign/Motor Mount. Copy it unchanged.",
+        type="string",
+        minLength=5,
+        maxLength=300,
+        pattern="^[^/]+/[^/]+/[^/]+$",
     )
     revision = _property_schema(
         "Exact current_revision from editable_sources or working_revision from the latest write.",
@@ -5644,19 +5714,131 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "additionalProperties": False,
         },
     )
+    geometry_reference = {
+        "description": (
+            "Exact object reference copied from selection[].reference, "
+            "available_components, or another VibeCAD result."
+        ),
+        "type": "object",
+        "x-vibecad-reference": True,
+        "properties": {
+            "document_uid": {"type": "string", "minLength": 1},
+            "object_name": {"type": "string", "minLength": 1},
+            "document_path": {"type": "string", "minLength": 1},
+        },
+        "required": ["document_uid", "object_name"],
+        "additionalProperties": False,
+    }
+    geometry_vector = {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": {"type": "number"},
+    }
+    geometry_query = {
+        "type": "object",
+        "properties": {
+            "name": _property_schema(
+                "Unique result name for this explicit query.",
+                type="string",
+                minLength=1,
+                maxLength=64,
+            ),
+            "element_type": {
+                "description": "Topology kind to inspect.",
+                "type": "string",
+                "enum": ["face", "edge"],
+            },
+            "geometry_type": _property_schema(
+                "Exact OCC geometry type, such as Plane, Cylinder, Circle, or Line.",
+                type="string",
+                minLength=1,
+            ),
+            "normal": {
+                "description": "Required directed face normal [x, y, z].",
+                **geometry_vector,
+            },
+            "direction": {
+                "description": "Required directed edge tangent [x, y, z].",
+                **geometry_vector,
+            },
+            "axis_direction": {
+                "description": "Required directed analytic plane, cylinder, circle, or line axis.",
+                **geometry_vector,
+            },
+            "radius_mm": _property_schema(
+                "Required analytic radius in millimetres.",
+                type="number",
+                minimum=0,
+            ),
+            "radius_tolerance_mm": _property_schema(
+                "Absolute radius tolerance in millimetres; defaults to 0.000001.",
+                type="number",
+                minimum=0,
+            ),
+            "min_area_mm2": _property_schema(
+                "Inclusive minimum face area in square millimetres.",
+                type="number",
+                minimum=0,
+            ),
+            "max_area_mm2": _property_schema(
+                "Inclusive maximum face area in square millimetres.",
+                type="number",
+                minimum=0,
+            ),
+            "min_length_mm": _property_schema(
+                "Inclusive minimum edge length in millimetres.",
+                type="number",
+                minimum=0,
+            ),
+            "max_length_mm": _property_schema(
+                "Inclusive maximum edge length in millimetres.",
+                type="number",
+                minimum=0,
+            ),
+            "near_point_mm": {
+                "description": "Required subelement center location [x, y, z] in millimetres.",
+                **geometry_vector,
+            },
+            "max_distance_mm": _property_schema(
+                "Maximum center distance from near_point_mm; defaults to 0.000001.",
+                type="number",
+                minimum=0,
+            ),
+            "angle_tolerance_degrees": _property_schema(
+                "Directed normal, tangent, or axis tolerance; defaults to 1 degree.",
+                type="number",
+                minimum=0,
+                maximum=180,
+            ),
+            "expected_count": _property_schema(
+                "Optional exact cardinality check reported as cardinality_ok.",
+                type="integer",
+                minimum=1,
+                maximum=256,
+            ),
+            "max_results": _property_schema(
+                "Maximum matching subelement records returned; total match count is always reported.",
+                type="integer",
+                minimum=1,
+                maximum=16,
+            ),
+        },
+        "required": ["name", "element_type"],
+        "additionalProperties": False,
+    }
     return (
         {
             "name": "vibescript.read_source",
             "description": (
-                "Read one saved editable source in the active workbench, including a "
-                "failed or not-yet-built source with no live outputs. Omit line_start "
-                "and line_end for the complete editable source; use a line range only "
-                "for a focused reread. Set include_logs=false for concise build state."
+                "List editable programs when program is omitted; otherwise read its "
+                "saved source and current state. A line range narrows the source. "
+                "Set include_logs=true only for raw diagnostics and native identities."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "line_start": _property_schema(
                         "Optional 1-based first source line to return.",
                         type="integer",
@@ -5669,9 +5851,10 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     ),
                     "include_logs": _property_schema(
                         "Include raw candidate stdout, stderr, traceback, and progress logs. "
-                        "Omit or set true for the compatibility-complete response; set false "
-                        "when only the failure summary and recovery action are needed.",
+                        "The default false returns authored outputs, failure summary, and exact "
+                        "recovery actions without internal implementation objects.",
                         type="boolean",
+                        default=False,
                     ),
                     "log_tail_lines": _property_schema(
                         "When raw logs are included, keep only this many final lines per log.",
@@ -5680,7 +5863,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                         maximum=1000,
                     ),
                 },
-                "required": ["source_id"],
+                "required": [],
                 "additionalProperties": False,
             },
             "safety": "READ",
@@ -5689,16 +5872,49 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "edit_modes": ["none", "sketch"],
         },
         {
-            "name": "vibescript.read_api",
+            "name": "vibescript.read_operation",
             "description": (
-                "Read the VibeScript API that owns an exact editable source. Pass source_id "
-                "when inspecting component code from another workbench; omit it to read the "
-                "active workbench API. Pass exact callable or group names for a focused response."
+                "Read a background source mutation by its returned operation_id. "
+                "Reports live progress while running and the compact terminal "
+                "outcome when finished."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "operation_id": _property_schema(
+                        "Exact readable operation id returned by the source mutation.",
+                        type="string",
+                        pattern="^operation-[1-9][0-9]*$",
+                    ),
+                    "wait_seconds": _property_schema(
+                        "Wait up to this many seconds for progress or completion; zero reads immediately.",
+                        type="number",
+                        minimum=0,
+                        maximum=60,
+                    ),
+                },
+                "required": ["operation_id"],
+                "additionalProperties": False,
+            },
+            "safety": "READ",
+            "contextual": True,
+            "requires_document": False,
+            "edit_modes": ["none", "sketch"],
+        },
+        {
+            "name": "vibescript.read_api",
+            "description": (
+                "Read one exact VibeScript API. Pass program for an existing "
+                "program or domain when planning a new one; do not pass both. Model "
+                "and Assembly APIs are available without switching the visible ribbon. "
+                "Omitting both keeps the visible ribbon's compatibility default. Pass "
+                "exact callable or group names for a focused response."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "program": program,
+                    "domain": domain,
                     "names": _property_schema(
                         "Exact api callable names to read, such as sketch, constraint, or extrude.",
                         type="array",
@@ -5723,14 +5939,157 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "edit_modes": ["none", "sketch"],
         },
         {
-            "name": "vibescript.create_program",
+            "name": "vibescript.read_geometry",
             "description": (
-                "Create and publish one new VibeScript source in the active workbench. "
-                "Use only when no editable_sources entry owns the requested output."
+                "Inspect one exact native or imported B-rep without changing CAD. Copy "
+                "reference from selection or available_components. Queries search the "
+                "complete shape for planes, axes, cylinders, circles, sizes, or locations; "
+                "each match includes an api.subshape selector, and analytic matches include "
+                "copy-ready sketch or axis placements. Use analysis_level='topology' for "
+                "normal orientation, bounds, counts, and subelement discovery, especially "
+                "on imported models. Use 'full' only when exact validity, length, area, "
+                "volume, and center of mass are needed; omission preserves the full response. "
+                "include_subelements returns only a bounded sample. Query vectors are "
+                "[x,y,z]; units are mm and degrees."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "reference": geometry_reference,
+                    "analysis_level": {
+                        "description": (
+                            "topology returns exact bounds, topology counts, and query "
+                            "matches without computing global mass properties or full B-rep "
+                            "validity; full also computes those expensive global facts. "
+                            "Defaults to full for compatibility."
+                        ),
+                        "type": "string",
+                        "enum": ["topology", "full"],
+                    },
+                    "include_subelements": _property_schema(
+                        "Include bounded, 1-based face and edge facts for this exact shape.",
+                        type="boolean",
+                    ),
+                    "max_subelements": _property_schema(
+                        "Maximum faces and maximum edges returned when subelements are included.",
+                        type="integer",
+                        minimum=1,
+                        maximum=32,
+                    ),
+                    "queries": {
+                        "description": "Search every face or edge with exact filters.",
+                        "type": "array",
+                        "maxItems": 16,
+                        "uniqueItems": True,
+                        "items": geometry_query,
+                    },
+                },
+                "required": ["reference"],
+                "additionalProperties": False,
+            },
+            "safety": "READ",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none", "sketch"],
+        },
+        {
+            "name": "vibescript.read_placement",
+            "description": (
+                "Resolve the exact local axes and local-to-global matrix for a planned "
+                "api.sketch, api.box, or api.wedge before building. For sketch, pass a "
+                "principal plane plus plane_offset_mm or an explicit placement. For an "
+                "extrude or hole, copy one returned linear_feature_directions key. For an "
+                "oriented box/wedge, pass direction and x_direction so its roll is explicit."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": _property_schema(
+                        "VibeScript operation whose coordinate frame is being planned.",
+                        type="string",
+                        enum=["sketch", "box", "wedge"],
+                    ),
+                    "plane": _property_schema(
+                        "Principal plane for api.sketch; defaults to XY.",
+                        type="string",
+                        enum=["XY", "XZ", "YZ"],
+                    ),
+                    "plane_offset_mm": _property_schema(
+                        "Signed offset along the selected sketch plane's exact local normal.",
+                        type="number",
+                    ),
+                    "placement": _property_schema(
+                        "Explicit api.sketch placement; do not combine with a plane offset.",
+                        type="object",
+                        properties={
+                            "origin": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "items": {"type": "number"},
+                            },
+                            "normal": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "items": {"type": "number"},
+                            },
+                            "x_direction": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "items": {"type": "number"},
+                            },
+                        },
+                        required=["origin", "normal", "x_direction"],
+                        additionalProperties=False,
+                    ),
+                    "origin": _property_schema(
+                        "Global origin [x,y,z] for api.box/api.wedge; defaults to [0,0,0].",
+                        type="array",
+                        minItems=3,
+                        maxItems=3,
+                        items={"type": "number"},
+                    ),
+                    "direction": _property_schema(
+                        "Global direction of primitive local +Z (height).",
+                        type="array",
+                        minItems=3,
+                        maxItems=3,
+                        items={"type": "number"},
+                    ),
+                    "x_direction": _property_schema(
+                        "Global direction projected to primitive local +X (length). Required "
+                        "with a non-default direction to define roll without guessing.",
+                        type="array",
+                        minItems=3,
+                        maxItems=3,
+                        items={"type": "number"},
+                    ),
+                },
+                "required": ["operation"],
+                "additionalProperties": False,
+            },
+            "safety": "READ",
+            "contextual": True,
+            "requires_document": False,
+            "edit_modes": ["none", "sketch"],
+        },
+        {
+            "name": "vibescript.create_program",
+            "description": (
+                "Create and publish one new VibeScript source in an exact authoring "
+                "domain. Use domain='partdesign' for part geometry or "
+                "domain='assembly' for occurrences, joints, mechanisms, and "
+                "simulations. Use only when no editable_sources entry owns the "
+                "requested output. Omitting domain keeps the visible ribbon's "
+                "compatibility default. This starts in the background; follow "
+                "the returned operation_id with vibescript.read_operation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": domain,
                     "program_name": _property_schema(
                         "Human-readable stable program label.",
                         type="string",
@@ -5760,15 +6119,17 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "name": "vibescript.build_program",
             "description": (
                 "Build and publish the saved source unchanged. Use after a failed, "
-                "cancelled, or validated-unpublished attempt."
+                "cancelled, or validated-unpublished attempt. This starts in the "
+                "background; follow the returned operation_id with "
+                "vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                 },
-                "required": ["source_id", "expected_revision"],
+                "required": ["program", "expected_revision"],
                 "additionalProperties": False,
             },
             "safety": "SAFE_WRITE",
@@ -5779,19 +6140,26 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.edit_source",
             "description": (
-                "Replace one existing source with complete updated VibeScript code, "
-                "then validate and publish every affected output. Read the source first, "
-                "keep its source_id, pass the returned current revision as "
-                "expected_revision, and send the entire updated source."
+                "Update one existing VibeScript program, then build and publish it. "
+                "Always send the complete source. Inputs, their schema, and output "
+                "declarations are optional and retain their current values when omitted; "
+                "include the changed fields in this same call when the code adds, removes, "
+                "or renames them. When inputs are supplied without input_schema, VibeCAD "
+                "preserves existing constraints and adds exact schemas for new values. "
+                "This starts in the background; follow the returned operation_id "
+                "with vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                     "source": source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": outputs,
                 },
-                "required": ["source_id", "expected_revision", "source"],
+                "required": ["program", "expected_revision", "source"],
                 "additionalProperties": False,
             },
             "safety": "SAFE_WRITE",
@@ -5803,12 +6171,14 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "name": "vibescript.set_inputs",
             "description": (
                 "Change only input values for one saved source, then rebuild it. "
-                "Source and output declarations remain unchanged."
+                "Source and output declarations remain unchanged. This starts in "
+                "the background; follow the returned operation_id with "
+                "vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                     "patch": _property_schema(
                         "RFC 7396 input merge patch; null removes an optional input.",
@@ -5816,7 +6186,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                         minProperties=1,
                     ),
                 },
-                "required": ["source_id", "expected_revision", "patch"],
+                "required": ["program", "expected_revision", "patch"],
                 "additionalProperties": False,
             },
             "safety": "SAFE_WRITE",
@@ -5827,13 +6197,15 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.reconfigure_program",
             "description": (
-                "Replace one source, input schema, inputs, and output declarations "
-                "together when its contract must change."
+                "Compatibility alias for replacing one source, input schema, inputs, "
+                "and output declarations together. New callers should use edit_source. "
+                "This starts in the background; follow the returned operation_id "
+                "with vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                     "source": source,
                     "input_schema": input_schema,
@@ -5841,7 +6213,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     "expected_outputs": outputs,
                 },
                 "required": [
-                    "source_id",
+                    "program",
                     "expected_revision",
                     "source",
                     "input_schema",
@@ -5862,12 +6234,14 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                 "outputs. Read the source first and send the complete revised source "
                 "without the deleted result key. The guarded rebuild removes the live "
                 "Body or other output and its owned publication and History state. Use "
-                "delete_program when the source has only one output."
+                "delete_program when the source has only one output. This starts in "
+                "the background; follow the returned operation_id with "
+                "vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                     "output_name": _property_schema(
                         "Exact output name from read_source expected_outputs.",
@@ -5883,7 +6257,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     ),
                 },
                 "required": [
-                    "source_id",
+                    "program",
                     "expected_revision",
                     "output_name",
                     "source",
@@ -5899,12 +6273,16 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.delete_program",
             "description": (
-                "Delete one guarded source, its live outputs, and persisted artifacts."
+                "Delete one saved source and everything it owns. Pass the source's "
+                "delete_target_arguments from editable_sources directly; another read "
+                "is not required. A failed source with no outputs deletes only its saved "
+                "source and build artifacts. This starts in the background; follow "
+                "the returned operation_id with vibescript.read_operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": source_id,
+                    "program": program,
                     "expected_revision": revision,
                     "reason": _property_schema(
                         "Why the source and outputs should be removed.",
@@ -5913,7 +6291,34 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                         maxLength=500,
                     ),
                 },
-                "required": ["source_id", "expected_revision", "reason"],
+                "required": ["program", "expected_revision", "reason"],
+                "additionalProperties": False,
+            },
+            "safety": "SAFE_WRITE",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none"],
+        },
+        {
+            "name": "vibescript.delete_object",
+            "description": (
+                "Delete one exact unowned or imported CAD object and its contained "
+                "children. Copy reference from selection, available_components, or "
+                "read_geometry. Managed VibeScript outputs are rejected: use "
+                "delete_output or delete_program for those."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reference": geometry_reference,
+                    "reason": _property_schema(
+                        "Why this exact object should be removed.",
+                        type="string",
+                        minLength=1,
+                        maxLength=500,
+                    ),
+                },
+                "required": ["reference", "reason"],
                 "additionalProperties": False,
             },
             "safety": "SAFE_WRITE",
@@ -6016,8 +6421,8 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
             pack,
             "reconfigure_program",
             description=(
-                f"Replace a {pack.title} program's source, input schema, inputs, and "
-                "output declarations together. Use when any of those contracts must change."
+                f"Compatibility alias for editing a {pack.title} program. New callers "
+                "should use vibescript.edit_source."
             ),
             properties={
                 "program_id": program_id,

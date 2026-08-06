@@ -104,6 +104,25 @@
        </widget>
       </item>
       <item>
+       <widget class="Gui::PrefCheckBox" name="checkBoxImportSolidBodies">
+        <property name="toolTip">
+         <string>Create one editable Design Body for each connected solid. The exact STEP B-rep becomes the Body's first feature; STEP does not contain the original sketches or feature history.</string>
+        </property>
+        <property name="text">
+         <string>Import connected solids as Bodies</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+        <property name="prefEntry" stdset="0">
+         <cstring>ImportSolidBodies</cstring>
+        </property>
+        <property name="prefPath" stdset="0">
+         <cstring>Mod/Import</cstring>
+        </property>
+       </widget>
+      </item>
+      <item>
        <widget class="Gui::PrefCheckBox" name="checkBoxShowProgress">
         <property name="toolTip">
          <string>Show progress bar when importing</string>
@@ -246,6 +265,7 @@
   <tabstop>checkBoxImportHiddenObj</tabstop>
   <tabstop>checkBoxReduceObjects</tabstop>
   <tabstop>checkBoxExpandCompound</tabstop>
+  <tabstop>checkBoxImportSolidBodies</tabstop>
   <tabstop>checkBoxUseBaseName</tabstop>
   <tabstop>comboBoxImportMode</tabstop>
  </tabstops>

@@ -127,13 +127,22 @@ private:
         PyObject* importHidden = Py_None;
         PyObject* merge = Py_None;
         PyObject* useLinkGroup = Py_None;
+        PyObject* importSolidBodies = Py_None;
         int mode = -1;
-        static const std::array<const char*, 7>
-            kwd_list {"name", "docName", "importHidden", "merge", "useLinkGroup", "mode", nullptr};
+        static const std::array<const char*, 8> kwd_list {
+            "name",
+            "docName",
+            "importHidden",
+            "merge",
+            "useLinkGroup",
+            "mode",
+            "importSolidBodies",
+            nullptr
+        };
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "et|sO!O!O!i",
+                "et|sO!O!O!iO!",
                 kwd_list,
                 "utf-8",
                 &Name,
@@ -144,7 +153,9 @@ private:
                 &merge,
                 &PyBool_Type,
                 &useLinkGroup,
-                &mode
+                &mode,
+                &PyBool_Type,
+                &importSolidBodies
             )) {
             throw Py::Exception();
         }
@@ -203,6 +214,9 @@ private:
 
             ImportOCAFExt ocaf(hDoc, pcDoc, file.fileNamePure());
             ocaf.setImportOptions(ImportOCAFExt::customImportOptions());
+            if (!file.hasExtension({"stp", "step"})) {
+                ocaf.setImportSolidBodies(false);
+            }
             if (merge != Py_None) {
                 ocaf.setMerge(Base::asBoolean(merge));
             }
@@ -211,6 +225,9 @@ private:
             }
             if (useLinkGroup != Py_None) {
                 ocaf.setUseLinkGroup(Base::asBoolean(useLinkGroup));
+            }
+            if (importSolidBodies != Py_None) {
+                ocaf.setImportSolidBodies(Base::asBoolean(importSolidBodies));
             }
             if (mode >= 0) {
                 ocaf.setMode(mode);

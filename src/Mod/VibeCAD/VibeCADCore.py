@@ -69,6 +69,8 @@ _PRIVATE_SCRIPTED_ROLES = frozenset(
     {"implementation", "publication_target", "parameters"}
 )
 _CONVERSATION_WRITE_LOCK = threading.RLock()
+_MAX_VIBESCRIPT_REFERENCE_CACHE_ENTRIES = 8
+_MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES = 256 * 1024 * 1024
 
 
 def _slug_filename(value: str) -> str:
@@ -207,7 +209,169 @@ class VibeCADService:
         self._project_store = VibeCADProjectStore(self._local_session_id)
         self._steering_messages: list[dict[str, Any]] = []
         self._steering_sequence = 0
+        self._vibescript_reference_cache_lock = threading.RLock()
+        self._vibescript_reference_snapshots: dict[
+            tuple[str, str], dict[str, Any]
+        ] = {}
         self._register_core_tools()
+
+    @staticmethod
+    def _vibescript_object_identity(obj: Any) -> tuple[str, str]:
+        document = getattr(obj, "Document", None)
+        return (
+            str(getattr(document, "Uid", "") or ""),
+            str(getattr(obj, "Name", "") or ""),
+        )
+
+    @classmethod
+    def _vibescript_reference_dependencies(
+        cls, obj: Any
+    ) -> frozenset[tuple[str, str]]:
+        dependencies: list[Any] = [obj]
+        dependencies.extend(list(getattr(obj, "OutListRecursive", []) or []))
+        linked = getattr(obj, "LinkedObject", None)
+        if linked is not None:
+            dependencies.append(linked)
+            dependencies.extend(
+                list(getattr(linked, "OutListRecursive", []) or [])
+            )
+        return frozenset(
+            identity
+            for identity in (
+                cls._vibescript_object_identity(candidate)
+                for candidate in dependencies
+            )
+            if all(identity)
+        )
+
+    def capture_vibescript_reference_shape(self, obj: Any) -> dict[str, Any]:
+        """Detach or reuse one exact source Shape for an isolated build.
+
+        Cache validity is event-driven: any change to the source or one of its
+        native dependencies invalidates the entry. No geometric fingerprints or
+        approximate comparisons decide whether reuse is safe.
+        """
+
+        identity = self._vibescript_object_identity(obj)
+        if not all(identity):
+            raise RuntimeError("A VibeScript reference has no stable document identity.")
+        with self._vibescript_reference_cache_lock:
+            cached = self._vibescript_reference_snapshots.pop(identity, None)
+            if cached is not None:
+                self._vibescript_reference_snapshots[identity] = cached
+                return {
+                    "detached_shape": cached["detached_shape"],
+                    "cache_token": str(cached["cache_token"]),
+                    "artifact": cached.get("artifact"),
+                    "cache_hit": True,
+                }
+
+        shape = getattr(obj, "Shape", None)
+        if shape is None:
+            raise RuntimeError("A VibeScript reference does not expose a Shape.")
+        # Capture an independent topology wrapper over immutable authoritative
+        # BREP geometry. Sharing the geometry avoids a costly deep copy of
+        # thousands of imported surfaces; display triangulation is not copied
+        # into the worker artifact and never participates in its identity.
+        detached = shape.copy(False, False)
+        entry = {
+            "detached_shape": detached,
+            "cache_token": uuid.uuid4().hex,
+            "dependencies": self._vibescript_reference_dependencies(obj),
+            "artifact": None,
+        }
+        with self._vibescript_reference_cache_lock:
+            self._vibescript_reference_snapshots[identity] = entry
+            while (
+                len(self._vibescript_reference_snapshots)
+                > _MAX_VIBESCRIPT_REFERENCE_CACHE_ENTRIES
+            ):
+                oldest = next(iter(self._vibescript_reference_snapshots))
+                self._vibescript_reference_snapshots.pop(oldest, None)
+        return {
+            "detached_shape": detached,
+            "cache_token": str(entry["cache_token"]),
+            "artifact": None,
+            "cache_hit": False,
+        }
+
+    def store_vibescript_reference_artifact(
+        self, cache_token: str, artifact: dict[str, Any]
+    ) -> None:
+        """Attach exact serialized BREP evidence to its live snapshot token."""
+
+        payload = artifact.get("brep_bytes")
+        if not isinstance(payload, bytes) or not payload:
+            return
+        if len(payload) > _MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES:
+            return
+        with self._vibescript_reference_cache_lock:
+            target = next(
+                (
+                    entry
+                    for entry in self._vibescript_reference_snapshots.values()
+                    if str(entry.get("cache_token") or "") == cache_token
+                ),
+                None,
+            )
+            if target is None:
+                return
+            while True:
+                retained_bytes = 0
+                for entry in self._vibescript_reference_snapshots.values():
+                    if entry is target:
+                        continue
+                    cached = entry.get("artifact")
+                    cached_bytes = (
+                        cached.get("brep_bytes")
+                        if isinstance(cached, dict)
+                        else None
+                    )
+                    if isinstance(cached_bytes, bytes):
+                        retained_bytes += len(cached_bytes)
+                if (
+                    retained_bytes + len(payload)
+                    <= _MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES
+                ):
+                    break
+                evicted = False
+                for entry in self._vibescript_reference_snapshots.values():
+                    if entry is target or entry.get("artifact") is None:
+                        continue
+                    entry["artifact"] = None
+                    evicted = True
+                    break
+                if not evicted:
+                    # payload alone was bounded above, so this is defensive.
+                    if len(payload) <= _MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES:
+                        break
+            target["artifact"] = dict(artifact)
+
+    def invalidate_vibescript_reference_snapshots(self, obj: Any) -> None:
+        """Invalidate every cached source that depends on ``obj`` exactly."""
+
+        identity = self._vibescript_object_identity(obj)
+        if not all(identity):
+            return
+        with self._vibescript_reference_cache_lock:
+            stale = [
+                key
+                for key, entry in self._vibescript_reference_snapshots.items()
+                if identity in entry.get("dependencies", ())
+            ]
+            for key in stale:
+                self._vibescript_reference_snapshots.pop(key, None)
+
+    def clear_vibescript_reference_snapshots(self, document_uid: str) -> None:
+        clean_uid = str(document_uid or "")
+        with self._vibescript_reference_cache_lock:
+            stale = [
+                key
+                for key in self._vibescript_reference_snapshots
+                if not clean_uid or key[0] == clean_uid
+            ]
+            for key in stale:
+                self._vibescript_reference_snapshots.pop(key, None)
 
     @property
     def registry(self) -> ToolRegistry:
@@ -390,6 +554,8 @@ class VibeCADService:
             return omitted(
                 "The explicit selection exceeds the bounded turn-start item limit."
             )
+        document = self._active_document()
+        document_uid = str(getattr(document, "Uid", "") or "")
         items = []
         for item in selected:
             try:
@@ -423,6 +589,16 @@ class VibeCADService:
                 items.append(
                     {
                         **fields,
+                        **(
+                            {
+                                "reference": {
+                                    "document_uid": document_uid,
+                                    "object_name": fields["object"],
+                                }
+                            }
+                            if document_uid and fields["object"]
+                            else {}
+                        ),
                         "subelements": subelements,
                     }
                 )
@@ -1061,7 +1237,6 @@ class VibeCADService:
 
             corner_points = [
                 (0, 0),
-                (max(0, width - 1), 0),
                 (0, max(0, height - 1)),
                 (max(0, width - 1), max(0, height - 1)),
             ]
@@ -1090,6 +1265,12 @@ class VibeCADService:
             for y_index in range(y_steps):
                 y = int(round(y_index * (height - 1) / max(1, y_steps - 1)))
                 for x_index in range(x_steps):
+                    # The navigation cube is a viewport overlay, not model
+                    # evidence. It occupies this same normalized corner in the
+                    # framebuffer and otherwise makes an empty capture look
+                    # non-empty.
+                    if x_index >= int(0.79 * x_steps) and y_index <= int(0.26 * y_steps):
+                        continue
                     x = int(round(x_index * (width - 1) / max(1, x_steps - 1)))
                     color = QtGui.QColor(image.pixel(x, y))
                     red = color.red()
@@ -3358,6 +3539,54 @@ class VibeCADService:
                 joints.extend(list(getattr(child, "Group", []) or []))
         return joints
 
+    def _assembly_component_objects(self, assembly: Any) -> list[Any]:
+        children = list(getattr(assembly, "Group", []) or [])
+        joint_names = {
+            getattr(joint, "Name", None)
+            for joint in self._assembly_joint_objects(assembly)
+        }
+        linked_target_ids = {
+            id(target)
+            for child in children
+            for target in [getattr(child, "LinkedObject", None)]
+            if target is not None
+        }
+        resource_output_types = {
+            "bom",
+            "check",
+            "dependency_anchor",
+            "exploded_view",
+            "joint",
+            "measurement",
+            "motion",
+            "simulation",
+            "solver_diagnostics",
+        }
+        components = []
+        for child in children:
+            type_id = str(getattr(child, "TypeId", "") or "")
+            if type_id in {
+                "Assembly::JointGroup",
+                "Assembly::BomGroup",
+                "Assembly::ViewGroup",
+                "Assembly::SimulationGroup",
+            }:
+                continue
+            if getattr(child, "Name", None) in joint_names:
+                continue
+            if id(child) in linked_target_ids:
+                # FreeCAD may expose a linked definition beside its occurrence
+                # when walking an Assembly group. The occurrence is the one
+                # independently placed mechanism component.
+                continue
+            output_type = str(
+                getattr(child, "VibeCADVibeScriptOutputType", "") or ""
+            ).strip()
+            if output_type in resource_output_types:
+                continue
+            components.append(child)
+        return components
+
     def _assembly_child_counts(self, assembly: Any) -> dict[str, int]:
         counts = {
             "components": 0,
@@ -3367,10 +3596,6 @@ class VibeCADService:
             "bom_groups": 0,
             "view_groups": 0,
             "simulation_groups": 0,
-        }
-        joint_names = {
-            getattr(joint, "Name", None)
-            for joint in self._assembly_joint_objects(assembly)
         }
         for child in list(getattr(assembly, "Group", []) or []):
             type_id = getattr(child, "TypeId", "")
@@ -3387,34 +3612,14 @@ class VibeCADService:
                 counts["view_groups"] += 1
             elif type_id == "Assembly::SimulationGroup":
                 counts["simulation_groups"] += 1
-            elif getattr(child, "Name", None) in joint_names:
-                # App::Part-style groups list nested members recursively; joint
-                # objects already counted through their JointGroup are not
-                # components.
-                continue
-            else:
-                counts["components"] += 1
+        counts["components"] = len(self._assembly_component_objects(assembly))
         return counts
 
     def _assembly_component_children(self, assembly: Any) -> list[dict[str, Any]]:
-        components = []
-        joint_names = {
-            getattr(joint, "Name", None)
-            for joint in self._assembly_joint_objects(assembly)
-        }
-        for child in list(getattr(assembly, "Group", []) or []):
-            type_id = getattr(child, "TypeId", "")
-            if type_id in {
-                "Assembly::JointGroup",
-                "Assembly::BomGroup",
-                "Assembly::ViewGroup",
-                "Assembly::SimulationGroup",
-            }:
-                continue
-            if getattr(child, "Name", None) in joint_names:
-                continue
-            components.append(self._object_summary(child))
-        return components
+        return [
+            self._object_summary(child)
+            for child in self._assembly_component_objects(assembly)
+        ]
 
     @staticmethod
     def _joint_reference_summary(reference: Any) -> dict[str, Any] | None:

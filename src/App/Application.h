@@ -538,6 +538,8 @@ public:
     fastsignals::signal<void (const App::Document&)> signalRecomputed;
     /// Signal on a recomputed document object.
     fastsignals::signal<void (const App::DocumentObject&)> signalObjectRecomputed;
+    /// Signal after an asynchronous recompute request has completely left the worker queue.
+    fastsignals::signal<void(const std::string&)> signalRecomputeRequestFinished;
     /// Signal on an opened transaction.
     fastsignals::signal<void (const App::Document&, std::string)> signalOpenTransaction;
     /// Signal on a committed transaction.

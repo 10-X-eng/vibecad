@@ -949,7 +949,7 @@ DockWindowItems* StdWorkbench::setupDockWindows() const
         root->addDockWidget(
             "VibeCADContextDebugPanel",
             Qt::BottomDockWidgetArea,
-            Gui::DockWindowOption::VisibleTabbed
+            Gui::DockWindowOption::HiddenTabbed
         );
     }
 

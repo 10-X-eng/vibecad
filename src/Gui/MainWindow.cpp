@@ -42,6 +42,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QOpenGLWidget>
 #include <QPainter>
 #include <QProcess>
@@ -368,7 +369,10 @@ private:
 namespace
 {
 
-constexpr int modelBrowserWidth = 288;
+constexpr int modelBrowserMinimumWidth = 288;
+constexpr int modelBrowserResizeHandleWidth = 8;
+constexpr int modelBrowserMinimumRemainingCanvas = 64;
+constexpr auto modelBrowserWidthPreference = "ModelBrowserWidth";
 
 /**
  * Central viewport layer used by VibeCAD's permanent model browser.
@@ -386,6 +390,17 @@ public:
         : QWidget(parent)
         , mdiArea(mdiArea)
         , browserHost(new QWidget(this))
+        , browserResizeHandle(new QWidget(browserHost))
+        , browserPreferences(App::GetApplication().GetParameterGroupByPath(
+              "User parameter:BaseApp/Preferences/MainWindow"
+          ))
+        , browserWidth(std::max(
+              modelBrowserMinimumWidth,
+              static_cast<int>(browserPreferences->GetInt(
+                  modelBrowserWidthPreference,
+                  modelBrowserMinimumWidth
+              ))
+          ))
     {
         setObjectName(QStringLiteral("VibeCADViewportCanvas"));
         setContentsMargins(0, 0, 0, 0);
@@ -399,27 +414,122 @@ public:
         auto* browserLayout = new QVBoxLayout(browserHost);
         browserLayout->setContentsMargins(0, 0, 0, 0);
         browserLayout->setSpacing(0);
+
+        browserResizeHandle->setObjectName(
+            QStringLiteral("VibeCADModelBrowserResizeHandle")
+        );
+        browserResizeHandle->setCursor(Qt::SizeHorCursor);
+        browserResizeHandle->setMouseTracking(true);
+        browserResizeHandle->setAttribute(Qt::WA_Hover);
+        browserResizeHandle->setToolTip(
+            tr("Drag to resize the Model browser")
+        );
+        browserResizeHandle->installEventFilter(this);
         browserHost->hide();
     }
 
 protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (watched != browserResizeHandle || !event) {
+            return QWidget::eventFilter(watched, event);
+        }
+
+        auto globalMouseX = [](const QMouseEvent& mouseEvent) {
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+            return mouseEvent.globalPos().x();
+#else
+            return qRound(mouseEvent.globalPosition().x());
+#endif
+        };
+
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            if (mouseEvent->button() != Qt::LeftButton) {
+                return false;
+            }
+            resizingBrowser = true;
+            resizeStartGlobalX = globalMouseX(*mouseEvent);
+            resizeStartWidth = browserHost->width();
+            browserResizeHandle->grabMouse();
+            return true;
+        }
+        if (event->type() == QEvent::MouseMove && resizingBrowser) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            setBrowserWidth(
+                resizeStartWidth
+                + globalMouseX(*mouseEvent)
+                - resizeStartGlobalX
+            );
+            return true;
+        }
+        if (event->type() == QEvent::MouseButtonRelease && resizingBrowser) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            setBrowserWidth(
+                resizeStartWidth
+                + globalMouseX(*mouseEvent)
+                - resizeStartGlobalX
+            );
+            resizingBrowser = false;
+            browserResizeHandle->releaseMouse();
+            browserPreferences->SetInt(modelBrowserWidthPreference, browserWidth);
+            return true;
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
     void resizeEvent(QResizeEvent* event) override
     {
         QWidget::resizeEvent(event);
-        mdiArea->setGeometry(rect());
-        browserHost->setGeometry(0, 0, std::min(modelBrowserWidth, width()), height());
-        browserHost->raise();
+        layoutViewport();
     }
 
     void showEvent(QShowEvent* event) override
     {
         QWidget::showEvent(event);
         browserHost->raise();
+        browserResizeHandle->raise();
     }
 
 private:
+    void setBrowserWidth(int requestedWidth)
+    {
+        if (width() > modelBrowserMinimumWidth) {
+            browserWidth = std::clamp(
+                requestedWidth,
+                modelBrowserMinimumWidth,
+                std::max(
+                    modelBrowserMinimumWidth,
+                    width() - modelBrowserMinimumRemainingCanvas
+                )
+            );
+        }
+        layoutViewport();
+    }
+
+    void layoutViewport()
+    {
+        mdiArea->setGeometry(rect());
+        const int displayedWidth = std::min(browserWidth, width());
+        browserHost->setGeometry(0, 0, displayedWidth, height());
+        browserResizeHandle->setGeometry(
+            std::max(0, displayedWidth - modelBrowserResizeHandleWidth),
+            0,
+            std::min(modelBrowserResizeHandleWidth, displayedWidth),
+            height()
+        );
+        browserHost->raise();
+        browserResizeHandle->raise();
+    }
+
     QMdiArea* mdiArea;
     QWidget* browserHost;
+    QWidget* browserResizeHandle;
+    ParameterGrp::handle browserPreferences;
+    int browserWidth;
+    bool resizingBrowser {false};
+    int resizeStartGlobalX {0};
+    int resizeStartWidth {modelBrowserMinimumWidth};
 };
 
 }  // namespace

@@ -1451,6 +1451,42 @@ PyObject* DocumentPy::reorderTimelineOperationBlocksBefore(PyObject* args)
     return reorderTimelineOperationBlocks(getDocumentPtr(), args, true);
 }
 
+PyObject* DocumentPy::reorderTimelineOperationDependentClosureAfter(PyObject* args)
+{
+    PyObject* pyOperation = nullptr;
+    PyObject* pyTarget = nullptr;
+    if (!PyArg_ParseTuple(args, "OO", &pyOperation, &pyTarget)) {
+        return nullptr;
+    }
+    if (!PyObject_TypeCheck(pyOperation, &DocumentObjectPy::Type)
+        || !PyObject_TypeCheck(pyTarget, &DocumentObjectPy::Type)) {
+        PyErr_SetString(PyExc_TypeError,
+                       "Timeline dependency rebase inputs must be document objects");
+        return nullptr;
+    }
+
+    auto* document = getDocumentPtr();
+    auto* operation = static_cast<DocumentObjectPy*>(pyOperation)->getDocumentObjectPtr();
+    auto* target = static_cast<DocumentObjectPy*>(pyTarget)->getDocumentObjectPtr();
+    if (!operation || !target || !document->containsObject(operation)
+        || !document->containsObject(target) || operation->getDocument() != document
+        || target->getDocument() != document) {
+        PyErr_SetString(PyExc_ValueError,
+                       "Timeline dependency rebase inputs must belong to this document");
+        return nullptr;
+    }
+
+    try {
+        auto* timeline = DocumentTimeline::get(document);
+        if (!timeline) {
+            throw Py::RuntimeError("This document has no native operation timeline");
+        }
+        return Py::new_reference_to(
+            Py::Boolean(timeline->reorderOperationDependentClosureAfter(operation, target)));
+    }
+    PY_CATCH;
+}
+
 PyObject* DocumentPy::adoptImportedTimelineOperations(PyObject* args)
 {
     PyObject* pyObjects = nullptr;

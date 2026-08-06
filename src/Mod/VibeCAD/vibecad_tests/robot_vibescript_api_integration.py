@@ -31,8 +31,10 @@ from VibeCADVibeScriptDomainPublication import (  # noqa: E402
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     RobotDomainAdapter,
     accept_candidate,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
+    finalize_candidate,
     finish_delete,
     prepare_candidate,
     prepare_delete,
@@ -56,8 +58,16 @@ from vibescript_robot_worker import (  # noqa: E402
 )
 
 
-EXPORTS = ("robot", "waypoint", "trajectory", "dressup", "simulate")
-OUTPUT_TYPES = ("robot", "trajectory", "dressup", "simulation")
+EXPORTS = (
+    "component",
+    "instances",
+    "robot",
+    "waypoint",
+    "trajectory",
+    "dressup",
+    "simulate",
+)
+OUTPUT_TYPES = ("component_link", "robot", "trajectory", "dressup", "simulation")
 EXPECTED_OUTPUTS = [
     {"name": "Robot", "type": "robot"},
     {"name": "Trajectory", "type": "trajectory"},
@@ -414,6 +424,8 @@ def _prepare_execute_validate(captured: dict[str, object]):
     assert staged_names == {
         "request.json",
         "worker.py",
+        "vibescript_component_api.py",
+        "vibescript_component_worker.py",
         "vibescript_domain_api.py",
         "vibescript_robot_api.py",
         "vibescript_robot_worker.py",
@@ -433,6 +445,113 @@ def _run_candidate(captured: dict[str, object], service: _Service):
     publication = publish_candidate(service, prepared, validated)
     accepted = accept_candidate(prepared, publication)
     return prepared, execution, validated, publication, accepted
+
+
+def _exercise_component_layout() -> dict[str, object]:
+    """Place one referenced machine component in the Robot domain."""
+
+    import Part
+
+    with tempfile.TemporaryDirectory(prefix="vibecad-robot-component-") as directory:
+        root = Path(directory)
+        document = App.newDocument("VibeScriptRobotComponent")
+        service = _Service(root)
+        try:
+            source = document.addObject("Part::Feature", "ConveyorDefinition")
+            source.Shape = Part.makeBox(120, 30, 12)
+            source.Label = "Conveyor definition"
+            document.recompute()
+            source_name = str(source.Name)
+            capture = _captured(
+                root,
+                document,
+                operation="create_program",
+                arguments={
+                    "program_name": "Robot cell layout",
+                    "source": (
+                        "conveyor = api.component(inputs['conveyor'], "
+                        "placement={'position':[50,20,5], 'axis':[0,0,1], "
+                        "'angle_degrees':90}, label='Infeed conveyor')\n"
+                        "result = {'Conveyor': conveyor}\n"
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "conveyor": {
+                                "type": "object",
+                                "x-vibecad-reference": True,
+                                "properties": {
+                                    "document_uid": {"type": "string"},
+                                    "object_name": {"type": "string"},
+                                },
+                                "required": ["document_uid", "object_name"],
+                                "additionalProperties": False,
+                            }
+                        },
+                        "required": ["conveyor"],
+                        "additionalProperties": False,
+                    },
+                    "inputs": {
+                        "conveyor": {
+                            "document_uid": str(document.Uid),
+                            "object_name": source_name,
+                        }
+                    },
+                    "expected_outputs": [
+                        {"name": "Conveyor", "type": "component_link"}
+                    ],
+                },
+            )
+            prepared = prepare_candidate(capture)
+            assert len(prepared["reference_requirements"]) == 1
+            prepared = finalize_candidate(
+                prepared,
+                capture_reference_inputs(service, prepared),
+            )
+            execution = execute_candidate(prepared, cancellation_check=None)
+            assert execution.get("ok") is True, execution
+            validated = validate_candidate(prepared, execution)
+            retain_candidate(prepared, status="validated")
+            publication = publish_candidate(service, prepared, validated)
+            accepted = accept_candidate(prepared, publication)
+            occurrence_name = accepted["live_outputs"]["Conveyor"]["object_name"]
+            occurrence = document.getObject(occurrence_name)
+            assert occurrence is not None and occurrence.TypeId == "App::Link"
+            assert occurrence.LinkedObject is source
+            assert occurrence.Label == "Infeed conveyor"
+            assert occurrence.Placement.Base == App.Vector(50, 20, 5)
+            assert (
+                abs(float(occurrence.Placement.Rotation.Angle) - 1.57079632679)
+                < 1.0e-9
+            )
+
+            prepared_delete = prepare_delete(
+                _captured(
+                    root,
+                    document,
+                    operation="delete_program",
+                    arguments={
+                        "program_id": prepared["program_id"],
+                        "expected_revision": accepted["working_revision"],
+                        "reason": "Robot component layout gate complete",
+                    },
+                )
+            )
+            finished = finish_delete(
+                prepared_delete,
+                delete_live_program(service, prepared_delete),
+            )
+            assert finished["ok"] is True
+            assert document.getObject(occurrence_name) is None
+            assert document.getObject(source_name) is source
+            return {
+                "linked_occurrence": True,
+                "axis_angle_placement": True,
+                "definition_preserved_after_delete": True,
+            }
+        finally:
+            if document.Name in App.listDocuments():
+                App.closeDocument(document.Name)
 
 
 def _outputs(document, accepted: dict[str, object]) -> dict[str, object]:
@@ -631,12 +750,13 @@ def _exercise_lifecycle() -> dict[str, object]:
             assert surface.cad_tool_names == (
                 "vibescript.read_source",
                 "vibescript.read_api",
+                "vibescript.create_program",
                 "vibescript.build_program",
                 "vibescript.edit_source",
-                "vibescript.robot.create_program",
-                "vibescript.robot.set_inputs",
-                "vibescript.robot.reconfigure_program",
-                "vibescript.robot.delete_program",
+                "vibescript.set_inputs",
+                "vibescript.reconfigure_program",
+                "vibescript.delete_output",
+                "vibescript.delete_program",
                 "robot.list_setup",
             )
             initial_inputs = {
@@ -972,6 +1092,7 @@ def main() -> int:
     _exercise_source_api()
     _exercise_frame_contract()
     _exercise_native_kinematic_persistence()
+    _exercise_component_layout()
     result = _exercise_lifecycle()
     print(json.dumps({"integration": "robot_vibescript_api", "ok": True, **result}))
     return 0

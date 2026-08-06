@@ -46,6 +46,7 @@ Branding::Branding()
     filter.push_back("BuildVersionMajor");
     filter.push_back("BuildVersionMinor");
     filter.push_back("BuildVersionPoint");
+    filter.push_back("BuildVersion");
     filter.push_back("BuildRevision");
     filter.push_back("BuildRevisionDate");
     filter.push_back("BuildVersionSuffix");

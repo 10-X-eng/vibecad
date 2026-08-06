@@ -259,6 +259,41 @@ def test_oversized_selection_is_rejected_before_object_enumeration(
     assert "sample" not in summary
 
 
+def test_selected_object_includes_copy_ready_geometry_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_object = SimpleNamespace(
+        Name="ImportedMotor",
+        Label="Imported STEP Motor",
+        TypeId="Part::Feature",
+    )
+    selection = SimpleNamespace(
+        Object=selected_object,
+        SubElementNames=("Face2",),
+    )
+    gui = ModuleType("FreeCADGui")
+    gui.Selection = SimpleNamespace(getSelectionEx=lambda: [selection])
+    monkeypatch.setitem(sys.modules, "FreeCADGui", gui)
+    service = object.__new__(VibeCADService)
+    service._active_document = lambda: SimpleNamespace(Uid="document-uid")
+
+    assert service.provider_turn_selection_summary() == {
+        "selection_count": 1,
+        "selection": [
+            {
+                "object": "ImportedMotor",
+                "label": "Imported STEP Motor",
+                "type": "Part::Feature",
+                "reference": {
+                    "document_uid": "document-uid",
+                    "object_name": "ImportedMotor",
+                },
+                "subelements": ["Face2"],
+            }
+        ],
+    }
+
+
 def test_provider_context_does_not_copy_conversation_cache() -> None:
     service = object.__new__(VibeCADService)
     service.active_workbench_name = lambda: "AssemblyWorkbench"
@@ -636,6 +671,7 @@ def test_oversized_tool_result_omits_whole_values_without_sampling() -> None:
     result = {
         "ok": True,
         "program_id": "program-1",
+        "program": "Design/partdesign/Program One",
         "working_revision": "revision-1",
         "diagnostics": [{"index": index, "payload": "x" * 1000} for index in range(1000)],
         "_vibecad_image_attachment": {"path": "/private/image.png"},
@@ -646,7 +682,8 @@ def test_oversized_tool_result_omits_whole_values_without_sampling() -> None:
 
     assert encoded_bytes <= provider.MAX_PROVIDER_TOOL_RESULT_BYTES
     assert visible["ok"] is True
-    assert visible["program_id"] == "program-1"
+    assert visible["program"] == "Design/partdesign/Program One"
+    assert "program_id" not in visible
     assert visible["working_revision"] == "revision-1"
     assert visible["diagnostics"] == {
         "_vibecad_value_omitted": True,
@@ -658,3 +695,173 @@ def test_oversized_tool_result_omits_whole_values_without_sampling() -> None:
     assert visible["vibecad_result_boundary"]["original_json_bytes"] > encoded_bytes
     assert "_vibecad_image_attachment" not in visible
     assert "payload" not in json.dumps(visible)
+
+
+def test_terminal_source_operation_never_omits_its_verdict_or_recovery() -> None:
+    result = {
+        "ok": True,
+        "operation": {
+            "operation_id": "operation-9",
+            "status": "failed",
+            "tool": "vibescript.edit_source",
+        },
+        "operation_succeeded": False,
+        "result": {
+            "ok": False,
+            "failure_code": "DOMAIN_CPU_LIMIT_EXCEEDED",
+            "failure_stage": "external_process",
+            "error": "The native solve exhausted its CPU limit.",
+            "program": "Clamp/assembly/Mechanism",
+            "working_revision": "a" * 64,
+            "next_write_expected_revision": "a" * 64,
+            "observed": {
+                "stdout": "noise\n" * 30_000,
+                "stderr": "solver iteration\n" * 30_000,
+                "termination_reason": "cpu_time_limit",
+                "limit_reached": "cpu_seconds",
+                "worker_progress": {
+                    "domain": "assembly",
+                    "phase": "simulation_native_solve",
+                    "phase_elapsed_seconds": 238.4,
+                    "item_progress": {
+                        "kind": "joint",
+                        "completed": 8,
+                        "total": 12,
+                        "current": "HandlePivot",
+                    },
+                    "graph_timings": [{"payload": "x" * 1000}] * 200,
+                },
+            },
+            "required_changes": [
+                "Correct HandlePivot and rebuild against the returned revision."
+            ],
+            "_vibecad_source_lifecycle_result": True,
+        },
+    }
+
+    visible = provider._provider_visible_tool_result(result)
+
+    assert provider._provider_json_bytes(visible) <= (
+        provider.MAX_PROVIDER_TOOL_RESULT_BYTES
+    )
+    assert visible["operation_succeeded"] is False
+    terminal = visible["result"]
+    assert terminal["failure_code"] == "DOMAIN_CPU_LIMIT_EXCEEDED"
+    assert terminal["failure_stage"] == "external_process"
+    assert terminal["revision"] == "a" * 64
+    assert terminal["observed"]["termination_reason"] == "cpu_time_limit"
+    assert terminal["observed"]["worker_progress"]["phase"] == (
+        "simulation_native_solve"
+    )
+    assert "stdout" not in json.dumps(visible)
+    assert "_vibecad_value_omitted" not in json.dumps(terminal)
+
+
+def test_pathological_terminal_error_keeps_stable_verdict_envelope() -> None:
+    result = {
+        "ok": True,
+        "operation": {
+            "operation_id": "operation-10",
+            "status": "failed",
+            "tool": "vibescript.edit_source",
+        },
+        "operation_succeeded": False,
+        "result": {
+            "ok": False,
+            "failure_code": "NATIVE_SOLVER_FAILED",
+            "failure_stage": "native_solve",
+            "error": "native solver detail\n" * 100_000,
+            "program": "Clamp/assembly/Mechanism",
+            "revision": "b" * 64,
+            "next_actions": [
+                {
+                    "tool": "vibescript.read_source",
+                    "arguments": {
+                        "program": "Clamp/assembly/Mechanism",
+                        "include_logs": False,
+                    },
+                }
+            ],
+        },
+    }
+
+    visible = provider._provider_visible_tool_result(result)
+
+    assert provider._provider_json_bytes(visible) <= (
+        provider.MAX_PROVIDER_TOOL_RESULT_BYTES
+    )
+    assert visible["operation"] == {
+        "status": "failed",
+        "tool": "vibescript.edit_source",
+    }
+    assert visible["operation_succeeded"] is False
+    terminal = visible["result"]
+    assert terminal["ok"] is False
+    assert terminal["failure_code"] == "NATIVE_SOLVER_FAILED"
+    assert terminal["failure_stage"] == "native_solve"
+    assert terminal["revision"] == "b" * 64
+    assert terminal["next_actions"][0]["tool"] == "vibescript.read_source"
+    assert terminal["error_boundary"]["utf8_bytes"] > 2048
+    assert "_vibecad_value_omitted" not in json.dumps(terminal)
+
+
+def test_concise_source_read_states_current_revision_directly() -> None:
+    result = {
+        "ok": True,
+        "program": "Audit/partdesign/Part",
+        "current_revision": "c" * 64,
+        "accepted_revision": "c" * 64,
+        "source": "result = {}\n",
+        "source_range": {
+            "line_start": 1,
+            "line_end": 1,
+            "total_lines": 1,
+            "complete": True,
+        },
+        "model_state": {"status": "accepted_current"},
+        "_vibecad_source_read_result": True,
+    }
+
+    visible = provider._provider_visible_tool_result(result)
+
+    assert visible["program"] == "Audit/partdesign/Part"
+    assert visible["revision"] == "c" * 64
+    assert visible["state"] == {"status": "accepted_current"}
+
+
+def test_successful_assembly_lifecycle_result_states_solver_scope() -> None:
+    validation_scope = {
+        "scope": "joint_constraint_consistency",
+        "constraints_consistent": True,
+        "mechanical_operation_verified": False,
+        "advisory": "A solved joint graph does not prove proper mechanism operation.",
+        "required_evidence": [
+            "collision_and_clearance",
+            "motion_over_operating_range",
+        ],
+    }
+    result = {
+        "ok": True,
+        "program": "Audit/assembly/Mechanism",
+        "working_revision": "d" * 64,
+        "outputs": [
+            {
+                "name": "Diagnostics",
+                "output_type": "solver_diagnostics",
+            }
+        ],
+        "live_outputs": {
+            "Diagnostics": {
+                "label": "Diagnostics",
+                "output_type": "solver_diagnostics",
+                "assembly_data": {"validation_scope": validation_scope},
+            }
+        },
+        "_vibecad_source_lifecycle_result": True,
+    }
+
+    visible = provider._provider_visible_tool_result(result)
+
+    assert visible["validation_scope"] == validation_scope
+    assert visible["outputs"][0]["validation_scope"] == validation_scope
+    assert visible["validation_scope"]["mechanical_operation_verified"] is False

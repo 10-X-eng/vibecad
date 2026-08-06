@@ -15,6 +15,7 @@ import traceback
 from types import MappingProxyType
 from typing import Any
 
+from VibeCADAssemblySolverPolicy import set_joint_connectors_without_auto_solve
 from vibescript_domain_api import DomainValue, create_domain_api
 import vibescript_worker_progress as worker_progress
 
@@ -196,12 +197,19 @@ def _execute_source(
     previous_trace = sys.gettrace()
     try:
         sys.settrace(trace)
-        with redirect_stdout(output):
-            exec(
-                compile(source, source_filename, "exec"),
-                namespace,
-                namespace,
-            )
+        try:
+            with redirect_stdout(output):
+                exec(
+                    compile(source, source_filename, "exec"),
+                    namespace,
+                    namespace,
+                )
+        except BaseException as exc:
+            # Source-authored diagnostics are useful precisely when execution
+            # fails. Carry the same bounded text to the outer worker failure
+            # report instead of forcing programs to raise it as an exception.
+            setattr(exc, "vibescript_stdout", output.getvalue()[-MAX_STDOUT_CHARS:])
+            raise
     finally:
         sys.settrace(previous_trace)
     result = namespace.get("result")
@@ -730,7 +738,11 @@ def _assembly_worker_validation(
             "App::FeaturePython", f"CandidateJoint{joint_count}"
         )
         JointObject.Joint(joint, JointObject.JointTypes.index(native_type))
-        joint.Proxy.setJointConnectors(joint, references)
+        set_joint_connectors_without_auto_solve(
+            joint,
+            references,
+            preserve_placements=components.values(),
+        )
         joint_count += 1
     document.recompute()
     solver_code = int(assembly.solve(False))
@@ -898,18 +910,25 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         "fem",
         "cam",
         "techdraw",
+        "robot",
     }:
         references = request.get("document_references", [])
         if not isinstance(references, list):
             raise TypeError("document_references must be an array.")
         if domain == "partdesign":
             from vibescript_partdesign_worker import configure_partdesign_references
+            from vibescript_component_worker import configure_component_references
 
             configure_partdesign_references(root, references)
+            configure_component_references(references)
         elif domain == "assembly":
             from vibescript_assembly_worker import configure_assembly_references
 
             configure_assembly_references(root, references)
+        elif domain == "robot":
+            from vibescript_component_worker import configure_component_references
+
+            configure_component_references(references)
         elif domain == "part":
             from vibescript_part_worker import configure_part_references
 
@@ -998,6 +1017,9 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             api=api,
             max_operations=int(request.get("max_operations") or 200_000),
             max_seconds=float(request.get("max_seconds") or 300.0),
+        )
+        (root / "source-stdout.txt").write_text(
+            stdout[-MAX_STDOUT_CHARS:], encoding="utf-8"
         )
         expected_names = [str(item.get("name") or "") for item in expected_outputs]
         if list(result) != expected_names:
@@ -1262,6 +1284,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
 
 def main() -> int:
     result_path = Path(os.environ[RESULT_ENV]).resolve()
+    root: Path | None = None
     try:
         request_path = Path(os.environ[REQUEST_ENV]).resolve()
         root = request_path.parent
@@ -1272,11 +1295,19 @@ def main() -> int:
         payload = _run(request, root)
     except BaseException as exc:
         worker_progress.failed(exc)
+        captured_stdout = str(getattr(exc, "vibescript_stdout", "") or "")
+        stdout_path = root / "source-stdout.txt" if root is not None else None
+        if not captured_stdout and stdout_path is not None and stdout_path.is_file():
+            try:
+                captured_stdout = stdout_path.read_text(encoding="utf-8")
+            except OSError:
+                captured_stdout = ""
         payload = {
             "ok": False,
             "exception_type": exc.__class__.__name__,
             "error": str(exc),
             "traceback": traceback.format_exc(limit=40),
+            "stdout": captured_stdout[-MAX_STDOUT_CHARS:],
         }
         details = getattr(exc, "details", None)
         if isinstance(details, dict):

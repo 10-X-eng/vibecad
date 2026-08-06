@@ -7,17 +7,22 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
+import threading
 
 import pytest
 
 import VibeCADVibeScriptDomainRuntime as runtime
 import VibeCADVibeScriptDomains as domains
+from VibeCADCore import VibeCADService
+import vibescript_domain_worker as domain_worker
 from vibescript_domain_api import DomainValue, create_domain_api
 from vibescript_partdesign_api import PartDesignDomainAPI
+from vibescript_partdesign_worker import _optimal_shape_bounds
+from vibescript_domain_worker import _execute_source
 
 
 PROGRAM_ID = "0123456789abcdef0123456789abcdef"
-OUTPUT_TYPES = ("solid", "shell", "face", "wire", "compound")
+OUTPUT_TYPES = ("solid", "shell", "face", "wire", "compound", "component_link")
 
 
 def _pack():
@@ -47,6 +52,114 @@ def _capture(root: Path, *, operation: str, arguments: dict) -> dict:
         "timeout_seconds": 30.0,
         "memory_limit_bytes": 512 * 1024 * 1024,
     }
+
+
+def test_measurement_bounds_prefer_exact_occ_geometry() -> None:
+    class Bounds:
+        def __init__(self, size: float) -> None:
+            self.XLength = size
+
+    class Shape:
+        BoundBox = Bounds(11.68)
+
+        @staticmethod
+        def optimalBoundingBox(
+            use_triangulation: bool, use_shape_tolerance: bool
+        ) -> Bounds:
+            assert use_triangulation is False
+            assert use_shape_tolerance is False
+            return Bounds(10.0)
+
+    assert _optimal_shape_bounds(Shape()).XLength == 10.0
+
+
+def test_failed_source_retains_bounded_print_output() -> None:
+    with pytest.raises(RuntimeError) as failure:
+        _execute_source(
+            source="print('axis probe: +Z')\nraise RuntimeError('stop')\n",
+            document_name="Diagnostics",
+            document_objects=[],
+            inputs={},
+            api=object(),
+            max_operations=100,
+            max_seconds=1.0,
+        )
+    assert getattr(failure.value, "vibescript_stdout", "") == "axis probe: +Z\n"
+
+
+def test_worker_failure_report_exposes_source_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request_path = tmp_path / "request.json"
+    result_path = tmp_path / "result.json"
+    request_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv(domain_worker.REQUEST_ENV, str(request_path))
+    monkeypatch.setenv(domain_worker.RESULT_ENV, str(result_path))
+    monkeypatch.setattr(domain_worker, "_resource_limits", lambda _request: None)
+    monkeypatch.setattr(domain_worker.worker_progress, "failed", lambda _exc: None)
+
+    def fail(_request, _root):
+        error = RuntimeError("validation stopped")
+        setattr(error, "vibescript_stdout", "measured clearance=0.12 mm\n")
+        raise error
+
+    monkeypatch.setattr(domain_worker, "_run", fail)
+    assert domain_worker.main() == 1
+    report = json.loads(result_path.read_text(encoding="utf-8"))
+    assert report["error"] == "validation stopped"
+    assert report["stdout"] == "measured clearance=0.12 mm\n"
+
+
+def test_reference_snapshot_cache_reuses_only_unchanged_dependencies() -> None:
+    copies = []
+
+    class Document:
+        Uid = "document-uid"
+
+    class Shape:
+        def copy(self, copy_geometry=True, copy_mesh=False):
+            assert copy_geometry is False
+            assert copy_mesh is False
+            detached = object()
+            copies.append(detached)
+            return detached
+
+    class Object:
+        def __init__(self, name: str) -> None:
+            self.Document = Document()
+            self.Name = name
+            self.Shape = Shape()
+            self.OutListRecursive = []
+            self.LinkedObject = None
+
+    dependency = Object("Dependency")
+    source = Object("ImportedMotor")
+    source.OutListRecursive = [dependency]
+    service = object.__new__(VibeCADService)
+    service._vibescript_reference_cache_lock = threading.RLock()
+    service._vibescript_reference_snapshots = {}
+
+    first = service.capture_vibescript_reference_shape(source)
+    service.store_vibescript_reference_artifact(
+        first["cache_token"],
+        {
+            "brep_bytes": b"exact-brep",
+            "brep_sha256": "a" * 64,
+            "shape_type": "Solid",
+            "facts": {"solids": 1},
+        },
+    )
+    second = service.capture_vibescript_reference_shape(source)
+    assert second["cache_hit"] is True
+    assert second["detached_shape"] is first["detached_shape"]
+    assert second["artifact"]["brep_bytes"] == b"exact-brep"
+    assert len(copies) == 1
+
+    service.invalidate_vibescript_reference_snapshots(dependency)
+    third = service.capture_vibescript_reference_shape(source)
+    assert third["cache_hit"] is False
+    assert third["detached_shape"] is not first["detached_shape"]
+    assert len(copies) == 2
 
 
 def _write_v1_program(root: Path) -> Path:
@@ -192,6 +305,22 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     assert "axis_direction" in description["api_details"]["body"]["interfaces"][
         "shape"
     ]["StableName"]["selection"]
+    placement = description["api_details"]["component"]["placement"]
+    assert list(placement["forms"]) == [
+        "translation",
+        "quaternion",
+        "axis_angle",
+    ]
+    assert placement["allowed_keys"] == [
+        "position",
+        "rotation",
+        "axis",
+        "angle_degrees",
+    ]
+    assert "4x4 matrices are invalid" in placement["rule"]
+    assert "OCC optimal geometry" in description["api_details"]["measure"][
+        "bounds_contract"
+    ]
     gear_description = next(
         item["description"]
         for item in description["runtime_exports"]
@@ -233,7 +362,8 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     )
     assert "Do not use api.loft as a shortcut" in operation_selection
     assert "subtractive" not in exports["loft"]["signature"]
-    assert "standalone solid is accepted only" in exports["body"]["description"]
+    assert "one connected solid" in exports["body"]["description"]
+    assert "stable parametric Design Body" in exports["body"]["description"]
 
 
 def test_semantic_interface_frame_is_explicit_and_orthonormal() -> None:
@@ -370,6 +500,23 @@ def test_partdesign_sketch_placement_and_geometry_checks_are_explicit() -> None:
         "x_direction": (1.0, 0.0, 0.0),
     }
     assert profile.properties["plane_offset_mm"] == 0.0
+    oriented_box = api.box(
+        10,
+        8,
+        6,
+        direction=[0, 1, 0],
+        x_direction=[1, 0, 0],
+    )
+    assert oriented_box.properties["direction"] == (0.0, 1.0, 0.0)
+    assert oriented_box.properties["x_direction"] == (1.0, 0.0, 0.0)
+    with pytest.raises(ValueError, match="must not be parallel to direction"):
+        api.wedge(
+            10,
+            8,
+            6,
+            direction=[0, 1, 0],
+            x_direction=[0, 2, 0],
+        )
     with pytest.raises(ValueError, match="map_mode is required with support"):
         api.sketch(
             [api.circle([0, 0], 2)],
@@ -407,6 +554,7 @@ def test_partdesign_sketch_placement_and_geometry_checks_are_explicit() -> None:
         other=second,
         expected=2,
     )
+    explicit_distance = api.minimum_distance(first, second, expected=2)
     thickness = api.measure(
         first,
         "minimum_wall_thickness_mm",
@@ -415,6 +563,9 @@ def test_partdesign_sketch_placement_and_geometry_checks_are_explicit() -> None:
         expected=10,
     )
     assert distance.properties["other"] is second
+    assert explicit_distance.operation == "measure"
+    assert explicit_distance.arguments[1] == "minimum_distance_mm"
+    assert explicit_distance.properties["other"] is second
     assert thickness.properties["selection"]["expected_count"] == 1
     assert thickness.properties["other_selection"]["expected_count"] == 1
 
@@ -440,6 +591,10 @@ def test_partdesign_sketch_placement_and_geometry_checks_are_explicit() -> None:
     assert set(details["constraint"]["forms"]) == set(details["constraint"]["kinds"])
     assert "arbitrary_placement" in details["sketch"]
     assert "minimum_distance_mm" in details["measure"]["pair_quantities"]
+    assert "api.minimum_distance" in details["measure"]["pair_quantities"][
+        "minimum_distance_mm"
+    ]
+    assert "api.subshape" in details["measure"]["minimum_distance_example"]
     assert details["material"]["catalog_tool"] == "material_catalog.search"
 
 
@@ -642,6 +797,17 @@ def test_hole_validates_cut_geometry_before_native_execution() -> None:
         operation="add_material",
     )
     profile = api.sketch([api.circle([0, 0], 1)], z_offset_mm=5)
+    reversed_hole = api.hole(
+        base,
+        profile,
+        2,
+        depth_mm=3,
+        reverse=True,
+        midplane=True,
+    )
+    assert reversed_hole.properties["reverse"] is True
+    assert reversed_hole.properties["midplane"] is True
+    assert reversed_hole.properties["direction"] == "symmetric"
 
     with pytest.raises(ValueError, match="greater than diameter_mm"):
         api.hole(
@@ -659,6 +825,71 @@ def test_hole_validates_cut_geometry_before_native_execution() -> None:
             through_all=True,
             countersink_diameter_mm=4,
             countersink_angle_degrees=180,
+        )
+
+
+def test_linear_feature_direction_is_consistent_across_additions_and_cuts() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    assert "direction: 'str | None' = None" in str(inspect.signature(api.extrude))
+    assert "direction: 'str | None' = None" in str(inspect.signature(api.hole))
+    assert "XZ maps [u,v] to [X,Z] with normal -Y" in inspect.getdoc(api.sketch)
+    assert "same meaning for additions and cuts" in inspect.getdoc(api.extrude)
+    profile = api.sketch([api.circle([0, 0], 5)])
+    base = api.extrude(
+        profile,
+        5,
+        operation="add_material",
+        direction="along_normal",
+    )
+    opposite_addition = api.extrude(
+        profile,
+        2,
+        operation="add_material",
+        base=base,
+        direction="opposite_normal",
+    )
+    along_cut = api.extrude(
+        profile,
+        operation="remove_material",
+        base=base,
+        through_all=True,
+        direction="along_normal",
+    )
+    symmetric_hole = api.hole(
+        base,
+        api.sketch([api.point([0, 0])], require_closed_profile=False),
+        2,
+        through_all=True,
+        direction="symmetric",
+    )
+
+    assert base.properties["direction"] == "along_normal"
+    assert base.properties["reverse"] is False
+    assert opposite_addition.properties["direction"] == "opposite_normal"
+    assert opposite_addition.properties["reverse"] is True
+    assert along_cut.properties["direction"] == "along_normal"
+    assert along_cut.properties["reverse"] is True
+    assert symmetric_hole.properties["direction"] == "symmetric"
+    assert symmetric_hole.properties["midplane"] is True
+    hole_profile = symmetric_hole.arguments[1]
+    assert hole_profile.arguments[0][0].operation == "point"
+    assert hole_profile.arguments[0][0].properties["construction"] is False
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        api.extrude(
+            profile,
+            5,
+            operation="add_material",
+            direction="along_normal",
+            reverse=True,
+        )
+    with pytest.raises(ValueError, match="along_normal, opposite_normal, or symmetric"):
+        api.hole(
+            base,
+            profile,
+            2,
+            through_all=True,
+            direction="guess",
         )
 
 
@@ -987,6 +1218,48 @@ def test_partdesign_rejects_cross_domain_graphs_and_transient_topology_names() -
         )
 
 
+def test_geometric_selection_accepts_find_subelements_public_units() -> None:
+    api = PartDesignDomainAPI(
+        PartDesignDomainAPI.exported_names,
+        OUTPUT_TYPES,
+    )
+    base = api.extrude(
+        api.sketch([api.circle([0, 0], 5)]),
+        5,
+        operation="add_material",
+    )
+    result = api.fillet(
+        base,
+        {
+            "type": "query",
+            "element_type": "edge",
+            "expected_count": 1,
+            "geometry_type": "Circle",
+            "radius_mm": 5.0,
+            "radius_tolerance_mm": 0.01,
+            "near_point": [5.0, 0.0, 0.0],
+            "max_distance_mm": 1.0,
+        },
+        0.5,
+    )
+    selection = result.arguments[1]
+    assert selection["radius"] == 5.0
+    assert selection["radius_tolerance"] == 0.01
+    assert selection["max_distance"] == 1.0
+
+    with pytest.raises(ValueError, match="unsupported fields.*mystery"):
+        api.fillet(
+            base,
+            {
+                "type": "query",
+                "element_type": "edge",
+                "expected_count": 1,
+                "mystery": 1,
+            },
+            0.5,
+        )
+
+
 def test_v1_saved_data_migrates_to_a_non_executable_v2_view(tmp_path: Path) -> None:
     directory = _write_v1_program(tmp_path)
     migrated = domains.migrate_program_manifest(
@@ -999,7 +1272,7 @@ def test_v1_saved_data_migrates_to_a_non_executable_v2_view(tmp_path: Path) -> N
     assert migrated["domain"] == "partdesign"
     assert migrated["artifact_directory"] == str(directory)
     assert migrated["migration_required"] is True
-    assert migrated["migration_action"] == ("vibescript.partdesign.reconfigure_program")
+    assert migrated["migration_action"] == "vibescript.edit_source"
     assert migrated["accepted_revision"] == "saved-v1-revision"
     assert migrated["live_outputs"]["Part"]["object_name"] == "SavedPartResult"
 
@@ -1029,7 +1302,11 @@ def test_v1_source_cannot_edit_set_inputs_or_execute(tmp_path: Path) -> None:
         )
         assert failure.value.payload["retry"]["required_changes"] == [
             {
-                "tool": "vibescript.partdesign.reconfigure_program",
+                "tool": "vibescript.edit_source",
+                "arguments": {
+                    "source_id": PROGRAM_ID,
+                    "expected_revision": "saved-v1-revision",
+                },
                 "expected_revision": "saved-v1-revision",
                 "replace": [
                     "source",
@@ -1040,6 +1317,56 @@ def test_v1_source_cannot_edit_set_inputs_or_execute(tmp_path: Path) -> None:
             }
         ]
     assert not (tmp_path / "vibescript" / PROGRAM_ID / "program.json").exists()
+
+
+def test_edit_source_atomically_updates_inputs_schema_and_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = (
+        "profile = api.sketch([api.circle([0,0], inputs['radius'])])\n"
+        "feature = api.extrude(profile, inputs['height'], operation='add_material')\n"
+        "result = {'Part': api.body(feature)}\n"
+    )
+    _directory, revision = _write_v2_program(tmp_path, source)
+    updated = source.replace(
+        "result = {'Part': api.body(feature)}",
+        "result = {'RenamedPart': api.body(feature, label=inputs['label'])}",
+    )
+    monkeypatch.setattr(runtime, "_freecadcmd", lambda _home: Path("/FreeCADCmd"))
+    prepared = runtime.prepare_candidate(
+        _capture(
+            tmp_path,
+            operation="edit_source",
+            arguments={
+                "program_id": PROGRAM_ID,
+                "expected_revision": revision,
+                "source": updated,
+                "inputs": {
+                    "radius": 4.0,
+                    "height": 5.0,
+                    "label": "Updated part",
+                },
+                "expected_outputs": [
+                    {"name": "RenamedPart", "type": "solid"}
+                ],
+            },
+        )
+    )
+
+    assert prepared["source"] == updated
+    assert prepared["inputs"]["label"] == "Updated part"
+    assert prepared["input_schema"]["properties"]["label"] == {
+        "type": "string",
+    }
+    assert prepared["input_schema"]["properties"]["radius"] == {
+        "type": "number",
+        "exclusiveMinimum": 0,
+    }
+    assert prepared["expected_outputs"] == [
+        {"name": "RenamedPart", "type": "solid"}
+    ]
+    runtime.abandon_prepared_candidate(prepared)
 
 
 def test_reconfigure_stages_v2_in_the_existing_saved_program_directory(

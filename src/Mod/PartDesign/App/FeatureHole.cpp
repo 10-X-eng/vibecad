@@ -2042,6 +2042,19 @@ App::DocumentObjectExecReturn* Hole::buildHoleCutters(
         prototype = threadedPrototype;
     }
 
+    // The inherited Midplane property is part of Hole's public sketch-based
+    // contract, but the cutter historically remained one-sided.  Center the
+    // complete cutter on the profile plane so a symmetric hole actually
+    // removes every intersected material region on both sides.  This applies
+    // before findHoles() copies the prototype to each point/circle center.
+    if (Midplane.getValue()) {
+        gp_Vec offset = zDir;
+        offset.Multiply(length / 2.0);
+        gp_Trsf translation;
+        translation.SetTranslation(offset);
+        prototype.Move(TopLoc_Location(translation));
+    }
+
     holes.clear();
     compound = findHoles(holes, profileShape, prototype);
     if (holes.empty()) {

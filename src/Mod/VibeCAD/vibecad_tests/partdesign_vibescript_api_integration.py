@@ -51,11 +51,16 @@ from VibeCADVibeScriptDomains import (  # noqa: E402
     program_revision,
 )
 from VibeCADVibeScriptDomainPublication import (  # noqa: E402
+    PROP_INPUT_OBJECTS,
     PROP_OUTPUT_TYPE,
+    PROP_PARTDESIGN_COMPONENT_OCCURRENCES,
+    PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES,
     PROP_PARTDESIGN_MATERIAL_BASELINE,
+    _delete_partdesign_program,
     _material_target_snapshot,
     _restore_material_target_snapshots,
     _set_physical_material_preserving_view,
+    migrate_partdesign_component_occurrence_links,
     publish_candidate,
 )
 from vibescript_domain_api import create_domain_api  # noqa: E402
@@ -712,6 +717,11 @@ def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
         stitch_volume_check = api.measure(
             stitching, "volume_mm3", minimum=70.0
         )
+        distance_check = api.minimum_distance(
+            box,
+            api.box(1, 1, 1, origin=[6, 0, 0]),
+            expected=2,
+        )
         face_profile = planar_face(
             api, [[0, 0, 0], [3, 0, 0], [3, 2, 0], [0, 2, 0]]
         )
@@ -768,7 +778,13 @@ def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
             ("face", face_profile, "face", {"face"}, ()),
             ("shell", shell, "shell", {"shell"}, ()),
             ("solid", direct_solid, "solid", {"solid"}, ()),
-            ("compound", stitching, "compound", {"compound", "loft", "measure"}, (stitch_check, stitch_volume_check)),
+            (
+                "compound",
+                stitching,
+                "compound",
+                {"compound", "loft", "measure", "minimum_distance"},
+                (stitch_check, stitch_volume_check, distance_check),
+            ),
             ("subshape", bottom_face, "face", {"subshape", "find_subelements"}, ()),
             ("extrude", api.extrude(face_profile, 4, operation="new_solid", vector=[0, 0, 1]), "solid", {"extrude"}, ()),
             ("extrude_surface", api.extrude(api.line_3d([0, 0, 0], [3, 0, 0]), 2, operation="new_surface", vector=[0, 0, 1]), "face", {"extrude"}, ()),
@@ -885,6 +901,40 @@ def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
             covered.update(case_exports)
         finally:
             App.closeDocument(document.Name)
+    component_reference = {
+        "document_uid": "partdesign-api-fixture",
+        "object_name": "MotorDefinition",
+    }
+    component_interfaces = {
+        "Mount": {
+            "selection": {
+                "type": "frame",
+                "origin": [0, 0, 0],
+                "axis_direction": [0, 0, 1],
+                "x_direction": [1, 0, 0],
+            },
+            "connector": {
+                "kind": "frame",
+                "allowed_joints": ["fixed"],
+                "compatibility": "FIXTURE_MOUNT",
+            },
+        }
+    }
+    occurrence = api.component(
+        component_reference,
+        placement=[1, 2, 3],
+        interfaces=component_interfaces,
+    )
+    repeated = api.instances(
+        component_reference,
+        [[0, 0, 0], [10, 0, 0]],
+        interfaces=component_interfaces,
+    )
+    assert occurrence.output_type == "component_link"
+    assert occurrence.to_payload()["properties"]["interfaces"] == component_interfaces
+    assert repeated[0].to_payload()["properties"]["interfaces"] == component_interfaces
+    assert len(repeated) == 2
+    covered.update({"component", "instances"})
     missing = set(pack.api_exports) - covered
     assert not missing, f"Unexercised Part Design VibeScript exports: {sorted(missing)}"
     return evidence
@@ -930,6 +980,235 @@ def _exercise_material_guardrails(root: Path, pack) -> dict:
         raise AssertionError("A no-effect additive feature passed material validation.")
     finally:
         App.closeDocument(document.Name)
+
+
+def _exercise_placement_and_hole_direction(root: Path, pack) -> dict:
+    """Prove explicit primitive roll and actionable native hole direction evidence."""
+
+    import FreeCAD as App
+
+    oriented_root = root / "explicit-primitive-frame"
+    (oriented_root / "outputs").mkdir(parents=True)
+    oriented_document = App.newDocument("PartDesignExplicitPrimitiveFrame")
+    try:
+        api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+        oriented = api.box(
+            2,
+            3,
+            4,
+            origin=[10, 20, 30],
+            direction=[0, 1, 0],
+            x_direction=[1, 0, 0],
+        )
+        outputs, _validation = validate_and_build_partdesign(
+            oriented_document,
+            {"Result": api.publish(oriented)},
+            [{"name": "Result", "type": "solid"}],
+            oriented_root,
+            max_shape_subelements=32,
+        )
+        assert outputs[0]["facts"]["bounds_mm"] == {
+            "min": [10.0, 20.0, 27.0],
+            "max": [12.0, 24.0, 30.0],
+            "size": [2.0, 4.0, 3.0],
+        }
+    finally:
+        App.closeDocument(oriented_document.Name)
+
+    failed_root = root / "hole-direction-failure"
+    (failed_root / "outputs").mkdir(parents=True)
+    failed_document = App.newDocument("PartDesignHoleDirectionFailure")
+    try:
+        api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 5)]),
+            8,
+            operation="add_material",
+        )
+        far_profile = api.sketch(
+            [api.circle([0, 0], 1)],
+            plane_offset_mm=108,
+        )
+        failed_hole = api.hole(base, far_profile, 2, depth_mm=4)
+        try:
+            validate_and_build_partdesign(
+                failed_document,
+                {"Result": api.body(failed_hole)},
+                [{"name": "Result", "type": "solid"}],
+                failed_root,
+                max_shape_subelements=32,
+            )
+        except PartDesignCandidateError as error:
+            assert error.details["stage"] == "feature_postcondition"
+            assert error.details["profile_source_placement"] == {
+                "plane": "XY",
+                "plane_offset_mm": 108.0,
+            }
+            assert error.details["profile_frame"]["origin_mm"] == [0.0, 0.0, 108.0]
+            direction = error.details["attempted_cut_directions"][0]
+            assert direction["direction_global"] == [-0.0, -0.0, -1.0]
+            assert direction["base_bounds_projection_from_profile_mm"] == [100.0, 108.0]
+            assert direction["requested_reach_mm"] == 4.0
+            assert direction["axial_reach_can_intersect_bounds"] is False
+            failure_evidence = dict(error.details)
+        else:
+            raise AssertionError("A hole that cannot reach its base passed validation.")
+    finally:
+        App.closeDocument(failed_document.Name)
+
+    reversed_root = root / "reversed-hole"
+    (reversed_root / "outputs").mkdir(parents=True)
+    reversed_document = App.newDocument("PartDesignReversedHole")
+    try:
+        api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 5)]),
+            8,
+            operation="add_material",
+        )
+        bottom_profile = api.sketch(
+            [api.point([0, 0])],
+            require_closed_profile=False,
+        )
+        reversed_hole = api.hole(
+            base,
+            bottom_profile,
+            2,
+            depth_mm=4,
+            direction="along_normal",
+        )
+        outputs, _validation = validate_and_build_partdesign(
+            reversed_document,
+            {"Result": api.body(reversed_hole)},
+            [{"name": "Result", "type": "solid"}],
+            reversed_root,
+            max_shape_subelements=32,
+        )
+        assert outputs[0]["partdesign_data"]["tip_type_id"] == "PartDesign::Hole"
+        reversed_volume = float(outputs[0]["facts"]["volume_mm3"])
+    finally:
+        App.closeDocument(reversed_document.Name)
+
+    symmetric_root = root / "single-point-symmetric-through-hole"
+    (symmetric_root / "outputs").mkdir(parents=True)
+    symmetric_document = App.newDocument("PartDesignSymmetricBoundaryHole")
+    try:
+        api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+        wall_profile = api.sketch(
+            [
+                api.line([-38, 0], [38, 0]),
+                api.line([38, 0], [38, 8]),
+                api.line([38, 8], [-38, 8]),
+                api.line([-38, 8], [-38, 0]),
+            ],
+            plane="XY",
+            plane_offset_mm=8,
+        )
+        wall = api.extrude(
+            wall_profile,
+            90,
+            operation="add_material",
+            direction="along_normal",
+        )
+        one_center = api.sketch(
+            [api.point([0, 53])],
+            plane="XZ",
+            plane_offset_mm=-8,
+            require_closed_profile=False,
+        )
+        boundary_hole = api.hole(
+            wall,
+            one_center,
+            42,
+            through_all=True,
+            direction="symmetric",
+        )
+        outputs, _validation = validate_and_build_partdesign(
+            symmetric_document,
+            {"Result": api.body(boundary_hole)},
+            [{"name": "Result", "type": "solid"}],
+            symmetric_root,
+            max_shape_subelements=32,
+        )
+        assert outputs[0]["partdesign_data"]["tip_type_id"] == "PartDesign::Hole"
+        symmetric_volume = float(outputs[0]["facts"]["volume_mm3"])
+        assert symmetric_volume < 76.0 * 8.0 * 90.0
+    finally:
+        App.closeDocument(symmetric_document.Name)
+
+    stepped_root = root / "symmetric-through-hole-across-material-step"
+    (stepped_root / "outputs").mkdir(parents=True)
+    stepped_document = App.newDocument("PartDesignSymmetricSteppedHole")
+    try:
+        api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+        wall_profile = api.sketch(
+            [
+                api.line([-20, 0], [20, 0]),
+                api.line([20, 0], [20, 40]),
+                api.line([20, 40], [-20, 40]),
+                api.line([-20, 40], [-20, 0]),
+            ],
+            plane="XZ",
+        )
+        wall = api.extrude(
+            wall_profile,
+            8,
+            operation="add_material",
+            direction="opposite_normal",
+        )
+        boss_profile = api.sketch(
+            [api.circle([0, 20], 9)],
+            plane="XZ",
+            plane_offset_mm=-8,
+        )
+        stepped_base = api.extrude(
+            boss_profile,
+            6,
+            operation="add_material",
+            base=wall,
+            direction="opposite_normal",
+        )
+        hole_locations = api.sketch(
+            [api.point([0, 20])],
+            plane="XZ",
+            plane_offset_mm=-8,
+            require_closed_profile=False,
+        )
+        stepped_hole = api.hole(
+            stepped_base,
+            hole_locations,
+            6.4,
+            through_all=True,
+            direction="symmetric",
+        )
+        outputs, _validation = validate_and_build_partdesign(
+            stepped_document,
+            {"Result": api.body(stepped_hole)},
+            [{"name": "Result", "type": "solid"}],
+            stepped_root,
+            max_shape_subelements=32,
+        )
+        stepped_volume = float(outputs[0]["facts"]["volume_mm3"])
+        expected_volume = (
+            40.0 * 40.0 * 8.0
+            + math.pi * 9.0 * 9.0 * 6.0
+            - math.pi * 3.2 * 3.2 * 14.0
+        )
+        assert abs(stepped_volume - expected_volume) <= 1.0e-5
+    finally:
+        App.closeDocument(stepped_document.Name)
+
+    return {
+        "oriented_bounds_verified": True,
+        "failed_hole_stage": str(failure_evidence["stage"]),
+        "failed_hole_direction_verified": True,
+        "point_hole_explicit_direction_verified": True,
+        "reversed_hole_volume_mm3": reversed_volume,
+        "single_point_symmetric_through_hole_verified": True,
+        "single_point_symmetric_volume_mm3": symmetric_volume,
+        "symmetric_stepped_through_hole_verified": True,
+        "symmetric_stepped_volume_mm3": stepped_volume,
+    }
 
 
 def _exercise_geometry_verification(root: Path, pack) -> dict:
@@ -990,6 +1269,7 @@ def _exercise_geometry_verification(root: Path, pack) -> dict:
                 other=separated,
                 expected=2,
             ),
+            api.minimum_distance(block, separated, expected=2),
             api.measure(
                 block,
                 "interference_volume_mm3",
@@ -1161,6 +1441,38 @@ result = {'SupportedBoss': api.body(feature, label='Supported boss body')}
         body_name = publication["native_history"]["body_objects"]["SupportedBoss"]
         body = document.getObject(body_name)
         assert body is not None
+        assert body.Label == "Supported boss body"
+        assert publication["live_outputs"]["SupportedBoss"]["label"] == (
+            "Supported boss body"
+        )
+        inspected_live = next(
+            item
+            for item in _live_programs(document, "partdesign")
+            if item["program_id"] == str(prepared["program_id"])
+        )
+        inspected_output = next(
+            item
+            for item in inspected_live["outputs"]
+            if item["name"] == "SupportedBoss"
+        )
+        assert inspected_output["label"] == "Supported boss body"
+        from VibeCADComponentCatalog import _live_component_candidate
+
+        catalog_output = _live_component_candidate(
+            document,
+            document,
+            document.getObject(
+                accepted["live_outputs"]["SupportedBoss"]["object_name"]
+            ),
+        )
+        assert catalog_output is not None
+        assert catalog_output["label"] == "Supported boss body"
+        assert all(
+            _live_component_candidate(document, document, obj) is None
+            for obj in document.Objects
+            if str(getattr(obj, "TypeId", "") or "")
+            == "PartDesign::DesignBodyState"
+        )
         assert body.Tip is not None
         assert body.Tip.TypeId == "PartDesign::DesignBodyPublication"
         sketch_evidence = publication["live_outputs"]["SupportedBoss"][
@@ -1365,11 +1677,20 @@ result = {
         assert body.Tip.CurrentState.Operation is operation
         assert list(operation.ProgramOutputKeys) == ["UtilityBlade"]
         assert list(operation.ProgramOutputTypes) == ["solid"]
-        assert not [
+        root_object = next(
+            obj for obj in document.Objects if role_of(obj) == ROLE_MODEL
+        )
+        restored_sketches = [
             obj
             for obj in document.Objects
             if obj.TypeId == "Sketcher::SketchObject"
         ]
+        assert [str(obj.Label) for obj in restored_sketches] == [
+            "Lower Face Blade Sketch",
+            "Cutting Edge Blade Sketch",
+            "Upper Face Blade Sketch",
+        ]
+        assert all(obj in list(root_object.Group) for obj in restored_sketches)
         document.recompute()
         assert body.Shape.isValid() and body.Shape.Volume > 0.0
         published = document.getObject(stable_output)
@@ -1379,20 +1700,23 @@ result = {
             1.0e-7,
             abs(published.Shape.Volume) * 1.0e-9,
         )
-        root_object = next(
-            obj for obj in document.Objects if role_of(obj) == ROLE_MODEL
-        )
         document.openTransaction("Remove VibeScript Design operation")
         removed = PartDesign.removeDesignOperation(operation)
         document.commitTransaction()
         assert removed == [body_name]
         assert document.getObject(native["operation_object"]) is None
         assert document.getObject(body_name) is None
-        assert not [
+        retained_sketches = [
             obj
             for obj in document.Objects
             if obj.TypeId == "Sketcher::SketchObject"
         ]
+        assert [str(obj.Label) for obj in retained_sketches] == [
+            "Lower Face Blade Sketch",
+            "Cutting Edge Blade Sketch",
+            "Upper Face Blade Sketch",
+        ]
+        assert all(obj in list(root_object.Group) for obj in retained_sketches)
 
         repair = _capture(
             {
@@ -1430,11 +1754,17 @@ result = {
         assert repaired_body is not None
         assert repaired_body.Tip.TypeId == "PartDesign::DesignBodyPublication"
         assert repaired_body.Tip.CurrentState.Operation is repaired_operation
-        assert not [
+        repaired_sketches = [
             obj
             for obj in document.Objects
             if obj.TypeId == "Sketcher::SketchObject"
         ]
+        assert [str(obj.Label) for obj in repaired_sketches] == [
+            "Lower Face Blade Sketch",
+            "Cutting Edge Blade Sketch",
+            "Upper Face Blade Sketch",
+        ]
+        assert all(obj in list(root_object.Group) for obj in repaired_sketches)
         document.recompute()
         assert repaired_body.Shape.isValid()
         portable = decode_document_program_contract(
@@ -1629,10 +1959,11 @@ def _assert_partdesign_timeline_graph(
         abs(published.Shape.Volume) * 1.0e-9,
     )
 
-    # Worker-side Pad/Pocket/Sketch objects are an execution detail. The
-    # editable source program is the one semantic History operation, and only
-    # its stable physical Body result is retained in the authoring document.
-    generated_legacy_features = [
+    # The source program remains one semantic History operation, while its
+    # validated native graph is retained under its source component. Sketches
+    # therefore remain visible in the model browser without becoming duplicate
+    # timeline operations or competing viewport solids.
+    restored_source_features = [
         obj
         for obj in document.Objects
         if obj.TypeId
@@ -1644,7 +1975,24 @@ def _assert_partdesign_timeline_graph(
         and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
         == program_id
     ]
-    assert generated_legacy_features == []
+    restored_sketches = [
+        obj
+        for obj in restored_source_features
+        if obj.TypeId == "Sketcher::SketchObject"
+    ]
+    restored_solids = [
+        obj
+        for obj in restored_source_features
+        if obj.TypeId in {"PartDesign::Pad", "PartDesign::Pocket"}
+    ]
+    assert len(restored_sketches) == 2
+    assert all(int(obj.GeometryCount) > 0 for obj in restored_sketches)
+    assert all(
+        not obj.Shape.isNull() and obj.Shape.isValid()
+        for obj in restored_solids
+    )
+    assert all(obj in list(root.Group) for obj in restored_source_features)
+    assert all(obj not in timeline_operations for obj in restored_source_features)
 
     pack = get_vibescript_pack("PartDesignWorkbench")
     assert pack is not None
@@ -2025,18 +2373,6 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         identity,
     )
     assert "through_all=True" in str(reopened_graph["source"])
-    assert not [
-        obj
-        for obj in reopened.Objects
-        if obj.TypeId
-        in {
-            "Sketcher::SketchObject",
-            "PartDesign::Pad",
-            "PartDesign::Pocket",
-        }
-        and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
-        == program_id
-    ]
     reopened_consumers = [reopened.getObject(name) for name in consumer_names]
     assert all(item is not None for item in reopened_consumers)
     _assert_consumers(reopened, reopened_consumers, reopened_published)
@@ -2116,6 +2452,17 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         )
     }
     implementation_names.add(str(reopened_root.Name))
+    body_containment_names: set[str] = set()
+
+    def collect_body_containment(obj) -> None:
+        name = str(getattr(obj, "Name", "") or "")
+        if not name or name in body_containment_names:
+            return
+        body_containment_names.add(name)
+        for child in list(getattr(obj, "Group", []) or []):
+            collect_body_containment(child)
+
+    collect_body_containment(reopened.getObject(str(pre_delete_state["body"])))
     deletion = prepare_delete(delete_capture)
     deletion_publication = adapter.delete(service, deletion, deletion["manifest"])
     deleted = finish_delete(deletion, deletion_publication)
@@ -2123,6 +2470,11 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     assert reopened.getObject(identity) is None
     assert not {
         name for name in implementation_names if reopened.getObject(name) is not None
+    }
+    assert not {
+        name
+        for name in body_containment_names
+        if reopened.getObject(name) is not None
     }
     assert not LocalPath(deletion["program_directory"]).exists()
     reopened.undo()
@@ -2137,6 +2489,44 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     assert not {
         name for name in implementation_names if reopened.getObject(name) is not None
     }
+    assert not {
+        name
+        for name in body_containment_names
+        if reopened.getObject(name) is not None
+    }
+    # Recover the exact partial state produced by an interrupted historical
+    # deletion: the program container and its private publication target are
+    # gone, while the stable link and native Design operation remain. Both the
+    # editor and History delete commands must be able to finish this lifecycle.
+    reopened.undo()
+    restored_root = next(
+        obj
+        for obj in reopened.Objects
+        if role_of(obj) == ROLE_MODEL
+        and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+        == program_id
+    )
+    reopened.openTransaction("Simulate interrupted VibeScript deletion")
+    reopened.removeObject(str(restored_root.Name))
+    reopened.commitTransaction()
+    assert reopened.getObject(str(restored_root.Name)) is None
+    assert reopened.getObject(identity) is not None
+    assert reopened.getObject(str(pre_delete_state["operation"])) is not None
+    rootless_deletion = _delete_partdesign_program(
+        reopened,
+        {"program_id": program_id},
+    )
+    assert rootless_deletion["ok"] is True
+    assert reopened.getObject(identity) is None
+    assert not [
+        obj
+        for obj in reopened.Objects
+        if str(getattr(obj, "ProgramId", "") or "") == program_id
+        or str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+        == program_id
+        or str(getattr(obj, "VibeCADVibeScriptProgramId", "") or "")
+        == program_id
+    ]
     App.closeDocument(reopened.Name)
     return {
         "program_id": program_id,
@@ -2144,8 +2534,637 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         "failed_candidate_retained": failed_prepared["revision"],
         "unsafe_reference_rejected": True,
         "save_reopen_regenerated": True,
+        "rootless_delete_recovered": True,
         "deleted": [item["object_name"] for item in deleted["deleted_objects"]],
     }
+
+
+def _exercise_component_occurrence(root: Path, pack) -> dict:
+    """Publish, reopen, and delete one reusable linked occurrence."""
+
+    import FreeCAD as App
+    import Part
+    from pathlib import Path as LocalPath
+
+    document = App.newDocument("PartDesignComponentOccurrence")
+    document.UndoMode = True
+    source = document.addObject("Part::Feature", "MotorDefinition")
+    source.Label = "Catalog motor"
+    source.Shape = Part.makeBox(20, 10, 8)
+    source_name = str(source.Name)
+    document.recompute()
+    service = _Service(document, root)
+    base_capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": service.provider_document_revision(),
+        "document_objects": [
+            {
+                "name": str(source.Name),
+                "label": str(source.Label),
+                "type_id": str(source.TypeId),
+            }
+        ],
+        "surface": resolve_modeling_surface(
+            "PartDesignWorkbench", "vibescript"
+        ).summary(),
+        "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "motor": {
+                "type": "object",
+                "x-vibecad-reference": True,
+                "properties": {
+                    "document_uid": {"type": "string"},
+                    "object_name": {"type": "string"},
+                },
+                "required": ["document_uid", "object_name"],
+                "additionalProperties": False,
+            }
+        },
+        "required": ["motor"],
+        "additionalProperties": False,
+    }
+    inputs = {
+        "motor": {
+            "document_uid": str(document.Uid),
+            "object_name": str(source.Name),
+        }
+    }
+    initial_source = (
+        "motor = api.component(inputs['motor'], interfaces={\n"
+        "    'Mount': {\n"
+        "        'selection': {'type':'frame', 'origin':[0,0,0], "
+        "'axis_direction':[0,0,1], 'x_direction':[1,0,0]},\n"
+        "        'connector': {'kind':'frame', 'allowed_joints':['fixed'], "
+        "'compatibility':'FIXTURE_MOUNT'},\n"
+        "    },\n"
+        "}, label='Motor occurrence')\n"
+        "result = {'Motor': motor}\n"
+    )
+    active_document = document
+    try:
+        prepared, publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="create_program",
+                arguments={
+                    "program_name": "Placed motor",
+                    "source": initial_source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": [
+                        {"name": "Motor", "type": "component_link"}
+                    ],
+                },
+            ),
+            service,
+        )
+        assert prepared["reference_capture_mode"] == "component_identity"
+        assert all(
+            item.get("artifact_kind") == "component_identity"
+            for item in prepared["resolved_references"]
+        )
+        occurrence_name = accepted["live_outputs"]["Motor"]["object_name"]
+        occurrence = document.getObject(occurrence_name)
+        assert occurrence is not None
+        assert occurrence.TypeId == "App::Link"
+        assert occurrence.LinkedObject is source
+        assert occurrence.Placement.Base == App.Vector(0, 0, 0)
+        assert source.Visibility is False
+        assert occurrence.Visibility is True
+        mount_interface = publication["interfaces"]["_outputs"]["Motor"]["Mount"]
+        assert mount_interface["connector"] == {
+            "kind": "frame",
+            "allowed_joints": ["fixed"],
+            "compatibility": "FIXTURE_MOUNT",
+        }
+        assert mount_interface["resolved"]["connector_frame"]["origin_mm"] == [
+            0.0,
+            0.0,
+            0.0,
+        ]
+
+        program_root = next(
+            obj
+            for obj in document.Objects
+            if str(getattr(obj, "VibeCADVibeScriptProgramId", "") or "")
+            == str(prepared["program_id"])
+            and str(getattr(obj, "TypeId", "") or "") == "App::Part"
+        )
+        assert list(
+            getattr(program_root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, []) or []
+        ) == []
+        assert list(
+            getattr(
+                program_root,
+                PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES,
+                [],
+            )
+            or []
+        ) == [occurrence_name]
+
+        # Recreate the original persisted representation and prove migration
+        # removes its forward dependency before an unrelated later program is
+        # finalized. This is the exact failure that previously poisoned every
+        # Model or Assembly publication after api.component().
+        program_root.removeProperty(PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES)
+        setattr(
+            program_root,
+            PROP_PARTDESIGN_COMPONENT_OCCURRENCES,
+            [occurrence],
+        )
+        migration = migrate_partdesign_component_occurrence_links(document)
+        assert migration["migrated_programs"] == [str(program_root.Name)]
+        assert list(
+            getattr(program_root, PROP_PARTDESIGN_COMPONENT_OCCURRENCES, []) or []
+        ) == []
+        assert list(
+            getattr(
+                program_root,
+                PROP_PARTDESIGN_COMPONENT_OCCURRENCE_NAMES,
+                [],
+            )
+            or []
+        ) == [occurrence_name]
+
+        independent_source = (
+            "profile = api.sketch([api.circle([0, 0], 2)], "
+            "label='Independent profile')\n"
+            "feature = api.extrude(profile, 3, operation='add_material', "
+            "label='Independent pad')\n"
+            "result = {'Independent': api.body(feature, "
+            "label='Independent body')}\n"
+        )
+        _independent_prepared, _independent_publication, independent_accepted = (
+            _run_candidate(
+                _capture(
+                    base_capture,
+                    operation="create_program",
+                    arguments={
+                        "program_name": "Independent later body",
+                        "source": independent_source,
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": False,
+                        },
+                        "inputs": {},
+                        "expected_outputs": [
+                            {"name": "Independent", "type": "solid"}
+                        ],
+                    },
+                ),
+                service,
+            )
+        )
+        independent_name = independent_accepted["live_outputs"]["Independent"][
+            "object_name"
+        ]
+        assert document.getObject(independent_name) is not None
+
+        import Assembly
+
+        del Assembly
+        mechanism = document.addObject(
+            "Assembly::AssemblyObject",
+            "ComponentOccurrenceConsumer",
+        )
+        mechanism.addObject(occurrence)
+        assert mechanism in list(occurrence.InList)
+
+        occurrence.Placement = App.Placement(
+            App.Vector(37, 4, 2),
+            App.Rotation(App.Vector(0, 0, 1), 15),
+        )
+        source.Visibility = True
+        occurrence.Visibility = False
+        label_edit = initial_source.replace("Motor occurrence", "Drive motor")
+        _prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="edit_source",
+                arguments={
+                    "program_id": prepared["program_id"],
+                    "expected_revision": accepted["working_revision"],
+                    "source": label_edit,
+                },
+            ),
+            service,
+        )
+        assert document.getObject(occurrence_name) is occurrence
+        assert source.Visibility is True
+        assert occurrence.Visibility is False
+        assert math.isclose(occurrence.Placement.Base.x, 37.0, abs_tol=1.0e-9)
+        assert math.isclose(occurrence.Placement.Base.y, 4.0, abs_tol=1.0e-9)
+
+        source.Visibility = False
+        occurrence.Visibility = True
+
+        moved_source = label_edit.replace(
+            "inputs['motor'], interfaces=",
+            "inputs['motor'], placement=[0, 0, 0], interfaces=",
+        )
+        _prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="edit_source",
+                arguments={
+                    "program_id": prepared["program_id"],
+                    "expected_revision": accepted["working_revision"],
+                    "source": moved_source,
+                },
+            ),
+            service,
+        )
+        assert occurrence.Placement.Base == App.Vector(0, 0, 0)
+        assert mechanism in list(occurrence.InList)
+        candidate = next(
+            item
+            for item in open_component_candidates(document)
+            if item["object_name"] == occurrence_name
+        )
+        assert candidate["kind"] == "occurrence"
+        assert candidate["reference"]["object_name"] == occurrence_name
+        assert candidate["published_interfaces"] == ["Mount"]
+        assert candidate["interfaces"][0]["connector"] == {
+            "kind": "frame",
+            "allowed_joints": ["fixed"],
+            "compatibility": "FIXTURE_MOUNT",
+        }
+        resolved_mount = resolve_interface(service, occurrence, "Mount")
+        assert resolved_mount["publication"] is occurrence
+        assert resolved_mount["connector_frame"]["origin_mm"] == [0.0, 0.0, 0.0]
+        mechanism.removeObject(occurrence)
+        assert mechanism not in list(occurrence.InList)
+        document.removeObject(mechanism.Name)
+
+        save_path = root / "partdesign-component-occurrence.FCStd"
+        program_id = str(prepared["program_id"])
+        accepted_revision = str(accepted["working_revision"])
+        document.recompute()
+        document.saveAs(str(save_path))
+        App.closeDocument(document.Name)
+        reopened = App.openDocument(str(save_path))
+        active_document = reopened
+        reopened_occurrence = reopened.getObject(occurrence_name)
+        reopened_source = reopened.getObject(source_name)
+        assert reopened_occurrence is not None
+        assert reopened_source is not None
+        assert reopened_occurrence.LinkedObject is reopened_source
+        assert reopened_occurrence.Placement.Base == App.Vector(0, 0, 0)
+        assert reopened_source.Visibility is False
+        assert reopened_occurrence.Visibility is True
+
+        reopened_service = _Service(reopened, root)
+        delete_capture = _capture(
+            {
+                **base_capture,
+                "document_name": str(reopened.Name),
+                "document_uid": str(reopened.Uid),
+                "document_objects": [
+                    {
+                        "name": str(obj.Name),
+                        "label": str(obj.Label),
+                        "type_id": str(obj.TypeId),
+                    }
+                    for obj in reopened.Objects
+                ],
+            },
+            operation="delete_program",
+            arguments={
+                "program_id": program_id,
+                "expected_revision": accepted_revision,
+                "reason": "Component occurrence lifecycle complete",
+            },
+        )
+        adapter = get_domain_adapter("partdesign")
+        assert adapter is not None
+        deletion = prepare_delete(delete_capture)
+        deletion_publication = adapter.delete(
+            reopened_service,
+            deletion,
+            deletion["manifest"],
+        )
+        assert finish_delete(deletion, deletion_publication)["ok"] is True
+        assert reopened.getObject(occurrence_name) is None
+        assert reopened.getObject(source_name) is reopened_source
+        return {
+            "occurrence": occurrence_name,
+            "source": source_name,
+            "live_placement_preserved": True,
+            "authored_placement_update_applied": True,
+            "assembly_containment_survived_rebuild": True,
+            "save_reopen_preserved_link": True,
+            "deletion_preserved_definition": True,
+            "definition_and_occurrence_visibility_are_independent": True,
+            "later_program_survived_component_occurrence_registry": True,
+        }
+    finally:
+        if str(active_document.Name) in App.listDocuments():
+            App.closeDocument(active_document.Name)
+
+
+def _exercise_external_component_occurrence(root: Path, pack) -> dict:
+    """Publish and reopen one portable occurrence of a saved external Body."""
+
+    import FreeCAD as App
+    import Part
+    from pathlib import Path as LocalPath
+
+    source_path = root / "external-motor.FCStd"
+    target_path = root / "external-motor-assembly.FCStd"
+    source_document = App.newDocument("ExternalMotorDefinition")
+    target_document = None
+    reopened = None
+    try:
+        motor = source_document.addObject("PartDesign::Body", "MotorBody")
+        feature = motor.newObject("PartDesign::Feature", "ImportedSolid")
+        feature.Shape = Part.makeBox(20, 10, 8)
+        motor.Tip = feature
+        source_document.recompute()
+        source_document.saveAs(str(source_path))
+
+        target_document = App.newDocument("ExternalMotorDesign")
+        target_document.saveAs(str(target_path))
+        service = _Service(target_document, root)
+        base_capture = {
+            "pack": pack,
+            "project_root": str(root),
+            "document_name": str(target_document.Name),
+            "document_uid": str(target_document.Uid),
+            "document_revision": service.provider_document_revision(),
+            "document_objects": [],
+            "surface": resolve_modeling_surface(
+                "PartDesignWorkbench", "vibescript"
+            ).summary(),
+            "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+            "timeout_seconds": 60.0,
+            "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+        }
+        reference_schema = {
+            "type": "object",
+            "x-vibecad-reference": True,
+            "properties": {
+                "document_uid": {"type": "string"},
+                "object_name": {"type": "string"},
+                "document_path": {"type": "string"},
+            },
+            "required": ["document_uid", "object_name"],
+            "additionalProperties": False,
+        }
+        source = (
+            "motor = api.component(inputs['motor'], placement=[10,20,30], "
+            "label='External motor')\n"
+            "result = {'Motor': motor}\n"
+        )
+        prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="create_program",
+                arguments={
+                    "program_name": "External motor occurrence",
+                    "source": source,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"motor": reference_schema},
+                        "required": ["motor"],
+                        "additionalProperties": False,
+                    },
+                    "inputs": {
+                        "motor": {
+                            "document_uid": str(source_document.Uid),
+                            "object_name": str(motor.Name),
+                            "document_path": source_path.name,
+                        }
+                    },
+                    "expected_outputs": [
+                        {"name": "Motor", "type": "component_link"}
+                    ],
+                },
+            ),
+            service,
+        )
+        occurrence_name = accepted["live_outputs"]["Motor"]["object_name"]
+        occurrence = target_document.getObject(occurrence_name)
+        assert occurrence is not None
+        assert occurrence.LinkedObject is motor
+        assert occurrence.Placement.Base == App.Vector(10, 20, 30)
+        assert occurrence.getTypeIdOfProperty(PROP_INPUT_OBJECTS) == (
+            "App::PropertyXLinkList"
+        )
+        assert list(getattr(occurrence, PROP_INPUT_OBJECTS, []) or []) == [motor]
+        target_uid = str(target_document.Uid)
+        source_uid = str(source_document.Uid)
+        target_document.recompute()
+        target_document.save()
+
+        App.closeDocument(target_document.Name)
+        target_document = None
+        App.closeDocument(source_document.Name)
+        reopened = App.openDocument(str(target_path))
+        assert str(reopened.Uid) == target_uid
+        reopened_occurrence = reopened.getObject(occurrence_name)
+        assert reopened_occurrence is not None
+        reopened_motor = reopened_occurrence.LinkedObject
+        assert reopened_motor is not None
+        assert str(reopened_motor.Document.Uid) == source_uid
+        assert str(reopened_motor.Name) == "MotorBody"
+        assert reopened_occurrence.Placement.Base == App.Vector(10, 20, 30)
+        return {
+            "program_id": str(prepared["program_id"]),
+            "portable_document_path": source_path.name,
+            "cross_document_input_property": "App::PropertyXLinkList",
+            "save_reopen_preserved_external_link": True,
+        }
+    finally:
+        paths = {str(source_path.resolve()), str(target_path.resolve())}
+        for name, document in list(App.listDocuments().items()):
+            file_name = str(getattr(document, "FileName", "") or "")
+            if file_name and str(LocalPath(file_name).resolve()) in paths:
+                App.closeDocument(name)
+
+
+def _exercise_component_shape_migration(root: Path, pack) -> dict:
+    """Keep one result key while deliberately changing its native carrier."""
+
+    import FreeCAD as App
+    import Part
+    from pathlib import Path as LocalPath
+
+    document = App.newDocument("PartDesignComponentShapeMigration")
+    source = document.addObject("Part::Feature", "ReusableMotor")
+    source.Shape = Part.makeBox(8, 6, 4)
+    document.recompute()
+    service = _Service(document, root)
+    reference_schema = {
+        "type": "object",
+        "x-vibecad-reference": True,
+        "properties": {
+            "document_uid": {"type": "string"},
+            "object_name": {"type": "string"},
+        },
+        "required": ["document_uid", "object_name"],
+        "additionalProperties": False,
+    }
+    input_schema = {
+        "type": "object",
+        "properties": {"motor": reference_schema},
+        "required": ["motor"],
+        "additionalProperties": False,
+    }
+    inputs = {
+        "motor": {
+            "document_uid": str(document.Uid),
+            "object_name": str(source.Name),
+        }
+    }
+    base_capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": service.provider_document_revision(),
+        "document_objects": [
+            {
+                "name": str(source.Name),
+                "label": str(source.Label),
+                "type_id": str(source.TypeId),
+            }
+        ],
+        "surface": resolve_modeling_surface(
+            "PartDesignWorkbench", "vibescript"
+        ).summary(),
+        "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    component_source = (
+        "motor = api.component(inputs['motor'], placement=[1,2,3], label='Motor')\n"
+        "result = {'Asset': motor}\n"
+    )
+    try:
+        prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="create_program",
+                arguments={
+                    "program_name": "Carrier migration",
+                    "source": component_source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": [
+                        {"name": "Asset", "type": "component_link"}
+                    ],
+                },
+            ),
+            service,
+        )
+        stable_name = accepted["live_outputs"]["Asset"]["object_name"]
+        occurrence = document.getObject(stable_name)
+        assert occurrence.LinkedObject is source
+
+        shape_source = (
+            "source = api.from_object(inputs['motor'], output_type='solid')\n"
+            "moved = api.transform(source, translation=[12,0,0])\n"
+            "result = {'Asset': api.publish(moved, label='Moved motor')}\n"
+        )
+        _prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="reconfigure_program",
+                arguments={
+                    "program_id": prepared["program_id"],
+                    "expected_revision": accepted["working_revision"],
+                    "source": shape_source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": [{"name": "Asset", "type": "solid"}],
+                },
+            ),
+            service,
+        )
+        shape_name = accepted["live_outputs"]["Asset"]["object_name"]
+        published = document.getObject(shape_name)
+        assert published is not None
+        assert str(getattr(published, PROP_OUTPUT_TYPE, "")) == "solid"
+        assert getattr(published, "LinkedObject", None) is not source
+        observed_bounds = (
+            float(published.Shape.BoundBox.XMin),
+            float(published.Shape.BoundBox.XMax),
+        )
+        implementation_name = str(
+            getattr(published, "VibeCADImplementationObject", "") or ""
+        )
+        implementation = document.getObject(implementation_name)
+        migration_diagnostic = {
+            "initial_name": stable_name,
+            "shape_name": shape_name,
+            "published_type": str(published.TypeId),
+            "published_output_type": str(getattr(published, PROP_OUTPUT_TYPE, "")),
+            "linked_object": str(
+                getattr(getattr(published, "LinkedObject", None), "Name", "") or ""
+            ),
+            "placement": [
+                float(published.Placement.Base.x),
+                float(published.Placement.Base.y),
+                float(published.Placement.Base.z),
+            ],
+            "implementation": implementation_name,
+            "implementation_bounds": (
+                [
+                    float(implementation.Shape.BoundBox.XMin),
+                    float(implementation.Shape.BoundBox.XMax),
+                ]
+                if implementation is not None
+                else None
+            ),
+        }
+        assert math.isclose(
+            observed_bounds[0], 12.0, abs_tol=1.0e-7
+        ), {"bounds": observed_bounds, **migration_diagnostic}
+        assert math.isclose(
+            observed_bounds[1], 20.0, abs_tol=1.0e-7
+        ), observed_bounds
+
+        returned_source = component_source.replace("[1,2,3]", "[4,5,6]")
+        _prepared, _publication, accepted = _run_candidate(
+            _capture(
+                base_capture,
+                operation="reconfigure_program",
+                arguments={
+                    "program_id": prepared["program_id"],
+                    "expected_revision": accepted["working_revision"],
+                    "source": returned_source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": [
+                        {"name": "Asset", "type": "component_link"}
+                    ],
+                },
+            ),
+            service,
+        )
+        restored_name = accepted["live_outputs"]["Asset"]["object_name"]
+        restored = document.getObject(restored_name)
+        assert restored is not None
+        assert restored.LinkedObject is source
+        assert restored.Placement.Base == App.Vector(4, 5, 6)
+        return {
+            "component_output_name": stable_name,
+            "shape_output_name": shape_name,
+            "restored_component_output_name": restored_name,
+            "component_to_shape_preserved_transform": True,
+            "shape_to_component_preserved_result_key": True,
+        }
+    finally:
+        App.closeDocument(document.Name)
 
 
 def _exercise_topology_publication(root: Path, pack) -> dict:
@@ -2612,13 +3631,25 @@ def _exercise_direct_solid_adoption_label(root: Path, pack) -> dict:
         assert publication["live_outputs"]["Part"]["partdesign_data"][
             "tip_label"
         ] == "Finished Direct Loft"
-        assert not [
+        restored_features = [
             obj
             for obj in document.Objects
             if obj.TypeId == "PartDesign::Feature"
             and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
             == str(_prepared["program_id"])
         ]
+        assert any(
+            str(obj.Label) == "Finished Direct Loft"
+            for obj in restored_features
+        )
+        root_object = next(
+            obj
+            for obj in document.Objects
+            if role_of(obj) == ROLE_MODEL
+            and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+            == str(_prepared["program_id"])
+        )
+        assert all(obj in list(root_object.Group) for obj in restored_features)
         published = document.getObject(
             accepted["live_outputs"]["Part"]["object_name"]
         )
@@ -2730,11 +3761,20 @@ def _exercise_saved_source_compatibility(root: Path, pack) -> dict:
         )
         assert operation is not None
         assert body.Tip.CurrentState.Operation is operation
-        assert not [
+        restored_pads = [
             obj
             for obj in document.Objects
             if obj.TypeId == "PartDesign::Pad"
         ]
+        assert len(restored_pads) == 1
+        source_root = next(
+            obj
+            for obj in document.Objects
+            if role_of(obj) == ROLE_MODEL
+            and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+            == program_id
+        )
+        assert restored_pads[0] in list(source_root.Group)
         assert publication["live_outputs"]["Part"]["partdesign_data"][
             "feature_count"
         ] >= 1
@@ -2743,6 +3783,156 @@ def _exercise_saved_source_compatibility(root: Path, pack) -> dict:
             "body_name": str(body.Name),
             "operation": str(operation.Name),
             "native_tip": str(body.Tip.TypeId),
+        }
+    finally:
+        App.closeDocument(document.Name)
+
+
+def _exercise_provider_failed_source_lifecycle(root: Path, pack) -> dict:
+    """A failed create remains readable, editable, buildable, and deletable."""
+
+    import FreeCAD as App
+
+    import VibeCADVibeScriptDomains as domains
+    from VibeCADSession import make_provider_tool_runner
+    from VibeCADTools import ToolRegistry
+    from tool_impl import service as service_tools
+    from tool_impl import sketcher as sketcher_tools
+
+    document = App.newDocument("PartDesignProviderSourceLifecycle")
+
+    class RunnerService(_Service):
+        def __init__(self, active_document, project_root: Path) -> None:
+            super().__init__(active_document, project_root)
+            self.registry = ToolRegistry()
+            service_tools.register_tools(self.registry, self)
+            sketcher_tools.register_tools(self.registry, self)
+            domains.register_domain_tools(self.registry, self)
+
+        @staticmethod
+        def provider_edit_object_summary():
+            return None
+
+        @staticmethod
+        def design_review_enabled() -> bool:
+            return True
+
+        @staticmethod
+        def note_provider_tool_targets(_arguments, _payload) -> None:
+            return None
+
+    service = RunnerService(document, root / "provider-source-lifecycle")
+    failed_source = "\n".join(
+        (
+            "base = api.extrude(api.sketch([api.circle([0, 0], 5)]), 8, operation='add_material')",
+            "far = api.sketch([api.point([0, 0])], plane_offset_mm=100, require_closed_profile=False)",
+            "failed = api.hole(base, far, 2, depth_mm=1)",
+            "result = {'Result': api.body(failed)}",
+        )
+    )
+    valid_source = "\n".join(
+        (
+            "profile = api.sketch([api.circle([0, 0], 5)])",
+            "solid = api.extrude(profile, 8, operation='add_material')",
+            "result = {'Result': api.body(solid)}",
+        )
+    )
+    runner = make_provider_tool_runner(
+        service,
+        tool_trace=[],
+        progress_callback=None,
+        cancellation_check=None,
+        steering_check=None,
+        question_callback=None,
+        document_thread_dispatch=lambda operation: operation(),
+        turn_editable_sources={
+            "schema": "vibecad-editable-sources-v1",
+            "domain": "partdesign",
+            "workbench": "PartDesignWorkbench",
+            "sources": [],
+        },
+    )
+
+    def run_source_operation(tool_name, arguments):
+        started = runner(tool_name, json.dumps(arguments))
+        assert started["ok"] is True, started
+        operation_id = started["operation"]["operation_id"]
+        while True:
+            status = runner(
+                "vibescript.read_operation",
+                json.dumps(
+                    {
+                        "operation_id": operation_id,
+                        "wait_seconds": 60,
+                    }
+                ),
+            )
+            if status["operation"]["status"] == "running":
+                continue
+            return status["result"]
+
+    try:
+        created = run_source_operation(
+            "vibescript.create_program",
+            {
+                "program_name": "Failed Source Lifecycle",
+                "source": failed_source,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                "inputs": {},
+                "expected_outputs": [{"name": "Result", "type": "solid"}],
+            },
+        )
+        assert created["ok"] is False, created
+        program = str(created["program"])
+        failed_revision = str(created["working_revision"])
+        assert program == (
+            "PartDesignProviderSourceLifecycle/partdesign/Failed Source Lifecycle"
+        )
+        assert len(failed_revision) == 64
+
+        read_failed = runner(
+            "vibescript.read_source",
+            json.dumps({"program": program, "include_logs": False}),
+        )
+        assert read_failed["ok"] is True, read_failed
+        assert read_failed["source"] == failed_source
+        assert read_failed["current_revision"] == failed_revision
+
+        edited = run_source_operation(
+            "vibescript.edit_source",
+            {
+                "program": program,
+                "expected_revision": failed_revision,
+                "source": valid_source,
+            },
+        )
+        assert edited["ok"] is True, edited
+        accepted_revision = str(edited["working_revision"])
+        assert accepted_revision != failed_revision
+        assert document.getObject(edited["live_outputs"]["Result"]["object_name"])
+
+        deleted = run_source_operation(
+            "vibescript.delete_program",
+            {
+                "program": program,
+                "expected_revision": accepted_revision,
+                "reason": "Complete the provider source lifecycle integration test.",
+            },
+        )
+        assert deleted["ok"] is True, deleted
+        missing = runner(
+            "vibescript.read_source",
+            json.dumps({"program": program, "include_logs": False}),
+        )
+        assert missing["failure_code"] == "PROGRAM_NOT_FOUND", missing
+        return {
+            "failed_source_read": True,
+            "same_source_edited": True,
+            "same_source_deleted": True,
         }
     finally:
         App.closeDocument(document.Name)
@@ -2831,6 +4021,10 @@ def main() -> int:
         feature_families = _exercise_feature_families(root, pack)
         unified_surface = _exercise_unified_standalone_surface(root, pack)
         material_guardrails = _exercise_material_guardrails(root, pack)
+        placement_and_hole_direction = _exercise_placement_and_hole_direction(
+            root,
+            pack,
+        )
         geometry_verification = _exercise_geometry_verification(root, pack)
         attached_sketch_history = _exercise_attached_sketch_history(root, pack)
         native_sketch_history = _exercise_native_sketch_history(root, pack)
@@ -2845,7 +4039,17 @@ def main() -> int:
             root,
             pack,
         )
+        component_occurrence = _exercise_component_occurrence(root, pack)
+        external_component_occurrence = _exercise_external_component_occurrence(
+            root,
+            pack,
+        )
+        component_shape_migration = _exercise_component_shape_migration(root, pack)
         lifecycle = _exercise_lifecycle(root, pack)
+        provider_source_lifecycle = _exercise_provider_failed_source_lifecycle(
+            root,
+            pack,
+        )
         print(
             dump_json(
                 {
@@ -2854,6 +4058,7 @@ def main() -> int:
                     "feature_families": feature_families,
                     "unified_surface": unified_surface,
                     "material_guardrails": material_guardrails,
+                    "placement_and_hole_direction": placement_and_hole_direction,
                     "geometry_verification": geometry_verification,
                     "attached_sketch_history": attached_sketch_history,
                     "native_sketch_history": native_sketch_history,
@@ -2862,7 +4067,11 @@ def main() -> int:
                     "physical_material": physical_material,
                     "direct_solid_label": direct_solid_label,
                     "saved_source_compatibility": saved_source_compatibility,
+                    "component_occurrence": component_occurrence,
+                    "external_component_occurrence": external_component_occurrence,
+                    "component_shape_migration": component_shape_migration,
                     "lifecycle": lifecycle,
+                    "provider_source_lifecycle": provider_source_lifecycle,
                 },
                 sort_keys=True,
             )

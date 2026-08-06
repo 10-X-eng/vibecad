@@ -65,6 +65,11 @@ class VersionInfo:
         return f"{self.simple}-{self.suffix}" if self.suffix else self.simple
 
     @property
+    def release_identity(self) -> str:
+        """Public version/build identity, e.g. ``1.2.0-RC1-build3``."""
+        return f"{self.complete}-build{self.build}"
+
+    @property
     def rpm(self) -> str:
         """Version with suffix after "~" per RPM convention, e.g. "1.2.0~dev"."""
         return f"{self.simple}~{self.suffix}" if self.suffix else self.simple
@@ -137,6 +142,7 @@ def sync_recipe_yaml(filepath: Path, version: VersionInfo) -> tuple[str, bool]:
     Updates:
       - context.version (quoted value)
       - package.name (unquoted value)
+      - build.number (integer value)
     """
     content = filepath.read_text(encoding="utf-8")
     updated = content
@@ -152,6 +158,13 @@ def sync_recipe_yaml(filepath: Path, version: VersionInfo) -> tuple[str, bool]:
     updated = re.sub(
         r"(package:\s*\n\s*name:\s*)\S+",
         rf"\g<1>{version.lowercase_name}",
+        updated,
+    )
+
+    # build:\n  number: 0
+    updated = re.sub(
+        r"(build:\s*\n\s*number:\s*)\d+",
+        rf"\g<1>{version.build}",
         updated,
     )
 

@@ -80,6 +80,10 @@ class TestVersionInfo(unittest.TestCase):
         self.assertEqual(version.rpm, "26.3.0~dev")
         self.assertEqual(version.conda, "26.3.0dev")
 
+    def test_release_identity_includes_build(self):
+        version = make_version(major=26, minor=3, patch=1, suffix="RC3", build=17)
+        self.assertEqual(version.release_identity, "26.3.1-RC3-build17")
+
     def test_lowercase_name(self):
         version = make_version(name="FreeCAD")
         self.assertEqual(version.lowercase_name, "freecad")
@@ -177,6 +181,9 @@ package:
 
 source:
   path: ../..
+
+build:
+  number: 0
 """
 
 DECLARATIONS_NSH = """\
@@ -267,6 +274,14 @@ class TestSyncRecipeYaml(unittest.TestCase):
             self.assertTrue(changed)
             self.assertIn('version: "1.2.0dev"', result)
             self.assertIn("name: freecad", result)
+
+    def test_updates_build_number(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            filepath = write_temp_file(Path(tmp), "recipe.yaml", RECIPE_YAML)
+            version = make_version(build=9)
+            result, changed = sync_recipe_yaml(filepath, version)
+            self.assertTrue(changed)
+            self.assertIn("number: 9", result)
 
     def test_preserves_version_template_reference(self):
         with tempfile.TemporaryDirectory() as tmp:

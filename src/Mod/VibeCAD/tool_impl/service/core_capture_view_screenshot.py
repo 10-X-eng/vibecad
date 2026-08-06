@@ -251,10 +251,6 @@ def run(
                 stack.enter_context(
                     core_set_view.temporarily_isolate_objects(document, frame_names)
                 )
-            elif resolved_frame == "all" and frame_names:
-                temporarily_shown_objects = stack.enter_context(
-                    core_set_view.temporarily_show_objects(document, frame_names)
-                )
             if annotation_mode == "clean" and active_sketch is not None:
                 annotations_excluded = stack.enter_context(
                     core_set_view.temporarily_detach_sketch_annotations(view)
@@ -527,7 +523,40 @@ def run(
         result["visual_observation"] = visual_observation
         stages.append({"stage": "visual_observation", "ok": True})
         service._last_view_screenshot = result
-        return result
+        target = {
+            "frame": resolved_frame,
+            "object_count": len(frame_names),
+        }
+        if resolved_frame in {"objects", "selection", "active_sketch"}:
+            target["object_names"] = frame_names
+        concise_observation = {
+            key: visual_observation[key]
+            for key in (
+                "inspection_summary",
+                "layout_summary",
+                "attention_flags",
+                "mostly_blank",
+                "foreground_pixel_ratio",
+            )
+            if visual_observation.get(key) not in (None, "", [], {})
+        }
+        return {
+            "ok": True,
+            "captured": True,
+            "document": document.Name,
+            "target": target,
+            "camera": camera_resolution.get("resolved"),
+            "size": result_size,
+            "new_observation": new_observation,
+            **({"duplicate_of": duplicate_of} if duplicate_of else {}),
+            "visual_observation": concise_observation,
+            "artifact": _artifact_state(path),
+            "pending_attachment": True,
+            "_vibecad_image_attachment": {
+                "path": str(path),
+                "name": f"{document.Name} viewport",
+            },
+        }
     except Exception as exc:
         stages.append({"stage": "visual_observation", "ok": False, "error": str(exc)})
         return _remember_failure(
@@ -556,6 +585,25 @@ def _remember_failure(
     artifact: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     artifact_state = artifact or {"created": False, "path": None, "file_size": 0}
+    raw_observed = observed or {}
+    compact_observed = {
+        key: value
+        for key, value in raw_observed.items()
+        if key not in {"stages", "camera_after", "camera_before"}
+    }
+    stages = raw_observed.get("stages")
+    if isinstance(stages, list):
+        failed_stages = [
+            {
+                key: value
+                for key, value in stage.items()
+                if key in {"stage", "ok", "error"}
+            }
+            for stage in stages
+            if isinstance(stage, dict) and stage.get("ok") is False
+        ]
+        if failed_stages:
+            compact_observed["failed_stages"] = failed_stages
     result = tool_failure(
         TOOL_SPEC["name"],
         failure_code,
@@ -563,7 +611,7 @@ def _remember_failure(
         error,
         requested=requested,
         normalized=normalized or {},
-        observed=observed or {},
+        observed=compact_observed,
         candidates=candidates or [],
         allowed_values=allowed_values or [],
         artifact=artifact_state,
@@ -572,6 +620,11 @@ def _remember_failure(
         path=artifact_state.get("path"),
         file_size=int(artifact_state.get("file_size") or 0),
     )
+    if artifact_state.get("created") and artifact_state.get("path"):
+        result["_vibecad_image_attachment"] = {
+            "path": str(artifact_state["path"]),
+            "name": "failed viewport capture",
+        }
     service._last_view_screenshot = result
     return result
 
@@ -582,11 +635,13 @@ def _capture_framebuffer(
     width: int,
     height: int,
 ) -> None:
-    """Capture one current rendered frame without entering a nested Qt event loop."""
+    """Capture one completely rendered frame from the active viewer."""
     try:
         from PySide import QtCore
     except Exception:
         from PySide6 import QtCore
+    import FreeCADGui as Gui
+
     get_viewer = getattr(view, "getViewer", None)
     if not callable(get_viewer):
         raise RuntimeError("The active 3D view does not expose its framebuffer viewer.")
@@ -595,6 +650,12 @@ def _capture_framebuffer(
     if not callable(grab):
         raise RuntimeError("The active 3D viewer does not expose framebuffer capture.")
     view.redraw()
+    # redraw() schedules Coin/Qt painting, but grabFramebuffer() can observe an
+    # incomplete buffer immediately after document activation or a large scene
+    # change. Flush that already-scheduled GUI work before reading pixels. This
+    # is the same synchronization boundary used by core.set_view and does not
+    # change the document, camera, visibility, or tool contract.
+    Gui.updateGui()
     image = grab()
     if image is None or image.isNull():
         raise RuntimeError("The active 3D viewer returned an empty framebuffer.")

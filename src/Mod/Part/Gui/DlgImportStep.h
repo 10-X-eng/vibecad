@@ -44,6 +44,7 @@ struct StepImportSettings
     bool reduceObjects = false;
     bool showProgress = false;
     bool expandCompound = false;
+    bool importSolidBodies = true;
     int mode = 0;
     int codePage = -1;
 };

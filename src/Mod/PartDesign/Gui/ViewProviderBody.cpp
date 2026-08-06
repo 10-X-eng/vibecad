@@ -693,6 +693,23 @@ Gui::ViewProvider* ViewProviderBody::getShownViewProvider() const
     return nullptr;
 }
 
+std::vector<Gui::ViewProvider::LinkChild3D>
+ViewProviderBody::claimLinkChildren3D() const
+{
+    auto* body = getObject<PartDesign::Body>();
+    auto* tip = body ? body->Tip.getValue() : nullptr;
+    if (!tip || !PartDesign::Body::isResultFeature(tip)) {
+        return {};
+    }
+
+    // A Body definition has one reusable geometric result: its current Tip.
+    // The Body eye controls only the definition rendered at its authoring
+    // location. App::Link occurrences consume this Tip through their own eye,
+    // so they must neither inherit the definition eye nor copy visible
+    // sketches, datums, or earlier history results.
+    return {{tip, true}};
+}
+
 bool ViewProviderBody::canDropObjects() const
 {
     // if the BaseFeature property is marked as hidden or read-only then

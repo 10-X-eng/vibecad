@@ -95,6 +95,49 @@ def _warn(message: str) -> None:
     App.Console.PrintWarning(f"VibeCAD scripted editor: {message}\n")
 
 
+def _diagnostic_detail_text(
+    payload: dict[str, Any],
+    diagnostic: dict[str, Any] | None = None,
+) -> str:
+    """Format one complete, copyable editor failure without truncation."""
+
+    record = diagnostic if isinstance(diagnostic, dict) else payload
+    message = str(
+        record.get("message")
+        or payload.get("error")
+        or "Scripted model operation failed."
+    )
+    lines = [message]
+    severity = str(record.get("severity") or "")
+    file_name = str(record.get("file") or "")
+    line = record.get("line")
+    location = f"{file_name}:{line}" if file_name and line else file_name
+    failure_code = str(payload.get("failure_code") or "")
+    failure_stage = str(payload.get("failure_stage") or "")
+    summary = [
+        ("Severity", severity),
+        ("Location", location),
+        ("Failure code", failure_code),
+        ("Failure stage", failure_stage),
+    ]
+    visible_summary = [(name, value) for name, value in summary if value]
+    if visible_summary:
+        lines.append("")
+        lines.extend(f"{name}: {value}" for name, value in visible_summary)
+    try:
+        structured = json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            default=str,
+        )
+    except Exception:
+        structured = repr(payload)
+    lines.extend(("", "Complete structured diagnostic:", structured))
+    return "\n".join(lines)
+
+
 def _document_restore_active(doc: Any | None) -> bool:
     is_restoring = getattr(App, "isRestoring", None)
     if callable(is_restoring):
@@ -926,6 +969,9 @@ class ScriptedEditorController:
             lambda _index: self._update_actions()
         )
         self.diagnostics.itemActivated.connect(self._diagnostic_activated)
+        self.diagnostics.itemDoubleClicked.connect(
+            self._diagnostic_detail_requested
+        )
 
     def _visibility_changed(self, visible: bool):
         if visible:
@@ -1252,6 +1298,13 @@ class ScriptedEditorController:
             or next_domain != self.domain
             or next_document_uid != self.document_uid
         )
+        if self.busy and not context_changed:
+            # Saving before Build emits a deferred document refresh. That
+            # refresh is metadata-only and must not submit a newer job to the
+            # latest-job runner, because doing so cancels the active isolated
+            # Build/Apply/Delete worker. The terminal operation refreshes the
+            # editor explicitly when its accepted document state changes.
+            return
         if context_changed and self.dirty:
             self.context_label.setText(
                 f"Unsaved {self.engine} edits retained — return to their document and domain"
@@ -2554,12 +2607,29 @@ class ScriptedEditorController:
                 ]
             )
             item.setData(0, self.QtCore.Qt.UserRole, int(line or 0))
-            item.setData(0, int(self.QtCore.Qt.UserRole) + 1, str(diagnostic.get("file") or ""))
+            item.setData(
+                0,
+                int(self.QtCore.Qt.UserRole) + 1,
+                str(diagnostic.get("file") or ""),
+            )
+            item.setData(
+                0,
+                int(self.QtCore.Qt.UserRole) + 2,
+                _diagnostic_detail_text(payload, diagnostic),
+            )
+            item.setToolTip(2, str(diagnostic.get("message") or ""))
             self.diagnostics.addTopLevelItem(item)
         if not diagnostics and payload.get("error"):
-            self.diagnostics.addTopLevelItem(
-                self.QtWidgets.QTreeWidgetItem(["error", "", str(payload["error"])])
+            item = self.QtWidgets.QTreeWidgetItem(
+                ["error", "", str(payload["error"])]
             )
+            item.setData(
+                0,
+                int(self.QtCore.Qt.UserRole) + 2,
+                _diagnostic_detail_text(payload),
+            )
+            item.setToolTip(2, str(payload["error"]))
+            self.diagnostics.addTopLevelItem(item)
         self.diagnostics.resizeColumnToContents(0)
         self.diagnostics.resizeColumnToContents(1)
 
@@ -2567,6 +2637,43 @@ class ScriptedEditorController:
         line = int(item.data(0, self.QtCore.Qt.UserRole) or 0)
         if line and hasattr(self.source, "goto_line"):
             self.source.goto_line(line)
+
+    def _diagnostic_detail_requested(self, item: Any, _column: int):
+        detail = str(
+            item.data(0, int(self.QtCore.Qt.UserRole) + 2)
+            or item.text(2)
+            or "No additional diagnostic information is available."
+        )
+        dialog = self.QtWidgets.QDialog(self.root)
+        dialog.setObjectName("VibeScriptedDiagnosticDetail")
+        dialog.setWindowTitle("Build Error Details")
+        dialog.setModal(True)
+
+        layout = self.QtWidgets.QVBoxLayout(dialog)
+        detail_view = self.QtWidgets.QPlainTextEdit(dialog)
+        detail_view.setObjectName("VibeScriptedDiagnosticDetailText")
+        detail_view.setReadOnly(True)
+        detail_view.setLineWrapMode(self.QtWidgets.QPlainTextEdit.WidgetWidth)
+        detail_view.setPlainText(detail)
+        layout.addWidget(detail_view, 1)
+
+        buttons = self.QtWidgets.QDialogButtonBox(
+            self.QtWidgets.QDialogButtonBox.Close,
+            parent=dialog,
+        )
+        copy_button = buttons.addButton(
+            "Copy Error",
+            self.QtWidgets.QDialogButtonBox.ActionRole,
+        )
+        copy_button.clicked.connect(
+            lambda: self.QtWidgets.QApplication.clipboard().setText(detail)
+        )
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        dialog.resize(760, 460)
+        detail_view.setFocus()
+        dialog.exec()
 
     def _update_actions(self):
         active_doc = App.ActiveDocument

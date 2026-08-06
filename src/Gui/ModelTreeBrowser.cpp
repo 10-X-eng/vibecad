@@ -191,6 +191,8 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
         targetRepresentations;
     std::unordered_set<const App::DocumentObject*> completePublicationLinks;
     std::unordered_set<const App::DocumentObject*> pairedPublicationTargets;
+    std::unordered_map<const App::DocumentObject*, App::DocumentObject*>
+        modelOccurrenceOwners;
     std::unordered_set<std::string> ambiguousIdentities;
     const auto recordAmbiguities = [&](const auto& table) {
         for (const auto& [identity, object] : table) {
@@ -226,6 +228,48 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
             pairedPublicationTargets.insert(target->second);
         }
     }
+    for (auto* object : objects) {
+        if (!isComponent(object)) {
+            continue;
+        }
+        std::vector<App::DocumentObject*> occurrences;
+        const auto* occurrenceNames = dynamic_cast<const App::PropertyStringList*>(
+            object->getPropertyByName("VibeCADPartDesignComponentOccurrenceNames")
+        );
+        if (occurrenceNames) {
+            App::Document* document = object->getDocument();
+            const auto& names = occurrenceNames->getValues();
+            occurrences.reserve(names.size());
+            for (const std::string& name : names) {
+                if (document) {
+                    occurrences.push_back(document->getObject(name.c_str()));
+                }
+            }
+        }
+        else if (const auto* legacyOccurrences =
+                     dynamic_cast<const App::PropertyLinkList*>(
+                         object->getPropertyByName(
+                             "VibeCADPartDesignComponentOccurrences"
+                         )
+                     )) {
+            // Compatibility for documents loaded before the Python migration
+            // runs. New documents keep this property empty so it cannot create
+            // forward modeling dependencies.
+            occurrences = legacyOccurrences->getValues();
+        }
+        for (auto* occurrence : occurrences) {
+            if (!occurrence) {
+                continue;
+            }
+            const auto [iterator, inserted] =
+                modelOccurrenceOwners.emplace(occurrence, object);
+            if (!inserted && iterator->second != object) {
+                // Conflicting explicit owners are damage that must remain
+                // visible at document root rather than being guessed away.
+                iterator->second = nullptr;
+            }
+        }
+    }
 
     for (auto* object : objects) {
         if (!object || !object->isAttachedToDocument()
@@ -233,7 +277,16 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
             continue;
         }
 
-        Ownership ownership = resolveOwnership(object);
+        // Selection subnames must follow only native document containment.
+        // Presentation ownership may place a root object below a semantic
+        // component in the browser, but that virtual relationship is not a
+        // valid getSubObject() path.
+        const Ownership selectionOwnership = resolveOwnership(object);
+        Ownership ownership = selectionOwnership;
+        if (const auto owner = modelOccurrenceOwners.find(object);
+            owner != modelOccurrenceOwners.end() && owner->second) {
+            ownership.component = owner->second;
+        }
         App::DocumentObject* normalGroup = App::GroupExtension::getGroupOfObject(object);
         if (normalGroup
             && normalGroup->hasExtension(
@@ -282,19 +335,19 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
         else if (entry.role == Role::Component) {
             // resolveOwnership() starts at the object's parent, so this is the
             // containing component for nested components and null at document root.
-            entry.logicalParent = ownership.component;
+            entry.logicalParent = selectionOwnership.component;
         }
         else if (normalGroup) {
             entry.logicalParent = normalGroup;
         }
         else if (entry.role == Role::Body) {
-            entry.logicalParent = ownership.component;
+            entry.logicalParent = selectionOwnership.component;
         }
-        else if (ownership.body) {
-            entry.logicalParent = ownership.body;
+        else if (selectionOwnership.body) {
+            entry.logicalParent = selectionOwnership.body;
         }
         else {
-            entry.logicalParent = ownership.component;
+            entry.logicalParent = selectionOwnership.component;
         }
 
         if (const auto body = bodyRepresentations.find(object);
@@ -460,9 +513,12 @@ ModelTreeBrowserProjection::Role ModelTreeBrowserProjection::classify(
     if (isReferenceGeometry(object)) {
         return Role::Reference;
     }
+    const std::string outputType = vibeScriptOutputType(object);
+    if (outputType == "component_link" && isLink(object)) {
+        return Role::AssemblyOccurrence;
+    }
     if (isDerivedFrom(ownership.component, "Assembly::AssemblyObject")
         || isDerivedFrom(ownership.component, "Assembly::AssemblyLink")) {
-        const std::string outputType = vibeScriptOutputType(object);
         if (outputType == "component_link" || isDerivedFrom(object, "Assembly::AssemblyLink")
             || isLink(object)) {
             return Role::AssemblyOccurrence;
@@ -475,6 +531,9 @@ ModelTreeBrowserProjection::Role ModelTreeBrowserProjection::classify(
             || outputType == "bom") {
             return Role::AssemblyOperation;
         }
+    }
+    if (publishedOutput) {
+        return Role::VibeCADOutput;
     }
     if (isReference(object)) {
         return Role::Reference;
@@ -490,9 +549,6 @@ ModelTreeBrowserProjection::Role ModelTreeBrowserProjection::classify(
     if (object->hasExtension(App::GroupExtension::getExtensionClassTypeId())
         && !object->hasExtension(App::GeoFeatureGroupExtension::getExtensionClassTypeId())) {
         return Role::Group;
-    }
-    if (publishedOutput) {
-        return Role::Geometry;
     }
     if (ownership.body) {
         return Role::Feature;

@@ -1795,6 +1795,9 @@ def _interfaces(
     obj: Any,
     family: str,
     nominal_diameter_mm: float,
+    *,
+    standard: str = "",
+    length_mm: float | None = None,
 ) -> dict[str, Any]:
     shape = getattr(obj, "Shape", None)
     if shape is None or shape.isNull():
@@ -1802,6 +1805,23 @@ def _interfaces(
             f"Fastener {getattr(obj, 'Name', '')!r} has no generated Shape."
         )
     bounds = shape.BoundBox
+    # Most upstream screw generators put the under-head bearing face at Z=0
+    # and extend the shank toward -Z.  Shoulder screws are deliberately
+    # different: their published nominal length is the shoulder length and
+    # makeShoulderScrew places the under-head face at Z=length.  Treating that
+    # face as Z=0 makes a native fixed joint put the screw head and shaft on
+    # the wrong side of the stack.
+    bearing_z = 0.0
+    if standard in {"ISO7379", "ASMEB18.3.4"}:
+        if length_mm is None:
+            length_mm = _active_length(obj)
+        shoulder_length = float(length_mm)
+        if not math.isfinite(shoulder_length) or shoulder_length <= 0.0:
+            raise FastenerCatalogError(
+                f"{standard} requires a positive shoulder length to publish its "
+                "under-head bearing plane."
+            )
+        bearing_z = shoulder_length
     interfaces: dict[str, Any] = {
         "axis": {
             "kind": "axis",
@@ -1815,7 +1835,7 @@ def _interfaces(
         },
         "mounting_plane": {
             "kind": "plane",
-            "origin_mm": [0.0, 0.0, 0.0],
+            "origin_mm": [0.0, 0.0, bearing_z],
             "normal": [0.0, 0.0, 1.0],
         },
         "minimum_z_plane": {
@@ -1840,7 +1860,7 @@ def _interfaces(
     if family in {"Screw", "SetScrew", "Stud", "Pin", "Nail"}:
         interfaces["bearing_plane"] = {
             "kind": "plane",
-            "origin_mm": [0.0, 0.0, 0.0],
+            "origin_mm": [0.0, 0.0, bearing_z],
             "normal": [0.0, 0.0, -1.0],
         }
         interfaces["under_head_plane"] = dict(interfaces["bearing_plane"])
@@ -1993,6 +2013,12 @@ def assembly_component_contract(
         proxy,
         str(identity["family"]),
         float(identity["nominal_diameter_mm"]),
+        standard=str(identity["standard"]),
+        length_mm=(
+            float(identity["length_mm"])
+            if identity.get("length_mm") is not None
+            else None
+        ),
     )
     published: dict[str, dict[str, Any]] = {}
     geometry_types = {
@@ -2023,7 +2049,11 @@ def assembly_component_contract(
         "type_id": "Part::FeaturePython",
         "source_kind": "standard_fastener",
         "transient_topology": True,
-        "requires_semantic_interfaces": True,
+        # Catalog fasteners have a canonical local frame, so their component
+        # origin is stable across regeneration and is safe for Assembly joints.
+        # Their generated FaceN/EdgeN names remain transient and are still
+        # rejected by the transient_topology guard in the Assembly worker.
+        "requires_semantic_interfaces": False,
         "published_interfaces": published,
         "facts": {
             "shape_type": str(shape.ShapeType),
@@ -2315,6 +2345,12 @@ def _write_metadata(obj: Any, identity: Mapping[str, Any]) -> None:
                 obj,
                 str(identity["family"]),
                 float(identity["nominal_diameter_mm"]),
+                standard=str(identity["standard"]),
+                length_mm=(
+                    float(identity["length_mm"])
+                    if identity.get("length_mm") is not None
+                    else None
+                ),
             ),
             ensure_ascii=True,
             sort_keys=True,

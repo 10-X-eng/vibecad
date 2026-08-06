@@ -1,3 +1,5 @@
 anthropic==0.116.0
 keyring==25.7.0
 jsonschema==4.25.1
+mcp==2.0.0
+tuf==7.0.0

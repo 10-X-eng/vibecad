@@ -131,7 +131,27 @@ def run(
                 {
                     "tool": "vibescript.read_source",
                     "arguments": {
-                        "source_id": str(component_obj.VibeCADVibeScriptProgramId),
+                        "program": "/".join(
+                            (
+                                str(getattr(component_obj.Document, "Name", "") or ""),
+                                str(
+                                    getattr(
+                                        component_obj,
+                                        "VibeCADVibeScriptDomain",
+                                        "",
+                                    )
+                                    or ""
+                                ),
+                                str(
+                                    getattr(
+                                        component_obj,
+                                        "VibeCADVibeScriptProgramLabel",
+                                        "",
+                                    )
+                                    or ""
+                                ),
+                            )
+                        ),
                         "include_logs": False,
                     },
                 }

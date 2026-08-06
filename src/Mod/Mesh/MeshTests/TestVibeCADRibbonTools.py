@@ -3695,8 +3695,11 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self.assertFalse(result.Visibility)
         self.assertTrue(self.mesh.Visibility)
 
-        self._timeline_button("VibeCADFeatureTimelineStart").click()
-        self._process_events(10)
+        while timeline.Position > 0:
+            previous_position = int(timeline.Position)
+            self._timeline_button("VibeCADFeatureTimelinePrevious").click()
+            self._process_events(10)
+            self.assertLess(timeline.Position, previous_position)
         self.assertEqual(timeline.Position, 0)
         self.assertTrue(result.Suppressed)
         self.assertFalse(

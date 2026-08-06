@@ -3587,9 +3587,9 @@ class TestVibeCADFEMTimelineContract(unittest.TestCase):
             )
         )
         self.assertIsNotNone(self.timeline_widget)
-        self.start_button = self.timeline_widget.findChild(
+        self.previous_button = self.timeline_widget.findChild(
             QtGui.QToolButton,
-            "VibeCADFeatureTimelineStart",
+            "VibeCADFeatureTimelinePrevious",
         )
         self.next_button = self.timeline_widget.findChild(
             QtGui.QToolButton,
@@ -3599,7 +3599,7 @@ class TestVibeCADFEMTimelineContract(unittest.TestCase):
             QtGui.QToolButton,
             "VibeCADFeatureTimelineEnd",
         )
-        self.assertIsNotNone(self.start_button)
+        self.assertIsNotNone(self.previous_button)
         self.assertIsNotNone(self.next_button)
         self.assertIsNotNone(self.end_button)
         self.assertTrue(
@@ -3656,10 +3656,15 @@ class TestVibeCADFEMTimelineContract(unittest.TestCase):
         return None
 
     def _move_to_position(self, position):
-        self.start_button.click()
-        self.assertTrue(
-            self._wait_until(lambda: self.timeline.Position == 0)
-        )
+        while self.timeline.Position > 0:
+            previous = int(self.timeline.Position)
+            self.previous_button.click()
+            self.assertTrue(
+                self._wait_until(
+                    lambda: int(self.timeline.Position) < previous
+                ),
+                f"The timeline did not retreat from position {previous}",
+            )
         while self.timeline.Position < position:
             previous = int(self.timeline.Position)
             self.next_button.click()
@@ -3791,7 +3796,7 @@ class TestVibeCADFEMTimelineContract(unittest.TestCase):
         expected_mesh_nodes = self.mesh.FemMesh.NodeCount
         expected_mesh_edges = self.mesh.FemMesh.EdgeCount
 
-        self.start_button.click()
+        self._move_to_position(0)
         self.assertTrue(
             self._wait_until(
                 lambda: self.timeline.Position == 0

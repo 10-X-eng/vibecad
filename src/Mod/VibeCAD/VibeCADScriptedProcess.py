@@ -174,6 +174,11 @@ def run_process(
         if cancelled or timed_out or memory_exceeded:
             _terminate(process)
         process.wait()
+        cpu_exceeded = bool(
+            sys.platform != "win32"
+            and hasattr(signal, "SIGXCPU")
+            and process.returncode == -int(signal.SIGXCPU)
+        )
         termination_reason = (
             "host_cancellation_request"
             if cancelled
@@ -181,6 +186,8 @@ def run_process(
             if timed_out
             else "memory_limit"
             if memory_exceeded
+            else "cpu_time_limit"
+            if cpu_exceeded
             else "process_exit"
         )
         return {
@@ -191,12 +198,15 @@ def run_process(
             "cancelled": cancelled,
             "timed_out": timed_out,
             "memory_exceeded": memory_exceeded,
+            "cpu_exceeded": cpu_exceeded,
             "cancelled_by": "host" if cancelled else None,
             "limit_reached": (
                 "wall_time_seconds"
                 if timed_out
                 else "memory_bytes"
                 if memory_exceeded
+                else "cpu_seconds"
+                if cpu_exceeded
                 else None
             ),
             "termination_reason": termination_reason,

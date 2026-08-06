@@ -15,14 +15,18 @@ set(VibeCAD_Scripts
     VibeCADFastenersGui.py
     VibeCADGrid.py
     VibeCADGeometry.py
+    VibeCADGeometryInspection.py
+    VibeCADPlacementInspection.py
     VibeCADGui.py
     VibeCADLegacyArchitecture.py
     VibeCADIntentMemory.py
     VibeCADIntentMemoryCompiler.py
     VibeCADMechanismEngine.py
     VibeCADMechanismGeometry.py
+    VibeCADMCP.py
     VibeCADModelingSurface.py
     VibeCADNativeTransaction.py
+    VibeCADObjectDeletion.py
     VibeCADPreferences.py
     VibeCADPromptStarters.py
     VibeCADProvider.py
@@ -35,6 +39,8 @@ set(VibeCAD_Scripts
     VibeCADScriptedPublication.py
     VibeCADTools.py
     VibeCADTransactions.py
+    VibeCADUpdate.py
+    VibeCADUpdateGui.py
     VibeCADVibeScriptDomains.py
     VibeCADVibeScriptDomainRuntime.py
     VibeCADVibeScriptDomainPublication.py
@@ -43,8 +49,11 @@ set(VibeCAD_Scripts
     vibescript_assembly_worker.py
     VibeCADAssemblyHierarchy.py
     VibeCADAssemblyBOM.py
+    VibeCADAssemblySolverPolicy.py
     vibescript_domain_api.py
     vibescript_domain_worker.py
+    vibescript_component_api.py
+    vibescript_component_worker.py
     vibescript_worker_progress.py
     vibescript_draft_api.py
     vibescript_draft_worker.py
@@ -98,6 +107,11 @@ set(VibeCAD_Resources
     vibecad-prompt-starters.svg
 )
 
+set(VibeCAD_UpdateTrustFiles)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/update-trust/root.json)
+    list(APPEND VibeCAD_UpdateTrustFiles update-trust/root.json)
+endif()
+
 set(VibeCAD_TestScripts)
 if(BUILD_TEST AND BUILD_GUI)
     list(APPEND VibeCAD_TestScripts
@@ -106,9 +120,11 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/TestDirectModelTimeline.py
         vibecad_tests/assembly_simulation_playback_gui_integration.py
         vibecad_tests/grid_gui_integration.py
+        vibecad_tests/mcp_gui_integration.py
         vibecad_tests/native_component_interface_integration.py
         vibecad_tests/partdesign_vibescript_api_integration.py
         vibecad_tests/qt_ribbon_theme_integration.py
+        vibecad_tests/read_geometry_integration.py
     )
 endif()
 
@@ -123,6 +139,7 @@ add_custom_target(VibeCADScripts ALL
         ${VibeCAD_Scripts}
         ${VibeCAD_ToolImplScripts}
         ${VibeCAD_Resources}
+        ${VibeCAD_UpdateTrustFiles}
         ${VibeCAD_TestScripts}
 )
 
@@ -135,6 +152,15 @@ fc_target_copy_resource(VibeCADScripts
     ${VibeCAD_TestScripts}
 )
 
+if(VibeCAD_UpdateTrustFiles)
+    file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/Mod/VibeCAD/update-trust)
+    fc_target_copy_resource(VibeCADScripts
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_BINARY_DIR}/Mod/VibeCAD
+        ${VibeCAD_UpdateTrustFiles}
+    )
+endif()
+
 install(
     FILES
         ${VibeCAD_Scripts}
@@ -142,6 +168,15 @@ install(
     DESTINATION
         Mod/VibeCAD
 )
+
+if(VibeCAD_UpdateTrustFiles)
+    install(
+        FILES
+            ${VibeCAD_UpdateTrustFiles}
+        DESTINATION
+            Mod/VibeCAD/update-trust
+    )
+endif()
 
 install(
     DIRECTORY

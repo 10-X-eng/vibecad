@@ -13,7 +13,11 @@ from dataclasses import dataclass
 import hashlib
 from typing import Any, Iterable
 
-from VibeCADVibeScriptDomains import domain_availability, get_vibescript_pack
+from VibeCADVibeScriptDomains import (
+    UNIVERSAL_SOURCE_OPERATIONS,
+    domain_availability,
+    get_vibescript_pack,
+)
 from VibeCADWorkbenchTools import get_tool_pack
 
 MODELING_ENGINES = frozenset({"vibescript"})
@@ -31,35 +35,65 @@ FASTENER_CATALOG_TOOL = "fastener_catalog.search"
 COMPONENT_CATALOG_TOOL = "component_catalog.search"
 COMPONENT_INTERFACE_TOOL = "component.publish_interface"
 ASSEMBLY_PLAYBACK_TOOL = "assembly.play_simulation"
+ASSEMBLY_STOP_PLAYBACK_TOOL = "assembly.stop_simulation"
 MATERIAL_CATALOG_TOOL = "material_catalog.search"
+MODEL_ASSEMBLY_WORKBENCHES = frozenset(
+    {"PartDesignWorkbench", "AssemblyWorkbench"}
+)
+MODEL_ASSEMBLY_DOMAINS = ("partdesign", "assembly")
 SHARED_CONTEXT_TOOLS = frozenset(
     {
         FASTENER_CATALOG_TOOL,
         COMPONENT_CATALOG_TOOL,
         COMPONENT_INTERFACE_TOOL,
         ASSEMBLY_PLAYBACK_TOOL,
+        ASSEMBLY_STOP_PLAYBACK_TOOL,
         MATERIAL_CATALOG_TOOL,
     }
 )
 FASTENER_WORKBENCHES = frozenset({"PartDesignWorkbench", "AssemblyWorkbench"})
-COMPONENT_CATALOG_WORKBENCHES = frozenset({"AssemblyWorkbench"})
+COMPONENT_CATALOG_WORKBENCHES = frozenset(
+    {"PartDesignWorkbench", "AssemblyWorkbench", "RobotWorkbench"}
+)
 COMPONENT_INTERFACE_WORKBENCHES = frozenset(
-    {"PartDesignWorkbench", "AssemblyWorkbench"}
+    {"PartDesignWorkbench", "AssemblyWorkbench", "RobotWorkbench"}
 )
 MATERIAL_CATALOG_WORKBENCHES = frozenset({"PartDesignWorkbench", "MaterialWorkbench"})
 
 
+def is_model_assembly_workbench(workbench: str | None) -> bool:
+    """Return whether the ribbon belongs to the unified authoring surface."""
+
+    return str(workbench or "") in MODEL_ASSEMBLY_WORKBENCHES
+
+
+def share_authoring_surface(
+    first_workbench: str | None,
+    second_workbench: str | None,
+) -> bool:
+    """Return whether two ribbons expose one stable provider contract."""
+
+    first = str(first_workbench or "")
+    second = str(second_workbench or "")
+    return first == second or (
+        first in MODEL_ASSEMBLY_WORKBENCHES
+        and second in MODEL_ASSEMBLY_WORKBENCHES
+    )
+
+
 def _core_tool_names(workbench: str | None) -> tuple[str, ...]:
     names = set(CORE_CONVERSATION_VIEW_TOOLS)
-    if workbench in FASTENER_WORKBENCHES:
+    unified = is_model_assembly_workbench(workbench)
+    if unified or workbench in FASTENER_WORKBENCHES:
         names.add(FASTENER_CATALOG_TOOL)
-    if workbench in COMPONENT_CATALOG_WORKBENCHES:
+    if unified or workbench in COMPONENT_CATALOG_WORKBENCHES:
         names.add(COMPONENT_CATALOG_TOOL)
-    if workbench in COMPONENT_INTERFACE_WORKBENCHES:
+    if unified or workbench in COMPONENT_INTERFACE_WORKBENCHES:
         names.add(COMPONENT_INTERFACE_TOOL)
-    if workbench == "AssemblyWorkbench":
+    if unified or workbench == "AssemblyWorkbench":
         names.add(ASSEMBLY_PLAYBACK_TOOL)
-    if workbench in MATERIAL_CATALOG_WORKBENCHES:
+        names.add(ASSEMBLY_STOP_PLAYBACK_TOOL)
+    if unified or workbench in MATERIAL_CATALOG_WORKBENCHES:
         names.add(MATERIAL_CATALOG_TOOL)
     return tuple(sorted(names))
 
@@ -81,6 +115,24 @@ PROVIDER_READ_TOOL_OWNERS: dict[str, tuple[str, str]] = {
 }
 
 
+def provider_read_tool_is_visible(
+    name: str,
+    *,
+    workbench: str | None,
+    engine: str,
+) -> bool:
+    """Return whether a focused native read belongs to this authoring surface."""
+
+    owner = PROVIDER_READ_TOOL_OWNERS.get(str(name))
+    if owner is None:
+        return True
+    owner_workbench, owner_engine = owner
+    return owner_engine == engine and share_authoring_surface(
+        owner_workbench,
+        workbench,
+    )
+
+
 def _provider_cad_tool_names(
     names: Iterable[str],
     *,
@@ -90,8 +142,11 @@ def _provider_cad_tool_names(
     result: list[str] = []
     for raw_name in names:
         name = str(raw_name)
-        owner = PROVIDER_READ_TOOL_OWNERS.get(name)
-        if owner is not None and owner != (workbench, engine):
+        if not provider_read_tool_is_visible(
+            name,
+            workbench=workbench,
+            engine=engine,
+        ):
             continue
         if name not in result:
             result.append(name)
@@ -223,10 +278,18 @@ def resolve_modeling_surface(
             engine=clean_engine,
             domain=vibescript_pack.domain,
             surface_id=_surface_id(
-                workbench=clean_workbench,
+                workbench=(
+                    "ModelAssemblyAuthoring"
+                    if is_model_assembly_workbench(clean_workbench)
+                    else clean_workbench
+                ),
                 engine=clean_engine,
-                domain=vibescript_pack.domain,
-                generation="domain-v6-focused-source-tools",
+                domain=(
+                    "partdesign+assembly"
+                    if is_model_assembly_workbench(clean_workbench)
+                    else vibescript_pack.domain
+                ),
+                generation="domain-v7-stable-authoring-tools",
             ),
             core_tool_names=_core_tool_names(clean_workbench),
             cad_tool_names=_provider_cad_tool_names(
@@ -235,7 +298,11 @@ def resolve_modeling_surface(
                     *(
                         name
                         for name, owner in PROVIDER_READ_TOOL_OWNERS.items()
-                        if owner == (clean_workbench, clean_engine)
+                        if provider_read_tool_is_visible(
+                            name,
+                            workbench=clean_workbench,
+                            engine=clean_engine,
+                        )
                     ),
                 ),
                 workbench=clean_workbench,
@@ -270,17 +337,7 @@ def _vibescript_domains(names: Iterable[str]) -> set[str]:
         parts = str(name).split(".")
         if not parts or parts[0] != "vibescript":
             continue
-        if len(parts) == 2 and parts[1] in {
-            "read_source",
-            "read_api",
-            "create_program",
-            "build_program",
-            "edit_source",
-            "set_inputs",
-            "reconfigure_program",
-            "delete_output",
-            "delete_program",
-        }:
+        if len(parts) == 2 and parts[1] in UNIVERSAL_SOURCE_OPERATIONS:
             continue
         if len(parts) == 3:
             result.add(parts[1])
@@ -345,8 +402,12 @@ def validate_surface_names(
     if engine == "vibescript" and scripted:
         allowed_reads = {
             name
-            for name, owner in PROVIDER_READ_TOOL_OWNERS.items()
-            if owner == (workbench, engine)
+            for name in PROVIDER_READ_TOOL_OWNERS
+            if provider_read_tool_is_visible(
+                name,
+                workbench=workbench,
+                engine=engine,
+            )
         }
         native_cad = [
             name

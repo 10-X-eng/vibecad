@@ -87,6 +87,58 @@ class TestVibeCADNativePanelStartup(unittest.TestCase):
 class TestVibeCADResponsiveAssistant(unittest.TestCase):
     """Exercise the compact composer against the real Qt layout engine."""
 
+    def test_shift_enter_sends_while_plain_enter_edits(self) -> None:
+        import FreeCAD as App
+
+        if not App.GuiUp:
+            self.skipTest("FreeCAD GUI mode is required")
+
+        from PySide import QtCore, QtGui, QtWidgets
+
+        import VibeCADGui
+
+        application = QtWidgets.QApplication.instance()
+        self.assertIsNotNone(application)
+        original_submit = VibeCADGui._run_prompt_from_panel
+        submitted: list[str] = []
+        root = None
+        try:
+            VibeCADGui._run_prompt_from_panel = lambda: submitted.append(
+                prompt.toPlainText()
+            )
+            root = VibeCADGui._build_panel_widget()
+            prompt = root.findChild(QtWidgets.QPlainTextEdit, "VibePrompt")
+            self.assertIsNotNone(prompt)
+            self.assertTrue(prompt.property("VibeSubmitFilterInstalled"))
+            send_button = root.findChild(QtWidgets.QPushButton, "VibeSend")
+            self.assertIsNotNone(send_button)
+            self.assertIn("Shift+Enter", send_button.toolTip())
+            prompt.setPlainText("Build the mounting bracket")
+
+            shift_enter = QtGui.QKeyEvent(
+                QtCore.QEvent.KeyPress,
+                QtCore.Qt.Key_Return,
+                QtCore.Qt.ShiftModifier,
+            )
+            application.sendEvent(prompt, shift_enter)
+            self.assertEqual(submitted, ["Build the mounting bracket"])
+            self.assertEqual(prompt.toPlainText(), "Build the mounting bracket")
+
+            plain_enter = QtGui.QKeyEvent(
+                QtCore.QEvent.KeyPress,
+                QtCore.Qt.Key_Return,
+                QtCore.Qt.NoModifier,
+            )
+            application.sendEvent(prompt, plain_enter)
+            self.assertEqual(submitted, ["Build the mounting bracket"])
+            self.assertIn("\n", prompt.toPlainText())
+        finally:
+            VibeCADGui._run_prompt_from_panel = original_submit
+            if root is not None:
+                root.close()
+                root.deleteLater()
+                application.processEvents()
+
     def test_narrow_composer_uses_distinct_icons_without_words(self) -> None:
         import FreeCAD as App
 
@@ -388,6 +440,11 @@ def test_vibecad_docks_use_native_standard_workbench_declarations() -> None:
     assert '"VibeCADContextDebugPanel"' in setup
     assert "Gui::DockWindowOption::VisibleTabbed" in setup
     assert "Gui::DockWindowOption::HiddenTabbed" in setup
+    context_debug_options = setup.rsplit('"VibeCADContextDebugPanel"', 1)[1].split(
+        ");", 1
+    )[0]
+    assert "Gui::DockWindowOption::HiddenTabbed" in context_debug_options
+    assert "Gui::DockWindowOption::VisibleTabbed" not in context_debug_options
 
     for relative_path in ROOT.glob("src/Mod/*/InitGui.py"):
         if relative_path.parent.name == "VibeCAD":
@@ -533,6 +590,48 @@ def test_hidden_context_debug_dock_performs_no_gui_thread_polling(monkeypatch) -
     assert refreshed == []
 
 
+def test_enabling_context_debug_does_not_open_the_viewer(monkeypatch) -> None:
+    import VibeCADGui as panel
+
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide",
+        SimpleNamespace(QtCore=SimpleNamespace(QTimer=object)),
+    )
+    shown: list[bool] = []
+    monkeypatch.setattr(
+        panel,
+        "_context_debug_settings",
+        lambda: SimpleNamespace(context_debug_enabled=True),
+    )
+    monkeypatch.setattr(panel, "_find_context_debug_dock", lambda: None)
+    monkeypatch.setattr(panel, "show_context_debugger", lambda: shown.append(True))
+
+    panel.apply_context_debug_preferences()
+
+    assert shown == []
+
+
+def test_mcp_settings_have_a_dedicated_vibecad_preference_page() -> None:
+    preferences = _source("src/Mod/VibeCAD/VibeCADPreferences.py")
+    gui = _source("src/Mod/VibeCAD/VibeCADGui.py")
+    main_page = preferences.split("class VibeCADPreferencesPage:", 1)[1].split(
+        "class VibeCADMCPPreferencesPage:", 1
+    )[0]
+    mcp_page = preferences.split("class VibeCADMCPPreferencesPage:", 1)[1].split(
+        "class VibeCADPromptStartersPreferencesPage:", 1
+    )[0]
+
+    assert 'setWindowTitle("MCP")' in mcp_page
+    assert 'setObjectName("VibeCADPrefMCPEnabled")' in mcp_page
+    assert 'setObjectName("VibeCADPrefMCPEnabled")' not in main_page
+    assert "mcp_enabled=persisted.mcp_enabled" in main_page
+    registration = gui.split("def ensure_preferences_registered()", 1)[1].split(
+        "def ensure_commands_registered()", 1
+    )[0]
+    assert "VibeCADPreferences.VibeCADMCPPreferencesPage" in registration
+
+
 def test_python_workbench_dock_declarations_reach_dock_window_manager() -> None:
     source = _source("src/Gui/WorkbenchManipulatorPython.cpp")
 
@@ -650,6 +749,11 @@ def test_overlaid_dock_visibility_has_one_requested_state_owner() -> None:
     # The Model browser is permanent viewport chrome, not a dock presentation.
     assert 'QStringLiteral("VibeCADViewportCanvas")' in main_window
     assert 'QStringLiteral("VibeCADModelBrowserHost")' in main_window
+    assert 'QStringLiteral("VibeCADModelBrowserResizeHandle")' in main_window
+    assert "modelBrowserMinimumWidth = 288" in main_window
+    assert 'modelBrowserWidthPreference = "ModelBrowserWidth"' in main_window
+    assert "browserPreferences->GetInt(" in main_window
+    assert "browserPreferences->SetInt(modelBrowserWidthPreference, browserWidth)" in main_window
     assert "workspaceLayout->addWidget(viewportCanvas, 1)" in main_window
     permanent = source.split("void presentPermanentModelBrowser", 1)[1].split(
         "}  // namespace", 1

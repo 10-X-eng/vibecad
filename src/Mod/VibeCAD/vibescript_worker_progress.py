@@ -24,6 +24,10 @@ def _write() -> None:
         return
     payload = dict(_state)
     payload["elapsed_seconds"] = round(time.monotonic() - _started, 6)
+    payload["phase_elapsed_seconds"] = round(
+        time.monotonic() - _phase_started,
+        6,
+    )
     temporary = _path.with_suffix(".tmp")
     temporary.write_text(
         json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
@@ -73,6 +77,28 @@ def set_phase(phase: str, *, output: str | None = None) -> None:
 
 def set_output(output: str) -> None:
     _state["current_output"] = str(output)
+    _write()
+
+
+def set_item_progress(
+    item_kind: str,
+    *,
+    completed: int,
+    total: int,
+    current: str = "",
+) -> None:
+    """Publish bounded counters for the current native worker subphase."""
+
+    clean_completed = max(0, int(completed))
+    clean_total = max(0, int(total))
+    if clean_completed > clean_total:
+        clean_completed = clean_total
+    _state["item_progress"] = {
+        "kind": str(item_kind),
+        "completed": clean_completed,
+        "total": clean_total,
+        **({"current": str(current)} if str(current) else {}),
+    }
     _write()
 
 
@@ -141,4 +167,3 @@ def finish() -> None:
     _state["current_graph_node"] = None
     _state["completed"] = True
     set_phase("completed", output="")
-

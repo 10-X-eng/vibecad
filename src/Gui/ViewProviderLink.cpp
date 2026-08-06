@@ -570,12 +570,15 @@ public:
 
         NodeMap nodeMap;
 
-        for (auto child : pcLinked->claimChildren3D()) {
-            Pointer info = get(child, nullptr);
+        for (const auto& child : pcLinked->claimLinkChildren3D()) {
+            Pointer info = get(child.object, nullptr);
             if (!info) {
                 continue;
             }
-            SoNode* node = info->getSnapshot(LinkView::SnapshotChild);
+            SoNode* node = info->getSnapshot(
+                child.overrideVisibility ? LinkView::SnapshotVisible
+                                         : LinkView::SnapshotChild
+            );
             if (!node) {
                 continue;
             }

@@ -3006,6 +3006,48 @@ TEST_F(DocumentTest, resourceReconciliationAcceptsAlreadyDeletedOldResources)
     doc()->commitTransaction();
 }
 
+TEST_F(DocumentTest, resourceReconciliationAdvancesCreationProvenanceForLaterPublication)
+{
+    auto* timeline = App::DocumentTimeline::ensure(doc());
+
+    doc()->openTransaction("Create replaceable semantic resource");
+    auto* owner = addTimelineTestFeature(doc(), "ProvenanceOwner");
+    auto* oldResource = addTimelineTestFeature(doc(), "ProvenanceOldResource");
+    markTimelineTestOperation(owner);
+    markTimelineTestResource(oldResource, owner);
+    timeline->finalizeProvisionalOperationBlock(owner, {oldResource, owner});
+    doc()->commitTransaction();
+
+    doc()->openTransaction("Reconcile then publish another semantic block");
+    timeline->stageOperationResourceReconciliation(owner, {oldResource});
+    auto* replacement = addTimelineTestFeature(doc(), "ProvenanceReplacement");
+    markTimelineTestResource(replacement, owner);
+    App::TimelineResourceReconciliationMapping mapping {
+        .owner = owner,
+        .orderedFinalResources = {replacement},
+        .stateSourceIndices = {0},
+        .consumerReplacementIndices = {-1},
+    };
+    timeline->finalizeProvisionalOperationResourceReconciliation(mapping);
+    const std::string oldResourceName = oldResource->getNameInDocument();
+    doc()->removeObject(oldResourceName.c_str());
+    ASSERT_EQ(doc()->getObject("ProvenanceOldResource"), nullptr);
+
+    auto* laterOperation = addTimelineTestFeature(doc(), "LaterPublishedOperation");
+    auto* laterResource = addTimelineTestFeature(doc(), "LaterPublishedResource");
+    markTimelineTestOperation(laterOperation);
+    markTimelineTestResource(laterResource, laterOperation);
+    EXPECT_NO_THROW(
+        timeline->publishProvisionalOperationBlock(laterOperation, {laterResource})
+    );
+    EXPECT_THAT(
+        timeline->Operations.getValues(),
+        ::testing::ElementsAre(replacement, owner, laterResource, laterOperation)
+    );
+    EXPECT_EQ(timeline->Position.getValue(), 4);
+    doc()->commitTransaction();
+}
+
 TEST_F(DocumentTest, resourceReconciliationRejectsLaterRetirementRemovedByOwnerCallback)
 {
     doc()->setUndoMode(1);

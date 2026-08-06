@@ -101,7 +101,7 @@ def is_publication(obj: Any) -> bool:
 
 
 def model_root_for(obj: Any) -> Any:
-    """Resolve the one owning scripted-model root through native dependencies."""
+    """Resolve the one owning scripted-model root from exact persisted identity."""
 
     if role_of(obj) == ROLE_MODEL:
         return obj
@@ -120,6 +120,20 @@ def model_root_for(obj: Any) -> Any:
         if role_of(owner) == ROLE_MODEL
         and str(getattr(owner, PROP_MODEL_ID, "") or "") == model_id
     ]
+    if not matches:
+        # Reusable component occurrences are independent top-level History
+        # operations by design. They cannot carry a native link back to their
+        # earlier program root without turning bookkeeping into a forward
+        # modeling dependency. Both objects already persist the same globally
+        # unique model ID, so resolve that exact identity in the owning
+        # document rather than inventing a containment relationship.
+        doc = getattr(obj, "Document", None)
+        matches = [
+            candidate
+            for candidate in list(getattr(doc, "Objects", []) or [])
+            if role_of(candidate) == ROLE_MODEL
+            and str(getattr(candidate, PROP_MODEL_ID, "") or "") == model_id
+        ]
     if len(matches) != 1:
         raise PublicationError(
             "A scripted publication must belong to exactly one model root.",

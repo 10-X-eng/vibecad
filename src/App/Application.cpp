@@ -892,6 +892,18 @@ bool Application::canRecomputeRequestOnWorker(const RecomputeRequest& req) const
     return document && documentCanRecomputeOnWorker(*document);
 }
 
+static std::string publicReleaseIdentity(const std::map<std::string, std::string>& config)
+{
+    std::string version = config.at("BuildVersionMajor") + "." + config.at("BuildVersionMinor")
+        + "." + config.at("BuildVersionPoint");
+    const auto& suffix = config.at("BuildVersionSuffix");
+    if (!suffix.empty()) {
+        version += "-" + suffix;
+    }
+    const auto& build = config.at("BuildVersion");
+    return version + " (Build " + (build.empty() ? "0" : build) + ")";
+}
+
 bool Application::tryQueueRecomputeRequest(RecomputeRequest req)
 {
     std::vector<RecomputeRequest> requests;
@@ -2676,8 +2688,7 @@ void processProgramOptions(const boost::program_options::variables_map& vm, std:
 {
     if (vm.contains("version") && !vm.contains("verbose")) {
         std::stringstream str;
-        str << mConfig["ExeName"] << " " << mConfig["ExeVersion"]
-            << " Revision: " << mConfig["BuildRevision"] << '\n';
+        str << mConfig["ExeName"] << " " << publicReleaseIdentity(mConfig) << '\n';
         if (vm.count("verbose")) {
             App::ProgramInformation::getVerboseCommonInfo(str, mConfig);
         }
@@ -2834,6 +2845,7 @@ void Application::initConfig(int argc, char ** argv)
         Application::Config()["BuildVersionMinor"  ] = FCVersionMinor;
         Application::Config()["BuildVersionPoint"  ] = FCVersionPoint;
         Application::Config()["BuildVersionSuffix" ] = FCVersionSuffix;
+        Application::Config()["BuildVersion"       ] = FCBuildVersion;
         Application::Config()["BuildRevision"      ] = FCRevision;
         Application::Config()["BuildRepositoryURL" ] = FCRepositoryURL;
         Application::Config()["BuildRevisionDate"  ] = FCRevisionDate;
@@ -2950,27 +2962,20 @@ void Application::initConfig(int argc, char ** argv)
 
     // Banner ===========================================================
     if (mConfig["RunMode"] != "Cmd" && !(vm.contains("verbose") && vm.contains("version"))) {
+        const auto releaseIdentity = publicReleaseIdentity(mConfig);
         // Remove banner if FreeCAD is invoked via the -c command as regular
         // Python interpreter
         if (mConfig["Verbose"] != "Strict")
-            Base::Console().message("%s %s, Libs: %s.%s.%s%sR%s\n%s",
+            Base::Console().message("%s %s, Libs: %s\n%s",
                               mConfig["ExeName"].c_str(),
                               mConfig["ExeVersion"].c_str(),
-                              mConfig["BuildVersionMajor"].c_str(),
-                              mConfig["BuildVersionMinor"].c_str(),
-                              mConfig["BuildVersionPoint"].c_str(),
-                              mConfig["BuildVersionSuffix"].c_str(),
-                              mConfig["BuildRevision"].c_str(),
+                              releaseIdentity.c_str(),
                               mConfig["CopyrightInfo"].c_str());
         else
-            Base::Console().message("%s %s, Libs: %s.%s.%s%sR%s\n",
+            Base::Console().message("%s %s, Libs: %s\n",
                               mConfig["ExeName"].c_str(),
                               mConfig["ExeVersion"].c_str(),
-                              mConfig["BuildVersionMajor"].c_str(),
-                              mConfig["BuildVersionMinor"].c_str(),
-                              mConfig["BuildVersionPoint"].c_str(),
-                              mConfig["BuildVersionSuffix"].c_str(),
-                              mConfig["BuildRevision"].c_str());
+                              releaseIdentity.c_str());
 
         if (SafeMode::SafeModeEnabled()) {
             Base::Console().message("FreeCAD is running in _SAFE_MODE_.\n"
@@ -3313,6 +3318,20 @@ void Application::recomputeWorker()
             if (!request.documentName.empty()) {
                 _recomputeDocumentsInProgress.erase(request.documentName);
                 _recomputeStateChanged.notify_all();
+
+                const std::string completedDocumentName = request.documentName;
+                lock.unlock();
+                auto notifyFinished = [this, completedDocumentName]() {
+                    signalRecomputeRequestFinished(completedDocumentName);
+                };
+                if (App::MainThreadSignalConfig::hasHooks()
+                    && !App::MainThreadSignalConfig::isMainThread()) {
+                    App::MainThreadSignalConfig::invoke(std::move(notifyFinished), false);
+                }
+                else {
+                    notifyFinished();
+                }
+                lock.lock();
             }
         }
     }

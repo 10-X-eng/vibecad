@@ -54,6 +54,8 @@ def test_linux_bundle_smokes_python_dependencies_independently() -> None:
         "anthropic",
         "keyring",
         "jsonschema",
+        "mcp",
+        "mcp_types",
         "secretstorage",
         "keyring.backends.SecretService",
     ):

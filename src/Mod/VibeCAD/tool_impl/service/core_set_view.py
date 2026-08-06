@@ -783,7 +783,14 @@ def resolve_frame_objects(
     if frame_mode == "all":
         if object_names:
             return _invalid("object_names requires frame='objects'.")
-        return {"ok": True, "object_names": model_display_target_names(document)}
+        return {
+            "ok": True,
+            "object_names": [
+                name
+                for name in model_display_target_names(document)
+                if bool(document.getObject(name).ViewObject.Visibility)
+            ],
+        }
 
     if frame_mode == "active_sketch":
         sketch = service._get_sketch()
@@ -836,42 +843,29 @@ def frame_view(
     if frame_mode == "none":
         return {"framed": False, "method": "unchanged"}
     if frame_mode == "all":
-        visible_objects = [
-            obj
-            for obj in list(document.Objects)
-            if getattr(obj, "ViewObject", None) is not None
-            and bool(obj.ViewObject.Visibility)
-        ]
-        finite_objects = [
-            obj for obj in visible_objects if _has_finite_shape_bounds(obj)
-        ]
-        unbounded_references = [
-            obj for obj in visible_objects if _is_unbounded_reference(obj)
-        ]
-        if finite_objects:
-            with temporarily_hide_objects(
+        # Fit the same top-level visible targets reported by resolution.  A
+        # native Link can render delegated geometry without exposing a direct
+        # Shape, while visible implementation children and datum origins can
+        # otherwise dominate fitAll even though they are not independent
+        # display targets.
+        if object_names:
+            with temporarily_isolate_objects(
                 document,
-                [obj.Name for obj in unbounded_references],
+                object_names,
+                reveal_targets=False,
             ):
-                view.fitAll()
+                if exclude_sketch_annotations:
+                    with temporarily_detach_sketch_annotations(view):
+                        view.fitAll()
+                else:
+                    view.fitAll()
             return {
                 "framed": True,
-                "method": "scene_fit_finite_geometry",
-                "reference_objects_excluded_from_fit": [
-                    obj.Name for obj in unbounded_references
-                ],
+                "method": "visible_model_target_fit",
+                "object_names": list(object_names),
             }
-        if unbounded_references:
-            framing = _frame_world_points(
-                view,
-                [_global_placement(obj).Base for obj in unbounded_references],
-                method="visible_reference_origin_bounds",
-                minimum_span=10.0,
-            )
-            framing["object_names"] = [obj.Name for obj in unbounded_references]
-            return framing
         view.fitAll()
-        return {"framed": True, "method": "scene_fit_all"}
+        return {"framed": True, "method": "empty_scene_fit"}
     if frame_mode == "active_sketch":
         sketch = service._get_sketch()
         if sketch is None:
@@ -1073,8 +1067,11 @@ def set_sketch_annotations(view: Any, mode: str) -> dict[str, Any]:
 def temporarily_isolate_objects(
     document: Any,
     object_names: list[str],
+    *,
+    reveal_targets: bool = True,
 ) -> Iterator[None]:
     keep = _visible_container_closure(document, object_names)
+    preserve = _linked_render_support_names(document, object_names) - keep
     snapshots: list[tuple[Any, bool]] = []
     for obj in list(document.Objects):
         view_object = getattr(obj, "ViewObject", None)
@@ -1082,7 +1079,18 @@ def temporarily_isolate_objects(
             continue
         visible = bool(view_object.Visibility)
         snapshots.append((view_object, visible))
-        desired = obj.Name in keep
+        # App::Link owns the occurrence's visibility, but its view provider may
+        # still consume the linked definition's currently enabled Body Tip or
+        # group children. Preserve those implementation switches without
+        # showing the definition container itself in the isolated scene.
+        if reveal_targets:
+            desired = visible if obj.Name in preserve else obj.Name in keep
+        else:
+            # frame='all' starts from the exact set of currently visible
+            # top-level model targets. Isolating that scene may hide unrelated
+            # objects, but it must never reinterpret a hidden Body Tip or
+            # container ancestor as something the user intended to show.
+            desired = visible and (obj.Name in keep or obj.Name in preserve)
         if visible != desired:
             view_object.Visibility = desired
     try:
@@ -1175,6 +1183,47 @@ def _visible_container_closure(document: Any, object_names: list[str]) -> set[st
     return keep
 
 
+def _linked_render_support_names(document: Any, object_names: list[str]) -> set[str]:
+    """Return definition children whose presentation an isolated Link consumes.
+
+    A linked occurrence and its definition are separate visible objects.  The
+    definition root must stay hidden during an occurrence-only capture, while
+    the definition's active Body Tip or visible group members retain their
+    existing presentation state so the Link can render its delegated scene.
+    """
+
+    support: set[str] = set()
+    visited: set[int] = set()
+
+    def retain_children(target: Any) -> None:
+        if target is None or id(target) in visited:
+            return
+        visited.add(id(target))
+        type_id = str(getattr(target, "TypeId", "") or "")
+        if type_id == "PartDesign::Body":
+            tip = getattr(target, "Tip", None)
+            tip_name = str(getattr(tip, "Name", "") or "")
+            if tip_name:
+                support.add(tip_name)
+            return
+        members = list(getattr(target, "Group", []) or [])
+        for member in members:
+            member_name = str(getattr(member, "Name", "") or "")
+            if member_name:
+                support.add(member_name)
+            retain_children(member)
+
+    for name in object_names:
+        occurrence = document.getObject(name)
+        if occurrence is None:
+            continue
+        target = getattr(occurrence, "LinkedObject", None)
+        if target is None:
+            continue
+        retain_children(target)
+    return support
+
+
 def _has_finite_shape_bounds(obj: Any) -> bool:
     shape = getattr(obj, "Shape", None)
     if shape is None or bool(shape.isNull()):
@@ -1194,9 +1243,12 @@ def _has_finite_shape_bounds(obj: Any) -> bool:
 def model_display_target_names(document: Any) -> list[str]:
     targets: list[Any] = []
     for obj in list(getattr(document, "Objects", []) or []):
+        type_id = str(getattr(obj, "TypeId", "") or "")
+        if type_id in {"App::Link", "Assembly::AssemblyLink"}:
+            targets.append(obj)
+            continue
         if not _has_finite_shape_bounds(obj):
             continue
-        type_id = str(getattr(obj, "TypeId", "") or "")
         if type_id == "Sketcher::SketchObject":
             continue
         if type_id == "PartDesign::Body":

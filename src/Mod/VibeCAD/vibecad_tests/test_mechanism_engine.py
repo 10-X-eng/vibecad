@@ -513,6 +513,17 @@ def test_solve_report_is_bound_to_scenario_identity_and_native_evidence() -> Non
     assert scenario["assembly"]["label"] == "Joint Matrix"
 
 
+def test_solver_scope_never_equates_constraint_consistency_with_operation() -> None:
+    from VibeCADMechanismEngine import solver_validation_scope
+
+    solved = solver_validation_scope(constraints_consistent=True)
+    assert solved["scope"] == "joint_constraint_consistency"
+    assert solved["constraints_consistent"] is True
+    assert solved["mechanical_operation_verified"] is False
+    assert "collision clearance" in solved["advisory"]
+    assert "motion_over_operating_range" in solved["required_evidence"]
+
+
 def test_static_check_requires_explicit_pairs_tolerances_and_unique_authority() -> None:
     scenario = _scenario()
     check = _static_check(

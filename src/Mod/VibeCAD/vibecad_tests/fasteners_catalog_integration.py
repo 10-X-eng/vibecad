@@ -123,6 +123,18 @@ def _verify_representative_geometry(index: dict) -> dict:
             contract = assembly_component_contract(feature.Shape, identity)
             assert "thread_axis" in contract["published_interfaces"]
             assert contract["bom_properties"]
+            if identity["standard"] in {"ISO7379", "ASMEB18.3.4"}:
+                shoulder_length = float(identity["length_mm"])
+                interfaces = contract["published_interfaces"]
+                assert interfaces["bearing_plane"]["standard_frame"][
+                    "position"
+                ] == [0.0, 0.0, shoulder_length]
+                assert interfaces["under_head_plane"]["standard_frame"][
+                    "position"
+                ] == [0.0, 0.0, shoulder_length]
+                assert interfaces["mounting_plane"]["standard_frame"][
+                    "position"
+                ] == [0.0, 0.0, shoulder_length]
             generated.append(
                 {
                     "standard": identity["standard"],
@@ -192,6 +204,40 @@ def _verify_model_thread_families(index: dict) -> dict:
         return {
             "families": generated,
             "family_count": len(generated),
+        }
+    finally:
+        App.closeDocument(document.Name)
+
+
+def _verify_shoulder_screw_thread_and_datum() -> dict:
+    """Pin the ISO 7379 thread boolean and its non-zero bearing datum."""
+
+    document = App.newDocument("VibeCADShoulderScrewContract")
+    try:
+        feature, identity = create_fastener_feature(
+            document,
+            standard="ISO7379",
+            nominal_thread="M6",
+            length_mm=30.0,
+            model_thread=True,
+            object_name="ThreadedShoulderScrew",
+        )
+        assert feature.Shape.isValid()
+        assert len(feature.Shape.Solids) == 1
+        assert bool(feature.Thread) is True
+        contract = assembly_component_contract(feature.Shape, identity)
+        interfaces = contract["published_interfaces"]
+        for name in ("mounting_plane", "bearing_plane", "under_head_plane"):
+            assert interfaces[name]["standard_frame"]["position"] == [
+                0.0,
+                0.0,
+                30.0,
+            ]
+        return {
+            "standard": identity["standard"],
+            "part_number": identity["part_number"],
+            "model_thread": bool(feature.Thread),
+            "bearing_plane_z_mm": 30.0,
         }
     finally:
         App.closeDocument(document.Name)
@@ -430,9 +476,11 @@ def main() -> int:
             "options",
         )
         index = catalog_index()
-        assert index["upstream_standard_count"] == 224
-        assert len(index["standards"]) == 222
-        assert len({row["standard"] for row in index["standards"]}) == 222
+        assert index["upstream_standard_count"] == 227
+        assert len(index["standards"]) == 225
+        standards = {row["standard"] for row in index["standards"]}
+        assert len(standards) == 225
+        assert {"PEMIUTA", "PEMIUTB", "PEMIUTC"}.issubset(standards)
         assert {
             item["standard"]
             for item in index["excluded_upstream_standards"]
@@ -453,6 +501,7 @@ def main() -> int:
             },
             "geometry": _verify_representative_geometry(index),
             "model_threads": _verify_model_thread_families(index),
+            "shoulder_screw": _verify_shoulder_screw_thread_and_datum(),
             "document": _verify_document_lifecycle(root),
             "search": _verify_search_and_failures(),
         }

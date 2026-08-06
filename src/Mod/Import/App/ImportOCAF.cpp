@@ -118,6 +118,11 @@ void ImportOCAF::setMerge(bool merge)
     this->merge = merge;
 }
 
+App::DocumentObject* ImportOCAF::finishShape(Part::Feature* part)
+{
+    return part;
+}
+
 void ImportOCAF::loadShapes(
     const TDF_Label& label,
     const TopLoc_Location& loc,
@@ -342,9 +347,8 @@ void ImportOCAF::createShape(
                 }
 
                 part->Label.setValue(name);
-                lValue.push_back(part);
-
                 loadColors(part, aShape);
+                lValue.push_back(finishShape(part));
             }
         }
         else {
@@ -393,9 +397,8 @@ void ImportOCAF::createShape(
     }
 
     part->Label.setValue(name);
-    lvalue.push_back(part);
-
     loadColors(part, aShape);
+    lvalue.push_back(finishShape(part));
 }
 
 void ImportOCAF::loadColors(Part::Feature* part, const TopoDS_Shape& aShape)

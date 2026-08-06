@@ -1089,6 +1089,17 @@ std::vector<App::DocumentObject*> ViewProvider::claimChildren3D() const
     return vec;
 }
 
+std::vector<ViewProvider::LinkChild3D> ViewProvider::claimLinkChildren3D() const
+{
+    std::vector<LinkChild3D> result;
+    const auto children = claimChildren3D();
+    result.reserve(children.size());
+    for (auto* child : children) {
+        result.push_back({child, false});
+    }
+    return result;
+}
+
 bool ViewProvider::getElementPicked(const SoPickedPoint* pp, std::string& subname) const
 {
     auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();

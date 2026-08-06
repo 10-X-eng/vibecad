@@ -165,6 +165,10 @@ class TestAssemblySimulationPlayback(unittest.TestCase):
         self.assertFalse(panel.form.RemoveButton.isEnabled())
         self.assertFalse(panel.form.TimeStartSpinBox.isEnabled())
         self.assertEqual(list(simulation.Group), [drive])
+        self.assertFalse(simulation.VibeCADCollisionFree)
+        self.assertEqual(simulation.VibeCADCollidingPairCount, 1)
+        self.assertTrue(panel.collisionStatusLabel.isVisible())
+        self.assertIn("Collision", panel.collisionStatusLabel.text())
 
         Gui.Control.activeTaskDialog().reject()
         Gui.updateGui()
@@ -222,6 +226,17 @@ class TestAssemblySimulationPlayback(unittest.TestCase):
 
         self.document = App.openDocument(str(saved_path))
         Gui.activeDocument().activeView().viewAxonometric()
+        stale_outputs = [
+            (obj.Name, str(getattr(obj, "VibeCADStaleReason", "") or ""))
+            for obj in self.document.Objects
+            if str(getattr(obj, "VibeCADVibeScriptProgramId", "") or "")
+            and str(getattr(obj, "VibeCADDerivedState", "") or "") == "stale"
+        ]
+        self.assertEqual(
+            stale_outputs,
+            [],
+            "Restoring App::Link occurrences must not invalidate accepted programs",
+        )
         reopened_simulation = next(
             obj
             for obj in self.document.Objects
@@ -306,7 +321,10 @@ class TestAssemblySimulationPlayback(unittest.TestCase):
         )
 
     def test_service_tool_routes_explicit_playback_state(self):
-        from tool_impl.service import assembly_play_simulation
+        from tool_impl.service import (
+            assembly_play_simulation,
+            assembly_stop_simulation,
+        )
 
         objects = self._publish_simulation()
         presentation = objects["Presentation"]
@@ -319,17 +337,133 @@ class TestAssemblySimulationPlayback(unittest.TestCase):
             presentation=reference_for_target(self.document, presentation),
             hidden_components=[reference_for_target(self.document, base)],
             camera="isometric",
+            autoplay=False,
+            time_seconds=0.04,
         )
         self.assertTrue(response["ok"], response)
         self.assertEqual(response["hidden_component_count"], 1)
         self.assertEqual(response["camera"], "isometric")
+        self.assertFalse(response["playing"])
+        self.assertEqual(response["frame"], 3)
+        self.assertAlmostEqual(response["time_seconds"], 0.04)
+        self.assertEqual(response["frame_kind"], "solver_output")
+        self.assertGreaterEqual(response["frame_count"], 3)
+        self.assertTrue(response["collision_alert"])
+        self.assertFalse(response["collision_summary"]["collision_free"])
+        self.assertEqual(
+            response["collision_summary"]["colliding_pair_count"],
+            1,
+        )
+        self.assertEqual(len(response["displayed_frame_collisions"]), 1)
         self.assertFalse(base.ViewObject.Visibility)
         self.assertTrue(presentation.Proxy._last_applied_placements)
 
-        Gui.Control.activeTaskDialog().reject()
-        Gui.updateGui()
+        stopped = assembly_stop_simulation.run(
+            _Service(self.document, self.root)
+        )
+        self.assertTrue(stopped["ok"], stopped)
+        self.assertTrue(stopped["stopped"])
+        self.assertFalse(stopped["playing"])
+        self.assertTrue(stopped["restored"])
+        self.assertEqual(
+            stopped["simulation"]["object_name"],
+            objects["Simulation"].Name,
+        )
         self.assertIsNone(Gui.Control.activeTaskDialog())
         self.assertEqual(bool(base.ViewObject.Visibility), base_visibility)
+
+    def test_service_tool_maps_start_time_to_first_solver_frame(self):
+        from tool_impl.service import (
+            assembly_play_simulation,
+            assembly_stop_simulation,
+        )
+
+        objects = self._publish_simulation()
+        simulation = objects["Simulation"]
+
+        response = assembly_play_simulation.run(
+            _Service(self.document, self.root),
+            reference_for_target(self.document, simulation),
+            autoplay=False,
+            time_seconds=float(simulation.aTimeStart.Value),
+        )
+        self.assertTrue(response["ok"], response)
+        self.assertEqual(response["frame"], 1)
+        self.assertEqual(response["frame_kind"], "solver_output")
+        self.assertAlmostEqual(
+            response["time_seconds"],
+            float(simulation.aTimeStart.Value),
+        )
+
+        stopped = assembly_stop_simulation.run(_Service(self.document, self.root))
+        self.assertTrue(stopped["ok"], stopped)
+        self.assertTrue(stopped["stopped"])
+
+        already_stopped = assembly_stop_simulation.run(
+            _Service(self.document, self.root)
+        )
+        self.assertTrue(already_stopped["ok"], already_stopped)
+        self.assertFalse(already_stopped["stopped"])
+
+    def test_incomplete_collision_analysis_alerts_without_blocking_playback(self):
+        from CommandCreateSimulation import openSimulation
+        from tool_impl.service import (
+            assembly_play_simulation,
+            assembly_stop_simulation,
+        )
+
+        objects = self._publish_simulation()
+        simulation = objects["Simulation"]
+        validation = json.loads(simulation.VibeCADAssemblySimulationValidation)
+        warning = {
+            "code": "COLLISION_ANALYSIS_INCOMPLETE",
+            "stage": "simulation_collision",
+            "message": "Injected geometry-engine failure",
+        }
+        validation["collision_summary"].update(
+            {
+                "status": "incomplete",
+                "analysis_complete": False,
+                "collision_free": False,
+                "colliding_frame_count": 0,
+                "colliding_pair_count": 0,
+                "first_collision": None,
+                "worst_collision": None,
+                "pairs": [],
+                "warning_count": 1,
+                "warnings": [warning],
+            }
+        )
+        simulation.VibeCADAssemblySimulationValidation = json.dumps(
+            validation,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+        panel = openSimulation(
+            simulation,
+            autoplay=False,
+            time_seconds=float(simulation.aTimeStart.Value),
+        )
+        self.assertIn("incomplete", panel.collisionStatusLabel.text().lower())
+        self.assertIn(warning["message"], panel.collisionStatusLabel.toolTip())
+        stopped = assembly_stop_simulation.run(_Service(self.document, self.root))
+        self.assertTrue(stopped["ok"], stopped)
+        self.assertTrue(stopped["stopped"])
+
+        response = assembly_play_simulation.run(
+            _Service(self.document, self.root),
+            reference_for_target(self.document, simulation),
+            autoplay=False,
+            time_seconds=float(simulation.aTimeStart.Value),
+        )
+        self.assertTrue(response["ok"], response)
+        self.assertTrue(response["collision_alert"])
+        self.assertEqual(response["collision_alert_reason"], "analysis_incomplete")
+        self.assertEqual(response["collision_summary"]["warnings"], [warning])
+        stopped = assembly_stop_simulation.run(_Service(self.document, self.root))
+        self.assertTrue(stopped["ok"], stopped)
+        self.assertTrue(stopped["stopped"])
 
 
 if __name__ == "__main__":

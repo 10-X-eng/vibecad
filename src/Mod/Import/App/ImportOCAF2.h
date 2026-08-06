@@ -72,6 +72,10 @@ struct ImportExport ImportOCAFOptions
     bool reduceObjects = false;
     bool showProgress = false;
     bool expandCompound = false;
+    // Generic OCAF callers retain their historical behavior unless they
+    // explicitly opt in. STEP entry points load the user preference, whose
+    // VibeCAD default is enabled.
+    bool importSolidBodies = false;
     int mode = 0;
 };
 
@@ -113,6 +117,10 @@ public:
     {
         options.expandCompound = enable;
     }
+    void setImportSolidBodies(bool enable)
+    {
+        options.importSolidBodies = enable;
+    }
 
     enum ImportMode
     {
@@ -134,6 +142,7 @@ private:
     {
         std::string baseName;
         App::DocumentObject* obj = nullptr;
+        Part::Feature* importedFeature = nullptr;
         App::PropertyPlacement* propPlacement = nullptr;
         Base::Color faceColor;
         Base::Color edgeColor;
@@ -147,7 +156,8 @@ private:
         TDF_Label label,
         const TopoDS_Shape& shape,
         bool baseOnly = false,
-        bool newDoc = true
+        bool newDoc = true,
+        bool occurrence = false
     );
     App::Document* getDocument(App::Document* doc, TDF_Label label);
     bool createAssembly(
@@ -177,6 +187,7 @@ private:
     void setObjectName(Info& info, TDF_Label label);
     std::string getLabelName(TDF_Label label);
     App::DocumentObject* expandShape(App::Document* doc, TDF_Label label, const TopoDS_Shape& shape);
+    App::DocumentObject* adoptSolidFeature(Part::Feature* feature);
 
     virtual void applyEdgeColors(Part::Feature*, const std::vector<Base::Color>&)
     {}
@@ -185,6 +196,8 @@ private:
     virtual void applyElementColors(App::DocumentObject*, const std::map<std::string, Base::Color>&)
     {}
     virtual void applyLinkColor(App::DocumentObject*, int /*index*/, Base::Color)
+    {}
+    virtual void setObjectVisible(App::DocumentObject*, bool)
     {}
 
 private:
@@ -201,6 +214,8 @@ private:
         {
             myParent.applyFaceColors(part, colors);
         }
+
+        App::DocumentObject* finishShape(Part::Feature* part) override;
 
         ImportOCAF2& myParent;
     };
