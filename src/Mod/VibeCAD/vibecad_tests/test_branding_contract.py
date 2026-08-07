@@ -303,7 +303,7 @@ class TestVibeCADRibbonChrome(unittest.TestCase):
         self.assertIsNotNone(theme_toggle)
         self.assertTrue(toolbar.isVisible())
         self.assertFalse(toolbar.toggleViewAction().isVisible())
-        self.assertFalse(main_window.menuBar().isVisible())
+        self.assertTrue(main_window.menuBar().isVisible())
         self.assertEqual(
             [tabs.tabText(index) for index in range(tabs.count())],
             [
@@ -837,6 +837,25 @@ def test_release_packages_share_canonical_artifact_basename() -> None:
     assert "package/rattler-build/osx/VibeCAD_*.dmg" not in macos_workflow
 
 
+def test_update_ui_uses_the_standard_menu_and_keeps_preferences_for_settings() -> None:
+    update_gui = _source("src/Mod/VibeCAD/VibeCADUpdateGui.py")
+    preferences = update_gui.split("class VibeCADUpdatePreferencesPage", 1)[1].split(
+        "class UpdateCenterDialog", 1
+    )[0]
+
+    assert '_COMMAND_NAME = "VibeCAD_CheckForUpdates"' in update_gui
+    assert '_LEGACY_COMMAND_NAME = "VibeCAD_UpdateCenter"' in update_gui
+    assert '"MenuText": "Check for Updates"' in update_gui
+    assert 'action.setProperty("VibeCADCheckForUpdates", True)' in update_gui
+    assert "main_window.workbenchActivated.connect(_schedule_help_menu_action)" in update_gui
+    assert "for delay in (0, 250, 1000, 5000):" in update_gui
+    assert "Open Update Center" not in update_gui
+    assert "QPushButton" not in preferences
+    assert 'self.setWindowTitle("VibeCAD Updates")' in update_gui
+    assert 'buttons.addButton("Download update"' in update_gui
+    assert "show_check_for_updates(check_now=False)" in update_gui
+
+
 def test_assistant_panel_uses_vibecad_product_name() -> None:
     panel_source = _source("src/Mod/VibeCAD/VibeCADGui.py")
     core_source = _source("src/Mod/VibeCAD/VibeCADCore.py")
@@ -1020,9 +1039,10 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
 
     assert "workbench->getToolbarItems()" in ribbon
     assert "command->getAction()->action()" in ribbon
-    assert "Qt::Key_Alt" in ribbon
-    assert "Qt::Key_F10" in ribbon
-    assert "mainWindow->menuBar()->hide();" in ribbon
+    assert "Qt::Key_Alt" not in ribbon
+    assert "Qt::Key_F10" not in ribbon
+    assert "mainWindow->menuBar()->setVisible(legacyMenuVisible);" in ribbon
+    assert "bool legacyMenuVisible = true;" in ribbon
     assert "sourceDocumentTabs->hide();" in ribbon
     assert "documentTabs->setTabsClosable(true);" in ribbon
     assert "groupMenu->setPopupMode(QToolButton::InstantPopup);" in ribbon

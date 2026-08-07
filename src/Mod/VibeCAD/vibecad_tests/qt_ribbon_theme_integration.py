@@ -1241,7 +1241,7 @@ def _run():
             settings_button.defaultAction().property("VibeCADCommandId")
             == "VibeCAD_OpenPreferences"
         )
-        assert not main_window.menuBar().isVisible()
+        assert main_window.menuBar().isVisible()
         assert _visible_main_window_toolbars(main_window) == [ribbon]
         _assert_application_strip_actions(main_window)
         print("VIBECAD_RIBBON_STAGE application-strip", flush=True)
@@ -2071,12 +2071,27 @@ def _run():
         assert_tree_rendered()
         print("VIBECAD_RIBBON_STAGE draft-compatibility", flush=True)
 
-        _key_click(main_window, QtCore.Qt.Key_F10)
-        _process_events()
         assert main_window.menuBar().isVisible()
-        _key_click(main_window, QtCore.Qt.Key_F10)
-        _process_events()
-        assert not main_window.menuBar().isVisible()
+        import VibeCADUpdateGui
+
+        VibeCADUpdateGui.ensure_registered()
+        VibeCADUpdateGui._add_help_menu_action()
+        help_menu = next(
+            (
+                menu
+                for menu in main_window.menuBar().findChildren(QtWidgets.QMenu)
+                if menu.title().replace("&", "").strip().casefold() == "help"
+            ),
+            None,
+        )
+        assert help_menu is not None
+        update_actions = [
+            action
+            for action in help_menu.actions()
+            if action.property("VibeCADCheckForUpdates") is True
+        ]
+        assert len(update_actions) == 1
+        assert update_actions[0].text().replace("&", "") == "Check for Updates"
         assert QtWidgets.QApplication.activePopupWidget() is None
         print("VIBECAD_RIBBON_STAGE menu-bar", flush=True)
 
@@ -2142,7 +2157,7 @@ def _run():
         assert preferences_check.get("ok"), preferences_check.get("error")
         _process_events()
         assert _visible_main_window_toolbars(main_window) == [ribbon]
-        assert not main_window.menuBar().isVisible()
+        assert main_window.menuBar().isVisible()
         print("VIBECAD_RIBBON_STAGE preferences", flush=True)
 
         tabs.setCurrentIndex(0)

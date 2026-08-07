@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Native VibeCAD Update Center, notification, and install-on-exit bridge."""
+"""Native VibeCAD update notification and install-on-restart bridge."""
 
 from __future__ import annotations
 
@@ -30,7 +30,8 @@ from VibeCADUpdate import (
 
 
 _PREFERENCE_PATH = "User parameter:BaseApp/Preferences/Mod/VibeCAD/Updates"
-_COMMAND_NAME = "VibeCAD_UpdateCenter"
+_COMMAND_NAME = "VibeCAD_CheckForUpdates"
+_LEGACY_COMMAND_NAME = "VibeCAD_UpdateCenter"
 _ICON = "preferences-vibecad.svg"
 _registered = False
 _controller: "UpdateController | None" = None
@@ -438,19 +439,23 @@ printf '{"status":"rolled-back","platform":"appimage"}\n' > "$receipt"
     )
 
 
-class UpdateCenterCommand:
+class CheckForUpdatesCommand:
     def GetResources(self) -> dict[str, str]:
         return {
             "Pixmap": _ICON,
-            "MenuText": "VibeCAD Update Center",
-            "ToolTip": "Check, download, and install trusted VibeCAD updates",
+            "MenuText": "Check for Updates",
+            "ToolTip": "Check for a VibeCAD update",
         }
 
     def IsActive(self) -> bool:
         return True
 
     def Activated(self) -> None:
-        show_update_center()
+        show_check_for_updates()
+
+
+class UpdateCenterCommand(CheckForUpdatesCommand):
+    """Compatibility alias for callers using the original command class."""
 
 
 class VibeCADUpdatePreferencesPage:
@@ -486,9 +491,6 @@ class VibeCADUpdatePreferencesPage:
         self.policy_source = QtWidgets.QLabel(self.form)
         self.policy_source.setWordWrap(True)
         layout.addRow("Policy", self.policy_source)
-        self.open_center = QtWidgets.QPushButton("Open Update Center", self.form)
-        self.open_center.clicked.connect(show_update_center)
-        layout.addRow("", self.open_center)
         self.loadSettings()
 
     def saveSettings(self) -> None:
@@ -535,10 +537,12 @@ class VibeCADUpdatePreferencesPage:
 
 
 class UpdateCenterDialog(QtWidgets.QDialog):
+    """Compatibility-named dialog implementing the simple update flow."""
+
     def __init__(self, controller: UpdateController, parent=None) -> None:
         super().__init__(parent or Gui.getMainWindow())
         self.controller = controller
-        self.setWindowTitle("VibeCAD Update Center")
+        self.setWindowTitle("VibeCAD Updates")
         self.setMinimumWidth(560)
         layout = QtWidgets.QVBoxLayout(self)
         current = current_release_identity()
@@ -662,10 +666,9 @@ def _show_update_notification(result: UpdateCheckResult) -> None:
     label.setWordWrap(True)
     layout.addWidget(label)
     buttons = QtWidgets.QDialogButtonBox(dialog)
-    open_button = buttons.addButton("Open Update Center", QtWidgets.QDialogButtonBox.AcceptRole)
+    open_button = buttons.addButton("Download update", QtWidgets.QDialogButtonBox.AcceptRole)
     later_button = buttons.addButton("Later", QtWidgets.QDialogButtonBox.RejectRole)
-    open_button.clicked.connect(show_update_center)
-    open_button.clicked.connect(dialog.accept)
+    open_button.clicked.connect(lambda: _download_available_update(dialog))
     later_button.clicked.connect(dialog.reject)
     layout.addWidget(buttons)
     dialog.destroyed.connect(lambda: _clear_notification(dialog))
@@ -679,7 +682,13 @@ def _clear_notification(dialog: Any) -> None:
         _notification = None
 
 
-def show_update_center() -> None:
+def _download_available_update(notification: Any) -> None:
+    notification.accept()
+    show_check_for_updates(check_now=False)
+    get_update_controller().download()
+
+
+def show_check_for_updates(*, check_now: bool = True) -> None:
     global _update_center
     controller = get_update_controller()
     if _update_center is None:
@@ -689,6 +698,14 @@ def show_update_center() -> None:
     _update_center.show()
     _update_center.raise_()
     _update_center.activateWindow()
+    if check_now and not controller.busy:
+        controller.check(force=True)
+
+
+def show_update_center() -> None:
+    """Open the update dialog for compatibility with existing callers."""
+
+    show_check_for_updates()
 
 
 def _clear_update_center(*_args: Any) -> None:
@@ -710,14 +727,22 @@ def _add_help_menu_action() -> None:
     if not actions:
         return
     action = actions[0]
-    action.setObjectName("VibeCADUpdateCenterAction")
+    action.setObjectName("VibeCADCheckForUpdatesAction")
+    action.setProperty("VibeCADCheckForUpdates", True)
     action.setProperty("VibeCADUpdateCenter", True)
     for menu in main_window.menuBar().findChildren(QtWidgets.QMenu):
         if menu.title().replace("&", "").strip().casefold() == "help":
             if action not in menu.actions():
                 menu.addSeparator()
                 menu.addAction(action)
+            if not menu.property("VibeCADCheckForUpdatesHooked"):
+                menu.aboutToShow.connect(_add_help_menu_action)
+                menu.setProperty("VibeCADCheckForUpdatesHooked", True)
             return
+
+
+def _schedule_help_menu_action(*_args: Any) -> None:
+    QtCore.QTimer.singleShot(0, _add_help_menu_action)
 
 
 def ensure_registered() -> None:
@@ -725,9 +750,15 @@ def ensure_registered() -> None:
     if _registered:
         return
     Gui.addIconPath(str(Path(__file__).resolve().parent))
-    Gui.addCommand(_COMMAND_NAME, UpdateCenterCommand())
+    Gui.addCommand(_COMMAND_NAME, CheckForUpdatesCommand())
+    Gui.addCommand(_LEGACY_COMMAND_NAME, UpdateCenterCommand())
     Gui.addPreferencePage(VibeCADUpdatePreferencesPage, "VibeCAD")
-    QtCore.QTimer.singleShot(0, _add_help_menu_action)
+    main_window = Gui.getMainWindow()
+    if not main_window.property("VibeCADUpdateMenuHooked"):
+        main_window.workbenchActivated.connect(_schedule_help_menu_action)
+        main_window.setProperty("VibeCADUpdateMenuHooked", True)
+    for delay in (0, 250, 1000, 5000):
+        QtCore.QTimer.singleShot(delay, _add_help_menu_action)
     QtCore.QTimer.singleShot(15000, get_update_controller().automatic_check)
     QtCore.QTimer.singleShot(30000, _complete_startup_health_check)
     _registered = True
