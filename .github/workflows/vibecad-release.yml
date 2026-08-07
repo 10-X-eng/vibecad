@@ -84,14 +84,6 @@ jobs:
               echo "Tag ${release_tag} already exists and will not be moved or reused." >&2
               exit 1
             fi
-            immutable_enabled="$(gh api \
-              -H "X-GitHub-Api-Version: 2026-03-10" \
-              "repos/${GITHUB_REPOSITORY}/immutable-releases" \
-              --jq '.enabled // false')"
-            if [[ "${immutable_enabled}" != "true" ]]; then
-              echo "GitHub release immutability must be enabled before publishing." >&2
-              exit 1
-            fi
           fi
 
           retention_days="14"

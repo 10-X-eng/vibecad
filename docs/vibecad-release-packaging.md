@@ -72,8 +72,11 @@ official release uses `source_ref=main` and `publish_release=true`.
 No additional repository token, external update repository, Microsoft account,
 or code-signing certificate is required. Publishing uses the workflow's scoped
 GitHub token. Production publication is fail-closed on the current `main`
-commit, version synchronization, unique tag and release identity, immutable
-release configuration, package checksums, and the canonical update manifest.
+commit, version synchronization, unique tag and release identity, package
+checksums, and the canonical update manifest. Repository owners must keep
+GitHub's immutable-releases setting enabled; the standard workflow token cannot
+read repository-administration settings, while GitHub enforces that setting on
+the release once it is published.
 
 ## Release assets
 
