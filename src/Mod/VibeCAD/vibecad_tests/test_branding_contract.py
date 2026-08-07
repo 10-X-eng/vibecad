@@ -831,6 +831,8 @@ def test_release_packages_share_canonical_artifact_basename() -> None:
         'deb_path="$output_dir/${artifact_basename}-Linux-${deb_arch}.deb"'
         in deb_builder
     )
+    assert 'sha256sum "$deb_filename" > "${deb_filename}-SHA256.txt"' in deb_builder
+    assert 'sha256sum "$deb_path" > "${deb_path}-SHA256.txt"' not in deb_builder
     assert "package/rattler-build/osx/VibeCAD-*.dmg" in macos_workflow
     assert "package/rattler-build/osx/VibeCAD_*.dmg" not in macos_workflow
 

@@ -189,6 +189,10 @@ fi
 # Staying on xz (rather than switching to zstd) keeps the package installable by the
 # same set of dpkg/apt versions, so the supported OS list is unchanged.
 dpkg-deb -Zxz -z1 --build --root-owner-group "$pkgroot" "$deb_path"
-sha256sum "$deb_path" > "${deb_path}-SHA256.txt"
+deb_filename="$(basename "$deb_path")"
+(
+    cd "$output_dir"
+    sha256sum "$deb_filename" > "${deb_filename}-SHA256.txt"
+)
 
 echo "$deb_path"
