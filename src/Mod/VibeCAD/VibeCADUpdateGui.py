@@ -25,7 +25,6 @@ from VibeCADUpdate import (
     current_release_identity,
     default_update_directory,
     load_update_policy,
-    packaged_trusted_root,
     record_pending_install,
 )
 
@@ -130,15 +129,6 @@ class UpdateController(QtCore.QObject):
                 App.Console.PrintWarning(
                     f"VibeCAD managed update policy is invalid: {policy_result.error}\n"
                 )
-            return
-        trust_root = (
-            Path(service.policy.trusted_root).expanduser()
-            if service.policy.trusted_root
-            else packaged_trusted_root(service.channel)
-        )
-        if not trust_root.is_file():
-            # Development builds intentionally remain quiet until the production
-            # root ceremony has installed the immutable trust anchor.
             return
         self.check(force=False, notify=True)
 
@@ -610,7 +600,7 @@ class UpdateCenterDialog(QtWidgets.QDialog):
 
     @QtCore.Slot()
     def _check_started(self) -> None:
-        self.status.setText("Checking signed update metadata…")
+        self.status.setText("Checking for updates…")
         self.progress.setVisible(False)
         self._refresh_buttons()
 

@@ -51,15 +51,8 @@ jobs:
         id: meta
         shell: bash
         env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           GH_TOKEN: ${{ github.token }}
           PUBLISH_RELEASE: ${{ inputs.publish_release }}
-          VIBECAD_UPDATES_TOKEN: ${{ secrets.VIBECAD_UPDATES_TOKEN }}
-          WINDOWS_AZURE_CERTIFICATE_PROFILE: ${{ secrets.WINDOWS_AZURE_CERTIFICATE_PROFILE }}
-          WINDOWS_AZURE_ENDPOINT: ${{ secrets.WINDOWS_AZURE_ENDPOINT }}
-          WINDOWS_AZURE_SIGNING_ACCOUNT: ${{ secrets.WINDOWS_AZURE_SIGNING_ACCOUNT }}
         run: |
           set -euo pipefail
 
@@ -77,31 +70,6 @@ jobs:
           python src/Tools/sync_version.py --check
 
           if [[ "${PUBLISH_RELEASE}" == "true" ]]; then
-            if [[ ! -s src/Mod/VibeCAD/update-trust/root.json ]]; then
-              echo "Production releases require the offline-signed TUF root.json." >&2
-              exit 1
-            fi
-            required_publication_values=(
-              AZURE_CLIENT_ID
-              AZURE_SUBSCRIPTION_ID
-              AZURE_TENANT_ID
-              VIBECAD_UPDATES_TOKEN
-              WINDOWS_AZURE_CERTIFICATE_PROFILE
-              WINDOWS_AZURE_ENDPOINT
-              WINDOWS_AZURE_SIGNING_ACCOUNT
-            )
-            for variable_name in "${required_publication_values[@]}"; do
-              if [[ -z "${!variable_name}" ]]; then
-                echo "${variable_name} is required before a release can be published." >&2
-                exit 1
-              fi
-            done
-            if ! GH_TOKEN="${VIBECAD_UPDATES_TOKEN}" gh api \
-              "repos/10-X-eng/vibecad-updates/actions/workflows/promote-release.yml" \
-              >/dev/null; then
-              echo "The update token cannot access 10-X-eng/vibecad-updates." >&2
-              exit 1
-            fi
             git fetch origin main:refs/remotes/origin/main --no-tags
             main_sha="$(git rev-parse --verify refs/remotes/origin/main)"
             if [[ "${source_sha}" != "${main_sha}" ]]; then
@@ -285,14 +253,6 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Sign in to Azure for production code signing
-        if: needs.prepare.outputs.publish_release == 'true'
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Install Pixi
         shell: bash
         run: |
@@ -351,10 +311,6 @@ jobs:
           BUILD_TAG: ${{ needs.prepare.outputs.build_tag }}
           MAKE_INSTALLER: "true"
           MAKE_PORTABLE_ARCHIVE: "false"
-          WINDOWS_AZURE_CERTIFICATE_PROFILE: ${{ secrets.WINDOWS_AZURE_CERTIFICATE_PROFILE }}
-          WINDOWS_AZURE_ENDPOINT: ${{ secrets.WINDOWS_AZURE_ENDPOINT }}
-          WINDOWS_AZURE_SIGNING_ACCOUNT: ${{ secrets.WINDOWS_AZURE_SIGNING_ACCOUNT }}
-          WINDOWS_SIGN_RELEASE: ${{ needs.prepare.outputs.publish_release == 'true' && '1' || '0' }}
         run: |
           set -euo pipefail
           pixi run -e package create_bundle
@@ -510,49 +466,3 @@ jobs:
 
           gh release create "${RELEASE_TAG}" "${release_files[@]}" "${release_args[@]}"
           gh release edit "${RELEASE_TAG}" "${publish_args[@]}"
-
-      - name: Promote release to the signed update repository
-        if: needs.prepare.outputs.publish_release == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.VIBECAD_UPDATES_TOKEN }}
-          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${GH_TOKEN}" ]]; then
-            echo "VIBECAD_UPDATES_TOKEN is required to promote a published release." >&2
-            exit 1
-          fi
-          promotion_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          gh workflow run vibecad-promote-update.yml \
-            --repo "${GITHUB_REPOSITORY}" \
-            --ref "${GITHUB_DEFAULT_BRANCH:-main}" \
-            -f release_tag="${RELEASE_TAG}"
-
-          promotion_run_id=""
-          expected_title="Promote update: ${RELEASE_TAG}"
-          for _attempt in $(seq 1 360); do
-            runs_json="$(gh run list \
-              --repo "${GITHUB_REPOSITORY}" \
-              --workflow vibecad-promote-update.yml \
-              --event workflow_dispatch \
-              --limit 30 \
-              --json databaseId,displayTitle,createdAt)"
-            promotion_run_id="$(jq -r \
-              --arg title "${expected_title}" \
-              --arg started "${promotion_started_at}" \
-              'map(select(.displayTitle == $title and .createdAt >= $started))
-               | sort_by(.createdAt) | last | .databaseId // empty' \
-              <<< "${runs_json}")"
-            if [[ -n "${promotion_run_id}" ]]; then
-              break
-            fi
-            sleep 10
-          done
-          if [[ -z "${promotion_run_id}" ]]; then
-            echo "The VibeCAD promotion workflow did not start within 60 minutes." >&2
-            exit 1
-          fi
-          gh run watch "${promotion_run_id}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --exit-status

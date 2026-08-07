@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Trusted version/build update discovery and package download support.
+"""Version/build update discovery and package download support.
 
 The GUI layer is intentionally separate.  This module owns release identity,
-enterprise policy, TUF verification, resumable downloads, and install plans so
-the security-sensitive behavior can be tested without Qt or a running FreeCAD.
+enterprise policy, GitHub Release verification, optional TUF verification,
+resumable downloads, and install plans so the security-sensitive behavior can
+be tested without Qt or a running FreeCAD.
 """
 
 from __future__ import annotations
@@ -26,7 +27,9 @@ from typing import Any, Callable, Mapping, Sequence
 
 
 UPDATE_REPOSITORY = "10-X-eng/vibecad"
-UPDATE_METADATA_REPOSITORY = "vibecad-updates"
+GITHUB_RELEASES_API_URL = (
+    f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases?per_page=100"
+)
 UPDATE_SCHEMA = 1
 DEFAULT_CHECK_INTERVAL_HOURS = 24
 MINIMUM_CHECK_INTERVAL_HOURS = 1
@@ -43,6 +46,9 @@ _PRERELEASE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _PRERELEASE_RANK = {"dev": 0, "alpha": 1, "beta": 2, "rc": 3}
+_MAX_RELEASE_INDEX_BYTES = 8 * 1024 * 1024
+_MAX_MANIFEST_BYTES = 2 * 1024 * 1024
+_MAX_CHECKSUM_BYTES = 4096
 
 
 class UpdateError(RuntimeError):
@@ -50,7 +56,7 @@ class UpdateError(RuntimeError):
 
 
 class UpdateTrustError(UpdateError):
-    """Signed update metadata is missing, expired, or invalid."""
+    """Update metadata is missing, expired, or invalid."""
 
 
 class DownloadCancelled(UpdateError):
@@ -463,19 +469,90 @@ def parse_update_manifest(payload: bytes | str | Mapping[str, object]) -> Update
 def default_metadata_base_url(channel: str) -> str:
     if channel not in _CHANNELS:
         raise ValueError(f"invalid update channel: {channel!r}")
-    return f"https://10-x-eng.github.io/{UPDATE_METADATA_REPOSITORY}/metadata/"
+    raise UpdateTrustError("VibeCAD does not configure a default TUF metadata service.")
 
 
 def default_target_base_url(channel: str) -> str:
     if channel not in _CHANNELS:
         raise ValueError(f"invalid update channel: {channel!r}")
-    return f"https://10-x-eng.github.io/{UPDATE_METADATA_REPOSITORY}/targets/"
+    raise UpdateTrustError("VibeCAD does not configure a default TUF target service.")
 
 
 def packaged_trusted_root(channel: str) -> Path:
     if channel not in _CHANNELS:
         raise ValueError(f"invalid update channel: {channel!r}")
     return Path(__file__).resolve().with_name("update-trust") / "root.json"
+
+
+def _release_identity_from_tag(tag: object) -> ReleaseIdentity | None:
+    value = str(tag or "").strip()
+    if not value.startswith("v") or "-build" not in value:
+        return None
+    version, separator, build_text = value[1:].rpartition("-build")
+    if not separator or not build_text.isdigit():
+        return None
+    try:
+        identity = ReleaseIdentity(version, int(build_text))
+    except ValueError:
+        return None
+    return identity if identity.tag == value else None
+
+
+def _canonical_release_asset_url(identity: ReleaseIdentity, name: str) -> str:
+    quoted_tag = urllib.parse.quote(identity.tag, safe="")
+    quoted_name = urllib.parse.quote(name, safe="")
+    return (
+        f"https://github.com/{UPDATE_REPOSITORY}/releases/download/"
+        f"{quoted_tag}/{quoted_name}"
+    )
+
+
+def _read_https_url(url: str, *, maximum: int, timeout: float = 30.0) -> bytes:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise UpdateTrustError("The update service returned an unsafe URL.")
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "VibeCAD-Updater",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = response.read(maximum + 1)
+    except (OSError, urllib.error.URLError) as exc:
+        raise UpdateError(f"The update service could not be reached: {exc}") from exc
+    if len(data) > maximum:
+        raise UpdateTrustError("The update service returned an oversized response.")
+    return data
+
+
+def _github_assets_by_name(release: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
+    raw_assets = release.get("assets")
+    if not isinstance(raw_assets, list):
+        raise UpdateTrustError("The GitHub release has no asset list.")
+    assets: dict[str, Mapping[str, object]] = {}
+    for raw_asset in raw_assets:
+        if not isinstance(raw_asset, dict):
+            raise UpdateTrustError("The GitHub release contains an invalid asset record.")
+        name = str(raw_asset.get("name") or "")
+        if not name or Path(name).name != name or name in assets:
+            raise UpdateTrustError("The GitHub release contains an unsafe or duplicate asset name.")
+        assets[name] = raw_asset
+    return assets
+
+
+def _github_asset_url(
+    raw_asset: Mapping[str, object], identity: ReleaseIdentity, name: str
+) -> str:
+    url = str(raw_asset.get("browser_download_url") or "")
+    if url != _canonical_release_asset_url(identity, name):
+        raise UpdateTrustError(f"GitHub returned a noncanonical URL for {name}.")
+    size = raw_asset.get("size")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise UpdateTrustError(f"GitHub returned an invalid size for {name}.")
+    return url
 
 
 def default_update_directory() -> Path:
@@ -565,7 +642,7 @@ class UpdateService:
             )
         return path
 
-    def _verified_manifest(self) -> UpdateRelease:
+    def _verified_tuf_manifest(self) -> UpdateRelease:
         try:
             from tuf.ngclient import Updater as TUFUpdater
         except ImportError as exc:
@@ -602,8 +679,8 @@ class UpdateService:
         target_dir = channel_dir / "targets"
         metadata_dir.mkdir(parents=True, exist_ok=True)
         target_dir.mkdir(parents=True, exist_ok=True)
-        metadata_url = self.policy.metadata_base_url or default_metadata_base_url(self.channel)
-        target_url = self.policy.target_base_url or default_target_base_url(self.channel)
+        metadata_url = self.policy.metadata_base_url
+        target_url = self.policy.target_base_url
         target_path = f"channels/{self.channel}.json"
         try:
             updater = VibeCADTUFUpdater(
@@ -627,6 +704,122 @@ class UpdateService:
         except Exception as exc:
             raise UpdateTrustError(f"Signed update verification failed: {exc}") from exc
 
+    def _github_release_manifest(self) -> UpdateRelease:
+        try:
+            raw_releases = json.loads(
+                _read_https_url(
+                    GITHUB_RELEASES_API_URL,
+                    maximum=_MAX_RELEASE_INDEX_BYTES,
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise UpdateTrustError("GitHub returned an invalid release index.") from exc
+        if not isinstance(raw_releases, list):
+            raise UpdateTrustError("GitHub returned an invalid release index.")
+
+        candidates: list[tuple[ReleaseIdentity, Mapping[str, object]]] = []
+        expected_prerelease = self.channel == "preview"
+        for raw_release in raw_releases:
+            if not isinstance(raw_release, dict) or raw_release.get("draft") is not False:
+                continue
+            identity = _release_identity_from_tag(raw_release.get("tag_name"))
+            if identity is None or identity.channel != self.channel:
+                continue
+            if raw_release.get("prerelease") is not expected_prerelease:
+                raise UpdateTrustError(
+                    f"GitHub release {identity.tag} has the wrong channel classification."
+                )
+            expected_release_url = (
+                f"https://github.com/{UPDATE_REPOSITORY}/releases/tag/{identity.tag}"
+            )
+            if raw_release.get("html_url") != expected_release_url:
+                raise UpdateTrustError(
+                    f"GitHub release {identity.tag} has a noncanonical release URL."
+                )
+            candidates.append((identity, raw_release))
+
+        if not candidates:
+            raise UpdateError(f"No {self.channel} VibeCAD release has been published yet.")
+
+        identity, raw_release = max(
+            candidates,
+            key=lambda candidate: candidate[0].precedence_key(),
+        )
+        assets = _github_assets_by_name(raw_release)
+        manifest_name = f"VibeCAD-update-{identity.version}-build{identity.build}.json"
+        checksum_name = f"{manifest_name}-SHA256.txt"
+        try:
+            manifest_asset = assets[manifest_name]
+            checksum_asset = assets[checksum_name]
+        except KeyError as exc:
+            raise UpdateTrustError(
+                f"GitHub release {identity.tag} is missing its update manifest or checksum."
+            ) from exc
+
+        manifest_url = _github_asset_url(manifest_asset, identity, manifest_name)
+        checksum_url = _github_asset_url(checksum_asset, identity, checksum_name)
+        manifest_bytes = _read_https_url(
+            manifest_url,
+            maximum=_MAX_MANIFEST_BYTES,
+        )
+        checksum_bytes = _read_https_url(
+            checksum_url,
+            maximum=_MAX_CHECKSUM_BYTES,
+        )
+        if len(manifest_bytes) != manifest_asset["size"]:
+            raise UpdateTrustError("The update manifest size differs from the GitHub release.")
+        if len(checksum_bytes) != checksum_asset["size"]:
+            raise UpdateTrustError("The manifest checksum size differs from the GitHub release.")
+        try:
+            checksum_fields = checksum_bytes.decode("ascii").strip().split()
+        except UnicodeDecodeError as exc:
+            raise UpdateTrustError("The update manifest checksum is invalid.") from exc
+        if len(checksum_fields) != 2:
+            raise UpdateTrustError("The update manifest checksum is invalid.")
+        expected_digest = checksum_fields[0].casefold()
+        checksum_target = checksum_fields[1].removeprefix("*")
+        if (
+            _SHA256_PATTERN.fullmatch(expected_digest) is None
+            or checksum_target != manifest_name
+            or hashlib.sha256(manifest_bytes).hexdigest() != expected_digest
+        ):
+            raise UpdateTrustError("The update manifest checksum does not match.")
+
+        try:
+            release = parse_update_manifest(manifest_bytes)
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            raise UpdateTrustError(f"The GitHub update manifest is invalid: {exc}") from exc
+        if release.identity != identity or release.channel != self.channel:
+            raise UpdateTrustError(
+                "The GitHub release identity differs from its update manifest."
+            )
+        for asset in release.assets:
+            raw_asset = assets.get(asset.name)
+            if raw_asset is None:
+                raise UpdateTrustError(
+                    f"The update manifest references missing GitHub asset {asset.name}."
+                )
+            github_url = _github_asset_url(raw_asset, identity, asset.name)
+            if raw_asset["size"] != asset.size or github_url != asset.url:
+                raise UpdateTrustError(
+                    f"GitHub asset {asset.name} differs from the update manifest."
+                )
+        return release
+
+    def _verified_manifest(self) -> UpdateRelease:
+        tuf_configured = bool(
+            self.policy.metadata_base_url
+            or self.policy.target_base_url
+            or self.policy.trusted_root
+        )
+        if not tuf_configured:
+            return self._github_release_manifest()
+        if not self.policy.metadata_base_url or not self.policy.target_base_url:
+            raise UpdateTrustError(
+                "Custom TUF updates require both metadata_base_url and target_base_url."
+            )
+        return self._verified_tuf_manifest()
+
     def check_for_updates(self, *, force: bool = False) -> UpdateCheckResult:
         if not self.policy.enabled:
             return UpdateCheckResult("disabled", self.current, message="Updates are disabled by policy.")
@@ -635,7 +828,7 @@ class UpdateService:
         try:
             release = self._verified_manifest()
             if release.channel != self.channel:
-                raise UpdateTrustError("The signed manifest belongs to a different channel.")
+                raise UpdateTrustError("The verified manifest belongs to a different channel.")
             if not release.identity.is_newer_than(self.current):
                 result = UpdateCheckResult(
                     "current",
@@ -749,13 +942,13 @@ class UpdateService:
                     stream.write(chunk)
                     downloaded += len(chunk)
                     if downloaded > asset.size:
-                        raise UpdateError("Update download exceeded its signed size.")
+                        raise UpdateError("Update download exceeded its authorized size.")
                     if progress is not None:
                         progress(downloaded, asset.size)
                 stream.flush()
                 os.fsync(stream.fileno())
         if not _file_matches(partial, asset):
-            raise UpdateError("Downloaded update failed its signed size or SHA-256 check.")
+            raise UpdateError("Downloaded update failed its authorized size or SHA-256 check.")
         os.replace(partial, destination)
         partial_state.unlink(missing_ok=True)
         try:
@@ -777,11 +970,9 @@ def _file_matches(path: Path, asset: UpdateAsset) -> bool:
 
 
 def _prepare_verified_asset(path: Path, asset: UpdateAsset) -> None:
-    """Apply the platform trust gate to both new and cached packages."""
+    """Apply platform preparation after authorized size and SHA-256 verification."""
 
-    if asset.platform == "windows" and asset.kind == "installer":
-        verify_windows_authenticode(path)
-    elif asset.platform == "linux" and asset.kind == "appimage":
+    if asset.platform == "linux" and asset.kind == "appimage":
         try:
             path.chmod(path.stat().st_mode | 0o111)
         except OSError as exc:
@@ -789,7 +980,13 @@ def _prepare_verified_asset(path: Path, asset: UpdateAsset) -> None:
 
 
 def verify_windows_authenticode(path: Path) -> None:
-    """Require a valid Authenticode signature using the Windows trust provider."""
+    """Verify Authenticode when explicitly requested by an external caller.
+
+    VibeCAD's updater authorizes packages through a verified release manifest
+    (or explicitly configured TUF metadata) plus exact size and SHA-256.
+    Authenticode is optional defense in depth and is not part of the default
+    download gate.
+    """
 
     if os.name != "nt":
         return
