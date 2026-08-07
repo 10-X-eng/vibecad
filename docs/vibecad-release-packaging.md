@@ -120,9 +120,11 @@ missing. It does not change the normal GitHub Releases flow.
 
 ## Application update flow
 
-The Update Center is available from VibeCAD's Help menu and Updates preference
-page. By default, VibeCAD checks once every 24 hours on a background thread. A
-manual check can always be requested when updates are enabled.
+The standard menu bar remains visible, and **Help > Check for Updates** opens the
+update flow and immediately checks the configured channel. The Updates
+preference page contains settings only. By default, VibeCAD checks once every 24
+hours on a background thread and shows a main-window notification only when an
+update is available.
 
 The client:
 

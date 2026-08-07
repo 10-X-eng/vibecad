@@ -28,7 +28,6 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QIcon>
-#include <QKeyEvent>
 #include <QKeySequence>
 #include <QLineEdit>
 #include <QList>
@@ -1624,6 +1623,7 @@ struct Gui::VibeCADRibbon::Private
 
         fullMenuAction = new QAction(QObject::tr("Show full menu bar"), q);
         fullMenuAction->setCheckable(true);
+        fullMenuAction->setChecked(legacyMenuVisible);
         QObject::connect(fullMenuAction, &QAction::toggled, q, [this](bool visible) {
             setLegacyMenuVisible(visible);
         });
@@ -1681,9 +1681,7 @@ struct Gui::VibeCADRibbon::Private
         toolbar->toggleViewAction()->setVisible(false);
         toolbar->show();
         collapseSourceDocumentTabs();
-        if (!legacyMenuVisible) {
-            mainWindow->menuBar()->hide();
-        }
+        mainWindow->menuBar()->setVisible(legacyMenuVisible);
     }
 
     bool isMainWindowToolbar(QToolBar* candidate) const
@@ -1900,8 +1898,7 @@ struct Gui::VibeCADRibbon::Private
     bool syncingTabs = false;
     bool syncingDocumentTabs = false;
     bool inSketchEdit = false;
-    bool legacyMenuVisible = false;
-    bool pendingAltToggle = false;
+    bool legacyMenuVisible = true;
     int previousDomain = 0;
     fastsignals::scoped_connection commandsChanged;
     fastsignals::scoped_connection enteredEdit;
@@ -1977,32 +1974,7 @@ bool Gui::VibeCADRibbon::eventFilter(QObject* watched, QEvent* event)
         d->scheduleDocumentTabsSync();
     }
 
-    if (event->type() == QEvent::KeyPress) {
-        auto* keyEvent = static_cast<QKeyEvent*>(event);
-        if (!keyEvent->isAutoRepeat() && keyEvent->key() == Qt::Key_Alt) {
-            d->pendingAltToggle = true;
-            return true;
-        }
-        if (keyEvent->key() != Qt::Key_Alt) {
-            d->pendingAltToggle = false;
-        }
-        if (!keyEvent->isAutoRepeat() && keyEvent->key() == Qt::Key_F10) {
-            d->setLegacyMenuVisible(!d->legacyMenuVisible);
-            return true;
-        }
-    }
-    else if (event->type() == QEvent::KeyRelease) {
-        auto* keyEvent = static_cast<QKeyEvent*>(event);
-        if (!keyEvent->isAutoRepeat() && keyEvent->key() == Qt::Key_Alt) {
-            const bool toggle = d->pendingAltToggle;
-            d->pendingAltToggle = false;
-            if (toggle) {
-                d->setLegacyMenuVisible(!d->legacyMenuVisible);
-            }
-            return toggle;
-        }
-    }
-    else if (event->type() == QEvent::Show) {
+    if (event->type() == QEvent::Show) {
         if (watched == d->sourceDocumentTabs) {
             QTimer::singleShot(0, this, [this]() { d->collapseSourceDocumentTabs(); });
         }
