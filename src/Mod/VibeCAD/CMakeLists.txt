@@ -187,6 +187,8 @@ install(
         PATTERN "*.py"
 )
 
+find_package(Threads REQUIRED)
+
 add_executable(VibeCADGeometryWorker
     VibeCADGeometryWorker.cpp
 )
@@ -206,6 +208,7 @@ target_link_libraries(VibeCADGeometryWorker
     PRIVATE
         ${OCC_LIBRARIES}
         ${OCC_DEBUG_LIBRARIES}
+        Threads::Threads
 )
 
 if(FREECAD_WARN_ERROR)
