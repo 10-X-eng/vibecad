@@ -38,7 +38,7 @@ jobs:
           --only-binary=:all:
           --requirement .github/requirements-update-validation.txt
 
-      - name: Require the production TUF API
+      - name: Require the optional enterprise TUF API
         shell: bash
         run: |
           set -euo pipefail
@@ -58,7 +58,7 @@ jobs:
           actual = {package: version(package) for package in expected}
           if actual != expected:
               raise SystemExit(f"Unexpected trust dependency versions: {actual!r}")
-          print(f"Validated production TUF API with {actual!r}")
+          print(f"Validated optional enterprise TUF API with {actual!r}")
           PY
 
       - name: Verify canonical version files

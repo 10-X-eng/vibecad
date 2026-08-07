@@ -1,9 +1,13 @@
-# VibeCAD update trust anchor
+# Optional enterprise TUF trust anchor
 
-Production packages must contain `root.json`, the offline-signed root metadata
-from the `10-X-eng/vibecad-updates` TUF repository. The application deliberately
-does not fall back to unsigned GitHub API data when this file is absent.
+Normal VibeCAD updates use official `10-X-eng/vibecad` GitHub Releases and do
+not require a `root.json` file.
 
-Root creation and rotation are owner-controlled key ceremonies. Private keys do
-not belong in this repository, GitHub Actions secrets, build artifacts, or a
-developer workstation cache.
+Administrators may instead configure a custom TUF service through managed
+policy. That opt-in path requires `metadata_base_url` and `target_base_url`,
+plus either `trusted_root` or a public `root.json` packaged here by the managed
+distribution. Partial configuration fails closed. VibeCAD does not host a
+default TUF service.
+
+Private keys do not belong in this repository, GitHub Actions secrets, build
+artifacts, or a developer workstation cache.

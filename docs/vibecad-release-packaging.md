@@ -57,13 +57,9 @@ The workflow:
 2. Pins every job to the same source commit.
 3. Builds the Linux AppImage and Debian package and the Windows installer.
 4. Verifies every package checksum and generates the strict update manifest.
-5. Verifies the manifest through the signed TUF publication path.
-6. Creates GitHub build-provenance attestations.
-7. Creates a draft release, uploads the complete asset set, and publishes it
+5. Creates GitHub build-provenance attestations.
+6. Creates a draft release, uploads the complete asset set, and publishes it
    only after all gates pass.
-8. Dispatches signed-channel promotion after the immutable release exists.
-9. Waits for independent TUF signing and GitHub Pages deployment, then requires
-   the live channel target's SHA-256 to match the immutable release manifest.
 
 Publishing is allowed only from the current `main` commit. The canonical tag
 and release must not already exist, and GitHub release immutability must be
@@ -73,17 +69,11 @@ portable archive is not part of validation or release builds.
 Validation builds may use any `source_ref` with `publish_release=false`. An
 official release uses `source_ref=main` and `publish_release=true`.
 
-Required GitHub Actions configuration:
-
-| Name | Purpose |
-| --- | --- |
-| `VIBECAD_UPDATES_TOKEN` | Fine-grained token with Actions read/write on VibeCAD plus Actions read and repository-dispatch permission on the update metadata repository |
-
-Production authorization is fail-closed: selecting publication without access
-to `10-X-eng/vibecad-updates`, the ceremony-produced
-`src/Mod/VibeCAD/update-trust/root.json`, and verifiable TUF metadata fails the
-workflow. A development build without that root never falls back to unsigned
-discovery.
+No additional repository token, external update repository, Microsoft account,
+or code-signing certificate is required. Publishing uses the workflow's scoped
+GitHub token. Production publication is fail-closed on the current `main`
+commit, version synchronization, unique tag and release identity, immutable
+release configuration, package checksums, and the canonical update manifest.
 
 ## Release assets
 
@@ -100,56 +90,30 @@ The update manifest contains the version, build, channel, canonical GitHub
 release links, and the exact size and SHA-256 of each native package. It never
 contains a source hash as release identity.
 
-## Signed update metadata
+## GitHub Release update authority
 
-GitHub Releases stores the packages, but clients do not trust the GitHub API as
-the update authority. VibeCAD uses The Update Framework (TUF) to protect update
-discovery against a compromised account, token, CDN, or stale metadata replay.
+Official VibeCAD updates use this repository's GitHub Releases as the single
+default publication and discovery service. No second repository, GitHub Pages
+site, signing ceremony, or promotion job is part of the standard release flow.
 
-The dedicated `10-X-eng/vibecad-updates` repository owns the TUF repository and
-publishes it with GitHub Pages at:
+The client lists published releases from `10-X-eng/vibecad` and accepts only
+canonical tags of the form `v<version>-build<build>`. Stable builds must be
+published as non-prereleases with an empty version suffix; preview builds must
+be published as prereleases with a version suffix. The client compares semantic
+version and build number, never a commit hash or date, and selects the newest
+release in the configured channel.
 
-```text
-https://10-x-eng.github.io/vibecad-updates/metadata/
-https://10-x-eng.github.io/vibecad-updates/targets/
-```
+Every accepted release must contain the canonical update manifest and its
+SHA-256 checksum. The client verifies the repository, release tag, channel,
+canonical download URLs, and GitHub-reported asset sizes against that manifest.
+It then verifies the manifest checksum and the selected package's exact size
+and SHA-256 before installation. Any mismatch fails closed.
 
-It should be bootstrapped from the maintained TUF-on-CI repository template.
-The update repository handles the `vibecad-release-published` repository
-dispatch sent by `.github/workflows/vibecad-promote-update.yml`. The payload is:
-
-```json
-{
-  "release_tag": "v26.3.1-RC3-build0",
-  "channel": "preview",
-  "manifest_name": "VibeCAD-update-26.3.1-RC3-build0.json",
-  "manifest_sha256": "<64 lowercase hex characters>",
-  "manifest_url": "https://github.com/10-X-eng/vibecad/releases/download/..."
-}
-```
-
-The handler independently downloads the immutable release manifest, verifies
-the dispatched digest and GitHub release asset evidence, and publishes it as
-`channels/preview.json` or `channels/stable.json`. TUF targets, snapshot, and
-timestamp metadata then commit the new channel state. Promotions are monotonic
-within each channel, so stable and preview can be advanced or frozen
-independently without reusing a version/build identity.
-
-The initial root ceremony is deliberately not automated in this repository:
-
-1. Generate root keys on offline, access-controlled systems.
-2. Require a threshold greater than one for root metadata.
-3. Configure distinct online targets, snapshot, and timestamp keys through the
-   protected `vibecad-update-signing` environment.
-4. Record owner, backup, rotation, expiry, and emergency-revocation procedures.
-5. Copy only the signed public `root.json` to
-   `src/Mod/VibeCAD/update-trust/root.json`.
-6. Build and validate a candidate containing that root before publishing the
-   first update-enabled release.
-
-Private keys must never enter this repository or a VibeCAD package. A missing,
-expired, or invalid root or metadata chain fails closed; there is no unsigned
-GitHub fallback.
+An enterprise can opt into its own TUF service through managed policy by
+providing `metadata_base_url` and `target_base_url`, plus either `trusted_root`
+or a public root packaged by that managed distribution. That path is optional,
+has no VibeCAD-hosted default, and fails closed if the URL pair or trust root is
+missing. It does not change the normal GitHub Releases flow.
 
 ## Application update flow
 
@@ -161,12 +125,14 @@ The client:
 
 1. Loads user preferences or an authoritative machine policy.
 2. Selects `stable` or `preview` from the installed version or policy.
-3. Refreshes and verifies the complete TUF metadata chain.
-4. Parses the strict signed channel manifest and compares version/build values.
+3. Reads official GitHub Releases, or an explicitly configured enterprise TUF
+   service.
+4. Selects a canonical release and verifies its manifest, checksum, channel,
+   URLs, sizes, and version/build identity.
 5. Selects only the native Windows installer or Linux AppImage for the current
    architecture.
 6. Resumes interrupted downloads with HTTP Range and ETag state.
-7. Verifies the TUF-authorized size and SHA-256 before using the package.
+7. Verifies the authorized size and SHA-256 before using the package.
 8. Stages installation on explicit request or, when policy allows, on exit.
 
 Windows updates run the installer silently after VibeCAD exits. The installer
@@ -214,8 +180,10 @@ Example:
 ```
 
 All fields are optional. `channel` is `auto`, `stable`, or `preview`; the check
-interval must be at least one hour. Metadata and target overrides must be HTTPS
-URLs without credentials. Managed controls are visible but read-only in the UI.
+interval must be at least one hour. The TUF URL fields are an all-or-nothing
+enterprise override and must be HTTPS URLs without credentials. `trusted_root`
+must identify the administrator-provided public root metadata unless the managed
+distribution packages one. Managed controls are visible but read-only in the UI.
 
 ## Release runbook
 
@@ -226,12 +194,12 @@ Before publication:
    package validation suites.
 3. Run the release workflow with `publish_release=false` and smoke-test the
    downloaded Windows installer and Linux AppImage artifacts.
-4. Confirm release immutability, update-repository dispatch, TUF role
-   thresholds/expiry, and the packaged root.
+4. Confirm release immutability and inspect the canonical manifest, checksums,
+   package names, and build-provenance attestations.
 5. Merge the exact candidate to `main` and run the workflow with publication
    enabled.
-6. Confirm every release asset/checksum/attestation and the signed stable or
-   preview channel before announcing the release.
+6. Confirm every release asset, checksum, manifest, and attestation before
+   announcing the release.
 7. Test discovery, resumable download, healthy install, and forced rollback from
    an older supported package.
 
@@ -252,6 +220,7 @@ $env:MAKE_PORTABLE_ARCHIVE = "false"
 pixi run -e package create_bundle
 ```
 
-Local and published packages are authorized by signed TUF metadata plus their
-exact size and SHA-256. No Microsoft account or Authenticode certificate is
+Local and published packages are authorized by the canonical GitHub Release
+manifest and checksum plus their exact size and SHA-256. No Microsoft account,
+Authenticode certificate, external update repository, or GitHub Pages site is
 required to build, test, publish, download, or install an update.

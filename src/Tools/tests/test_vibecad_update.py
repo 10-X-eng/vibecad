@@ -18,6 +18,7 @@ VIBECAD_MODULE_DIR = REPO_ROOT / "src" / "Mod" / "VibeCAD"
 sys.path.insert(0, str(VIBECAD_MODULE_DIR))
 
 from VibeCADUpdate import (  # noqa: E402
+    GITHUB_RELEASES_API_URL,
     ReleaseIdentity,
     UpdateAsset,
     UpdateError,
@@ -74,6 +75,84 @@ def _manifest(*, version: str = "26.3.1-RC3", build: int = 1) -> dict[str, objec
                 "sha256": "b" * 64,
             },
         ],
+    }
+
+
+class _BytesResponse:
+    status = 200
+    headers: dict[str, str] = {}
+
+    def __init__(self, payload: bytes, url: str) -> None:
+        self._stream = io.BytesIO(payload)
+        self._url = url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
+
+    def geturl(self) -> str:
+        return self._url
+
+    def getcode(self) -> int:
+        return self.status
+
+
+def _github_release_fixture(
+    manifest: dict[str, object],
+) -> tuple[dict[str, object], dict[str, bytes]]:
+    identity = ReleaseIdentity(str(manifest["version"]), int(manifest["build"]))
+    manifest_name = (
+        f"VibeCAD-update-{identity.version}-build{identity.build}.json"
+    )
+    checksum_name = f"{manifest_name}-SHA256.txt"
+    manifest_bytes = json.dumps(manifest, sort_keys=True).encode("utf-8")
+    checksum_bytes = (
+        f"{hashlib.sha256(manifest_bytes).hexdigest()}  {manifest_name}\n".encode(
+            "ascii"
+        )
+    )
+    release_assets = [
+        {
+            "name": asset["name"],
+            "browser_download_url": asset["url"],
+            "size": asset["size"],
+        }
+        for asset in manifest["assets"]
+    ]
+    manifest_url = (
+        f"https://github.com/10-X-eng/vibecad/releases/download/"
+        f"{identity.tag}/{manifest_name}"
+    )
+    checksum_url = f"{manifest_url}-SHA256.txt"
+    release_assets.extend(
+        [
+            {
+                "name": manifest_name,
+                "browser_download_url": manifest_url,
+                "size": len(manifest_bytes),
+            },
+            {
+                "name": checksum_name,
+                "browser_download_url": checksum_url,
+                "size": len(checksum_bytes),
+            },
+        ]
+    )
+    release = {
+        "draft": False,
+        "prerelease": identity.channel == "preview",
+        "tag_name": identity.tag,
+        "html_url": f"https://github.com/10-X-eng/vibecad/releases/tag/{identity.tag}",
+        "assets": release_assets,
+    }
+    return release, {
+        manifest_url: manifest_bytes,
+        checksum_url: checksum_bytes,
     }
 
 
@@ -208,7 +287,7 @@ class UpdateServiceTests(unittest.TestCase):
             hashlib.sha256(payload).hexdigest(),
         )
 
-    def test_cached_windows_installer_uses_tuf_size_and_hash_without_authenticode(
+    def test_cached_windows_installer_uses_manifest_size_and_hash_without_authenticode(
         self,
     ) -> None:
         payload = b"unsigned installer fixture"
@@ -249,6 +328,146 @@ class UpdateServiceTests(unittest.TestCase):
                     service.download_asset(asset)
             exists = cached.exists()
         self.assertFalse(exists)
+
+    def test_github_release_discovery_uses_version_build_manifest_and_checksum(
+        self,
+    ) -> None:
+        release, responses = _github_release_fixture(_manifest(build=2))
+        responses[GITHUB_RELEASES_API_URL] = json.dumps([release]).encode("utf-8")
+
+        def open_request(request, **_kwargs):
+            url = request.full_url
+            return _BytesResponse(responses[url], url)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = UpdateService(
+                ReleaseIdentity("26.3.1-RC3", 1),
+                UpdatePolicy(),
+                update_directory=Path(temp_dir),
+                system="Windows",
+                machine="AMD64",
+            )
+            with mock.patch("urllib.request.urlopen", side_effect=open_request):
+                result = service.check_for_updates(force=True)
+        self.assertEqual(result.status, "available", result.message)
+        self.assertEqual(result.release.identity, ReleaseIdentity("26.3.1-RC3", 2))
+        self.assertEqual(result.asset.kind, "installer")
+
+    def test_github_release_discovery_selects_highest_canonical_identity(self) -> None:
+        older_release, older_responses = _github_release_fixture(_manifest(build=2))
+        newer_release, newer_responses = _github_release_fixture(_manifest(build=3))
+        legacy_release = {
+            "draft": False,
+            "prerelease": True,
+            "tag_name": "v26.3.1-RC3",
+            "html_url": "https://github.com/10-X-eng/vibecad/releases/tag/v26.3.1-RC3",
+            "assets": [],
+        }
+        responses = {**older_responses, **newer_responses}
+        responses[GITHUB_RELEASES_API_URL] = json.dumps(
+            [older_release, legacy_release, newer_release]
+        ).encode("utf-8")
+
+        def open_request(request, **_kwargs):
+            url = request.full_url
+            return _BytesResponse(responses[url], url)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = UpdateService(
+                ReleaseIdentity("26.3.1-RC3", 1),
+                UpdatePolicy(),
+                update_directory=Path(temp_dir),
+                system="Windows",
+                machine="AMD64",
+            )
+            with mock.patch("urllib.request.urlopen", side_effect=open_request):
+                result = service.check_for_updates(force=True)
+        self.assertEqual(result.status, "available", result.message)
+        self.assertEqual(result.release.identity, ReleaseIdentity("26.3.1-RC3", 3))
+
+    def test_github_release_discovery_rejects_wrong_channel_classification(
+        self,
+    ) -> None:
+        release, responses = _github_release_fixture(_manifest(build=2))
+        release["prerelease"] = False
+        responses[GITHUB_RELEASES_API_URL] = json.dumps([release]).encode("utf-8")
+
+        def open_request(request, **_kwargs):
+            url = request.full_url
+            return _BytesResponse(responses[url], url)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = UpdateService(
+                ReleaseIdentity("26.3.1-RC3", 1),
+                UpdatePolicy(),
+                update_directory=Path(temp_dir),
+            )
+            with mock.patch("urllib.request.urlopen", side_effect=open_request):
+                result = service.check_for_updates(force=True)
+        self.assertEqual(result.status, "error")
+        self.assertIn("wrong channel classification", result.message)
+
+    def test_github_release_discovery_rejects_tampered_manifest_checksum(self) -> None:
+        release, responses = _github_release_fixture(_manifest(build=2))
+        checksum_url = next(url for url in responses if url.endswith("-SHA256.txt"))
+        original = responses[checksum_url]
+        responses[checksum_url] = b"0" * 64 + original[64:]
+        for asset in release["assets"]:
+            if asset["name"].endswith("-SHA256.txt"):
+                asset["size"] = len(responses[checksum_url])
+        responses[GITHUB_RELEASES_API_URL] = json.dumps([release]).encode("utf-8")
+
+        def open_request(request, **_kwargs):
+            url = request.full_url
+            return _BytesResponse(responses[url], url)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = UpdateService(
+                ReleaseIdentity("26.3.1-RC3", 1),
+                UpdatePolicy(),
+                update_directory=Path(temp_dir),
+                system="Windows",
+                machine="AMD64",
+            )
+            with mock.patch("urllib.request.urlopen", side_effect=open_request):
+                result = service.check_for_updates(force=True)
+        self.assertEqual(result.status, "error")
+        self.assertIn("checksum", result.message)
+
+    def test_github_release_discovery_rejects_asset_size_disagreement(self) -> None:
+        release, responses = _github_release_fixture(_manifest(build=2))
+        release["assets"][0]["size"] = 999
+        responses[GITHUB_RELEASES_API_URL] = json.dumps([release]).encode("utf-8")
+
+        def open_request(request, **_kwargs):
+            url = request.full_url
+            return _BytesResponse(responses[url], url)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = UpdateService(
+                ReleaseIdentity("26.3.1-RC3", 1),
+                UpdatePolicy(),
+                update_directory=Path(temp_dir),
+                system="Windows",
+                machine="AMD64",
+            )
+            with mock.patch("urllib.request.urlopen", side_effect=open_request):
+                result = service.check_for_updates(force=True)
+        self.assertEqual(result.status, "error")
+        self.assertIn("differs", result.message)
+
+    def test_partial_custom_tuf_configuration_fails_without_github_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = UpdateService(
+                ReleaseIdentity("26.3.1-RC3", 1),
+                UpdatePolicy(metadata_base_url="https://updates.example.test/metadata/"),
+                update_directory=Path(temp_dir),
+            )
+            with mock.patch("urllib.request.urlopen") as urlopen:
+                result = service.check_for_updates(force=True)
+        self.assertEqual(result.status, "error")
+        self.assertIn("both metadata_base_url and target_base_url", result.message)
+        urlopen.assert_not_called()
 
     def test_download_resumes_from_valid_partial_state(self) -> None:
         payload = b"complete resumable payload"
