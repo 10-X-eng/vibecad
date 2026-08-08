@@ -1352,6 +1352,11 @@ struct Gui::VibeCADRibbon::Private
             QStringLiteral("VibeCAD_OpenAssistant"),
             QStringLiteral("VibeCADRibbonAssistant")
         );
+        updateButton = addCommandButton(
+            trailingLayout,
+            QStringLiteral("VibeCAD_CheckForUpdates"),
+            QStringLiteral("VibeCADRibbonCheckForUpdates")
+        );
         settingsButton = addCommandButton(
             trailingLayout,
             QStringLiteral("VibeCAD_OpenPreferences"),
@@ -1889,6 +1894,7 @@ struct Gui::VibeCADRibbon::Private
     QAction* searchShortcut = nullptr;
     QToolButton* themeButton = nullptr;
     QToolButton* assistantButton = nullptr;
+    QToolButton* updateButton = nullptr;
     QToolButton* settingsButton = nullptr;
     QTabBar* tabs = nullptr;
     RibbonPage* page = nullptr;

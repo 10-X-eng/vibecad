@@ -792,6 +792,7 @@ def _assert_application_strip_actions(main_window):
         "VibeCADRibbonRedo": "Std_Redo",
         "VibeCADRibbonNew": "Std_New",
         "VibeCADRibbonAssistant": "VibeCAD_OpenAssistant",
+        "VibeCADRibbonCheckForUpdates": "VibeCAD_CheckForUpdates",
         "VibeCADRibbonSettings": "VibeCAD_OpenPreferences",
     }
     command_ids = []
@@ -1202,6 +1203,9 @@ def _run():
         assistant_button = main_window.findChild(
             QtWidgets.QToolButton, "VibeCADRibbonAssistant"
         )
+        update_button = main_window.findChild(
+            QtWidgets.QToolButton, "VibeCADRibbonCheckForUpdates"
+        )
         settings_button = main_window.findChild(
             QtWidgets.QToolButton, "VibeCADRibbonSettings"
         )
@@ -1227,20 +1231,39 @@ def _run():
         assert new_document_button is not None and new_document_button.isVisible()
         assert search is not None and search.completer() is not None
         _assert_visible_inside(assistant_button, root)
+        _assert_visible_inside(update_button, root)
         _assert_visible_inside(settings_button, root)
         _assert_visible_inside(document_tabs, root)
         _assert_visible_inside(search_button, root)
         _assert_visible_inside(new_document_button, root)
         assert assistant_button.toolButtonStyle() == QtCore.Qt.ToolButtonIconOnly
+        assert update_button.toolButtonStyle() == QtCore.Qt.ToolButtonIconOnly
         assert settings_button.toolButtonStyle() == QtCore.Qt.ToolButtonIconOnly
         assert (
             assistant_button.defaultAction().property("VibeCADCommandId")
             == "VibeCAD_OpenAssistant"
         )
         assert (
+            update_button.defaultAction().property("VibeCADCommandId")
+            == "VibeCAD_CheckForUpdates"
+        )
+        assert (
             settings_button.defaultAction().property("VibeCADCommandId")
             == "VibeCAD_OpenPreferences"
         )
+        import VibeCADUpdateGui
+
+        update_calls = []
+        original_show_check = VibeCADUpdateGui.show_check_for_updates
+        VibeCADUpdateGui.show_check_for_updates = lambda **kwargs: update_calls.append(
+            kwargs
+        )
+        try:
+            update_button.click()
+            _process_events()
+        finally:
+            VibeCADUpdateGui.show_check_for_updates = original_show_check
+        assert update_calls == [{}]
         assert main_window.menuBar().isVisible()
         assert _visible_main_window_toolbars(main_window) == [ribbon]
         _assert_application_strip_actions(main_window)
@@ -1663,11 +1686,13 @@ def _run():
         main_window.resize(850, 760)
         _process_events()
         assert assistant_button.toolButtonStyle() == QtCore.Qt.ToolButtonIconOnly
+        assert update_button.toolButtonStyle() == QtCore.Qt.ToolButtonIconOnly
         assert settings_button.toolButtonStyle() == QtCore.Qt.ToolButtonIconOnly
         assert not search.isVisible()
         _assert_visible_inside(search_button, root)
         _assert_visible_inside(document_tabs, root)
         _assert_visible_inside(assistant_button, root)
+        _assert_visible_inside(update_button, root)
         _assert_visible_inside(settings_button, root)
         assert not source_document_tabs.isVisible()
         saw_collapsed_group = False
@@ -2072,18 +2097,8 @@ def _run():
         print("VIBECAD_RIBBON_STAGE draft-compatibility", flush=True)
 
         assert main_window.menuBar().isVisible()
-        import VibeCADUpdateGui
-
         VibeCADUpdateGui.ensure_registered()
-        VibeCADUpdateGui._add_help_menu_action()
-        help_menu = next(
-            (
-                menu
-                for menu in main_window.menuBar().findChildren(QtWidgets.QMenu)
-                if menu.title().replace("&", "").strip().casefold() == "help"
-            ),
-            None,
-        )
+        help_menu = VibeCADUpdateGui._find_help_menu(main_window)
         assert help_menu is not None
         update_actions = [
             action

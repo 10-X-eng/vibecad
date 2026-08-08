@@ -32,7 +32,7 @@ from VibeCADUpdate import (
 _PREFERENCE_PATH = "User parameter:BaseApp/Preferences/Mod/VibeCAD/Updates"
 _COMMAND_NAME = "VibeCAD_CheckForUpdates"
 _LEGACY_COMMAND_NAME = "VibeCAD_UpdateCenter"
-_ICON = "preferences-vibecad.svg"
+_ICON = "view-refresh.svg"
 _registered = False
 _controller: "UpdateController | None" = None
 _update_center: "UpdateCenterDialog | None" = None
@@ -720,6 +720,28 @@ def get_update_controller() -> UpdateController:
     return _controller
 
 
+def _find_help_menu(main_window: Any) -> Any | None:
+    menu_bar = main_window.menuBar()
+    candidates = list(menu_bar.findChildren(QtWidgets.QMenu))
+    candidates.extend(main_window.findChildren(QtWidgets.QMenu))
+    for menu_action in menu_bar.actions():
+        try:
+            menu = menu_action.menu()
+        except RuntimeError:
+            continue
+        if menu is not None:
+            candidates.append(menu)
+    for menu in candidates:
+        try:
+            title = menu.title()
+            menu.actions()
+        except RuntimeError:
+            continue
+        if title.replace("&", "").strip().casefold() == "help":
+            return menu
+    return None
+
+
 def _add_help_menu_action() -> None:
     main_window = Gui.getMainWindow()
     command = Gui.Command.get(_COMMAND_NAME)
@@ -730,15 +752,20 @@ def _add_help_menu_action() -> None:
     action.setObjectName("VibeCADCheckForUpdatesAction")
     action.setProperty("VibeCADCheckForUpdates", True)
     action.setProperty("VibeCADUpdateCenter", True)
-    for menu in main_window.menuBar().findChildren(QtWidgets.QMenu):
-        if menu.title().replace("&", "").strip().casefold() == "help":
-            if action not in menu.actions():
-                menu.addSeparator()
-                menu.addAction(action)
-            if not menu.property("VibeCADCheckForUpdatesHooked"):
-                menu.aboutToShow.connect(_add_help_menu_action)
-                menu.setProperty("VibeCADCheckForUpdatesHooked", True)
-            return
+    menu = _find_help_menu(main_window)
+    if menu is None:
+        return
+    try:
+        if action not in menu.actions():
+            menu.addSeparator()
+            menu.addAction(action)
+        if not menu.property("VibeCADCheckForUpdatesHooked"):
+            menu.aboutToShow.connect(_add_help_menu_action)
+            menu.setProperty("VibeCADCheckForUpdatesHooked", True)
+    except RuntimeError:
+        # Workbench activation can replace FreeCAD's menus between discovery
+        # and insertion. A later scheduled/workbench callback will retry.
+        return
 
 
 def _schedule_help_menu_action(*_args: Any) -> None:
