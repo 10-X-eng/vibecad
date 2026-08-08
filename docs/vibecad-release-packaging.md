@@ -57,8 +57,11 @@ The workflow:
 2. Pins every job to the same source commit.
 3. Builds the Linux AppImage and Debian package and the Windows installer.
 4. Verifies every package checksum and generates the strict update manifest.
-5. Creates GitHub build-provenance attestations.
-6. Creates a draft release, uploads the complete asset set, and publishes it
+5. On Windows, installs the previous published build and proves that the new
+   installer removes a stale program-tree marker while retaining the old tree
+   as the rollback snapshot.
+6. Creates GitHub build-provenance attestations.
+7. Creates a draft release, uploads the complete asset set, and publishes it
    only after all gates pass.
 
 Publishing is allowed only from the current `main` commit. The canonical tag
@@ -148,6 +151,13 @@ last-known-good tree, installs into a clean directory, imports the updater in
 survives startup. A failed install, import, crash, or health timeout restores
 the previous installation and registry state. One healthy Windows rollback
 tree is retained until the next update or uninstall.
+
+Running a newer Windows installer directly uses the same clean replacement
+transaction instead of overlaying files. The installer compares the canonical
+semantic version, prerelease rank, and build stored in the registry: an older
+installed identity is presented as an update, the same identity as a repair,
+and a newer identity blocks an accidental downgrade. Documents and preferences
+remain outside the replaced program tree.
 
 AppImage updates copy the verified package beside the running AppImage, atomically
 swap the files after exit, perform a command-line import check, and start the new

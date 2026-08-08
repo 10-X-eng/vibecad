@@ -55,6 +55,7 @@ These typically need to be modified for each FreeCAD release
     !define APP_RELEASE_VERSION "${APP_VERSION_MAJOR}.${APP_VERSION_MINOR}.${APP_VERSION_PATCH}-${APP_VERSION_SUFFIX}"
 !endif
 !define APP_VERSION "${APP_RELEASE_VERSION} (Build ${APP_VERSION_BUILD})" # Version to display
+!define APP_UPDATE_VERSION "${APP_VERSION_MAJOR}.${APP_VERSION_MINOR}.${APP_VERSION_PATCH}.${APP_VERSION_RELEASE_RANK}.${APP_VERSION_BUILD}"
 
 #--------------------------------
 # Installer file name
