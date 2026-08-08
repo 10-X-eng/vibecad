@@ -13,6 +13,7 @@ Installation of program files, dictionaries and external components
 Section -PrepareVibeCADUpdate
 
   ${if} $VibeCADUpdateMode == "install"
+  ${orif} $VibeCADUpdateMode == "manual"
     StrCpy $VibeCADUpdateBackupDir "$INSTDIR.vibecad-rollback"
     IfFileExists "$VibeCADUpdateBackupDir\*.*" 0 PreviousRollbackRemoved
       RMDir /r "$VibeCADUpdateBackupDir"
@@ -33,29 +34,57 @@ Section -PrepareVibeCADUpdate
       IfErrors 0 +3
         SetErrorLevel 22
         Quit
+      ClearErrors
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "UninstallKey" "$R2"
+      IfErrors VibeCADUpdateRegistrySaveFailed
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "AppKey" "$R3"
+      IfErrors VibeCADUpdateRegistrySaveFailed
       ReadRegStr $R4 SHCTX "$R2" "DisplayName"
+      ClearErrors
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "DisplayName" "$R4"
+      IfErrors VibeCADUpdateRegistrySaveFailed
       ReadRegStr $R4 SHCTX "$R2" "DisplayVersion"
+      ClearErrors
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "DisplayVersion" "$R4"
+      IfErrors VibeCADUpdateRegistrySaveFailed
       ReadRegStr $R4 SHCTX "$R2" "UninstallString"
+      ClearErrors
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "UninstallString" "$R4"
+      IfErrors VibeCADUpdateRegistrySaveFailed
       ReadRegStr $R4 SHCTX "$R2" "QuietUninstallString"
+      ClearErrors
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "QuietUninstallString" "$R4"
+      IfErrors VibeCADUpdateRegistrySaveFailed
       ReadRegStr $R4 SHCTX "$R2" "DisplayIcon"
+      ClearErrors
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "DisplayIcon" "$R4"
+      IfErrors VibeCADUpdateRegistrySaveFailed
       ReadRegStr $R4 SHCTX "$R2" "StartMenu"
+      ClearErrors
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "StartMenu" "$R4"
+      IfErrors VibeCADUpdateRegistrySaveFailed
       ReadRegStr $R4 SHCTX "$R3" ""
+      ClearErrors
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "InstallPath" "$R4"
+      IfErrors VibeCADUpdateRegistrySaveFailed
       ReadRegStr $R4 SHCTX "$R3" "Version"
+      ClearErrors
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "Version" "$R4"
+      IfErrors VibeCADUpdateRegistrySaveFailed
       ReadRegStr $R4 SHCTX "$R3" "ReleaseVersion"
+      ClearErrors
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "ReleaseVersion" "$R4"
+      IfErrors VibeCADUpdateRegistrySaveFailed
+      ReadRegStr $R4 SHCTX "$R3" "UpdateVersion"
+      ClearErrors
+      WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "UpdateVersion" "$R4"
+      IfErrors VibeCADUpdateRegistrySaveFailed
       ReadRegDWORD $R4 SHCTX "$R3" "Build"
+      ClearErrors
       WriteINIStr "$VibeCADUpdateBackupDir\vibecad-update-registry.ini" "Registry" "Build" "$R4"
-      IfErrors 0 VibeCADUpdateRegistrySaved
+      IfErrors VibeCADUpdateRegistrySaveFailed
+      Goto VibeCADUpdateRegistrySaved
+      VibeCADUpdateRegistrySaveFailed:
         ClearErrors
         Rename "$VibeCADUpdateBackupDir" "$INSTDIR"
         SetErrorLevel 26
@@ -129,6 +158,7 @@ SectionEnd
 Section -ValidateVibeCADUpdate
 
   ${if} $VibeCADUpdateMode == "install"
+  ${orif} $VibeCADUpdateMode == "manual"
     IfErrors RollbackVibeCADUpdate
     IfFileExists "$INSTDIR\bin\freecadcmd.exe" 0 RollbackVibeCADUpdate
     ExecWait '"$INSTDIR\bin\freecadcmd.exe" --safe-mode -c "import VibeCADUpdate"' $R0

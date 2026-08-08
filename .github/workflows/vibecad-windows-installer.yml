@@ -21,7 +21,9 @@ jobs:
     name: Resolve Canonical Metadata
     runs-on: ubuntu-24.04
     outputs:
+      build: ${{ steps.meta.outputs.build }}
       build_tag: ${{ steps.meta.outputs.build_tag }}
+      release_version: ${{ steps.meta.outputs.release_version }}
       release_title: ${{ steps.meta.outputs.release_title }}
       source_sha: ${{ steps.meta.outputs.source_sha }}
     steps:
@@ -39,10 +41,14 @@ jobs:
           set -euo pipefail
           python src/Tools/sync_version.py --check
           source_sha="$(git rev-parse --verify HEAD)"
+          build="$(python src/Tools/resolve_release_artifact_name.py . --component build)"
           build_tag="$(python src/Tools/resolve_release_artifact_name.py . --component release-tag)"
+          release_version="$(python src/Tools/resolve_release_artifact_name.py . --component release-version)"
           release_title="$(python src/Tools/resolve_release_artifact_name.py . --component release-title)"
           {
+            echo "build=${build}"
             echo "build_tag=${build_tag}"
+            echo "release_version=${release_version}"
             echo "release_title=${release_title}"
             echo "source_sha=${source_sha}"
           } >> "${GITHUB_OUTPUT}"
@@ -121,6 +127,17 @@ jobs:
         run: |
           set -euo pipefail
           pixi run -e package create_bundle
+
+      - name: Verify clean installer upgrade from the previous build
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          ./package/WindowsInstaller/test_clean_upgrade.ps1
+          -CurrentInstaller "package/rattler-build/windows/VibeCAD-${{ needs.metadata.outputs.release_version }}-build${{ needs.metadata.outputs.build }}-Windows-x86_64-installer.exe"
+          -Repository "${{ github.repository }}"
+          -ReleaseVersion "${{ needs.metadata.outputs.release_version }}"
+          -Build ${{ needs.metadata.outputs.build }}
 
       - name: Save Pixi and Python caches
         if: always() && steps.cache-pixi-windows.outputs.cache-hit != 'true'

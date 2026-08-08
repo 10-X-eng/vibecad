@@ -81,5 +81,13 @@ Var VibeCADUpdateBackupDir
 Var VibeCADUpdateFailedDir
 Var VibeCADUpdateInstallRoot
 Var VibeCADUpdateMode
+Var VibeCADInstalledBuild
+Var VibeCADInstalledDisplayVersion
+Var VibeCADInstalledDisposition
+Var VibeCADInstalledInstallRoot
+Var VibeCADInstalledPatch
+Var VibeCADInstalledReleaseVersion
+Var VibeCADInstalledUninstallString
+Var VibeCADInstalledUpdateVersion
 Var UserList
 Var LangName

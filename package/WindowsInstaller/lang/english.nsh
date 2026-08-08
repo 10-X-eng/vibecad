@@ -38,13 +38,28 @@ ${LangFileString} SecDesktopDescription "A VibeCAD icon on the desktop."
 
 #${LangFileString} RunConfigureFailed "Could not run configure script."
 ${LangFileString} InstallRunning "The installer is already running!"
-${LangFileString} AlreadyInstalled "VibeCAD ${APP_SERIES_KEY2} is already installed!$\r$\n\
-				Installing over existing installations is not recommended if the installed version$\r$\n\
-				is a test release or if you have problems with your existing VibeCAD installation.$\r$\n\
-				In these cases better reinstall VibeCAD.$\r$\n\
-				Do you nevertheless want to install VibeCAD over the existing version?"
-${LangFileString} NewerInstalled "You are trying to install an older version of VibeCAD than what you have installed.$\r$\n\
-				  If you really want this, you must uninstall the existing VibeCAD $OldVersionNumber before."
+${LangFileString} UpgradeInstalled "$VibeCADInstalledDisplayVersion is installed.$\r$\n\
+				This installer will update it to ${APP_VERSION} using a clean replacement of the program files.$\r$\n\
+				Your documents and preferences will be preserved.$\r$\n$\r$\n\
+				Continue with the update?"
+${LangFileString} RepairInstalled "VibeCAD ${APP_VERSION} is already installed.$\r$\n\
+				Would you like to repair it by cleanly replacing the program files?$\r$\n\
+				Your documents and preferences will be preserved."
+${LangFileString} DowngradeBlocked "A newer VibeCAD release is already installed:$\r$\n\
+				$VibeCADInstalledDisplayVersion$\r$\n$\r$\n\
+				This installer contains ${APP_VERSION} and will not downgrade it automatically.$\r$\n\
+				Uninstall the newer release first if you intentionally need to downgrade."
+${LangFileString} ReplaceUnknownInstalled "An existing VibeCAD installation was found:$\r$\n\
+				$VibeCADInstalledDisplayVersion$\r$\n$\r$\n\
+				Its complete version/build order cannot be determined. Continuing will cleanly replace its$\r$\n\
+				program files with ${APP_VERSION}; documents and preferences will be preserved.$\r$\n$\r$\n\
+				Continue?"
+${LangFileString} InvalidExistingInstall "The registered VibeCAD installation directory is missing or invalid.$\r$\n\
+				The installer stopped without changing it. Uninstall the damaged entry before reinstalling VibeCAD."
+# Retained for compatibility with downstream installer extensions that may
+# still reference the historical language identifiers.
+${LangFileString} AlreadyInstalled "VibeCAD ${APP_SERIES_KEY2} is already installed."
+${LangFileString} NewerInstalled "A newer VibeCAD installation already exists."
 
 #${LangFileString} FinishPageMessage "Congratulations! VibeCAD has been installed successfully.$\r$\n\
 #					$\r$\n\
