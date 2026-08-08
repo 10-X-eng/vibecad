@@ -307,6 +307,17 @@ jobs:
           set -euo pipefail
           pixi run -e package create_bundle
 
+      - name: Verify clean installer upgrade from the previous build
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          ./package/WindowsInstaller/test_clean_upgrade.ps1
+          -CurrentInstaller "package/rattler-build/windows/VibeCAD-${{ needs.prepare.outputs.release_version }}-build${{ needs.prepare.outputs.build }}-Windows-x86_64-installer.exe"
+          -Repository "${{ github.repository }}"
+          -ReleaseVersion "${{ needs.prepare.outputs.release_version }}"
+          -Build ${{ needs.prepare.outputs.build }}
+
       - name: Save Pixi and Python caches
         if: always() && steps.cache-pixi-windows.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4

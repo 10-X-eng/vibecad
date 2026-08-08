@@ -22,62 +22,226 @@ Function InitUser
 FunctionEnd
 
 #--------------------------------
+# Installed-version discovery and clean replacement
+
+Function FindInstalledVibeCAD
+
+  StrCpy $OldVersionNumber ""
+  StrCpy $VibeCADInstalledBuild ""
+  StrCpy $VibeCADInstalledDisplayVersion ""
+  StrCpy $VibeCADInstalledDisposition "none"
+  StrCpy $VibeCADInstalledInstallRoot ""
+  StrCpy $VibeCADInstalledPatch ""
+  StrCpy $VibeCADInstalledReleaseVersion ""
+  StrCpy $VibeCADInstalledUninstallString ""
+  StrCpy $VibeCADInstalledUpdateVersion ""
+
+  # Find the highest installed patch in this major/minor series. Historical
+  # VibeCAD/FreeCAD installers used one registry key per patch release.
+  IntOp $4 ${APP_VERSION_PATCH} + 20
+  ${for} $5 0 $4
+    StrCpy $R0 "${APP_VERSION_MAJOR}${APP_VERSION_MINOR}$5"
+    StrCpy $R2 "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}$R0"
+    ReadRegStr $0 SHCTX "$R2" "DisplayVersion"
+    ${if} $0 == ""
+      # Preserve discovery of the legacy emergency-release key shape.
+      StrCpy $R0 "${APP_VERSION_MAJOR}${APP_VERSION_MINOR}$51"
+      StrCpy $R2 "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}$R0"
+      ReadRegStr $0 SHCTX "$R2" "DisplayVersion"
+    ${endif}
+    ${if} $0 != ""
+      StrCpy $OldVersionNumber $R0
+      StrCpy $VibeCADInstalledPatch $5
+      StrCpy $VibeCADInstalledDisplayVersion $0
+      ReadRegStr $VibeCADInstalledUninstallString SHCTX "$R2" "UninstallString"
+      StrCpy $R3 "SOFTWARE\${APP_NAME}$OldVersionNumber"
+      ReadRegStr $VibeCADInstalledInstallRoot SHCTX "$R3" ""
+      ReadRegStr $VibeCADInstalledReleaseVersion SHCTX "$R3" "ReleaseVersion"
+      ReadRegStr $VibeCADInstalledUpdateVersion SHCTX "$R3" "UpdateVersion"
+      ClearErrors
+      ReadRegDWORD $1 SHCTX "$R3" "Build"
+      ${if} ${Errors}
+        StrCpy $VibeCADInstalledBuild ""
+        ClearErrors
+      ${else}
+        StrCpy $VibeCADInstalledBuild $1
+      ${endif}
+    ${endif}
+  ${next}
+
+FunctionEnd
+
+Function SelectExistingVibeCADInstallMode
+
+  # The MultiUser plug-in normally restores the install scope from the target
+  # patch's registry key. Search the entire major/minor series as a migration
+  # fallback so a new patch still updates the existing per-user/per-machine
+  # installation instead of creating a second copy in another scope.
+  StrCpy $6 ""
+  StrCpy $7 ""
+  IntOp $4 ${APP_VERSION_PATCH} + 20
+  ${for} $5 0 $4
+    StrCpy $R0 "${APP_VERSION_MAJOR}${APP_VERSION_MINOR}$5"
+    ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}$R0" "DisplayVersion"
+    ${if} $0 != ""
+      ReadRegStr $6 HKLM "SOFTWARE\${APP_NAME}$R0" ""
+    ${endif}
+    ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}$R0" "DisplayVersion"
+    ${if} $0 != ""
+      ReadRegStr $7 HKCU "SOFTWARE\${APP_NAME}$R0" ""
+    ${endif}
+  ${next}
+
+  ${if} $6 != ""
+  ${andif} $7 == ""
+    Call MultiUser.InstallMode.AllUsers
+  ${elseif} $7 != ""
+  ${andif} $6 == ""
+    Call MultiUser.InstallMode.CurrentUser
+  ${elseif} $6 != ""
+  ${andif} $7 != ""
+  ${andif} $VibeCADUpdateInstallRoot != ""
+    GetFullPathName $6 "$6"
+    GetFullPathName $7 "$7"
+    GetFullPathName $0 "$VibeCADUpdateInstallRoot"
+    ${if} $0 == $6
+      Call MultiUser.InstallMode.AllUsers
+    ${elseif} $0 == $7
+      Call MultiUser.InstallMode.CurrentUser
+    ${endif}
+  ${endif}
+
+FunctionEnd
+
+Function ClassifyInstalledVibeCAD
+
+  StrCpy $VibeCADInstalledDisposition "unknown"
+
+  # Installers produced after this change persist a fully sortable numeric
+  # identity. It includes semantic version, prerelease rank, and build.
+  !if "${APP_VERSION_ORDER_KNOWN}" == "1"
+    ${if} $VibeCADInstalledUpdateVersion != ""
+      ${VersionCompare} "${APP_UPDATE_VERSION}" "$VibeCADInstalledUpdateVersion" $0
+      ${if} $0 == "1"
+        StrCpy $VibeCADInstalledDisposition "upgrade"
+      ${elseif} $0 == "0"
+        StrCpy $VibeCADInstalledDisposition "repair"
+      ${else}
+        StrCpy $VibeCADInstalledDisposition "downgrade"
+      ${endif}
+      Return
+    ${endif}
+  !endif
+
+  # Compatibility with already-published installers: exact public releases
+  # have always persisted ReleaseVersion and Build separately.
+  ${if} $VibeCADInstalledReleaseVersion == "${APP_RELEASE_VERSION}"
+  ${andif} $VibeCADInstalledBuild != ""
+    ${if} $VibeCADInstalledBuild < ${APP_VERSION_BUILD}
+      StrCpy $VibeCADInstalledDisposition "upgrade"
+    ${elseif} $VibeCADInstalledBuild == ${APP_VERSION_BUILD}
+      StrCpy $VibeCADInstalledDisposition "repair"
+    ${else}
+      StrCpy $VibeCADInstalledDisposition "downgrade"
+    ${endif}
+    Return
+  ${endif}
+
+  # Patch releases have an unambiguous order even for a legacy install.
+  ${if} $VibeCADInstalledPatch != ""
+    ${if} $VibeCADInstalledPatch < ${APP_VERSION_PATCH}
+      StrCpy $VibeCADInstalledDisposition "upgrade"
+      Return
+    ${elseif} $VibeCADInstalledPatch > ${APP_VERSION_PATCH}
+      StrCpy $VibeCADInstalledDisposition "downgrade"
+      Return
+    ${endif}
+  ${endif}
+
+  # A final release sorts after a legacy prerelease of the same patch. A
+  # prerelease must never replace an installed final release automatically.
+  !if "${APP_VERSION_SUFFIX}" == ""
+    ${if} $VibeCADInstalledReleaseVersion != ""
+    ${andif} $VibeCADInstalledReleaseVersion != "${APP_VERSION_MAJOR}.${APP_VERSION_MINOR}.${APP_VERSION_PATCH}"
+      StrCpy $VibeCADInstalledDisposition "upgrade"
+    ${endif}
+  !else
+    ${if} $VibeCADInstalledReleaseVersion == "${APP_VERSION_MAJOR}.${APP_VERSION_MINOR}.${APP_VERSION_PATCH}"
+      StrCpy $VibeCADInstalledDisposition "downgrade"
+    ${endif}
+  !endif
+
+FunctionEnd
+
+Function BeginManualVibeCADReplacement
+
+  StrCpy $VibeCADUpdateMode "manual"
+  StrCpy $VibeCADUpdateInstallRoot $VibeCADInstalledInstallRoot
+  Call ValidateVibeCADUpdateInstallRoot
+  ${if} ${Errors}
+    StrCpy $VibeCADUpdateMode "false"
+    MessageBox MB_OK|MB_ICONSTOP "$(InvalidExistingInstall)" /SD IDOK
+    SetErrorLevel 28
+    Quit
+  ${endif}
+  ClearErrors
+
+FunctionEnd
+
+Function VibeCADDirectoryPagePre
+
+  # A replacement must use the registered installation root. Skipping the
+  # directory page prevents a clean upgrade from being redirected midway.
+  ${if} $VibeCADUpdateMode == "install"
+  ${orif} $VibeCADUpdateMode == "manual"
+    Abort
+  ${endif}
+
+FunctionEnd
+
+#--------------------------------
 # MultiUser custom method
 
 Function PostMultiUserPageInit
-  # check if this FreeCAD version is already installed
-  ReadRegStr $0 SHCTX "${APP_UNINST_KEY}" "UninstallString"
-  ${if} $0 != ""
-   ${if} $VibeCADUpdateMode != "false"
-    Goto ContinueInstall
-   ${endif}
-   # check if the uninstaller was accidentally deleted
-   # if so, don't bother the user if they really want to install a new FreeCAD over an existing one
-   # because they won't have a chance to deny this
+  Call FindInstalledVibeCAD
 
-   # remove quotes from uninstaller filename
-   ${TrimQuotes} $0 $0
-   # skip message box if uninstaller file is missing
-   IfFileExists $0 0 ContinueInstall
-
-   # installing over an existing installation of the same FreeCAD release is not necessary
-   # if the users does this, they most probably have a problem with FreeCAD that can better be solved
-   # by reinstalling FreeCAD
-   # for beta and other test releases over-installing can even cause errors
-   MessageBox MB_YESNOCANCEL "$(AlreadyInstalled)" /SD IDCANCEL IDYES ContinueInstall IDNO BackToMuiltUserPage
-   Quit
-   BackToMuiltUserPage:
-   Abort
-   ContinueInstall:
+  ${if} $OldVersionNumber == ""
+    Return
   ${endif}
 
-  # check if there is an existing FreeCAD installation of the same FreeCAD series
-  # we usually don't release more than 10 versions so with 20 we are safe to check if a newer version is installed
-  IntOp $4 ${APP_VERSION_PATCH} + 20
-  ${for} $5 0 $4
-   ReadRegStr $0 SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}${APP_VERSION_MAJOR}${APP_VERSION_MINOR}$5" "DisplayVersion"
-   # also check for an emergency release
-   ${if} $0 == ""
-    ReadRegStr $0 SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}${APP_VERSION_MAJOR}${APP_VERSION_MINOR}$51" "DisplayVersion"
-   ${endif}
-   ${if} $0 != ""
-    StrCpy $R5 $0 # store the read version number
-    StrCpy $OldVersionNumber "${APP_VERSION_MAJOR}${APP_VERSION_MINOR}$5"
-    # we don't stop here because we want the latest installed version
-   ${endif}
-  ${next}
-
-  # NSIS cannot handle numbers with leading zero, thus cut it off before comparing
-  StrCpy $1 $OldVersionNumber "" 1
-  StrCpy $2 ${APP_SERIES_KEY} "" 1
-  ${if} $1 > $2
-   # store the version number and reformat it temporarily for the error message
-   StrCpy $R0 $OldVersionNumber
-   StrCpy $OldVersionNumber $R5
-   MessageBox MB_OK|MB_ICONSTOP "$(NewerInstalled)" /SD IDOK
-   StrCpy $OldVersionNumber $R0
-   Quit
+  # The verified in-app updater already supplies a silent, pinned install root.
+  # Preserve that path while sharing the same clean replacement sections.
+  ${if} $VibeCADUpdateMode != "false"
+    Return
   ${endif}
+
+  Call ClassifyInstalledVibeCAD
+
+  ${if} $VibeCADInstalledDisposition == "upgrade"
+    MessageBox MB_OKCANCEL|MB_ICONINFORMATION "$(UpgradeInstalled)" /SD IDOK IDOK AcceptManualReplacement
+    Goto CancelManualReplacement
+  ${elseif} $VibeCADInstalledDisposition == "repair"
+    MessageBox MB_YESNO|MB_ICONQUESTION "$(RepairInstalled)" /SD IDNO IDYES AcceptManualReplacement
+    Goto CancelManualReplacement
+  ${elseif} $VibeCADInstalledDisposition == "downgrade"
+    MessageBox MB_OK|MB_ICONSTOP "$(DowngradeBlocked)" /SD IDOK
+    SetErrorLevel 27
+    Quit
+  ${else}
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(ReplaceUnknownInstalled)" /SD IDNO IDYES AcceptManualReplacement
+    Goto CancelManualReplacement
+  ${endif}
+
+  AcceptManualReplacement:
+    Call BeginManualVibeCADReplacement
+    Return
+
+  CancelManualReplacement:
+    ${if} ${Silent}
+      Quit
+    ${else}
+      Abort
+    ${endif}
 FunctionEnd
 
 
@@ -110,6 +274,7 @@ Function .onInit
 
   StrCpy $VibeCADUpdateMode "false"
   StrCpy $VibeCADUpdateInstallRoot ""
+  StrCpy $OldVersionNumber ""
   ${GetParameters} $R8
   ClearErrors
   ${GetOptions} $R8 "/VIBECADUPDATE" $R9
@@ -172,6 +337,7 @@ Function .onInit
   
   # initialize the multi-user installer UI
   !insertmacro MULTIUSER_INIT
+  Call SelectExistingVibeCADInstallMode
 
   # this can be reset to "true" in section SecDesktop
   StrCpy $CreateDesktopIcon "false"
@@ -296,6 +462,12 @@ Function RestoreVibeCADUpdateBackup
   WriteRegStr SHCTX "$R3" "Version" "$R4"
   ReadINIStr $R4 "$INSTDIR\vibecad-update-registry.ini" "Registry" "ReleaseVersion"
   WriteRegStr SHCTX "$R3" "ReleaseVersion" "$R4"
+  ReadINIStr $R4 "$INSTDIR\vibecad-update-registry.ini" "Registry" "UpdateVersion"
+  ${if} $R4 == ""
+    DeleteRegValue SHCTX "$R3" "UpdateVersion"
+  ${else}
+    WriteRegStr SHCTX "$R3" "UpdateVersion" "$R4"
+  ${endif}
   ReadINIStr $R4 "$INSTDIR\vibecad-update-registry.ini" "Registry" "Build"
   WriteRegDWORD SHCTX "$R3" "Build" $R4
   Delete "$INSTDIR\vibecad-update-registry.ini"

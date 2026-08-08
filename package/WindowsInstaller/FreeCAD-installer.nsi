@@ -48,6 +48,7 @@ ManifestDPIAware true
 !include MUI2.nsh
 !include MultiUser.nsh
 !include Sections.nsh
+!include WordFunc.nsh
 !include WinVer.nsh
 !include x64.nsh
 
