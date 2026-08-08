@@ -837,7 +837,7 @@ def test_release_packages_share_canonical_artifact_basename() -> None:
     assert "package/rattler-build/osx/VibeCAD_*.dmg" not in macos_workflow
 
 
-def test_update_ui_uses_the_standard_menu_and_keeps_preferences_for_settings() -> None:
+def test_update_ui_uses_the_vibecad_bar_and_keeps_preferences_for_settings() -> None:
     update_gui = _source("src/Mod/VibeCAD/VibeCADUpdateGui.py")
     preferences = update_gui.split("class VibeCADUpdatePreferencesPage", 1)[1].split(
         "class UpdateCenterDialog", 1
@@ -845,8 +845,11 @@ def test_update_ui_uses_the_standard_menu_and_keeps_preferences_for_settings() -
 
     assert '_COMMAND_NAME = "VibeCAD_CheckForUpdates"' in update_gui
     assert '_LEGACY_COMMAND_NAME = "VibeCAD_UpdateCenter"' in update_gui
+    assert '_ICON = "view-refresh.svg"' in update_gui
     assert '"MenuText": "Check for Updates"' in update_gui
     assert 'action.setProperty("VibeCADCheckForUpdates", True)' in update_gui
+    assert "def _find_help_menu(main_window: Any)" in update_gui
+    assert "for menu_action in menu_bar.actions():" in update_gui
     assert "main_window.workbenchActivated.connect(_schedule_help_menu_action)" in update_gui
     assert "for delay in (0, 250, 1000, 5000):" in update_gui
     assert "Open Update Center" not in update_gui
@@ -1031,6 +1034,7 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
         "VibeCADTrailingTools",
         "VibeCADRibbonGroupMenu",
         "VibeCADRibbonSearch",
+        "VibeCADRibbonCheckForUpdates",
         "VibeCADCommandSearch",
         "VibeCADThemeToggle",
         "VibeCADRibbonTabs",
@@ -1053,6 +1057,7 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
     assert '<< "MeshPart_ShapeFromMesh"' in mesh_workbench
     assert '<< "MeshPart_CurveOnMesh"' in mesh_workbench
     assert 'QStringLiteral("VibeCAD_OpenPreferences")' in ribbon
+    assert 'QStringLiteral("VibeCAD_CheckForUpdates")' in ribbon
     assert "VibeCADRibbon::install(mainWindow);" in startup
 
 
