@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADNativeAssemblyJointBindings import assembly_joint_runtime_bindings
+from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
 from VibeCADNativeAssemblyStructureBindings import (
     assembly_structure_runtime_bindings,
 )
@@ -64,6 +66,7 @@ def build_native_runtime_bindings(
     if not isinstance(context, NativeRuntimeContext):
         raise TypeError("context must be a NativeRuntimeContext")
     common = NativeCommonRuntime(context=context)
+    assembly_joint = NativeAssemblyJointRuntime(context)
     assembly_structure = NativeAssemblyStructureRuntime(context)
     component_interface = NativeComponentInterfaceRuntime(context)
     model_catalog = NativeModelCatalogRuntime(context)
@@ -85,6 +88,7 @@ def build_native_runtime_bindings(
     sketch_presentation = NativeSketchPresentationRuntime(context)
     available = {
         **common_runtime_bindings(common),
+        **assembly_joint_runtime_bindings(assembly_joint),
         **assembly_structure_runtime_bindings(assembly_structure),
         **component_interface_runtime_bindings(component_interface),
         **model_catalog_runtime_bindings(model_catalog),

@@ -10,11 +10,21 @@ from VibeCADNativeAssemblyComponents import (
     assembly_components,
     available_component_sources,
 )
+from VibeCADNativeAssemblyGrounding import active_grounded_joints
 from VibeCADNativeAssemblyState import read_active_assembly
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
 
 MAX_ASSEMBLIES = 16
+
+
+def _timeline_active(obj: Any) -> bool:
+    try:
+        import UtilsAssembly
+
+        return bool(UtilsAssembly.isTimelineOperationActive(obj))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError):
+        return False
 
 
 def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
@@ -28,16 +38,34 @@ def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
         joint
         for group in joint_groups
         for joint in list(getattr(group, "Group", []) or [])
+        if _timeline_active(joint)
     ]
     components = list(assembly_components(assembly))
+    grounding_joints = tuple(
+        joint
+        for group in joint_groups
+        for joint in active_grounded_joints(group)
+    )
+    grounded = {}
+    for joint in grounding_joints:
+        component = getattr(joint, "ObjectToGround", None)
+        if component is not None:
+            grounded.setdefault(component, joint)
+    component_summaries = []
+    for component in components[:32]:
+        summary = concise_object(component)
+        ground_joint = grounded.get(component)
+        summary["grounded"] = ground_joint is not None
+        summary["grounded_joint"] = (
+            concise_object(ground_joint) if ground_joint is not None else None
+        )
+        component_summaries.append(summary)
     result["counts"] = {
         "components": len(components),
         "joints": len(joints),
-        "grounded": sum(
-            1 for joint in joints if getattr(joint, "ObjectToGround", None) is not None
-        ),
+        "grounded": len(grounding_joints),
     }
-    result["components"] = [concise_object(value) for value in components[:32]]
+    result["components"] = component_summaries
     result["joints"] = [concise_object(value) for value in joints[:32]]
     return result
 

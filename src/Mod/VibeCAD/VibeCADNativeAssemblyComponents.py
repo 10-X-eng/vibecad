@@ -96,11 +96,34 @@ def _is_component_source(obj: Any) -> bool:
     )
 
 
+def _is_component_instance(obj: Any) -> bool:
+    """Match the native Assembly component classes, excluding joint resources."""
+
+    type_id = str(getattr(obj, "TypeId", "") or "")
+    if type_id in _ASSEMBLY_RESOURCE_TYPES:
+        return False
+    if type_id == "App::LinkElement":
+        return True
+    if any(
+        _is_derived(obj, expected)
+        for expected in (
+            "Assembly::AssemblyObject",
+            "Assembly::AssemblyLink",
+            "App::Link",
+            "App::Part",
+            "App::GeoFeature",
+            "Part::Feature",
+        )
+    ):
+        return not _is_derived(obj, "App::LocalCoordinateSystem")
+    return False
+
+
 def assembly_components(assembly: Any) -> tuple[Any, ...]:
     return tuple(
         child
         for child in list(getattr(assembly, "Group", ()) or ())
-        if str(getattr(child, "TypeId", "") or "") not in _ASSEMBLY_RESOURCE_TYPES
+        if _is_component_instance(child) and _timeline_active(child)
     )
 
 

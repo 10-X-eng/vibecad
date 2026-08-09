@@ -1595,6 +1595,36 @@ def isAssemblyGrounded():
     return False
 
 
+def assemblyOwnsGroundingComponent(assembly, component):
+    """Return whether *component* is a live grounding target of *assembly*.
+
+    Grounding is allowed for direct/nested Assembly members and for a materialized
+    ``App::LinkElement`` whose owning link group belongs to the Assembly.  Keeping
+    this predicate in the Assembly domain gives ribbon commands and exact Native
+    calls one ownership rule without depending on GUI selection state.
+    """
+
+    if (
+        assembly is None
+        or component is None
+        or component.Document is not assembly.Document
+        or not isTimelineOperationActive(assembly)
+        or not isTimelineOperationActive(component)
+    ):
+        return False
+    if assembly.hasObject(component, True):
+        return True
+    if component.TypeId != "App::LinkElement":
+        return False
+    link_group = getLinkGroup(component)
+    return (
+        link_group is not None
+        and link_group.Document is assembly.Document
+        and assembly.hasObject(link_group, True)
+        and isTimelineOperationActive(link_group)
+    )
+
+
 def removeObjAndChilds(obj):
     removeObjsAndChilds([obj])
 

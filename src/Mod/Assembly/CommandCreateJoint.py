@@ -455,25 +455,7 @@ class CommandGroupGearBelt:
 
 
 def _assemblyOwnsGroundingComponent(assembly, component):
-    if (
-        assembly is None
-        or component is None
-        or component.Document is not assembly.Document
-        or not UtilsAssembly.isTimelineOperationActive(assembly)
-        or not UtilsAssembly.isTimelineOperationActive(component)
-    ):
-        return False
-    if assembly.hasObject(component, True):
-        return True
-    if component.TypeId != "App::LinkElement":
-        return False
-    link_group = UtilsAssembly.getLinkGroup(component)
-    return (
-        link_group is not None
-        and link_group.Document is assembly.Document
-        and assembly.hasObject(link_group, True)
-        and UtilsAssembly.isTimelineOperationActive(link_group)
-    )
+    return UtilsAssembly.assemblyOwnsGroundingComponent(assembly, component)
 
 
 def createGroundedJoint(obj, assembly=None, record=True):

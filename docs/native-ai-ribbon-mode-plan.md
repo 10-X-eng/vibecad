@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 338 complete / 408 pending / 746 total (45.3% by row count)
+Checklist status: 339 complete / 407 pending / 746 total (45.4% by row count)
 
 ## Purpose
 
@@ -5084,6 +5084,27 @@ implementation changes:
   VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui builds are green.
   The protected Sketcher, Part Design, and Assembly VibeScript integrations all
   exit zero; the Part Design result reports `"ok": true`.
+- Assemble Ground and Unground are one desired-state `assembly.joint`
+  operation mapped from the live `Assembly_ToggleGrounded` action. A bounded
+  request names the exact human-active Assembly and each exact component,
+  supplies the expected component and grounded-joint counts, and states every
+  component's expected current grounding state. Preflight runs both before and
+  inside the transaction and rejects stale, duplicate, malformed, foreign,
+  inactive-timeline, or no-op targets before mutation. Human and Native paths
+  share the same Assembly ownership predicate; Native creates the real
+  `GroundedJoint` and `ViewProviderGroundedJoint`, verifies timeline ownership
+  and placement-property locking, and removes the exact joint when ungrounding.
+  It leaves human selection and Assembly activation unchanged and returns exact
+  created, deleted, and changed-object receipts. A dispatcher-backed compiled
+  GUI gate proves two-component atomic ground, duplicate replay, one-step
+  undo/redo, partial unground, a second undo/redo cycle, and FCStd save/reopen;
+  it reports `VIBECAD_NATIVE_ASSEMBLY_GROUNDING_GUI_OK components=2
+  ground_batch=2 unground=1 transactions=2 reopen=true`. The complete suite is
+  2,953 passed with four intentional skips; Ruff and sequential VibeCADScripts,
+  AssemblyScripts, Assembly, and AssemblyGui builds are green. The protected
+  Sketcher, Part Design, and Assembly VibeScript integrations all exit zero,
+  no FreeCAD process remains, and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5622,7 +5643,7 @@ concisely.
 - [x] 11.2 Implement active-assembly reading without changing activation.
 - [x] 11.3 Implement insertion of an existing component link.
 - [x] 11.4 Implement creation/insertion of a new part.
-- [ ] 11.5 Implement Ground and Unground.
+- [x] 11.5 Implement Ground and Unground.
 - [ ] 11.6 Implement Fixed joint.
 - [ ] 11.7 Implement Revolute joint.
 - [ ] 11.8 Implement Cylindrical joint.
