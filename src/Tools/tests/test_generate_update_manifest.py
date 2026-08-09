@@ -92,6 +92,36 @@ class TestGenerateUpdateManifest(unittest.TestCase):
 
             self.assertEqual(manifest["channel"], "stable")
 
+    def test_generates_macos_assets_for_both_release_architectures(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            assets = root / "assets"
+            assets.mkdir()
+            self._repo(root)
+            (assets / "VibeCAD-26.3.1-RC3-build17-macOS12-arm64.dmg").write_bytes(
+                b"apple silicon dmg"
+            )
+            (assets / "VibeCAD-26.3.1-RC3-build17-macOS12-x86_64.dmg").write_bytes(
+                b"intel dmg"
+            )
+
+            manifest = generate_manifest(
+                root,
+                assets,
+                repository="10-X-eng/vibecad",
+                published_at="2026-08-06T17:30:00Z",
+            )
+
+            macos_assets = {
+                (asset["architecture"], asset["kind"])
+                for asset in manifest["assets"]
+                if asset["platform"] == "macos"
+            }
+            self.assertEqual(
+                macos_assets,
+                {("aarch64", "dmg"), ("x86_64", "dmg")},
+            )
+
     def test_rejects_noncanonical_asset_name(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -55,19 +55,27 @@ The workflow:
 
 1. Resolves canonical metadata from `version.json` and verifies synchronization.
 2. Pins every job to the same source commit.
-3. Builds the Linux AppImage and Debian package and the Windows installer.
-4. Verifies every package checksum and generates the strict update manifest.
+3. Builds the Linux AppImage and Debian package, the Windows installer, and
+   macOS DMGs for Apple Silicon and Intel.
+4. Verifies every included package checksum and generates the strict update
+   manifest.
 5. On Windows, installs the previous published build and proves that the new
    installer removes a stale program-tree marker while retaining the old tree
    as the rollback snapshot.
 6. Creates GitHub build-provenance attestations.
-7. Creates a draft release, uploads the complete asset set, and publishes it
-   only after all gates pass.
+7. Creates a draft release, uploads the validated asset set, and publishes it
+   only after all applicable gates pass.
 
 Publishing is allowed only from the current `main` commit. The canonical tag
 and release must not already exist, and GitHub release immutability must be
 enabled for the repository. Windows builds always produce the installer; the
 portable archive is not part of validation or release builds.
+
+Preview releases are best-effort by platform: a failed or unavailable Windows,
+Linux, macOS Apple Silicon, or macOS Intel build is omitted without preventing
+the other validated packages from being published. At least one valid package
+is still required. Stable releases remain fail-closed and require the complete
+Windows, Linux, and both-architecture macOS package set.
 
 Validation builds may use any `source_ref` with `publish_release=false`. An
 official release uses `source_ref=main` and `publish_release=true`.
@@ -89,6 +97,8 @@ The canonical asset set is:
 - `VibeCAD-<version>-build<build>-Linux-<arch>.AppImage.zsync`
 - `VibeCAD-<version>-build<build>-Linux-<arch>.deb`
 - `VibeCAD-<version>-build<build>-Windows-x86_64-installer.exe`
+- `VibeCAD-<version>-build<build>-macOS<deployment>-arm64.dmg`
+- `VibeCAD-<version>-build<build>-macOS<deployment>-x86_64.dmg`
 - one `-SHA256.txt` file for every package
 - `VibeCAD-update-<version>-build<build>.json` and its checksum
 
@@ -139,7 +149,8 @@ The client:
 4. Selects a canonical release and verifies its manifest, checksum, channel,
    URLs, sizes, and version/build identity.
 5. Selects only the native Windows installer or Linux AppImage for the current
-   architecture.
+   architecture. macOS DMGs are published for manual installation; automatic
+   macOS installation is not implemented yet.
 6. Resumes interrupted downloads with HTTP Range and ETag state.
 7. Verifies the authorized size and SHA-256 before using the package.
 8. Stages installation on explicit request or, when policy allows, on exit.
@@ -209,7 +220,7 @@ Before publication:
 2. Synchronize versions and run the focused unit, workflow, shell, and local
    package validation suites.
 3. Run the release workflow with `publish_release=false` and smoke-test the
-   downloaded Windows installer and Linux AppImage artifacts.
+   downloaded Windows installer, Linux AppImage, and macOS DMG artifacts.
 4. Confirm release immutability and inspect the canonical manifest, checksums,
    package names, and build-provenance attestations.
 5. Merge the exact candidate to `main` and run the workflow with publication
