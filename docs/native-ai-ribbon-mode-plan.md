@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 343 complete / 403 pending / 746 total (46.0% by row count)
+Checklist status: 344 complete / 402 pending / 746 total (46.1% by row count)
 
 ## Purpose
 
@@ -5227,6 +5227,37 @@ implementation changes:
   Part Design, and Assembly VibeScript integrations all exit zero, no VibeCAD
   test process remains, and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Ball Joint is an exact `assembly.joint/create_ball` operation mapped
+  from the live `Assembly_CreateJointBall` action. It uses Assembly type index
+  4 and the shared regular-joint engine, which reaches the compiled spherical
+  solver used by the human command. Its two exact component-rooted connectors
+  retain complete advanced attachment offsets and expected component
+  placements, while the joint holds the connector points coincident and leaves
+  rotation unrestricted. The provider schema deliberately omits reverse,
+  simplified rotation, distance, and limit fields because the human Ball task
+  exposes none of those controls; the concise result likewise omits the shared
+  engine's internal false reverse state and empty property map. Expected
+  component, grounded, and regular-joint counts plus the solve-on-creation
+  preference guard stale requests before mutation. Invalid connectors,
+  duplicate Ball pairs, malformed graphs, changed placements, and inapplicable
+  fields fail closed. Native performs the human pre-solve and a final solve,
+  then proves exact object identity, proxies, point references, full offsets,
+  solver status, activation, and selection. Concise Assemble state returns the
+  Ball connectors without fabricating linear or angular limits. A
+  dispatcher-backed compiled GUI gate proves stale-count no-op, two real
+  vertex connectors, independent full offsets, final solver success,
+  idempotent replay, one-step undo/redo, and FCStd save/close/reopen with
+  model/view proxies, references, offsets, and bounded state restored. It
+  reports `VIBECAD_NATIVE_ASSEMBLY_BALL_JOINT_GUI_OK components=2 joints=1
+  point_connectors=true offsets=true transactions=1 reopen=true`; the Fixed,
+  Revolute, Cylindrical, and Slider lifecycle gates remain green against the
+  expanded shared engine. The complete suite is 3,016 passed with four
+  intentional skips; Ruff, compileall, diff checks, and the VibeCADScripts,
+  AssemblyScripts, Assembly, and AssemblyGui build targets are green. The
+  protected Sketcher, Part Design, and Assembly VibeScript integrations all
+  exit zero, no VibeCAD test process remains, and the immutable 5-axis fixture
+  remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5770,7 +5801,7 @@ concisely.
 - [x] 11.7 Implement Revolute joint.
 - [x] 11.8 Implement Cylindrical joint.
 - [x] 11.9 Implement Slider joint.
-- [ ] 11.10 Implement Ball joint.
+- [x] 11.10 Implement Ball joint.
 - [ ] 11.11 Implement Distance joint.
 - [ ] 11.12 Implement Parallel joint.
 - [ ] 11.13 Implement Perpendicular joint.

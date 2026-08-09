@@ -7,6 +7,13 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
+from VibeCADNativeAssemblyBallJoint import (
+    BallJointSpec,
+    NativeAssemblyBallJointError,
+    apply_ball_joint,
+    preflight_ball_joint,
+    verify_ball_joint,
+)
 from VibeCADNativeAssemblyGrounding import (
     GroundingSpec,
     GroundingTargetSpec,
@@ -396,8 +403,72 @@ class NativeAssemblyJointRuntime:
                         "expected_solve_on_creation",
                     }
                 ),
+                "create_ball": frozenset(
+                    {
+                        "assembly",
+                        "first",
+                        "second",
+                        "label",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    }
+                ),
             },
         )
+        if operation == "create_ball":
+            spec = BallJointSpec(
+                assembly_ref=_joint_object_ref(
+                    self._context.document_uid,
+                    values["assembly"],
+                    "assembly",
+                    NativeAssemblyBallJointError,
+                ),
+                first=_connector(
+                    self._context.document_uid,
+                    values["first"],
+                    "first",
+                    NativeAssemblyBallJointError,
+                ),
+                second=_connector(
+                    self._context.document_uid,
+                    values["second"],
+                    "second",
+                    NativeAssemblyBallJointError,
+                ),
+                label=_label(values["label"], NativeAssemblyBallJointError),
+                expected_component_count=_joint_count(
+                    values["expected_component_count"],
+                    "expected_component_count",
+                    NativeAssemblyBallJointError,
+                ),
+                expected_grounded_count=_joint_count(
+                    values["expected_grounded_count"],
+                    "expected_grounded_count",
+                    NativeAssemblyBallJointError,
+                ),
+                expected_joint_count=_joint_count(
+                    values["expected_joint_count"],
+                    "expected_joint_count",
+                    NativeAssemblyBallJointError,
+                    256,
+                ),
+                expected_solve_on_creation=_joint_bool(
+                    values["expected_solve_on_creation"],
+                    "expected_solve_on_creation",
+                    NativeAssemblyBallJointError,
+                ),
+            )
+            self._context.guard()
+            preflight_ball_joint(self._context.document, spec)
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name="Create Native Assembly Ball Joint",
+                mutate=lambda document: apply_ball_joint(document, spec),
+                verify=verify_ball_joint,
+            )
         if operation == "create_slider":
             minimum_enabled, minimum, maximum_enabled, maximum = _slider_limits(
                 values["limits"]

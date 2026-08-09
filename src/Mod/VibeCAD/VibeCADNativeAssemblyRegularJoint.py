@@ -43,6 +43,7 @@ REGULAR_JOINT_TYPE_INDICES = {
     "Revolute": 1,
     "Cylindrical": 2,
     "Slider": 3,
+    "Ball": 4,
 }
 REGULAR_JOINT_PROPERTIES = {
     "Fixed": frozenset(),
@@ -74,6 +75,7 @@ REGULAR_JOINT_PROPERTIES = {
             "LengthMax",
         }
     ),
+    "Ball": frozenset(),
 }
 
 
