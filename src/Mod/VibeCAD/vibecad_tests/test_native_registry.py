@@ -21,6 +21,7 @@ from VibeCADNativeModelStructureBindings import MODEL_STRUCTURE_CAPABILITY_NAMES
 from VibeCADNativeModelSurfaceBindings import MODEL_SURFACE_CAPABILITY_NAME
 from VibeCADNativeModelTransformBindings import MODEL_TRANSFORM_CAPABILITY_NAME
 from VibeCADNativeRegistry import build_native_capability_registry
+from VibeCADNativeSketchBatchBindings import SKETCH_BATCH_CAPABILITY_NAME
 from VibeCADNativeSketchConstraintBindings import SKETCH_CONSTRAINT_CAPABILITY_NAME
 from VibeCADNativeSketchControlBindings import SKETCH_CONTROL_CAPABILITY_NAME
 from VibeCADNativeSketchGeometryBindings import SKETCH_GEOMETRY_CAPABILITY_NAME
@@ -36,6 +37,7 @@ def test_production_registry_assembles_finished_contracts_and_bindings_exactly()
     assert registry.shared_definition_names == (
         *COMMON_NATIVE_CAPABILITY_NAMES,
         "model.catalog",
+        SKETCH_BATCH_CAPABILITY_NAME,
     )
     expected = (
         *COMMON_NATIVE_CAPABILITY_NAMES,
@@ -51,6 +53,7 @@ def test_production_registry_assembles_finished_contracts_and_bindings_exactly()
         MODEL_PART_CAPABILITY_NAME,
         MODEL_SURFACE_CAPABILITY_NAME,
         MODEL_TRANSFORM_CAPABILITY_NAME,
+        SKETCH_BATCH_CAPABILITY_NAME,
         SKETCH_CONSTRAINT_CAPABILITY_NAME,
         SKETCH_CONTROL_CAPABILITY_NAME,
         SKETCH_GEOMETRY_CAPABILITY_NAME,

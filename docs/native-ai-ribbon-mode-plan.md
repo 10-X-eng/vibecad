@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 329 complete / 417 pending / 746 total (44.1% by row count)
+Checklist status: 334 complete / 412 pending / 746 total (44.8% by row count)
 
 ## Purpose
 
@@ -5033,6 +5033,28 @@ implementation changes:
   passed with four intentional skips, all four required build targets green,
   both protected VibeScript lifecycles green, and the 5-axis fixture hash
   unchanged.
+- The contextual Sketch surface now includes one bounded atomic `sketch.batch`
+  create operation alongside the exact single-operation tools. One request can
+  add 1–32 points, lines, circles, or circular arcs and 1–16 supported
+  constraints using client-local references. All references, geometry kinds,
+  point positions, dimensions, active-Sketch identity, and expected counts are
+  resolved before a transaction. Sketcher's additional-constraint diagnosis
+  rejects redundancy or conflicts before durable constraint insertion, and
+  any later degeneracy or postcondition failure rolls back the entire batch.
+  Success returns stable host geometry IDs and exact constraint indices plus a
+  concise closed-profile and solver summary. The exact production Sketch
+  surface serializes to 63,246 bytes under the unchanged 65,536-byte cap.
+  A dispatcher-backed compiled GUI gate proves a fully constrained four-line
+  profile with 11 constraints in one mutating call, invalid-reference no-op,
+  redundant-batch rollback, exact duplicate-call replay, one undo step, exact
+  undo/redo, and FCStd save/reopen. A second rolled-back catalog batch exercises
+  point, circle, arc, Parallel, Perpendicular, Equal, Angle, Radius, Diameter,
+  and Distance construction paths. It reports
+  `VIBECAD_NATIVE_SKETCH_BATCH_GUI_OK schema_bytes=63246 profile_mutations=1
+  catalog_mutations=1 geometry=4 constraints=11`. The complete pure suite is
+  2,934 passed with four intentional skips, Ruff is green, both protected
+  VibeScript integrations exit zero, and the 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5550,19 +5572,19 @@ concisely.
 - [x] 10.82 Implement B-spline pole-weight visibility.
 - [x] 10.83 Implement internal-alignment restoration.
 - [x] 10.84 Implement virtual-space switching as presentation state.
-- [ ] 10.85 Implement a bounded batch call that creates geometry and constraints
+- [x] 10.85 Implement a bounded batch call that creates geometry and constraints
   using client-local references.
-- [ ] 10.86 Make the batch call atomic and reject invalid references before
+- [x] 10.86 Make the batch call atomic and reject invalid references before
   mutation.
-- [ ] 10.87 Return stable geometry and constraint references from the batch.
-- [ ] 10.88 Return closed-profile status, degrees of freedom, redundancy,
+- [x] 10.87 Return stable geometry and constraint references from the batch.
+- [x] 10.88 Return closed-profile status, degrees of freedom, redundancy,
   conflicts, and degenerate geometry without dumping all solver internals.
 - [x] 10.89 Expose exact Leave Sketch as provider edit control and keep Cancel
   Sketch human-controlled.
 - [x] 10.90 Verify Leave Sketch does not activate Model, another workbench, or
   another ribbon, and that the resulting contextual change invalidates the
   current turn.
-- [ ] 10.91 Complete a constrained profile from a fresh transcript using no more
+- [x] 10.91 Complete a constrained profile from a fresh transcript using no more
   than two mutating calls.
 
 ### 11. Implement the Assemble surface

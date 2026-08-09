@@ -157,6 +157,11 @@ set(VibeCAD_Scripts
     VibeCADNativeSketchErrors.py
     VibeCADNativeSketchArc.py
     VibeCADNativeSketchArcSlot.py
+    VibeCADNativeSketchBatch.py
+    VibeCADNativeSketchBatchBindings.py
+    VibeCADNativeSketchBatchPlan.py
+    VibeCADNativeSketchBatchRuntime.py
+    VibeCADNativeSketchBatchSchema.py
     VibeCADNativeSketchBSpline.py
     VibeCADNativeSketchArbitraryRegularPolygon.py
     VibeCADNativeSketchCircularArc.py
@@ -531,6 +536,8 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_model_profiles_gui_integration.py
         vibecad_tests/native_model_bracket_workflow_gui_integration.py
         vibecad_tests/native_sketch_state_gui_integration.py
+        vibecad_tests/native_sketch_batch_gui_integration.py
+        vibecad_tests/native_sketch_batch_test_support.py
         vibecad_tests/native_sketch_geometry_gui_support.py
         vibecad_tests/native_sketch_provider_turn.py
         vibecad_tests/native_sketch_leave_gui_integration.py
@@ -618,6 +625,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/test_native_sketch_virtual_space_schema.py
     vibecad_tests/test_native_sketch_presentation.py
     vibecad_tests/test_native_sketch_presentation_schema.py
+    vibecad_tests/test_native_sketch_batch.py
     vibecad_tests/test_native_sketch_control_schema.py
         vibecad_tests/native_sketch_basic_geometry_gui_case.py
         vibecad_tests/native_sketch_bspline_gui_case.py

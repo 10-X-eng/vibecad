@@ -35,6 +35,8 @@ from VibeCADNativeModelStructureRuntime import NativeModelStructureRuntime
 from VibeCADNativeModelTransformBindings import model_transform_runtime_bindings
 from VibeCADNativeModelTransformRuntime import NativeModelTransformRuntime
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
+from VibeCADNativeSketchBatchBindings import sketch_batch_runtime_bindings
+from VibeCADNativeSketchBatchRuntime import NativeSketchBatchRuntime
 from VibeCADNativeSketchConstraintBindings import sketch_constraint_runtime_bindings
 from VibeCADNativeSketchConstraintRuntime import NativeSketchConstraintRuntime
 from VibeCADNativeSketchControlBindings import sketch_control_runtime_bindings
@@ -70,6 +72,7 @@ def build_native_runtime_bindings(
     model_surface = NativeModelSurfaceRuntime(context)
     model_structure = NativeModelStructureRuntime(context)
     model_transform = NativeModelTransformRuntime(context)
+    sketch_batch = NativeSketchBatchRuntime(context)
     sketch_constraint = NativeSketchConstraintRuntime(context)
     sketch_control = NativeSketchControlRuntime(context)
     sketch_geometry = NativeSketchGeometryRuntime(context)
@@ -89,6 +92,7 @@ def build_native_runtime_bindings(
         **model_surface_runtime_bindings(model_surface),
         **model_structure_runtime_bindings(model_structure),
         **model_transform_runtime_bindings(model_transform),
+        **sketch_batch_runtime_bindings(sketch_batch),
         **sketch_constraint_runtime_bindings(sketch_constraint),
         **sketch_control_runtime_bindings(sketch_control),
         **sketch_geometry_runtime_bindings(sketch_geometry),
