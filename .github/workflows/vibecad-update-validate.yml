@@ -71,4 +71,5 @@ jobs:
           src.Tools.tests.test_release_artifact_name
           src.Tools.tests.test_windows_installer_version
           src.Tools.tests.test_generate_update_manifest
+          src.Tools.tests.test_release_workflow
           src.Tools.tests.test_vibecad_update

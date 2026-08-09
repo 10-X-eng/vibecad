@@ -116,6 +116,7 @@ jobs:
   linux:
     name: Linux AppImage and Debian Package
     needs: prepare
+    continue-on-error: ${{ needs.prepare.outputs.prerelease == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -222,6 +223,7 @@ jobs:
           key: ${{ steps.cache-pixi-linux.outputs.cache-primary-key }}
 
       - name: Upload Linux release assets
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vibecad-linux
@@ -236,6 +238,7 @@ jobs:
   windows:
     name: Windows Bundle and Installer
     needs: prepare
+    continue-on-error: ${{ needs.prepare.outputs.prerelease == 'true' }}
     runs-on: windows-2022
     steps:
       - name: Check out source
@@ -340,12 +343,139 @@ jobs:
             package/rattler-build/windows/*.exe
             package/rattler-build/windows/*-installer.exe-SHA256.txt
 
+  macos:
+    name: macOS ${{ matrix.arch }} DMG
+    needs: prepare
+    continue-on-error: ${{ needs.prepare.outputs.prerelease == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: osx-arm64
+            runner: macos-15
+            arch: arm64
+          - target: osx-64
+            runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install Pixi
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://pixi.sh/install.sh | bash
+          echo "${HOME}/.pixi/bin" >> "${GITHUB_PATH}"
+
+      - name: Restore Pixi and runtime caches
+        id: cache-pixi-macos
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            package/rattler-build/.pixi
+            package/rattler-build/.download-cache
+            ~/.cache/pixi
+            ~/.cache/rattler
+            ~/Library/Caches/pip
+          key: pixi-${{ matrix.target }}-${{ hashFiles('package/rattler-build/pixi.lock', 'package/rattler-build/pixi.toml', 'package/rattler-build/recipe.yaml', 'src/Mod/VibeCAD/requirements.txt', 'package/rattler-build/scripts/install_vibecad_provider_deps.sh', 'package/rattler-build/scripts/install_vibecad_codex_runtime.sh', 'package/rattler-build/scripts/purge_vibecad_retired_authoring_artifacts.sh', 'package/rattler-build/scripts/relocate_conda_environment.py') }}
+          restore-keys: |
+            pixi-${{ matrix.target }}-
+
+      - name: Restore ccache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-${{ matrix.target }}-
+
+      - name: Build package environment
+        shell: bash
+        working-directory: package/rattler-build
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+          CCACHE_MAXSIZE: "2G"
+          MACOS_DEPLOYMENT_TARGET: "12.0"
+        run: |
+          set -euo pipefail
+          if [[ -d .pixi/envs/default ]]; then
+            pixi reinstall -e default vibecad
+          else
+            pixi install -e default
+          fi
+          pixi install -e package
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save Pixi and runtime caches
+        if: always() && steps.cache-pixi-macos.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            package/rattler-build/.pixi
+            package/rattler-build/.download-cache
+            ~/.cache/pixi
+            ~/.cache/rattler
+            ~/Library/Caches/pip
+          key: ${{ steps.cache-pixi-macos.outputs.cache-primary-key }}
+
+      - name: Reclaim macOS packaging workspace
+        shell: bash
+        working-directory: package/rattler-build
+        run: |
+          set -euo pipefail
+          echo "Rattler build workspace before packaging cleanup:"
+          du -sk .pixi/bld
+          rm -rf .pixi/bld
+          if [[ -d "${RUNNER_TEMP}/ccache" ]]; then
+            echo "Compiler cache before packaging cleanup:"
+            du -sk "${RUNNER_TEMP}/ccache"
+            rm -rf "${RUNNER_TEMP}/ccache"
+          fi
+          echo "Runner disk space available for macOS packaging:"
+          df -h .
+
+      - name: Create and validate VibeCAD DMG
+        timeout-minutes: 120
+        shell: bash
+        working-directory: package/rattler-build
+        env:
+          BUILD_TAG: ${{ needs.prepare.outputs.build_tag }}
+          MACOS_DEPLOYMENT_TARGET: "12.0"
+          MACOS_SIGN_RELEASE: "false"
+        run: |
+          set -euo pipefail
+          pixi run -e package create_bundle
+
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vibecad-macos-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: ${{ needs.prepare.outputs.artifact_retention_days }}
+          path: |
+            package/rattler-build/osx/VibeCAD-*.dmg
+            package/rattler-build/osx/VibeCAD-*.dmg-SHA256.txt
+
   release:
     name: Validate and Publish Canonical Release
     needs:
       - prepare
       - linux
       - windows
+      - macos
+    if: ${{ always() && needs.prepare.result == 'success' && (needs.prepare.outputs.prerelease == 'true' || (needs.linux.result == 'success' && needs.windows.result == 'success' && needs.macos.result == 'success')) }}
     runs-on: ubuntu-24.04
     steps:
       - name: Check out packaged source
@@ -355,53 +485,77 @@ jobs:
           fetch-depth: 1
           submodules: false
 
-      - name: Download Linux assets
+      - name: Download available release assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: vibecad-linux
+          pattern: vibecad-*
           path: dist/assets
-
-      - name: Download Windows assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: vibecad-windows
-          path: dist/assets
+          merge-multiple: true
 
       - name: Verify packages and generate release manifest
         id: validate
         shell: bash
         env:
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
           set -euo pipefail
 
           mapfile -d '' checksum_files < <(find dist/assets -maxdepth 1 -type f -name '*-SHA256.txt' -print0)
-          if [[ "${#checksum_files[@]}" -eq 0 ]]; then
-            echo "No release checksums were produced." >&2
-            exit 1
-          fi
           for checksum in "${checksum_files[@]}"; do
+            package="${checksum%-SHA256.txt}"
+            if [[ ! -f "${package}" ]]; then
+              if [[ "${PRERELEASE}" == "true" ]]; then
+                echo "Omitting orphan checksum from preview release: ${checksum}" >&2
+                rm -f -- "${checksum}"
+                continue
+              fi
+              echo "Stable release checksum has no package: ${checksum}" >&2
+              exit 1
+            fi
             (cd dist/assets && sha256sum --check "$(basename "${checksum}")")
           done
 
           mapfile -d '' package_files < <(
             find dist/assets -maxdepth 1 -type f \
-              \( -name '*.AppImage' -o -name '*.AppImage.zsync' -o -name '*.deb' -o -name '*.exe' \) \
+              \( -name '*.AppImage' -o -name '*.AppImage.zsync' -o -name '*.deb' -o -name '*.exe' -o -name '*.dmg' \) \
               -print0
           )
-          if [[ "${#package_files[@]}" -eq 0 ]]; then
-            echo "No release packages were produced." >&2
-            exit 1
-          fi
           for package_file in "${package_files[@]}"; do
             if [[ ! -f "${package_file}-SHA256.txt" ]]; then
+              if [[ "${PRERELEASE}" == "true" ]]; then
+                echo "Omitting unchecked package from preview release: ${package_file}" >&2
+                rm -f -- "${package_file}"
+                continue
+              fi
               echo "Missing checksum for ${package_file}." >&2
               exit 1
             fi
           done
-          if ! compgen -G 'dist/assets/*-installer.exe' >/dev/null; then
-            echo "The required Windows installer was not produced." >&2
+          mapfile -d '' package_files < <(
+            find dist/assets -maxdepth 1 -type f \
+              \( -name '*.AppImage' -o -name '*.AppImage.zsync' -o -name '*.deb' -o -name '*.exe' -o -name '*.dmg' \) \
+              -print0
+          )
+          if [[ "${#package_files[@]}" -eq 0 ]]; then
+            echo "No complete, checksummed release packages were produced." >&2
             exit 1
+          fi
+          if [[ "${PRERELEASE}" != "true" ]]; then
+            required_patterns=(
+              'dist/assets/*-Linux-*.AppImage'
+              'dist/assets/*-Linux-*.AppImage.zsync'
+              'dist/assets/*-Linux-*.deb'
+              'dist/assets/*-Windows-x86_64-installer.exe'
+              'dist/assets/*-macOS*-arm64.dmg'
+              'dist/assets/*-macOS*-x86_64.dmg'
+            )
+            for required_pattern in "${required_patterns[@]}"; do
+              if ! compgen -G "${required_pattern}" >/dev/null; then
+                echo "Stable release is missing required package: ${required_pattern}" >&2
+                exit 1
+              fi
+            done
           fi
 
           published_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -445,16 +599,21 @@ jobs:
             exit 1
           fi
 
-          cat > release-notes.md <<EOF
-          VibeCAD ${RELEASE_VERSION} (Build ${RELEASE_BUILD}) is a ${CHANNEL} release.
-
-          Packages:
-          - Linux AppImage for direct execution.
-          - Linux Debian package.
-          - Windows installer executable.
-
-          Every package has a SHA-256 checksum, a canonical update manifest, and GitHub build provenance. Published release assets and their tag are immutable.
-          EOF
+          {
+            echo "VibeCAD ${RELEASE_VERSION} (Build ${RELEASE_BUILD}) is a ${CHANNEL} release."
+            echo
+            echo "Validated packages included in this release:"
+            compgen -G 'dist/assets/*-Linux-*.AppImage' >/dev/null && echo "- Linux AppImage for direct execution."
+            compgen -G 'dist/assets/*-Linux-*.deb' >/dev/null && echo "- Linux Debian package."
+            compgen -G 'dist/assets/*-Windows-x86_64-installer.exe' >/dev/null && echo "- Windows installer executable."
+            compgen -G 'dist/assets/*-macOS*-arm64.dmg' >/dev/null && echo "- macOS Apple Silicon DMG."
+            compgen -G 'dist/assets/*-macOS*-x86_64.dmg' >/dev/null && echo "- macOS Intel DMG."
+            echo
+            if [[ "${PRERELEASE}" == "true" ]]; then
+              echo "Preview publication is best-effort by platform; unavailable packages are omitted."
+            fi
+            echo "Every included package has a SHA-256 checksum, a canonical update manifest, and GitHub build provenance. Published release assets and their tag are immutable."
+          } > release-notes.md
 
           mapfile -d '' release_files < <(find dist/assets -maxdepth 1 -type f -print0)
           release_args=(--draft --target "${SOURCE_SHA}" --title "${RELEASE_TITLE}" --notes-file release-notes.md)
