@@ -572,6 +572,60 @@ def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
                     "additionalProperties": False,
                 },
             ),
+            NativeCapabilityVariant(
+                operation="create_angle",
+                description=(
+                    "Create one native Angle joint from exact component-rooted "
+                    "connectors, full offsets, one canonical 0-to-180 degree axis "
+                    "angle, and expected live state. Zero uses the human command's "
+                    "unsigned Parallel relation."
+                ),
+                action_ids=frozenset({"Assembly_CreateJointAngle"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactAngleJointConnectorPairAndExpectedState"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "first": _JOINT_CONNECTOR,
+                        "second": _JOINT_CONNECTOR,
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                        },
+                        "angle_degrees": {
+                            "type": "number",
+                            "minimum": 0.0,
+                            "maximum": 180.0,
+                        },
+                        "expected_component_count": _COUNT,
+                        "expected_grounded_count": _COUNT,
+                        "expected_joint_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 256,
+                        },
+                        "expected_solve_on_creation": {"type": "boolean"},
+                    },
+                    "required": [
+                        "assembly",
+                        "first",
+                        "second",
+                        "label",
+                        "angle_degrees",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
         ),
     )
 

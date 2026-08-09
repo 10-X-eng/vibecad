@@ -953,6 +953,7 @@ _CAPABILITY_OVERRIDES = {
 _OPERATION_VARIANT_OVERRIDES = {
     "Assembly_CreateJointBall": "create_ball",
     "Assembly_CreateJointCylindrical": "create_cylindrical",
+    "Assembly_CreateJointAngle": "create_angle",
     "Assembly_CreateJointDistance": "create_distance",
     "Assembly_CreateJointFixed": "create_fixed",
     "Assembly_CreateJointParallel": "create_parallel",

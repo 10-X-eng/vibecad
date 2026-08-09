@@ -6,6 +6,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADNativeAssemblyAngleJoint import (
+    NativeAssemblyAngleJointError,
+    angle_axes_satisfied,
+    angle_solver_relation,
+    measured_axis_angle_degrees,
+)
 from VibeCADNativeAssemblyComponents import (
     assembly_components,
     available_component_sources,
@@ -120,6 +126,15 @@ def _joint_summary(joint: Any) -> dict[str, Any]:
         summary["axes_parallel"] = parallel_axes_satisfied(joint)
     if joint_type == "Perpendicular":
         summary["axes_perpendicular"] = perpendicular_axes_satisfied(joint)
+    if joint_type == "Angle":
+        angle = _quantity_value(joint, "Angle")
+        summary["angle_degrees"] = angle
+        try:
+            summary["angle_relation"] = angle_solver_relation(angle)
+        except NativeAssemblyAngleJointError:
+            summary["angle_relation"] = None
+        summary["measured_axis_angle_degrees"] = measured_axis_angle_degrees(joint)
+        summary["angle_satisfied"] = angle_axes_satisfied(joint, angle)
     return summary
 
 

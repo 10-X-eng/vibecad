@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 347 complete / 399 pending / 746 total (46.5% by row count)
+Checklist status: 348 complete / 398 pending / 746 total (46.6% by row count)
 
 ## Purpose
 
@@ -5367,11 +5367,50 @@ implementation changes:
   and Assembly VibeScript integrations all exit zero, no VibeCAD test process
   remains, and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Angle Joint is an exact `assembly.joint/create_angle` operation
+  mapped from the live `Assembly_CreateJointAngle` action. It uses Assembly
+  type index 8, persists the human task's real `Angle` property, and reaches
+  the compiled `ASMTAngleJoint`, whose constraint is the global connector-Z
+  dot product `cos(abs(Angle))`. Native deliberately accepts the one canonical
+  geometric range from 0 through 180 degrees instead of exposing the raw
+  property's negative and periodic aliases as false choices. At zero, it
+  mirrors the compiled `AssemblyObject` special case that substitutes
+  `ASMTParallelAxesJoint`; concise results and state name that relation
+  `parallel_unsigned` so equal and anti-parallel zero-angle outcomes cannot be
+  misread. All other canonical values report `axis_dot_cosine`. Two exact
+  component-rooted connectors retain complete, independent Offset1 and Offset2
+  placements. Reverse, distance, simplified rotation, and limit fields are
+  absent because the human Angle task exposes none of them. Expected component,
+  grounded, and regular-joint counts plus the solve-on-creation preference
+  guard stale requests. Invalid connectors, duplicate Angle pairs, malformed
+  graphs, changed component placements, non-finite or non-canonical angles,
+  and inapplicable fields fail before mutation. Native follows the human
+  `preventParallel` connector path, including its 10-degree global connector-X
+  perturbation when the initial axes are parallel. It then verifies the live
+  global connector-axis dot product against the exact compiled relation and
+  reports the stored canonical angle, measured principal axis angle, relation,
+  and satisfaction without leaking the shared engine's internal false Reverse
+  state or property map. A dispatcher-backed compiled GUI gate deliberately
+  starts with exact connector axes parallel through yaw-only full offsets and
+  proves the real 60-degree cosine solver, stale-count no-op, property and
+  offset persistence, moved-component reporting, idempotent replay, one-step
+  undo/redo, and FCStd save/close/reopen with model and view proxies,
+  references, semantic state, and bounded summary restored. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_ANGLE_JOINT_GUI_OK components=2 joints=1
+  initial_parallel=true angle_degrees=60 angle_satisfied=true offsets=true
+  transactions=1 reopen=true`; all eight previously completed compiled joint
+  lifecycle gates remain green. The complete suite is 3,086 passed with four
+  intentional skips; Ruff, compileall, diff checks, source/build-tree byte
+  comparison, and the VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui
+  build targets are green. The protected Sketcher, Part Design, and Assembly
+  VibeScript integrations all exit zero, no VibeCAD test process remains, and
+  the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - The Assembly joint runtime has been split by responsibility without changing
-  its public provider contract: the dispatcher is 187 lines, shared argument
+  its public provider contract: the dispatcher is 188 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
-  relation-joint execution is 232 lines. The new Perpendicular contract is 151
-  lines, and every execution module remains below the 1,000-line ceiling.
+  relation-joint execution is 294 lines. The Angle contract is 229 lines, and
+  every execution module remains below the 1,000-line ceiling.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5919,7 +5958,7 @@ concisely.
 - [x] 11.11 Implement Distance joint.
 - [x] 11.12 Implement Parallel joint.
 - [x] 11.13 Implement Perpendicular joint.
-- [ ] 11.14 Implement Angle joint.
+- [x] 11.14 Implement Angle joint.
 - [ ] 11.15 Implement Rack-and-Pinion joint.
 - [ ] 11.16 Implement Screw joint.
 - [ ] 11.17 Implement Gear joint.

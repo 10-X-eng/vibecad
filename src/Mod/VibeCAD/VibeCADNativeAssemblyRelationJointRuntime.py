@@ -6,6 +6,14 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from VibeCADNativeAssemblyAngleJoint import (
+    AngleJointSpec,
+    NativeAssemblyAngleJointError,
+    apply_angle_joint,
+    canonical_angle_degrees,
+    preflight_angle_joint,
+    verify_angle_joint,
+)
 from VibeCADNativeAssemblyDistanceJoint import (
     DistanceJointSpec,
     NativeAssemblyDistanceJointError,
@@ -42,6 +50,7 @@ from VibeCADNativeState import NativeCallTicket
 
 RELATION_JOINT_OPERATIONS = frozenset(
     {
+        "create_angle",
         "create_distance",
         "create_parallel",
         "create_perpendicular",
@@ -58,6 +67,59 @@ def execute_relation_joint(
     """Decode and execute one already-authorized relation-joint variant."""
 
     document_uid = context.document_uid
+    if operation == "create_angle":
+        spec = AngleJointSpec(
+            assembly_ref=joint_object_ref(
+                document_uid,
+                values["assembly"],
+                "assembly",
+                NativeAssemblyAngleJointError,
+            ),
+            first=joint_connector(
+                document_uid,
+                values["first"],
+                "first",
+                NativeAssemblyAngleJointError,
+            ),
+            second=joint_connector(
+                document_uid,
+                values["second"],
+                "second",
+                NativeAssemblyAngleJointError,
+            ),
+            label=joint_label(values["label"], NativeAssemblyAngleJointError),
+            angle_degrees=canonical_angle_degrees(values["angle_degrees"]),
+            expected_component_count=joint_count(
+                values["expected_component_count"],
+                "expected_component_count",
+                NativeAssemblyAngleJointError,
+            ),
+            expected_grounded_count=joint_count(
+                values["expected_grounded_count"],
+                "expected_grounded_count",
+                NativeAssemblyAngleJointError,
+            ),
+            expected_joint_count=joint_count(
+                values["expected_joint_count"],
+                "expected_joint_count",
+                NativeAssemblyAngleJointError,
+                256,
+            ),
+            expected_solve_on_creation=joint_bool(
+                values["expected_solve_on_creation"],
+                "expected_solve_on_creation",
+                NativeAssemblyAngleJointError,
+            ),
+        )
+        context.guard()
+        preflight_angle_joint(context.document, spec)
+        return run_immediate_mutation(
+            context,
+            ticket=ticket,
+            transaction_name="Create Native Assembly Angle Joint",
+            mutate=lambda document: apply_angle_joint(document, spec),
+            verify=verify_angle_joint,
+        )
     if operation == "create_perpendicular":
         spec = PerpendicularJointSpec(
             assembly_ref=joint_object_ref(

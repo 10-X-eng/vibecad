@@ -61,6 +61,7 @@ _OPERATION_FIELDS = {
     | {"reverse", "distance_mm", "expected_distance_mode"},
     "create_parallel": _COMMON_JOINT_FIELDS | {"reverse"},
     "create_perpendicular": _COMMON_JOINT_FIELDS,
+    "create_angle": _COMMON_JOINT_FIELDS | {"angle_degrees"},
 }
 
 
