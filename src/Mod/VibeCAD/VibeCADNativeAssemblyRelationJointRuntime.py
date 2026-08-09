@@ -28,6 +28,13 @@ from VibeCADNativeAssemblyParallelJoint import (
     preflight_parallel_joint,
     verify_parallel_joint,
 )
+from VibeCADNativeAssemblyPerpendicularJoint import (
+    NativeAssemblyPerpendicularJointError,
+    PerpendicularJointSpec,
+    apply_perpendicular_joint,
+    preflight_perpendicular_joint,
+    verify_perpendicular_joint,
+)
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
@@ -37,6 +44,7 @@ RELATION_JOINT_OPERATIONS = frozenset(
     {
         "create_distance",
         "create_parallel",
+        "create_perpendicular",
     }
 )
 
@@ -50,6 +58,61 @@ def execute_relation_joint(
     """Decode and execute one already-authorized relation-joint variant."""
 
     document_uid = context.document_uid
+    if operation == "create_perpendicular":
+        spec = PerpendicularJointSpec(
+            assembly_ref=joint_object_ref(
+                document_uid,
+                values["assembly"],
+                "assembly",
+                NativeAssemblyPerpendicularJointError,
+            ),
+            first=joint_connector(
+                document_uid,
+                values["first"],
+                "first",
+                NativeAssemblyPerpendicularJointError,
+            ),
+            second=joint_connector(
+                document_uid,
+                values["second"],
+                "second",
+                NativeAssemblyPerpendicularJointError,
+            ),
+            label=joint_label(
+                values["label"],
+                NativeAssemblyPerpendicularJointError,
+            ),
+            expected_component_count=joint_count(
+                values["expected_component_count"],
+                "expected_component_count",
+                NativeAssemblyPerpendicularJointError,
+            ),
+            expected_grounded_count=joint_count(
+                values["expected_grounded_count"],
+                "expected_grounded_count",
+                NativeAssemblyPerpendicularJointError,
+            ),
+            expected_joint_count=joint_count(
+                values["expected_joint_count"],
+                "expected_joint_count",
+                NativeAssemblyPerpendicularJointError,
+                256,
+            ),
+            expected_solve_on_creation=joint_bool(
+                values["expected_solve_on_creation"],
+                "expected_solve_on_creation",
+                NativeAssemblyPerpendicularJointError,
+            ),
+        )
+        context.guard()
+        preflight_perpendicular_joint(context.document, spec)
+        return run_immediate_mutation(
+            context,
+            ticket=ticket,
+            transaction_name="Create Native Assembly Perpendicular Joint",
+            mutate=lambda document: apply_perpendicular_joint(document, spec),
+            verify=verify_perpendicular_joint,
+        )
     if operation == "create_parallel":
         spec = ParallelJointSpec(
             assembly_ref=joint_object_ref(

@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 346 complete / 400 pending / 746 total (46.4% by row count)
+Checklist status: 347 complete / 399 pending / 746 total (46.5% by row count)
 
 ## Purpose
 
@@ -5331,6 +5331,47 @@ implementation changes:
   exit zero, no VibeCAD test process remains, and the immutable 5-axis fixture
   remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Perpendicular Joint is an exact
+  `assembly.joint/create_perpendicular` operation mapped from the live
+  `Assembly_CreateJointPerpendicular` action. It uses Assembly type index 7
+  and reaches the compiled `ASMTPerpendicularJoint` used by the human command,
+  whose real constraint makes the two connector coordinate systems' global Z
+  axes orthogonal. The two exact component-rooted connectors preserve complete,
+  independent Offset1 and Offset2 placements. Reverse, angle, distance,
+  simplified rotation, and limit fields are deliberately absent because the
+  human Perpendicular task exposes none of them. Expected component, grounded,
+  and regular-joint counts plus the solve-on-creation preference guard stale
+  requests. Invalid connectors, duplicate Perpendicular pairs, malformed
+  graphs, changed component placements, and inapplicable fields fail before
+  mutation. Native follows the human command's `preventParallel` connector
+  path, including its 10-degree X-axis perturbation of the moving component
+  when the initial connector axes are parallel, so the solver does not begin
+  from that singular orientation. It then verifies the live global connector
+  Z-axis dot product as an exact `axes_perpendicular` semantic postcondition,
+  in addition to exact type, proxies, references, offsets, solver status,
+  activation, and selection. Concise Assembly state reports that semantic
+  relationship without fabricating joint properties. A dispatcher-backed
+  compiled GUI gate deliberately starts with the exact connector axes parallel
+  by using yaw-only full offsets, then proves the perturbation-and-solve path,
+  stale-count no-op, independent offsets, moved-component reporting,
+  idempotent replay, one-step undo/redo, and FCStd save/close/reopen with model
+  and view proxies, references, offsets, semantic state, and bounded summary
+  restored. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_PERPENDICULAR_JOINT_GUI_OK components=2 joints=1
+  initial_parallel=true axes_perpendicular=true offsets=true transactions=1
+  reopen=true`; the Fixed, Revolute, Cylindrical, Slider, Ball, Distance, and
+  Parallel lifecycle gates remain green. The complete suite is 3,064 passed
+  with four intentional skips; Ruff, compileall, diff checks, source/build-tree
+  byte comparison, and the VibeCADScripts, AssemblyScripts, Assembly, and
+  AssemblyGui build targets are green. The protected Sketcher, Part Design,
+  and Assembly VibeScript integrations all exit zero, no VibeCAD test process
+  remains, and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- The Assembly joint runtime has been split by responsibility without changing
+  its public provider contract: the dispatcher is 187 lines, shared argument
+  decoding is 158 lines, motion-joint execution is 440 lines, and
+  relation-joint execution is 232 lines. The new Perpendicular contract is 151
+  lines, and every execution module remains below the 1,000-line ceiling.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5877,7 +5918,7 @@ concisely.
 - [x] 11.10 Implement Ball joint.
 - [x] 11.11 Implement Distance joint.
 - [x] 11.12 Implement Parallel joint.
-- [ ] 11.13 Implement Perpendicular joint.
+- [x] 11.13 Implement Perpendicular joint.
 - [ ] 11.14 Implement Angle joint.
 - [ ] 11.15 Implement Rack-and-Pinion joint.
 - [ ] 11.16 Implement Screw joint.

@@ -956,6 +956,7 @@ _OPERATION_VARIANT_OVERRIDES = {
     "Assembly_CreateJointDistance": "create_distance",
     "Assembly_CreateJointFixed": "create_fixed",
     "Assembly_CreateJointParallel": "create_parallel",
+    "Assembly_CreateJointPerpendicular": "create_perpendicular",
     "Assembly_CreateJointRevolute": "create_revolute",
     "Assembly_CreateJointSlider": "create_slider",
     "Assembly_ToggleGrounded": "set_grounded",

@@ -524,6 +524,54 @@ def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
                     "additionalProperties": False,
                 },
             ),
+            NativeCapabilityVariant(
+                operation="create_perpendicular",
+                description=(
+                    "Create one native Perpendicular joint from exact "
+                    "component-rooted connectors, full attachment offsets, and "
+                    "expected live Assembly state without exposing inapplicable "
+                    "reverse, angle, rotation, distance, or limit controls."
+                ),
+                action_ids=frozenset({"Assembly_CreateJointPerpendicular"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactPerpendicularJointConnectorPairAndExpectedState"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "first": _JOINT_CONNECTOR,
+                        "second": _JOINT_CONNECTOR,
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                        },
+                        "expected_component_count": _COUNT,
+                        "expected_grounded_count": _COUNT,
+                        "expected_joint_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 256,
+                        },
+                        "expected_solve_on_creation": {"type": "boolean"},
+                    },
+                    "required": [
+                        "assembly",
+                        "first",
+                        "second",
+                        "label",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
         ),
     )
 
