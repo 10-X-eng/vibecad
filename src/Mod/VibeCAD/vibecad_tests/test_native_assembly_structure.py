@@ -138,6 +138,8 @@ def test_structure_schema_exactly_covers_the_live_create_action() -> None:
     assert registered is not None
     assert tuple(variant.operation for variant in registered.variants) == (
         "create_assembly",
+        "insert_component",
+        "create_part",
     )
     assert registry.implementation("assembly.structure") is not None
 

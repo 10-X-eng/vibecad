@@ -9,6 +9,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeCapabilityVariant,
 )
+from VibeCADNativeDesignSchema import placement_schema
 
 
 _LABEL = {
@@ -26,6 +27,35 @@ _OBJECT_REF = {
     "properties": {"object_name": _OBJECT_NAME},
     "required": ["object_name"],
     "additionalProperties": False,
+}
+_SOURCE_REF = {
+    "type": "object",
+    "properties": {
+        "document_uid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+        },
+        "document_name": _OBJECT_NAME,
+        "object_name": _OBJECT_NAME,
+        "object_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2_147_483_647,
+        },
+    },
+    "required": [
+        "document_uid",
+        "document_name",
+        "object_name",
+        "object_id",
+    ],
+    "additionalProperties": False,
+}
+_EXPECTED_COMPONENT_COUNT = {
+    "type": "integer",
+    "minimum": 0,
+    "maximum": 100_000,
 }
 
 
@@ -64,6 +94,71 @@ def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
                         "label",
                         "parent_assembly",
                         "expected_assembly_count",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="insert_component",
+                description=(
+                    "Insert one exact existing Part, Body, primitive, or Assembly "
+                    "into the human-active Assembly without changing activation."
+                ),
+                action_ids=frozenset({"Assembly_InsertLink"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type="HumanActiveAssemblyExactSourceAndExpectedCount",
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "source": _SOURCE_REF,
+                        "label": _LABEL,
+                        "placement": placement_schema(),
+                        "rigid": {
+                            "oneOf": [
+                                {"type": "boolean"},
+                                {"type": "null"},
+                            ],
+                        },
+                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
+                    },
+                    "required": [
+                        "assembly",
+                        "source",
+                        "label",
+                        "placement",
+                        "rigid",
+                        "expected_component_count",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="create_part",
+                description=(
+                    "Create one empty current-document Part and Body and insert "
+                    "its occurrence into the human-active Assembly."
+                ),
+                action_ids=frozenset({"Assembly_InsertNewPart"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type="HumanActiveAssemblyAndExpectedCount",
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "label": _LABEL,
+                        "placement": placement_schema(),
+                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
+                    },
+                    "required": [
+                        "assembly",
+                        "label",
+                        "placement",
+                        "expected_component_count",
                     ],
                     "additionalProperties": False,
                 },

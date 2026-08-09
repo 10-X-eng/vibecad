@@ -6,19 +6,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADNativeAssemblyComponents import (
+    assembly_components,
+    available_component_sources,
+)
 from VibeCADNativeAssemblyState import read_active_assembly
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
 
 MAX_ASSEMBLIES = 16
-_RESOURCE_GROUPS = frozenset(
-    {
-        "Assembly::JointGroup",
-        "Assembly::BomGroup",
-        "Assembly::ViewGroup",
-        "Assembly::SimulationGroup",
-    }
-)
 
 
 def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
@@ -33,11 +29,7 @@ def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
         for group in joint_groups
         for joint in list(getattr(group, "Group", []) or [])
     ]
-    components = [
-        child
-        for child in children
-        if str(getattr(child, "TypeId", "") or "") not in _RESOURCE_GROUPS
-    ]
+    components = list(assembly_components(assembly))
     result["counts"] = {
         "components": len(components),
         "joints": len(joints),
@@ -57,11 +49,16 @@ def build_assembly_snapshot(document: Any) -> dict[str, Any]:
         "Assembly::Assembly",
     )
     active = read_active_assembly(document)
-    return {
+    sources, sources_truncated = available_component_sources(document, active)
+    result = {
         "kind": "assembly",
         "assembly_count": len(assemblies),
         "active_assembly": concise_object(active) if active is not None else None,
         "assemblies": [
             _assembly_summary(value, active) for value in assemblies[:MAX_ASSEMBLIES]
         ],
+        "available_component_sources": sources,
     }
+    if sources_truncated:
+        result["available_component_sources_truncated"] = True
+    return result

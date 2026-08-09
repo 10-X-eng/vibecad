@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 336 complete / 410 pending / 746 total (45.0% by row count)
+Checklist status: 338 complete / 408 pending / 746 total (45.3% by row count)
 
 ## Purpose
 
@@ -5055,26 +5055,35 @@ implementation changes:
   2,934 passed with four intentional skips, Ruff is green, both protected
   VibeScript integrations exit zero, and the 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
-- The first Assemble slice implements the live
-  `Assembly_CreateAssembly` action as `assembly.structure/create_assembly`.
-  The request supplies an exact expected Assembly count and the exact
-  human-active parent Assembly or `null`; both are rechecked before the
-  transaction and again inside it. Root creation honors the current one-root
-  preference, nested creation accepts only the actual human-active Assembly,
-  and each operation creates one native `Assembly::AssemblyObject` with its
-  one native `Assembly::JointGroup`. Native never enters or changes Assembly
-  edit mode. `Assembly_ActivateAssembly` remains human-only. The bounded
-  Assemble domain returned through `state.read` now identifies the exact
-  active Assembly and marks it in the Assembly list without mutating state.
-  A dispatcher-backed compiled GUI gate proves invalid-schema and stale-count
-  no-ops, root and nested creation, unchanged activation, one undo entry per
-  operation, exact undo/redo, duplicate-call replay, and FCStd save/reopen. It
-  reports `VIBECAD_NATIVE_ASSEMBLY_STRUCTURE_GUI_OK assemblies=2
-  transactions=2 active_read=true`. The complete pure suite is 2,940 passed
-  with four intentional skips; Ruff and sequential VibeCADScripts,
-  AssemblyScripts, Assembly, and AssemblyGui builds are green. The protected
-  Sketcher, Part Design, and Assembly VibeScript integrations all exit zero;
-  the Part Design result reports `"ok": true`.
+- The Assemble structure family implements the live
+  `Assembly_CreateAssembly`, `Assembly_InsertLink`, and
+  `Assembly_InsertNewPart` actions. Assembly creation rechecks the expected
+  Assembly count and exact human-active parent both before and inside its
+  transaction, honors the one-root preference, and creates one native
+  `Assembly::AssemblyObject` with one `Assembly::JointGroup`. Existing-source
+  insertion requires the exact open source document UID/name and source object
+  name/ID from bounded Assemble state, rejects stale objects, unsaved external
+  documents, non-component sources, and dependency cycles, and creates the
+  correct `App::Link` or `Assembly::AssemblyLink`. Placement, rigid/flexible
+  state, native managed-clone ownership, and the placement transform that a
+  flexible AssemblyLink distributes into its cloned components are verified
+  after recompute. Automatic grounding is deliberately absent because Ground
+  is its own later operation.
+- New Part creates one current-document `App::Part`, its empty
+  `PartDesign::Body`, and one Assembly occurrence as a single timeline
+  operation. Native does not activate the Body, change Assembly edit mode,
+  change selection, or open either human task dialog. `Assembly_ActivateAssembly`
+  remains human-only. A dispatcher-backed compiled GUI gate proves invalid and
+  stale no-ops, root/nested creation, same-document component insertion,
+  non-identity flexible external-subassembly insertion, exact native clone
+  resources, new-Part timeline ownership, duplicate replay, five independent
+  undo/redo entries, unchanged human activation, and two-document FCStd
+  save/reopen. It reports `VIBECAD_NATIVE_ASSEMBLY_STRUCTURE_GUI_OK
+  assemblies=2 components=4 transactions=5 active_read=true`. The complete
+  pure suite is 2,948 passed with four intentional skips; Ruff and sequential
+  VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui builds are green.
+  The protected Sketcher, Part Design, and Assembly VibeScript integrations all
+  exit zero; the Part Design result reports `"ok": true`.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5611,8 +5620,8 @@ concisely.
 
 - [x] 11.1 Implement Assembly creation.
 - [x] 11.2 Implement active-assembly reading without changing activation.
-- [ ] 11.3 Implement insertion of an existing component link.
-- [ ] 11.4 Implement creation/insertion of a new part.
+- [x] 11.3 Implement insertion of an existing component link.
+- [x] 11.4 Implement creation/insertion of a new part.
 - [ ] 11.5 Implement Ground and Unground.
 - [ ] 11.6 Implement Fixed joint.
 - [ ] 11.7 Implement Revolute joint.
