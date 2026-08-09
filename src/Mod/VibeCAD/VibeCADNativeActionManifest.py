@@ -951,6 +951,7 @@ _CAPABILITY_OVERRIDES = {
 }
 
 _OPERATION_VARIANT_OVERRIDES = {
+    "Assembly_CreateJointFixed": "create_fixed",
     "Assembly_ToggleGrounded": "set_grounded",
     "PartDesign::DesignBox": "primitive",
     "PartDesign::DesignCylinder": "primitive",

@@ -10,6 +10,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeCapabilityVariant,
 )
+from VibeCADNativeDesignSchema import placement_schema
 
 
 _OBJECT_NAME = {
@@ -24,6 +25,14 @@ _OBJECT_REF = {
     "additionalProperties": False,
 }
 _COUNT = {"type": "integer", "minimum": 0, "maximum": 100_000}
+_CONNECTOR_PATH = {
+    "type": "string",
+    "maxLength": 512,
+    "pattern": (
+        r"^(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)*"
+        r"(?:(?:Face|Edge|Vertex)[1-9][0-9]*)?$"
+    ),
+}
 _GROUNDING_TARGET = {
     "type": "object",
     "properties": {
@@ -31,6 +40,24 @@ _GROUNDING_TARGET = {
         "expected_grounded": {"type": "boolean"},
     },
     "required": ["component", "expected_grounded"],
+    "additionalProperties": False,
+}
+_JOINT_CONNECTOR = {
+    "type": "object",
+    "properties": {
+        "component": _OBJECT_REF,
+        "element_path": _CONNECTOR_PATH,
+        "anchor_path": _CONNECTOR_PATH,
+        "offset": placement_schema(),
+        "expected_component_placement": placement_schema(),
+    },
+    "required": [
+        "component",
+        "element_path",
+        "anchor_path",
+        "offset",
+        "expected_component_placement",
+    ],
     "additionalProperties": False,
 }
 
@@ -77,6 +104,55 @@ def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
                         "grounded",
                         "expected_component_count",
                         "expected_grounded_count",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="create_fixed",
+                description=(
+                    "Create one native Fixed joint between exact component-rooted "
+                    "connectors, full attachment offsets, and expected live state "
+                    "without opening the human task dialog or changing selection."
+                ),
+                action_ids=frozenset({"Assembly_CreateJointFixed"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactFixedJointConnectorPairAndExpectedState"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "first": _JOINT_CONNECTOR,
+                        "second": _JOINT_CONNECTOR,
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                        },
+                        "reverse": {"type": "boolean"},
+                        "expected_component_count": _COUNT,
+                        "expected_grounded_count": _COUNT,
+                        "expected_joint_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 256,
+                        },
+                        "expected_solve_on_creation": {"type": "boolean"},
+                    },
+                    "required": [
+                        "assembly",
+                        "first",
+                        "second",
+                        "label",
+                        "reverse",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
                     ],
                     "additionalProperties": False,
                 },

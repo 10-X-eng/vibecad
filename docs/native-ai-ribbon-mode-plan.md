@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 339 complete / 407 pending / 746 total (45.4% by row count)
+Checklist status: 340 complete / 406 pending / 746 total (45.6% by row count)
 
 ## Purpose
 
@@ -5105,6 +5105,37 @@ implementation changes:
   Sketcher, Part Design, and Assembly VibeScript integrations all exit zero,
   no FreeCAD process remains, and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Fixed Joint is an exact `assembly.joint/create_fixed` operation
+  mapped from the live `Assembly_CreateJointFixed` action. Its bounded request
+  names two distinct active movable components using normalized
+  component-relative object/Face/Edge/Vertex paths, exact compatible anchor
+  paths, complete connector offsets, expected component placements, expected
+  component/grounded/regular-joint counts, the expected solve-on-creation
+  preference, and explicit label/reverse state. Preflight runs before and
+  inside the transaction and rejects stale placements or counts, malformed or
+  foreign joint graphs, unsupported anchors, same-component targets, and an
+  existing Fixed pair without mutation. Native creates one real Assembly
+  `Joint` with `JointObject.Joint` and `ViewProviderJoint`, uses the same
+  connector and reverse operations as the human task path, preserves selection
+  and human Assembly activation, and verifies exact topology references,
+  offsets, timeline ownership, object graph, moved placements, and bounded
+  solver diagnostics. A conflicting, redundant, malformed, or otherwise
+  rejected solve rolls back the transaction; the human-equivalent ungrounded
+  deferred-solve status remains representable. Assemble state now exposes
+  exact component placements and shape counts, regular joints separately from
+  grounded joints, the solve preference, and the last bounded solver result.
+  A dispatcher-backed compiled GUI gate proves a stale-count no-op, two solved
+  Fixed joints with full offsets, reverse behavior, exact duplicate replay,
+  undo/redo after each transaction, and FCStd save/close/reopen with both model
+  and view proxies restored. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_FIXED_JOINT_GUI_OK components=3 joints=2
+  reverse=true transactions=2 reopen=true`. The complete suite is 2,969
+  passed with four intentional skips; Ruff, compileall, diff checks, and the
+  VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui build targets are
+  green. The protected Sketcher, Part Design, and Assembly VibeScript
+  integrations all exit zero, no VibeCAD test process remains, and the
+  immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5644,7 +5675,7 @@ concisely.
 - [x] 11.3 Implement insertion of an existing component link.
 - [x] 11.4 Implement creation/insertion of a new part.
 - [x] 11.5 Implement Ground and Unground.
-- [ ] 11.6 Implement Fixed joint.
+- [x] 11.6 Implement Fixed joint.
 - [ ] 11.7 Implement Revolute joint.
 - [ ] 11.8 Implement Cylindrical joint.
 - [ ] 11.9 Implement Slider joint.
