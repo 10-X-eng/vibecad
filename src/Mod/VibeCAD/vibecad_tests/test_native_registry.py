@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 
 from VibeCADNativeCommonBindings import COMMON_NATIVE_CAPABILITY_NAMES
+from VibeCADNativeAssemblyStructureBindings import (
+    ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+)
 from VibeCADNativeCapabilityRegistry import MAX_NATIVE_SCHEMAS_JSON_BYTES
 from VibeCADNativeComponentInterfaceBindings import (
     COMPONENT_INTERFACE_CAPABILITY_NAME,
@@ -41,6 +44,7 @@ def test_production_registry_assembles_finished_contracts_and_bindings_exactly()
     )
     expected = (
         *COMMON_NATIVE_CAPABILITY_NAMES,
+        ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
         COMPONENT_INTERFACE_CAPABILITY_NAME,
         MODEL_BOOLEAN_CAPABILITY_NAME,
         *MODEL_STRUCTURE_CAPABILITY_NAMES,

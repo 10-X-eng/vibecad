@@ -34,6 +34,11 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeSnapshot.py
     VibeCADNativeApplicationManifest.py
     VibeCADNativeAssemblySnapshot.py
+    VibeCADNativeAssemblyState.py
+    VibeCADNativeAssemblyStructure.py
+    VibeCADNativeAssemblyStructureBindings.py
+    VibeCADNativeAssemblyStructureRuntime.py
+    VibeCADNativeAssemblyStructureSchema.py
     VibeCADNativeBackground.py
     VibeCADNativeCapabilityRegistry.py
     VibeCADNativeCommonBindings.py
@@ -537,6 +542,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_model_bracket_workflow_gui_integration.py
         vibecad_tests/native_sketch_state_gui_integration.py
         vibecad_tests/native_sketch_batch_gui_integration.py
+        vibecad_tests/native_assembly_structure_gui_integration.py
         vibecad_tests/native_sketch_batch_test_support.py
         vibecad_tests/native_sketch_geometry_gui_support.py
         vibecad_tests/native_sketch_provider_turn.py

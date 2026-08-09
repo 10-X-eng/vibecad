@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADNativeAssemblyState import read_active_assembly
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
 
@@ -20,8 +21,9 @@ _RESOURCE_GROUPS = frozenset(
 )
 
 
-def _assembly_summary(assembly: Any) -> dict[str, Any]:
+def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
     result = concise_object(assembly)
+    result["active"] = assembly is active
     children = list(getattr(assembly, "Group", []) or [])
     joint_groups = [
         child for child in children if getattr(child, "TypeId", "") == "Assembly::JointGroup"
@@ -54,10 +56,12 @@ def build_assembly_snapshot(document: Any) -> dict[str, Any]:
         "Assembly::AssemblyObject",
         "Assembly::Assembly",
     )
+    active = read_active_assembly(document)
     return {
         "kind": "assembly",
         "assembly_count": len(assemblies),
+        "active_assembly": concise_object(active) if active is not None else None,
         "assemblies": [
-            _assembly_summary(value) for value in assemblies[:MAX_ASSEMBLIES]
+            _assembly_summary(value, active) for value in assemblies[:MAX_ASSEMBLIES]
         ],
     }

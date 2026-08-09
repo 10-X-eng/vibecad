@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import VibeCADNativeSnapshot as snapshot_module
+import VibeCADNativeAssemblySnapshot as assembly_snapshot_module
 import VibeCADNativeModelSnapshot as model_snapshot_module
 from VibeCADNativeSnapshot import NativeSnapshotError, build_active_snapshot
 
@@ -133,8 +134,17 @@ def _state() -> dict:
         ("parameters", "parameters"),
     ),
 )
-def test_each_surface_builds_only_its_live_domain(surface_id: str, kind: str) -> None:
+def test_each_surface_builds_only_its_live_domain(
+    surface_id: str,
+    kind: str,
+    monkeypatch,
+) -> None:
     document = _document()
+    monkeypatch.setattr(
+        assembly_snapshot_module,
+        "read_active_assembly",
+        lambda _document: None,
+    )
     selection = {
         "document_uid": "document-a",
         "selected_count": 1,

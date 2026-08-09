@@ -4,6 +4,12 @@
 
 from __future__ import annotations
 
+from VibeCADNativeAssemblyStructureBindings import (
+    register_assembly_structure_capability_implementation,
+)
+from VibeCADNativeAssemblyStructureSchema import (
+    register_assembly_structure_capability_definition,
+)
 from VibeCADNativeCapabilityRegistry import NativeCapabilityRegistry
 from VibeCADNativeComponentInterfaceBindings import (
     register_component_interface_capability_implementation,
@@ -119,6 +125,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     registry = NativeCapabilityRegistry()
     register_common_capability_definitions(registry)
     register_common_capability_implementations(registry)
+    register_assembly_structure_capability_definition(registry)
+    register_assembly_structure_capability_implementation(registry)
     register_component_interface_capability_definition(registry)
     register_component_interface_capability_implementation(registry)
     register_model_catalog_capability_definition(registry)
