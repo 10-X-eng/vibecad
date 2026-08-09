@@ -954,6 +954,7 @@ _OPERATION_VARIANT_OVERRIDES = {
     "Assembly_CreateJointCylindrical": "create_cylindrical",
     "Assembly_CreateJointFixed": "create_fixed",
     "Assembly_CreateJointRevolute": "create_revolute",
+    "Assembly_CreateJointSlider": "create_slider",
     "Assembly_ToggleGrounded": "set_grounded",
     "PartDesign::DesignBox": "primitive",
     "PartDesign::DesignCylinder": "primitive",

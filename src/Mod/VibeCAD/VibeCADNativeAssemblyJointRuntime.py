@@ -41,6 +41,14 @@ from VibeCADNativeAssemblyRevoluteJoint import (
     revolute_limit_degrees,
     verify_revolute_joint,
 )
+from VibeCADNativeAssemblySliderJoint import (
+    NativeAssemblySliderJointError,
+    SliderJointSpec,
+    apply_slider_joint,
+    preflight_slider_joint,
+    slider_length_mm,
+    verify_slider_joint,
+)
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativePartPrimitives import part_placement_from_mapping
@@ -297,6 +305,16 @@ def _cylindrical_limits(
     return (*length, *angle)
 
 
+def _slider_limits(value: Any) -> tuple[bool, float, bool, float]:
+    return _joint_limit_pair(
+        value,
+        "limits",
+        "mm",
+        slider_length_mm,
+        NativeAssemblySliderJointError,
+    )
+
+
 class NativeAssemblyJointRuntime:
     """Execute only joint operations authorized for one frozen Assemble turn."""
 
@@ -364,8 +382,86 @@ class NativeAssemblyJointRuntime:
                         "expected_solve_on_creation",
                     }
                 ),
+                "create_slider": frozenset(
+                    {
+                        "assembly",
+                        "first",
+                        "second",
+                        "label",
+                        "reverse",
+                        "limits",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    }
+                ),
             },
         )
+        if operation == "create_slider":
+            minimum_enabled, minimum, maximum_enabled, maximum = _slider_limits(
+                values["limits"]
+            )
+            spec = SliderJointSpec(
+                assembly_ref=_joint_object_ref(
+                    self._context.document_uid,
+                    values["assembly"],
+                    "assembly",
+                    NativeAssemblySliderJointError,
+                ),
+                first=_connector(
+                    self._context.document_uid,
+                    values["first"],
+                    "first",
+                    NativeAssemblySliderJointError,
+                ),
+                second=_connector(
+                    self._context.document_uid,
+                    values["second"],
+                    "second",
+                    NativeAssemblySliderJointError,
+                ),
+                label=_label(values["label"], NativeAssemblySliderJointError),
+                reverse=_joint_bool(
+                    values["reverse"],
+                    "reverse",
+                    NativeAssemblySliderJointError,
+                ),
+                minimum_enabled=minimum_enabled,
+                minimum_mm=minimum,
+                maximum_enabled=maximum_enabled,
+                maximum_mm=maximum,
+                expected_component_count=_joint_count(
+                    values["expected_component_count"],
+                    "expected_component_count",
+                    NativeAssemblySliderJointError,
+                ),
+                expected_grounded_count=_joint_count(
+                    values["expected_grounded_count"],
+                    "expected_grounded_count",
+                    NativeAssemblySliderJointError,
+                ),
+                expected_joint_count=_joint_count(
+                    values["expected_joint_count"],
+                    "expected_joint_count",
+                    NativeAssemblySliderJointError,
+                    256,
+                ),
+                expected_solve_on_creation=_joint_bool(
+                    values["expected_solve_on_creation"],
+                    "expected_solve_on_creation",
+                    NativeAssemblySliderJointError,
+                ),
+            )
+            self._context.guard()
+            preflight_slider_joint(self._context.document, spec)
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name="Create Native Assembly Slider Joint",
+                mutate=lambda document: apply_slider_joint(document, spec),
+                verify=verify_slider_joint,
+            )
         if operation == "create_cylindrical":
             (
                 length_minimum_enabled,

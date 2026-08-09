@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 342 complete / 404 pending / 746 total (45.8% by row count)
+Checklist status: 343 complete / 403 pending / 746 total (46.0% by row count)
 
 ## Purpose
 
@@ -5195,6 +5195,38 @@ implementation changes:
   exit zero, no VibeCAD test process remains, and the immutable 5-axis fixture
   remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Slider Joint is an exact `assembly.joint/create_slider` operation
+  mapped from the live `Assembly_CreateJointSlider` action. It uses the proven
+  shared regular-joint engine with Assembly type index 3 and names two exact
+  component-rooted connectors with complete offsets, expected component
+  placements, label, reverse state, expected component/grounded/regular-joint
+  counts, and the expected solve-on-creation preference. The full connector
+  offsets preserve the human task UI's Advanced offsets and simplified
+  second-connector yaw; no separate rotation field is invented. Slider permits
+  translation along the connector axis while restricting rotation, and its
+  only real limit properties are `EnableLengthMin`, `LengthMin`,
+  `EnableLengthMax`, and `LengthMax`. Independent enabled states and finite
+  values use the existing Native coordinate envelope of `-1,000,000` through
+  `1,000,000` mm because the human length controls impose no narrower range.
+  Enabled inverted bounds, non-finite or out-of-envelope values, stale state,
+  duplicate Slider pairs, invalid connectors, and malformed graphs fail
+  before mutation. Native writes the four exact properties before connector
+  solve, performs a final solve after reverse configuration, and preserves
+  activation and human selection. Concise Assemble state exposes linear
+  limits for Slider without fabricating angular limits. A dispatcher-backed
+  compiled GUI gate proves stale-count no-op, full offsets, both enabled
+  linear bounds, reverse behavior, final solver success, duplicate replay,
+  one-step undo/redo, and FCStd save/close/reopen with model/view proxies,
+  references, offsets, limits, and bounded state restored. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_SLIDER_JOINT_GUI_OK components=2 joints=1
+  limits=true reverse=true transactions=1 reopen=true`; the Fixed, Revolute,
+  and Cylindrical lifecycle gates remain green against the expanded shared
+  engine. The complete suite is 3,009 passed with four intentional skips;
+  Ruff, compileall, diff checks, and the VibeCADScripts, AssemblyScripts,
+  Assembly, and AssemblyGui build targets are green. The protected Sketcher,
+  Part Design, and Assembly VibeScript integrations all exit zero, no VibeCAD
+  test process remains, and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5737,7 +5769,7 @@ concisely.
 - [x] 11.6 Implement Fixed joint.
 - [x] 11.7 Implement Revolute joint.
 - [x] 11.8 Implement Cylindrical joint.
-- [ ] 11.9 Implement Slider joint.
+- [x] 11.9 Implement Slider joint.
 - [ ] 11.10 Implement Ball joint.
 - [ ] 11.11 Implement Distance joint.
 - [ ] 11.12 Implement Parallel joint.

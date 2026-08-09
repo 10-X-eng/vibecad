@@ -86,6 +86,15 @@ _LENGTH_LIMIT = {
     "required": ["enabled", "mm"],
     "additionalProperties": False,
 }
+_LINEAR_LIMITS = {
+    "type": "object",
+    "properties": {
+        "minimum": _LENGTH_LIMIT,
+        "maximum": _LENGTH_LIMIT,
+    },
+    "required": ["minimum", "maximum"],
+    "additionalProperties": False,
+}
 _REVOLUTE_LIMITS = {
     "type": "object",
     "properties": {
@@ -98,15 +107,7 @@ _REVOLUTE_LIMITS = {
 _CYLINDRICAL_LIMITS = {
     "type": "object",
     "properties": {
-        "length": {
-            "type": "object",
-            "properties": {
-                "minimum": _LENGTH_LIMIT,
-                "maximum": _LENGTH_LIMIT,
-            },
-            "required": ["minimum", "maximum"],
-            "additionalProperties": False,
-        },
+        "length": _LINEAR_LIMITS,
         "angle": _REVOLUTE_LIMITS,
     },
     "required": ["length", "angle"],
@@ -288,6 +289,58 @@ def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
                         },
                         "reverse": {"type": "boolean"},
                         "limits": _CYLINDRICAL_LIMITS,
+                        "expected_component_count": _COUNT,
+                        "expected_grounded_count": _COUNT,
+                        "expected_joint_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 256,
+                        },
+                        "expected_solve_on_creation": {"type": "boolean"},
+                    },
+                    "required": [
+                        "assembly",
+                        "first",
+                        "second",
+                        "label",
+                        "reverse",
+                        "limits",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="create_slider",
+                description=(
+                    "Create one native Slider joint from exact component-rooted "
+                    "connectors, full offsets, reverse state, independent linear "
+                    "limits, and expected live Assembly state without changing "
+                    "selection."
+                ),
+                action_ids=frozenset({"Assembly_CreateJointSlider"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactSliderJointConnectorPairAndExpectedState"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "first": _JOINT_CONNECTOR,
+                        "second": _JOINT_CONNECTOR,
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                        },
+                        "reverse": {"type": "boolean"},
+                        "limits": _LINEAR_LIMITS,
                         "expected_component_count": _COUNT,
                         "expected_grounded_count": _COUNT,
                         "expected_joint_count": {

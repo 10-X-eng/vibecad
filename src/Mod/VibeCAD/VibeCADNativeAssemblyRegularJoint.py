@@ -42,6 +42,7 @@ REGULAR_JOINT_TYPE_INDICES = {
     "Fixed": 0,
     "Revolute": 1,
     "Cylindrical": 2,
+    "Slider": 3,
 }
 REGULAR_JOINT_PROPERTIES = {
     "Fixed": frozenset(),
@@ -63,6 +64,14 @@ REGULAR_JOINT_PROPERTIES = {
             "AngleMin",
             "EnableAngleMax",
             "AngleMax",
+        }
+    ),
+    "Slider": frozenset(
+        {
+            "EnableLengthMin",
+            "LengthMin",
+            "EnableLengthMax",
+            "LengthMax",
         }
     ),
 }
