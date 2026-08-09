@@ -11,6 +11,7 @@ from VibeCADNativeAssemblyComponents import (
     available_component_sources,
 )
 from VibeCADNativeAssemblyGrounding import active_grounded_joints
+from VibeCADNativeAssemblyDistanceJoint import distance_mode_from_joint
 from VibeCADNativeAssemblyJointConnectors import (
     NativeAssemblyJointConnectorError,
     component_placement,
@@ -110,6 +111,9 @@ def _joint_summary(joint: Any) -> dict[str, Any]:
                 "mm": _quantity_value(joint, "LengthMax"),
             },
         }
+    if joint_type == "Distance":
+        summary["distance_mm"] = _quantity_value(joint, "Distance")
+        summary["distance_mode"] = distance_mode_from_joint(joint)
     return summary
 
 

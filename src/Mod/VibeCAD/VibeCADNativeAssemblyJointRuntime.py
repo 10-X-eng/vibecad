@@ -32,6 +32,14 @@ from VibeCADNativeAssemblyCylindricalJoint import (
     preflight_cylindrical_joint,
     verify_cylindrical_joint,
 )
+from VibeCADNativeAssemblyDistanceJoint import (
+    DistanceJointSpec,
+    NativeAssemblyDistanceJointError,
+    apply_distance_joint,
+    distance_mm,
+    preflight_distance_joint,
+    verify_distance_joint,
+)
 from VibeCADNativeAssemblyFixedJoint import (
     FixedJointSpec,
     NativeAssemblyFixedJointError,
@@ -415,8 +423,82 @@ class NativeAssemblyJointRuntime:
                         "expected_solve_on_creation",
                     }
                 ),
+                "create_distance": frozenset(
+                    {
+                        "assembly",
+                        "first",
+                        "second",
+                        "label",
+                        "reverse",
+                        "distance_mm",
+                        "expected_distance_mode",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    }
+                ),
             },
         )
+        if operation == "create_distance":
+            spec = DistanceJointSpec(
+                assembly_ref=_joint_object_ref(
+                    self._context.document_uid,
+                    values["assembly"],
+                    "assembly",
+                    NativeAssemblyDistanceJointError,
+                ),
+                first=_connector(
+                    self._context.document_uid,
+                    values["first"],
+                    "first",
+                    NativeAssemblyDistanceJointError,
+                ),
+                second=_connector(
+                    self._context.document_uid,
+                    values["second"],
+                    "second",
+                    NativeAssemblyDistanceJointError,
+                ),
+                label=_label(values["label"], NativeAssemblyDistanceJointError),
+                reverse=_joint_bool(
+                    values["reverse"],
+                    "reverse",
+                    NativeAssemblyDistanceJointError,
+                ),
+                distance_mm=distance_mm(values["distance_mm"]),
+                expected_distance_mode=str(values["expected_distance_mode"] or ""),
+                expected_component_count=_joint_count(
+                    values["expected_component_count"],
+                    "expected_component_count",
+                    NativeAssemblyDistanceJointError,
+                ),
+                expected_grounded_count=_joint_count(
+                    values["expected_grounded_count"],
+                    "expected_grounded_count",
+                    NativeAssemblyDistanceJointError,
+                ),
+                expected_joint_count=_joint_count(
+                    values["expected_joint_count"],
+                    "expected_joint_count",
+                    NativeAssemblyDistanceJointError,
+                    256,
+                ),
+                expected_solve_on_creation=_joint_bool(
+                    values["expected_solve_on_creation"],
+                    "expected_solve_on_creation",
+                    NativeAssemblyDistanceJointError,
+                ),
+            )
+            self._context.guard()
+            preflight_distance_joint(self._context.document, spec)
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name="Create Native Assembly Distance Joint",
+                mutate=lambda document: apply_distance_joint(document, spec),
+                verify=verify_distance_joint,
+            )
         if operation == "create_ball":
             spec = BallJointSpec(
                 assembly_ref=_joint_object_ref(

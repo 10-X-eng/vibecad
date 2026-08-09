@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from VibeCADNativeAssemblyDistanceJoint import DISTANCE_MODES
 from VibeCADNativeAssemblyGrounding import MAX_GROUNDING_TARGETS
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityDefinition,
@@ -405,6 +406,67 @@ def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
                         "first",
                         "second",
                         "label",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="create_distance",
+                description=(
+                    "Create one native geometry-aware Distance joint from exact "
+                    "component-rooted connectors, full attachment offsets, a "
+                    "signed distance, reverse state, the expected derived geometry "
+                    "mode, and expected live Assembly state."
+                ),
+                action_ids=frozenset({"Assembly_CreateJointDistance"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactDistanceJointConnectorPairGeometryModeAndExpectedState"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "first": _JOINT_CONNECTOR,
+                        "second": _JOINT_CONNECTOR,
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                        },
+                        "reverse": {"type": "boolean"},
+                        "distance_mm": {
+                            "type": "number",
+                            "minimum": -1_000_000.0,
+                            "maximum": 1_000_000.0,
+                        },
+                        "expected_distance_mode": {
+                            "type": "string",
+                            "enum": sorted(DISTANCE_MODES),
+                        },
+                        "expected_component_count": _COUNT,
+                        "expected_grounded_count": _COUNT,
+                        "expected_joint_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 256,
+                        },
+                        "expected_solve_on_creation": {"type": "boolean"},
+                    },
+                    "required": [
+                        "assembly",
+                        "first",
+                        "second",
+                        "label",
+                        "reverse",
+                        "distance_mm",
+                        "expected_distance_mode",
                         "expected_component_count",
                         "expected_grounded_count",
                         "expected_joint_count",

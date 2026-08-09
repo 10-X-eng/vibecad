@@ -36,6 +36,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyBallJoint.py
     VibeCADNativeAssemblyComponents.py
     VibeCADNativeAssemblyCylindricalJoint.py
+    VibeCADNativeAssemblyDistanceJoint.py
     VibeCADNativeAssemblyFixedJoint.py
     VibeCADNativeAssemblyGrounding.py
     VibeCADNativeAssemblyJointBindings.py
@@ -562,6 +563,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_assembly_cylindrical_joint_gui_integration.py
         vibecad_tests/native_assembly_slider_joint_gui_integration.py
         vibecad_tests/native_assembly_ball_joint_gui_integration.py
+        vibecad_tests/native_assembly_distance_joint_gui_integration.py
         vibecad_tests/test_native_assembly_components.py
         vibecad_tests/native_sketch_batch_test_support.py
         vibecad_tests/native_sketch_geometry_gui_support.py

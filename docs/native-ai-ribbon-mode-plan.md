@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 344 complete / 402 pending / 746 total (46.1% by row count)
+Checklist status: 345 complete / 401 pending / 746 total (46.2% by row count)
 
 ## Purpose
 
@@ -5258,6 +5258,45 @@ implementation changes:
   exit zero, no VibeCAD test process remains, and the immutable 5-axis fixture
   remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Distance Joint is an exact `assembly.joint/create_distance`
+  operation mapped from the live `Assembly_CreateJointDistance` action. It
+  uses Assembly type index 5, writes the human joint's exact signed `Distance`
+  property, supports the human Reverse control, and retains the complete
+  independent Offset1 and Offset2 placements from the Advanced controls. It
+  deliberately exposes no simplified offset/rotation or linear/angular limit
+  fields because the human Distance task has none. Finite distance values use
+  the Native coordinate envelope of `-1,000,000` through `1,000,000` mm; bool,
+  non-finite, and out-of-envelope values fail before mutation. The contract
+  derives the same 37 point, line, circle, curve, plane, cylinder, cone, torus,
+  sphere, and fallback geometry modes as the compiled Distance implementation,
+  and requires `expected_distance_mode` so topology drift cannot silently
+  change solver semantics. Native mirrors the compiled implementation's
+  canonical connector priority before creating the joint. This is essential
+  because the compiled canonicalizer swaps Reference1/Reference2 and
+  Placement1/Placement2 for mixed geometry but does not swap Offset1/Offset2;
+  canonicalizing the connector specifications first keeps each complete offset
+  attached to its intended component. Expected component, grounded, and
+  regular-joint counts plus the solve-on-creation preference guard stale
+  requests before mutation. Invalid connectors, changed placements, duplicate
+  Distance pairs, malformed graphs, changed geometry modes, and inapplicable
+  fields fail closed. Concise Assembly state reports the exact signed distance
+  and derived mode without invoking the mutating compiled canonicalizer or
+  fabricating limit fields. A dispatcher-backed compiled GUI gate proves a
+  deliberately reversed point/plane request is canonicalized with offset
+  ownership intact, then verifies stale-count no-op, Reverse, the 18 mm signed
+  value, final solver success, idempotent replay, one-step undo/redo, and FCStd
+  save/close/reopen with model/view proxies, references, offsets, mode, and
+  bounded state restored. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_DISTANCE_JOINT_GUI_OK components=2 joints=1
+  mode=point_plane canonicalized=true distance_mm=18 reverse=true
+  transactions=1 reopen=true`; the Fixed, Revolute, Cylindrical, Slider, and
+  Ball lifecycle gates remain green. The complete suite is 3,042 passed with
+  four intentional skips; Ruff, compileall, diff checks, and the
+  VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui build targets are
+  green. The protected Sketcher, Part Design, and Assembly VibeScript
+  integrations all exit zero, no VibeCAD test process remains, and the
+  immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5802,7 +5841,7 @@ concisely.
 - [x] 11.8 Implement Cylindrical joint.
 - [x] 11.9 Implement Slider joint.
 - [x] 11.10 Implement Ball joint.
-- [ ] 11.11 Implement Distance joint.
+- [x] 11.11 Implement Distance joint.
 - [ ] 11.12 Implement Parallel joint.
 - [ ] 11.13 Implement Perpendicular joint.
 - [ ] 11.14 Implement Angle joint.

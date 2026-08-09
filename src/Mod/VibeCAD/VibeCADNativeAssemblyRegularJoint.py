@@ -44,6 +44,7 @@ REGULAR_JOINT_TYPE_INDICES = {
     "Cylindrical": 2,
     "Slider": 3,
     "Ball": 4,
+    "Distance": 5,
 }
 REGULAR_JOINT_PROPERTIES = {
     "Fixed": frozenset(),
@@ -76,6 +77,7 @@ REGULAR_JOINT_PROPERTIES = {
         }
     ),
     "Ball": frozenset(),
+    "Distance": frozenset({"Distance"}),
 }
 
 
