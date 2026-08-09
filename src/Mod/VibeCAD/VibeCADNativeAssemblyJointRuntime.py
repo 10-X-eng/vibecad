@@ -48,6 +48,13 @@ from VibeCADNativeAssemblyFixedJoint import (
     verify_fixed_joint,
 )
 from VibeCADNativeAssemblyJointConnectors import JointConnectorSpec
+from VibeCADNativeAssemblyParallelJoint import (
+    NativeAssemblyParallelJointError,
+    ParallelJointSpec,
+    apply_parallel_joint,
+    preflight_parallel_joint,
+    verify_parallel_joint,
+)
 from VibeCADNativeAssemblyRevoluteJoint import (
     NativeAssemblyRevoluteJointError,
     RevoluteJointSpec,
@@ -438,8 +445,78 @@ class NativeAssemblyJointRuntime:
                         "expected_solve_on_creation",
                     }
                 ),
+                "create_parallel": frozenset(
+                    {
+                        "assembly",
+                        "first",
+                        "second",
+                        "label",
+                        "reverse",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    }
+                ),
             },
         )
+        if operation == "create_parallel":
+            spec = ParallelJointSpec(
+                assembly_ref=_joint_object_ref(
+                    self._context.document_uid,
+                    values["assembly"],
+                    "assembly",
+                    NativeAssemblyParallelJointError,
+                ),
+                first=_connector(
+                    self._context.document_uid,
+                    values["first"],
+                    "first",
+                    NativeAssemblyParallelJointError,
+                ),
+                second=_connector(
+                    self._context.document_uid,
+                    values["second"],
+                    "second",
+                    NativeAssemblyParallelJointError,
+                ),
+                label=_label(values["label"], NativeAssemblyParallelJointError),
+                reverse=_joint_bool(
+                    values["reverse"],
+                    "reverse",
+                    NativeAssemblyParallelJointError,
+                ),
+                expected_component_count=_joint_count(
+                    values["expected_component_count"],
+                    "expected_component_count",
+                    NativeAssemblyParallelJointError,
+                ),
+                expected_grounded_count=_joint_count(
+                    values["expected_grounded_count"],
+                    "expected_grounded_count",
+                    NativeAssemblyParallelJointError,
+                ),
+                expected_joint_count=_joint_count(
+                    values["expected_joint_count"],
+                    "expected_joint_count",
+                    NativeAssemblyParallelJointError,
+                    256,
+                ),
+                expected_solve_on_creation=_joint_bool(
+                    values["expected_solve_on_creation"],
+                    "expected_solve_on_creation",
+                    NativeAssemblyParallelJointError,
+                ),
+            )
+            self._context.guard()
+            preflight_parallel_joint(self._context.document, spec)
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name="Create Native Assembly Parallel Joint",
+                mutate=lambda document: apply_parallel_joint(document, spec),
+                verify=verify_parallel_joint,
+            )
         if operation == "create_distance":
             spec = DistanceJointSpec(
                 assembly_ref=_joint_object_ref(

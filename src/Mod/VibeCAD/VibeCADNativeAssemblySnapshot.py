@@ -19,6 +19,7 @@ from VibeCADNativeAssemblyJointConnectors import (
     connector_summary,
     placement_summary,
 )
+from VibeCADNativeAssemblyParallelJoint import parallel_axes_satisfied
 from VibeCADNativeAssemblyJointGraph import (
     active_regular_joints,
     reference_summary,
@@ -114,6 +115,8 @@ def _joint_summary(joint: Any) -> dict[str, Any]:
     if joint_type == "Distance":
         summary["distance_mm"] = _quantity_value(joint, "Distance")
         summary["distance_mode"] = distance_mode_from_joint(joint)
+    if joint_type == "Parallel":
+        summary["axes_parallel"] = parallel_axes_satisfied(joint)
     return summary
 
 

@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 345 complete / 401 pending / 746 total (46.2% by row count)
+Checklist status: 346 complete / 400 pending / 746 total (46.4% by row count)
 
 ## Purpose
 
@@ -5297,6 +5297,40 @@ implementation changes:
   integrations all exit zero, no VibeCAD test process remains, and the
   immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Parallel Joint is an exact `assembly.joint/create_parallel`
+  operation mapped from the live `Assembly_CreateJointParallel` action. It
+  uses Assembly type index 6 and reaches the compiled
+  `ASMTParallelAxesJoint` used by the human command. The two exact
+  component-rooted connectors preserve independent complete Offset1 and
+  Offset2 placements, and the operation supports the human Reverse control.
+  No distance, angle, simplified rotation, or limit properties are invented;
+  the human task's Rotate 90 control merely changes the second full attachment
+  offset, which Native already represents exactly. Expected component,
+  grounded, and regular-joint counts plus the solve-on-creation preference
+  guard stale requests. Invalid connectors, duplicate Parallel pairs,
+  malformed graphs, changed component placements, and inapplicable fields
+  fail before mutation. In addition to proving exact type, proxies,
+  references, offsets, reverse state, activation, selection, and solver
+  status, Native verifies the live global connector axes satisfy the actual
+  Parallel postcondition. Both equal and anti-parallel directions are valid,
+  matching the human command's cross-product semantics. Concise Assembly
+  state reports `axes_parallel` without fabricating joint properties. A
+  dispatcher-backed compiled GUI gate starts with both the arm and its second
+  connector deliberately misaligned, then proves the solver establishes the
+  semantic axis relationship, stale-count no-op, independent full offsets,
+  Reverse, idempotent replay, one-step undo/redo, and FCStd
+  save/close/reopen with model/view proxies, references, offsets, and bounded
+  state restored. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_PARALLEL_JOINT_GUI_OK components=2 joints=1
+  axes_parallel=true reverse=true offsets=true transactions=1 reopen=true`;
+  the Fixed, Revolute, Cylindrical, Slider, Ball, and Distance lifecycle gates
+  remain green. The complete suite is 3,052 passed with four intentional
+  skips; Ruff, compileall, diff checks, and the VibeCADScripts,
+  AssemblyScripts, Assembly, and AssemblyGui build targets are green. The
+  protected Sketcher, Part Design, and Assembly VibeScript integrations all
+  exit zero, no VibeCAD test process remains, and the immutable 5-axis fixture
+  remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5842,7 +5876,7 @@ concisely.
 - [x] 11.9 Implement Slider joint.
 - [x] 11.10 Implement Ball joint.
 - [x] 11.11 Implement Distance joint.
-- [ ] 11.12 Implement Parallel joint.
+- [x] 11.12 Implement Parallel joint.
 - [ ] 11.13 Implement Perpendicular joint.
 - [ ] 11.14 Implement Angle joint.
 - [ ] 11.15 Implement Rack-and-Pinion joint.
