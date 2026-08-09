@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 348 complete / 398 pending / 746 total (46.6% by row count)
+Checklist status: 349 complete / 397 pending / 746 total (46.8% by row count)
 
 ## Purpose
 
@@ -5406,14 +5406,58 @@ implementation changes:
   VibeScript integrations all exit zero, no VibeCAD test process remains, and
   the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Rack-and-Pinion Joint is an exact
+  `assembly.joint/create_rack_pinion` operation mapped from the live
+  `Assembly_CreateJointRackPinion` action. It uses Assembly type index 9,
+  persists the human task's real signed `Distance` pitch-radius property, and
+  reaches the compiled `ASMTRackPinionJoint`, whose exact coupling relation is
+  `rack travel mm per pinion radian = -pitch radius`. The contract requires the
+  exact active Slider joint for the rack and exact active Revolute joint for
+  the pinion instead of relying on the compiled engine's ambiguous scan for any
+  matching Slider. It also requires semantically named rack and pinion
+  connectors that exactly reuse the corresponding prerequisite joint side,
+  including component, element and anchor paths, and complete attachment
+  offset. Preflight proves both prerequisites are active in the human-active
+  Assembly, have the required joint types, constrain distinct rack and pinion
+  components, leave those components ungrounded, and expose perpendicular live
+  Slider and Revolute axes. Native creates the rack as connector one and the
+  pinion as connector two, then verifies that the compiled solve did not swap
+  or drift that exact persisted dependency graph. The pitch radius accepts the
+  human task's complete signed direction semantics while rejecting Boolean,
+  zero, non-finite, sub-tolerance, and unbounded values. Reverse, angle,
+  simplified offset/rotation, limits, and a second radius are absent because
+  the human Rack-and-Pinion task exposes none of them. Expected component,
+  grounded, and regular-joint counts plus the solve-on-creation preference
+  guard stale requests before mutation. Concise results report the two
+  semantic connectors, both exact prerequisite identities, pitch radius,
+  signed travel ratio, and perpendicular-axis proof without leaking the shared
+  engine's false Reverse value or raw property map. Concise state reconstructs
+  the prerequisites from persisted connector equality after save/reopen and
+  explicitly reports whether that graph still resolves. A dispatcher-backed
+  compiled GUI gate builds a real grounded base, global-X Slider rack, and
+  global-Z Revolute pinion, then proves stale-count no-op, real solver status
+  zero, exact dependency reuse, canonical side order, idempotent replay,
+  one-step undo/redo that preserves both prerequisites, and FCStd
+  save/close/reopen with model and view proxies, references, offsets, ratio,
+  axis semantics, and bounded state restored. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_RACK_PINION_JOINT_GUI_OK components=3 joints=3
+  prerequisites=true pitch_radius_mm=20 ratio=-20 axes_perpendicular=true
+  transactions=1 reopen=true`; all nine previously completed compiled joint
+  lifecycle gates remain green. The complete suite is 3,109 passed with four
+  intentional skips; Ruff, compileall, diff checks, source/build-tree byte
+  comparison, and the VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui
+  build targets are green. The protected Sketcher, all 17 Part Design phases,
+  and Assembly VibeScript integrations exit zero, no VibeCAD test process
+  remains, and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - The Assembly joint runtime has been split by responsibility without changing
-  its public provider contract: the dispatcher is 188 lines, shared argument
+  its public provider contract: the dispatcher is 201 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
-  relation-joint execution is 294 lines. The Angle contract is 229 lines, and
-  every execution module remains below the 1,000-line ceiling.
-- New implementation modules remain between 12 and 995 lines except the
-  1,319-line declarative action inventory; no domain execution logic is being
-  accumulated in a monolith. New domain modules are split before they approach
+  relation-joint execution is 371 lines. The Angle contract is 229 lines, the
+  Rack-and-Pinion contract is 440 lines, and every execution module remains
+  below the 1,000-line ceiling.
+- The 1,402-line action inventory remains declarative rather than accumulating
+  domain execution logic. New domain modules are split before they approach
   1,000 lines.
 
 ## Non-negotiable product rules
@@ -5959,7 +6003,7 @@ concisely.
 - [x] 11.12 Implement Parallel joint.
 - [x] 11.13 Implement Perpendicular joint.
 - [x] 11.14 Implement Angle joint.
-- [ ] 11.15 Implement Rack-and-Pinion joint.
+- [x] 11.15 Implement Rack-and-Pinion joint.
 - [ ] 11.16 Implement Screw joint.
 - [ ] 11.17 Implement Gear joint.
 - [ ] 11.18 Implement Belt joint.

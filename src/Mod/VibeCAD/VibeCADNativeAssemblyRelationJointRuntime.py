@@ -43,6 +43,14 @@ from VibeCADNativeAssemblyPerpendicularJoint import (
     preflight_perpendicular_joint,
     verify_perpendicular_joint,
 )
+from VibeCADNativeAssemblyRackPinionJoint import (
+    NativeAssemblyRackPinionJointError,
+    RackPinionJointSpec,
+    apply_rack_pinion_joint,
+    pitch_radius_mm,
+    preflight_rack_pinion_joint,
+    verify_rack_pinion_joint,
+)
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
@@ -54,6 +62,7 @@ RELATION_JOINT_OPERATIONS = frozenset(
         "create_distance",
         "create_parallel",
         "create_perpendicular",
+        "create_rack_pinion",
     }
 )
 
@@ -67,6 +76,74 @@ def execute_relation_joint(
     """Decode and execute one already-authorized relation-joint variant."""
 
     document_uid = context.document_uid
+    if operation == "create_rack_pinion":
+        spec = RackPinionJointSpec(
+            assembly_ref=joint_object_ref(
+                document_uid,
+                values["assembly"],
+                "assembly",
+                NativeAssemblyRackPinionJointError,
+            ),
+            rack_connector=joint_connector(
+                document_uid,
+                values["rack_connector"],
+                "rack_connector",
+                NativeAssemblyRackPinionJointError,
+            ),
+            pinion_connector=joint_connector(
+                document_uid,
+                values["pinion_connector"],
+                "pinion_connector",
+                NativeAssemblyRackPinionJointError,
+            ),
+            rack_slider_joint_ref=joint_object_ref(
+                document_uid,
+                values["rack_slider_joint"],
+                "rack_slider_joint",
+                NativeAssemblyRackPinionJointError,
+            ),
+            pinion_revolute_joint_ref=joint_object_ref(
+                document_uid,
+                values["pinion_revolute_joint"],
+                "pinion_revolute_joint",
+                NativeAssemblyRackPinionJointError,
+            ),
+            label=joint_label(
+                values["label"],
+                NativeAssemblyRackPinionJointError,
+            ),
+            pitch_radius_mm=pitch_radius_mm(values["pitch_radius_mm"]),
+            expected_component_count=joint_count(
+                values["expected_component_count"],
+                "expected_component_count",
+                NativeAssemblyRackPinionJointError,
+            ),
+            expected_grounded_count=joint_count(
+                values["expected_grounded_count"],
+                "expected_grounded_count",
+                NativeAssemblyRackPinionJointError,
+            ),
+            expected_joint_count=joint_count(
+                values["expected_joint_count"],
+                "expected_joint_count",
+                NativeAssemblyRackPinionJointError,
+                256,
+            ),
+            expected_solve_on_creation=joint_bool(
+                values["expected_solve_on_creation"],
+                "expected_solve_on_creation",
+                NativeAssemblyRackPinionJointError,
+            ),
+        )
+        context.guard()
+        preflight_rack_pinion_joint(context.document, spec)
+        return run_immediate_mutation(
+            context,
+            ticket=ticket,
+            transaction_name="Create Native Assembly Rack-and-Pinion Joint",
+            mutate=lambda document: apply_rack_pinion_joint(document, spec),
+            verify=verify_rack_pinion_joint,
+        )
     if operation == "create_angle":
         spec = AngleJointSpec(
             assembly_ref=joint_object_ref(

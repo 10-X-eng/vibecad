@@ -48,6 +48,7 @@ REGULAR_JOINT_TYPE_INDICES = {
     "Parallel": 6,
     "Perpendicular": 7,
     "Angle": 8,
+    "RackPinion": 9,
 }
 REGULAR_JOINT_PROPERTIES = {
     "Fixed": frozenset(),
@@ -84,6 +85,7 @@ REGULAR_JOINT_PROPERTIES = {
     "Parallel": frozenset(),
     "Perpendicular": frozenset(),
     "Angle": frozenset({"Angle"}),
+    "RackPinion": frozenset({"Distance"}),
 }
 
 

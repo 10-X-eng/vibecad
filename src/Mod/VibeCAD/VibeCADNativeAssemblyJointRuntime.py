@@ -62,6 +62,19 @@ _OPERATION_FIELDS = {
     "create_parallel": _COMMON_JOINT_FIELDS | {"reverse"},
     "create_perpendicular": _COMMON_JOINT_FIELDS,
     "create_angle": _COMMON_JOINT_FIELDS | {"angle_degrees"},
+    "create_rack_pinion": {
+        "assembly",
+        "rack_connector",
+        "pinion_connector",
+        "rack_slider_joint",
+        "pinion_revolute_joint",
+        "label",
+        "pitch_radius_mm",
+        "expected_component_count",
+        "expected_grounded_count",
+        "expected_joint_count",
+        "expected_solve_on_creation",
+    },
 }
 
 

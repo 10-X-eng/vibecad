@@ -27,6 +27,7 @@ from VibeCADNativeAssemblyJointConnectors import (
 )
 from VibeCADNativeAssemblyParallelJoint import parallel_axes_satisfied
 from VibeCADNativeAssemblyPerpendicularJoint import perpendicular_axes_satisfied
+from VibeCADNativeAssemblyRackPinionJoint import rack_pinion_dependency_summary
 from VibeCADNativeAssemblyJointGraph import (
     active_regular_joints,
     reference_summary,
@@ -83,7 +84,10 @@ def _quantity_value(obj: Any, name: str) -> float | None:
         return None
 
 
-def _joint_summary(joint: Any) -> dict[str, Any]:
+def _joint_summary(
+    joint: Any,
+    active_joints: tuple[Any, ...] = (),
+) -> dict[str, Any]:
     summary = concise_object(joint)
     joint_type = str(getattr(joint, "JointType", "") or "")
     summary["joint_type"] = joint_type
@@ -135,6 +139,16 @@ def _joint_summary(joint: Any) -> dict[str, Any]:
             summary["angle_relation"] = None
         summary["measured_axis_angle_degrees"] = measured_axis_angle_degrees(joint)
         summary["angle_satisfied"] = angle_axes_satisfied(joint, angle)
+    if joint_type == "RackPinion":
+        radius = _quantity_value(joint, "Distance")
+        summary["pitch_radius_mm"] = radius
+        summary["rack_travel_mm_per_pinion_radian"] = (
+            None if radius is None else -radius
+        )
+        dependencies = rack_pinion_dependency_summary(joint, active_joints)
+        summary["prerequisites_resolved"] = dependencies is not None
+        if dependencies is not None:
+            summary.update(dependencies)
     return summary
 
 
@@ -171,7 +185,7 @@ def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
         "grounded": len(grounding_joints),
     }
     result["components"] = component_summaries
-    result["joints"] = [_joint_summary(value) for value in joints[:32]]
+    result["joints"] = [_joint_summary(value, joints) for value in joints[:32]]
     result["last_solver"] = solver_diagnostics(assembly)
     return result
 

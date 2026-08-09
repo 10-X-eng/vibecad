@@ -626,6 +626,72 @@ def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
                     "additionalProperties": False,
                 },
             ),
+            NativeCapabilityVariant(
+                operation="create_rack_pinion",
+                description=(
+                    "Couple an exact Slider rack connector to an exact Revolute "
+                    "pinion connector with a finite signed pitch radius and "
+                    "expected live Assembly state."
+                ),
+                action_ids=frozenset({"Assembly_CreateJointRackPinion"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactRackSliderAndPinionRevoluteCoupling"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "rack_connector": _JOINT_CONNECTOR,
+                        "pinion_connector": _JOINT_CONNECTOR,
+                        "rack_slider_joint": _OBJECT_REF,
+                        "pinion_revolute_joint": _OBJECT_REF,
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                        },
+                        "pitch_radius_mm": {
+                            "oneOf": [
+                                {
+                                    "type": "number",
+                                    "minimum": -1_000_000.0,
+                                    "maximum": -1.0e-7,
+                                },
+                                {
+                                    "type": "number",
+                                    "minimum": 1.0e-7,
+                                    "maximum": 1_000_000.0,
+                                },
+                            ]
+                        },
+                        "expected_component_count": _COUNT,
+                        "expected_grounded_count": _COUNT,
+                        "expected_joint_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 256,
+                        },
+                        "expected_solve_on_creation": {"type": "boolean"},
+                    },
+                    "required": [
+                        "assembly",
+                        "rack_connector",
+                        "pinion_connector",
+                        "rack_slider_joint",
+                        "pinion_revolute_joint",
+                        "label",
+                        "pitch_radius_mm",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
         ),
     )
 
