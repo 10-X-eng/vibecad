@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 341 complete / 405 pending / 746 total (45.7% by row count)
+Checklist status: 342 complete / 404 pending / 746 total (45.8% by row count)
 
 ## Purpose
 
@@ -5164,6 +5164,37 @@ implementation changes:
   integrations all exit zero, no VibeCAD test process remains, and the
   immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Cylindrical Joint is an exact
+  `assembly.joint/create_cylindrical` operation mapped from the live
+  `Assembly_CreateJointCylindrical` action. It uses the proven shared
+  regular-joint engine and names two exact component-rooted connectors with
+  complete offsets, expected component placements, label, reverse state,
+  expected component/grounded/regular-joint counts, and the expected
+  solve-on-creation preference. Its request carries independent enabled states
+  and values for minimum/maximum linear travel and minimum/maximum angular
+  travel. Angles match the human task UI's `-180` through `180` degree range;
+  lengths must be finite and remain inside the existing Native coordinate
+  envelope of `-1,000,000` through `1,000,000` mm because the human length
+  controls impose no narrower range. Enabled inverted pairs, non-finite or
+  out-of-envelope values, stale state, duplicate Cylindrical pairs, invalid
+  connectors, and malformed graphs fail without mutation. Native writes all
+  eight real Assembly limit properties before connector solve and performs a
+  final solve after reverse configuration. Concise Assemble state now exposes
+  both linear and angular limits for Cylindrical joints. A dispatcher-backed
+  compiled GUI gate proves stale-count no-op, full offsets, all four enabled
+  bounds, reverse behavior, final solver success, duplicate replay, one-step
+  undo/redo, and FCStd save/close/reopen with model/view proxies, references,
+  offsets, and both limit families restored. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_CYLINDRICAL_JOINT_GUI_OK components=2 joints=1
+  length_limits=true angle_limits=true reverse=true transactions=1
+  reopen=true`; the Fixed and Revolute lifecycle gates remain green against
+  the expanded shared engine. The complete suite is 2,995 passed with four
+  intentional skips; Ruff, compileall, diff checks, and the VibeCADScripts,
+  AssemblyScripts, Assembly, and AssemblyGui build targets are green. The
+  protected Sketcher, Part Design, and Assembly VibeScript integrations all
+  exit zero, no VibeCAD test process remains, and the immutable 5-axis fixture
+  remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5705,7 +5736,7 @@ concisely.
 - [x] 11.5 Implement Ground and Unground.
 - [x] 11.6 Implement Fixed joint.
 - [x] 11.7 Implement Revolute joint.
-- [ ] 11.8 Implement Cylindrical joint.
+- [x] 11.8 Implement Cylindrical joint.
 - [ ] 11.9 Implement Slider joint.
 - [ ] 11.10 Implement Ball joint.
 - [ ] 11.11 Implement Distance joint.

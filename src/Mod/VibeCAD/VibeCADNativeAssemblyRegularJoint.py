@@ -41,11 +41,24 @@ from VibeCADNativeTargets import (
 REGULAR_JOINT_TYPE_INDICES = {
     "Fixed": 0,
     "Revolute": 1,
+    "Cylindrical": 2,
 }
 REGULAR_JOINT_PROPERTIES = {
     "Fixed": frozenset(),
     "Revolute": frozenset(
         {
+            "EnableAngleMin",
+            "AngleMin",
+            "EnableAngleMax",
+            "AngleMax",
+        }
+    ),
+    "Cylindrical": frozenset(
+        {
+            "EnableLengthMin",
+            "LengthMin",
+            "EnableLengthMax",
+            "LengthMax",
             "EnableAngleMin",
             "AngleMin",
             "EnableAngleMax",

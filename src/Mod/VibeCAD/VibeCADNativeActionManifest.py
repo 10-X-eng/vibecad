@@ -951,6 +951,7 @@ _CAPABILITY_OVERRIDES = {
 }
 
 _OPERATION_VARIANT_OVERRIDES = {
+    "Assembly_CreateJointCylindrical": "create_cylindrical",
     "Assembly_CreateJointFixed": "create_fixed",
     "Assembly_CreateJointRevolute": "create_revolute",
     "Assembly_ToggleGrounded": "set_grounded",

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeAssemblyGrounding import (
@@ -15,6 +15,15 @@ from VibeCADNativeAssemblyGrounding import (
     apply_grounding,
     preflight_grounding,
     verify_grounding,
+)
+from VibeCADNativeAssemblyCylindricalJoint import (
+    CylindricalJointSpec,
+    NativeAssemblyCylindricalJointError,
+    apply_cylindrical_joint,
+    cylindrical_angle_degrees,
+    cylindrical_length_mm,
+    preflight_cylindrical_joint,
+    verify_cylindrical_joint,
 )
 from VibeCADNativeAssemblyFixedJoint import (
     FixedJointSpec,
@@ -207,32 +216,85 @@ def _label(value: Any, error_type: type[RuntimeError]) -> str:
     return label
 
 
-def _revolute_limit(value: Any, name: str) -> tuple[bool, float]:
-    if not isinstance(value, Mapping) or set(value) != {"enabled", "degrees"}:
-        raise NativeAssemblyRevoluteJointError(
-            f"limits.{name} must contain enabled and degrees."
-        )
+def _joint_limit(
+    value: Any,
+    field: str,
+    value_key: str,
+    converter: Callable[[Any, str], float],
+    error_type: type[RuntimeError],
+) -> tuple[bool, float]:
+    if not isinstance(value, Mapping) or set(value) != {"enabled", value_key}:
+        raise error_type(f"{field} must contain enabled and {value_key}.")
     return (
         _joint_bool(
             value["enabled"],
-            f"limits.{name}.enabled",
-            NativeAssemblyRevoluteJointError,
+            f"{field}.enabled",
+            error_type,
         ),
-        revolute_limit_degrees(
-            value["degrees"],
-            f"limits.{name}.degrees",
-        ),
+        converter(value[value_key], f"{field}.{value_key}"),
     )
 
 
-def _revolute_limits(value: Any) -> tuple[bool, float, bool, float]:
+def _joint_limit_pair(
+    value: Any,
+    field: str,
+    value_key: str,
+    converter: Callable[[Any, str], float],
+    error_type: type[RuntimeError],
+) -> tuple[bool, float, bool, float]:
     if not isinstance(value, Mapping) or set(value) != {"minimum", "maximum"}:
-        raise NativeAssemblyRevoluteJointError(
-            "limits must contain exact minimum and maximum angle states."
+        raise error_type(
+            f"{field} must contain exact minimum and maximum states."
         )
-    minimum_enabled, minimum = _revolute_limit(value["minimum"], "minimum")
-    maximum_enabled, maximum = _revolute_limit(value["maximum"], "maximum")
+    minimum_enabled, minimum = _joint_limit(
+        value["minimum"],
+        f"{field}.minimum",
+        value_key,
+        converter,
+        error_type,
+    )
+    maximum_enabled, maximum = _joint_limit(
+        value["maximum"],
+        f"{field}.maximum",
+        value_key,
+        converter,
+        error_type,
+    )
     return minimum_enabled, minimum, maximum_enabled, maximum
+
+
+def _revolute_limits(value: Any) -> tuple[bool, float, bool, float]:
+    return _joint_limit_pair(
+        value,
+        "limits",
+        "degrees",
+        revolute_limit_degrees,
+        NativeAssemblyRevoluteJointError,
+    )
+
+
+def _cylindrical_limits(
+    value: Any,
+) -> tuple[bool, float, bool, float, bool, float, bool, float]:
+    if not isinstance(value, Mapping) or set(value) != {"length", "angle"}:
+        raise NativeAssemblyCylindricalJointError(
+            "limits must contain exact length and angle states."
+        )
+    length = _joint_limit_pair(
+        value["length"],
+        "limits.length",
+        "mm",
+        cylindrical_length_mm,
+        NativeAssemblyCylindricalJointError,
+    )
+    angle = _joint_limit_pair(
+        value["angle"],
+        "limits.angle",
+        "degrees",
+        cylindrical_angle_degrees,
+        NativeAssemblyCylindricalJointError,
+    )
+    return (*length, *angle)
 
 
 class NativeAssemblyJointRuntime:
@@ -288,8 +350,100 @@ class NativeAssemblyJointRuntime:
                         "expected_solve_on_creation",
                     }
                 ),
+                "create_cylindrical": frozenset(
+                    {
+                        "assembly",
+                        "first",
+                        "second",
+                        "label",
+                        "reverse",
+                        "limits",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    }
+                ),
             },
         )
+        if operation == "create_cylindrical":
+            (
+                length_minimum_enabled,
+                length_minimum,
+                length_maximum_enabled,
+                length_maximum,
+                angle_minimum_enabled,
+                angle_minimum,
+                angle_maximum_enabled,
+                angle_maximum,
+            ) = _cylindrical_limits(values["limits"])
+            spec = CylindricalJointSpec(
+                assembly_ref=_joint_object_ref(
+                    self._context.document_uid,
+                    values["assembly"],
+                    "assembly",
+                    NativeAssemblyCylindricalJointError,
+                ),
+                first=_connector(
+                    self._context.document_uid,
+                    values["first"],
+                    "first",
+                    NativeAssemblyCylindricalJointError,
+                ),
+                second=_connector(
+                    self._context.document_uid,
+                    values["second"],
+                    "second",
+                    NativeAssemblyCylindricalJointError,
+                ),
+                label=_label(
+                    values["label"],
+                    NativeAssemblyCylindricalJointError,
+                ),
+                reverse=_joint_bool(
+                    values["reverse"],
+                    "reverse",
+                    NativeAssemblyCylindricalJointError,
+                ),
+                length_minimum_enabled=length_minimum_enabled,
+                length_minimum_mm=length_minimum,
+                length_maximum_enabled=length_maximum_enabled,
+                length_maximum_mm=length_maximum,
+                angle_minimum_enabled=angle_minimum_enabled,
+                angle_minimum_degrees=angle_minimum,
+                angle_maximum_enabled=angle_maximum_enabled,
+                angle_maximum_degrees=angle_maximum,
+                expected_component_count=_joint_count(
+                    values["expected_component_count"],
+                    "expected_component_count",
+                    NativeAssemblyCylindricalJointError,
+                ),
+                expected_grounded_count=_joint_count(
+                    values["expected_grounded_count"],
+                    "expected_grounded_count",
+                    NativeAssemblyCylindricalJointError,
+                ),
+                expected_joint_count=_joint_count(
+                    values["expected_joint_count"],
+                    "expected_joint_count",
+                    NativeAssemblyCylindricalJointError,
+                    256,
+                ),
+                expected_solve_on_creation=_joint_bool(
+                    values["expected_solve_on_creation"],
+                    "expected_solve_on_creation",
+                    NativeAssemblyCylindricalJointError,
+                ),
+            )
+            self._context.guard()
+            preflight_cylindrical_joint(self._context.document, spec)
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name="Create Native Assembly Cylindrical Joint",
+                mutate=lambda document: apply_cylindrical_joint(document, spec),
+                verify=verify_cylindrical_joint,
+            )
         if operation == "create_revolute":
             minimum_enabled, minimum, maximum_enabled, maximum = _revolute_limits(
                 values["limits"]

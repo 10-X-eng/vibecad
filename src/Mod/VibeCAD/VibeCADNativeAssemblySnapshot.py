@@ -99,6 +99,17 @@ def _joint_summary(joint: Any) -> dict[str, Any]:
                 "degrees": _quantity_value(joint, "AngleMax"),
             },
         }
+    if joint_type in {"Cylindrical", "Slider"}:
+        summary["linear_limits"] = {
+            "minimum": {
+                "enabled": bool(getattr(joint, "EnableLengthMin", False)),
+                "mm": _quantity_value(joint, "LengthMin"),
+            },
+            "maximum": {
+                "enabled": bool(getattr(joint, "EnableLengthMax", False)),
+                "mm": _quantity_value(joint, "LengthMax"),
+            },
+        }
     return summary
 
 
