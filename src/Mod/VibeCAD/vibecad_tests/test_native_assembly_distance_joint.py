@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 import VibeCADNativeAssemblyDistanceJoint as distance_module
-import VibeCADNativeAssemblyJointRuntime as runtime_module
+import VibeCADNativeAssemblyJointArguments as joint_arguments
+import VibeCADNativeAssemblyRelationJointRuntime as runtime_module
 from VibeCADNativeActionManifest import classify_native_surface
 from VibeCADNativeAssemblyDistanceJoint import (
     DISTANCE_MODES,
@@ -261,8 +262,8 @@ def test_distance_runtime_routes_complete_exact_spec_before_transaction(
     runtime, state, document = _runtime()
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        runtime_module,
-        "_placement",
+        joint_arguments,
+        "joint_placement",
         lambda value, field, _error_type: (field, value),
     )
     monkeypatch.setattr(

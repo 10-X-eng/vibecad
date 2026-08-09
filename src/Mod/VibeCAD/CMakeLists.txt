@@ -39,13 +39,16 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyDistanceJoint.py
     VibeCADNativeAssemblyFixedJoint.py
     VibeCADNativeAssemblyGrounding.py
+    VibeCADNativeAssemblyJointArguments.py
     VibeCADNativeAssemblyJointBindings.py
     VibeCADNativeAssemblyJointConnectors.py
     VibeCADNativeAssemblyJointGraph.py
     VibeCADNativeAssemblyJointRuntime.py
     VibeCADNativeAssemblyJointSchema.py
+    VibeCADNativeAssemblyMotionJointRuntime.py
     VibeCADNativeAssemblyParallelJoint.py
     VibeCADNativeAssemblyRegularJoint.py
+    VibeCADNativeAssemblyRelationJointRuntime.py
     VibeCADNativeAssemblyRevoluteJoint.py
     VibeCADNativeAssemblySliderJoint.py
     VibeCADNativeAssemblySnapshot.py

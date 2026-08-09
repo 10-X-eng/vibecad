@@ -1,0 +1,169 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+"""Execution routing for exact Native Assembly relation joints."""
+
+from __future__ import annotations
+
+from typing import Any, Mapping
+
+from VibeCADNativeAssemblyDistanceJoint import (
+    DistanceJointSpec,
+    NativeAssemblyDistanceJointError,
+    apply_distance_joint,
+    distance_mm,
+    preflight_distance_joint,
+    verify_distance_joint,
+)
+from VibeCADNativeAssemblyJointArguments import (
+    joint_bool,
+    joint_connector,
+    joint_count,
+    joint_label,
+    joint_object_ref,
+)
+from VibeCADNativeAssemblyParallelJoint import (
+    NativeAssemblyParallelJointError,
+    ParallelJointSpec,
+    apply_parallel_joint,
+    preflight_parallel_joint,
+    verify_parallel_joint,
+)
+from VibeCADNativeImmediate import run_immediate_mutation
+from VibeCADNativeRuntimeContext import NativeRuntimeContext
+from VibeCADNativeState import NativeCallTicket
+
+
+RELATION_JOINT_OPERATIONS = frozenset(
+    {
+        "create_distance",
+        "create_parallel",
+    }
+)
+
+
+def execute_relation_joint(
+    context: NativeRuntimeContext,
+    ticket: NativeCallTicket,
+    operation: str,
+    values: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Decode and execute one already-authorized relation-joint variant."""
+
+    document_uid = context.document_uid
+    if operation == "create_parallel":
+        spec = ParallelJointSpec(
+            assembly_ref=joint_object_ref(
+                document_uid,
+                values["assembly"],
+                "assembly",
+                NativeAssemblyParallelJointError,
+            ),
+            first=joint_connector(
+                document_uid,
+                values["first"],
+                "first",
+                NativeAssemblyParallelJointError,
+            ),
+            second=joint_connector(
+                document_uid,
+                values["second"],
+                "second",
+                NativeAssemblyParallelJointError,
+            ),
+            label=joint_label(values["label"], NativeAssemblyParallelJointError),
+            reverse=joint_bool(
+                values["reverse"],
+                "reverse",
+                NativeAssemblyParallelJointError,
+            ),
+            expected_component_count=joint_count(
+                values["expected_component_count"],
+                "expected_component_count",
+                NativeAssemblyParallelJointError,
+            ),
+            expected_grounded_count=joint_count(
+                values["expected_grounded_count"],
+                "expected_grounded_count",
+                NativeAssemblyParallelJointError,
+            ),
+            expected_joint_count=joint_count(
+                values["expected_joint_count"],
+                "expected_joint_count",
+                NativeAssemblyParallelJointError,
+                256,
+            ),
+            expected_solve_on_creation=joint_bool(
+                values["expected_solve_on_creation"],
+                "expected_solve_on_creation",
+                NativeAssemblyParallelJointError,
+            ),
+        )
+        context.guard()
+        preflight_parallel_joint(context.document, spec)
+        return run_immediate_mutation(
+            context,
+            ticket=ticket,
+            transaction_name="Create Native Assembly Parallel Joint",
+            mutate=lambda document: apply_parallel_joint(document, spec),
+            verify=verify_parallel_joint,
+        )
+    if operation == "create_distance":
+        spec = DistanceJointSpec(
+            assembly_ref=joint_object_ref(
+                document_uid,
+                values["assembly"],
+                "assembly",
+                NativeAssemblyDistanceJointError,
+            ),
+            first=joint_connector(
+                document_uid,
+                values["first"],
+                "first",
+                NativeAssemblyDistanceJointError,
+            ),
+            second=joint_connector(
+                document_uid,
+                values["second"],
+                "second",
+                NativeAssemblyDistanceJointError,
+            ),
+            label=joint_label(values["label"], NativeAssemblyDistanceJointError),
+            reverse=joint_bool(
+                values["reverse"],
+                "reverse",
+                NativeAssemblyDistanceJointError,
+            ),
+            distance_mm=distance_mm(values["distance_mm"]),
+            expected_distance_mode=str(values["expected_distance_mode"] or ""),
+            expected_component_count=joint_count(
+                values["expected_component_count"],
+                "expected_component_count",
+                NativeAssemblyDistanceJointError,
+            ),
+            expected_grounded_count=joint_count(
+                values["expected_grounded_count"],
+                "expected_grounded_count",
+                NativeAssemblyDistanceJointError,
+            ),
+            expected_joint_count=joint_count(
+                values["expected_joint_count"],
+                "expected_joint_count",
+                NativeAssemblyDistanceJointError,
+                256,
+            ),
+            expected_solve_on_creation=joint_bool(
+                values["expected_solve_on_creation"],
+                "expected_solve_on_creation",
+                NativeAssemblyDistanceJointError,
+            ),
+        )
+        context.guard()
+        preflight_distance_joint(context.document, spec)
+        return run_immediate_mutation(
+            context,
+            ticket=ticket,
+            transaction_name="Create Native Assembly Distance Joint",
+            mutate=lambda document: apply_distance_joint(document, spec),
+            verify=verify_distance_joint,
+        )
+    raise RuntimeError("Unsupported Native Assembly relation-joint operation.")

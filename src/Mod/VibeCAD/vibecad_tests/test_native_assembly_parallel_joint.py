@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import VibeCADNativeAssemblyJointRuntime as runtime_module
+import VibeCADNativeAssemblyJointArguments as joint_arguments
+import VibeCADNativeAssemblyRelationJointRuntime as runtime_module
 import VibeCADNativeAssemblyParallelJoint as parallel_module
 from VibeCADNativeActionManifest import classify_native_surface
 from VibeCADNativeArguments import NativeArgumentError
@@ -210,8 +211,8 @@ def test_parallel_runtime_routes_complete_exact_spec_before_transaction(
     runtime, state, document = _runtime()
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        runtime_module,
-        "_placement",
+        joint_arguments,
+        "joint_placement",
         lambda value, field, _error_type: (field, value),
     )
     monkeypatch.setattr(
