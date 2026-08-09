@@ -45,8 +45,13 @@ def test_first_save_promotes_session_choice_to_project() -> None:
     values: dict[Path, str] = {}
     unsaved = _scope("doc-a", Path("/unused/a.json"), saved=False)
     saved = _scope("doc-a", Path("/projects/a/project.vibecad.json"), saved=True)
-    reader = lambda path: values.get(path, "vibescript")
-    writer = lambda path, mode: values.__setitem__(path, mode)
+
+    def reader(path: Path) -> str:
+        return values.get(path, "vibescript")
+
+    def writer(path: Path, mode: str) -> None:
+        values[path] = mode
+
     store.select(unsaved, "native", writer)
 
     assert store.current(saved, reader).summary() == {

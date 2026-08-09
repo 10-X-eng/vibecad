@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 327 complete / 419 pending / 746 total (43.8% by row count)
+Checklist status: 329 complete / 417 pending / 746 total (44.1% by row count)
 
 ## Purpose
 
@@ -5023,7 +5023,7 @@ implementation changes:
   Analyze, Manufacture, and all four Drawing preference graphs no longer
   inherit phantom actions from a default graph. MCP forwards the same frozen
   surface and exposes no provider workbench-switch command; only the GUI can
-  change ribbons between turns. The retired direct layer was reduced by 97
+  change ribbons between turns. The retired direct layer was reduced by 121
   implementation modules and six obsolete test suites. Durable Assembly, FEM,
   Drawing, Manufacture, and Part regeneration rebinding now lives in five
   focused modules backed by one exact-selection module, without old provider
@@ -5215,7 +5215,7 @@ concisely.
 - [x] 2.10 Delete old direct native tool schemas from the provider registry.
 - [x] 2.11 Delete old direct native public dispatch names.
 - [x] 2.12 Delete implementations used only by removed public wrappers.
-- [ ] 2.13 Move only proven domain algorithms into clean new capability modules
+- [x] 2.13 Move only proven domain algorithms into clean new capability modules
   when they already satisfy the new exact-target, transaction, result, and
   state contracts; delete their old wrapper modules and compatibility branches.
 - [x] 2.14 Delete old workbench-pack contract tests.
@@ -5225,7 +5225,7 @@ concisely.
 - [x] 2.18 Delete provider-accessible workbench-switch registration.
 - [x] 2.19 Delete arbitrary command enumeration from normal model context.
 - [x] 2.20 Prove no removed native name remains registered or advertised.
-- [ ] 2.21 Prove VibeScript registrations and VibeScript tests are unchanged.
+- [x] 2.21 Prove VibeScript registrations and VibeScript tests are unchanged.
 
 ### 3. Restore authoring-mode selection cleanly
 

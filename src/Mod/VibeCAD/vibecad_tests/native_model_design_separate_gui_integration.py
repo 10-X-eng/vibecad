@@ -16,7 +16,6 @@ import FreeCADGui as Gui
 import Materials
 import Part
 import PartDesign
-import PartGui
 from PySide import QtCore, QtWidgets
 
 import VibeCADGui as VibeGui

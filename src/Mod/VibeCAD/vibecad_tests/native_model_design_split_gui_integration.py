@@ -416,7 +416,6 @@ def _run() -> None:
         Gui.Selection.addSelection(human_plane)
         _process_events()
         assert Gui.isCommandActive("PartDesign_Split")
-        before_human = tuple(obj.Name for obj in document.Objects)
         Gui.runCommand("PartDesign_Split", 0)
         _process_events(50)
         assert Gui.Control.activeDialog()

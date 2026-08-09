@@ -635,7 +635,6 @@ def verify_design_split(document: Any, draft: NativeMutationDraft) -> dict[str, 
     ):
         current = PartGui.resolveModelingObject(body)
         body_shape = body.Shape
-        previous = getattr(current, "PreviousState", None)
         expected_previous_state = source.state if index == 0 else None
         if (
             document.getObject(body.Name) is not body
