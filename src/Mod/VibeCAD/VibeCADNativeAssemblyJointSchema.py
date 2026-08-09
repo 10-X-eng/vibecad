@@ -60,6 +60,28 @@ _JOINT_CONNECTOR = {
     ],
     "additionalProperties": False,
 }
+_ANGLE_LIMIT = {
+    "type": "object",
+    "properties": {
+        "enabled": {"type": "boolean"},
+        "degrees": {
+            "type": "number",
+            "minimum": -180.0,
+            "maximum": 180.0,
+        },
+    },
+    "required": ["enabled", "degrees"],
+    "additionalProperties": False,
+}
+_REVOLUTE_LIMITS = {
+    "type": "object",
+    "properties": {
+        "minimum": _ANGLE_LIMIT,
+        "maximum": _ANGLE_LIMIT,
+    },
+    "required": ["minimum", "maximum"],
+    "additionalProperties": False,
+}
 
 
 def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
@@ -149,6 +171,57 @@ def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
                         "second",
                         "label",
                         "reverse",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="create_revolute",
+                description=(
+                    "Create one native Revolute joint from exact component-rooted "
+                    "connectors, full offsets, reverse state, angular limits, and "
+                    "expected live Assembly state without changing selection."
+                ),
+                action_ids=frozenset({"Assembly_CreateJointRevolute"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactRevoluteJointConnectorPairAndExpectedState"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "first": _JOINT_CONNECTOR,
+                        "second": _JOINT_CONNECTOR,
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                        },
+                        "reverse": {"type": "boolean"},
+                        "limits": _REVOLUTE_LIMITS,
+                        "expected_component_count": _COUNT,
+                        "expected_grounded_count": _COUNT,
+                        "expected_joint_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 256,
+                        },
+                        "expected_solve_on_creation": {"type": "boolean"},
+                    },
+                    "required": [
+                        "assembly",
+                        "first",
+                        "second",
+                        "label",
+                        "reverse",
+                        "limits",
                         "expected_component_count",
                         "expected_grounded_count",
                         "expected_joint_count",

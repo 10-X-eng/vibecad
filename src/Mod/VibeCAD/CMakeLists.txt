@@ -41,6 +41,8 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyJointGraph.py
     VibeCADNativeAssemblyJointRuntime.py
     VibeCADNativeAssemblyJointSchema.py
+    VibeCADNativeAssemblyRegularJoint.py
+    VibeCADNativeAssemblyRevoluteJoint.py
     VibeCADNativeAssemblySnapshot.py
     VibeCADNativeAssemblyState.py
     VibeCADNativeAssemblyStructure.py
@@ -553,6 +555,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_assembly_structure_gui_integration.py
         vibecad_tests/native_assembly_grounding_gui_integration.py
         vibecad_tests/native_assembly_fixed_joint_gui_integration.py
+        vibecad_tests/native_assembly_revolute_joint_gui_integration.py
         vibecad_tests/test_native_assembly_components.py
         vibecad_tests/native_sketch_batch_test_support.py
         vibecad_tests/native_sketch_geometry_gui_support.py

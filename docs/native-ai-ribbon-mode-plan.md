@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 340 complete / 406 pending / 746 total (45.6% by row count)
+Checklist status: 341 complete / 405 pending / 746 total (45.7% by row count)
 
 ## Purpose
 
@@ -5136,6 +5136,34 @@ implementation changes:
   integrations all exit zero, no VibeCAD test process remains, and the
   immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Revolute Joint is an exact `assembly.joint/create_revolute`
+  operation mapped from the live `Assembly_CreateJointRevolute` action. It
+  reuses a shared regular-joint engine extracted from the proven Fixed path;
+  the public Fixed contract remains intact while connector, graph, solver,
+  receipt, activation, selection, and lifecycle verification logic has one
+  implementation for later joint families. The Revolute request adds explicit
+  minimum and maximum enabled states and degree values matching the human
+  task UI's `-180` through `180` range. Enabled inverted bounds, non-finite or
+  out-of-range angles, stale counts/placements/preferences, duplicate
+  Revolute pairs, and malformed graphs all fail before mutation. Native sets
+  the real `EnableAngleMin`, `AngleMin`, `EnableAngleMax`, and `AngleMax`
+  properties before connector solve, applies full offsets and reverse state,
+  and performs a final solve so returned diagnostics describe the final
+  configured pose. Bounded Assemble state now returns complete connector
+  offsets and angular limits for regular joints. A dispatcher-backed compiled
+  GUI gate proves stale-count no-op, exact offsets, both enabled limits,
+  reverse behavior, final solver success, duplicate replay, one-step
+  undo/redo, and FCStd save/close/reopen with native model and view proxies,
+  references, offsets, and limits restored. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_REVOLUTE_JOINT_GUI_OK components=2 joints=1
+  limits=true reverse=true transactions=1 reopen=true`; the original Fixed
+  lifecycle gate remains green after extraction. The complete suite is 2,978
+  passed with four intentional skips; Ruff, compileall, diff checks, and the
+  VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui build targets are
+  green. The protected Sketcher, Part Design, and Assembly VibeScript
+  integrations all exit zero, no VibeCAD test process remains, and the
+  immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - New implementation modules remain between 12 and 995 lines except the
   1,319-line declarative action inventory; no domain execution logic is being
   accumulated in a monolith. New domain modules are split before they approach
@@ -5676,7 +5704,7 @@ concisely.
 - [x] 11.4 Implement creation/insertion of a new part.
 - [x] 11.5 Implement Ground and Unground.
 - [x] 11.6 Implement Fixed joint.
-- [ ] 11.7 Implement Revolute joint.
+- [x] 11.7 Implement Revolute joint.
 - [ ] 11.8 Implement Cylindrical joint.
 - [ ] 11.9 Implement Slider joint.
 - [ ] 11.10 Implement Ball joint.

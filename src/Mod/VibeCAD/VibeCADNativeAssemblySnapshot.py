@@ -15,6 +15,7 @@ from VibeCADNativeAssemblyJointConnectors import (
     NativeAssemblyJointConnectorError,
     component_placement,
     component_shape_summary,
+    connector_summary,
     placement_summary,
 )
 from VibeCADNativeAssemblyJointGraph import (
@@ -65,12 +66,39 @@ def _component_summary(component: Any, ground_joint: Any | None) -> dict[str, An
     return summary
 
 
+def _quantity_value(obj: Any, name: str) -> float | None:
+    try:
+        value = getattr(obj, name)
+        return float(getattr(value, "Value", value))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+
+
 def _joint_summary(joint: Any) -> dict[str, Any]:
     summary = concise_object(joint)
-    summary["joint_type"] = str(getattr(joint, "JointType", "") or "")
+    joint_type = str(getattr(joint, "JointType", "") or "")
+    summary["joint_type"] = joint_type
     summary["suppressed"] = bool(getattr(joint, "Suppressed", False))
-    summary["first"] = reference_summary(getattr(joint, "Reference1", None))
-    summary["second"] = reference_summary(getattr(joint, "Reference2", None))
+    for key, index in (("first", 1), ("second", 2)):
+        reference = getattr(joint, f"Reference{index}", None)
+        try:
+            summary[key] = connector_summary(
+                reference,
+                getattr(joint, f"Offset{index}"),
+            )
+        except (AttributeError, NativeAssemblyJointConnectorError):
+            summary[key] = reference_summary(reference)
+    if joint_type in {"Revolute", "Cylindrical"}:
+        summary["angular_limits"] = {
+            "minimum": {
+                "enabled": bool(getattr(joint, "EnableAngleMin", False)),
+                "degrees": _quantity_value(joint, "AngleMin"),
+            },
+            "maximum": {
+                "enabled": bool(getattr(joint, "EnableAngleMax", False)),
+                "degrees": _quantity_value(joint, "AngleMax"),
+            },
+        }
     return summary
 
 

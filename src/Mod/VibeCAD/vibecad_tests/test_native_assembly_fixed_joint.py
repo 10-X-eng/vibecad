@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import VibeCADNativeAssemblyFixedJoint as fixed_module
 import VibeCADNativeAssemblyJointRuntime as runtime_module
+import VibeCADNativeAssemblyRegularJoint as regular_module
 from VibeCADNativeActionManifest import classify_native_surface
 from VibeCADNativeAssemblyFixedJoint import (
     FixedJointSpec,
@@ -183,7 +183,7 @@ def test_fixed_runtime_routes_complete_exact_spec_before_transaction(
     monkeypatch.setattr(
         runtime_module,
         "_placement",
-        lambda value, field: (field, value),
+        lambda value, field, _error_type: (field, value),
     )
     monkeypatch.setattr(
         runtime_module,
@@ -273,15 +273,19 @@ def _preflight_shell(monkeypatch):
         Reference1=[component_a, ["Face1", "Face1"]],
         Reference2=[component_b, ["Face1", "Face1"]],
     )
-    monkeypatch.setattr(fixed_module, "resolve_object", lambda *_args, **_kwargs: assembly)
-    monkeypatch.setattr(fixed_module, "timeline_active", lambda _obj: True)
-    monkeypatch.setattr(fixed_module, "object_is_valid", lambda _obj: True)
-    monkeypatch.setattr(fixed_module, "assembly_components", lambda _assembly: (component_a, component_b))
-    monkeypatch.setattr(fixed_module, "require_joint_group", lambda _assembly: joint_group)
-    monkeypatch.setattr(fixed_module, "active_regular_joints", lambda _group: (existing,))
-    monkeypatch.setattr(fixed_module, "active_grounded_joints", lambda _group: ())
-    monkeypatch.setattr(fixed_module, "_validate_regular_graph", lambda *_args: None)
-    monkeypatch.setattr(fixed_module, "_validate_grounded_graph", lambda *_args: None)
+    monkeypatch.setattr(regular_module, "resolve_object", lambda *_args, **_kwargs: assembly)
+    monkeypatch.setattr(regular_module, "timeline_active", lambda _obj: True)
+    monkeypatch.setattr(regular_module, "object_is_valid", lambda _obj: True)
+    monkeypatch.setattr(
+        regular_module,
+        "assembly_components",
+        lambda _assembly: (component_a, component_b),
+    )
+    monkeypatch.setattr(regular_module, "require_joint_group", lambda _assembly: joint_group)
+    monkeypatch.setattr(regular_module, "active_regular_joints", lambda _group: (existing,))
+    monkeypatch.setattr(regular_module, "active_grounded_joints", lambda _group: ())
+    monkeypatch.setattr(regular_module, "_validate_regular_graph", lambda *_args: None)
+    monkeypatch.setattr(regular_module, "_validate_grounded_graph", lambda *_args: None)
 
     def resolve_connector(_document, _assembly, connector_spec):
         component = (
@@ -299,7 +303,7 @@ def _preflight_shell(monkeypatch):
             object(),
         )
 
-    monkeypatch.setattr(fixed_module, "resolve_joint_connector", resolve_connector)
+    monkeypatch.setattr(regular_module, "resolve_joint_connector", resolve_connector)
     return document, assembly
 
 
@@ -319,7 +323,7 @@ def test_fixed_preflight_rejects_duplicate_pair_without_mutation(monkeypatch) ->
 def test_fixed_preflight_normalizes_joint_graph_failure(monkeypatch) -> None:
     document, assembly = _preflight_shell(monkeypatch)
     monkeypatch.setattr(
-        fixed_module,
+        regular_module,
         "require_joint_group",
         lambda _assembly: (_ for _ in ()).throw(
             NativeAssemblyJointGraphError("malformed joint graph")
