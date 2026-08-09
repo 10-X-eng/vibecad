@@ -173,6 +173,9 @@ public:
     {
         return "PartDesignGui::ViewProviderPad";
     }
+
+protected:
+    TopoShape getExtrusionContextBaseShape() const override;
 };
 
 /**
@@ -196,6 +199,9 @@ public:
     {
         return "PartDesignGui::ViewProviderRevolution";
     }
+
+protected:
+    TopoShape getRevolutionContextBaseShape() const override;
 };
 
 /** Design-global loft with explicit result Bodies. */

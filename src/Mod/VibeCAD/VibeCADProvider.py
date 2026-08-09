@@ -22,7 +22,6 @@ from typing import Any, Callable
 from VibeCADDebug import capture_provider_request
 from VibeCADModelingSurface import (
     is_model_assembly_workbench,
-    resolve_modeling_surface,
     validate_surface_names,
 )
 from VibeCADVibeScriptDomains import get_vibescript_pack
@@ -225,7 +224,7 @@ class ProviderResult:
     raw: Any = None
 
 
-ToolRunner = Callable[[str, str], dict[str, Any]]
+ToolRunner = Callable[[str, str, str], dict[str, Any]]
 CancellationCheck = Callable[[], bool]
 ProgressCallback = Callable[[dict[str, Any]], None]
 
@@ -363,12 +362,19 @@ def _codex_dynamic_tool_surface(
         )
     workbench = str(surface.get("workbench") or "") or None
     engine = str(surface.get("engine") or "")
-    resolution = resolve_modeling_surface(workbench, engine)
+    modeling_surface = context.get("modeling_surface")
+    if not isinstance(modeling_surface, dict):
+        raise ProviderUnavailable(
+            "The frozen VibeCAD turn has no modeling-surface declaration."
+        )
     if (
-        surface.get("domain") != resolution.domain
-        or surface.get("surface_id") != resolution.surface_id
-        or surface.get("available") is not resolution.available
-        or str(surface.get("unavailable_reason") or "") != resolution.unavailable_reason
+        str(modeling_surface.get("workbench") or "") != str(workbench or "")
+        or surface.get("engine") != modeling_surface.get("engine")
+        or surface.get("domain") != modeling_surface.get("domain")
+        or surface.get("surface_id") != modeling_surface.get("surface_id")
+        or surface.get("available") is not modeling_surface.get("available")
+        or str(surface.get("unavailable_reason") or "")
+        != str(modeling_surface.get("unavailable_reason") or "")
     ):
         raise ProviderUnavailable(
             "The modeling-engine/domain declaration does not match the frozen "
@@ -379,7 +385,7 @@ def _codex_dynamic_tool_surface(
             workbench=workbench,
             engine=engine,
             names=schema_names,
-            allowed_names=resolution.tool_names,
+            allowed_names=declared_names,
         )
     except ValueError as exc:
         raise ProviderUnavailable(str(exc)) from exc
@@ -751,6 +757,9 @@ class CodexProvider(BaseProvider):
             arguments_json = json.dumps(
                 _json_safe(arguments), ensure_ascii=True, separators=(",", ":")
             )
+            provider_call_id = str(
+                params.get("callId") or params.get("call_id") or ""
+            )
             _emit_provider_progress(
                 progress_callback,
                 {
@@ -760,7 +769,12 @@ class CodexProvider(BaseProvider):
                     "arguments": _tool_arguments_summary(arguments_json),
                 },
             )
-            result = _call_parent_tool(tool_runner, tool_name, arguments_json)
+            result = _call_parent_tool(
+                tool_runner,
+                tool_name,
+                arguments_json,
+                provider_call_id,
+            )
             updated_context = _tool_runner_provider_update(tool_runner)
             with state_lock:
                 live_context = updated_context
@@ -1430,6 +1444,7 @@ def _run_provider_subprocess(
                         raise ProviderUnavailable("VibeCAD run stopped by user.")
                     tool_name = str(message.get("tool_name", ""))
                     arguments_json = str(message.get("arguments_json") or "{}")
+                    provider_call_id = str(message.get("provider_call_id") or "")
                     _emit_provider_progress(
                         progress_callback,
                         {
@@ -1443,6 +1458,7 @@ def _run_provider_subprocess(
                         tool_runner,
                         tool_name,
                         arguments_json,
+                        provider_call_id,
                     )
                     parent_conn.send(
                         {
@@ -1658,11 +1674,12 @@ def _call_parent_tool(
     tool_runner: ToolRunner | None,
     tool_name: str,
     arguments_json: str,
+    provider_call_id: str,
 ) -> dict[str, Any]:
     if tool_runner is None:
         return {"ok": False, "error": "No VibeCAD tool runner is available."}
     try:
-        return tool_runner(tool_name, arguments_json)
+        return tool_runner(tool_name, arguments_json, provider_call_id)
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1687,6 +1704,7 @@ def _model_visible_context(
     sections = (
         "workbench",
         "modeling_surface",
+        "native_state",
         "document",
         "selection",
         "editable_sources",
@@ -1798,6 +1816,14 @@ def _provider_function_name(tool_name: str) -> str:
 
 def _provider_tool_parameters(schema: dict[str, Any]) -> dict[str, Any]:
     parameters = schema.get("parameters")
+    if isinstance(parameters, dict) and set(parameters) == {"oneOf"}:
+        branches = parameters.get("oneOf")
+        if (
+            isinstance(branches, list)
+            and len(branches) == 1
+            and isinstance(branches[0], dict)
+        ):
+            parameters = branches[0]
     if not isinstance(parameters, dict) or parameters.get("type") != "object":
         raise ValueError(f"Provider tool {schema.get('name')!r} has no object schema.")
     if not isinstance(parameters.get("properties"), dict):
@@ -1936,13 +1962,17 @@ def _provider_state_after_tool(
         "invalidated",
         "next_turn_required",
     )
-    return {
+    result = {
         "surface": {
             key: _json_safe(surface[key])
             for key in keys
             if key in surface and surface[key] not in (None, "", [], {})
         }
     }
+    native_state = context.get("native_state")
+    if isinstance(native_state, dict):
+        result["active_domain"] = _json_safe(native_state)
+    return result
 
 
 def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -4189,6 +4219,7 @@ def _anthropic_child_main(
                             "type": "tool",
                             "tool_name": tool_name,
                             "arguments_json": arguments_json,
+                            "provider_call_id": str(block.id),
                         }
                     )
                     bridge = conn.recv()

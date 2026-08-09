@@ -211,6 +211,103 @@ def test_anthropic_empty_completion_returns_explicit_error(monkeypatch) -> None:
     assert connection.closed
 
 
+def test_anthropic_child_forwards_the_exact_tool_use_id(monkeypatch) -> None:
+    tool_block = SimpleNamespace(
+        type="tool_use",
+        id="anthropic-call-17",
+        name="state_read",
+        input={},
+    )
+    text_block = SimpleNamespace(type="text", text="Done.")
+    responses = iter(
+        (
+            SimpleNamespace(content=[tool_block], stop_reason="tool_use"),
+            SimpleNamespace(content=[text_block], stop_reason="end_turn"),
+        )
+    )
+
+    class _Stream:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def __iter__(self):
+            return iter(())
+
+        def get_final_message(self):
+            return self.response
+
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(
+            messages=SimpleNamespace(
+                stream=lambda **_kwargs: _Stream(next(responses))
+            )
+        ),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider,
+        "_validate_provider_wire_surface",
+        lambda _context: None,
+    )
+
+    context = {
+        "provider_tool_schemas": [
+            {
+                "name": "state.read",
+                "description": "Read exact state.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    }
+
+    class _Connection(_CollectingConnection):
+        def recv(self):
+            return {
+                "type": "tool_result",
+                "result": {"ok": True},
+                "context": context,
+            }
+
+    connection = _Connection()
+    provider._anthropic_child_main(
+        connection,
+        "Read state.",
+        context,
+        "test-model",
+        "test-key",
+        None,
+        1.0,
+        3,
+        False,
+    )
+
+    tool_messages = [
+        message for message in connection.messages if message.get("type") == "tool"
+    ]
+    assert tool_messages == [
+        {
+            "type": "tool",
+            "tool_name": "state.read",
+            "arguments_json": "{}",
+            "provider_call_id": "anthropic-call-17",
+        }
+    ]
+    assert any(message.get("type") == "done" for message in connection.messages)
+    assert connection.closed
+
+
 def test_anthropic_turn_compaction_packet_excludes_deterministic_payloads() -> None:
     prompt = (
         "VIBECAD_CONTEXT_JSON\n"
@@ -861,6 +958,57 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
     }
     assert "source_id" not in json.dumps(visible)
     assert "vibescript_domain" not in visible
+
+
+def test_native_context_replaces_legacy_document_and_selection_summaries(
+    monkeypatch,
+) -> None:
+    from VibeCADModelingSurface import ModelingSurface
+
+    schema = _context_schema("state.read")
+    resolution = ModelingSurface(
+        workbench="PartDesignWorkbench",
+        engine="native",
+        domain="model",
+        surface_id="vibecad/surface/native/model/7/abc",
+        core_tool_names=(),
+        cad_tool_names=("state.read",),
+        available=True,
+        unavailable_reason="",
+    )
+    monkeypatch.setattr(session, "resolve_service_surface", lambda *_args: resolution)
+    monkeypatch.setattr(
+        session,
+        "provider_tool_schemas",
+        lambda *_args, **_kwargs: [schema],
+    )
+    service = _ProviderContextService(
+        "PartDesignWorkbench",
+        {
+            "document": {"legacy": "must not leak"},
+            "selection": {"legacy": "must not leak"},
+        },
+        engine="native",
+    )
+    service.native_active_snapshot = lambda: {
+        "surface_id": "model",
+        "document": {"document_uid": "document-a", "document_name": "Part"},
+        "structural_revision": 9,
+        "domain": {"kind": "model", "counts": {"bodies": 1}},
+        "working_set": [],
+    }
+
+    context = session._context_for_provider(service)
+    visible = provider._model_visible_context(context)
+
+    assert "document" not in context
+    assert "selection" not in context
+    assert context["native_state"]["structural_revision"] == 9
+    assert visible["native_state"] == context["native_state"]
+    assert "must not leak" not in json.dumps(context)
+    assert provider._provider_state_after_tool(context)["active_domain"] == (
+        context["native_state"]
+    )
 
 
 def test_editable_source_manifests_complete_after_document_thread_capture(

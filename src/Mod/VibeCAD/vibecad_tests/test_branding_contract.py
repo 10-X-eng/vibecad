@@ -1002,16 +1002,16 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
     vibecad_gui_startup = _source("src/Mod/VibeCAD/InitGui.py")
     mesh_workbench = _source("src/Mod/Mesh/Gui/Workbench.cpp")
 
-    for label, workbench in (
-        ("Model", "PartDesignWorkbench"),
-        ("Assemble", "AssemblyWorkbench"),
-        ("Mesh", "MeshWorkbench"),
-        ("Analyze", "FemWorkbench"),
-        ("Manufacture", "CAMWorkbench"),
-        ("Drawing", "TechDrawWorkbench"),
-        ("Parameters", "SpreadsheetWorkbench"),
+    for label, workbench, surface in (
+        ("Model", "PartDesignWorkbench", "model"),
+        ("Assemble", "AssemblyWorkbench", "assemble"),
+        ("Mesh", "MeshWorkbench", "mesh"),
+        ("Analyze", "FemWorkbench", "analyze"),
+        ("Manufacture", "CAMWorkbench", "manufacture"),
+        ("Drawing", "TechDrawWorkbench", "drawing"),
+        ("Parameters", "SpreadsheetWorkbench", "parameters"),
     ):
-        assert f'{{"{label}", "{workbench}"}}' in ribbon
+        assert f'{{"{label}", "{workbench}", "{surface}"}}' in ribbon
 
     compact_ribbon = "".join(ribbon.split())
     for workbench in (
@@ -1051,7 +1051,7 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
     assert "documentTabs->setTabsClosable(true);" in ribbon
     assert "groupMenu->setPopupMode(QToolButton::InstantPopup);" in ribbon
     assert "sharedInspectionCommands()" in ribbon
-    assert 'new RibbonGroup(QObject::tr("Inspect")' in ribbon
+    assert 'addGroup(QObject::tr("Inspect"), std::move(entries));' in ribbon
     assert '("InspectionGui", "MeshPartGui", "PartGui")' in vibecad_gui_startup
     assert 'convert->setCommand("Mesh Convert")' in mesh_workbench
     assert '<< "MeshPart_ShapeFromMesh"' in mesh_workbench

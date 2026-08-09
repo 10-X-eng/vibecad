@@ -15,7 +15,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[4]
 VIBECAD = REPO / "src" / "Mod" / "VibeCAD"
 FASTENERS = REPO / "src" / "Mod" / "Fasteners"
-PINNED_REVISION = "9a09ec46bf5bff87231fce007e1da53610b30854"
+PINNED_REVISION = "033225ae84d65cfde0a39c2750dfa8e549a10cab"
 PINNED_SOURCE = "https://github.com/10-X-eng/FreeCAD_FastenersWB"
 
 

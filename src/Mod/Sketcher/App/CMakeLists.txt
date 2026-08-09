@@ -72,6 +72,19 @@ SET(Features_SRCS
     SketchObjectExternal.cpp
     SketchObjectConstraints.cpp
     SketchObjectOperations.cpp
+    SketchObjectTransform.cpp
+    SketchObjectScale.cpp
+    SketchObjectOffset.cpp
+    SketchObjectOffsetConstraints.cpp
+    SketchObjectOffsetInternal.h
+    SketchObjectSymmetry.cpp
+    SketchObjectAxisAlignment.cpp
+    SketchObjectNURBSConversion.cpp
+    SketchObjectBSplineDegree.cpp
+    SketchObjectBSplineDegreeDecrease.cpp
+    SketchObjectBSplineKnotMultiplicity.cpp
+    SketchObjectBSplineKnotInsertion.cpp
+    SketchObjectJoin.cpp
     SketchAnalysis.h
     SketchAnalysis.cpp
     Analyse.h

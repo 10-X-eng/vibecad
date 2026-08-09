@@ -1,3 +1,3 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Native VibeCAD tool implementations."""
+"""Provider tool implementations retained by VibeScript and shared reads."""

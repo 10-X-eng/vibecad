@@ -115,6 +115,7 @@ MODEL_TOOLBARS = {
         "PartDesign_Thickness",
     ],
     "Transform Features": [
+        "PartDesign_Scale",
         "PartDesign_DesignMirror",
         "PartDesign_DesignLinearPattern",
         "PartDesign_DesignCircularPattern",
@@ -125,7 +126,6 @@ MODEL_TOOLBARS = {
         "Part_Extrude",
         "Part_Revolve",
         "Part_Mirror",
-        "Part_Scale",
         "Part_MakeFace",
         "Part_RuledSurface",
         "Part_Loft",
@@ -273,6 +273,7 @@ MODEL_COMMAND_TIMELINE_BEHAVIOR = {
     "PartDesign_Thickness": frozenset(
         {"operation", "design-operation"}
     ),
+    "PartDesign_Scale": frozenset({"operation", "design-operation"}),
     "PartDesign_DesignMirror": frozenset(
         {"operation", "design-operation"}
     ),

@@ -223,12 +223,14 @@ void ViewProviderAssemblyLink::setupContextMenu(QMenu* menu, QObject* receiver, 
     }
     if (assemblyLink->isRigid()) {
         act = menu->addAction(QObject::tr("Turn flexible"));
+        act->setObjectName(QStringLiteral("AssemblyContextMakeFlexible"));
         act->setToolTip(
             QObject::tr("Your sub-assembly is currently rigid. This will make it flexible instead.")
         );
     }
     else {
         act = menu->addAction(QObject::tr("Turn rigid"));
+        act->setObjectName(QStringLiteral("AssemblyContextMakeRigid"));
         act->setToolTip(
             QObject::tr("Your sub-assembly is currently flexible. This will make it rigid instead.")
         );

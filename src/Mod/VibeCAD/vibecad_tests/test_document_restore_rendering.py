@@ -602,6 +602,14 @@ def test_open_scheduler_drops_final_redraw_after_document_closes(
 def test_document_observer_schedules_new_documents_for_render(monkeypatch) -> None:
     document = _Document([])
     scheduled = []
+    initialized = []
+    monkeypatch.setattr(
+        gui,
+        "get_service",
+        lambda: SimpleNamespace(
+            ensure_native_document_state=initialized.append,
+        ),
+    )
     monkeypatch.setattr(
         gui,
         "_schedule_document_render_after_restore",
@@ -612,3 +620,4 @@ def test_document_observer_schedules_new_documents_for_render(monkeypatch) -> No
     gui._VibeCADDocumentObserver().slotCreatedDocument(document)
 
     assert scheduled == [document]
+    assert initialized == [document.Uid]

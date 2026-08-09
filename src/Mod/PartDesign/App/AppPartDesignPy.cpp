@@ -718,14 +718,22 @@ private:
     Py::Object finalizeDesignOperationEditImpl(const Py::Tuple& args, bool scriptOperation)
     {
         PyObject* editObject = nullptr;
-        if (!PyArg_ParseTuple(args.ptr(), "O", &editObject)) {
+        int affectedBodiesOnly = scriptOperation ? 1 : 0;
+        const char* format = scriptOperation ? "O" : "O|p";
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                format,
+                &editObject,
+                &affectedBodiesOnly
+            )) {
             throw Py::Exception();
         }
         auto* edit = designEditFromCapsule(editObject);
         std::vector<Body*> bodies;
         try {
-            bodies = scriptOperation ? DesignModel::finalizeScriptOperation(*edit)
-                                     : DesignModel::finalizeOperation(*edit);
+            bodies = scriptOperation
+                ? DesignModel::finalizeScriptOperation(*edit)
+                : DesignModel::finalizeOperation(*edit, affectedBodiesOnly != 0);
         }
         catch (const Base::Exception& error) {
             throw Py::RuntimeError(error.what());

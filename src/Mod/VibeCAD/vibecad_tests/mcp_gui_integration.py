@@ -79,6 +79,12 @@ def run() -> None:
         Gui.Control.closeDialog()
         QtWidgets.QApplication.processEvents()
     expected_model = _normalized_contracts(_live_tool_contracts())
+    request_assembly = threading.Event()
+    assembly_changed = threading.Event()
+    request_mesh = threading.Event()
+    mesh_changed = threading.Event()
+    request_restore = threading.Event()
+    restore_changed = threading.Event()
     target_ready = threading.Event()
     continue_client = threading.Event()
     client_done = threading.Event()
@@ -160,11 +166,8 @@ def run() -> None:
                             assembly_notification_count = int(
                                 observed.get("tool_list_notifications", 0)
                             )
-                            assembly = await session.call_tool(
-                                "vibecad.switch_workbench",
-                                {"workbench": "AssemblyWorkbench"},
-                            )
-                            observed["assembly_switch"] = assembly.structured_content
+                            request_assembly.set()
+                            await asyncio.to_thread(assembly_changed.wait)
                             assembly_tools = await session.list_tools()
                             observed["assembly_contracts"] = [
                                 {
@@ -178,11 +181,8 @@ def run() -> None:
                             observed["assembly_tool_list_notifications"] = int(
                                 observed.get("tool_list_notifications", 0)
                             ) - assembly_notification_count
-                            switched = await session.call_tool(
-                                "vibecad.switch_workbench",
-                                {"workbench": "MeshWorkbench"},
-                            )
-                            observed["mesh_switch"] = switched.structured_content
+                            request_mesh.set()
+                            await asyncio.to_thread(mesh_changed.wait)
                             notification_deadline = time.monotonic() + 5.0
                             while (
                                 int(observed.get("tool_list_notifications", 0))
@@ -204,11 +204,8 @@ def run() -> None:
                             notification_count = int(
                                 observed.get("tool_list_notifications", 0)
                             )
-                            restored = await session.call_tool(
-                                "vibecad.switch_workbench",
-                                {"workbench": "PartDesignWorkbench"},
-                            )
-                            observed["restore_switch"] = restored.structured_content
+                            request_restore.set()
+                            await asyncio.to_thread(restore_changed.wait)
                             notification_deadline = time.monotonic() + 5.0
                             while (
                                 int(observed.get("tool_list_notifications", 0))
@@ -230,17 +227,20 @@ def run() -> None:
             name="VibeCAD-MCP-GUI-Test-Client",
             daemon=True,
         ).start()
+        _wait(request_assembly.is_set)
+        Gui.activateWorkbench("AssemblyWorkbench")
+        QtWidgets.QApplication.processEvents()
+        assembly_changed.set()
+        _wait(request_mesh.is_set)
+        Gui.activateWorkbench("MeshWorkbench")
+        QtWidgets.QApplication.processEvents()
+        mesh_changed.set()
         _wait(target_ready.is_set)
         if "client_error" in observed:
             raise observed["client_error"]
-        assert observed["assembly_switch"]["ok"] is True, observed[
-            "assembly_switch"
-        ]
-        assert observed["assembly_switch"]["tool_list_changed"] is False
         assert observed["assembly_tool_list_notifications"] == 0
-        assert observed["mesh_switch"]["ok"] is True, observed["mesh_switch"]
         assert observed.get("tool_list_notifications", 0) >= 1
-        assert Gui.activeWorkbench().name() == "MeshWorkbench", observed["mesh_switch"]
+        assert Gui.activeWorkbench().name() == "MeshWorkbench"
         expected_mesh = _normalized_contracts(_live_tool_contracts())
         assert observed["unauthenticated_status"] == 401
         assert observed["tools_list_changed_capability"] is True
@@ -250,6 +250,15 @@ def run() -> None:
         assert observed["workbench_read"]["active_workbench"] == (
             "PartDesignWorkbench"
         )
+        assert observed["workbench_read"]["available_workbenches"] == [
+            {"name": "PartDesignWorkbench", "label": "Model"},
+            {"name": "AssemblyWorkbench", "label": "Assemble"},
+            {"name": "MeshWorkbench", "label": "Mesh"},
+            {"name": "FemWorkbench", "label": "Analyze"},
+            {"name": "CAMWorkbench", "label": "Manufacture"},
+            {"name": "TechDrawWorkbench", "label": "Drawing"},
+            {"name": "SpreadsheetWorkbench", "label": "Parameters"},
+        ]
         assert observed["api_read_error"] is False
         assert observed["review"]["failure_code"] == "PROVIDER_CALL_DISABLED", (
             observed["review"]
@@ -265,10 +274,13 @@ def run() -> None:
         assert preference_page.copy_mcp_configuration.isEnabled()
 
         continue_client.set()
+        _wait(request_restore.is_set)
+        Gui.activateWorkbench("PartDesignWorkbench")
+        QtWidgets.QApplication.processEvents()
+        restore_changed.set()
         _wait(client_done.is_set)
         if "client_error" in observed:
             raise observed["client_error"]
-        assert observed["restore_switch"]["ok"] is True
 
         set_mcp_enabled(False)
         controller.request_mcp_enabled(False)
@@ -288,6 +300,9 @@ def run() -> None:
             f"model_tools={len(expected_model)} mesh_tools={len(expected_mesh)}"
         )
     finally:
+        assembly_changed.set()
+        mesh_changed.set()
+        restore_changed.set()
         continue_client.set()
         if controller.snapshot()["state"] != "internal":
             controller.request_mcp_enabled(False)

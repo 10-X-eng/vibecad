@@ -14,9 +14,8 @@ TOOL_SPEC = {
     "description": (
         "List every TechDraw drawing page in the active document with its "
         "exact internal name, template, and the views it contains (with "
-        "their source objects, positions, and scale). Use the returned page "
-        "and view names to target techdraw.add_view, techdraw.add_dimension, "
-        "and techdraw.add_annotation."
+        "their source objects, positions, and scale). Use these page and view "
+        "identities when reading or editing the owning Drawing VibeScript source."
     ),
     "contextual": True,
     "safety": "READ",

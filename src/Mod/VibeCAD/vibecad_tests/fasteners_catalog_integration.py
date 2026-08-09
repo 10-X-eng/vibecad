@@ -126,15 +126,20 @@ def _verify_representative_geometry(index: dict) -> dict:
             if identity["standard"] in {"ISO7379", "ASMEB18.3.4"}:
                 shoulder_length = float(identity["length_mm"])
                 interfaces = contract["published_interfaces"]
+                expected_position = [
+                    0.0,
+                    0.0,
+                    round(shoulder_length, 12),
+                ]
                 assert interfaces["bearing_plane"]["standard_frame"][
                     "position"
-                ] == [0.0, 0.0, shoulder_length]
+                ] == expected_position
                 assert interfaces["under_head_plane"]["standard_frame"][
                     "position"
-                ] == [0.0, 0.0, shoulder_length]
+                ] == expected_position
                 assert interfaces["mounting_plane"]["standard_frame"][
                     "position"
-                ] == [0.0, 0.0, shoulder_length]
+                ] == expected_position
             generated.append(
                 {
                     "standard": identity["standard"],

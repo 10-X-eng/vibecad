@@ -13,9 +13,8 @@ TOOL_SPEC = {
     "name": "draft.list_objects",
     "description": (
         "List every Draft object in the active document with its exact internal "
-        "name, label, type, and geometry summary. Use the returned internal "
-        "names to target draft.create_array and other Draft tools that take an "
-        "exact object name."
+        "name, label, type, and geometry summary. Use these identities when "
+        "reading or editing the owning Draft VibeScript source."
     ),
     "contextual": True,
     "safety": "READ",

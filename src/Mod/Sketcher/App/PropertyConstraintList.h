@@ -44,6 +44,7 @@ class Writer;
 namespace Sketcher
 {
 class Constraint;
+class SketchObject;
 
 class SketcherExport PropertyConstraintList: public App::PropertyLists
 {
@@ -166,6 +167,13 @@ public:
     App::ObjectIdentifier createPath(int ConstrNbr) const;
 
 private:
+    friend class SketchObject;
+
+    void setDetachedDiagnosticMode(bool enabled)
+    {
+        detachedDiagnosticMode = enabled;
+    }
+
     App::ObjectIdentifier makeArrayPath(int idx);
     App::ObjectIdentifier makeSimplePath(const Constraint* c);
     App::ObjectIdentifier makePath(int idx, const Constraint* c);
@@ -177,6 +185,7 @@ private:
     bool invalidGeometry;
     bool restoreFromTransaction;
     bool invalidIndices;
+    bool detachedDiagnosticMode;
 
     void applyValues(std::vector<Constraint*>&&);
     void applyValidGeometryKeys(const std::vector<unsigned int>& keys);

@@ -38,9 +38,21 @@ def _tool_schema(name: str) -> dict:
 
 def _surface_context(*names: str, workbench: str = "PartDesignWorkbench") -> dict:
     schemas = [_tool_schema(name) for name in names]
+    surface = session._turn_start_tool_surface(workbench, schemas)
     return {
         "provider_tool_schemas": schemas,
-        "provider_tool_surface": session._turn_start_tool_surface(workbench, schemas),
+        "provider_tool_surface": surface,
+        "modeling_surface": {
+            key: surface[key]
+            for key in (
+                "workbench",
+                "engine",
+                "domain",
+                "surface_id",
+                "available",
+                "unavailable_reason",
+            )
+        },
     }
 
 
@@ -132,6 +144,42 @@ def test_codex_dynamic_tools_preserve_vibecad_namespaces_and_schema() -> None:
     )
 
 
+def test_codex_dynamic_tools_never_reresolve_the_live_modeling_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _part_vibescript_context()
+
+    def forbidden_live_resolution(*_args, **_kwargs):
+        raise AssertionError("A provider worker must use the frozen turn surface.")
+
+    import VibeCADModelingSurface as modeling_surface
+
+    monkeypatch.setattr(
+        modeling_surface,
+        "resolve_modeling_surface",
+        forbidden_live_resolution,
+    )
+
+    tools, names = provider._codex_dynamic_tool_surface(context)
+
+    assert tools
+    assert names
+
+
+def test_codex_dynamic_tools_normalize_an_exact_single_schema_branch() -> None:
+    context = _scripted_context()
+    expected = context["provider_tool_schemas"][0]["parameters"]
+    context["provider_tool_schemas"][0]["parameters"] = {"oneOf": [expected]}
+    context["provider_tool_surface"] = session._turn_start_tool_surface(
+        "PartDesignWorkbench",
+        context["provider_tool_schemas"],
+    )
+
+    tools, _names = provider._codex_dynamic_tool_surface(context)
+
+    assert tools[0]["tools"][0]["inputSchema"] == expected
+
+
 def test_codex_dynamic_tools_use_one_workbench_neutral_namespace() -> None:
     tools, names = provider._codex_dynamic_tool_surface(_part_vibescript_context())
     assert names == {
@@ -139,6 +187,90 @@ def test_codex_dynamic_tools_use_one_workbench_neutral_namespace() -> None:
         ("vibescript", "create_program"): "vibescript.create_program",
     }
     assert [namespace["name"] for namespace in tools] == ["vibescript"]
+
+
+def test_codex_forwards_its_exact_dynamic_tool_call_id(monkeypatch) -> None:
+    class _Client:
+        def __init__(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+            environment=None,
+        ) -> None:
+            self.notification_handler = notification_handler
+            self.server_request_handler = server_request_handler
+            self.environment = environment
+            self.namespace = ""
+            self.tool = ""
+            self.alive = True
+
+        @property
+        def stderr_tail(self):
+            return []
+
+        def start(self):
+            return None
+
+        def request(self, method, params, timeout):
+            if method == "thread/start":
+                namespace = params["dynamicTools"][0]
+                self.namespace = namespace["name"]
+                self.tool = namespace["tools"][0]["name"]
+                return {"thread": {"id": "thread-1"}, "model": "gpt-test"}
+            if method == "turn/start":
+                self.server_request_handler(
+                    "item/tool/call",
+                    {
+                        "callId": "codex-call-42",
+                        "namespace": self.namespace,
+                        "tool": self.tool,
+                        "arguments": {"model_id": "exact-model"},
+                    },
+                )
+                self.notification_handler(
+                    "item/completed",
+                    {
+                        "threadId": "thread-1",
+                        "item": {"type": "agentMessage", "text": "Done."},
+                    },
+                )
+                self.notification_handler(
+                    "turn/completed",
+                    {
+                        "threadId": "thread-1",
+                        "turn": {"id": "turn-1", "status": "completed"},
+                    },
+                )
+                return {"turn": {"id": "turn-1"}}
+            if method == "thread/delete":
+                return {}
+            raise AssertionError(method)
+
+        def close(self):
+            self.alive = False
+
+    monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
+    context = _surface_context("core.set_view")
+    calls = []
+
+    def runner(tool_name, arguments_json, provider_call_id):
+        calls.append((tool_name, arguments_json, provider_call_id))
+        return {"ok": True}
+
+    runner.provider_update = lambda: context
+    active_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="test-key",
+        auth_mode="api_key",
+    )
+
+    result = active_provider.run("Set the view.", context, tool_runner=runner)
+
+    assert result.final_output == "Done."
+    assert calls == [
+        ("core.set_view", '{"model_id":"exact-model"}', "codex-call-42")
+    ]
 
 
 def test_turn_start_surface_rejects_human_mutation_commands() -> None:

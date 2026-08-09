@@ -1,5 +1,36 @@
 add_library(FreeCADGui SHARED)
 
+set(VIBECAD_RIBBON_BUILD_FEATURES
+    ASSEMBLY
+    CAM
+    FASTENERS
+    FEM
+    FEM_NETGEN
+    FEM_VTK
+    FEM_VTK_PYTHON
+    FLAT_MESH
+    INSPECTION
+    MEASURE
+    MESH
+    MESH_PART
+    PART
+    PART_DESIGN
+    POINTS
+    REVERSEENGINEERING
+    ROBOT
+    SKETCHER
+    SPREADSHEET
+    SURFACE
+    TECHDRAW
+)
+foreach(feature IN LISTS VIBECAD_RIBBON_BUILD_FEATURES)
+    set(VIBECAD_BUILD_${feature} ${BUILD_${feature}})
+endforeach()
+configure_file(
+    VibeCADRibbonBuildFeatures.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/VibeCADRibbonBuildFeatures.h
+)
+
 if ( EXISTS "${CMAKE_SOURCE_DIR}/src/3rdParty/GSL/include" )
     include_directories( ${CMAKE_SOURCE_DIR}/src/3rdParty/GSL/include )
 else()

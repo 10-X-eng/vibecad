@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from Base.Metadata import export
 from Base.Persistence import Persistence
-from typing import Final
+from typing import Final, Tuple
 
 @export(
     Include="Mod/Sketcher/App/Constraint.h",
@@ -40,6 +40,12 @@ class Constraint(Persistence):
     ThirdPos: int = 0
     """Position of third geometry index the Constraint refers to"""
 
+    InternalAlignmentIndex: Final[int] = -1
+    """Internal element index for an InternalAlignment constraint, otherwise -1"""
+
+    Tag: Final[str] = ""
+    """Stable identity tag of the constraint."""
+
     Value: Final[float] = 0.0
     """Value of the Constraint"""
 
@@ -60,3 +66,15 @@ class Constraint(Persistence):
 
     LabelPosition: Final[float] = 0.0
     """Label position"""
+
+    Elements: Final[Tuple[Tuple[int, int], ...]] = ()
+    """All geometry and point-position pairs referenced by the constraint"""
+
+    Text: Final[str] = ""
+    """Text content for a Text constraint, otherwise empty"""
+
+    Font: Final[str] = ""
+    """Persisted font name for a Text constraint, otherwise empty"""
+
+    IsTextHeight: Final[bool] = True
+    """Whether a Text constraint handle controls height instead of width"""

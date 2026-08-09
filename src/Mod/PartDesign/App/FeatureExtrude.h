@@ -96,6 +96,13 @@ protected:
     App::DocumentObjectExecReturn* buildExtrusion(ExtrudeOptions options);
 
     /**
+     * Return the solid used only to resolve target-dependent terminations.
+     * Body-local features use their ordinary BaseFeature. Global Design
+     * operations override this without reintroducing a mutable Body link.
+     */
+    virtual TopoShape getExtrusionContextBaseShape() const;
+
+    /**
      * generate an open shell from a given shape
      * by removing the farthest face from the sketchshape in the direction
      * if farthest is nearest (circular) then return the initial shape

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import math
 from typing import Any
@@ -31,6 +32,14 @@ class ReferenceContractError(RuntimeError):
     def __init__(self, message: str, *, details: dict[str, Any] | None = None):
         self.details = dict(details or {})
         super().__init__(message)
+
+
+@dataclass(frozen=True, slots=True)
+class NativeInterfaceSpec:
+    name: str
+    kind: str
+    allowed_joints: tuple[str, ...]
+    compatibility: str
 
 
 def is_native_coordinate_system(obj: Any) -> bool:
@@ -105,7 +114,7 @@ def native_interface_definitions(component: Any) -> dict[str, dict[str, Any]]:
     return definitions
 
 
-def publish_native_interface(
+def prepare_native_interface(
     component: Any,
     lcs: Any,
     *,
@@ -113,8 +122,8 @@ def publish_native_interface(
     kind: str,
     allowed_joints: list[str] | tuple[str, ...] = (),
     compatibility: str = "",
-) -> dict[str, Any]:
-    """Publish one exact existing LCS as a reusable component connector."""
+) -> NativeInterfaceSpec:
+    """Validate and normalize one exact native component-interface request."""
 
     import re
     from vibescript_assembly_api import JOINT_TYPES
@@ -155,6 +164,33 @@ def publish_native_interface(
             raise ReferenceContractError(
                 f"Component {component.Name!r} already publishes interface {clean_name!r}."
             )
+    return NativeInterfaceSpec(
+        clean_name,
+        clean_kind,
+        tuple(clean_joints),
+        clean_compatibility,
+    )
+
+
+def publish_native_interface(
+    component: Any,
+    lcs: Any,
+    *,
+    name: str,
+    kind: str,
+    allowed_joints: list[str] | tuple[str, ...] = (),
+    compatibility: str = "",
+) -> dict[str, Any]:
+    """Publish one exact existing LCS as a reusable component connector."""
+
+    spec = prepare_native_interface(
+        component,
+        lcs,
+        name=name,
+        kind=kind,
+        allowed_joints=allowed_joints,
+        compatibility=compatibility,
+    )
     for property_type, property_name, description in (
         ("App::PropertyBool", PROP_NATIVE_INTERFACE, "Marks this LCS as a component interface."),
         ("App::PropertyString", PROP_NATIVE_INTERFACE_NAME, "Stable component-local interface name."),
@@ -170,15 +206,15 @@ def publish_native_interface(
                 description,
             )
     setattr(lcs, PROP_NATIVE_INTERFACE, True)
-    setattr(lcs, PROP_NATIVE_INTERFACE_NAME, clean_name)
-    setattr(lcs, PROP_NATIVE_INTERFACE_KIND, clean_kind)
+    setattr(lcs, PROP_NATIVE_INTERFACE_NAME, spec.name)
+    setattr(lcs, PROP_NATIVE_INTERFACE_KIND, spec.kind)
     setattr(
         lcs,
         PROP_NATIVE_INTERFACE_ALLOWED_JOINTS,
-        json.dumps(clean_joints, ensure_ascii=True, separators=(",", ":")),
+        json.dumps(spec.allowed_joints, ensure_ascii=True, separators=(",", ":")),
     )
-    setattr(lcs, PROP_NATIVE_INTERFACE_COMPATIBILITY, clean_compatibility)
-    return native_interface_definitions(component)[clean_name]
+    setattr(lcs, PROP_NATIVE_INTERFACE_COMPATIBILITY, spec.compatibility)
+    return native_interface_definitions(component)[spec.name]
 
 
 def interface_definitions_for_output(
@@ -996,15 +1032,15 @@ def _reference_graph(
 def _rebind_one(service: Any, obj: Any, contract: dict[str, Any]) -> dict[str, Any]:
     domain = str(contract.get("domain") or "")
     if domain == "assembly_joint":
-        from tool_impl.service import assembly_create_joint as handler
+        import VibeCADReferenceRebindAssembly as handler
     elif domain == "fem_constraint":
-        from tool_impl.service import fem_add_constraint as handler
+        import VibeCADReferenceRebindFEM as handler
     elif domain == "techdraw_dimension":
-        from tool_impl.service import techdraw_add_dimension as handler
+        import VibeCADReferenceRebindDrawing as handler
     elif domain == "cam_reference":
-        from tool_impl.service import cam_add_operation as handler
+        import VibeCADReferenceRebindManufacture as handler
     elif domain == "part_edge_finish":
-        from tool_impl.service import part_fillet as handler
+        import VibeCADReferenceRebindPart as handler
     else:
         raise ReferenceContractError(
             f"No rebinding implementation exists for managed reference domain {domain!r}.",

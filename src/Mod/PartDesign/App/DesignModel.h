@@ -297,6 +297,16 @@ public:
     static std::vector<Body*> finalizeOperation(DesignOperationEdit& edit);
 
     /**
+     * Publish one operation while recomputing only its affected output Bodies.
+     *
+     * The one-argument overload remains the default full-document behavior.
+     */
+    static std::vector<Body*> finalizeOperation(
+        DesignOperationEdit& edit,
+        bool affectedBodiesOnly
+    );
+
+    /**
      * Atomically publish a worker-validated VibeScript operation without
      * recomputing unrelated document branches.
      *

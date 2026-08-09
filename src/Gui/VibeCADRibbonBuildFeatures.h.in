@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#pragma once
+
+// Exact CMake feature state used by the VibeCAD ribbon authority fingerprint.
+// Keep these names aligned with VibeCADRibbon.cpp and the strict Python reader.
+#cmakedefine01 VIBECAD_BUILD_ASSEMBLY
+#cmakedefine01 VIBECAD_BUILD_CAM
+#cmakedefine01 VIBECAD_BUILD_FASTENERS
+#cmakedefine01 VIBECAD_BUILD_FEM
+#cmakedefine01 VIBECAD_BUILD_FEM_NETGEN
+#cmakedefine01 VIBECAD_BUILD_FEM_VTK
+#cmakedefine01 VIBECAD_BUILD_FEM_VTK_PYTHON
+#cmakedefine01 VIBECAD_BUILD_FLAT_MESH
+#cmakedefine01 VIBECAD_BUILD_INSPECTION
+#cmakedefine01 VIBECAD_BUILD_MEASURE
+#cmakedefine01 VIBECAD_BUILD_MESH
+#cmakedefine01 VIBECAD_BUILD_MESH_PART
+#cmakedefine01 VIBECAD_BUILD_PART
+#cmakedefine01 VIBECAD_BUILD_PART_DESIGN
+#cmakedefine01 VIBECAD_BUILD_POINTS
+#cmakedefine01 VIBECAD_BUILD_REVERSEENGINEERING
+#cmakedefine01 VIBECAD_BUILD_ROBOT
+#cmakedefine01 VIBECAD_BUILD_SKETCHER
+#cmakedefine01 VIBECAD_BUILD_SPREADSHEET
+#cmakedefine01 VIBECAD_BUILD_SURFACE
+#cmakedefine01 VIBECAD_BUILD_TECHDRAW

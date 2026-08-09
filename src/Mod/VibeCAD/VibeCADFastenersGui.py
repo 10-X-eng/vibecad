@@ -11,6 +11,15 @@ from typing import Any, Mapping
 import FreeCAD as App
 import FreeCADGui as Gui
 
+from VibeCADFastenerAttachment import attach_model_fastener_graph
+from VibeCADFastenerModel import (
+    copy_fastener_appearance as _copy_fastener_appearance,
+    create_model_fastener_graph,
+    ensure_timeline_property as _ensure_timeline_property,
+    mark_timeline_operation as _mark_timeline_operation,
+    safe_fastener_object_name as _safe_name,
+)
+
 
 _COMMANDS_REGISTERED = False
 _ICON_ROOT = Path(__file__).resolve().parent
@@ -53,104 +62,6 @@ def _document_transaction_is_clean(document: Any) -> bool:
         and int(document.getBookedTransactionID()) == 0
         and not bool(document.HasPendingTransaction)
     )
-
-
-def _ensure_timeline_property(
-    obj: Any,
-    type_id: str,
-    name: str,
-    description: str,
-) -> None:
-    if name in obj.PropertiesList:
-        existing_type = str(obj.getTypeIdOfProperty(name))
-        if existing_type != type_id:
-            raise TypeError(f"{name} must be {type_id}, not {existing_type}")
-    else:
-        obj.addProperty(
-            type_id,
-            name,
-            "Timeline",
-            description,
-            attr=16,
-            hidden=True,
-            locked=True,
-        )
-    obj.setPropertyStatus(
-        name,
-        ("Hidden", "LockDynamic", "NoRecompute"),
-    )
-    obj.setEditorMode(name, 2)
-
-
-def _mark_timeline_operation(
-    operation: Any,
-    edit_command: str = "VibeCAD_EditStandardFastener",
-    *,
-    editor: Any | None = None,
-) -> None:
-    """Persist one visible standard-fastener history operation and editor."""
-
-    if operation is None:
-        raise ValueError("A standard-fastener timeline operation is required")
-    if not isinstance(edit_command, str) or not edit_command:
-        raise ValueError("A standard-fastener timeline editor command is required")
-    _ensure_timeline_property(
-        operation,
-        "App::PropertyString",
-        "VibeCADTimelineRole",
-        "Document timeline classification",
-    )
-    _ensure_timeline_property(
-        operation,
-        "App::PropertyString",
-        "VibeCADTimelineEditCommand",
-        "Command which edits this document timeline operation",
-    )
-    if "VibeCADTimelineOwner" in operation.PropertiesList:
-        _ensure_timeline_property(
-            operation,
-            "App::PropertyLinkHidden",
-            "VibeCADTimelineOwner",
-            "Visible standard-component operation which owns this implementation",
-        )
-        operation.VibeCADTimelineOwner = None
-    operation.VibeCADTimelineRole = "operation"
-    operation.VibeCADTimelineEditCommand = edit_command
-    if editor is None:
-        if "VibeCADTimelineEditor" in operation.PropertiesList:
-            _ensure_timeline_property(
-                operation,
-                "App::PropertyLinkHidden",
-                "VibeCADTimelineEditor",
-                "Implementation object which edits this standard component",
-            )
-        return
-
-    if editor is operation or getattr(editor, "Document", None) is not getattr(
-        operation,
-        "Document",
-        None,
-    ):
-        raise ValueError(
-            "A standard-fastener editor must be a distinct resource in the "
-            "operation document"
-        )
-    if (
-        str(getattr(editor, "VibeCADTimelineRole", "") or "")
-        != "resource"
-        or getattr(editor, "VibeCADTimelineOwner", None) is not operation
-    ):
-        raise ValueError(
-            "A standard-fastener editor must already be owned by its "
-            "timeline operation"
-        )
-    _ensure_timeline_property(
-        operation,
-        "App::PropertyLinkHidden",
-        "VibeCADTimelineEditor",
-        "Implementation object which edits this standard component",
-    )
-    operation.VibeCADTimelineEditor = editor
 
 
 def _mark_timeline_resource(resource: Any, owner: Any) -> None:
@@ -266,52 +177,20 @@ def _show_information(title: str, message: str) -> None:
     )
 
 
-def _safe_name(value: str, fallback: str) -> str:
-    clean = re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_")
-    if not clean or not re.match(r"[A-Za-z_]", clean):
-        clean = fallback
-    return clean[:96]
-
-
 def _generated_fastener_operation(generator: Any) -> Any | None:
     """Return the one Design operation which owns *generator* as a dependency."""
 
-    if generator is None:
-        return None
-    matches = [
-        candidate
-        for candidate in list(getattr(generator, "InList", []) or [])
-        if str(getattr(candidate, "TypeId", "") or "")
-        == "PartDesign::DesignGeneratedOperation"
-        and str(getattr(candidate, "GeneratorKind", "") or "")
-        == "standard-fastener"
-        and getattr(candidate, "Generator", None) is generator
-    ]
-    return matches[0] if len(matches) == 1 else None
+    from VibeCADFastenerModel import generated_fastener_operation
+
+    return generated_fastener_operation(generator)
 
 
 def _generated_fastener_body(operation: Any) -> Any | None:
     """Resolve the one stable Body output declared by *operation*."""
 
-    if (
-        operation is None
-        or str(getattr(operation, "TypeId", "") or "")
-        != "PartDesign::DesignGeneratedOperation"
-        or str(getattr(operation, "GeneratorKind", "") or "")
-        != "standard-fastener"
-    ):
-        return None
-    body_ids = list(getattr(operation, "OutputBodyIds", []) or [])
-    if len(body_ids) != 1:
-        return None
-    matches = [
-        candidate
-        for candidate in list(getattr(operation.Document, "Objects", []) or [])
-        if str(getattr(candidate, "TypeId", "") or "") == "PartDesign::Body"
-        and str(getattr(candidate, "VibeCADBodyId", "") or "")
-        == str(body_ids[0])
-    ]
-    return matches[0] if len(matches) == 1 else None
+    from VibeCADFastenerModel import generated_fastener_body
+
+    return generated_fastener_body(operation)
 
 
 def _timeline_root(obj: Any) -> Any | None:
@@ -362,36 +241,6 @@ def _timeline_successor_root(
     if indices[-1] + 1 >= len(operations):
         return None
     return _timeline_root(operations[indices[-1] + 1])
-
-
-def _reference_history_root(document: Any, selected: Any) -> Any | None:
-    """Resolve the History root that must precede a selected geometry reference."""
-
-    timeline = document.getObject("VibeCADTimeline")
-    operations = list(getattr(timeline, "Operations", []) or [])
-    operation_set = set(operations)
-    candidates: list[Any] = [selected]
-    if str(getattr(selected, "TypeId", "") or "") == "PartDesign::Body":
-        publication = getattr(selected, "Tip", None)
-        state = getattr(publication, "CurrentState", None)
-        producer = getattr(state, "Operation", None)
-        if producer is not None:
-            candidates.insert(0, producer)
-        legacy_tip = getattr(selected, "Tip", None)
-        if legacy_tip is not None:
-            candidates.append(legacy_tip)
-    else:
-        try:
-            body = selected.getParentGeoFeatureGroup()
-        except Exception:
-            body = None
-        if str(getattr(body, "TypeId", "") or "") == "PartDesign::Body":
-            candidates.append(body)
-    for candidate in candidates:
-        root = _timeline_root(candidate)
-        if root in operation_set:
-            return root
-    return None
 
 
 def _legacy_model_fastener_body(generator: Any) -> Any | None:
@@ -742,30 +591,6 @@ def _fastener_label_owner(selected: Any, target: Any) -> Any:
     ):
         return body
     return target
-
-
-def _copy_fastener_appearance(generator: Any, body: Any) -> None:
-    """Publish the native generator's appearance on the stable Body result."""
-
-    source = getattr(generator, "ViewObject", None)
-    publication = getattr(body, "Tip", None)
-    targets = [
-        getattr(body, "ViewObject", None),
-        getattr(publication, "ViewObject", None),
-    ]
-    for target in targets:
-        if source is None or target is None:
-            continue
-        for name in (
-            "ShapeColor",
-            "LineColor",
-            "PointColor",
-            "Transparency",
-            "LineWidth",
-            "PointSize",
-        ):
-            if hasattr(source, name) and hasattr(target, name):
-                setattr(target, name, getattr(source, name))
 
 
 def _activate_partdesign_body(body: Any) -> None:
@@ -1159,10 +984,9 @@ class _InsertStandardFastenerCommand:
                 )
                 selected = occurrence
             else:
-                import PartDesign
-
-                generator, _identity = create_fastener_feature(
+                graph = create_model_fastener_graph(
                     document,
+                    label=visible_label,
                     **{
                         key: values[key]
                         for key in (
@@ -1174,47 +998,8 @@ class _InsertStandardFastenerCommand:
                             "options",
                         )
                     },
-                    object_name=_safe_name(
-                        f"{visible_label}_Generator",
-                        "StandardFastenerGenerator",
-                    ),
-                    label=f"{visible_label} generator",
                 )
-                document.classifyProvisionalTimelineInternalObject(generator)
-                generator.ViewObject.Visibility = False
-                if hasattr(generator.ViewObject, "ShowInTree"):
-                    generator.ViewObject.ShowInTree = False
-
-                operation = document.addObject(
-                    "PartDesign::DesignGeneratedOperation",
-                    _safe_name(
-                        f"{visible_label}_Feature",
-                        "StandardFastenerFeature",
-                    ),
-                )
-                edit = PartDesign.beginDesignOperationEdit(operation)
-                operation.Label = f"Fastener: {visible_label}"
-                operation.GeneratorKind = "standard-fastener"
-                operation.Generator = generator
-                operation.OutputLabel = visible_label
-                _mark_timeline_operation(operation)
-                PartDesign.setDesignOperationTargets(
-                    edit,
-                    "New Body",
-                    [],
-                )
-                document.recompute()
-                outputs = PartDesign.finalizeDesignOperationEdit(edit)
-                if len(outputs) != 1:
-                    raise RuntimeError(
-                        _translate(
-                            "The standard fastener did not publish exactly one Body."
-                        )
-                    )
-                body = outputs[0]
-                body.Label = visible_label
-                _copy_fastener_appearance(generator, body)
-                selected = body
+                selected = graph.body
             document.recompute()
             document.commitTransaction()
             Gui.Selection.clearSelection()
@@ -1252,6 +1037,7 @@ class _EditStandardFastenerCommand:
         )
 
     def Activated(self) -> None:
+        from VibeCADFastenerModel import edit_model_fastener_graph
         from VibeCADFasteners import (
             compatible_fastener_standards,
             fastener_feature_identity,
@@ -1327,31 +1113,30 @@ class _EditStandardFastenerCommand:
                     )
                     body.Label = visible_label
                 else:
-                    edit = None
                     if operation is not None:
-                        import PartDesign
-
-                        edit = PartDesign.beginDesignOperationEdit(operation)
-                        update_values["label"] = (
-                            f"{visible_label} generator"
-                        )
-                    if label_owner is not target:
-                        label_owner.Label = visible_label
-                    update_fastener_feature(target, **update_values)
-                    if operation is not None:
-                        operation.Label = f"Fastener: {visible_label}"
-                        operation.OutputLabel = visible_label
-                    document.recompute()
-                if operation is not None and legacy_body is None:
-                    outputs = PartDesign.finalizeDesignOperationEdit(edit)
-                    if len(outputs) != 1:
-                        raise RuntimeError(
-                            _translate(
-                                "The edited standard fastener did not retain one Body."
+                        body = _generated_fastener_body(operation)
+                        if body is None:
+                            raise RuntimeError(
+                                _translate(
+                                    "The edited standard fastener has no exact Body."
+                                )
                             )
+                        edit_model_fastener_graph(
+                            document,
+                            body=body,
+                            label=visible_label,
+                            standard=values["standard"],
+                            nominal_thread=values["nominal_thread"],
+                            length_mm=values["length_mm"],
+                            model_thread=values["model_thread"],
+                            left_handed=values["left_handed"],
+                            options=values["options"],
                         )
-                    outputs[0].Label = visible_label
-                    _copy_fastener_appearance(target, outputs[0])
+                    else:
+                        if label_owner is not target:
+                            label_owner.Label = visible_label
+                        update_fastener_feature(target, **update_values)
+                        document.recompute()
                 document.commitTransaction()
             except Exception:
                 document.abortTransaction()
@@ -1638,37 +1423,20 @@ class _AttachStandardFastenerCommand:
                         )[0]
                     ]
                 else:
-                    dependency_root = _reference_history_root(document, host)
-                    timeline = document.getObject("VibeCADTimeline")
-                    history = list(getattr(timeline, "Operations", []) or [])
-                    if (
-                        dependency_root is not None
-                        and dependency_root is not operation
-                        and dependency_root in history
-                        and operation in history
-                        and history.index(operation)
-                        < history.index(dependency_root)
-                    ):
-                        document.reorderTimelineOperationBlocksAfter(
-                            [operation],
-                            dependency_root,
+                    body = _generated_fastener_body(operation)
+                    if body is None:
+                        raise RuntimeError(
+                            _translate(
+                                "The attached standard fastener has no exact Body."
+                            )
                         )
-                    edit = PartDesign.beginDesignOperationEdit(operation)
-                    exact_host, exact_subelements = (
-                        PartDesign.resolveDesignDefinitionSubelementReference(
-                            operation,
-                            host,
-                            [sub_name],
-                        )
+                    attachment = attach_model_fastener_graph(
+                        document,
+                        body=body,
+                        host=host,
+                        subelement=sub_name,
                     )
-                    fastener.BaseObject = (
-                        exact_host,
-                        list(exact_subelements),
-                    )
-                    document.recompute()
-                    if str(getattr(fastener, "VibeCADFastenerError", "") or ""):
-                        raise RuntimeError(str(fastener.VibeCADFastenerError))
-                    outputs = PartDesign.finalizeDesignOperationEdit(edit)
+                    outputs = [attachment.graph.body]
                 if len(outputs) != 1:
                     raise RuntimeError(
                         _translate(

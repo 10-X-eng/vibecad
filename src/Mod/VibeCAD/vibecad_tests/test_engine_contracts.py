@@ -166,7 +166,6 @@ class TestStageAwareFailureRendering:
 
 def test_private_vibescript_carriers_are_not_provider_document_objects() -> None:
     from VibeCADCore import VibeCADService
-    from VibeCADWorkbenchTools import get_tool_pack
 
     for role in ("implementation", "publication_target", "parameters"):
         assert VibeCADService._is_private_scripted_object(
@@ -176,20 +175,6 @@ def test_private_vibescript_carriers_are_not_provider_document_objects() -> None
         assert not VibeCADService._is_private_scripted_object(
             SimpleNamespace(VibeCADScriptedRole=role)
         )
-
-    part_pack = get_tool_pack("PartWorkbench")
-    assert part_pack is not None
-    assert VibeCADService._object_matches_pack(
-        SimpleNamespace(VibeCADScriptedRole="publication", TypeId="App::Link"),
-        part_pack,
-    )
-    assert not VibeCADService._object_matches_pack(
-        SimpleNamespace(
-            VibeCADScriptedRole="publication_target",
-            TypeId="Part::Feature",
-        ),
-        part_pack,
-    )
 
     native = SimpleNamespace(Name="Native", Label="Native", TypeId="Part::Box")
     published = SimpleNamespace(
@@ -287,7 +272,7 @@ class _RecordingPreferences(_UnsetPreferences):
         self.values.pop(name, None)
 
 
-class TestVibeScriptDefaults:
+class TestAuthoringModeDefaults:
     _SCOPE = {"project_id": "f" * 32, "title": "Default Test", "document": {}}
 
     def test_settings_have_no_vibescript_availability_toggle(self) -> None:
@@ -310,7 +295,7 @@ class TestVibeScriptDefaults:
     def test_default_engine_is_vibescript(self) -> None:
         from VibeCADProject import DEFAULT_MODELING_ENGINE, MODELING_ENGINES
 
-        assert MODELING_ENGINES == {"vibescript"}
+        assert MODELING_ENGINES == {"native", "vibescript"}
         assert DEFAULT_MODELING_ENGINE == "vibescript"
 
     def test_fresh_manifest_seeds_vibescript_engine(self, tmp_path: Path) -> None:
@@ -321,48 +306,31 @@ class TestVibeScriptDefaults:
         assert manifest["modeling_engine"] == "vibescript"
         assert "partdesign_engine" not in manifest
 
-    def test_merge_preserves_vibescript_engine(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("mode", ("native", "vibescript"))
+    def test_merge_preserves_supported_engine(self, tmp_path: Path, mode: str) -> None:
         from VibeCADProject import VibeCADProjectStore
 
         store = VibeCADProjectStore("test-session", index_path=tmp_path / "index.db")
         merged = store._merge_manifest_defaults(
-            {"modeling_engine": "vibescript"},
+            {"modeling_engine": mode},
             dict(self._SCOPE),
         )
-        assert merged["modeling_engine"] == "vibescript"
+        assert merged["modeling_engine"] == mode
 
-    @pytest.mark.parametrize(
-        ("legacy_field", "legacy_engine"),
-        (
-            ("modeling_engine", "native"),
-            ("partdesign_engine", "build123d"),
-            ("partdesign_engine", "openscad"),
-        ),
-    )
-    def test_retired_selection_migrates_one_way_to_vibescript(
-        self, tmp_path: Path, legacy_field: str, legacy_engine: str
+    @pytest.mark.parametrize("mode", ("build123d", "openscad", "typo"))
+    def test_unsupported_engine_has_actionable_error(
+        self, tmp_path: Path, mode: str
     ) -> None:
         from VibeCADProject import VibeCADProjectStore
 
         store = VibeCADProjectStore("test-session", index_path=tmp_path / "index.db")
-        merged = store._merge_manifest_defaults(
-            {legacy_field: legacy_engine},
-            dict(self._SCOPE),
-        )
-        assert merged["modeling_engine"] == "vibescript"
-        assert "partdesign_engine" not in merged
-
-    def test_unknown_engine_has_actionable_error(self, tmp_path: Path) -> None:
-        from VibeCADProject import VibeCADProjectStore
-
-        store = VibeCADProjectStore("test-session", index_path=tmp_path / "index.db")
-        with pytest.raises(RuntimeError, match="unsupported modeling engine"):
+        with pytest.raises(RuntimeError, match="unsupported authoring mode"):
             store._merge_manifest_defaults(
-                {"modeling_engine": "typo"},
+                {"modeling_engine": mode},
                 dict(self._SCOPE),
             )
 
-    def test_context_persists_retired_selection_migration(
+    def test_context_reads_persisted_native_selection(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         from VibeCADProject import PROJECT_SCHEMA, VibeCADProjectStore
@@ -375,8 +343,8 @@ class TestVibeScriptDefaults:
                     "schema": PROJECT_SCHEMA,
                     "version": 2,
                     "project_id": "f" * 32,
-                    "title": "Migrated",
-                    "partdesign_engine": "openscad",
+                    "title": "Native project",
+                    "modeling_engine": "native",
                     "documents": {},
                 }
             ),
@@ -396,9 +364,69 @@ class TestVibeScriptDefaults:
         context = store.context()
 
         persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
-        assert context["modeling_engine"] == "vibescript"
-        assert persisted["modeling_engine"] == "vibescript"
-        assert "partdesign_engine" not in persisted
+        assert context["modeling_engine"] == "native"
+        assert persisted["modeling_engine"] == "native"
+
+    def test_unsaved_native_selection_is_promoted_on_first_save(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from VibeCADProject import VibeCADProjectStore
+
+        index_path = tmp_path / "index.db"
+        unsaved_root = tmp_path / "unsaved"
+        saved_root = tmp_path / "saved"
+        scope = {
+            **self._SCOPE,
+            "root": str(unsaved_root),
+            "manifest_path": str(unsaved_root / "project.vibecad.json"),
+            "persistent": True,
+            "document_saved": False,
+            "index_path": str(index_path),
+            "document": {
+                "document": "Engine",
+                "uid": "stable-document-uid",
+                "saved": False,
+            },
+        }
+        store = VibeCADProjectStore("test-session", index_path=index_path)
+        monkeypatch.setattr(store, "project_scope", lambda: dict(scope))
+
+        assert store.select_modeling_engine("native") == {
+            "mode": "native",
+            "persistence": "session",
+        }
+        assert store.context()["modeling_engine"] == "native"
+        unsaved_manifest = json.loads(
+            Path(scope["manifest_path"]).read_text(encoding="utf-8")
+        )
+        assert unsaved_manifest["modeling_engine"] == "vibescript"
+
+        scope.update(
+            {
+                "root": str(saved_root),
+                "manifest_path": str(saved_root / "project.vibecad.json"),
+                "document_saved": True,
+                "document": {
+                    "document": "Engine",
+                    "uid": "stable-document-uid",
+                    "file_path": str(tmp_path / "Engine.FCStd"),
+                    "saved": True,
+                },
+            }
+        )
+        assert store.modeling_engine() == "native"
+        assert store.persist_modeling_engine_after_save() == {
+            "mode": "native",
+            "persistence": "project",
+        }
+        saved_manifest = json.loads(
+            Path(scope["manifest_path"]).read_text(encoding="utf-8")
+        )
+        assert saved_manifest["modeling_engine"] == "native"
+
+        reopened = VibeCADProjectStore("new-session", index_path=index_path)
+        monkeypatch.setattr(reopened, "project_scope", lambda: dict(scope))
+        assert reopened.modeling_engine() == "native"
 
     def test_newer_manifest_is_read_without_rewrite(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

@@ -230,6 +230,101 @@ class TestDesignModeling(unittest.TestCase):
         self.assertIsNone(self.document.getObject(generator_name))
         self.assertIsNone(self.document.getObject(body_name))
 
+    def test_generated_operation_preserves_one_solid_compound_child_location(self):
+        def located_compound():
+            head = Part.makeCylinder(2.75, 3)
+            shank = Part.makeCylinder(
+                1.5,
+                10,
+                App.Vector(0, 0, -10),
+            )
+            socket = Part.makeCylinder(
+                1.2,
+                2,
+                App.Vector(0, 0, 1),
+            )
+            solid = head.fuse(shank).cut(socket)
+            solid.Placement = App.Placement(
+                App.Vector(7, -3, 2),
+                App.Rotation(),
+            )
+            return Part.makeCompound([solid])
+
+        def signature(shape):
+            solid = shape.Solids[0]
+            bounds = solid.BoundBox
+            center = solid.CenterOfMass
+            return (
+                len(solid.Faces),
+                len(solid.Edges),
+                len(solid.Vertexes),
+                solid.Volume,
+                solid.Area,
+                bounds.XMin,
+                bounds.XMax,
+                bounds.YMin,
+                bounds.YMax,
+                bounds.ZMin,
+                bounds.ZMax,
+                center.x,
+                center.y,
+                center.z,
+            )
+
+        def assert_shape_matches_generator(generator, body):
+            expected = signature(generator.Shape)
+            actual = signature(body.Shape)
+            self.assertEqual(actual[:3], expected[:3])
+            for observed, wanted in zip(actual[3:], expected[3:]):
+                self.assertAlmostEqual(observed, wanted, places=7)
+
+        generator_frame = App.Placement(
+            App.Vector(20, 30, 40),
+            App.Rotation(),
+        )
+        self.document.openTransaction("Create located generated operation")
+        generator = self.document.addObject(
+            "Part::Feature",
+            "LocatedNativeGenerator",
+        )
+        generator.Shape = located_compound()
+        generator.Placement = generator_frame
+        self.document.classifyProvisionalTimelineInternalObject(generator)
+        operation = self.document.addObject(
+            "PartDesign::DesignGeneratedOperation",
+            "LocatedGeneratedFeature",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Generator = generator
+        operation.GeneratorKind = "located-one-solid-compound"
+        operation.OutputLabel = "Located Generated Body"
+        PartDesign.setDesignOperationTargets(edit, "New Body", [])
+        self.document.recompute()
+        bodies = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(len(bodies), 1)
+        body = bodies[0]
+        assert_shape_matches_generator(generator, body)
+        PartDesign.validateDesign(operation)
+
+        for index in range(3):
+            self.document.openTransaction(
+                f"Recompute located generated operation {index}"
+            )
+            generator.Shape = located_compound()
+            generator.Placement = generator_frame
+            self.document.recompute([generator, operation, body], True, True)
+            self.document.commitTransaction()
+            assert_shape_matches_generator(generator, body)
+            PartDesign.validateDesign(operation)
+
+        self.document.undo()
+        self.document.redo()
+        self.document.recompute([generator, operation, body], True, True)
+        assert_shape_matches_generator(generator, body)
+        PartDesign.validateDesign(operation)
+
     def test_one_master_sketch_drives_independent_closed_region_extrusions(self):
         sketch, first_radius = self._master_circle_sketch("MasterSketch")
         self.document.recompute()

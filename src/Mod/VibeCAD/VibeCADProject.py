@@ -20,6 +20,13 @@ import time
 from typing import Any
 import uuid
 
+from VibeCADAuthoringMode import (
+    AUTHORING_MODES,
+    DEFAULT_AUTHORING_MODE,
+    AuthoringModeScope,
+    AuthoringModeStore,
+    normalize_authoring_mode,
+)
 from VibeCADIntentMemory import DESIGN_DOCUMENT_NAME, read_memory, write_memory
 
 
@@ -35,25 +42,8 @@ LEGACY_CONVERSATION_NAME = "conversation.json"
 CONVERSATION_INDEX_SCHEMA = "vibecad-conversation-index-v1"
 CONVERSATION_THREAD_SCHEMA = "vibecad-conversation-thread-v1"
 DEFAULT_CONVERSATION_TITLE = "New conversation"
-MODELING_ENGINES = frozenset({"vibescript"})
-DEFAULT_MODELING_ENGINE = "vibescript"
-RETIRED_MODELING_ENGINE_SELECTIONS = frozenset(
-    {"native", "build123d", "openscad"}
-)
-
-
-def _normalize_modeling_engine(value: Any) -> str:
-    """Return a supported selection, migrating retired selectors one way."""
-
-    engine = str(value or DEFAULT_MODELING_ENGINE).strip().lower()
-    if engine in RETIRED_MODELING_ENGINE_SELECTIONS:
-        return DEFAULT_MODELING_ENGINE
-    if engine not in MODELING_ENGINES:
-        raise RuntimeError(
-            f"VibeCAD project selects unsupported modeling engine {engine!r}; "
-            f"choose one of: {sorted(MODELING_ENGINES)}."
-        )
-    return engine
+MODELING_ENGINES = AUTHORING_MODES
+DEFAULT_MODELING_ENGINE = DEFAULT_AUTHORING_MODE
 
 
 def now_iso() -> str:
@@ -126,6 +116,7 @@ def _active_document_info() -> dict[str, Any]:
     file_path = str(getattr(doc, "FileName", "") or "")
     return {
         "document": str(getattr(doc, "Name", "") or ""),
+        "uid": str(getattr(doc, "Uid", "") or ""),
         "label": str(getattr(doc, "Label", "") or getattr(doc, "Name", "") or ""),
         "file_path": file_path or None,
         "saved": bool(file_path),
@@ -764,6 +755,7 @@ class VibeCADProjectStore:
     def __init__(self, session_id: str, index_path: Path | None = None) -> None:
         self.session_id = str(session_id)
         self.index_path = index_path or _default_index_path()
+        self._authoring_modes = AuthoringModeStore()
 
     def project_scope(self) -> dict[str, Any]:
         doc = _active_document_info()
@@ -811,6 +803,7 @@ class VibeCADProjectStore:
 
     def context(self) -> dict[str, Any]:
         scope = self.project_scope()
+        selected_mode = self.modeling_engine(scope=scope)
         manifest = self.load_manifest()
         if manifest.get("schema") == PROJECT_SCHEMA:
             manifest = self.save_manifest(manifest)
@@ -831,7 +824,7 @@ class VibeCADProjectStore:
             "document_saved": bool(scope.get("document_saved")),
             "document": scope.get("document", {}),
             "documents": manifest.get("documents", {}),
-            "modeling_engine": str(manifest.get("modeling_engine") or DEFAULT_MODELING_ENGINE),
+            "modeling_engine": selected_mode,
         }
 
     def design_document(self) -> dict[str, Any]:
@@ -871,8 +864,52 @@ class VibeCADProjectStore:
             "updated_at": saved.get("updated_at"),
         }
 
-    def modeling_engine(self) -> str:
-        return _normalize_modeling_engine(self.load_manifest().get("modeling_engine"))
+    def _authoring_mode_scope(
+        self,
+        scope: dict[str, Any] | None = None,
+    ) -> AuthoringModeScope:
+        return AuthoringModeScope.from_project_scope(
+            scope or self.project_scope(),
+            session_id=self.session_id,
+        )
+
+    def _read_persisted_modeling_engine(self, _path: Path) -> str:
+        return normalize_authoring_mode(
+            self.load_manifest().get("modeling_engine")
+        )
+
+    def _write_persisted_modeling_engine(self, _path: Path, mode: str) -> None:
+        manifest = self.load_manifest()
+        manifest["modeling_engine"] = normalize_authoring_mode(mode)
+        self.save_manifest(manifest)
+
+    def modeling_engine(self, *, scope: dict[str, Any] | None = None) -> str:
+        selection = self._authoring_modes.current(
+            self._authoring_mode_scope(scope),
+            self._read_persisted_modeling_engine,
+        )
+        return selection.mode
+
+    def select_modeling_engine(self, mode: str) -> dict[str, str]:
+        """Store a human selection without modifying the CAD document."""
+
+        selection = self._authoring_modes.select(
+            self._authoring_mode_scope(),
+            mode,
+            self._write_persisted_modeling_engine,
+        )
+        return selection.summary()
+
+    def persist_modeling_engine_after_save(self) -> dict[str, str]:
+        selection = self._authoring_modes.persist_after_save(
+            self._authoring_mode_scope(),
+            self._read_persisted_modeling_engine,
+            self._write_persisted_modeling_engine,
+        )
+        return selection.summary()
+
+    def discard_session_modeling_engine(self, document_identity: str) -> None:
+        self._authoring_modes.discard_document(document_identity)
 
     @staticmethod
     def read_modeling_engine_manifest(manifest_path: str | Path) -> str:
@@ -888,10 +925,8 @@ class VibeCADProjectStore:
             return DEFAULT_MODELING_ENGINE
         data = _read_json_object(path, "project manifest")
         _project_manifest_schema(data, source=path)
-        engine = _normalize_modeling_engine(
-            data.get("modeling_engine")
-            or data.get("partdesign_engine")
-            or DEFAULT_MODELING_ENGINE
+        engine = normalize_authoring_mode(
+            data.get("modeling_engine") or DEFAULT_MODELING_ENGINE
         )
         return engine
 
@@ -917,9 +952,6 @@ class VibeCADProjectStore:
         )
         default = self._default_manifest(scope)
         merged = dict(manifest)
-        migrated_engine = manifest.get("modeling_engine")
-        if migrated_engine is None:
-            migrated_engine = manifest.get("partdesign_engine")
         for key, value in default.items():
             if merged.get(key) is None:
                 merged[key] = value
@@ -930,7 +962,9 @@ class VibeCADProjectStore:
             type(merged.get("version")) is int and int(merged["version"]) > 0
         ):
             merged["version"] = schema_version
-        merged["modeling_engine"] = _normalize_modeling_engine(migrated_engine)
+        merged["modeling_engine"] = normalize_authoring_mode(
+            manifest.get("modeling_engine") or DEFAULT_MODELING_ENGINE
+        )
         merged.pop("partdesign_engine", None)
         merged["project_id"] = scope["project_id"]
         documents = merged.get("documents")

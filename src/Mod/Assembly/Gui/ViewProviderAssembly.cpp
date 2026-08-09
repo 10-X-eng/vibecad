@@ -162,6 +162,7 @@ void ViewProviderAssembly::setupContextMenu(QMenu* menu, QObject* receiver, cons
     auto func = new Gui::ActionFunction(menu);
 
     QAction* act = menu->addAction(QObject::tr("Active object"));
+    act->setObjectName(QStringLiteral("AssemblyContextToggleActive"));
     act->setCheckable(true);
     act->setChecked(isActivePart(ASSEMBLYKEY));
     func->trigger(act, [this]() { this->doubleClicked(); });

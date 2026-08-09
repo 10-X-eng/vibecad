@@ -23954,9 +23954,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
             "connector": {
                 "partdesign_handoff": (
                     "Use the exact named interface listed on the component. VibeScript parts "
-                    "declare it in api.body(..., interfaces=...); native parts publish an "
-                    "existing LCS with component.publish_interface. Do not guess FaceN/EdgeN "
-                    "or derive a connector from nearby geometry."
+                    "declare it in api.body(..., interfaces=...). For native parts, the user "
+                    "publishes an existing LCS with Publish Interface on the Model or Assemble "
+                    "ribbon. Do not guess FaceN/EdgeN or derive a connector from nearby geometry."
                 ),
                 "axis_rule": "Connector local +Z is the joint axis.",
                 "offset_rule": (

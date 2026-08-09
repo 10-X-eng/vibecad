@@ -33,6 +33,13 @@ from VibeCADIntentMemory import (
     uncovered_turns,
 )
 from VibeCADModelingSurface import resolve_modeling_surface
+from VibeCADNativeBackground import NativeBackgroundManager
+from VibeCADNativeState import NativeDocumentStateStore
+from VibeCADNativeStatePersistence import (
+    native_state_path,
+    read_native_state,
+    write_native_state,
+)
 from VibeCADProject import (
     DEFAULT_CONVERSATION_TITLE,
     VibeCADConversationStore,
@@ -41,15 +48,12 @@ from VibeCADProject import (
     vibecad_data_dir,
 )
 from VibeCADTools import ToolRegistry
-from VibeCADWorkbenchTools import get_tool_pack, list_tool_packs
 import VibeCADVibeScriptDomains as vibescript_domains
 from tool_impl import service as service_tools
-from tool_impl import sketcher as sketcher_tools
 
 
 MAX_CONTEXT_OBJECTS = 25
-MAX_CONTEXT_COMMANDS = 120
-MAX_CONTEXT_WORKBENCH_OBJECTS = 40
+MAX_PROVIDER_PART_OBJECTS = 40
 MAX_PROVIDER_SELECTION_BYTES = 4096
 MAX_PROVIDER_SELECTION_ITEMS = 32
 MAX_PROVIDER_SELECTION_SUBELEMENTS = 64
@@ -207,6 +211,10 @@ class VibeCADService:
         self._provider_working_object_names: list[str] = []
         self._provider_working_document_uid: str | None = None
         self._project_store = VibeCADProjectStore(self._local_session_id)
+        self._native_document_states = NativeDocumentStateStore()
+        self._native_background_jobs = NativeBackgroundManager()
+        self._native_state_restores: set[tuple[str, str]] = set()
+        self._native_state_restore_errors: dict[str, str] = {}
         self._steering_messages: list[dict[str, Any]] = []
         self._steering_sequence = 0
         self._vibescript_reference_cache_lock = threading.RLock()
@@ -425,9 +433,188 @@ class VibeCADService:
         return settings.intent_memory_model_for(self.provider_name())
 
     def modeling_engine(self) -> str:
-        """The assistant always authors through VibeScript."""
+        """Return the human-selected project/document authoring mode."""
 
-        return "vibescript"
+        return self._project_store.modeling_engine()
+
+    def select_modeling_engine(self, mode: str) -> dict[str, str]:
+        """Store a human mode selection without mutating the CAD document."""
+
+        from VibeCADAuthoringMode import normalize_authoring_mode
+
+        selected = normalize_authoring_mode(mode)
+        current = self.modeling_engine()
+        if selected == current:
+            return {"mode": current, "persistence": "unchanged"}
+        uid = str(self._active_document_uid() or "")
+        if not uid:
+            raise RuntimeError("Select an authoring mode with an active document.")
+        self.ensure_native_document_state(uid)
+        restore_error = self._native_state_restore_errors.get(uid)
+        if restore_error:
+            raise RuntimeError(
+                f"Native authority state is unavailable: {restore_error}"
+            )
+        if selected == "native":
+            self._native_document_states.begin_native_authority(uid)
+            try:
+                result = self._project_store.select_modeling_engine(selected)
+                self._persist_active_native_state()
+            except Exception:
+                try:
+                    self._project_store.select_modeling_engine(current)
+                finally:
+                    self._native_document_states.end_native_authority(uid)
+                raise
+            return result
+
+        self._native_document_states.require_vibescript_return_safe(uid)
+        result = self._project_store.select_modeling_engine(selected)
+        self._native_document_states.end_native_authority(uid)
+        return result
+
+    def persist_modeling_engine_after_save(
+        self,
+        document_identity: str,
+    ) -> dict[str, str] | None:
+        """Promote the active document's session choice after its first save."""
+
+        if str(document_identity or "").strip() != str(
+            self._active_document_uid() or ""
+        ):
+            return None
+        selection = self._project_store.persist_modeling_engine_after_save()
+        if selection.get("mode") == "native":
+            self.ensure_native_document_state(document_identity)
+            self._native_document_states.begin_native_authority(document_identity)
+            self._persist_active_native_state()
+        return selection
+
+    def discard_session_modeling_engine(self, document_identity: str) -> None:
+        self._project_store.discard_session_modeling_engine(document_identity)
+
+    @staticmethod
+    def _object_document_uid(obj: Any) -> str:
+        document = getattr(obj, "Document", None)
+        return str(getattr(document, "Uid", "") or "").strip()
+
+    def ensure_native_document_state(self, document_uid: str) -> int | None:
+        uid = str(document_uid or "").strip()
+        if not uid:
+            return None
+        revision = self._native_document_states.ensure_document(uid)
+        if uid != str(self._active_document_uid() or ""):
+            return revision
+        scope = self._project_store.project_scope()
+        if not bool(scope.get("document_saved")) or self.modeling_engine() != "native":
+            return revision
+        path = native_state_path(scope)
+        restore_key = (uid, str(path))
+        if restore_key in self._native_state_restores:
+            return self._native_document_states.current_revision(uid)
+        try:
+            payload = read_native_state(path)
+            if payload is None:
+                self._native_document_states.begin_native_authority(uid)
+            else:
+                self._native_document_states.restore_document(uid, payload)
+        except Exception as exc:
+            self._native_state_restore_errors[uid] = str(exc)
+        else:
+            self._native_state_restore_errors.pop(uid, None)
+            self._native_state_restores.add(restore_key)
+        return self._native_document_states.current_revision(uid)
+
+    def _persist_active_native_state(self) -> str | None:
+        uid = str(self._active_document_uid() or "")
+        if not uid or self.modeling_engine() != "native":
+            return None
+        scope = self._project_store.project_scope()
+        if not bool(scope.get("document_saved")):
+            return None
+        restore_error = self._native_state_restore_errors.get(uid)
+        if restore_error:
+            raise RuntimeError(
+                f"Refusing to overwrite unreadable Native state: {restore_error}"
+            )
+        path = write_native_state(
+            native_state_path(scope),
+            self._native_document_states.export_document(uid),
+        )
+        self._native_state_restores.add((uid, str(path)))
+        return str(path)
+
+    def note_native_object_created(self, obj: Any) -> int | None:
+        uid = self._object_document_uid(obj)
+        return self._native_document_states.note_structural_change(uid) if uid else None
+
+    def note_native_object_deleted(self, obj: Any) -> int | None:
+        uid = self._object_document_uid(obj)
+        return self._native_document_states.note_structural_change(uid) if uid else None
+
+    def note_native_object_property_change(
+        self,
+        obj: Any,
+        property_name: str,
+    ) -> int | None:
+        uid = self._object_document_uid(obj)
+        if not uid:
+            return None
+        return self._native_document_states.note_object_property_change(
+            uid,
+            property_name,
+        )
+
+    def native_document_state(self) -> dict[str, Any]:
+        uid = str(self._active_document_uid() or "")
+        if not uid:
+            return {
+                "document_uid": "",
+                "structural_revision": 0,
+                "recent_receipts": [],
+            }
+        result = self._native_document_states.snapshot(uid)
+        restore_error = self._native_state_restore_errors.get(uid)
+        if restore_error:
+            result["restore_error"] = restore_error
+        return result
+
+    def native_active_snapshot(self) -> dict[str, Any]:
+        """Build only the live state for the human-selected Native surface."""
+
+        if self.modeling_engine() != "native":
+            raise RuntimeError("The active document is not under Native authority.")
+        document = self._active_document()
+        if document is None:
+            raise RuntimeError("No active document is available.")
+        from VibeCADNativeSnapshot import build_active_snapshot
+        from VibeCADRibbonSurface import read_active_ribbon_surface
+
+        surface = read_active_ribbon_surface()
+        return build_active_snapshot(
+            document,
+            surface.surface_id,
+            self.native_document_state(),
+        )
+
+    def close_native_document_state(self, document_uid: str) -> None:
+        uid = str(document_uid or "").strip()
+        self._native_background_jobs.cancel_document(uid)
+        self._native_document_states.close_document(uid)
+        self._native_state_restore_errors.pop(uid, None)
+        self._native_state_restores = {
+            item for item in self._native_state_restores if item[0] != uid
+        }
+
+    def native_background_manager(self) -> NativeBackgroundManager:
+        """Return the host-owned manager; this is never a provider tool."""
+
+        return self._native_background_jobs
+
+    def native_document_state_store(self) -> NativeDocumentStateStore:
+        """Return host-owned Native state; this is never a provider tool."""
+
+        return self._native_document_states
 
     def provider_debug_config(self) -> dict[str, Any]:
         settings = load_debug_settings()
@@ -917,23 +1104,6 @@ class VibeCADService:
             "file_path": file_path,
             "message": "",
         }
-
-    @staticmethod
-    def _object_matches_pack(obj: Any, pack: Any) -> bool:
-        if VibeCADService._is_private_scripted_object(obj):
-            return False
-        if (
-            getattr(pack, "workbench", "")
-            in {"PartWorkbench", "PartDesignWorkbench"}
-            and str(getattr(obj, "VibeCADScriptedRole", "") or "")
-            == "publication"
-        ):
-            return True
-        object_types = getattr(pack, "object_types", ()) if pack else ()
-        if not object_types:
-            return False
-        type_id = getattr(obj, "TypeId", "")
-        return any(type_id.startswith(prefix) for prefix in object_types)
 
     @staticmethod
     def _short_value(value: Any) -> Any:
@@ -1838,120 +2008,6 @@ class VibeCADService:
         self._reference_cache_key = str(path)
         self._reference_cache_document_uid = self._active_document_uid()
         return {"path": str(path), "count": len(saved), "reference_images": saved}
-
-    def workbench_summary(self) -> dict[str, Any]:
-        try:
-            import FreeCADGui as Gui
-
-            workbenches = sorted(Gui.listWorkbenches().keys())
-        except Exception:
-            workbenches = []
-        return {
-            "active": self.active_workbench_name(),
-            "workbenches": workbenches,
-        }
-
-    def command_summary(self) -> dict[str, Any]:
-        try:
-            import FreeCADGui as Gui
-
-            commands = sorted(Gui.listCommands())
-        except Exception:
-            commands = []
-        return {
-            "active_workbench": self.active_workbench_name(),
-            "command_count": len(commands),
-            "command_limit": min(MAX_CONTEXT_COMMANDS, len(commands)),
-            "commands_truncated": len(commands) > MAX_CONTEXT_COMMANDS,
-            "commands_omitted": max(0, len(commands) - MAX_CONTEXT_COMMANDS),
-            "commands": commands[:MAX_CONTEXT_COMMANDS],
-        }
-
-    def workbench_command_summary(self, workbench: str | None = None) -> dict[str, Any]:
-        active = workbench or self.active_workbench_name()
-        pack = get_tool_pack(active)
-        try:
-            import FreeCADGui as Gui
-
-            all_commands = sorted(Gui.listCommands())
-        except Exception:
-            all_commands = []
-
-        prefixes = pack.command_prefixes if pack else ()
-        if prefixes:
-            commands = [
-                name
-                for name in all_commands
-                if any(name.startswith(prefix) for prefix in prefixes)
-            ]
-        else:
-            commands = []
-        return {
-            "active_workbench": active,
-            "domain": pack.domain if pack else None,
-            "command_prefixes": list(prefixes),
-            "command_count": len(commands),
-            "command_limit": min(MAX_CONTEXT_COMMANDS, len(commands)),
-            "commands_truncated": len(commands) > MAX_CONTEXT_COMMANDS,
-            "commands_omitted": max(0, len(commands) - MAX_CONTEXT_COMMANDS),
-            "commands": commands[:MAX_CONTEXT_COMMANDS],
-        }
-
-    def workbench_tool_pack_summary(
-        self, workbench: str | None = None
-    ) -> dict[str, Any]:
-        active = workbench or self.active_workbench_name()
-        pack = get_tool_pack(active)
-        summary = pack.summary() if pack else None
-        return {
-            "active_workbench": active,
-            "tool_pack": summary,
-        }
-
-    def all_workbench_tool_packs(self) -> dict[str, Any]:
-        return {"tool_packs": list_tool_packs()}
-
-    def workbench_object_templates(
-        self, workbench: str | None = None
-    ) -> dict[str, Any]:
-        active = workbench or self.active_workbench_name()
-        pack = get_tool_pack(active)
-        return {
-            "active_workbench": active,
-            "templates": list(pack.object_templates) if pack else [],
-        }
-
-    def workbench_object_summary(self, workbench: str | None = None) -> dict[str, Any]:
-        active = workbench or self.active_workbench_name()
-        pack = get_tool_pack(active)
-        doc = self._active_document()
-        if doc is None:
-            return {
-                "active_workbench": active,
-                "document": None,
-                "object_count": 0,
-                "objects": [],
-            }
-        objects = []
-        if pack:
-            objects = [
-                self._object_summary(obj)
-                for obj in doc.Objects
-                if self._object_matches_pack(obj, pack)
-            ]
-        visible_objects, bounds = self._bounded_items(
-            objects,
-            MAX_CONTEXT_WORKBENCH_OBJECTS,
-        )
-        return {
-            "active_workbench": active,
-            "document": doc.Name,
-            "object_count": len(objects),
-            "object_limit": bounds["limit"],
-            "objects_truncated": bounds["truncated"],
-            "objects_omitted": bounds["omitted"],
-            "objects": visible_objects,
-        }
 
     def object_property_summary(self, object_name: str) -> dict[str, Any]:
         doc = self._active_document()
@@ -4661,12 +4717,12 @@ class VibeCADService:
         """Return bounded Part identity without broad owner-thread topology work."""
 
         objects = self._part_objects()
-        visible = objects[:MAX_CONTEXT_WORKBENCH_OBJECTS]
+        visible = objects[:MAX_PROVIDER_PART_OBJECTS]
         doc = self._active_document()
         return {
             "document": doc.Name if doc else None,
             "object_count": len(objects),
-            "object_limit": MAX_CONTEXT_WORKBENCH_OBJECTS,
+            "object_limit": MAX_PROVIDER_PART_OBJECTS,
             "objects_truncated": len(objects) > len(visible),
             "objects_omitted": max(0, len(objects) - len(visible)),
             "objects": [self._object_summary(obj) for obj in visible],
@@ -4933,11 +4989,6 @@ class VibeCADService:
             "task_panel": task_panel,
             "view_screenshot": self.view_screenshot_summary(),
             "reference_images": self.reference_images_summary(),
-            "workbenches": self.workbench_summary(),
-            "workbench_tool_pack": self.workbench_tool_pack_summary(),
-            "workbench_commands": self.workbench_command_summary(),
-            "workbench_object_templates": self.workbench_object_templates(),
-            "workbench_objects": self.workbench_object_summary(),
             "part": self.part_summary(),
             "mesh": self.mesh_summary(),
             "points": self.points_summary(),
@@ -4993,7 +5044,6 @@ class VibeCADService:
 
     def _register_core_tools(self) -> None:
         service_tools.register_tools(self._registry, self)
-        sketcher_tools.register_tools(self._registry, self)
         vibescript_domains.register_domain_tools(self._registry, self)
 
 

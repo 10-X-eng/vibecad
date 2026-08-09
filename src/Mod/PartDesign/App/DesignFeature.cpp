@@ -110,6 +110,38 @@ App::DocumentObjectExecReturn* outputError(const std::string& message)
     return new App::DocumentObjectExecReturn(message);
 }
 
+Part::TopoShape exactSingleInputContextShape(
+    const App::DocumentObject& controller,
+    const DesignOperationProperties& operation,
+    std::string_view termination
+)
+{
+    const auto& inputs = operation.InputStates.getValues();
+    const auto& frames = operation.InputFrames.getValues();
+    if (inputs.size() != 1 || frames.size() != 1) {
+        throw Base::ValueError(
+            std::string(termination)
+            + " requires exactly one explicit target Body because its extent depends on that "
+              "Body's prior state"
+        );
+    }
+    auto* input = freecad_cast<Part::Feature*>(inputs.front());
+    if (!input || input == &controller || input->getDocument() != controller.getDocument()) {
+        throw Base::ValueError(
+            std::string(termination) + " lost its exact prior Body state"
+        );
+    }
+    Part::TopoShape shape = shapeInBodyStateCoordinates(*input);
+    if (shape.isNull() || !shape.hasSubShape(TopAbs_SOLID)) {
+        throw Base::ValueError(
+            std::string(termination) + " requires a solid prior Body state"
+        );
+    }
+    return transformedShape(shape, frames.front());
+}
+
+Part::TopoShape featureToolInDesignCoordinates(const PartDesign::FeatureAddSub& feature);
+
 void bindDesignIdentity(App::DocumentObject& object, App::PropertyUUID& designId)
 {
     auto* document = object.getDocument();
@@ -642,7 +674,9 @@ App::DocumentObjectExecReturn* computeOutputShapes(
     const auto& previousInputIndices = operation.OutputPreviousInputIndices.getValues();
     const auto& outputComponentIds = operation.OutputComponentIds.getValues();
     const std::string_view resultOperation = operation.ResultOperation.getValueAsString();
-    Part::TopoShape tool = shapeInDesignCoordinates(toolFeature);
+    auto* additive = freecad_cast<PartDesign::FeatureAddSub*>(&toolFeature);
+    Part::TopoShape tool = additive ? featureToolInDesignCoordinates(*additive)
+                                    : shapeInDesignCoordinates(toolFeature);
 
     // The operation is a History/controller object, never a second rendered
     // result. Body-state resources publish its outputs in their local frames.
@@ -1884,14 +1918,15 @@ App::DocumentObjectExecReturn* computeDesignDressupOutputs(
     return App::DocumentObject::StdReturn;
 }
 
-void touchDesignResults(
+void touchDesignResultConsumers(
     App::DocumentObject& operation,
-    const App::Property* property,
-    const Part::PropertyTopoShapeList& outputShapes
+    bool allowDuringRestore = false
 )
 {
     auto* document = operation.getDocument();
-    if (!document || document->testStatus(App::Document::Restoring) || property == &outputShapes) {
+    if (!document
+        || (!allowDuringRestore
+            && document->testStatus(App::Document::Restoring))) {
         return;
     }
 
@@ -1909,6 +1944,18 @@ void touchDesignResults(
             body->touch();
         }
     }
+}
+
+void touchDesignResults(
+    App::DocumentObject& operation,
+    const App::Property* property,
+    const Part::PropertyTopoShapeList& outputShapes
+)
+{
+    if (property == &outputShapes) {
+        return;
+    }
+    touchDesignResultConsumers(operation);
 }
 
 }  // namespace
@@ -2546,6 +2593,19 @@ App::DocumentObjectExecReturn* DesignExtrude::recompute()
     return computeSuppressedOutputs(*this, *this);
 }
 
+TopoShape DesignExtrude::getExtrusionContextBaseShape() const
+{
+    const auto needsContext = [](const App::PropertyEnumeration& type) {
+        const std::string_view value = type.getValueAsString();
+        return value == "UpToFirst" || value == "UpToLast";
+    };
+    const bool secondSide = std::string_view(SideType.getValueAsString()) == "Two sides";
+    if (!needsContext(Type) && !(secondSide && needsContext(Type2))) {
+        return FeatureExtrude::getExtrusionContextBaseShape();
+    }
+    return exactSingleInputContextShape(*this, *this, "Up to first/last extrusion");
+}
+
 App::DocumentObjectExecReturn* DesignExtrude::execute()
 {
     App::DocumentObjectExecReturn* result = Pad::execute();
@@ -2592,6 +2652,15 @@ App::DocumentObjectExecReturn* DesignRevolve::recompute()
 
     Shape.setValue(Part::TopoShape());
     return computeSuppressedOutputs(*this, *this);
+}
+
+TopoShape DesignRevolve::getRevolutionContextBaseShape() const
+{
+    const std::string_view type = Type.getValueAsString();
+    if (type != "UpToFirst" && type != "UpToLast" && type != "UpToFace") {
+        return Revolved::getRevolutionContextBaseShape();
+    }
+    return exactSingleInputContextShape(*this, *this, "Target-dependent revolution");
 }
 
 App::DocumentObjectExecReturn* DesignRevolve::execute()
@@ -4603,7 +4672,15 @@ short DesignGeneratedOperation::mustExecute() const
 void DesignGeneratedOperation::onChanged(const App::Property* property)
 {
     Feature::onChanged(property);
-    touchDesignResults(*this, property, OutputShapes);
+    if (property == &OutputShapes) {
+        // A linked FeaturePython generator can execute during restore or a
+        // dependency recompute without changing the Generator link itself.
+        // Its newly published shape must invalidate the retained Body state.
+        touchDesignResultConsumers(*this, true);
+    }
+    else {
+        touchDesignResults(*this, property, OutputShapes);
+    }
 }
 
 App::DocumentObjectExecReturn* DesignGeneratedOperation::recompute()
@@ -4653,7 +4730,16 @@ App::DocumentObjectExecReturn* DesignGeneratedOperation::execute()
         // Keep the two ports atomic when a generated feature changes its frame;
         // validateDesign() deliberately rejects a partially updated operation.
         TargetFrames.setValues({generatedFrame});
-        generated = generator->Shape.getShape();
+        // A generator may publish a one-solid compound whose child solid has
+        // its own TopLoc_Location (modeled Fasteners do this after recompute).
+        // Bake the complete generator shape into Design coordinates and then
+        // express it in the retained Body frame. Resetting the extracted
+        // solid's placement would discard that child location and make the
+        // result change across recompute/undo/abort cycles.
+        generated = transformedShape(
+            shapeInDesignCoordinates(*generator),
+            generatedFrame.inverse()
+        );
     }
     else {
         // A promoted legacy generator remains at Design scope in its exact
@@ -4669,12 +4755,27 @@ App::DocumentObjectExecReturn* DesignGeneratedOperation::execute()
         || generated.countSubShapes(TopAbs_SOLID) != 1) {
         return outputError("A native Design generator must produce exactly one solid");
     }
-    // Part::Feature keeps Shape's TopLoc_Location synchronized with its
-    // Placement. New Body takes the generator's global frame; Modify has
-    // already transformed the generated solid into the retained Body frame.
-    generated = generated.getSubTopoShape(TopAbs_SOLID, 1);
-    if (createsBody) {
+    // Both paths above already express the result in the retained Body frame.
+    // The named-subshape cache intentionally stores topology independently of
+    // compound ancestry, so use OCCT's explorer for the solid's cumulative
+    // parent/child location and retain the mapped element table separately.
+    Part::TopoShape mappedSolid = generated.getSubTopoShape(TopAbs_SOLID, 1);
+    TopExp_Explorer solidExplorer(generated.getShape(), TopAbs_SOLID);
+    if (!solidExplorer.More()) {
+        return outputError("A native Design generator lost its one solid result");
+    }
+    mappedSolid.setShape(solidExplorer.Current(), false);
+    generated = mappedSolid;
+    if (generated.getPlacement() != Base::Placement()) {
+        // Part::Feature forces an assigned Shape's top-level transform to its
+        // Placement while recomputing. Bake the extracted child's rigid
+        // location into an unlocated copy so that synchronization cannot erase
+        // it. TopoShape::bakeInTransform() uses a general geometric transform;
+        // that needlessly converts curved BREP and can change its mass
+        // properties even for a pure placement.
+        const Base::Placement childPlacement = generated.getPlacement();
         generated.setPlacement(Base::Placement());
+        generated.transformShape(childPlacement.toMatrix(), true, true);
     }
 
     boost::dynamic_bitset<> presence(1);
@@ -4776,6 +4877,27 @@ short DesignBodyState::mustExecute() const
 {
     if (Operation.isTouched() || OutputIndex.isTouched() || PreviousState.isTouched()) {
         return 1;
+    }
+    const auto* operation = dynamic_cast<const DesignOperation*>(Operation.getValue());
+    const int index = OutputIndex.getValue();
+    if (operation && index >= 0) {
+        const auto& outputs = operation->designOutputShapes().getValues();
+        const auto& presence = operation->designOutputPresence().getValues();
+        const auto outputIndex = static_cast<std::size_t>(index);
+        if (outputIndex < outputs.size() && outputIndex < presence.size()) {
+            const bool expectedPresent = presence[outputIndex];
+            const auto& expectedShape = outputs[outputIndex];
+            const auto& currentShape = Shape.getShape();
+            if (Present.getValue() != expectedPresent
+                || (expectedPresent
+                    && (currentShape.isNull()
+                        || !currentShape.getShape().IsPartner(
+                            expectedShape.getShape()
+                        )))
+                || (!expectedPresent && !currentShape.isNull())) {
+                return 1;
+            }
+        }
     }
     return Part::Feature::mustExecute();
 }

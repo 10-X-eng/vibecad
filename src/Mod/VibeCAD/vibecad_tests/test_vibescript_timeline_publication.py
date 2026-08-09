@@ -756,7 +756,7 @@ def test_vibescript_deletion_consumes_native_resource_and_reveal_plan(
 
     monkeypatch.setitem(
         sys.modules,
-        "FreeCADGui",
+        "FreeCAD",
         SimpleNamespace(timelineOperationDeletionPlan=deletion_plan),
     )
     remove_object = document.removeObject
@@ -826,7 +826,7 @@ def test_vibescript_deletion_blocks_malformed_native_history_before_mutation(
     document = _DeletionDocument([owner])
     monkeypatch.setitem(
         sys.modules,
-        "FreeCADGui",
+        "FreeCAD",
         SimpleNamespace(
             timelineOperationDeletionPlan=lambda _obj: {
                 "applicable": True,
@@ -880,7 +880,7 @@ def test_vibescript_deletion_refuses_resource_without_its_semantic_owner(
 
     monkeypatch.setitem(
         sys.modules,
-        "FreeCADGui",
+        "FreeCAD",
         SimpleNamespace(timelineOperationDeletionPlan=deletion_plan),
     )
 
@@ -926,7 +926,7 @@ def test_vibescript_deletion_accepts_resource_with_its_semantic_owner(
 
     monkeypatch.setitem(
         sys.modules,
-        "FreeCADGui",
+        "FreeCAD",
         SimpleNamespace(timelineOperationDeletionPlan=deletion_plan),
     )
     remove_object = document.removeObject

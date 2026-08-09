@@ -1833,9 +1833,19 @@ DesignOperationEdit DesignModel::beginOperationEdit(App::DocumentObject& operati
     return edit;
 }
 
-std::vector<Body*> DesignModel::finalizeOperation(DesignOperationEdit& edit)
+std::vector<Body*> DesignModel::finalizeOperation(
+    DesignOperationEdit& edit
+)
 {
     return finalizeOperationImpl(edit, false);
+}
+
+std::vector<Body*> DesignModel::finalizeOperation(
+    DesignOperationEdit& edit,
+    bool affectedBodiesOnly
+)
+{
+    return finalizeOperationImpl(edit, affectedBodiesOnly);
 }
 
 std::vector<Body*> DesignModel::finalizeScriptOperation(DesignOperationEdit& edit)

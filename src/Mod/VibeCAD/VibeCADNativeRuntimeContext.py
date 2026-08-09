@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+"""Exact document and guard context shared by one Native assistant turn."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+from VibeCADNativeState import NativeDocumentStateStore
+from VibeCADNativeTargets import document_uid
+from VibeCADNativeUndo import NativeAssistantUndoLedger
+
+
+class NativeRuntimeContextError(RuntimeError):
+    def failure(self) -> dict[str, str]:
+        return {
+            "error_code": "NATIVE_RUNTIME_GUARD_FAILED",
+            "message": str(self),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimeContext:
+    """Host-owned authority needed by document-bound capability runtimes."""
+
+    service: Any = field(repr=False, compare=False)
+    document: Any = field(repr=False, compare=False)
+    state: NativeDocumentStateStore = field(repr=False, compare=False)
+    undo_ledger: NativeAssistantUndoLedger = field(repr=False, compare=False)
+    reauthorize_turn: Callable[[], Any] = field(repr=False, compare=False)
+    active_document: Callable[[], Any] = field(repr=False, compare=False)
+    active_surface_id: Callable[[], str] = field(repr=False, compare=False)
+    edit_or_task_active: Callable[[], bool] = field(repr=False, compare=False)
+    document_uid: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, NativeDocumentStateStore):
+            raise TypeError("state must be a NativeDocumentStateStore")
+        if not isinstance(self.undo_ledger, NativeAssistantUndoLedger):
+            raise TypeError("undo_ledger must be a NativeAssistantUndoLedger")
+        callbacks = (
+            self.reauthorize_turn,
+            self.active_document,
+            self.active_surface_id,
+            self.edit_or_task_active,
+        )
+        if not all(callable(value) for value in callbacks):
+            raise TypeError("Native runtime guards must be callable")
+        object.__setattr__(self, "document_uid", document_uid(self.document))
+
+    def guard(self) -> None:
+        self.reauthorize_turn()
+        active = self.active_document()
+        if (
+            active is not self.document
+            or document_uid(self.document) != self.document_uid
+        ):
+            raise NativeRuntimeContextError(
+                "The exact Native document is no longer active."
+            )

@@ -694,7 +694,7 @@ void GeomPoint::Restore(Base::XMLReader& reader)
 
 PyObject* GeomPoint::getPyObject()
 {
-    return new PointPy(new GeomPoint(getPoint()));
+    return new PointPy(static_cast<GeomPoint*>(this->clone()));
 }
 
 bool GeomPoint::isSame(const Geometry& other, double tol, double) const

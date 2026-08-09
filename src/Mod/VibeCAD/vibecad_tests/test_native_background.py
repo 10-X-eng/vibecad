@@ -1,0 +1,262 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+from __future__ import annotations
+
+import threading
+import time
+
+import pytest
+
+import VibeCADNativeBackground as background_module
+from VibeCADNativeBackground import (
+    NativeBackgroundError,
+    NativeBackgroundManager,
+)
+
+
+def _callbacks(*, prepare, validate=lambda: None, commit=lambda value: value):
+    return {
+        "document_uid": "document-a",
+        "capability_name": "mesh.generate",
+        "prepare": prepare,
+        "validate_before_commit": validate,
+        "commit": commit,
+        "dispatch_to_document_thread": lambda callback: callback(),
+    }
+
+
+def _wait_phase(manager, job_id: str, phase: str, timeout: float = 2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        snapshot = manager.snapshot(job_id)
+        if snapshot.phase == phase or snapshot.terminal:
+            return snapshot
+        time.sleep(0.005)
+    raise AssertionError(f"job did not reach {phase}")
+
+
+def test_submit_returns_while_detached_preparation_is_running() -> None:
+    manager = NativeBackgroundManager()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def prepare(cancelled, progress):
+        entered.set()
+        progress(20, "Meshing detached geometry")
+        while not release.wait(0.01):
+            if cancelled():
+                return {"cancelled": True}
+        return {"mesh": "ready"}
+
+    submitted = manager.submit(**_callbacks(prepare=prepare))
+
+    assert entered.wait(1.0)
+    assert manager.snapshot(submitted.job_id).phase == "preparing"
+    release.set()
+    completed = manager.wait(submitted.job_id, 2.0)
+    assert completed.phase == "completed"
+    assert completed.result == {"mesh": "ready"}
+
+
+def test_cooperative_cancel_never_dispatches_a_commit() -> None:
+    manager = NativeBackgroundManager()
+    entered = threading.Event()
+    commits = []
+
+    def prepare(cancelled, progress):
+        entered.set()
+        progress(10, "Preparing")
+        while not cancelled():
+            time.sleep(0.005)
+        return {"must_not_commit": True}
+
+    submitted = manager.submit(
+        **_callbacks(prepare=prepare, commit=lambda value: commits.append(value))
+    )
+    assert entered.wait(1.0)
+    assert manager.cancel(submitted.job_id) is True
+
+    cancelled = manager.wait(submitted.job_id, 2.0)
+    assert cancelled.phase == "cancelled"
+    assert cancelled.error["error_code"] == "NATIVE_BACKGROUND_CANCELLED"
+    assert commits == []
+
+
+def test_cancel_while_waiting_for_document_thread_skips_commit() -> None:
+    manager = NativeBackgroundManager()
+    dispatcher_entered = threading.Event()
+    allow_dispatch = threading.Event()
+    commits = []
+
+    def dispatch(callback):
+        dispatcher_entered.set()
+        assert allow_dispatch.wait(1.0)
+        return callback()
+
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="analyze.solve",
+        prepare=lambda _cancelled, _progress: {"solution": "ready"},
+        validate_before_commit=lambda: None,
+        commit=lambda value: commits.append(value),
+        dispatch_to_document_thread=dispatch,
+    )
+    assert dispatcher_entered.wait(1.0)
+    assert manager.cancel(submitted.job_id) is True
+    allow_dispatch.set()
+
+    cancelled = manager.wait(submitted.job_id, 2.0)
+    assert cancelled.phase == "cancelled"
+    assert commits == []
+
+
+def test_surface_or_document_validation_failure_prevents_commit() -> None:
+    class SurfaceChanged(RuntimeError):
+        def failure(self):
+            return {
+                "error_code": "NATIVE_SURFACE_CHANGED",
+                "message": "Resume from the current ribbon.",
+                "current_surface": "mesh",
+                "repair": {"resume_next_turn": True},
+                "noisy_internal_field": "must not escape",
+            }
+
+    manager = NativeBackgroundManager()
+    commits = []
+
+    def validate():
+        raise SurfaceChanged()
+
+    submitted = manager.submit(
+        **_callbacks(
+            prepare=lambda _cancelled, _progress: {"mesh": "ready"},
+            validate=validate,
+            commit=lambda value: commits.append(value),
+        )
+    )
+    failed = manager.wait(submitted.job_id, 2.0)
+
+    assert failed.phase == "failed"
+    assert failed.error == {
+        "error_code": "NATIVE_SURFACE_CHANGED",
+        "message": "Resume from the current ribbon.",
+        "current_surface": "mesh",
+        "repair": {"resume_next_turn": True},
+    }
+    assert commits == []
+
+
+def test_frozen_turn_change_during_preparation_prevents_commit(monkeypatch) -> None:
+    import VibeCADNativeActionManifest as action_manifest_module
+    from VibeCADNativeSurface import SURFACE_CHANGED
+    from VibeCADNativeTurn import freeze_native_turn, require_frozen_native_turn
+    from vibecad_tests.test_native_capability_registry import (
+        _focused_inventory_by_surface,
+        _register_complete,
+    )
+    from vibecad_tests.test_ribbon_surface import _Controller, _manifest
+
+    controller = _Controller(_manifest(), revision=6)
+    monkeypatch.setattr(
+        action_manifest_module,
+        "KNOWN_ACTIONS_BY_SURFACE",
+        _focused_inventory_by_surface(),
+    )
+    registry = _register_complete()
+    frozen = freeze_native_turn(controller, registry)
+    release = threading.Event()
+    commits = []
+
+    def prepare(_cancelled, _progress):
+        release.wait(1.0)
+        return {"mesh": "ready"}
+
+    manager = NativeBackgroundManager()
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="mesh.generate",
+        prepare=prepare,
+        validate_before_commit=lambda: require_frozen_native_turn(
+            frozen,
+            controller,
+            registry,
+        ),
+        commit=lambda value: commits.append(value),
+        dispatch_to_document_thread=lambda callback: callback(),
+    )
+    controller.values["VibeCADActiveSurfaceRevision"] = 7
+    release.set()
+    failed = manager.wait(submitted.job_id, 2.0)
+
+    assert failed.phase == "failed"
+    assert failed.error["error_code"] == SURFACE_CHANGED
+    assert commits == []
+
+
+def test_close_document_cancels_its_active_preparation() -> None:
+    manager = NativeBackgroundManager()
+    entered = threading.Event()
+
+    def prepare(cancelled, _progress):
+        entered.set()
+        while not cancelled():
+            time.sleep(0.005)
+        return {}
+
+    submitted = manager.submit(**_callbacks(prepare=prepare))
+    assert entered.wait(1.0)
+
+    assert manager.cancel_document("document-a") is True
+    assert manager.wait(submitted.job_id, 2.0).phase == "cancelled"
+
+
+def test_only_one_background_operation_owns_a_document() -> None:
+    manager = NativeBackgroundManager()
+    release = threading.Event()
+
+    def prepare(_cancelled, _progress):
+        release.wait(1.0)
+        return {"ready": True}
+
+    submitted = manager.submit(**_callbacks(prepare=prepare))
+
+    with pytest.raises(NativeBackgroundError, match="already has"):
+        manager.submit(**_callbacks(prepare=lambda _cancelled, _progress: {}))
+
+    release.set()
+    manager.wait(submitted.job_id, 2.0)
+
+
+def test_result_and_progress_contracts_are_bounded(monkeypatch) -> None:
+    monkeypatch.setattr(background_module, "MAX_BACKGROUND_RESULT_BYTES", 20)
+    manager = NativeBackgroundManager()
+    def prepare(_cancelled, progress):
+        progress(30, "x" * 500)
+        return {"ready": True}
+
+    submitted = manager.submit(
+        **_callbacks(
+            prepare=prepare,
+            commit=lambda _value: {"payload": "too large for bound"},
+        )
+    )
+    failed = manager.wait(submitted.job_id, 2.0)
+
+    assert failed.phase == "failed"
+    assert failed.error["error_code"] == "NATIVE_BACKGROUND_FAILED"
+    assert len(failed.progress_message) <= 160
+
+
+def test_progress_cannot_move_backwards() -> None:
+    manager = NativeBackgroundManager()
+
+    def prepare(_cancelled, progress):
+        progress(40, "First")
+        progress(20, "Backwards")
+        return {}
+
+    submitted = manager.submit(**_callbacks(prepare=prepare))
+    failed = manager.wait(submitted.job_id, 2.0)
+
+    assert failed.phase == "failed"
+    assert failed.error["error_code"] == "NATIVE_BACKGROUND_FAILED"

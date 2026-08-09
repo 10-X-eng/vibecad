@@ -5,13 +5,12 @@
 Four invariants are enforced:
 
 1. No orphan provider tools — every provider-visible tool spec is surfaced through
-   ``CORE_PROVIDER_TOOLS``, at least one workbench pack, one explicitly enumerated
-   compatibility surface, a workbench-owned read surface, or the VibeScript
-   session surface. A tool
+   ``CORE_PROVIDER_TOOLS``, a workbench-owned VibeScript read surface, or the
+   VibeScript session surface. A tool
    registered without any surface fails this test, so stale or
    experimental tools cannot silently become callable by default.
-2. No dangling names — every name in ``CORE_PROVIDER_TOOLS`` and every pack
-   ``tool_names`` entry resolves to a registered, validating :class:`ToolSpec`.
+2. No dangling names — every surfaced name resolves to a registered, validating
+   :class:`ToolSpec`.
 3. Writes are transactional — every non-READ tool either contains a FreeCAD
    transaction marker in its own module or in a same-package module it
    imports, or appears in a justified allowlist.
@@ -22,7 +21,6 @@ Four invariants are enforced:
 
 from __future__ import annotations
 
-import ast
 from importlib import import_module
 from pathlib import Path
 import re
@@ -33,21 +31,13 @@ import pytest
 from VibeCADTools import SafetyLevel, ToolSpec, VibeCADTool
 from tool_impl.service import TOOL_MODULE_NAMES
 
-TOOL_PACKAGES = ("tool_impl.service", "tool_impl.sketcher")
+TOOL_PACKAGES = ("tool_impl.service",)
 
 TOOL_IMPL_DIR = Path(__file__).resolve().parent.parent / "tool_impl"
 
 # Write-safety tools that legitimately run without a
 # FreeCAD document transaction. Each entry needs a reason.
-TRANSACTION_EXEMPT = {
-    # Enters native sketch edit mode; changes UI state, not document data.
-    "partdesign.edit_sketch",
-    # Invokes FeatureTimeline's exact validated transaction; nesting a generic
-    # Python transaction around it would make native history navigation fail.
-    "partdesign.set_tip",
-    # Accepts native sketch edit mode; resetEdit owns the Sketcher transaction commit.
-    "sketcher.close_sketch",
-}
+TRANSACTION_EXEMPT: frozenset[str] = frozenset()
 
 # Runner-handled engine tools carry only a spec in tool_impl; their document
 # mutations run inside the engine module, so search it for markers too.
@@ -100,13 +90,6 @@ def specs() -> dict[str, tuple[ToolSpec, Path, str]]:
 
 
 @pytest.fixture(scope="module")
-def packs() -> list[dict[str, Any]]:
-    import VibeCADWorkbenchTools as wbt
-
-    return list(wbt.list_tool_packs())
-
-
-@pytest.fixture(scope="module")
 def core_tools() -> frozenset[str]:
     import VibeCADSession as session
 
@@ -117,10 +100,7 @@ def core_tools() -> frozenset[str]:
 def engine_tools() -> frozenset[str]:
     import VibeCADSession as session
     import VibeCADVibeScriptDomains as domains
-    from VibeCADModelingSurface import (
-        PROVIDER_READ_TOOL_OWNERS,
-        provider_read_tool_is_visible,
-    )
+    from VibeCADModelingSurface import PROVIDER_READ_TOOL_OWNERS
 
     return frozenset(
         session.VIBESCRIPT_PROVIDER_TOOLS
@@ -133,54 +113,43 @@ def engine_tools() -> frozenset[str]:
     )
 
 
-@pytest.fixture(scope="module")
-def compatibility_tools() -> frozenset[str]:
-    import VibeCADWorkbenchTools as wbt
-
-    return frozenset(wbt.MODELING_COMPATIBILITY_TOOL_NAMES)
-
-
 def _surfaced_names(
     core_tools: frozenset[str],
-    packs: list[dict[str, Any]],
     engine_tools: frozenset[str] = frozenset(),
 ) -> set[str]:
-    surfaced = set(core_tools) | set(engine_tools)
-    for pack in packs:
-        surfaced.update(pack["tool_names"])
-    return surfaced
+    return set(core_tools) | set(engine_tools)
 
 
-def test_no_orphan_tools(
-    specs, packs, core_tools, engine_tools, compatibility_tools
-) -> None:
-    """1. Every registered tool must belong to a live or compatibility surface."""
-    recognized = _surfaced_names(core_tools, packs, engine_tools) | set(
-        compatibility_tools
-    )
+def test_no_orphan_tools(specs, core_tools, engine_tools) -> None:
+    """1. Every registered tool must belong to a live provider surface."""
+    recognized = _surfaced_names(core_tools, engine_tools)
     orphans = sorted(set(specs) - recognized)
     assert not orphans, (
-        "Tools registered but not surfaced by CORE_PROVIDER_TOOLS, any "
-        "workbench pack, compatibility contract, or engine session surface (add to one or remove "
+        "Tools registered but not surfaced by CORE_PROVIDER_TOOLS or the "
+        "VibeScript session surface (add to one or remove "
         f"the registration): {orphans}"
     )
 
 
-def test_no_dangling_names(specs, packs, core_tools, engine_tools) -> None:
+def test_no_dangling_names(specs, core_tools, engine_tools) -> None:
     """2. Every surfaced name must resolve to a registered spec."""
-    dangling = sorted(_surfaced_names(core_tools, packs, engine_tools) - set(specs))
+    dangling = sorted(_surfaced_names(core_tools, engine_tools) - set(specs))
     assert not dangling, (
-        f"Names surfaced by core/packs/engines with no registered tool spec: {dangling}"
+        f"Names surfaced by core/VibeScript with no registered tool spec: {dangling}"
     )
 
 
-def test_modeling_compatibility_tools_are_registered_but_not_advertised(
-    specs, packs, compatibility_tools
-) -> None:
-    """Legacy exact names resolve without competing with the canonical model.* surface."""
-    assert compatibility_tools <= set(specs)
-    surfaced = _surfaced_names(frozenset(), packs)
-    assert compatibility_tools.isdisjoint(surfaced)
+def test_retired_direct_native_tools_are_not_registered(specs) -> None:
+    """Only VibeScript support tools remain until the new Native registry lands."""
+    import VibeCADSession as session
+    from VibeCADModelingSurface import PROVIDER_READ_TOOL_OWNERS
+
+    registered_support = {
+        name for name in specs if not name.startswith("vibescript.")
+    }
+    assert registered_support == (
+        set(session.CORE_PROVIDER_TOOLS) | set(PROVIDER_READ_TOOL_OWNERS)
+    )
 
 
 def _module_sources_with_local_imports(module_path: Path) -> Iterator[str]:
@@ -252,44 +221,6 @@ def test_no_legacy_command_execution() -> None:
     )
 
 
-def test_intentionally_empty_packs_stay_empty(packs) -> None:
-    """TestWorkbench and NoneWorkbench must never surface tools."""
-    for pack in packs:
-        if pack["workbench"] in {"TestWorkbench", "NoneWorkbench"}:
-            assert not pack["tool_names"], (
-                f"{pack['workbench']} must stay empty; found {pack['tool_names']}"
-            )
-
-
-def test_native_tools_never_direct_the_provider_to_foreign_pack_tools(specs) -> None:
-    """Native guidance may name only tools owned by its exact pack."""
-    scripted_or_core = {"vibescript", "core", "conversation"}
-    native_namespaces = {
-        name.split(".", 1)[0]
-        for name in specs
-        if "." in name and name.split(".", 1)[0] not in scripted_or_core
-    }
-    reference = re.compile(r"\b([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\b")
-    offenders: dict[str, list[str]] = {}
-    for name, (_spec, module_path, _package_name) in specs.items():
-        owner = name.split(".", 1)[0]
-        if owner in scripted_or_core:
-            continue
-        tree = ast.parse(module_path.read_text(encoding="utf-8"))
-        foreign = sorted(
-            {
-                match.group(0)
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Constant) and isinstance(node.value, str)
-                for match in reference.finditer(node.value)
-                if match.group(1) in native_namespaces and match.group(1) != owner
-            }
-        )
-        if foreign:
-            offenders[name] = foreign
-    assert not offenders, f"Native tools reference foreign pack tools: {offenders}"
-
-
 # ---------------------------------------------------------------------------
 # VibeScript surface guardrails.
 # ---------------------------------------------------------------------------
@@ -338,9 +269,9 @@ def test_every_surfaced_vibescript_tool_is_registered(specs) -> None:
 def test_engine_surface_table_covers_every_scripted_engine() -> None:
     """The provider has exactly one VibeScript authoring surface family."""
     import VibeCADSession as session
-    from VibeCADProject import MODELING_ENGINES
 
-    assert set(session.SCRIPTED_ENGINE_PROVIDER_TOOLS) == set(MODELING_ENGINES)
+    assert set(session.SCRIPTED_ENGINE_PROVIDER_TOOLS) == {"vibescript"}
+    assert "native" not in session.SCRIPTED_ENGINE_PROVIDER_TOOLS
 
 
 def test_default_engine_is_vibescript_with_a_provider_surface() -> None:
@@ -426,19 +357,17 @@ def test_provider_schema_build_reuses_turn_context_runtime_state(
 
 
 def test_all_exact_surfaces_fit_their_model_context_budgets(specs) -> None:
-    """All 16 workbench surfaces stay bounded without dropping exact schemas."""
+    """All VibeScript surfaces stay bounded without dropping exact schemas."""
 
     import json
 
     import VibeCADProvider as provider
     import VibeCADSession as session
     from VibeCADModelingSurface import resolve_modeling_surface
-    from VibeCADWorkbenchTools import WORKBENCH_TOOL_PACKS
+    from VibeCADVibeScriptDomains import VIBESCRIPT_WORKBENCH_PACKS
 
     observed_workbenches = 0
-    for workbench in WORKBENCH_TOOL_PACKS:
-        if workbench in {"NoneWorkbench", "TestWorkbench"}:
-            continue
+    for workbench in VIBESCRIPT_WORKBENCH_PACKS:
         observed_workbenches += 1
         surface = resolve_modeling_surface(workbench, "vibescript")
         schemas = [
@@ -475,7 +404,7 @@ def test_all_exact_surfaces_fit_their_model_context_budgets(specs) -> None:
             <= provider.MAX_PROVIDER_INSTRUCTIONS_BYTES
         )
 
-    assert observed_workbenches == 16
+    assert observed_workbenches == len(VIBESCRIPT_WORKBENCH_PACKS) == 17
 
 
 @pytest.mark.parametrize(
@@ -503,13 +432,9 @@ def test_selected_vibescript_excludes_human_mutation_commands(
         PROVIDER_READ_TOOL_OWNERS,
         provider_read_tool_is_visible,
     )
-    from VibeCADWorkbenchTools import get_tool_pack
 
     service = _SurfaceService("vibescript")
     names = session._surface_tool_names(service, workbench)
-    pack = get_tool_pack(workbench)
-
-    assert pack is not None
     from VibeCADVibeScriptDomains import get_vibescript_pack
 
     domain_pack = get_vibescript_pack(workbench)
@@ -523,7 +448,6 @@ def test_selected_vibescript_excludes_human_mutation_commands(
             engine="vibescript",
         )
     }
-    assert (set(pack.tool_names) - allowed_reads).isdisjoint(names)
     assert allowed_reads <= names
     assert domain_pack.production_ready is production_ready
     if production_ready:
@@ -543,14 +467,12 @@ def test_selected_vibescript_excludes_human_mutation_commands(
 def test_removed_bim_surface_is_not_registered() -> None:
     from tool_impl.service import TOOL_MODULE_NAMES
     from VibeCADCore import VibeCADService
-    from VibeCADWorkbenchTools import get_tool_pack
     from VibeCADModelingSurface import resolve_modeling_surface
     from VibeCADVibeScriptDomains import domain_availability, get_vibescript_pack
 
     assert not hasattr(VibeCADService, "vibescript_on_bim_enabled")
     assert not hasattr(VibeCADService, "bim_summary")
     assert not any(name.startswith("bim_") for name in TOOL_MODULE_NAMES)
-    assert get_tool_pack("BIMWorkbench") is None
     assert get_vibescript_pack("BIMWorkbench") is None
     available, reason = domain_availability("BIMWorkbench")
     assert available is False
@@ -568,7 +490,6 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
     expected = (
         "assembly.play_simulation",
         "assembly.stop_simulation",
-        "component.publish_interface",
         "component_catalog.search",
         "conversation.ask_user",
         "conversation.review_design",
@@ -661,11 +582,12 @@ def test_model_authoring_contract_survives_document_and_task_transitions(specs) 
 
 
 def test_retired_surface_and_publication_shims_are_absent() -> None:
+    from importlib.util import find_spec
+
     import vibescript_cam_worker as cam_worker
     import VibeCADVibeScriptDomainPublication as publication
-    import VibeCADWorkbenchTools as native_packs
 
-    assert not hasattr(native_packs, "PARTDESIGN_REQUIRED_ADJACENT_TOOL_NAMES")
+    assert find_spec("VibeCADWorkbenchTools") is None
     assert not hasattr(publication, "_configure_material")
     assert not hasattr(cam_worker, "_path_records")
     assert "core_delete_object" not in TOOL_MODULE_NAMES
@@ -682,12 +604,18 @@ def test_non_user_workbenches_do_not_gain_vibescript() -> None:
 
 def test_every_constructed_surface_contains_at_most_one_scripted_engine() -> None:
     import VibeCADSession as session
-    from VibeCADWorkbenchTools import WORKBENCH_TOOL_PACKS
+    from VibeCADVibeScriptDomains import VIBESCRIPT_WORKBENCH_PACKS
 
     prefixes = tuple(f"{engine}." for engine in session.SCRIPTED_ENGINE_PROVIDER_TOOLS)
+    workbenches = (
+        *VIBESCRIPT_WORKBENCH_PACKS,
+        "NoneWorkbench",
+        "TestWorkbench",
+        "UnknownWorkbench",
+    )
     for engine in session.SCRIPTED_ENGINE_PROVIDER_TOOLS:
         service = _SurfaceService(engine)
-        for workbench in WORKBENCH_TOOL_PACKS:
+        for workbench in workbenches:
             names = session._surface_tool_names(service, workbench)
             surfaced_engines = {
                 prefix
@@ -703,12 +631,10 @@ def test_real_vibescript_workbench_schemas_form_valid_codex_snapshots(specs) -> 
     """Every workbench-shaped VibeScript surface survives the Codex wire format."""
     import VibeCADProvider as provider
     import VibeCADSession as session
-    from VibeCADWorkbenchTools import WORKBENCH_TOOL_PACKS
+    from VibeCADVibeScriptDomains import VIBESCRIPT_WORKBENCH_PACKS
 
     service = _SurfaceService("vibescript")
-    for workbench in WORKBENCH_TOOL_PACKS:
-        if workbench in {"NoneWorkbench", "TestWorkbench"}:
-            continue
+    for workbench in VIBESCRIPT_WORKBENCH_PACKS:
         names = session._surface_tool_names(service, workbench)
         schemas = [
             session._provider_schema_copy(
@@ -722,6 +648,17 @@ def test_real_vibescript_workbench_schemas_form_valid_codex_snapshots(specs) -> 
             {
                 "provider_tool_schemas": schemas,
                 "provider_tool_surface": snapshot,
+                "modeling_surface": {
+                    key: snapshot[key]
+                    for key in (
+                        "workbench",
+                        "engine",
+                        "domain",
+                        "surface_id",
+                        "available",
+                        "unavailable_reason",
+                    )
+                },
             }
         )
 

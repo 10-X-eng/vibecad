@@ -16,9 +16,8 @@ TOOL_SPEC = {
     "name": "spreadsheet.read_sheet",
     "description": (
         "Read every used cell of one named spreadsheet: raw content, evaluated "
-        "value, and alias. Use this before spreadsheet.set_cells to avoid "
-        "overwriting existing data, and to discover aliases for parametric "
-        "expressions."
+        "value, and alias. Use these exact cells, formulas, and aliases when "
+        "reading or editing the owning Spreadsheet VibeScript source."
     ),
     "contextual": True,
     "safety": "READ",

@@ -138,10 +138,12 @@ private:
 
             SketchObject* Obj = sketchgui->getSketchObject();
             createSymConstraints = !deleteOriginal && createSymConstraints;
-            Obj->addSymmetric(listOfGeoIds, refGeoId, refPosId, createSymConstraints);
-
-            if (deleteOriginal) {
-                deleteOriginalGeos();
+            const auto sourceMode = deleteOriginal
+                ? Sketcher::SymmetrySourceMode::Delete
+                : createSymConstraints ? Sketcher::SymmetrySourceMode::Constrain
+                                       : Sketcher::SymmetrySourceMode::Keep;
+            if (Obj->symmetryExact(listOfGeoIds, refGeoId, refPosId, sourceMode) < 0) {
+                THROWM(Base::RuntimeError, "Sketcher rejected the exact Symmetry operation");
             }
             tryAutoRecomputeIfNotSolve(Obj);
 
@@ -231,21 +233,6 @@ public:
         return {
             {tr("%1 pick axis, edge, or point", "Sketcher Symmetry: hint"), {MouseLeft}},
         };
-    }
-
-    void deleteOriginalGeos()
-    {
-        std::stringstream stream;
-        for (size_t j = 0; j < listOfGeoIds.size() - 1; j++) {
-            stream << listOfGeoIds[j] << ",";
-        }
-        stream << listOfGeoIds[listOfGeoIds.size() - 1];
-        try {
-            Gui::cmdAppObjectArgs(sketchgui->getObject(), "delGeometries([%s])", stream.str().c_str());
-        }
-        catch (const Base::Exception& e) {
-            Base::Console().error("%s\n", e.what());
-        }
     }
 
     void createShape(bool onlyeditoutline) override

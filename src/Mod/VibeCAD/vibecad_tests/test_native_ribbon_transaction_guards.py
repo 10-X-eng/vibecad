@@ -66,8 +66,10 @@ _CPP_GUARDS = {
         "PartDesign_DesignMirror": "designPatternCommandActive",
         "PartDesign_DesignLinearPattern": "designPatternCommandActive",
         "PartDesign_DesignCircularPattern": "designPatternCommandActive",
+        "PartDesign_Scale": "canStartModelingCommand",
         "PartDesign_Combine": "canStartModelingCommand",
         "PartDesign_Split": "canStartModelingCommand",
+        "PartDesign_Separate": "canStartModelingCommand",
     },
     "src/Mod/Sketcher/Gui/Command.cpp": {
         "Sketcher_NewSketch": "isSketchSetupAvailable",
@@ -169,6 +171,12 @@ _PYTHON_GUARDS = {
         "VibeCAD_AttachStandardFastener": (
             "class _AttachStandardFastenerCommand",
             "_can_start_modeling_transaction",
+        ),
+    },
+    "src/Mod/VibeCAD/VibeCADGui.py": {
+        "VibeCAD_PublishInterface": (
+            "class PublishComponentInterfaceCommand",
+            "Gui.Control.activeDialog",
         ),
     },
 }

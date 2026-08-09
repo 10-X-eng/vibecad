@@ -139,6 +139,7 @@ GeomFillSurface::GeomFillSurface()
     ADD_PROPERTY(ReversedList, (false));
     FillType.setEnums(FillTypeEnums);
     BoundaryList.setScope(App::LinkScope::Global);
+    ReversedList.setSize(0);
 }
 
 

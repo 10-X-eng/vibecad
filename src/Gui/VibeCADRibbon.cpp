@@ -46,10 +46,14 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QVariantList>
+#include <QVariantMap>
 #include <QVBoxLayout>
 #include <QWidgetAction>
 
+#include <App/Application.h>
 #include <App/DocumentObject.h>
+#include <Base/Parameter.h>
 
 #include "Action.h"
 #include "Application.h"
@@ -58,6 +62,7 @@
 #include "MainWindow.h"
 #include "ThemeManager.h"
 #include "ViewProviderDocumentObject.h"
+#include "VibeCADRibbonBuildFeatures.h"
 #include "Workbench.h"
 #include "WorkbenchManager.h"
 
@@ -68,16 +73,17 @@ struct DomainDefinition
 {
     const char* label;
     const char* workbench;
+    const char* surface;
 };
 
 constexpr std::array<DomainDefinition, 7> domains = {{
-    {"Model", "PartDesignWorkbench"},
-    {"Assemble", "AssemblyWorkbench"},
-    {"Mesh", "MeshWorkbench"},
-    {"Analyze", "FemWorkbench"},
-    {"Manufacture", "CAMWorkbench"},
-    {"Drawing", "TechDrawWorkbench"},
-    {"Parameters", "SpreadsheetWorkbench"},
+    {"Model", "PartDesignWorkbench", "model"},
+    {"Assemble", "AssemblyWorkbench", "assemble"},
+    {"Mesh", "MeshWorkbench", "mesh"},
+    {"Analyze", "FemWorkbench", "analyze"},
+    {"Manufacture", "CAMWorkbench", "manufacture"},
+    {"Drawing", "TechDrawWorkbench", "drawing"},
+    {"Parameters", "SpreadsheetWorkbench", "parameters"},
 }};
 
 struct CommandEntry
@@ -284,6 +290,152 @@ int entryActionCount(const CommandEntries& entries)
     return static_cast<int>(std::count_if(entries.begin(), entries.end(), [](const CommandEntry& entry) {
         return entry.action != nullptr;
     }));
+}
+
+QVariantMap actionManifestRecord(const QAction* action, const QString& kind)
+{
+    QVariantMap record;
+    if (!action || action->isSeparator()) {
+        return record;
+    }
+
+    const QString commandId = actionCommandId(action);
+    if (commandId.isEmpty()) {
+        return record;
+    }
+    record.insert(QStringLiteral("command_id"), commandId);
+    record.insert(QStringLiteral("kind"), kind);
+    record.insert(
+        QStringLiteral("label"),
+        action->property("VibeCADAccessibleName").toString().trimmed()
+    );
+    record.insert(
+        QStringLiteral("available"),
+        !action->property("VibeCADUnavailable").toBool()
+    );
+    return record;
+}
+
+QVariantMap entryManifestRecord(const CommandEntry& entry)
+{
+    QVariantMap record = actionManifestRecord(
+        entry.action,
+        entry.childActions.isEmpty() ? QStringLiteral("command") : QStringLiteral("composite")
+    );
+    if (record.isEmpty() || entry.childActions.isEmpty()) {
+        return record;
+    }
+
+    QVariantList children;
+    for (const QAction* child : entry.childActions) {
+        QVariantMap childRecord = actionManifestRecord(child, QStringLiteral("command"));
+        if (childRecord.isEmpty()) {
+            continue;
+        }
+        childRecord.insert(
+            QStringLiteral("parent_command_id"),
+            record.value(QStringLiteral("command_id"))
+        );
+        children.push_back(childRecord);
+    }
+    record.insert(QStringLiteral("children"), children);
+    return record;
+}
+
+QVariantMap groupManifestRecord(const QString& label, const CommandEntries& entries)
+{
+    QVariantList actions;
+    for (const CommandEntry& entry : entries) {
+        QVariantMap record = entryManifestRecord(entry);
+        if (!record.isEmpty()) {
+            actions.push_back(record);
+        }
+    }
+
+    QVariantMap group;
+    group.insert(QStringLiteral("label"), label);
+    group.insert(QStringLiteral("actions"), actions);
+    return group;
+}
+
+QVariantMap compiledFeatureFlags()
+{
+    QVariantMap result;
+    result.insert(QStringLiteral("assembly"), bool(VIBECAD_BUILD_ASSEMBLY));
+    result.insert(QStringLiteral("cam"), bool(VIBECAD_BUILD_CAM));
+    result.insert(QStringLiteral("fasteners"), bool(VIBECAD_BUILD_FASTENERS));
+    result.insert(QStringLiteral("fem"), bool(VIBECAD_BUILD_FEM));
+    result.insert(QStringLiteral("fem_netgen"), bool(VIBECAD_BUILD_FEM_NETGEN));
+    result.insert(QStringLiteral("fem_vtk"), bool(VIBECAD_BUILD_FEM_VTK));
+    result.insert(
+        QStringLiteral("fem_vtk_python"),
+        bool(VIBECAD_BUILD_FEM_VTK_PYTHON)
+    );
+    result.insert(QStringLiteral("flat_mesh"), bool(VIBECAD_BUILD_FLAT_MESH));
+    result.insert(QStringLiteral("inspection"), bool(VIBECAD_BUILD_INSPECTION));
+    result.insert(QStringLiteral("measure"), bool(VIBECAD_BUILD_MEASURE));
+    result.insert(QStringLiteral("mesh"), bool(VIBECAD_BUILD_MESH));
+    result.insert(QStringLiteral("mesh_part"), bool(VIBECAD_BUILD_MESH_PART));
+    result.insert(QStringLiteral("part"), bool(VIBECAD_BUILD_PART));
+    result.insert(QStringLiteral("part_design"), bool(VIBECAD_BUILD_PART_DESIGN));
+    result.insert(QStringLiteral("points"), bool(VIBECAD_BUILD_POINTS));
+    result.insert(
+        QStringLiteral("reverse_engineering"),
+        bool(VIBECAD_BUILD_REVERSEENGINEERING)
+    );
+    result.insert(QStringLiteral("robot"), bool(VIBECAD_BUILD_ROBOT));
+    result.insert(QStringLiteral("sketcher"), bool(VIBECAD_BUILD_SKETCHER));
+    result.insert(QStringLiteral("spreadsheet"), bool(VIBECAD_BUILD_SPREADSHEET));
+    result.insert(QStringLiteral("surface"), bool(VIBECAD_BUILD_SURFACE));
+    result.insert(QStringLiteral("techdraw"), bool(VIBECAD_BUILD_TECHDRAW));
+    return result;
+}
+
+QVariantMap relevantSurfacePreferences(const QString& surfaceId)
+{
+    QVariantMap result;
+    if (surfaceId == QStringLiteral("manufacture")) {
+        const ParameterGrp::handle preferences
+            = App::GetApplication().GetParameterGroupByPath(
+                "User parameter:BaseApp/Preferences/Mod/CAM"
+            );
+        result.insert(
+            QStringLiteral("cam.default_simulator_legacy"),
+            preferences->GetBool("DefaultSimulatorLegacy", false)
+        );
+        result.insert(
+            QStringLiteral("cam.enable_advanced_ocl_features"),
+            preferences->GetBool("EnableAdvancedOCLFeatures", false)
+        );
+        result.insert(
+            QStringLiteral("cam.enable_experimental_features"),
+            preferences->GetBool("EnableExperimentalFeatures", false)
+        );
+    }
+    else if (surfaceId == QStringLiteral("drawing")) {
+        const ParameterGrp::handle preferences
+            = App::GetApplication().GetParameterGroupByPath(
+                "User parameter:BaseApp/Preferences/Mod/TechDraw/dimensioning"
+            );
+        result.insert(
+            QStringLiteral("techdraw.separated_dimensioning_tools"),
+            preferences->GetBool("SeparatedDimensioningTools", false)
+        );
+        result.insert(
+            QStringLiteral("techdraw.single_dimensioning_tool"),
+            preferences->GetBool("SingleDimensioningTool", true)
+        );
+    }
+    return result;
+}
+
+QVariantMap surfaceEnvironmentRecord(const QString& surfaceId)
+{
+    QVariantMap result;
+    result.insert(QStringLiteral("schema_version"), 1);
+    result.insert(QStringLiteral("build_features"), compiledFeatureFlags());
+    result.insert(QStringLiteral("preferences"), relevantSurfacePreferences(surfaceId));
+    return result;
 }
 
 class RibbonGroup final: public QFrame
@@ -1044,9 +1196,64 @@ struct Gui::VibeCADRibbon::Private
         return groups;
     }
 
+    QString activeSurfaceId() const
+    {
+        if (inSketchEdit) {
+            return QStringLiteral("sketch.edit");
+        }
+        if (!tabs || tabs->currentIndex() < 0) {
+            return QStringLiteral("unavailable");
+        }
+
+        const QString selectedWorkbench = tabs->tabData(tabs->currentIndex()).toString();
+        const QString activeWorkbench
+            = QString::fromStdString(WorkbenchManager::instance()->activeName());
+        if (selectedWorkbench.isEmpty()) {
+            return activeWorkbench == QStringLiteral("SketcherWorkbench")
+                ? QStringLiteral("sketch.setup")
+                : QStringLiteral("unavailable");
+        }
+        if (selectedWorkbench != activeWorkbench) {
+            return QStringLiteral("unavailable");
+        }
+        const auto found = std::find_if(
+            domains.begin(),
+            domains.end(),
+            [&selectedWorkbench](const DomainDefinition& domain) {
+                return selectedWorkbench == QString::fromLatin1(domain.workbench);
+            }
+        );
+        return found == domains.end() ? QStringLiteral("unavailable")
+                                      : QString::fromLatin1(found->surface);
+    }
+
+    void publishSurfaceManifest(const QVariantList& groupRecords)
+    {
+        const QString surfaceId = activeSurfaceId();
+        QVariantMap manifest;
+        manifest.insert(QStringLiteral("schema_version"), 1);
+        manifest.insert(QStringLiteral("surface_id"), surfaceId);
+        manifest.insert(QStringLiteral("groups"), groupRecords);
+        const QVariantMap environment = surfaceEnvironmentRecord(surfaceId);
+
+        if (manifest != activeSurfaceManifest || environment != activeSurfaceEnvironment) {
+            activeSurfaceManifest = manifest;
+            activeSurfaceEnvironment = environment;
+            ++surfaceRevision;
+        }
+        q->setProperty(
+            "VibeCADActiveSurfaceId",
+            activeSurfaceManifest.value(QStringLiteral("surface_id"))
+        );
+        q->setProperty("VibeCADActiveSurfaceRevision", QVariant::fromValue(surfaceRevision));
+        q->setProperty("VibeCADActiveSurfaceManifest", activeSurfaceManifest);
+        q->setProperty("VibeCADActiveSurfaceEnvironment", activeSurfaceEnvironment);
+    }
+
     void rebuildPage()
     {
         std::vector<RibbonGroup*> groups;
+        QVariantList manifestGroups;
         bool inspectionAdded = false;
         QSet<QString> surfacedActionIds;
 
@@ -1084,24 +1291,31 @@ struct Gui::VibeCADRibbon::Private
                 return entries;
             };
 
-        const auto addInspectionGroup = [&groups, &inspectionAdded, &resolveUniqueEntries]() {
+        const auto addGroup = [&groups, &manifestGroups](
+                                  const QString& title,
+                                  CommandEntries entries
+                              ) {
+            if (entryActionCount(entries) <= 0) {
+                return;
+            }
+            manifestGroups.push_back(groupManifestRecord(title, entries));
+            groups.push_back(new RibbonGroup(title, std::move(entries)));
+        };
+
+        const auto addInspectionGroup = [&inspectionAdded, &resolveUniqueEntries, &addGroup]() {
             if (inspectionAdded) {
                 return;
             }
             inspectionAdded = true;
             CommandEntries entries = resolveUniqueEntries(sharedInspectionCommands());
-            if (entryActionCount(entries) > 0) {
-                groups.push_back(new RibbonGroup(QObject::tr("Inspect"), std::move(entries)));
-            }
+            addGroup(QObject::tr("Inspect"), std::move(entries));
         };
 
         // View controls stay present in every CAD domain.
         CommandEntries viewEntries = resolveUniqueEntries(
             {"Std_ViewFitAll", "Std_ViewIsometric", "VibeCAD_ToggleGrid"}
         );
-        if (entryActionCount(viewEntries) > 0) {
-            groups.push_back(new RibbonGroup(QObject::tr("View"), std::move(viewEntries)));
-        }
+        addGroup(QObject::tr("View"), std::move(viewEntries));
 
         for (const auto& [title, commands] : pageGroups()) {
             if (!inSketchEdit && title == QObject::tr("Fasteners")) {
@@ -1113,13 +1327,12 @@ struct Gui::VibeCADRibbon::Private
                 std::erase_if(domainCommands, isSharedInspectionCommand);
             }
             CommandEntries entries = resolveUniqueEntries(domainCommands);
-            if (entryActionCount(entries) > 0) {
-                groups.push_back(new RibbonGroup(title, std::move(entries)));
-            }
+            addGroup(title, std::move(entries));
         }
         if (!inSketchEdit && !inspectionAdded) {
             addInspectionGroup();
         }
+        publishSurfaceManifest(manifestGroups);
         page->setGroups(std::move(groups));
     }
 
@@ -1703,6 +1916,40 @@ struct Gui::VibeCADRibbon::Private
         }
     }
 
+    void observeSurfacePreferences()
+    {
+        camPreferences = App::GetApplication().GetParameterGroupByPath(
+            "User parameter:BaseApp/Preferences/Mod/CAM"
+        );
+        drawingPreferences = App::GetApplication().GetParameterGroupByPath(
+            "User parameter:BaseApp/Preferences/Mod/TechDraw/dimensioning"
+        );
+        preferencesChanged
+            = App::GetApplication().GetUserParameter().signalParamChanged.connect(
+                [this](
+                    ParameterGrp* group,
+                    ParameterGrp::ParamType,
+                    const char* name,
+                    const char*
+                ) {
+                    if (!group || !name) {
+                        return;
+                    }
+                    const QString key = QString::fromUtf8(name);
+                    const bool camChanged = group == camPreferences
+                        && (key == QStringLiteral("DefaultSimulatorLegacy")
+                            || key == QStringLiteral("EnableAdvancedOCLFeatures")
+                            || key == QStringLiteral("EnableExperimentalFeatures"));
+                    const bool drawingChanged = group == drawingPreferences
+                        && (key == QStringLiteral("SeparatedDimensioningTools")
+                            || key == QStringLiteral("SingleDimensioningTool"));
+                    if (camChanged || drawingChanged) {
+                        scheduleRefresh();
+                    }
+                }
+            );
+    }
+
     void refresh()
     {
         refreshSearch();
@@ -1906,7 +2153,13 @@ struct Gui::VibeCADRibbon::Private
     bool inSketchEdit = false;
     bool legacyMenuVisible = true;
     int previousDomain = 0;
+    qulonglong surfaceRevision = 0;
+    QVariantMap activeSurfaceManifest;
+    QVariantMap activeSurfaceEnvironment;
+    ParameterGrp::handle camPreferences;
+    ParameterGrp::handle drawingPreferences;
     fastsignals::scoped_connection commandsChanged;
+    fastsignals::scoped_connection preferencesChanged;
     fastsignals::scoped_connection enteredEdit;
     fastsignals::scoped_connection leftEdit;
 };
@@ -1954,6 +2207,7 @@ Gui::VibeCADRibbon::VibeCADRibbon(MainWindow* mainWindow)
         [this](const ViewProviderDocumentObject&) { d->leaveSketchEdit(); }
     );
 
+    d->observeSurfacePreferences();
     qApp->installEventFilter(this);
     d->build();
 }
