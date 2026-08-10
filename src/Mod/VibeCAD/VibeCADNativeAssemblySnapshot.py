@@ -28,6 +28,7 @@ from VibeCADNativeAssemblyJointConnectors import (
 from VibeCADNativeAssemblyParallelJoint import parallel_axes_satisfied
 from VibeCADNativeAssemblyPerpendicularJoint import perpendicular_axes_satisfied
 from VibeCADNativeAssemblyRackPinionJoint import rack_pinion_dependency_summary
+from VibeCADNativeAssemblyScrewJoint import screw_dependency_summary
 from VibeCADNativeAssemblyJointGraph import (
     active_regular_joints,
     reference_summary,
@@ -146,6 +147,17 @@ def _joint_summary(
             None if radius is None else -radius
         )
         dependencies = rack_pinion_dependency_summary(joint, active_joints)
+        summary["prerequisites_resolved"] = dependencies is not None
+        if dependencies is not None:
+            summary.update(dependencies)
+    if joint_type == "Screw":
+        pitch = _quantity_value(joint, "Distance")
+        summary["thread_pitch_mm"] = pitch
+        summary["relative_axial_advance_mm_per_revolution"] = pitch
+        summary["slider_travel_mm_per_screw_revolution"] = (
+            None if pitch is None else -pitch
+        )
+        dependencies = screw_dependency_summary(joint, active_joints)
         summary["prerequisites_resolved"] = dependencies is not None
         if dependencies is not None:
             summary.update(dependencies)

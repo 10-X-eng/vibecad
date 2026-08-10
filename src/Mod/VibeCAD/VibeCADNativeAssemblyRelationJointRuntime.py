@@ -51,6 +51,14 @@ from VibeCADNativeAssemblyRackPinionJoint import (
     preflight_rack_pinion_joint,
     verify_rack_pinion_joint,
 )
+from VibeCADNativeAssemblyScrewJoint import (
+    NativeAssemblyScrewJointError,
+    ScrewJointSpec,
+    apply_screw_joint,
+    preflight_screw_joint,
+    thread_pitch_mm,
+    verify_screw_joint,
+)
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
@@ -63,6 +71,7 @@ RELATION_JOINT_OPERATIONS = frozenset(
         "create_parallel",
         "create_perpendicular",
         "create_rack_pinion",
+        "create_screw",
     }
 )
 
@@ -76,6 +85,74 @@ def execute_relation_joint(
     """Decode and execute one already-authorized relation-joint variant."""
 
     document_uid = context.document_uid
+    if operation == "create_screw":
+        spec = ScrewJointSpec(
+            assembly_ref=joint_object_ref(
+                document_uid,
+                values["assembly"],
+                "assembly",
+                NativeAssemblyScrewJointError,
+            ),
+            slider_connector=joint_connector(
+                document_uid,
+                values["slider_connector"],
+                "slider_connector",
+                NativeAssemblyScrewJointError,
+            ),
+            screw_connector=joint_connector(
+                document_uid,
+                values["screw_connector"],
+                "screw_connector",
+                NativeAssemblyScrewJointError,
+            ),
+            slider_joint_ref=joint_object_ref(
+                document_uid,
+                values["slider_joint"],
+                "slider_joint",
+                NativeAssemblyScrewJointError,
+            ),
+            screw_revolute_joint_ref=joint_object_ref(
+                document_uid,
+                values["screw_revolute_joint"],
+                "screw_revolute_joint",
+                NativeAssemblyScrewJointError,
+            ),
+            label=joint_label(
+                values["label"],
+                NativeAssemblyScrewJointError,
+            ),
+            thread_pitch_mm=thread_pitch_mm(values["thread_pitch_mm"]),
+            expected_component_count=joint_count(
+                values["expected_component_count"],
+                "expected_component_count",
+                NativeAssemblyScrewJointError,
+            ),
+            expected_grounded_count=joint_count(
+                values["expected_grounded_count"],
+                "expected_grounded_count",
+                NativeAssemblyScrewJointError,
+            ),
+            expected_joint_count=joint_count(
+                values["expected_joint_count"],
+                "expected_joint_count",
+                NativeAssemblyScrewJointError,
+                256,
+            ),
+            expected_solve_on_creation=joint_bool(
+                values["expected_solve_on_creation"],
+                "expected_solve_on_creation",
+                NativeAssemblyScrewJointError,
+            ),
+        )
+        context.guard()
+        preflight_screw_joint(context.document, spec)
+        return run_immediate_mutation(
+            context,
+            ticket=ticket,
+            transaction_name="Create Native Assembly Screw Joint",
+            mutate=lambda document: apply_screw_joint(document, spec),
+            verify=verify_screw_joint,
+        )
     if operation == "create_rack_pinion":
         spec = RackPinionJointSpec(
             assembly_ref=joint_object_ref(

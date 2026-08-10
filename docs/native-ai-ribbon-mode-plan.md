@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 349 complete / 397 pending / 746 total (46.8% by row count)
+Checklist status: 350 complete / 396 pending / 746 total (46.9% by row count)
 
 ## Purpose
 
@@ -5450,13 +5450,60 @@ implementation changes:
   and Assembly VibeScript integrations exit zero, no VibeCAD test process
   remains, and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Screw Joint is an exact `assembly.joint/create_screw` operation
+  mapped from the live `Assembly_CreateJointScrew` action. It uses Assembly
+  type index 10, persists the human task's real signed `Distance` thread-pitch
+  property, and reaches the compiled `ASMTScrewJoint`, whose constraint is
+  `2*pi*z - pitch*theta - constant = 0`. Results therefore distinguish the
+  persisted relative axial advance per relative revolution from the slider's
+  travel per screw revolution; for the canonical fixed-base arrangement the
+  latter is the negative of the signed pitch. The contract requires an exact
+  active Slider prerequisite for the translating component and an exact active
+  Revolute prerequisite for the screw instead of relying on the compiled
+  engine's ambiguous scan for a matching Slider. Semantically named slider and
+  screw connectors must exactly reuse the corresponding prerequisite side,
+  including component, element and anchor paths, and complete attachment
+  offset. Preflight proves both prerequisites are active in the human-active
+  Assembly, have the required joint types, constrain distinct ungrounded
+  components, and place their live connector Z axes on one directed collinear
+  line rather than merely parallel lines. Native persists the slider as
+  connector one and screw as connector two, then verifies that the compiled
+  solve did not swap or drift the exact dependency graph. Signed pitch accepts
+  the human task's complete direction semantics while rejecting Boolean, zero,
+  non-finite, sub-tolerance, and unbounded values. Reverse, angle, simplified
+  offset/rotation, limits, and secondary-distance fields are absent because
+  the human Screw task exposes none of them. Expected component, grounded, and
+  regular-joint counts plus the solve-on-creation preference guard stale
+  requests before mutation. Concise results return semantic connectors, both
+  exact prerequisite identities, signed pitch, both motion-rate conventions,
+  and the collinearity proof without leaking the shared engine's false Reverse
+  value or raw property map. Concise state reconstructs both prerequisites from
+  persisted connector equality after save/reopen and explicitly reports
+  whether the graph still resolves. A dispatcher-backed compiled GUI gate
+  builds a real grounded base, Slider component, and Revolute screw component,
+  then proves stale-count no-op, real solver status zero, exact dependency
+  reuse, canonical side order, idempotent replay, one-step undo/redo preserving
+  both prerequisites, and FCStd save/close/reopen with model and view proxies,
+  references, offsets, rates, axis semantics, and bounded state restored. It
+  reports `VIBECAD_NATIVE_ASSEMBLY_SCREW_JOINT_GUI_OK components=3 joints=3
+  prerequisites=true thread_pitch_mm=-2 slider_travel_mm_per_revolution=2
+  axes_collinear=true transactions=1 reopen=true`; all ten previously completed
+  compiled joint lifecycle gates remain green. The complete suite is 3,133
+  passed with four intentional skips; Ruff lint, new-file Ruff formatting,
+  compileall, diff checks, ten applicable source/build-tree byte comparisons,
+  and the VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui build
+  targets are green. The protected Sketcher, all 17 Part Design phases, and
+  Assembly VibeScript integrations all exit zero, no VibeCAD test process
+  remains, and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - The Assembly joint runtime has been split by responsibility without changing
-  its public provider contract: the dispatcher is 201 lines, shared argument
+  its public provider contract: the dispatcher is 214 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
-  relation-joint execution is 371 lines. The Angle contract is 229 lines, the
-  Rack-and-Pinion contract is 440 lines, and every execution module remains
-  below the 1,000-line ceiling.
-- The 1,402-line action inventory remains declarative rather than accumulating
+  relation-joint execution is 448 lines. The Angle contract is 229 lines, the
+  Rack-and-Pinion contract is 350 lines, the shared coupled-joint geometry
+  layer is 194 lines, the Screw contract is 345 lines, and every execution
+  module remains below the 1,000-line ceiling.
+- The 1,403-line action inventory remains declarative rather than accumulating
   domain execution logic. New domain modules are split before they approach
   1,000 lines.
 
@@ -6004,7 +6051,7 @@ concisely.
 - [x] 11.13 Implement Perpendicular joint.
 - [x] 11.14 Implement Angle joint.
 - [x] 11.15 Implement Rack-and-Pinion joint.
-- [ ] 11.16 Implement Screw joint.
+- [x] 11.16 Implement Screw joint.
 - [ ] 11.17 Implement Gear joint.
 - [ ] 11.18 Implement Belt joint.
 - [ ] 11.19 Implement solver execution and exact placement verification.

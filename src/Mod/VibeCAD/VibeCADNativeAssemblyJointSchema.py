@@ -692,6 +692,72 @@ def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
                     "additionalProperties": False,
                 },
             ),
+            NativeCapabilityVariant(
+                operation="create_screw",
+                description=(
+                    "Couple an exact Slider connector to an exact Revolute screw "
+                    "connector on one directed collinear axis with a finite signed "
+                    "thread pitch and expected live Assembly state."
+                ),
+                action_ids=frozenset({"Assembly_CreateJointScrew"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactSliderAndScrewRevoluteCoupling"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "slider_connector": _JOINT_CONNECTOR,
+                        "screw_connector": _JOINT_CONNECTOR,
+                        "slider_joint": _OBJECT_REF,
+                        "screw_revolute_joint": _OBJECT_REF,
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                        },
+                        "thread_pitch_mm": {
+                            "oneOf": [
+                                {
+                                    "type": "number",
+                                    "minimum": -1_000_000.0,
+                                    "maximum": -1.0e-7,
+                                },
+                                {
+                                    "type": "number",
+                                    "minimum": 1.0e-7,
+                                    "maximum": 1_000_000.0,
+                                },
+                            ]
+                        },
+                        "expected_component_count": _COUNT,
+                        "expected_grounded_count": _COUNT,
+                        "expected_joint_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 256,
+                        },
+                        "expected_solve_on_creation": {"type": "boolean"},
+                    },
+                    "required": [
+                        "assembly",
+                        "slider_connector",
+                        "screw_connector",
+                        "slider_joint",
+                        "screw_revolute_joint",
+                        "label",
+                        "thread_pitch_mm",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
         ),
     )
 

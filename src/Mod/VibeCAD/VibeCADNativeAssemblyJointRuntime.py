@@ -75,6 +75,19 @@ _OPERATION_FIELDS = {
         "expected_joint_count",
         "expected_solve_on_creation",
     },
+    "create_screw": {
+        "assembly",
+        "slider_connector",
+        "screw_connector",
+        "slider_joint",
+        "screw_revolute_joint",
+        "label",
+        "thread_pitch_mm",
+        "expected_component_count",
+        "expected_grounded_count",
+        "expected_joint_count",
+        "expected_solve_on_creation",
+    },
 }
 
 

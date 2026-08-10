@@ -960,6 +960,7 @@ _OPERATION_VARIANT_OVERRIDES = {
     "Assembly_CreateJointPerpendicular": "create_perpendicular",
     "Assembly_CreateJointRackPinion": "create_rack_pinion",
     "Assembly_CreateJointRevolute": "create_revolute",
+    "Assembly_CreateJointScrew": "create_screw",
     "Assembly_CreateJointSlider": "create_slider",
     "Assembly_ToggleGrounded": "set_grounded",
     "PartDesign::DesignBox": "primitive",

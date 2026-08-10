@@ -8,10 +8,13 @@ from dataclasses import dataclass
 import math
 from typing import Any, Callable, Iterable
 
-from VibeCADNativeAssemblyJointConnectors import (
-    JointConnectorSpec,
-    placement_is_same,
+from VibeCADNativeAssemblyCoupledJoint import (
+    axes_perpendicular,
+    joint_components,
+    matching_spec_side,
+    sides_equal,
 )
+from VibeCADNativeAssemblyJointConnectors import JointConnectorSpec
 from VibeCADNativeAssemblyRegularJoint import (
     NativeAssemblyRegularJointError,
     PreparedRegularJoint,
@@ -32,7 +35,6 @@ from VibeCADNativeTargets import (
 
 MIN_ABS_PITCH_RADIUS_MM = 1.0e-7
 MAX_ABS_PITCH_RADIUS_MM = 1_000_000.0
-AXIS_DOT_TOLERANCE = 1.0e-6
 
 
 class NativeAssemblyRackPinionJointError(RuntimeError):
@@ -113,98 +115,6 @@ def _regular_spec(spec: RackPinionJointSpec) -> RegularJointSpec:
     )
 
 
-def _reference_side(joint: Any, side: int) -> tuple[Any, tuple[str, str], Any] | None:
-    try:
-        reference = getattr(joint, f"Reference{side}")
-        component = reference[0]
-        paths = tuple(str(path) for path in reference[1])
-        offset = getattr(joint, f"Offset{side}")
-        if component is None or len(paths) != 2:
-            return None
-        return component, paths, offset
-    except (AttributeError, IndexError, ReferenceError, TypeError):
-        return None
-
-
-def _side_matches_spec(
-    joint: Any,
-    side: int,
-    component: Any,
-    spec: JointConnectorSpec,
-) -> bool:
-    actual = _reference_side(joint, side)
-    return bool(
-        actual is not None
-        and actual[0] is component
-        and actual[1] == (spec.element_path, spec.anchor_path)
-        and placement_is_same(actual[2], spec.offset)
-    )
-
-
-def _matching_spec_side(
-    joint: Any,
-    component: Any,
-    spec: JointConnectorSpec,
-) -> int:
-    matches = [
-        side for side in (1, 2) if _side_matches_spec(joint, side, component, spec)
-    ]
-    return matches[0] if len(matches) == 1 else 0
-
-
-def _sides_equal(first: Any, first_side: int, second: Any, second_side: int) -> bool:
-    left = _reference_side(first, first_side)
-    right = _reference_side(second, second_side)
-    return bool(
-        left is not None
-        and right is not None
-        and left[0] is right[0]
-        and left[1] == right[1]
-        and placement_is_same(left[2], right[2])
-    )
-
-
-def _joint_components(joint: Any) -> set[Any]:
-    return {
-        side[0]
-        for side in (_reference_side(joint, 1), _reference_side(joint, 2))
-        if side is not None
-    }
-
-
-def _axes_perpendicular(
-    slider_joint: Any,
-    slider_side: int,
-    revolute_joint: Any,
-    revolute_side: int,
-) -> bool:
-    try:
-        import FreeCAD as App
-        import UtilsAssembly
-
-        slider = UtilsAssembly.getJcsGlobalPlc(
-            getattr(slider_joint, f"Placement{slider_side}"),
-            getattr(slider_joint, f"Reference{slider_side}"),
-        )
-        revolute = UtilsAssembly.getJcsGlobalPlc(
-            getattr(revolute_joint, f"Placement{revolute_side}"),
-            getattr(revolute_joint, f"Reference{revolute_side}"),
-        )
-        slider_z = slider.Rotation.multVec(App.Vector(0, 0, 1))
-        revolute_z = revolute.Rotation.multVec(App.Vector(0, 0, 1))
-        return abs(float(slider_z.dot(revolute_z))) < AXIS_DOT_TOLERANCE
-    except (
-        AttributeError,
-        ImportError,
-        IndexError,
-        ReferenceError,
-        RuntimeError,
-        TypeError,
-        ValueError,
-    ):
-        return False
-
-
 def _resolve_dependency(
     document: Any,
     reference: NativeObjectRef,
@@ -248,19 +158,19 @@ def _validate_dependencies(
             "Rack and pinion components must retain their Slider and Revolute "
             "degrees of freedom rather than being grounded."
         )
-    if pinion in _joint_components(slider_joint) or rack in _joint_components(
+    if pinion in joint_components(slider_joint) or rack in joint_components(
         revolute_joint
     ):
         raise NativeAssemblyRackPinionJointError(
             "Rack-and-Pinion prerequisite joints must constrain distinct rack and "
             "pinion components."
         )
-    slider_side = _matching_spec_side(
+    slider_side = matching_spec_side(
         slider_joint,
         rack,
         spec.rack_connector,
     )
-    revolute_side = _matching_spec_side(
+    revolute_side = matching_spec_side(
         revolute_joint,
         pinion,
         spec.pinion_connector,
@@ -270,7 +180,7 @@ def _validate_dependencies(
             "Rack and pinion connectors must exactly reuse the named Slider and "
             "Revolute joint coordinate systems."
         )
-    if not _axes_perpendicular(
+    if not axes_perpendicular(
         slider_joint,
         slider_side,
         revolute_joint,
@@ -294,29 +204,29 @@ def rack_pinion_dependency_summary(
             item
             for item in candidates
             if str(getattr(item, "JointType", "") or "") == "Slider"
-            and any(_sides_equal(joint, rack_side, item, side) for side in (1, 2))
+            and any(sides_equal(joint, rack_side, item, side) for side in (1, 2))
         ]
         revolutes = [
             item
             for item in candidates
             if str(getattr(item, "JointType", "") or "") == "Revolute"
-            and any(_sides_equal(joint, pinion_side, item, side) for side in (1, 2))
+            and any(sides_equal(joint, pinion_side, item, side) for side in (1, 2))
         ]
         if len(sliders) == 1 and len(revolutes) == 1:
             slider_side = next(
                 side
                 for side in (1, 2)
-                if _sides_equal(joint, rack_side, sliders[0], side)
+                if sides_equal(joint, rack_side, sliders[0], side)
             )
             revolute_side = next(
                 side
                 for side in (1, 2)
-                if _sides_equal(joint, pinion_side, revolutes[0], side)
+                if sides_equal(joint, pinion_side, revolutes[0], side)
             )
             return {
                 "rack_slider_joint": object_reference(sliders[0]),
                 "pinion_revolute_joint": object_reference(revolutes[0]),
-                "axes_perpendicular": _axes_perpendicular(
+                "axes_perpendicular": axes_perpendicular(
                     sliders[0],
                     slider_side,
                     revolutes[0],
@@ -414,9 +324,9 @@ def verify_rack_pinion_joint(
         or document.getObject(str(revolute.Name)) is not revolute
         or str(getattr(slider, "JointType", "") or "") != "Slider"
         or str(getattr(revolute, "JointType", "") or "") != "Revolute"
-        or not _sides_equal(joint, 1, slider, value["rack_slider_side"])
-        or not _sides_equal(joint, 2, revolute, value["pinion_revolute_side"])
-        or not _axes_perpendicular(
+        or not sides_equal(joint, 1, slider, value["rack_slider_side"])
+        or not sides_equal(joint, 2, revolute, value["pinion_revolute_side"])
+        or not axes_perpendicular(
             slider,
             value["rack_slider_side"],
             revolute,
