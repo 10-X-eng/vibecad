@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Exact Gears coupling over two explicit Revolute prerequisites."""
+"""Exact Belt coupling over two explicit Revolute prerequisites."""
 
 from __future__ import annotations
 
@@ -26,25 +26,25 @@ from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import NativeObjectRef
 
 
-MIN_GEAR_RADIUS_MM = MIN_COUPLING_RADIUS_MM
-MAX_GEAR_RADIUS_MM = MAX_COUPLING_RADIUS_MM
+MIN_BELT_RADIUS_MM = MIN_COUPLING_RADIUS_MM
+MAX_BELT_RADIUS_MM = MAX_COUPLING_RADIUS_MM
 
 
-class NativeAssemblyGearJointError(RuntimeError):
-    """An exact Gears request or postcondition failed safely."""
+class NativeAssemblyBeltJointError(RuntimeError):
+    """An exact Belt request or postcondition failed safely."""
 
     def failure(self) -> dict[str, str]:
         return {
-            "error_code": "NATIVE_ASSEMBLY_GEAR_JOINT_FAILED",
+            "error_code": "NATIVE_ASSEMBLY_BELT_JOINT_FAILED",
             "message": str(self),
         }
 
 
 @dataclass(frozen=True, slots=True)
-class GearJointSpec:
+class BeltJointSpec:
     assembly_ref: NativeObjectRef
-    first_gear_connector: JointConnectorSpec
-    second_gear_connector: JointConnectorSpec
+    first_pulley_connector: JointConnectorSpec
+    second_pulley_connector: JointConnectorSpec
     first_revolute_joint_ref: NativeObjectRef
     second_revolute_joint_ref: NativeObjectRef
     label: str
@@ -56,106 +56,106 @@ class GearJointSpec:
     expected_solve_on_creation: bool
 
 
-PreparedGearJoint = PreparedRotationCoupling
+PreparedBeltJoint = PreparedRotationCoupling
 
 
-_GEAR_CONTRACT = RotationCouplingContract(
-    joint_type="Gears",
-    type_index=11,
-    coupling_label="Gears",
-    connector_label="Gear",
-    component_noun="gear",
-    first_connector_result_key="first_gear_connector",
-    second_connector_result_key="second_gear_connector",
-    rotation_multiplier=-1.0,
-    rotation_direction="opposite",
+_BELT_CONTRACT = RotationCouplingContract(
+    joint_type="Belt",
+    type_index=12,
+    coupling_label="Belt",
+    connector_label="Pulley",
+    component_noun="pulley",
+    first_connector_result_key="first_pulley_connector",
+    second_connector_result_key="second_pulley_connector",
+    rotation_multiplier=1.0,
+    rotation_direction="same",
 )
 
 
-def gear_radius_mm(value: Any, field: str) -> float:
-    return positive_coupling_radius_mm(value, field, NativeAssemblyGearJointError)
+def belt_radius_mm(value: Any, field: str) -> float:
+    return positive_coupling_radius_mm(value, field, NativeAssemblyBeltJointError)
 
 
-def _regular_spec(spec: GearJointSpec) -> RegularJointSpec:
-    if not isinstance(spec, GearJointSpec):
-        raise TypeError("spec must be a GearJointSpec")
+def _regular_spec(spec: BeltJointSpec) -> RegularJointSpec:
+    if not isinstance(spec, BeltJointSpec):
+        raise TypeError("spec must be a BeltJointSpec")
     return regular_rotation_coupling_spec(
         spec,
-        spec.first_gear_connector,
-        spec.second_gear_connector,
-        _GEAR_CONTRACT,
-        NativeAssemblyGearJointError,
+        spec.first_pulley_connector,
+        spec.second_pulley_connector,
+        _BELT_CONTRACT,
+        NativeAssemblyBeltJointError,
     )
 
 
 def _validate_dependencies(
     prepared: PreparedRegularJoint,
-    spec: GearJointSpec,
+    spec: BeltJointSpec,
     first_revolute: Any,
     second_revolute: Any,
 ) -> tuple[int, int]:
     return validate_rotation_coupling_dependencies(
         prepared,
-        spec.first_gear_connector,
-        spec.second_gear_connector,
+        spec.first_pulley_connector,
+        spec.second_pulley_connector,
         first_revolute,
         second_revolute,
-        _GEAR_CONTRACT,
-        NativeAssemblyGearJointError,
+        _BELT_CONTRACT,
+        NativeAssemblyBeltJointError,
     )
 
 
-def gears_dependency_summary(
+def belt_dependency_summary(
     joint: Any,
     active_joints: Iterable[Any],
 ) -> dict[str, Any] | None:
     return rotation_coupling_dependency_summary(joint, active_joints)
 
 
-def preflight_gear_joint(
+def preflight_belt_joint(
     document: Any,
-    spec: GearJointSpec,
+    spec: BeltJointSpec,
     **kwargs: Any,
-) -> PreparedGearJoint:
-    if not isinstance(spec, GearJointSpec):
-        raise TypeError("spec must be a GearJointSpec")
+) -> PreparedBeltJoint:
+    if not isinstance(spec, BeltJointSpec):
+        raise TypeError("spec must be a BeltJointSpec")
     return preflight_rotation_coupling(
         document,
         spec,
-        first_connector=spec.first_gear_connector,
-        second_connector=spec.second_gear_connector,
+        first_connector=spec.first_pulley_connector,
+        second_connector=spec.second_pulley_connector,
         first_revolute_joint_ref=spec.first_revolute_joint_ref,
         second_revolute_joint_ref=spec.second_revolute_joint_ref,
-        first_dependency_label="first gear Revolute joint",
-        second_dependency_label="second gear Revolute joint",
-        contract=_GEAR_CONTRACT,
-        error_type=NativeAssemblyGearJointError,
+        first_dependency_label="first pulley Revolute joint",
+        second_dependency_label="second pulley Revolute joint",
+        contract=_BELT_CONTRACT,
+        error_type=NativeAssemblyBeltJointError,
         **kwargs,
     )
 
 
-def apply_gear_joint(
+def apply_belt_joint(
     document: Any,
-    spec: GearJointSpec,
+    spec: BeltJointSpec,
     *,
-    joint_factory: Callable[[Any, Any, GearJointSpec], Any] | None = None,
+    joint_factory: Callable[[Any, Any, BeltJointSpec], Any] | None = None,
 ) -> NativeMutationDraft:
     return apply_rotation_coupling(
         document,
         spec,
-        first_connector=spec.first_gear_connector,
-        second_connector=spec.second_gear_connector,
+        first_connector=spec.first_pulley_connector,
+        second_connector=spec.second_pulley_connector,
         first_revolute_joint_ref=spec.first_revolute_joint_ref,
         second_revolute_joint_ref=spec.second_revolute_joint_ref,
-        first_dependency_label="first gear Revolute joint",
-        second_dependency_label="second gear Revolute joint",
-        contract=_GEAR_CONTRACT,
-        error_type=NativeAssemblyGearJointError,
+        first_dependency_label="first pulley Revolute joint",
+        second_dependency_label="second pulley Revolute joint",
+        contract=_BELT_CONTRACT,
+        error_type=NativeAssemblyBeltJointError,
         joint_factory=joint_factory,
     )
 
 
-def verify_gear_joint(
+def verify_belt_joint(
     document: Any,
     draft: NativeMutationDraft,
     **kwargs: Any,
@@ -163,8 +163,8 @@ def verify_gear_joint(
     return verify_rotation_coupling(
         document,
         draft,
-        spec_type=GearJointSpec,
-        contract=_GEAR_CONTRACT,
-        error_type=NativeAssemblyGearJointError,
+        spec_type=BeltJointSpec,
+        contract=_BELT_CONTRACT,
+        error_type=NativeAssemblyBeltJointError,
         **kwargs,
     )

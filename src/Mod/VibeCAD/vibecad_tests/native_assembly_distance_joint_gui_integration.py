@@ -209,7 +209,9 @@ def _run() -> None:
         registry = build_native_capability_registry()
         production = resolve_native_provider_surface(surface, registry)
         assert production.available is False
-        assert ASSEMBLY_JOINT_CAPABILITY_NAME in production.incomplete_definition_names
+        assert ASSEMBLY_JOINT_CAPABILITY_NAME not in production.missing_definition_names
+        assert ASSEMBLY_JOINT_CAPABILITY_NAME not in production.missing_implementation_names
+        assert ASSEMBLY_JOINT_CAPABILITY_NAME not in production.incomplete_definition_names
 
         service = get_service()
         service.select_modeling_engine("native")

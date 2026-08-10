@@ -14,6 +14,14 @@ from VibeCADNativeAssemblyAngleJoint import (
     preflight_angle_joint,
     verify_angle_joint,
 )
+from VibeCADNativeAssemblyBeltJoint import (
+    BeltJointSpec,
+    NativeAssemblyBeltJointError,
+    apply_belt_joint,
+    belt_radius_mm,
+    preflight_belt_joint,
+    verify_belt_joint,
+)
 from VibeCADNativeAssemblyDistanceJoint import (
     DistanceJointSpec,
     NativeAssemblyDistanceJointError,
@@ -75,6 +83,7 @@ from VibeCADNativeState import NativeCallTicket
 RELATION_JOINT_OPERATIONS = frozenset(
     {
         "create_angle",
+        "create_belt",
         "create_distance",
         "create_gears",
         "create_parallel",
@@ -94,6 +103,72 @@ def execute_relation_joint(
     """Decode and execute one already-authorized relation-joint variant."""
 
     document_uid = context.document_uid
+    if operation == "create_belt":
+        spec = BeltJointSpec(
+            assembly_ref=joint_object_ref(
+                document_uid,
+                values["assembly"],
+                "assembly",
+                NativeAssemblyBeltJointError,
+            ),
+            first_pulley_connector=joint_connector(
+                document_uid,
+                values["first_pulley_connector"],
+                "first_pulley_connector",
+                NativeAssemblyBeltJointError,
+            ),
+            second_pulley_connector=joint_connector(
+                document_uid,
+                values["second_pulley_connector"],
+                "second_pulley_connector",
+                NativeAssemblyBeltJointError,
+            ),
+            first_revolute_joint_ref=joint_object_ref(
+                document_uid,
+                values["first_revolute_joint"],
+                "first_revolute_joint",
+                NativeAssemblyBeltJointError,
+            ),
+            second_revolute_joint_ref=joint_object_ref(
+                document_uid,
+                values["second_revolute_joint"],
+                "second_revolute_joint",
+                NativeAssemblyBeltJointError,
+            ),
+            label=joint_label(values["label"], NativeAssemblyBeltJointError),
+            radius1_mm=belt_radius_mm(values["radius1_mm"], "radius1_mm"),
+            radius2_mm=belt_radius_mm(values["radius2_mm"], "radius2_mm"),
+            expected_component_count=joint_count(
+                values["expected_component_count"],
+                "expected_component_count",
+                NativeAssemblyBeltJointError,
+            ),
+            expected_grounded_count=joint_count(
+                values["expected_grounded_count"],
+                "expected_grounded_count",
+                NativeAssemblyBeltJointError,
+            ),
+            expected_joint_count=joint_count(
+                values["expected_joint_count"],
+                "expected_joint_count",
+                NativeAssemblyBeltJointError,
+                256,
+            ),
+            expected_solve_on_creation=joint_bool(
+                values["expected_solve_on_creation"],
+                "expected_solve_on_creation",
+                NativeAssemblyBeltJointError,
+            ),
+        )
+        context.guard()
+        preflight_belt_joint(context.document, spec)
+        return run_immediate_mutation(
+            context,
+            ticket=ticket,
+            transaction_name="Create Native Assembly Belt Joint",
+            mutate=lambda document: apply_belt_joint(document, spec),
+            verify=verify_belt_joint,
+        )
     if operation == "create_gears":
         spec = GearJointSpec(
             assembly_ref=joint_object_ref(

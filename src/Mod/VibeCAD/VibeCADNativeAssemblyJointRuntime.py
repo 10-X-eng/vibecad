@@ -102,6 +102,20 @@ _OPERATION_FIELDS = {
         "expected_joint_count",
         "expected_solve_on_creation",
     },
+    "create_belt": {
+        "assembly",
+        "first_pulley_connector",
+        "second_pulley_connector",
+        "first_revolute_joint",
+        "second_revolute_joint",
+        "label",
+        "radius1_mm",
+        "radius2_mm",
+        "expected_component_count",
+        "expected_grounded_count",
+        "expected_joint_count",
+        "expected_solve_on_creation",
+    },
 }
 
 

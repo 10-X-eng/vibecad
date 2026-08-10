@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 351 complete / 395 pending / 746 total (47.1% by row count)
+Checklist status: 352 complete / 394 pending / 746 total (47.2% by row count)
 
 ## Purpose
 
@@ -5538,14 +5538,61 @@ implementation changes:
   Assembly VibeScript integrations all exit zero, no VibeCAD test process or
   test-created crash lock remains, and the immutable 5-axis fixture remains
   exactly `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Belt Joint is an exact `assembly.joint/create_belt` operation mapped
+  from the live `Assembly_CreateJointBelt` action and persisted `Belt` joint
+  type. It uses the human command's type index 12 and stores the task panel's
+  positive Radius 1 and Radius 2 values in the real `Distance` and `Distance2`
+  properties. Boolean, zero, negative, non-finite, sub-tolerance, and unbounded
+  radii fail before mutation. The compiled Belt path uses `ASMTGearJoint` with
+  a negated second solver radius, yielding
+  `theta2 - (radius1 / radius2) * theta1 = constant`; concise output therefore
+  reports `+(radius1 / radius2)` as the second rotation per first rotation and
+  names the direction `same`. The contract accepts only two distinct exact
+  active Revolute prerequisites and semantically named pulley connectors that
+  reuse their corresponding prerequisite sides completely: component,
+  element path, anchor path, and attachment offset. Both pulley components
+  must remain ungrounded and the prerequisites may not cross-constrain the
+  other pulley. Native deliberately does not invent an axis-parallelism rule
+  absent from the human task and compiled relation. Reverse, angle, simplified
+  offset/rotation, and limit fields are absent because the task checkbox
+  selects between the separate Gears and Belt types rather than persisting a
+  direction property. Expected component, grounded, regular-joint, and
+  solve-on-creation state rejects stale requests without a transaction. A new
+  shared 373-line two-Revolute rotation-coupling engine now owns the common
+  prerequisite, exact-side, regular-joint, verification, and concise-result
+  mechanics; the Gears and Belt contracts are each 170-line semantic wrappers
+  with opposite and same direction fixed by their respective persisted joint
+  types. Concise Assembly state restores both prerequisite identities and the
+  signed ratio after reopen. The dispatcher-backed compiled GUI gate proves a
+  stale-count no-op, real solver status zero, exact dependency reuse, radius
+  order, `+0.5` same-direction output, idempotent replay, one-step undo/redo,
+  and FCStd save/close/reopen with model/view proxies, references, offsets, and
+  state restored. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_BELT_JOINT_GUI_OK components=3 joints=3
+  prerequisites=true radius1_mm=20 radius2_mm=40 ratio=0.5 direction=same
+  transactions=1 reopen=true`. Completing Belt makes the entire
+  `assembly.joint` capability definition and implementation complete while
+  Native remains globally unavailable until the rest of this plan is done.
+  All thirteen compiled joint lifecycle gates pass. The complete VibeCAD suite
+  is 3,184 passed with four intentional skips; Ruff, compileall, diff checks,
+  source/build parity, and the VibeCADScripts, AssemblyScripts, Assembly, and
+  AssemblyGui targets are green. The protected Sketcher gate exits zero, all
+  17 Part Design phases report `VIBECAD_VIBESCRIPT_PHASE_OK`, and the Assembly
+  VibeScript gate returns `VIBECAD_ASSEMBLY_VIBESCRIPT_GATE_EXIT 0` with every
+  published joint solver code zero. No VibeScript source changed.
+  No FreeCAD or FreeCADCmd process remains, the preserved pre-existing recovery
+  snapshot and lock are untouched, the prior test-created crash lock remains
+  absent, and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
-  relation-joint execution is 523 lines. The Angle contract is 229 lines, the
+  relation-joint execution is 598 lines. The Angle contract is 229 lines, the
   Rack-and-Pinion contract is 350 lines, the shared coupled-joint geometry
-  layer is 194 lines, the Screw contract is 345 lines, the Gears contract is
-  323 lines, and every execution module remains below the 1,000-line ceiling.
-- The 1,404-line action inventory remains declarative rather than accumulating
+  layer is 194 lines, the Screw contract is 345 lines, the shared rotational
+  coupling engine is 373 lines, and the Gears and Belt contracts are 170 lines
+  each. Every execution module remains below the 1,000-line ceiling.
+- The 1,405-line action inventory remains declarative rather than accumulating
   domain execution logic. New domain modules are split before they approach
   1,000 lines.
 
@@ -6095,7 +6142,7 @@ concisely.
 - [x] 11.15 Implement Rack-and-Pinion joint.
 - [x] 11.16 Implement Screw joint.
 - [x] 11.17 Implement Gear joint.
-- [ ] 11.18 Implement Belt joint.
+- [x] 11.18 Implement Belt joint.
 - [ ] 11.19 Implement solver execution and exact placement verification.
 - [ ] 11.20 Implement conflicting-constraint diagnosis.
 - [ ] 11.21 Implement redundant-constraint diagnosis.

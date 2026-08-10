@@ -759,6 +759,69 @@ def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
                 },
             ),
             NativeCapabilityVariant(
+                operation="create_belt",
+                description=(
+                    "Couple two exact Revolute pulley connectors at the same "
+                    "rotation ratio defined by two finite positive radii and expected "
+                    "live Assembly state."
+                ),
+                action_ids=frozenset({"Assembly_CreateJointBelt"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactTwoRevolutePulleyCoupling"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "first_pulley_connector": _JOINT_CONNECTOR,
+                        "second_pulley_connector": _JOINT_CONNECTOR,
+                        "first_revolute_joint": _OBJECT_REF,
+                        "second_revolute_joint": _OBJECT_REF,
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                        },
+                        "radius1_mm": {
+                            "type": "number",
+                            "minimum": 1.0e-7,
+                            "maximum": 1_000_000.0,
+                        },
+                        "radius2_mm": {
+                            "type": "number",
+                            "minimum": 1.0e-7,
+                            "maximum": 1_000_000.0,
+                        },
+                        "expected_component_count": _COUNT,
+                        "expected_grounded_count": _COUNT,
+                        "expected_joint_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 256,
+                        },
+                        "expected_solve_on_creation": {"type": "boolean"},
+                    },
+                    "required": [
+                        "assembly",
+                        "first_pulley_connector",
+                        "second_pulley_connector",
+                        "first_revolute_joint",
+                        "second_revolute_joint",
+                        "label",
+                        "radius1_mm",
+                        "radius2_mm",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                        "expected_solve_on_creation",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
                 operation="create_gears",
                 description=(
                     "Couple two exact Revolute gear connectors at the opposite "

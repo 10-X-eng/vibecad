@@ -12,6 +12,7 @@ from VibeCADNativeAssemblyAngleJoint import (
     angle_solver_relation,
     measured_axis_angle_degrees,
 )
+from VibeCADNativeAssemblyBeltJoint import belt_dependency_summary
 from VibeCADNativeAssemblyComponents import (
     assembly_components,
     available_component_sources,
@@ -162,7 +163,7 @@ def _joint_summary(
         summary["prerequisites_resolved"] = dependencies is not None
         if dependencies is not None:
             summary.update(dependencies)
-    if joint_type == "Gears":
+    if joint_type in {"Gears", "Belt"}:
         radius1 = _quantity_value(joint, "Distance")
         radius2 = _quantity_value(joint, "Distance2")
         summary["radius1_mm"] = radius1
@@ -170,10 +171,16 @@ def _joint_summary(
         summary["second_rotation_per_first_rotation"] = (
             None
             if radius1 is None or radius2 is None or radius2 == 0.0
-            else -(radius1 / radius2)
+            else (-1.0 if joint_type == "Gears" else 1.0) * radius1 / radius2
         )
-        summary["rotation_direction"] = "opposite"
-        dependencies = gears_dependency_summary(joint, active_joints)
+        summary["rotation_direction"] = (
+            "opposite" if joint_type == "Gears" else "same"
+        )
+        dependencies = (
+            gears_dependency_summary(joint, active_joints)
+            if joint_type == "Gears"
+            else belt_dependency_summary(joint, active_joints)
+        )
         summary["prerequisites_resolved"] = dependencies is not None
         if dependencies is not None:
             summary.update(dependencies)
