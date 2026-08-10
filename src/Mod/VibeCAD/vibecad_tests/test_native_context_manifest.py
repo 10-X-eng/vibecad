@@ -24,6 +24,7 @@ EXPECTED_CONTEXT_ACTION_IDS = {
     "AssemblyContextMakeFlexible",
     "AssemblyContextMakeRigid",
     "Assembly_LinkSelectLinked",
+    "Assembly_ExportASMT",
     "AssemblyContextPlaySimulation",
     "AssemblySimulationSeek",
     "AssemblySimulationStep",
@@ -81,8 +82,8 @@ def test_context_inventory_is_complete_unique_and_small() -> None:
     assert {action.action_id for action in NATIVE_CONTEXT_ACTIONS} == (
         EXPECTED_CONTEXT_ACTION_IDS
     )
-    assert len(NATIVE_CONTEXT_ACTIONS) == 26
-    assert len({action.action_id for action in NATIVE_CONTEXT_ACTIONS}) == 26
+    assert len(NATIVE_CONTEXT_ACTIONS) == 27
+    assert len({action.action_id for action in NATIVE_CONTEXT_ACTIONS}) == 27
     assert sum(action.classification.human_only for action in NATIVE_CONTEXT_ACTIONS) == 5
     assert all(action.exact_target_type for action in NATIVE_CONTEXT_ACTIONS)
 
@@ -90,8 +91,8 @@ def test_context_inventory_is_complete_unique_and_small() -> None:
 def test_surface_filtering_never_leaks_context_actions() -> None:
     assert len(context_actions_for_surface("drawing")) == 12
     assert len(provider_context_actions_for_surface("drawing")) == 8
-    assert len(context_actions_for_surface("assemble")) == 12
-    assert len(provider_context_actions_for_surface("assemble")) == 9
+    assert len(context_actions_for_surface("assemble")) == 13
+    assert len(provider_context_actions_for_surface("assemble")) == 10
     assert len(context_actions_for_surface("manufacture")) == 6
     assert len(provider_context_actions_for_surface("manufacture")) == 4
     assert len(context_actions_for_surface("model")) == 2
@@ -132,6 +133,12 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
     assert provider_actions["Assembly_LinkSelectLinked"].transaction_behavior == "none"
     assert provider_actions["Assembly_LinkSelectLinked"].source_command_id == (
         "Assembly_LinkSelectLinked"
+    )
+    assert provider_actions["Assembly_ExportASMT"].operation_variant == "asmt"
+    assert provider_actions["Assembly_ExportASMT"].classification.export
+    assert provider_actions["Assembly_ExportASMT"].transaction_behavior == "output"
+    assert provider_actions["Assembly_ExportASMT"].source_command_id == (
+        "Assembly_ExportASMT"
     )
     assert provider_actions["AssemblyContextPlaySimulation"].operation_variant == (
         "open"

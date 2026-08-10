@@ -10,6 +10,8 @@ from VibeCADNativeAssemblyDiagnosisBindings import (
     assembly_diagnosis_runtime_bindings,
 )
 from VibeCADNativeAssemblyDiagnosisRuntime import NativeAssemblyDiagnosisRuntime
+from VibeCADNativeAssemblyExportBindings import assembly_export_runtime_bindings
+from VibeCADNativeAssemblyExportRuntime import NativeAssemblyExportRuntime
 from VibeCADNativeAssemblyInspectBindings import assembly_inspect_runtime_bindings
 from VibeCADNativeAssemblyInspectRuntime import NativeAssemblyInspectRuntime
 from VibeCADNativeAssemblyJointBindings import assembly_joint_runtime_bindings
@@ -77,6 +79,7 @@ def build_native_runtime_bindings(
         raise TypeError("context must be a NativeRuntimeContext")
     common = NativeCommonRuntime(context=context)
     assembly_diagnosis = NativeAssemblyDiagnosisRuntime(context)
+    assembly_export = NativeAssemblyExportRuntime(context)
     assembly_inspect = NativeAssemblyInspectRuntime(context)
     assembly_joint = NativeAssemblyJointRuntime(context)
     assembly_playback = NativeAssemblyPlaybackRuntime(context)
@@ -102,6 +105,7 @@ def build_native_runtime_bindings(
     available = {
         **common_runtime_bindings(common),
         **assembly_diagnosis_runtime_bindings(assembly_diagnosis),
+        **assembly_export_runtime_bindings(assembly_export),
         **assembly_inspect_runtime_bindings(assembly_inspect),
         **assembly_joint_runtime_bindings(assembly_joint),
         **assembly_playback_runtime_bindings(assembly_playback),

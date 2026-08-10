@@ -49,6 +49,10 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyDiagnosisSchema.py
     VibeCADNativeAssemblyDiagnosisState.py
     VibeCADNativeAssemblyDistanceJoint.py
+    VibeCADNativeAssemblyExport.py
+    VibeCADNativeAssemblyExportBindings.py
+    VibeCADNativeAssemblyExportRuntime.py
+    VibeCADNativeAssemblyExportSchema.py
     VibeCADNativeAssemblyFixedJoint.py
     VibeCADNativeAssemblyGearJoint.py
     VibeCADNativeAssemblyGrounding.py
@@ -179,6 +183,8 @@ set(VibeCAD_Scripts
     VibeCADNativeModelTransformRuntime.py
     VibeCADNativeModelTransformSchema.py
     VibeCADNativeMutation.py
+    VibeCADNativeOutput.py
+    VibeCADNativeOutputGui.py
     VibeCADNativePartPrimitives.py
     VibeCADNativePartBuilder.py
     VibeCADNativePartHistory.py
@@ -614,6 +620,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_assembly_screw_joint_gui_integration.py
         vibecad_tests/native_assembly_gears_joint_gui_integration.py
         vibecad_tests/native_assembly_belt_joint_gui_integration.py
+        vibecad_tests/native_assembly_asmt_export_gui_integration.py
         vibecad_tests/native_assembly_solve_gui_integration.py
         vibecad_tests/native_assembly_conflict_diagnosis_gui_integration.py
         vibecad_tests/native_assembly_component_joints_gui_integration.py
@@ -628,11 +635,13 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_native_assembly_partial_redundancy_diagnosis.py
         vibecad_tests/test_native_assembly_redundant_diagnosis.py
         vibecad_tests/test_native_assembly_inspect.py
+        vibecad_tests/test_native_assembly_export.py
         vibecad_tests/test_native_assembly_solve.py
         vibecad_tests/test_native_assembly_playback.py
         vibecad_tests/test_native_assembly_bom.py
         vibecad_tests/test_native_assembly_simulation.py
         vibecad_tests/test_native_assembly_view.py
+        vibecad_tests/test_native_output.py
         vibecad_tests/native_sketch_batch_test_support.py
         vibecad_tests/native_sketch_geometry_gui_support.py
         vibecad_tests/native_sketch_provider_turn.py

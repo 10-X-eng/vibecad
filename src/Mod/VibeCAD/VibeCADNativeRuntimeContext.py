@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from VibeCADNativeOutput import NativeOutputAuthorizer
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeTargets import document_uid
 from VibeCADNativeUndo import NativeAssistantUndoLedger
@@ -32,6 +33,11 @@ class NativeRuntimeContext:
     active_document: Callable[[], Any] = field(repr=False, compare=False)
     active_surface_id: Callable[[], str] = field(repr=False, compare=False)
     edit_or_task_active: Callable[[], bool] = field(repr=False, compare=False)
+    authorize_output: NativeOutputAuthorizer | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     document_uid: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -47,6 +53,8 @@ class NativeRuntimeContext:
         )
         if not all(callable(value) for value in callbacks):
             raise TypeError("Native runtime guards must be callable")
+        if self.authorize_output is not None and not callable(self.authorize_output):
+            raise TypeError("Native output authorizer must be callable")
         object.__setattr__(self, "document_uid", document_uid(self.document))
 
     def guard(self, *, allow_owned_playback: bool = False) -> None:

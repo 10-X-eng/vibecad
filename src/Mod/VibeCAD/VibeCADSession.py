@@ -45,6 +45,7 @@ from VibeCADTools import (
     normalize_tool_failure,
     tool_failure,
 )
+from VibeCADNativeOutput import NativeOutputAuthorizer
 import VibeCADVibeScriptDomains as vibescript_domains
 
 
@@ -4017,6 +4018,7 @@ def make_provider_tool_runner(
     cancellation_check: CancellationCheck | None,
     steering_check: SteeringCheck | None,
     question_callback: QuestionCallback | None,
+    output_authorization_callback: NativeOutputAuthorizer | None = None,
     session_trigger: dict[str, Any] | None = None,
     document_thread_dispatch: DocumentThreadDispatch | None = None,
     turn_surface: dict[str, Any] | None = None,
@@ -4045,6 +4047,7 @@ def make_provider_tool_runner(
                 service=service,
                 expected_surface=dict(turn_surface),
                 expected_schemas=[dict(value) for value in (turn_schemas or [])],
+                output_authorizer=output_authorization_callback,
             ),
         )
         return NativeProviderToolRunner(
@@ -4984,6 +4987,7 @@ def _run_session_turn(
     cancellation_check: CancellationCheck | None,
     steering_check: SteeringCheck | None,
     question_callback: QuestionCallback | None,
+    output_authorization_callback: NativeOutputAuthorizer | None,
     session_trigger: dict[str, Any] | None,
     persist_input_as_user: bool,
     prompt_section: str,
@@ -5076,6 +5080,7 @@ def _run_session_turn(
         cancellation_check=cancellation_check,
         steering_check=steering_check,
         question_callback=question_callback,
+        output_authorization_callback=output_authorization_callback,
         session_trigger=session_trigger,
         document_thread_dispatch=document_thread_dispatch,
         turn_surface=(
@@ -5220,6 +5225,7 @@ def run_prompt(
     cancellation_check: CancellationCheck | None = None,
     steering_check: SteeringCheck | None = None,
     question_callback: QuestionCallback | None = None,
+    output_authorization_callback: NativeOutputAuthorizer | None = None,
     document_thread_dispatch: DocumentThreadDispatch | None = None,
     interaction_mode: str = "build",
 ) -> VibeCADResponse:
@@ -5232,6 +5238,7 @@ def run_prompt(
         cancellation_check=cancellation_check,
         steering_check=steering_check,
         question_callback=question_callback,
+        output_authorization_callback=output_authorization_callback,
         session_trigger=None,
         persist_input_as_user=True,
         prompt_section="CURRENT_USER_MESSAGE",
@@ -5332,6 +5339,7 @@ def run_sketch_close_continuation(
     cancellation_check: CancellationCheck | None = None,
     steering_check: SteeringCheck | None = None,
     question_callback: QuestionCallback | None = None,
+    output_authorization_callback: NativeOutputAuthorizer | None = None,
     document_thread_dispatch: DocumentThreadDispatch | None = None,
 ) -> VibeCADResponse:
     if not isinstance(event, dict):
@@ -5389,6 +5397,7 @@ def run_sketch_close_continuation(
         cancellation_check=cancellation_check,
         steering_check=steering_check,
         question_callback=question_callback,
+        output_authorization_callback=output_authorization_callback,
         session_trigger=clean_event,
         persist_input_as_user=False,
         prompt_section="CURRENT_SESSION_EVENT",

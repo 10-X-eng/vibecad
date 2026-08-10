@@ -194,6 +194,12 @@ NATIVE_CONTEXT_ACTIONS = (
         source_command_id="Assembly_LinkSelectLinked",
     ),
     _action(
+        "Assembly_ExportASMT", ("assemble",), ("menu",),
+        "export", "assembly.export", "asmt",
+        "HumanActiveAssemblyAndAuthorizedOutputPath", "output",
+        source_command_id="Assembly_ExportASMT",
+    ),
+    _action(
         "AssemblyContextPlaySimulation", ("assemble",), ("tree_context",),
         "view", "assembly.simulation", "open",
         "App::FeaturePython/Simulation", "presentation",

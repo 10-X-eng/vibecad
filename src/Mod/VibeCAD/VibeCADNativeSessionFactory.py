@@ -11,6 +11,7 @@ import secrets
 from typing import Any, Callable, Mapping
 
 from VibeCADNativeDispatch import NativeDispatchError, NativeTurnDispatcher
+from VibeCADNativeOutput import NativeOutputAuthorizer
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
@@ -103,6 +104,7 @@ def create_native_session_execution(
     debug_sink: Callable[[Mapping[str, Any]], None] | None = None,
     registry: Any | None = None,
     controller: Any | None = None,
+    output_authorizer: NativeOutputAuthorizer | None = None,
 ) -> NativeSessionExecution:
     if str(service.modeling_engine() or "").strip().lower() != "native":
         raise NativeDispatchError(
@@ -153,6 +155,7 @@ def create_native_session_execution(
         active_document=service._active_document,
         active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
         edit_or_task_active=lambda: _edit_or_task_active(service),
+        authorize_output=output_authorizer,
     )
     dispatcher = NativeTurnDispatcher(
         document=document,

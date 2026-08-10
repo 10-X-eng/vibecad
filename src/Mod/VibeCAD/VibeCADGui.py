@@ -2899,6 +2899,14 @@ def _execute_assistant_run(
     def _question_callback(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return _request_user_answers(questions, _cancelled)
 
+    def _output_authorization_callback(request: Any) -> Any:
+        from VibeCADNativeOutputGui import request_native_output_authorization
+
+        return request_native_output_authorization(
+            request,
+            parent=_find_dock() or dock,
+        )
+
     def _progress_on_document_thread(event: dict[str, Any]) -> None:
         current_dock = _find_dock() or dock
         if event.get("event") == "provider_turn_output":
@@ -2996,6 +3004,7 @@ def _execute_assistant_run(
             "cancellation_check": _cancelled,
             "steering_check": _steering_messages,
             "question_callback": _question_callback,
+            "output_authorization_callback": _output_authorization_callback,
             "document_thread_dispatch": _dispatch_to_document_thread,
         }
         try:

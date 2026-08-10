@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-10
-Checklist status: 363 complete / 383 pending / 746 total (48.7% by row count)
+Checklist status: 364 complete / 382 pending / 746 total (48.8% by row count)
 
 ## Purpose
 
@@ -139,8 +139,8 @@ implementation changes:
   Drawing IDs. It preserves live order, rejects unknown IDs, group drift, and
   composite-role drift, and contains no dispatch or activation API. Default,
   maximum, and all eight CAM-preference clean-profile GUI gates pass.
-- `VibeCADNativeContextManifest.py` separately inventories 25 current context
-  actions: nine Assembly, four CAM-only additions, ten Drawing, and two
+- `VibeCADNativeContextManifest.py` separately inventories 27 current context
+  actions: eleven Assembly, four CAM-only additions, ten Drawing, and two
   Inspection actions. Assembly context actions now have stable object names;
   source-drift tests prove the C++ and CAM context inventories exactly. The
   current VibeCAD fastener workflow adds no hidden context-only action: Model
@@ -6100,6 +6100,46 @@ implementation changes:
   absent, no FreeCAD process remains, and the immutable 5-axis fixture remains
   exactly `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
   Native mode remains globally unavailable until this entire plan is complete.
+- ASMT export is one exact `assembly.export/asmt` output operation mapped only
+  from the shipped `Assembly_ExportASMT` Assembly-menu action on the
+  human-selected Assemble surface. The provider request contains the exact
+  human-active Assembly reference plus its frozen diagnosis-state digest and
+  component, ground, and joint counts; it contains no path, directory, file,
+  or destination field. Preflight rejects an open transaction or recompute,
+  re-resolves the exact active `Assembly::AssemblyObject`, and freezes the
+  document graph, selection, undo position, transaction state, and GUI dirty
+  state before VibeCAD asks the human to choose a destination.
+  A new shared Native output boundary creates one trusted, bounded output
+  request and accepts one exact path only from a main-thread save dialog. The
+  resulting grant is request-bound and one-shot. It validates the suffix,
+  parent-directory identity, and destination type and identity, and rejects
+  cancellation, symlinks, directories, nonexistent parents, reuse, or drift.
+  The real compiled `AssemblyObject.exportAsASMT()` serializer writes only to
+  a private sibling temporary file. VibeCAD validates the ASMT header, bounds
+  and hashes the complete output, reauthorizes the frozen turn and unchanged
+  Assembly/document/UI state before and after serialization, then atomically
+  publishes with `os.replace`. A failed serializer, stale turn, changed
+  destination, or changed Assembly leaves the authorized destination intact.
+  The concise result returns the Assembly identity, destination basename,
+  byte count, SHA-256 digest, replacement fact, source-state digest, and
+  explicit preservation facts; neither the provider request nor result
+  reveals the human's filesystem path.
+  The compiled GUI lifecycle gate exercises the shipped C++ serializer and
+  reports `VIBECAD_NATIVE_ASSEMBLY_ASMT_EXPORT_GUI_OK human_serializer=true
+  explicit_path=true provider_path_refused=true cancel_noop=true
+  destination_drift_noop=true stale_noop=true atomic_overwrite=true
+  idempotent=true document_unchanged=true selection_unchanged=true reopen=true`.
+  The focused output/export suite has 15 passing tests and the complete
+  VibeCAD suite has 3,279 passing tests with four intentional skips.
+  VibeCADScripts, Ruff, formatting, Python compilation, diff checks, declared
+  source/build parity, and the compiled GUI gate are green. The protected
+  current-source Sketcher lifecycle, all 17 Part Design VibeScript phases, and
+  Assembly VibeScript integration pass; no VibeScript source changed. The
+  preserved recovery cache and lock are untouched, the forbidden crash lock
+  remains absent, no FreeCAD process remains, and the immutable 5-axis fixture
+  remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native mode remains globally unavailable until this entire plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6670,7 +6710,7 @@ concisely.
 - [x] 11.27 Implement simulation playback and restoration.
 - [x] 11.28 Implement BOM creation.
 - [x] 11.29 Implement linked-source selection reading.
-- [ ] 11.30 Implement ASMT export with explicit path authorization.
+- [x] 11.30 Implement ASMT export with explicit path authorization.
 - [ ] 11.31 Implement Assemble-ribbon fastener insertion.
 - [ ] 11.32 Implement Assemble-ribbon fastener editing.
 - [ ] 11.33 Implement Assemble-ribbon matching-hole action when present.
