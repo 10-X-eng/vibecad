@@ -285,7 +285,7 @@ def test_scale_parser_rejects_ambiguous_or_invalid_controls(mutate, message) -> 
         prepare_design_scale("document-transform", arguments)
 
 
-def test_scale_preflight_requires_active_exact_single_solid_bodies(monkeypatch) -> None:
+def test_scale_preflight_requires_active_exact_solid_bodies(monkeypatch) -> None:
     _runtime_value, _state, document = _runtime()
     monkeypatch.setitem(
         sys.modules,
@@ -318,6 +318,31 @@ def test_scale_preflight_requires_active_exact_single_solid_bodies(monkeypatch) 
 
     document.objects["TargetBody"].Shape.Solids = (object(), object())
     with pytest.raises(NativeModelError, match="one exact current solid"):
+        preflight_design_scale(document, spec)
+
+
+def test_scale_preflight_respects_each_body_allow_compound_setting(monkeypatch) -> None:
+    _runtime_value, _state, document = _runtime()
+    monkeypatch.setitem(
+        sys.modules,
+        "PartGui",
+        SimpleNamespace(
+            isModelingObjectActive=lambda _body: True,
+            resolveModelingObject=lambda body: body.Tip.CurrentState,
+        ),
+    )
+    arguments = _scale_arguments()
+    arguments.pop("operation")
+    spec = prepare_design_scale(document.Uid, arguments)
+    target = document.objects["TargetBody"]
+    target.Shape.Solids = (object(), object())
+    target.AllowCompound = True
+
+    prepared = preflight_design_scale(document, spec)
+    assert tuple(item.body for item in prepared.targets)[1] is target
+
+    target.AllowCompound = False
+    with pytest.raises(NativeModelError, match="solid-bearing Body state"):
         preflight_design_scale(document, spec)
 
 

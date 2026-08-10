@@ -9,6 +9,7 @@ import math
 import re
 from typing import Any, Mapping
 
+from VibeCADNativeDesignBodies import is_valid_solid_shape
 from VibeCADNativeDesignPatterns import (
     DesignPatternSourceSpec,
     configure_pattern_source,
@@ -363,8 +364,7 @@ def verify_design_linear_pattern(
         raise NativeModelError("The Linear Pattern failed its exact operation postcondition.")
     output_shapes = list(operation.OutputShapes)
     if len(output_shapes) != len(outputs) or any(
-        shape.isNull() or not shape.isValid() or len(shape.Solids) != 1
-        for shape in output_shapes
+        not is_valid_solid_shape(shape) for shape in output_shapes
     ):
         raise NativeModelError("The Linear Pattern produced an invalid solid result.")
 

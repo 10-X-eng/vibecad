@@ -113,6 +113,7 @@ set(VibeCAD_Scripts
     VibeCADNativeDispatch.py
     VibeCADNativeDocument.py
     VibeCADNativeDrawingSnapshot.py
+    VibeCADNativeDesignBodies.py
     VibeCADNativeDesignChamfer.py
     VibeCADNativeDesignCombine.py
     VibeCADNativeDesignCircularPattern.py

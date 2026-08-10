@@ -2,7 +2,7 @@
 
 Status: In Progress
 Scope owner: VibeCAD native multi-body modeling
-Last updated: 2026-07-31
+Last updated: 2026-08-10
 
 This document defines the design-level modeling architecture and the exact gate
 for calling it complete. It is intentionally short and must remain under five
@@ -15,7 +15,7 @@ One saved VibeCAD design is one modeling space:
 ```text
 Design
 ├─ Sketches       reusable profile definitions
-├─ Bodies         stable physical solid identities
+├─ Bodies         stable modeled-part identities
 ├─ Components     assembly/BOM groupings of Bodies
 └─ History        globally ordered modeling operations
 ```
@@ -24,9 +24,13 @@ Design
   operations and Bodies may reference it. Its support/frame is an explicit
   dependency and does not determine ownership. A profile operation may use the
   complete sketch or persist exact selectable closed areas from that sketch.
-- A **Body** identifies one physical solid. It owns visibility, appearance,
-  material, assembly identity, and one stable rendered publication, but it
-  does not own sketches, Body states, or the user-visible operation history.
+- A **Body** identifies one modeled part and owns its complete current shape.
+  With `AllowCompound` enabled, that shape may contain one or more topological
+  solids and all ordinary Body operations act on the complete shape without
+  changing Body identity. Disabling `AllowCompound` retains the traditional
+  single-solid restriction. A Body owns visibility, appearance, material,
+  assembly identity, and one stable rendered publication, but it does not own
+  sketches, Body states, or the user-visible operation history.
 - A **Component** groups Bodies that move, assemble, document, manufacture, and
   appear in a BOM as one unit. It owns a coordinate frame and product metadata,
   but it does not own sketches or History operations.
@@ -54,7 +58,7 @@ The Model ribbon must expose these primary actions together:
    frame. It never changes sketch or History ownership.
 2. **New Sketch** creates a reusable Design sketch. An active Body or Component
    is not required; the user selects its support/frame explicitly.
-3. **New Body** creates a stable solid identity, optionally assigned to a
+3. **New Body** creates a stable modeled-part identity, optionally assigned to a
    selected Component.
 4. Extrude, Revolve, and later profile-based commands accept one reusable
    sketch, either its complete profile or selected filled areas, plus an
@@ -69,8 +73,11 @@ The Model ribbon must expose these primary actions together:
 A sketch can therefore drive several features, and one cut or revolve can
 modify several independent Bodies across Component boundaries without copying
 the sketch or duplicating the operation. `Join` applies the generated tool to
-each target while preserving Body identities. Combining separate Bodies into
-one is a distinct Union operation with an explicit surviving Body identity.
+each target while preserving Body identities. Combining separate Body
+identities into one is a distinct Union operation with an explicit surviving
+Body identity. Split remains the explicit operation for turning selected
+result regions into independent Body identities; it is not required merely
+because one Body contains several solids.
 
 ## Persistent model
 
@@ -82,7 +89,7 @@ position, document object name, or transient object ID:
 | Design | `DesignId`, schema version |
 | Component | `ComponentId`, owning `DesignId` |
 | Sketch | `SketchId`, owning `DesignId`, explicit support/frame link |
-| Body | `BodyId`, optional `ComponentId`, one stable publication |
+| Body | `BodyId`, optional `ComponentId`, `AllowCompound`, one stable publication |
 | Operation | `OperationId`, owning `DesignId`, ordered input/output state links, target `BodyId` list |
 | Body state | `BodyStateId`, `BodyId`, producing `OperationId`, previous state link |
 | Body publication | `BodyId`, current `BodyStateId`; presentation only |

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import math
 from typing import Any, Mapping
 
+from VibeCADNativeDesignBodies import is_valid_body_shape, is_valid_solid_shape
 from VibeCADNativeDesignResults import DesignResultSpec, create_design_operation
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeMutation import NativeMutationDraft
@@ -188,16 +189,14 @@ def preflight_design_scale(
         if not PartGui.isModelingObjectActive(body):
             raise NativeModelError("A Design Scale Body is not active in current History.")
         if (
-            shape is None
-            or shape.isNull()
-            or not shape.isValid()
-            or len(shape.Solids) != 1
+            not is_valid_body_shape(body, shape)
             or state is None
             or getattr(state, "Document", None) is not document
             or not body_id
         ):
             raise NativeModelError(
-                "Every Design Scale target Body must contain one exact current solid state."
+                "Every Design Scale target Body must contain one exact current solid-bearing "
+                "Body state."
             )
         state_identity = id(state)
         if state_identity in state_identities:
@@ -256,10 +255,7 @@ def _verify_scale(operation: Any, expected: Mapping[str, Any]) -> Mapping[str, A
         or tuple(operation.OutputPresence)
         != tuple(True for _target in prepared.targets)
         or len(output_shapes) != len(prepared.targets)
-        or any(
-            shape.isNull() or not shape.isValid() or len(shape.Solids) != 1
-            for shape in output_shapes
-        )
+        or any(not is_valid_solid_shape(shape) for shape in output_shapes)
     ):
         raise NativeModelError("The Design Scale controls or exact Body ports changed.")
     return {

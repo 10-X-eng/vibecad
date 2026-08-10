@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import math
 from typing import Any, Mapping
 
+from VibeCADNativeDesignBodies import is_valid_body_shape
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import (
@@ -128,14 +129,11 @@ def _resolve_body(
     if (
         state is None
         or getattr(state, "Document", None) is not document
-        or shape is None
-        or shape.isNull()
-        or not shape.isValid()
-        or len(shape.Solids) != 1
+        or not is_valid_body_shape(body, shape)
         or not body_id
     ):
         raise NativeModelError(
-            f"The Design Combine {role} must contain one exact current solid state."
+            f"The Design Combine {role} must contain one exact current Body state."
         )
     return ResolvedDesignCombineBody(body, state, body_id, shape, frame)
 
@@ -218,9 +216,7 @@ def create_design_combine(
     expected_count = 1 if prepared.spec.keep_tools else len(prepared.bodies)
     if (
         len(output_shapes) != expected_count
-        or output_shapes[0].isNull()
-        or not output_shapes[0].isValid()
-        or len(output_shapes[0].Solids) != 1
+        or not is_valid_body_shape(prepared.result.body, output_shapes[0])
     ):
         raise NativeModelError("Design Combine produced an invalid solid output.")
     outputs = tuple(PartDesign.finalizeDesignOperationEdit(edit) or ())
@@ -318,9 +314,7 @@ def verify_design_combine(document: Any, draft: NativeMutationDraft) -> dict[str
         or tuple(operation.TargetFrames) != output_frames
         or tuple(draft.value["outputs"]) != output_bodies
         or len(output_shapes) != output_count
-        or output_shapes[0].isNull()
-        or not output_shapes[0].isValid()
-        or len(output_shapes[0].Solids) != 1
+        or not is_valid_body_shape(prepared.result.body, output_shapes[0])
         or any(not shape.isNull() for shape in output_shapes[1:])
     ):
         raise NativeModelError("The Design Combine controls or exact Body ports changed.")

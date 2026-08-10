@@ -9,6 +9,7 @@ import hashlib
 import math
 from typing import Any, Mapping
 
+from VibeCADNativeDesignBodies import is_valid_body_shape
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import (
@@ -177,14 +178,11 @@ def _resolve_body(document: Any, reference: NativeObjectRef) -> ResolvedDesignSp
     if (
         state is None
         or getattr(state, "Document", None) is not document
-        or shape is None
-        or shape.isNull()
-        or not shape.isValid()
-        or len(shape.Solids) != 1
+        or not is_valid_body_shape(body, shape)
         or not body_id
     ):
         raise NativeModelError(
-            "Design Split requires one source Body with one exact current solid state."
+            "Design Split requires one source Body with one exact current Body state."
         )
     if component is not None and str(getattr(component, "ComponentId", "") or "") != component_id:
         raise NativeModelError("The Design Split source Body has inconsistent Component identity.")

@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from VibeCADNativeDesignBodies import is_valid_body_shape
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeTargets import NativeObjectRef, object_reference, resolve_object
 
@@ -60,15 +61,9 @@ def pattern_source_from_mapping(
 
 
 def _valid_solid_body(body: Any, *, role: str) -> None:
-    shape = getattr(body, "Shape", None)
-    if (
-        shape is None
-        or shape.isNull()
-        or not shape.isValid()
-        or len(shape.Solids) != 1
-    ):
+    if not is_valid_body_shape(body):
         raise NativeModelError(
-            f"The exact Design Pattern {role} has no single valid solid state."
+            f"The exact Design Pattern {role} has no valid Body shape."
         )
 
 

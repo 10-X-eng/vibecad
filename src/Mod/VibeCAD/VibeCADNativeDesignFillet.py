@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import math
 from typing import Any, Mapping
 
+from VibeCADNativeDesignBodies import is_valid_solid_shape
 from VibeCADNativeDesignDressupTargets import (
     DesignDressupSelection,
     DesignDressupTarget,
@@ -76,10 +77,7 @@ def _verify_fillet(operation: Any, expected: Mapping[str, Any]) -> Mapping[str, 
         or len(output_shapes) != len(spec.targets)
     ):
         raise NativeModelError("The Design Fillet controls changed before commit.")
-    if any(
-        shape.isNull() or not shape.isValid() or len(shape.Solids) != 1
-        for shape in output_shapes
-    ):
+    if any(not is_valid_solid_shape(shape) for shape in output_shapes):
         raise NativeModelError("The Design Fillet produced an invalid Body result.")
     return {
         "radius_mm": radius,

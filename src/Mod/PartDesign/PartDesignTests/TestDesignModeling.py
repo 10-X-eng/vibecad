@@ -138,6 +138,17 @@ class TestDesignModeling(unittest.TestCase):
         initial.Shape = Part.makeBox(10, 10, 10)
         return component, body, initial
 
+    def _compound_body(self, name, origins):
+        body = self.document.addObject("PartDesign::Body", f"{name}Body")
+        initial = body.newObject(
+            "PartDesign::Feature",
+            f"{name}ImportedState",
+        )
+        initial.Shape = Part.makeCompound(
+            [Part.makeBox(10, 10, 10, App.Vector(*origin)) for origin in origins]
+        )
+        return body, initial
+
     def _new_body_operation(self, type_name, name, configure):
         self.document.openTransaction(f"Create {name}")
         operation = self.document.addObject(type_name, name)
@@ -325,6 +336,40 @@ class TestDesignModeling(unittest.TestCase):
         assert_shape_matches_generator(generator, body)
         PartDesign.validateDesign(operation)
 
+    def test_generated_operation_preserves_a_multi_solid_body_shape(self):
+        self.document.openTransaction("Create compound generated operation")
+        generator = self.document.addObject(
+            "Part::Feature",
+            "CompoundNativeGenerator",
+        )
+        generator.Shape = Part.makeCompound(
+            [
+                Part.makeBox(10, 10, 10),
+                Part.makeBox(10, 10, 10, App.Vector(25, 0, 0)),
+            ]
+        )
+        self.document.classifyProvisionalTimelineInternalObject(generator)
+        operation = self.document.addObject(
+            "PartDesign::DesignGeneratedOperation",
+            "CompoundGeneratedFeature",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Generator = generator
+        operation.GeneratorKind = "compound-native-generator"
+        operation.OutputLabel = "Compound Generated Body"
+        PartDesign.setDesignOperationTargets(edit, "New Body", [])
+        self.document.recompute()
+        bodies = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(len(bodies), 1)
+        body = bodies[0]
+        self.assertTrue(body.AllowCompound)
+        self.assertEqual(len(body.Shape.Solids), 2)
+        self.assertAlmostEqual(body.Shape.Volume, 2000.0)
+        self.assertAlmostEqual(body.Shape.BoundBox.XLength, 35.0)
+        PartDesign.validateDesign(operation)
+
     def test_one_master_sketch_drives_independent_closed_region_extrusions(self):
         sketch, first_radius = self._master_circle_sketch("MasterSketch")
         self.document.recompute()
@@ -397,6 +442,124 @@ class TestDesignModeling(unittest.TestCase):
             places=4,
         )
         self._assert_dependency_graph_acyclic(self.document)
+
+    def test_compound_body_join_preserves_one_body_identity(self):
+        self.document.openTransaction("Create compound Body")
+        body = self.document.addObject("PartDesign::Body", "CompoundTarget")
+        initial = body.newObject("PartDesign::Feature", "CompoundImportedState")
+        initial.Shape = Part.makeCompound(
+            [
+                Part.makeBox(10, 10, 10, App.Vector(index * 20, 0, 0))
+                for index in range(18)
+            ]
+        )
+        original_body_id = str(body.VibeCADBodyId)
+        self.document.commitTransaction()
+
+        sketch = self._rectangle_sketch("CompoundJoinProfile", 2, 8, 2, 8)
+        sketch.Placement.Base.z = 9
+
+        self.document.openTransaction("Join profile into compound Body")
+        operation = self.document.addObject(
+            "PartDesign::DesignExtrude",
+            "CompoundJoin",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Profile = sketch
+        operation.Length = 3
+        PartDesign.setDesignOperationTargets(edit, "Join", [body])
+        self.document.recompute()
+        self.assertTrue(operation.isValid(), operation.getStatusString())
+        outputs = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(outputs, [body])
+        self.assertEqual(str(body.VibeCADBodyId), original_body_id)
+        self.assertEqual(len(body.Shape.Solids), 18)
+        self.assertGreater(body.Shape.Volume, initial.Shape.Volume)
+        PartDesign.validateDesign(operation)
+
+        saved = Path(self._temporary_directory.name) / "compound-body-join.FCStd"
+        operation_name = operation.Name
+        body_name = body.Name
+        self.document.saveAs(str(saved))
+        App.closeDocument(self.document.Name)
+        self.document = App.openDocument(str(saved))
+
+        reopened_body = self.document.getObject(body_name)
+        reopened_operation = self.document.getObject(operation_name)
+        self.assertEqual(str(reopened_body.VibeCADBodyId), original_body_id)
+        self.assertEqual(len(reopened_body.Shape.Solids), 18)
+        PartDesign.validateDesign(reopened_operation)
+
+    def test_new_body_accepts_disconnected_profile_regions_when_compounds_are_allowed(self):
+        sketch, _ = self._master_circle_sketch("CompoundNewBodyProfile")
+        operation, body = self._new_body_operation(
+            "PartDesign::DesignExtrude",
+            "CompoundNewBody",
+            lambda feature: (
+                setattr(feature, "Profile", sketch),
+                setattr(feature, "Length", 5),
+            ),
+        )
+
+        self.assertTrue(body.AllowCompound)
+        self.assertEqual(len(body.Shape.Solids), 2)
+        PartDesign.validateDesign(operation)
+
+    def test_cut_can_split_one_compound_enabled_body_without_changing_identity(self):
+        self.document.openTransaction("Create cut target")
+        body = self.document.addObject("PartDesign::Body", "CompoundCutTarget")
+        initial = body.newObject("PartDesign::Feature", "CompoundCutInitial")
+        initial.Shape = Part.makeBox(10, 10, 10)
+        original_body_id = str(body.VibeCADBodyId)
+        self.document.commitTransaction()
+        sketch = self._rectangle_sketch("CompoundCutProfile", 4, 6, 0, 10)
+
+        self.document.openTransaction("Split solid with ordinary Cut")
+        operation = self.document.addObject(
+            "PartDesign::DesignExtrude",
+            "CompoundCut",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Profile = sketch
+        operation.Length = 10
+        PartDesign.setDesignOperationTargets(edit, "Cut", [body])
+        self.document.recompute()
+        self.assertTrue(operation.isValid(), operation.getStatusString())
+        PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(str(body.VibeCADBodyId), original_body_id)
+        self.assertEqual(len(body.Shape.Solids), 2)
+        self.assertAlmostEqual(body.Shape.Volume, 800.0)
+        PartDesign.validateDesign(operation)
+
+    def test_cut_rejects_multi_solid_result_when_allow_compound_is_disabled(self):
+        self.document.openTransaction("Create strict cut target")
+        body = self.document.addObject("PartDesign::Body", "StrictCutTarget")
+        body.AllowCompound = False
+        initial = body.newObject("PartDesign::Feature", "StrictCutInitial")
+        initial.Shape = Part.makeBox(10, 10, 10)
+        self.document.commitTransaction()
+        sketch = self._rectangle_sketch("StrictCutProfile", 4, 6, 0, 10)
+
+        self.document.openTransaction("Reject split strict Body")
+        operation = self.document.addObject(
+            "PartDesign::DesignExtrude",
+            "StrictCut",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Profile = sketch
+        operation.Length = 10
+        PartDesign.setDesignOperationTargets(edit, "Cut", [body])
+        self.document.recompute()
+
+        self.assertFalse(operation.isValid())
+        self.assertIn("Allow Compound is disabled", operation.getStatusString())
+        self.assertAlmostEqual(body.Shape.Volume, 1000.0)
+        self.assertEqual(len(body.Shape.Solids), 1)
+        self.document.abortTransaction()
 
     def test_master_sketch_regions_cut_their_explicit_bodies_in_one_operation(self):
         _, first_body, _ = self._component_body("FirstRegionTarget", -3)
@@ -805,6 +968,35 @@ class TestDesignModeling(unittest.TestCase):
         PartDesign.validateDesign(reopened)
         self._assert_dependency_graph_acyclic(self.document)
 
+    def test_scale_preserves_all_solids_under_one_body_identity(self):
+        body, initial = self._compound_body(
+            "CompoundScale",
+            [(0, 0, 0), (25, 0, 0)],
+        )
+        body_id = str(body.VibeCADBodyId)
+
+        self.document.openTransaction("Scale compound Body")
+        operation = self.document.addObject(
+            "PartDesign::DesignScale",
+            "CompoundScale",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        PartDesign.setDesignOperationTargets(edit, "Modify", [body])
+        operation.Uniform = True
+        operation.UniformScale = 2.0
+        operation.Center = App.Vector(0, 0, 0)
+        self.document.recompute()
+        outputs = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(outputs, [body])
+        self.assertEqual(operation.InputStates, [initial])
+        self.assertEqual(str(body.VibeCADBodyId), body_id)
+        self.assertEqual(len(body.Shape.Solids), 2)
+        self.assertAlmostEqual(body.Shape.Volume, 16000.0)
+        self.assertAlmostEqual(body.Shape.BoundBox.XLength, 70.0)
+        PartDesign.validateDesign(operation)
+
     def test_reference_is_one_global_definition_with_exact_body_state(self):
         source_operation, source_body = self._new_body_operation(
             "PartDesign::DesignBox",
@@ -1033,6 +1225,74 @@ class TestDesignModeling(unittest.TestCase):
             self.assertEqual(tuple(operation.OutputBodyIds), expected[1])
             self.assertTrue(operation.isValid(), operation.getStatusString())
             PartDesign.validateDesign(operation)
+
+    def test_body_pattern_copies_a_complete_compound_body(self):
+        source_body, _ = self._compound_body(
+            "CompoundPatternSource",
+            [(0, 0, 0), (0, 20, 0)],
+        )
+        source_body_id = str(source_body.VibeCADBodyId)
+
+        self.document.openTransaction("Pattern compound Body")
+        operation = self.document.addObject(
+            "PartDesign::DesignLinearPattern",
+            "CompoundBodyPattern",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Occurrences = 2
+        operation.Spacing = 40
+        PartDesign.setDesignBodyPatternSource(edit, source_body, 1)
+        self.document.recompute()
+        outputs = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(len(outputs), 1)
+        output = outputs[0]
+        self.assertNotEqual(str(output.VibeCADBodyId), source_body_id)
+        self.assertEqual(len(output.Shape.Solids), 2)
+        self.assertAlmostEqual(output.Shape.Volume, 2000.0)
+        self.assertAlmostEqual(output.Shape.BoundBox.XMin, 40.0)
+        self.assertAlmostEqual(output.Shape.BoundBox.YLength, 30.0)
+        self.assertEqual(len(source_body.Shape.Solids), 2)
+        PartDesign.validateDesign(operation)
+
+    def test_feature_pattern_modifies_a_complete_compound_body(self):
+        body, _ = self._compound_body(
+            "CompoundFeaturePattern",
+            [(0, 0, 0), (40, 0, 0)],
+        )
+        body_id = str(body.VibeCADBodyId)
+
+        self.document.openTransaction("Create compound feature source")
+        source = self.document.addObject(
+            "PartDesign::DesignBox",
+            "CompoundFeatureSource",
+        )
+        source.Placement.Base.x = 8
+        source_edit = PartDesign.beginDesignOperationEdit(source)
+        PartDesign.setDesignOperationTargets(source_edit, "Join", [body])
+        self.document.recompute()
+        PartDesign.finalizeDesignOperationEdit(source_edit)
+        self.document.commitTransaction()
+
+        self.document.openTransaction("Pattern feature on compound Body")
+        operation = self.document.addObject(
+            "PartDesign::DesignLinearPattern",
+            "CompoundFeaturePatternOperation",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Occurrences = 2
+        operation.Spacing = 8
+        PartDesign.setDesignFeaturePatternTargets(edit, source, [body])
+        self.document.recompute()
+        outputs = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(outputs, [body])
+        self.assertEqual(str(body.VibeCADBodyId), body_id)
+        self.assertEqual(len(body.Shape.Solids), 2)
+        self.assertAlmostEqual(body.Shape.Volume, 3600.0)
+        PartDesign.validateDesign(operation)
 
     def test_feature_pattern_repeats_parametric_additive_and_cut_tools(self):
         component = self.document.addObject(
@@ -1722,6 +1982,42 @@ class TestDesignModeling(unittest.TestCase):
         PartDesign.validateDesign(reopened_combine)
         self._assert_dependency_graph_acyclic(self.document)
 
+    def test_combine_operates_on_complete_compound_body_shapes(self):
+        result_body, result_input = self._compound_body(
+            "CompoundCombineResult",
+            [(0, 0, 0), (30, 0, 0)],
+        )
+        tool_body, tool_input = self._compound_body(
+            "CompoundCombineTool",
+            [(5, 0, 0), (60, 0, 0)],
+        )
+        result_body_id = str(result_body.VibeCADBodyId)
+
+        self.document.openTransaction("Combine compound Bodies")
+        operation = self.document.addObject(
+            "PartDesign::DesignCombine",
+            "CompoundCombine",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        PartDesign.setDesignCombineBodies(
+            edit,
+            "Join",
+            result_body,
+            [tool_body],
+            True,
+        )
+        outputs = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(outputs, [result_body])
+        self.assertEqual(operation.InputStates, [result_input, tool_input])
+        self.assertEqual(str(result_body.VibeCADBodyId), result_body_id)
+        self.assertEqual(len(result_body.Shape.Solids), 3)
+        self.assertAlmostEqual(result_body.Shape.Volume, 3500.0)
+        self.assertEqual(len(tool_body.Shape.Solids), 2)
+        self.assertAlmostEqual(tool_body.Shape.Volume, 2000.0)
+        PartDesign.validateDesign(operation)
+
     def test_combine_cut_uses_saved_cross_component_frames(self):
         _, result_body, _ = self._component_body("Result", 0)
         tool_component, tool_body, _ = self._component_body("Tool", 5)
@@ -1951,6 +2247,67 @@ class TestDesignModeling(unittest.TestCase):
         self.assertAlmostEqual(reopened_created.Shape.Volume, 400.0)
         PartDesign.validateDesign(reopened)
         self._assert_dependency_graph_acyclic(self.document)
+
+    def test_split_divides_one_solid_within_a_compound_source_body(self):
+        component = self.document.addObject(
+            "PartDesign::Component",
+            "CompoundSplitComponent",
+        )
+        source_body, source_input = self._compound_body(
+            "CompoundSplitSource",
+            [(0, 0, 0), (20, 0, 0)],
+        )
+        component.addObject(source_body)
+        source_body_id = str(source_body.VibeCADBodyId)
+        splitter = self.document.addObject(
+            "PartDesign::Feature",
+            "CompoundSplitterPlane",
+        )
+        splitter.Shape = Part.makePlane(
+            30,
+            30,
+            App.Vector(5, 20, -10),
+            App.Vector(1, 0, 0),
+        )
+
+        self.document.openTransaction("Split compound Body")
+        operation = self.document.addObject(
+            "PartDesign::DesignSplit",
+            "CompoundSplit",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        witnesses = PartDesign.setDesignSplitDefinition(
+            edit,
+            source_body,
+            [splitter],
+        )
+        self.assertEqual(len(witnesses), 3)
+        retained_region = max(
+            range(len(witnesses)),
+            key=lambda index: witnesses[index].x,
+        )
+        PartDesign.assignDesignSplitRegions(
+            edit,
+            source_body,
+            witnesses,
+            retained_region,
+        )
+        outputs = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(len(outputs), 3)
+        self.assertIs(outputs[0], source_body)
+        self.assertEqual(operation.InputStates, [source_input])
+        self.assertEqual(str(source_body.VibeCADBodyId), source_body_id)
+        self.assertTrue(all(len(body.Shape.Solids) == 1 for body in outputs))
+        self.assertEqual(
+            sorted(round(body.Shape.Volume) for body in outputs),
+            [500, 500, 1000],
+        )
+        self.assertTrue(
+            all(body.getParentGeoFeatureGroup() is component for body in outputs)
+        )
+        PartDesign.validateDesign(operation)
 
     def test_separate_persists_one_body_identity_per_source_solid(self):
         self.document.openTransaction("Create reusable multi-solid definition")
@@ -2449,6 +2806,41 @@ class TestDesignModeling(unittest.TestCase):
         )
         PartDesign.validateDesign(reopened)
         self._assert_dependency_graph_acyclic(self.document)
+
+    def test_design_fillet_preserves_untouched_solids_in_one_compound_body(self):
+        self.document.openTransaction("Create compound fillet target")
+        body = self.document.addObject("PartDesign::Body", "CompoundFilletBody")
+        initial = body.newObject("PartDesign::Feature", "CompoundFilletInitial")
+        initial.Shape = Part.makeCompound(
+            [
+                Part.makeBox(10, 10, 10),
+                Part.makeBox(10, 10, 10, App.Vector(20, 0, 0)),
+            ]
+        )
+        original_body_id = str(body.VibeCADBodyId)
+        self.document.commitTransaction()
+
+        self.document.openTransaction("Fillet compound Body")
+        fillet = self.document.addObject(
+            "PartDesign::DesignFillet",
+            "CompoundFillet",
+        )
+        edit = PartDesign.beginDesignOperationEdit(fillet)
+        PartDesign.setDesignOperationTargets(edit, "Modify", [body])
+        fillet.TargetElementOffsets = [0, 1]
+        fillet.TargetElements = ["Edge1"]
+        fillet.Radius = 1.0
+        self.document.recompute()
+        self.assertTrue(fillet.isValid(), fillet.getStatusString())
+        outputs = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(outputs, [body])
+        self.assertEqual(str(body.VibeCADBodyId), original_body_id)
+        self.assertEqual(len(body.Shape.Solids), 2)
+        self.assertLess(body.Shape.Volume, 2000.0)
+        self.assertAlmostEqual(body.Shape.Solids[1].Volume, 1000.0)
+        PartDesign.validateDesign(fillet)
 
     def test_design_chamfer_cancel_and_accept_leave_no_body_tip_links(self):
         _, body, initial = self._component_body("Target", 0)
@@ -3465,6 +3857,57 @@ class TestDesignModeling(unittest.TestCase):
         )
         PartDesign.validateDesign(operation)
         self._assert_dependency_graph_acyclic(self.document)
+
+    def test_vibescript_output_keeps_a_compound_shape_in_one_body(self):
+        program = self.document.addObject("App::Part", "CompoundScriptProgram")
+
+        self.document.openTransaction("Publish compound VibeScript output")
+        operation = self.document.addObject(
+            "PartDesign::DesignScriptOperation",
+            "CompoundScriptOperation",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        PartDesign.setDesignScriptOutputs(
+            edit,
+            program.Name,
+            "program-compound-output",
+            "revision-1",
+            ["Enclosure"],
+            ["Enclosure"],
+            [
+                Part.makeCompound(
+                    [
+                        Part.makeBox(10, 10, 10),
+                        Part.makeBox(10, 10, 10, App.Vector(25, 0, 0)),
+                    ]
+                )
+            ],
+            [None],
+        )
+        bodies = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(len(bodies), 1)
+        body = bodies[0]
+        body_name = body.Name
+        body_id = str(body.VibeCADBodyId)
+        operation_name = operation.Name
+        self.assertEqual(len(body.Shape.Solids), 2)
+        self.assertAlmostEqual(body.Shape.Volume, 2000.0)
+        PartDesign.validateDesign(operation)
+
+        path = Path(self._temporary_directory.name) / "CompoundScript.FCStd"
+        self.document.saveAs(str(path))
+        App.closeDocument(self.document.Name)
+        self.document = App.openDocument(str(path))
+        self.document.recompute()
+
+        operation = self.document.getObject(operation_name)
+        body = self.document.getObject(body_name)
+        self.assertEqual(str(body.VibeCADBodyId), body_id)
+        self.assertEqual(len(body.Shape.Solids), 2)
+        self.assertAlmostEqual(body.Shape.Volume, 2000.0)
+        PartDesign.validateDesign(operation)
 
     def test_vibescript_finalizer_leaves_unrelated_document_branch_deferred(self):
         class RecomputeCounter:

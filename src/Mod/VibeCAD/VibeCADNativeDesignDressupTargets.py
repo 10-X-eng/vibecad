@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import re
 from typing import Any, Mapping
 
+from VibeCADNativeDesignBodies import is_valid_body_shape
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeTargets import NativeObjectRef, resolve_object
 
@@ -110,14 +111,9 @@ def preflight_dressup_selection(
             expected_types=("PartDesign::Body",),
         )
         shape = getattr(body, "Shape", None)
-        if (
-            shape is None
-            or shape.isNull()
-            or not shape.isValid()
-            or len(shape.Solids) != 1
-        ):
+        if not is_valid_body_shape(body, shape):
             raise NativeModelError(
-                f"Every {operation} target Body must contain one valid solid."
+                f"Every {operation} target Body must contain a valid Body shape."
             )
         for name in target.subelements:
             try:

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <App/PropertyLinks.h>
@@ -81,6 +82,29 @@ public:
     static Body* bodyWithId(App::Document& document, const std::string& bodyId);
     static App::Part* componentWithId(App::Document& document, const std::string& componentId);
     static std::string componentId(const App::Part& component);
+
+    /**
+     * Enforce the saved shape contract for one user-visible Body.
+     *
+     * Body identity belongs to the complete current shape. A Body with
+     * AllowCompound enabled may therefore contain any positive number of
+     * topological solids; disabling AllowCompound retains the traditional
+     * single-solid restriction. The context is included in deterministic
+     * diagnostics. This function never mutates the Body or shape.
+     */
+    static void requireBodyShape(
+        const Body& body,
+        const Part::TopoShape& shape,
+        std::string_view context
+    );
+
+    /** Apply the same contract before an operation-created Body exists. */
+    static void requireBodyShape(
+        const Part::TopoShape& shape,
+        bool allowCompound,
+        std::string_view bodyLabel,
+        std::string_view context
+    );
 
     /**
      * Resolve one user-selected modeling reference at a global definition's

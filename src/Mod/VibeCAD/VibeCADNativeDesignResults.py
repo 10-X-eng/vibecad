@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import math
 from typing import Any, Callable, Mapping
 
+from VibeCADNativeDesignBodies import is_valid_body_shape
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import (
@@ -209,6 +210,7 @@ def verify_design_operation(document: Any, draft: NativeMutationDraft) -> dict[s
         or operation.ResultOperation != spec.native_mode
         or not operation.isValid()
         or any(document.getObject(body.Name) is not body for body in outputs)
+        or any(not is_valid_body_shape(body) for body in outputs)
     ):
         raise NativeModelError("The Design feature failed its exact output postcondition.")
     if spec.mode == "new_body":
