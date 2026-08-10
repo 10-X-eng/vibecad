@@ -26,7 +26,7 @@ _CONTEXT_SOURCES = frozenset(
     }
 )
 _TRANSACTION_BEHAVIORS = frozenset(
-    {"document", "presentation", "output", "background_output", "human"}
+    {"none", "document", "presentation", "output", "background_output", "human"}
 )
 _INSPECTION_SURFACES = (
     "model",
@@ -45,12 +45,12 @@ def _classification(
     *,
     interactive: bool = False,
 ) -> NativeActionClassification:
-    if primary not in {"mutation", "view", "export", "human_only"}:
+    if primary not in {"read", "mutation", "view", "export", "human_only"}:
         raise NativeContextManifestError(
             f"Unsupported context-action classification {primary!r}."
         )
     return NativeActionClassification(
-        read=False,
+        read=primary == "read",
         mutation=primary == "mutation",
         view=primary == "view",
         export=primary == "export",
@@ -125,6 +125,7 @@ class NativeContextActionPlan:
             "sources": list(self.sources),
             "source_command_id": self.source_command_id,
             "classification": {
+                "read": self.classification.read,
                 "mutation": self.classification.mutation,
                 "view": self.classification.view,
                 "export": self.classification.export,
@@ -185,6 +186,12 @@ NATIVE_CONTEXT_ACTIONS = (
         "AssemblyContextMakeRigid", ("assemble",), ("tree_context",),
         "mutation", "assembly.structure", "make_rigid",
         "Assembly::AssemblyLink", "document",
+    ),
+    _action(
+        "Assembly_LinkSelectLinked", ("assemble",), ("tree_context", "menu"),
+        "read", "assembly.inspect", "linked_source",
+        "HumanSelectionExactActiveAssemblyLink", "none",
+        source_command_id="Assembly_LinkSelectLinked",
     ),
     _action(
         "AssemblyContextPlaySimulation", ("assemble",), ("tree_context",),

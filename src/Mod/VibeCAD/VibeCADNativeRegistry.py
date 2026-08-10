@@ -10,6 +10,12 @@ from VibeCADNativeAssemblyDiagnosisBindings import (
 from VibeCADNativeAssemblyDiagnosisSchema import (
     register_assembly_diagnosis_capability_definition,
 )
+from VibeCADNativeAssemblyInspectBindings import (
+    register_assembly_inspect_capability_implementation,
+)
+from VibeCADNativeAssemblyInspectSchema import (
+    register_assembly_inspect_capability_definition,
+)
 from VibeCADNativeAssemblyJointBindings import (
     register_assembly_joint_capability_implementation,
 )
@@ -145,6 +151,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_common_capability_implementations(registry)
     register_assembly_diagnosis_capability_definition(registry)
     register_assembly_diagnosis_capability_implementation(registry)
+    register_assembly_inspect_capability_definition(registry)
+    register_assembly_inspect_capability_implementation(registry)
     register_assembly_joint_capability_definition(registry)
     register_assembly_joint_capability_implementation(registry)
     register_assembly_playback_capability_definition(registry)

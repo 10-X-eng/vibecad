@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-10
-Checklist status: 362 complete / 384 pending / 746 total (48.5% by row count)
+Checklist status: 363 complete / 383 pending / 746 total (48.7% by row count)
 
 ## Purpose
 
@@ -6062,6 +6062,44 @@ implementation changes:
   fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
   Native mode remains globally unavailable until this entire plan is complete.
+- Linked-source selection is one exact read-only
+  `assembly.inspect/linked_source` operation mapped to the shipped
+  `Assembly_LinkSelectLinked` command exposed by the Assembly menu and
+  AssemblyLink tree context menu. The context-action manifest now models
+  primary read operations with `none` transaction behavior explicitly; it
+  does not misclassify this action as a mutation or synthesize a ribbon button.
+  The closed schema accepts only one exact current-document AssemblyLink name.
+  Runtime reauthorizes the frozen Assemble turn, resolves that exact live
+  `Assembly::AssemblyLink`, requires it to be the sole global human selection,
+  preserves any selected subelement names, requires both the occurrence and
+  linked `Assembly::AssemblyObject` to be active at their documents' current
+  History positions, and resolves the same native `LinkedObject` relationship
+  consumed by the C++ command. It reauthorizes again and verifies the global
+  selection, target and source document graphs, object identities, active
+  document, ribbon, edit state, and task state did not change. It never runs a
+  command, activates a document, selects the source, or changes an MDI view.
+  The concise result returns exact occurrence and source document UIDs, names,
+  object IDs, types and bounded labels, external-document and rigid/flexible
+  facts, selected subelements, and explicit preservation facts.
+  The compiled GUI gate saves and reopens a real cross-document
+  `Assembly::AssemblyLink`, proves the shipped human command selects the source
+  and navigates to its document, then proves Native returns that identical
+  source while preserving active document, MDI subwindow, selection, task/edit
+  state, touched state, transactions, undo history, and both document graphs.
+  Zero- and multi-selection calls fail without mutation. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_LINKED_SOURCE_GUI_OK human_navigation=true
+  external=true read_only=true exact_selection=true stale_noop=true
+  reopen=true selection_unchanged=true active_document_unchanged=true`.
+  The complete VibeCAD suite has 3,264 passing tests and four intentional
+  skips; the focused manifest, registry, schema and runtime suite has 79
+  passing tests. VibeCADScripts, Ruff, new-file formatting, Python compilation, diff
+  checks, and declared source/build parity are green. The protected
+  current-source Sketcher gate, all 17 Part Design phases, and Assembly
+  VibeScript integration pass; no VibeScript source changed. The preserved
+  recovery cache and lock are untouched, the forbidden crash lock remains
+  absent, no FreeCAD process remains, and the immutable 5-axis fixture remains
+  exactly `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native mode remains globally unavailable until this entire plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6631,7 +6669,7 @@ concisely.
 - [x] 11.26 Implement simulation creation.
 - [x] 11.27 Implement simulation playback and restoration.
 - [x] 11.28 Implement BOM creation.
-- [ ] 11.29 Implement linked-source selection reading.
+- [x] 11.29 Implement linked-source selection reading.
 - [ ] 11.30 Implement ASMT export with explicit path authorization.
 - [ ] 11.31 Implement Assemble-ribbon fastener insertion.
 - [ ] 11.32 Implement Assemble-ribbon fastener editing.
