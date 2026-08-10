@@ -501,6 +501,8 @@ def capture_assembly_diagnosis_state(assembly: Any) -> AssemblyDiagnosisState:
     diagnostic_names = [str(item.joint.Name) for item in joint_diagnostics]
     if len(set(diagnostic_names)) != len(diagnostic_names):
         raise _malformed("duplicate joint")
+    if set(categories["malformed"]).intersection(diagnostic_names):
+        raise _malformed("malformed joint")
     diagnostics_by_name = {str(item.joint.Name): item for item in joint_diagnostics}
     tolerance = _finite(
         raw.get("residual_tolerance"),

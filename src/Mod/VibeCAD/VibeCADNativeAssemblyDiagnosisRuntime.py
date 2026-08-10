@@ -12,6 +12,10 @@ from VibeCADNativeAssemblyConflictDiagnosis import (
     read_conflicting_constraints,
 )
 from VibeCADNativeAssemblyDiagnosisState import NativeAssemblyDiagnosisError
+from VibeCADNativeAssemblyMalformedDiagnosis import (
+    MalformedConstraintsSpec,
+    read_malformed_constraints,
+)
 from VibeCADNativeAssemblyPartialRedundancyDiagnosis import (
     PartiallyRedundantConstraintsSpec,
     read_partially_redundant_constraints,
@@ -56,6 +60,18 @@ _PARTIALLY_REDUNDANT_FIELDS = frozenset(
         "expected_grounded_count",
         "expected_joint_count",
         "expected_partially_redundant_count",
+        "offset",
+        "limit",
+    }
+)
+_MALFORMED_FIELDS = frozenset(
+    {
+        "assembly",
+        "expected_diagnosis_state_sha256",
+        "expected_component_count",
+        "expected_grounded_count",
+        "expected_joint_count",
+        "expected_malformed_count",
         "offset",
         "limit",
     }
@@ -119,6 +135,7 @@ class NativeAssemblyDiagnosisRuntime:
                 "select_partially_redundant_constraints": (
                     _PARTIALLY_REDUNDANT_FIELDS
                 ),
+                "select_malformed_constraints": _MALFORMED_FIELDS,
             },
         )
         common = {
@@ -177,6 +194,16 @@ class NativeAssemblyDiagnosisRuntime:
                 ),
             )
             return read_partially_redundant_constraints(self._context, spec)
+        if operation == "select_malformed_constraints":
+            spec = MalformedConstraintsSpec(
+                **common,
+                expected_malformed_count=_count(
+                    values["expected_malformed_count"],
+                    "expected_malformed_count",
+                    256,
+                ),
+            )
+            return read_malformed_constraints(self._context, spec)
         raise NativeAssemblyDiagnosisError(
             "The Assembly diagnosis operation is not implemented."
         )

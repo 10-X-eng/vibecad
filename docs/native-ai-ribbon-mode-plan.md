@@ -5662,7 +5662,7 @@ implementation changes:
   test-created crash lock remains absent; and the immutable 5-axis fixture
   remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
-  `assembly.diagnose` remains intentionally incomplete until row 11.23 lands,
+  `assembly.diagnose` remains intentionally incomplete until row 11.24 lands,
   and Native mode remains globally unavailable until this entire
   plan is complete.
 - Redundant-constraint diagnosis is an exact read-only
@@ -5701,7 +5701,7 @@ implementation changes:
   recovery snapshot and lock are untouched; the prior test-created crash lock
   remains absent; and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
-  `assembly.diagnose` remains intentionally incomplete until row 11.23 lands,
+  `assembly.diagnose` remains intentionally incomplete until row 11.24 lands,
   and Native mode remains globally unavailable until this entire
   plan is complete.
 - Partially redundant-constraint diagnosis is an exact read-only
@@ -5740,9 +5740,55 @@ implementation changes:
   recovery snapshot and lock are untouched; the prior test-created crash lock
   remains absent; and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
-  `assembly.diagnose` remains intentionally incomplete until row 11.23 lands,
+  `assembly.diagnose` remains intentionally incomplete until row 11.24 lands,
   and Native mode remains globally unavailable until this entire plan is
   complete.
+- Malformed-constraint diagnosis is an exact read-only
+  `assembly.diagnose/select_malformed_constraints` operation mapped only from
+  the live `Assembly_SelectMalformedConstraints` action. It consumes the same
+  most-recent `getLastMalformed()` result selected by the human command and
+  does not solve, recompute, select, open a transaction, or mutate the
+  document. The shared diagnosis guard freezes and rechecks the exact
+  human-active Assembly, timeline, object identities, solver-placement and
+  diagnosis SHA-256 values, category and graph counts, bounded page, turn, and
+  human selection. Malformed joints must be absent from the native constraint
+  rows because the compiled producer excludes them from the MbD graph; any
+  overlapping, unknown, stale, duplicate, unbounded, connector-drifting, or
+  selection-drifting state fails closed. Each result contains only the exact
+  joint reference, label/type, both semantic connectors and offsets, the
+  `same_solver_part_in_fixed_drag_bundle` reason, whether the joint is the
+  Fixed bundle constraint itself or an extra intra-bundle constraint, and a
+  role-specific corrective action. A dispatcher-backed compiled GUI gate
+  creates three components with a grounded-to-moving Cylindrical joint, a
+  Fixed joint between the two moving components, and a Slider across that same
+  pair. A normal solve is clean; a real direct component drag then enters the
+  compiled Fixed-bundle pre-drag solve, which safely omits the Fixed and Slider
+  joints, leaves only the Cylindrical solver row, reports status `0`, and
+  produces the exact two-joint malformed set. The gate cancels that real move
+  through the supported selection-clear lifecycle, proves exact placement
+  restoration and transaction abort while retaining the diagnosis, and
+  matches Native's two bounded pages to the real human selection command. It
+  also proves stale hash/count no-ops, unchanged selection/objects/placements/
+  undo/transaction/edit state, idempotent replay, and FCStd save/close/reopen
+  followed by another compiled drag diagnosis. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_MALFORMED_DIAGNOSIS_GUI_OK components=3 joints=3
+  malformed=2 fixed_member=1 intra_bundle=1 solver_status=0 human_match=true
+  pagination=true stale_noop=true selection=true transactions=0 reopen=true`.
+  The combined diagnosis suite has 31 tests, all 20 Assembly GUI lifecycle
+  gates pass, and the complete VibeCAD suite is 3,224 passed with four
+  intentional skips. Ruff, compileall, diff checks, source/build parity, and
+  the VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui targets are
+  green. The protected Sketcher gate exits zero, all 17 Part Design phases
+  pass with final `"ok": true`, and the Assembly VibeScript gate exits zero
+  with top-level `"ok": true`, all 13 ordinary joint solver codes zero, and
+  both coupled-joint solver codes zero. No VibeScript source changed; no
+  FreeCAD or FreeCADCmd process remains; the preserved recovery snapshot and
+  lock are untouched; the prior test-created crash lock remains absent; and
+  the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  `assembly.diagnose` remains intentionally incomplete until row 11.24 adds
+  the remaining human Diagnose action, and Native mode remains globally
+  unavailable until this entire plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6306,7 +6352,7 @@ concisely.
 - [x] 11.20 Implement conflicting-constraint diagnosis.
 - [x] 11.21 Implement redundant-constraint diagnosis.
 - [x] 11.22 Implement partially redundant-constraint diagnosis.
-- [ ] 11.23 Implement malformed-constraint diagnosis.
+- [x] 11.23 Implement malformed-constraint diagnosis.
 - [ ] 11.24 Implement joints-of-component reading.
 - [ ] 11.25 Implement assembly view creation.
 - [ ] 11.26 Implement simulation creation.

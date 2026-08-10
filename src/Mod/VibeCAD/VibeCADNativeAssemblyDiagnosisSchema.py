@@ -116,6 +116,19 @@ def assembly_diagnosis_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=_parameters("expected_partially_redundant_count"),
             ),
+            NativeCapabilityVariant(
+                operation="select_malformed_constraints",
+                description=(
+                    "Read one exact bounded page of joints the human malformed "
+                    "selection command identifies after a Fixed-bundle drag solve."
+                ),
+                action_ids=frozenset({"Assembly_SelectMalformedConstraints"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type="HumanActiveAssemblyAndExactSolverDiagnosis",
+                transaction_behavior="none",
+                background_required=False,
+                parameters=_parameters("expected_malformed_count"),
+            ),
         ),
     )
 

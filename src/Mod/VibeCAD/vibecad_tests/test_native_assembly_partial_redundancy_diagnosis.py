@@ -106,6 +106,7 @@ def test_schema_maps_the_live_partial_action_to_the_shared_exact_read() -> None:
         "select_conflicting_constraints",
         "select_redundant_constraints",
         "select_partially_redundant_constraints",
+        "select_malformed_constraints",
     )
     assert variant.action_ids == frozenset(
         {"Assembly_SelectPartiallyRedundantConstraints"}
