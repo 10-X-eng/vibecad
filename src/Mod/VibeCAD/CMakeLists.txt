@@ -37,6 +37,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyBallJoint.py
     VibeCADNativeAssemblyBeltJoint.py
     VibeCADNativeAssemblyComponents.py
+    VibeCADNativeAssemblyComponentJoints.py
     VibeCADNativeAssemblyConflictDiagnosis.py
     VibeCADNativeAssemblyCoupledJoint.py
     VibeCADNativeAssemblyCylindricalJoint.py
@@ -596,11 +597,13 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_assembly_belt_joint_gui_integration.py
         vibecad_tests/native_assembly_solve_gui_integration.py
         vibecad_tests/native_assembly_conflict_diagnosis_gui_integration.py
+        vibecad_tests/native_assembly_component_joints_gui_integration.py
         vibecad_tests/native_assembly_diagnosis_gui_support.py
         vibecad_tests/native_assembly_malformed_diagnosis_gui_integration.py
         vibecad_tests/native_assembly_partial_redundancy_diagnosis_gui_integration.py
         vibecad_tests/native_assembly_redundant_diagnosis_gui_integration.py
         vibecad_tests/test_native_assembly_components.py
+        vibecad_tests/test_native_assembly_component_joints.py
         vibecad_tests/test_native_assembly_conflict_diagnosis.py
         vibecad_tests/test_native_assembly_malformed_diagnosis.py
         vibecad_tests/test_native_assembly_partial_redundancy_diagnosis.py

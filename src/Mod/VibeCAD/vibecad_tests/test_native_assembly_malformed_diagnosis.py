@@ -83,6 +83,7 @@ def test_schema_maps_the_live_malformed_action_to_the_shared_exact_read() -> Non
         "select_redundant_constraints",
         "select_partially_redundant_constraints",
         "select_malformed_constraints",
+        "select_joints_of_component",
     )
     assert variant.action_ids == frozenset({"Assembly_SelectMalformedConstraints"})
     assert variant.surface_ids == frozenset({"assemble"})

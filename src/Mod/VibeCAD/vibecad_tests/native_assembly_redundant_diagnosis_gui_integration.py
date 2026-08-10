@@ -146,7 +146,7 @@ def _run() -> None:
             not in production.missing_implementation_names
         )
         assert (
-            ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME in production.incomplete_definition_names
+            ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME not in production.incomplete_definition_names
         )
         definition = registry.definition(ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME)
         assert definition is not None

@@ -66,11 +66,46 @@ def _parameters(category_count_field: str) -> dict:
     }
 
 
+def _component_joint_parameters() -> dict:
+    properties = {
+        "assembly": _OBJECT_REF,
+        "component": _OBJECT_REF,
+        "expected_joint_graph_state_sha256": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": r"^[0-9a-f]{64}$",
+        },
+        "expected_component_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100_000,
+        },
+        "expected_joint_count": _COUNT,
+        "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16,
+        },
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
+    }
+
+
 def assembly_diagnosis_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="assembly.diagnose",
         description=(
-            "Read the exact most-recent native Assembly solver diagnosis without "
+            "Read exact Assembly solver or component-joint diagnosis without "
             "changing the human's selection."
         ),
         primary_classification="read",
@@ -128,6 +163,19 @@ def assembly_diagnosis_capability_definition() -> NativeCapabilityDefinition:
                 transaction_behavior="none",
                 background_required=False,
                 parameters=_parameters("expected_malformed_count"),
+            ),
+            NativeCapabilityVariant(
+                operation="select_joints_of_component",
+                description=(
+                    "Read one exact bounded page of active joints attached to one "
+                    "exact movable Assembly component."
+                ),
+                action_ids=frozenset({"Assembly_SelectJointsOfComponent"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type="HumanActiveAssemblyAndExactComponentJointGraph",
+                transaction_behavior="none",
+                background_required=False,
+                parameters=_component_joint_parameters(),
             ),
         ),
     )

@@ -11,6 +11,10 @@ from VibeCADNativeAssemblyConflictDiagnosis import (
     ConflictingConstraintsSpec,
     read_conflicting_constraints,
 )
+from VibeCADNativeAssemblyComponentJoints import (
+    ComponentJointsSpec,
+    read_component_joints,
+)
 from VibeCADNativeAssemblyDiagnosisState import NativeAssemblyDiagnosisError
 from VibeCADNativeAssemblyMalformedDiagnosis import (
     MalformedConstraintsSpec,
@@ -76,6 +80,17 @@ _MALFORMED_FIELDS = frozenset(
         "limit",
     }
 )
+_COMPONENT_JOINT_FIELDS = frozenset(
+    {
+        "assembly",
+        "component",
+        "expected_joint_graph_state_sha256",
+        "expected_component_count",
+        "expected_joint_count",
+        "offset",
+        "limit",
+    }
+)
 
 
 def _count(value: Any, field: str, maximum: int) -> int:
@@ -94,26 +109,33 @@ def _positive_count(value: Any, field: str, maximum: int) -> int:
     return value
 
 
-def _digest(value: Any) -> str:
-    result = str(value or "")
-    if len(result) != 64 or any(
-        character not in "0123456789abcdef" for character in result
+def _digest(value: Any, field: str = "expected_diagnosis_state_sha256") -> str:
+    if not isinstance(value, str):
+        raise NativeAssemblyDiagnosisError(
+            f"{field} must be one lowercase SHA-256 digest."
+        )
+    if len(value) != 64 or any(
+        character not in "0123456789abcdef" for character in value
     ):
         raise NativeAssemblyDiagnosisError(
-            "expected_diagnosis_state_sha256 must be one lowercase SHA-256 digest."
+            f"{field} must be one lowercase SHA-256 digest."
         )
-    return result
+    return value
 
 
-def _object_ref(document_uid: str, value: Any) -> NativeObjectRef:
+def _object_ref(
+    document_uid: str,
+    value: Any,
+    field: str = "assembly",
+) -> NativeObjectRef:
     if not isinstance(value, Mapping) or set(value) != {"object_name"}:
         raise NativeAssemblyDiagnosisError(
-            "assembly must contain one exact object_name."
+            f"{field} must contain one exact object_name."
         )
     name = value.get("object_name")
     if not isinstance(name, str) or not name or len(name) > 128:
         raise NativeAssemblyDiagnosisError(
-            "assembly.object_name must identify one exact document object."
+            f"{field}.object_name must identify one exact document object."
         )
     return NativeObjectRef(document_uid, name)
 
@@ -136,8 +158,38 @@ class NativeAssemblyDiagnosisRuntime:
                     _PARTIALLY_REDUNDANT_FIELDS
                 ),
                 "select_malformed_constraints": _MALFORMED_FIELDS,
+                "select_joints_of_component": _COMPONENT_JOINT_FIELDS,
             },
         )
+        if operation == "select_joints_of_component":
+            spec = ComponentJointsSpec(
+                assembly_ref=_object_ref(
+                    self._context.document_uid,
+                    values["assembly"],
+                ),
+                component_ref=_object_ref(
+                    self._context.document_uid,
+                    values["component"],
+                    "component",
+                ),
+                expected_joint_graph_state_sha256=_digest(
+                    values["expected_joint_graph_state_sha256"],
+                    "expected_joint_graph_state_sha256",
+                ),
+                expected_component_count=_count(
+                    values["expected_component_count"],
+                    "expected_component_count",
+                    100_000,
+                ),
+                expected_joint_count=_count(
+                    values["expected_joint_count"],
+                    "expected_joint_count",
+                    256,
+                ),
+                offset=_count(values["offset"], "offset", 255),
+                limit=_positive_count(values["limit"], "limit", 16),
+            )
+            return read_component_joints(self._context, spec)
         common = {
             "assembly_ref": _object_ref(
                 self._context.document_uid,
