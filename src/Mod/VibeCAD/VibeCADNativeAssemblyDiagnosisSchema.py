@@ -30,6 +30,42 @@ _COUNT = {
 }
 
 
+def _parameters(category_count_field: str) -> dict:
+    properties = {
+        "assembly": _OBJECT_REF,
+        "expected_diagnosis_state_sha256": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": r"^[0-9a-f]{64}$",
+        },
+        "expected_component_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100_000,
+        },
+        "expected_grounded_count": _COUNT,
+        "expected_joint_count": _COUNT,
+        category_count_field: _COUNT,
+        "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32,
+        },
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
+    }
+
+
 def assembly_diagnosis_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="assembly.diagnose",
@@ -50,47 +86,20 @@ def assembly_diagnosis_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type="HumanActiveAssemblyAndExactSolverDiagnosis",
                 transaction_behavior="none",
                 background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "expected_diagnosis_state_sha256": {
-                            "type": "string",
-                            "minLength": 64,
-                            "maxLength": 64,
-                            "pattern": r"^[0-9a-f]{64}$",
-                        },
-                        "expected_component_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 100_000,
-                        },
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": _COUNT,
-                        "expected_conflicting_count": _COUNT,
-                        "offset": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 255,
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 32,
-                        },
-                    },
-                    "required": [
-                        "assembly",
-                        "expected_diagnosis_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_conflicting_count",
-                        "offset",
-                        "limit",
-                    ],
-                    "additionalProperties": False,
-                },
+                parameters=_parameters("expected_conflicting_count"),
+            ),
+            NativeCapabilityVariant(
+                operation="select_redundant_constraints",
+                description=(
+                    "Read one exact bounded page of joints the human redundant "
+                    "selection command identifies."
+                ),
+                action_ids=frozenset({"Assembly_SelectRedundantConstraints"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type="HumanActiveAssemblyAndExactSolverDiagnosis",
+                transaction_behavior="none",
+                background_required=False,
+                parameters=_parameters("expected_redundant_count"),
             ),
         ),
     )

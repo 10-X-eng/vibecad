@@ -507,17 +507,33 @@ def capture_assembly_diagnosis_state(assembly: Any) -> AssemblyDiagnosisState:
         "residual tolerance",
         positive=True,
     )
-    for name in categories["conflicting"]:
-        item = diagnostics_by_name.get(name)
-        if (
-            item is None
-            or item.status != "conflicting"
-            or item.maximum_absolute_residual <= tolerance
-            or not any(abs(value.residual) > tolerance for value in item.constraints)
-        ):
-            raise _malformed("conflicting joint")
-    for category in ("redundant", "partially_redundant"):
-        if not set(categories[category]).issubset(diagnostics_by_name):
+    expected_conflicting = tuple(
+        name
+        for name in diagnostic_names
+        if diagnostics_by_name[name].maximum_absolute_residual > tolerance
+    )
+    expected_redundant = tuple(
+        name
+        for name in diagnostic_names
+        if any(
+            value.specification.startswith("Redundant")
+            for value in diagnostics_by_name[name].constraints
+        )
+    )
+    expected_partially_redundant = tuple(
+        name
+        for name in diagnostic_names
+        if 0
+        < diagnostics_by_name[name].redundant_constraint_count
+        < diagnostics_by_name[name].constraint_count
+    )
+    expected_categories = {
+        "conflicting": expected_conflicting,
+        "redundant": expected_redundant,
+        "partially_redundant": expected_partially_redundant,
+    }
+    for category, expected in expected_categories.items():
+        if categories[category] != expected:
             raise _malformed(f"{category.replace('_', ' ')} joint")
 
     solver_status = _exact_int(

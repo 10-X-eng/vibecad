@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 354 complete / 392 pending / 746 total (47.5% by row count)
+Checklist status: 355 complete / 391 pending / 746 total (47.6% by row count)
 
 ## Purpose
 
@@ -5665,6 +5665,45 @@ implementation changes:
   `assembly.diagnose` remains intentionally incomplete until rows 11.21 through
   11.23 land, and Native mode remains globally unavailable until this entire
   plan is complete.
+- Redundant-constraint diagnosis is an exact read-only
+  `assembly.diagnose/select_redundant_constraints` operation mapped only from
+  the live `Assembly_SelectRedundantConstraints` action. It consumes the same
+  most-recent `getLastRedundant()` solver result selected by the human command;
+  it does not invoke a solve or recompute, change selection, open a transaction,
+  or mutate the document. Conflict and redundancy reads now share one bounded
+  preflight/drift guard that verifies the exact human-active Assembly, timeline
+  state, component and joint identities, diagnosis SHA-256 and counts, page,
+  frozen turn, and human selection before returning. Category membership is
+  independently reconstructed from the same native constraint specifications,
+  residuals, and redundant flags, including the producer's intentional overlap
+  between redundant and partially redundant sets. Success
+  returns only exact joint references, labels/types, both semantic connectors
+  and offsets, aggregate constraint/DoF evidence, concise solver health, and
+  pagination state. A dispatcher-backed compiled GUI gate creates two identical
+  Fixed joints between one grounded and one moving component, proves native
+  solver status `0`, proves only `FixedTwo` is redundant with all six of its six
+  constraints redundant and zero degrees of freedom removed, and matches the
+  exact human selection command. It also proves stale hash/count no-ops,
+  unchanged selection/objects/placements/undo/transaction/edit state,
+  idempotent replay, and FCStd save/close/reopen followed by a fresh compiled
+  solve and read. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_REDUNDANT_DIAGNOSIS_GUI_OK components=2 joints=2
+  redundant=1 solver_status=0 human_match=true complete_redundancy=true
+  stale_noop=true selection=true transactions=0 reopen=true`. The combined
+  conflict/redundancy diagnosis suite has 19 tests, all 18 Assembly GUI
+  lifecycle gates pass, and the complete VibeCAD suite is 3,212 passed with
+  four intentional skips. Ruff, compileall, diff checks, source/build parity,
+  and the VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui targets are
+  green. The protected Sketcher gate exits zero, all 17 Part Design phases pass
+  with final `"ok": true`, and the Assembly VibeScript gate exits zero with
+  top-level `"ok": true` and every ordinary and coupled joint solver code zero.
+  No VibeScript source changed; no FreeCAD process remains; the preserved
+  recovery snapshot and lock are untouched; the prior test-created crash lock
+  remains absent; and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  `assembly.diagnose` remains intentionally incomplete until rows 11.22 and
+  11.23 land, and Native mode remains globally unavailable until this entire
+  plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6226,7 +6265,7 @@ concisely.
 - [x] 11.18 Implement Belt joint.
 - [x] 11.19 Implement solver execution and exact placement verification.
 - [x] 11.20 Implement conflicting-constraint diagnosis.
-- [ ] 11.21 Implement redundant-constraint diagnosis.
+- [x] 11.21 Implement redundant-constraint diagnosis.
 - [ ] 11.22 Implement partially redundant-constraint diagnosis.
 - [ ] 11.23 Implement malformed-constraint diagnosis.
 - [ ] 11.24 Implement joints-of-component reading.

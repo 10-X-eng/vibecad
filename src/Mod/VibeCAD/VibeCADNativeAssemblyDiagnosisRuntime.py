@@ -12,6 +12,10 @@ from VibeCADNativeAssemblyConflictDiagnosis import (
     read_conflicting_constraints,
 )
 from VibeCADNativeAssemblyDiagnosisState import NativeAssemblyDiagnosisError
+from VibeCADNativeAssemblyRedundantDiagnosis import (
+    RedundantConstraintsSpec,
+    read_redundant_constraints,
+)
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeTargets import NativeObjectRef
 
@@ -24,6 +28,18 @@ _CONFLICT_FIELDS = frozenset(
         "expected_grounded_count",
         "expected_joint_count",
         "expected_conflicting_count",
+        "offset",
+        "limit",
+    }
+)
+_REDUNDANT_FIELDS = frozenset(
+    {
+        "assembly",
+        "expected_diagnosis_state_sha256",
+        "expected_component_count",
+        "expected_grounded_count",
+        "expected_joint_count",
+        "expected_redundant_count",
         "offset",
         "limit",
     }
@@ -81,41 +97,57 @@ class NativeAssemblyDiagnosisRuntime:
     def diagnose(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         operation, values = strict_variant_arguments(
             arguments,
-            {"select_conflicting_constraints": _CONFLICT_FIELDS},
+            {
+                "select_conflicting_constraints": _CONFLICT_FIELDS,
+                "select_redundant_constraints": _REDUNDANT_FIELDS,
+            },
         )
-        if operation != "select_conflicting_constraints":
-            raise NativeAssemblyDiagnosisError(
-                "The Assembly diagnosis operation is not implemented."
-            )
-        spec = ConflictingConstraintsSpec(
-            assembly_ref=_object_ref(
+        common = {
+            "assembly_ref": _object_ref(
                 self._context.document_uid,
                 values["assembly"],
             ),
-            expected_diagnosis_state_sha256=_digest(
+            "expected_diagnosis_state_sha256": _digest(
                 values["expected_diagnosis_state_sha256"]
             ),
-            expected_component_count=_count(
+            "expected_component_count": _count(
                 values["expected_component_count"],
                 "expected_component_count",
                 100_000,
             ),
-            expected_grounded_count=_count(
+            "expected_grounded_count": _count(
                 values["expected_grounded_count"],
                 "expected_grounded_count",
                 256,
             ),
-            expected_joint_count=_count(
+            "expected_joint_count": _count(
                 values["expected_joint_count"],
                 "expected_joint_count",
                 256,
             ),
-            expected_conflicting_count=_count(
-                values["expected_conflicting_count"],
-                "expected_conflicting_count",
-                256,
-            ),
-            offset=_count(values["offset"], "offset", 255),
-            limit=_positive_count(values["limit"], "limit", 32),
+            "offset": _count(values["offset"], "offset", 255),
+            "limit": _positive_count(values["limit"], "limit", 32),
+        }
+        if operation == "select_conflicting_constraints":
+            spec = ConflictingConstraintsSpec(
+                **common,
+                expected_conflicting_count=_count(
+                    values["expected_conflicting_count"],
+                    "expected_conflicting_count",
+                    256,
+                ),
+            )
+            return read_conflicting_constraints(self._context, spec)
+        if operation == "select_redundant_constraints":
+            spec = RedundantConstraintsSpec(
+                **common,
+                expected_redundant_count=_count(
+                    values["expected_redundant_count"],
+                    "expected_redundant_count",
+                    256,
+                ),
+            )
+            return read_redundant_constraints(self._context, spec)
+        raise NativeAssemblyDiagnosisError(
+            "The Assembly diagnosis operation is not implemented."
         )
-        return read_conflicting_constraints(self._context, spec)
