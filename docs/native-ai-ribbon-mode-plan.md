@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-10
-Checklist status: 366 complete / 380 pending / 746 total (49.1% by row count)
+Checklist status: 368 complete / 378 pending / 746 total (49.3% by row count)
 
 ## Purpose
 
@@ -6233,6 +6233,24 @@ implementation changes:
   Sketcher lifecycle, all 17 Part Design VibeScript phases, and Assembly
   VibeScript integration exit zero; no VibeScript source changed. Native mode
   remains globally unavailable until this entire plan is complete.
+- The conditional Assemble matching-hole and fastener-attachment rows require
+  no Assemble provider operation on the current product. The authoritative
+  live manifest contains 53 Assemble actions and exposes only Insert and Edit
+  in its Standard Components group; `VibeCAD_CreateMatchingFastenerHole` and
+  `VibeCAD_AttachStandardFastener` are Model-only actions, and the shipped
+  human matching-hole command explicitly requires `PartDesignWorkbench`.
+  Existing Model rows 9.65 and 9.66 already provide their exact-target Native
+  implementations on the Model surface. Mapping either action into Assemble
+  would create AI-only cross-ribbon authority, so rows 11.33 and 11.34 are
+  satisfied by deliberate absence rather than duplicate tools. The context
+  manifest test proves there is no hidden fastener context action and that the
+  intersection of the four fastener actions with Assemble is exactly Insert
+  and Edit. The compiled live-surface gate confirms Assemble remains the exact
+  53-action shipped graph and reports `VIBECAD_NATIVE_RIBBON_SURFACE_GUI_OK`;
+  the focused action/context-manifest suite has 54 passing tests. Any future
+  addition of either command to the shipped Assemble graph will fail manifest
+  parity and require a new Assemble-scoped implementation before Native can be
+  enabled there.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6806,8 +6824,8 @@ concisely.
 - [x] 11.30 Implement ASMT export with explicit path authorization.
 - [x] 11.31 Implement Assemble-ribbon fastener insertion.
 - [x] 11.32 Implement Assemble-ribbon fastener editing.
-- [ ] 11.33 Implement Assemble-ribbon matching-hole action when present.
-- [ ] 11.34 Implement Assemble-ribbon fastener attachment when present.
+- [x] 11.33 Implement Assemble-ribbon matching-hole action when present.
+- [x] 11.34 Implement Assemble-ribbon fastener attachment when present.
 - [ ] 11.35 Implement Robot creation and setup.
 - [ ] 11.36 Implement Robot tool shape, orientation, and default values.
 - [ ] 11.37 Implement Robot trajectory and waypoint operations.
