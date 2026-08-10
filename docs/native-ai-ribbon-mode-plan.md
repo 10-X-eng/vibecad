@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-10
-Checklist status: 364 complete / 382 pending / 746 total (48.8% by row count)
+Checklist status: 365 complete / 381 pending / 746 total (48.9% by row count)
 
 ## Purpose
 
@@ -6140,6 +6140,57 @@ implementation changes:
   remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
   Native mode remains globally unavailable until this entire plan is complete.
+- Assemble-ribbon standard-fastener insertion is one exact
+  `assembly.fastener/insert_standard_fastener` mutation mapped only from the
+  shipped `VibeCAD_InsertStandardFastener` action on the human-selected
+  Assemble surface. It is intentionally separate from the retained Model
+  fastener graph: the shared `model.catalog/fasteners` read is available on
+  both Model and Assemble, while insertion creates the same native Assembly
+  graph as the human command—a hidden catalog-backed `Part::FeaturePython`
+  definition and one visible `App::Link` occurrence inside the unchanged
+  human-active `Assembly::AssemblyObject`.
+  The human command and Native runtime use one shared graph factory and
+  validator, so their object types, generated solid, catalog identity, link
+  target, tree presentation, and History semantics cannot drift. The hidden
+  definition is the occurrence-owned History resource and immediately
+  precedes the visible occurrence operation; the occurrence retains the
+  shipped edit command and exact hidden editor link. Its local operation
+  metadata is established before linking so an App::Link cannot forward the
+  definition's owner property and falsely appear self-owned.
+  The closed provider schema accepts only one exact active Assembly reference,
+  printable label, exact catalog constructor, and frozen diagnosis-state
+  digest plus component, ground, and joint counts. It exposes no placement,
+  fuzzy target, workbench, command-dispatch, or filesystem authority.
+  Preflight resolves and rechecks the human-active Assembly, exact catalog
+  choice, document graph, selection, History operations, visibility state,
+  component graph, joint graph, and solver placements before mutation.
+  Postconditions prove the two-object creation boundary, exact source-then-
+  occurrence History append, single-solid source/link equivalence, identity
+  initial placement, unchanged active Assembly and selection, unchanged prior
+  placements and joints, no stray objects, and a new exact diagnosis digest.
+  Concise Assembly state identifies modern occurrences with a bounded
+  `standard_fastener` record and exact hidden source reference.
+  The compiled lifecycle gate exercises the shipped human command and Native
+  parity, schema rejection, stale digest and count no-ops, invalid catalog
+  rejection, forced verifier rollback, idempotent same-call replay, one-step
+  undo/redo, tree and History presentation, snapshot continuity, placement
+  preservation, and save/reopen. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_FASTENER_GUI_OK human_parity=true
+  hidden_definition=true visible_occurrence=true exact_history=true
+  stale_noop=true invalid_catalog_noop=true rollback=true idempotent=true
+  undo_redo=true reopen=true snapshot=true placements_unchanged=true`.
+  The complete VibeCAD suite has 3,285 passing tests with four intentional
+  skips; the focused registry, manifest, catalog, schema, and runtime suite has
+  55 passing tests. VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui
+  build cleanly; strict Ruff checks, formatting, Python compilation, diff
+  checks, and declared source/build parity are green. The protected
+  current-source Sketcher lifecycle, all 17 Part Design VibeScript phases, and
+  Assembly VibeScript integration exit zero; no VibeScript source changed.
+  The preserved recovery cache and lock are untouched, the forbidden crash
+  lock remains absent, no FreeCAD process remains, and the immutable 5-axis
+  fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native mode remains globally unavailable until this entire plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6711,7 +6762,7 @@ concisely.
 - [x] 11.28 Implement BOM creation.
 - [x] 11.29 Implement linked-source selection reading.
 - [x] 11.30 Implement ASMT export with explicit path authorization.
-- [ ] 11.31 Implement Assemble-ribbon fastener insertion.
+- [x] 11.31 Implement Assemble-ribbon fastener insertion.
 - [ ] 11.32 Implement Assemble-ribbon fastener editing.
 - [ ] 11.33 Implement Assemble-ribbon matching-hole action when present.
 - [ ] 11.34 Implement Assemble-ribbon fastener attachment when present.

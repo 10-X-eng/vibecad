@@ -42,7 +42,7 @@ _ATTACHMENT_HOST = parameters_schema(
 )
 
 
-def _fastener_options() -> dict[str, Any]:
+def standard_fastener_options_schema() -> dict[str, Any]:
     return parameters_schema(
         {
             "body_width_code": _CATALOG_TEXT,
@@ -63,7 +63,7 @@ def _fastener_options() -> dict[str, Any]:
     )
 
 
-def _fastener_definition() -> dict[str, Any]:
+def standard_fastener_definition_schema() -> dict[str, Any]:
     fields = {
         "standard": _CATALOG_TEXT,
         "nominal_thread": _CATALOG_TEXT,
@@ -72,7 +72,7 @@ def _fastener_definition() -> dict[str, Any]:
         },
         "model_thread": {"type": "boolean"},
         "left_handed": {"type": "boolean"},
-        "options": _fastener_options(),
+        "options": standard_fastener_options_schema(),
     }
     return parameters_schema(fields, tuple(fields))
 
@@ -97,7 +97,7 @@ def model_fastener_capability_definition() -> NativeCapabilityDefinition:
                 parameters=parameters_schema(
                     {
                         "label": LABEL_SCHEMA,
-                        "definition": _fastener_definition(),
+                        "definition": standard_fastener_definition_schema(),
                     },
                     ("label", "definition"),
                 ),
@@ -117,7 +117,7 @@ def model_fastener_capability_definition() -> NativeCapabilityDefinition:
                     {
                         "target": object_reference_schema(),
                         "label": LABEL_SCHEMA,
-                        "definition": _fastener_definition(),
+                        "definition": standard_fastener_definition_schema(),
                     },
                     ("target", "label", "definition"),
                 ),

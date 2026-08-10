@@ -26,6 +26,7 @@ from VibeCADNativeAssemblyComponentJoints import (
     component_joint_state_summary,
 )
 from VibeCADNativeAssemblyGrounding import active_grounded_joints
+from VibeCADFastenerAssembly import assembly_fastener_summary
 from VibeCADNativeAssemblyDistanceJoint import distance_mode_from_joint
 from VibeCADNativeAssemblyDiagnosisState import (
     NativeAssemblyDiagnosisError,
@@ -90,7 +91,11 @@ def _solve_on_joint_creation() -> bool:
         return True
 
 
-def _component_summary(component: Any, ground_joint: Any | None) -> dict[str, Any]:
+def _component_summary(
+    assembly: Any,
+    component: Any,
+    ground_joint: Any | None,
+) -> dict[str, Any]:
     summary = concise_object(component)
     summary["grounded"] = ground_joint is not None
     summary["grounded_joint"] = (
@@ -103,6 +108,9 @@ def _component_summary(component: Any, ground_joint: Any | None) -> dict[str, An
     shape = component_shape_summary(component)
     if shape is not None:
         summary["shape"] = shape
+    fastener = assembly_fastener_summary(assembly, component)
+    if fastener is not None:
+        summary["standard_fastener"] = fastener
     return summary
 
 
@@ -238,7 +246,7 @@ def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
         if component is not None:
             grounded.setdefault(component, joint)
     component_summaries = [
-        _component_summary(component, grounded.get(component))
+        _component_summary(assembly, component, grounded.get(component))
         for component in components[:32]
     ]
     result["counts"] = {

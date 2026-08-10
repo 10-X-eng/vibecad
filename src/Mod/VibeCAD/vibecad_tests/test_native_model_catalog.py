@@ -69,6 +69,14 @@ def test_catalog_contract_combines_hole_and_bounded_fastener_discovery() -> None
     assert parameters["properties"]["query"]["maxLength"] == 256
 
 
+def test_fastener_catalog_is_shared_with_assemble_without_leaking_hole_catalog() -> None:
+    definition = model_catalog_capability_definition()
+    variants = {variant.operation: variant for variant in definition.variants}
+
+    assert variants["fasteners"].surface_ids == frozenset({"model", "assemble"})
+    assert variants["hole_threads"].surface_ids == frozenset({"model"})
+
+
 def test_fastener_catalog_returns_only_constructor_relevant_bounded_fields(
     monkeypatch,
 ) -> None:

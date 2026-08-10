@@ -16,6 +16,7 @@ from VibeCADNativeModelHoleSchema import THREAD_STANDARDS
 
 
 _MODEL_SURFACE = frozenset({"model"})
+_FASTENER_SURFACES = frozenset({"model", "assemble"})
 _CATALOG_TEXT = {"type": "string", "maxLength": 128}
 
 
@@ -60,7 +61,7 @@ def model_catalog_capability_definition() -> NativeCapabilityDefinition:
                     "constructor values in the bundled fastener catalog."
                 ),
                 action_ids=frozenset({"VibeCAD_NativeFastenerCatalog"}),
-                surface_ids=_MODEL_SURFACE,
+                surface_ids=_FASTENER_SURFACES,
                 exact_target_type=None,
                 transaction_behavior="none",
                 background_required=False,

@@ -331,6 +331,40 @@ def test_provider_families_exclude_parent_only_actions_and_preserve_order() -> N
     )
 
 
+def test_assemble_fasteners_use_an_assembly_owned_capability_family() -> None:
+    manifest = {
+        "schema_version": 1,
+        "surface_id": "assemble",
+        "groups": [
+            {
+                "label": "Fasteners",
+                "actions": [
+                    {
+                        "command_id": "VibeCAD_InsertStandardFastener",
+                        "kind": "command",
+                        "label": "Insert Standard Fastener",
+                        "available": True,
+                    },
+                    {
+                        "command_id": "VibeCAD_EditStandardFastener",
+                        "kind": "command",
+                        "label": "Edit Standard Fastener",
+                        "available": True,
+                    },
+                ],
+            }
+        ],
+    }
+
+    plans = classify_native_surface(_surface(manifest))
+
+    assert {plan.capability_family for plan in plans} == {"assembly.fastener"}
+    assert tuple(plan.operation_variant for plan in plans) == (
+        "insert_standard_fastener",
+        "edit_standard_fastener",
+    )
+
+
 def test_hole_is_a_focused_model_capability_instead_of_a_generic_feature() -> None:
     manifest = {
         "schema_version": 1,

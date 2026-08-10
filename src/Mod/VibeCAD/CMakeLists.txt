@@ -17,6 +17,7 @@ set(VibeCAD_Scripts
     VibeCADFastenersGui.py
     VibeCADFastenerModel.py
     VibeCADFastenerAttachment.py
+    VibeCADFastenerAssembly.py
     VibeCADGrid.py
     VibeCADGeometry.py
     VibeCADGeometryInspection.py
@@ -53,6 +54,10 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyExportBindings.py
     VibeCADNativeAssemblyExportRuntime.py
     VibeCADNativeAssemblyExportSchema.py
+    VibeCADNativeAssemblyFastener.py
+    VibeCADNativeAssemblyFastenerBindings.py
+    VibeCADNativeAssemblyFastenerRuntime.py
+    VibeCADNativeAssemblyFastenerSchema.py
     VibeCADNativeAssemblyFixedJoint.py
     VibeCADNativeAssemblyGearJoint.py
     VibeCADNativeAssemblyGrounding.py
@@ -601,6 +606,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_sketch_state_gui_integration.py
         vibecad_tests/native_sketch_batch_gui_integration.py
         vibecad_tests/native_assembly_structure_gui_integration.py
+        vibecad_tests/native_assembly_fastener_gui_integration.py
         vibecad_tests/native_assembly_linked_source_gui_integration.py
         vibecad_tests/native_assembly_bom_gui_integration.py
         vibecad_tests/native_assembly_playback_gui_integration.py
@@ -636,6 +642,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_native_assembly_redundant_diagnosis.py
         vibecad_tests/test_native_assembly_inspect.py
         vibecad_tests/test_native_assembly_export.py
+        vibecad_tests/test_native_assembly_fastener.py
         vibecad_tests/test_native_assembly_solve.py
         vibecad_tests/test_native_assembly_playback.py
         vibecad_tests/test_native_assembly_bom.py

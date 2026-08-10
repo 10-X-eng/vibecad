@@ -10,6 +10,12 @@ from VibeCADNativeAssemblyDiagnosisBindings import (
 from VibeCADNativeAssemblyDiagnosisSchema import (
     register_assembly_diagnosis_capability_definition,
 )
+from VibeCADNativeAssemblyFastenerBindings import (
+    register_assembly_fastener_capability_implementation,
+)
+from VibeCADNativeAssemblyFastenerSchema import (
+    register_assembly_fastener_capability_definition,
+)
 from VibeCADNativeAssemblyExportBindings import (
     register_assembly_export_capability_implementation,
 )
@@ -157,6 +163,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_common_capability_implementations(registry)
     register_assembly_diagnosis_capability_definition(registry)
     register_assembly_diagnosis_capability_implementation(registry)
+    register_assembly_fastener_capability_definition(registry)
+    register_assembly_fastener_capability_implementation(registry)
     register_assembly_export_capability_definition(registry)
     register_assembly_export_capability_implementation(registry)
     register_assembly_inspect_capability_definition(registry)

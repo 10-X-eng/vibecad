@@ -12,6 +12,7 @@ import FreeCAD as App
 import FreeCADGui as Gui
 
 from VibeCADFastenerAttachment import attach_model_fastener_graph
+from VibeCADFastenerAssembly import create_assembly_fastener_graph
 from VibeCADFastenerModel import (
     copy_fastener_appearance as _copy_fastener_appearance,
     create_model_fastener_graph,
@@ -919,8 +920,6 @@ class _InsertStandardFastenerCommand:
         )
 
     def Activated(self) -> None:
-        from VibeCADFasteners import create_fastener_feature
-
         dialog = _FastenerDialog(title="Insert Standard Fastener")
         values = dialog.exec()
         if values is None:
@@ -945,16 +944,10 @@ class _InsertStandardFastenerCommand:
                             "a standard fastener."
                         )
                     )
-                occurrence = assembly.newObject(
-                    "App::Link",
-                    _safe_name(
-                        visible_label,
-                        "StandardFastener",
-                    ),
-                )
-                occurrence.Label = visible_label
-                source, _identity = create_fastener_feature(
+                graph = create_assembly_fastener_graph(
                     document,
+                    assembly=assembly,
+                    label=visible_label,
                     **{
                         key: values[key]
                         for key in (
@@ -966,23 +959,8 @@ class _InsertStandardFastenerCommand:
                             "options",
                         )
                     },
-                    object_name=_safe_name(
-                        f"{values['standard']}_{values['nominal_thread']}_Definition",
-                        "StandardFastenerDefinition",
-                    ),
-                    label=visible_label,
                 )
-                source.ViewObject.Visibility = False
-                if hasattr(source.ViewObject, "ShowInTree"):
-                    source.ViewObject.ShowInTree = False
-                occurrence.LinkedObject = source
-                _mark_timeline_resource(source, occurrence)
-                _mark_timeline_operation(occurrence, editor=source)
-                document.finalizeProvisionalTimelineOperationBlock(
-                    occurrence,
-                    [source, occurrence],
-                )
-                selected = occurrence
+                selected = graph.occurrence
             else:
                 graph = create_model_fastener_graph(
                     document,

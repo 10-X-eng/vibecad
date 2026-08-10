@@ -8,6 +8,7 @@ from VibeCADNativeAssemblyDiagnosisBindings import (
     ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME,
 )
 from VibeCADNativeAssemblyExportSchema import ASSEMBLY_EXPORT_CAPABILITY_NAME
+from VibeCADNativeAssemblyFastenerSchema import ASSEMBLY_FASTENER_CAPABILITY_NAME
 from VibeCADNativeAssemblyInspectSchema import ASSEMBLY_INSPECT_CAPABILITY_NAME
 from VibeCADNativeAssemblyJointBindings import ASSEMBLY_JOINT_CAPABILITY_NAME
 from VibeCADNativeAssemblyPlaybackBindings import (
@@ -55,6 +56,7 @@ def test_production_registry_assembles_finished_contracts_and_bindings_exactly(
     expected = (
         *COMMON_NATIVE_CAPABILITY_NAMES,
         ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME,
+        ASSEMBLY_FASTENER_CAPABILITY_NAME,
         ASSEMBLY_EXPORT_CAPABILITY_NAME,
         ASSEMBLY_INSPECT_CAPABILITY_NAME,
         ASSEMBLY_JOINT_CAPABILITY_NAME,

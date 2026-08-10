@@ -1083,7 +1083,7 @@ _GROUP_CAPABILITY_FAMILIES = {
     ("assemble", "Assembly"): "assembly.structure",
     ("assemble", "Joints"): "assembly.joint",
     ("assemble", "Diagnose"): "assembly.diagnose",
-    ("assemble", "Fasteners"): "model.fastener",
+    ("assemble", "Fasteners"): "assembly.fastener",
     ("assemble", "Robot"): "robot.setup",
     ("assemble", "Trajectory"): "robot.trajectory",
     ("assemble", "Motion"): "robot.motion",
