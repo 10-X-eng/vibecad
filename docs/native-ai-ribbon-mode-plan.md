@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 353 complete / 393 pending / 746 total (47.3% by row count)
+Checklist status: 354 complete / 392 pending / 746 total (47.5% by row count)
 
 ## Purpose
 
@@ -5624,6 +5624,47 @@ implementation changes:
   lock are untouched, the prior test-created crash lock remains absent, and
   the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Conflicting-constraint diagnosis is an exact read-only
+  `assembly.diagnose/select_conflicting_constraints` operation mapped only from
+  the live `Assembly_SelectConflictingConstraints` action. It reads the same
+  most-recent compiled solver diagnosis used by the human command without
+  invoking another solve, changing selection, opening a transaction, or
+  mutating the document. Its bounded state capture cross-checks the exact
+  human-active Assembly, native JointGroup, components, grounded and regular
+  joints, solver placement hash, status, message, remaining degrees of freedom,
+  category flags and names, per-joint constraint counts, redundancy flags,
+  removed degrees of freedom, signed residuals, absolute residuals, and maximum
+  residuals. Duplicate, unknown, inconsistent, oversized, non-finite, stale,
+  malformed, or selection-drifting diagnostics fail closed. The provider
+  request supplies the exact Assembly, diagnosis SHA-256, all relevant counts,
+  and a bounded page; success returns only exact conflicting-joint references,
+  labels/types, both semantic connectors and offsets, constraint and violating
+  counts, maximum residuals, solver status/DoF/tolerance, and pagination state.
+  Assemble snapshots classify unavailable or incomplete diagnostic graphs as a
+  bounded unavailable summary rather than breaking state capture. A
+  dispatcher-backed compiled GUI gate creates an impossible 3-4-7.1 distance
+  loop, proves native solve status `-1`, compares Native's exact three-joint set
+  with the real human selection command, verifies residual evidence, two-page
+  pagination, stale-state no-ops, unchanged selection/objects/placements/undo
+  and transaction state, idempotent replay, and FCStd save/close/reopen followed
+  by another compiled solve. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_CONFLICT_DIAGNOSIS_GUI_OK components=3 joints=3
+  conflicts=3 solver_status=-1 human_match=true pagination=true
+  stale_noop=true selection=true transactions=0 reopen=true`. The focused
+  diagnosis suite has 13 tests, all 17 Assembly GUI lifecycle gates pass, and
+  the complete VibeCAD suite is 3,206 passed with four intentional skips. Ruff,
+  compileall, diff checks, source/build parity, and the VibeCADScripts,
+  AssemblyScripts, Assembly, and AssemblyGui targets are green. The protected
+  Sketcher gate exits zero, all 17 Part Design phases pass, and the Assembly
+  VibeScript gate returns explicit `"ok": true` with every ordinary and coupled
+  joint solver code zero. No VibeScript source changed; no FreeCAD process
+  remains; the preserved recovery snapshot and lock are untouched; the prior
+  test-created crash lock remains absent; and the immutable 5-axis fixture
+  remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  `assembly.diagnose` remains intentionally incomplete until rows 11.21 through
+  11.23 land, and Native mode remains globally unavailable until this entire
+  plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6184,7 +6225,7 @@ concisely.
 - [x] 11.17 Implement Gear joint.
 - [x] 11.18 Implement Belt joint.
 - [x] 11.19 Implement solver execution and exact placement verification.
-- [ ] 11.20 Implement conflicting-constraint diagnosis.
+- [x] 11.20 Implement conflicting-constraint diagnosis.
 - [ ] 11.21 Implement redundant-constraint diagnosis.
 - [ ] 11.22 Implement partially redundant-constraint diagnosis.
 - [ ] 11.23 Implement malformed-constraint diagnosis.

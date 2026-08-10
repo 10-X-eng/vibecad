@@ -19,6 +19,10 @@ from VibeCADNativeAssemblyComponents import (
 )
 from VibeCADNativeAssemblyGrounding import active_grounded_joints
 from VibeCADNativeAssemblyDistanceJoint import distance_mode_from_joint
+from VibeCADNativeAssemblyDiagnosisState import (
+    NativeAssemblyDiagnosisError,
+    assembly_diagnosis_state_summary,
+)
 from VibeCADNativeAssemblyGearJoint import gears_dependency_summary
 from VibeCADNativeAssemblyJointConnectors import (
     NativeAssemblyJointConnectorError,
@@ -226,6 +230,13 @@ def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
     result["components"] = component_summaries
     result["joints"] = [_joint_summary(value, joints) for value in joints[:32]]
     result["last_solver"] = solver_diagnostics(assembly)
+    try:
+        result["diagnosis_state"] = assembly_diagnosis_state_summary(assembly)
+    except NativeAssemblyDiagnosisError as exc:
+        result["diagnosis_state"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
     try:
         result["solver_state"] = assembly_solver_state_summary(assembly)
     except NativeAssemblySolveStateError as exc:

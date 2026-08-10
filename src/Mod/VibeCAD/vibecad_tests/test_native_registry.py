@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 
+from VibeCADNativeAssemblyDiagnosisBindings import (
+    ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME,
+)
 from VibeCADNativeAssemblyJointBindings import ASSEMBLY_JOINT_CAPABILITY_NAME
 from VibeCADNativeCommonBindings import COMMON_NATIVE_CAPABILITY_NAMES
 from VibeCADNativeAssemblyStructureBindings import (
@@ -35,7 +38,8 @@ from VibeCADNativeSketchPresentationBindings import (
 )
 
 
-def test_production_registry_assembles_finished_contracts_and_bindings_exactly() -> None:
+def test_production_registry_assembles_finished_contracts_and_bindings_exactly(
+) -> None:
     registry = build_native_capability_registry()
 
     assert registry.shared_definition_names == (
@@ -45,6 +49,7 @@ def test_production_registry_assembles_finished_contracts_and_bindings_exactly()
     )
     expected = (
         *COMMON_NATIVE_CAPABILITY_NAMES,
+        ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME,
         ASSEMBLY_JOINT_CAPABILITY_NAME,
         ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
         COMPONENT_INTERFACE_CAPABILITY_NAME,
