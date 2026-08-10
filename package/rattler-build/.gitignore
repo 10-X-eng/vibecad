@@ -1,3 +1,5 @@
+# Generated AppImage staging tree, including bundled resources
+linux/AppDir/
 linux/AppDir/usr
 linux/AppDir/*.desktop
 linux/AppDir/*.svg
