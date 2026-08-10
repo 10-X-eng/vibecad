@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-10
-Checklist status: 369 complete / 377 pending / 746 total (49.5% by row count)
+Checklist status: 371 complete / 375 pending / 746 total (49.7% by row count)
 
 ## Purpose
 
@@ -6359,6 +6359,57 @@ implementation changes:
   immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
   Native mode remains globally unavailable until this entire plan is complete.
+- Robot trajectory creation and the two shipped waypoint insertion paths now
+  complete row 11.37 without granting the provider GUI preselection, mouse,
+  command-dispatch, workbench-switching, filesystem-path, or document-lifecycle
+  authority. The `robot.trajectory` capability has three closed variants for
+  `Robot_CreateTrajectory`, `Robot_InsertWaypoint`, and
+  `Robot_InsertWaypointPreselect`; the latter is represented by the exact
+  persisted world-space point rather than hidden access to transient GUI
+  preselection. Robot-derived waypoints reproduce the shipped command's
+  `Tcp.multiply(Tool)` placement, while position waypoints use the frozen
+  orientation, displacement, velocity, and acceleration defaults that the
+  human command consumes.
+  Assemble context now exposes a bounded, path-free Robot trajectory inventory
+  with exact object identity, Base reference, History, validity, suppression,
+  presentation, waypoint indices and names, type, placement, motion parameters,
+  tool/base numbers, per-waypoint digests, per-trajectory digests, and one
+  global digest. The reader admits at most 256 trajectory objects, publishes at
+  most 16 concise trajectory summaries and four representative waypoint
+  summaries per trajectory, accepts at most 4,096 waypoints in one trajectory,
+  and stops immediately at the 16,384-waypoint document bound rather than
+  scanning an unbounded remainder on the UI thread.
+  Every mutation freezes the active document, exact trajectory and Robot state,
+  and waypoint defaults before opening one transaction. Creation publishes one
+  final History operation. Insertion edits only the exact trajectory, preserves
+  every existing object and History record, and verifies the exact new
+  waypoint. Stale trajectory, Robot, or default state fails before mutation;
+  verifier failure rolls back; and same-call replay is idempotent at the shared
+  dispatcher/state boundary.
+  The compiled lifecycle gate drives all three shipped human commands and their
+  Native equivalents and reports
+  `VIBECAD_NATIVE_ROBOT_TRAJECTORY_GUI_OK human_create_parity=true
+  exact_history=true exact_targets=true human_robot_waypoint_parity=true
+  human_position_waypoint_parity=true provider_preselection=false
+  stale_trajectory_noop=true stale_robot_noop=true stale_defaults_noop=true
+  rollback=true idempotent=true undo_redo=true reopen=true
+  selection_preserved=true`. The existing Robot setup and configuration gates
+  remain green, as do all 13 shipped Robot GUI tests. The complete VibeCAD suite
+  has 3,308 passing tests with four intentional skips; the focused trajectory,
+  registry, manifest, capability, setup, and snapshot suite has 92 passing
+  tests. VibeCADScripts, RobotScripts, Robot, and RobotGui build cleanly; Ruff,
+  Python compilation, diff checks, and declared source/build parity are green.
+  The protected current-source Sketcher, Part Design, and Assembly VibeScript
+  lifecycles exit zero with Part Design reporting `"ok": true`; no VibeScript
+  production source changed. The five execution/state modules are 770, 43, 108,
+  138, and 345 lines, and the compiled gate is 492 lines, all below the
+  1,000-line ceiling. The preserved recovery cache and lock are untouched, the
+  forbidden crash lock remains absent, no FreeCAD process remains, and the
+  immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native mode remains globally unavailable until this entire plan is complete;
+  row 11.38 will add the remaining edge, dress-up, and compound trajectory
+  actions before the Assemble surface can be complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6936,7 +6987,7 @@ concisely.
 - [x] 11.34 Implement Assemble-ribbon fastener attachment when present.
 - [x] 11.35 Implement Robot creation and setup.
 - [x] 11.36 Implement Robot tool shape, orientation, and default values.
-- [ ] 11.37 Implement Robot trajectory and waypoint operations.
+- [x] 11.37 Implement Robot trajectory and waypoint operations.
 - [ ] 11.38 Implement Robot edge, dress-up, and compound trajectories.
 - [ ] 11.39 Implement Robot home, restore, and simulation.
 - [ ] 11.40 Implement component-interface publication from Assemble.

@@ -1066,6 +1066,8 @@ _OPERATION_VARIANT_OVERRIDES = {
     "Sketcher_BSplineKnotMultiplicity": "bspline_knot_multiplicity",
     "Sketcher_BSplinePoleWeight": "bspline_pole_weight",
     "Sketcher_SwitchVirtualSpace": "set_virtual_space",
+    "Robot_InsertWaypoint": "insert_robot_waypoint",
+    "Robot_InsertWaypointPreselect": "insert_position_waypoint",
     "TechDraw_ExportPageDXF": "dxf",
     "TechDraw_ExportPageSVG": "svg",
 }

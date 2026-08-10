@@ -77,6 +77,10 @@ from VibeCADNativeRobotToolState import (
     NativeRobotToolStateError,
     capture_robot_tool_shape_inventory,
 )
+from VibeCADNativeRobotTrajectoryState import (
+    NativeRobotTrajectoryStateError,
+    capture_robot_trajectory_state,
+)
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
 
@@ -355,6 +359,15 @@ def build_assembly_snapshot(document: Any) -> dict[str, Any]:
         )
     except NativeRobotDefaultsStateError as exc:
         result["robot_waypoint_defaults"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
+    try:
+        result["robot_trajectories"] = capture_robot_trajectory_state(
+            document
+        ).summary()
+    except NativeRobotTrajectoryStateError as exc:
+        result["robot_trajectories"] = {
             "available": False,
             "reason": str(exc)[:256],
         }
