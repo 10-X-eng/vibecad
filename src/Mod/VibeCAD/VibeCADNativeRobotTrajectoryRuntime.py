@@ -22,12 +22,88 @@ from VibeCADNativeRobotTrajectory import (
     verify_appended_waypoint,
     verify_created_trajectory,
 )
+from VibeCADNativeRobotTrajectoryFeatures import (
+    mutate_trajectory_feature,
+    preflight_trajectory_feature,
+    trajectory_feature_is_noop,
+    verify_trajectory_feature,
+    verify_trajectory_feature_noop,
+)
+from VibeCADNativeRobotTrajectoryFeatureSpecs import (
+    prepare_compound_trajectory_spec,
+    prepare_dress_up_trajectory_spec,
+    prepare_edge_trajectory_spec,
+)
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
-from VibeCADNativeState import NativeCallTicket
+from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
+
+
+_FEATURE_ARGUMENTS = {
+    "edge2_trac": frozenset(
+        {
+            "mode",
+            "target",
+            "source",
+            "edges",
+            "segmentation_mm",
+            "use_rotation",
+            "expected_trajectory_setup_state_sha256",
+            "expected_target_state_sha256",
+            "expected_source_state_sha256",
+        }
+    ),
+    "trajectory_dress_up": frozenset(
+        {
+            "mode",
+            "target",
+            "source",
+            "use_speed",
+            "speed_mm_per_s",
+            "use_acceleration",
+            "acceleration_mm_per_s2",
+            "continuity_mode",
+            "placement",
+            "placement_mode",
+            "expected_trajectory_setup_state_sha256",
+            "expected_target_state_sha256",
+            "expected_source_state_sha256",
+        }
+    ),
+    "trajectory_compound": frozenset(
+        {
+            "mode",
+            "target",
+            "sources",
+            "expected_trajectory_setup_state_sha256",
+            "expected_target_state_sha256",
+        }
+    ),
+}
+_FEATURE_PREPARERS = {
+    "edge2_trac": prepare_edge_trajectory_spec,
+    "trajectory_dress_up": prepare_dress_up_trajectory_spec,
+    "trajectory_compound": prepare_compound_trajectory_spec,
+}
+_FEATURE_TITLES = {
+    "edge2_trac": "Robot Edge Trajectory",
+    "trajectory_dress_up": "Robot Trajectory Modifier",
+    "trajectory_compound": "Robot Trajectory Sequence",
+}
+
+
+def _require_current_ticket(
+    context: NativeRuntimeContext,
+    ticket: NativeCallTicket,
+) -> None:
+    if not isinstance(ticket, NativeCallTicket):
+        raise TypeError("ticket must be a NativeCallTicket")
+    current = context.state.current_revision(context.document_uid)
+    if current != ticket.expected_revision:
+        raise NativeRevisionConflict(ticket.expected_revision, current)
 
 
 class NativeRobotTrajectoryRuntime:
-    """Mutate trajectories only on the exact frozen Assemble surface."""
+    """Mutate trajectories only on an exact frozen Robot-capable surface."""
 
     def __init__(self, context: NativeRuntimeContext) -> None:
         if not isinstance(context, NativeRuntimeContext):
@@ -70,9 +146,35 @@ class NativeRobotTrajectoryRuntime:
                         "expected_defaults_state_sha256",
                     }
                 ),
+                **_FEATURE_ARGUMENTS,
             },
         )
         self._context.guard()
+        if operation in _FEATURE_ARGUMENTS:
+            _require_current_ticket(self._context, ticket)
+            spec = _FEATURE_PREPARERS[operation](
+                self._context.document_uid,
+                values,
+            )
+            prepared = preflight_trajectory_feature(
+                self._context.document,
+                operation,
+                spec,
+            )
+            if trajectory_feature_is_noop(prepared):
+                return verify_trajectory_feature_noop(
+                    self._context.document,
+                    prepared,
+                )
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name=(
+                    f"{spec.target.mode.title()} Native {_FEATURE_TITLES[operation]}"
+                ),
+                mutate=partial(mutate_trajectory_feature, prepared=prepared),
+                verify=verify_trajectory_feature,
+            )
         if operation == "create_trajectory":
             prepared = preflight_trajectory_create(
                 self._context.document,

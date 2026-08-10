@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-10
-Checklist status: 371 complete / 375 pending / 746 total (49.7% by row count)
+Checklist status: 372 complete / 374 pending / 746 total (49.9% by row count)
 
 ## Purpose
 
@@ -6410,6 +6410,58 @@ implementation changes:
   Native mode remains globally unavailable until this entire plan is complete;
   row 11.38 will add the remaining edge, dress-up, and compound trajectory
   actions before the Assemble surface can be complete.
+- Robot edge, dress-up, and compound trajectory authoring now completes row
+  11.38 through three additional exact variants of `robot.trajectory` on both
+  the Assemble and Manufacture surfaces: `edge2_trac` for
+  `Robot_Edge2Trac`, `trajectory_dress_up` for
+  `Robot_TrajectoryDressUp`, and `trajectory_compound` for
+  `Robot_TrajectoryCompound`. The schemas distinguish create from edit,
+  require exact target and source digests for edits, and never expose GUI
+  preselection, command dispatch, workbench switching, filesystem paths, or
+  document lifecycle controls.
+  Edge trajectories accept exact Part-object `EdgeN` references, line,
+  B-spline, and circle shape tags, segmentation, and rotation while bounding
+  generated output at 4,096 waypoints. Dress-up trajectories freeze the exact
+  source, speed, acceleration, continuity, and placement semantics and predict
+  the C++ feature's float32 waypoint output before mutation. Compound
+  trajectories require an ordered unique source list, reject cycles, reproduce
+  the shipped feature's ASCII name sanitation and uniqueness rules, and reject
+  empty or over-bounded output. All three freeze the global trajectory state,
+  exact source state, target state, History, and presentation inputs; stale,
+  cyclic, invalid, and already-equal calls are transaction-free no-ops. A real
+  mutation uses one transaction and one History operation, then reconciles the
+  result and replaced-source visibility with the same owner-chain semantics as
+  RobotGui, including sources still replaced by another active modifier.
+  Assemble state now includes the exact feature controls and usable History
+  positions. Manufacture state adds bounded `robot_tool_shapes` and
+  `robot_trajectories` inventories so the same actions retain exact targeting
+  without a second state contract.
+  The compiled lifecycle gate drives the three shipped human commands and the
+  Native equivalents and reports
+  `VIBECAD_NATIVE_ROBOT_TRAJECTORY_FEATURES_GUI_OK human_edge_parity=true
+  human_dress_up_parity=true human_compound_parity=true exact_history=true
+  exact_targets=true manufacture_surface=true stale_noop=true cycle_noop=true
+  bounded=true rollback=true verified_noop=true idempotent=true undo_redo=true
+  reopen=true selection_preserved=true`. The preceding Robot creation,
+  configuration, and trajectory gates remain green, as do all 13 shipped Robot
+  GUI tests. The complete VibeCAD suite has 3,312 passing tests with four
+  intentional skips; the focused trajectory, setup, registry, manifest,
+  capability, and snapshot suite has 96 passing tests. VibeCADScripts,
+  RobotScripts, Robot, and RobotGui build cleanly; Ruff, Python compilation,
+  diff checks, and declared source/build parity are green. The protected
+  current-source Sketcher, all 17 Part Design phases, Assembly, and Robot
+  VibeScript lifecycles exit zero with their structured success markers. The
+  Robot gate's stale exact surface expectation was updated to include the four
+  focused read/delete tools already present on the current VibeScript surface;
+  no VibeScript production source changed. The split feature-spec,
+  presentation, execution, and dispatch modules are 376, 101, 944, and 210
+  lines, and the compiled gate is 863 lines, all below the 1,000-line ceiling.
+  The preserved recovery cache and lock are untouched, the forbidden crash
+  lock remains absent, no FreeCAD process remains, and the immutable 5-axis
+  fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native mode remains globally unavailable until this entire plan is complete;
+  row 11.39 is next.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6988,7 +7040,7 @@ concisely.
 - [x] 11.35 Implement Robot creation and setup.
 - [x] 11.36 Implement Robot tool shape, orientation, and default values.
 - [x] 11.37 Implement Robot trajectory and waypoint operations.
-- [ ] 11.38 Implement Robot edge, dress-up, and compound trajectories.
+- [x] 11.38 Implement Robot edge, dress-up, and compound trajectories.
 - [ ] 11.39 Implement Robot home, restore, and simulation.
 - [ ] 11.40 Implement component-interface publication from Assemble.
 - [ ] 11.41 Return components, exact instance IDs, grounding, joints, remaining

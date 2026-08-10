@@ -6,6 +6,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADNativeRobotToolState import (
+    NativeRobotToolStateError,
+    capture_robot_tool_shape_inventory,
+)
+from VibeCADNativeRobotTrajectoryState import (
+    NativeRobotTrajectoryStateError,
+    capture_robot_trajectory_state,
+)
 from VibeCADNativeSnapshot import concise_object
 
 
@@ -49,8 +57,27 @@ def _job_summary(job: Any) -> dict[str, Any]:
 
 def build_manufacture_snapshot(document: Any) -> dict[str, Any]:
     jobs = [obj for obj in list(getattr(document, "Objects", []) or []) if _is_job(obj)]
-    return {
+    result = {
         "kind": "manufacture",
         "job_count": len(jobs),
         "jobs": [_job_summary(value) for value in jobs[:MAX_JOBS]],
     }
+    try:
+        result["robot_tool_shapes"] = capture_robot_tool_shape_inventory(
+            document
+        ).summary()
+    except NativeRobotToolStateError as exc:
+        result["robot_tool_shapes"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
+    try:
+        result["robot_trajectories"] = capture_robot_trajectory_state(
+            document
+        ).summary()
+    except NativeRobotTrajectoryStateError as exc:
+        result["robot_trajectories"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
+    return result

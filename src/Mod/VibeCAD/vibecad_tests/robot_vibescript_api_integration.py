@@ -749,7 +749,10 @@ def _exercise_lifecycle() -> dict[str, object]:
             assert surface.available is True, surface.unavailable_reason
             assert surface.cad_tool_names == (
                 "vibescript.read_source",
+                "vibescript.read_operation",
                 "vibescript.read_api",
+                "vibescript.read_geometry",
+                "vibescript.read_placement",
                 "vibescript.create_program",
                 "vibescript.build_program",
                 "vibescript.edit_source",
@@ -757,6 +760,7 @@ def _exercise_lifecycle() -> dict[str, object]:
                 "vibescript.reconfigure_program",
                 "vibescript.delete_output",
                 "vibescript.delete_program",
+                "vibescript.delete_object",
                 "robot.list_setup",
             )
             initial_inputs = {

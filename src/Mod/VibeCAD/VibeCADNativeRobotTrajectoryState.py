@@ -18,7 +18,20 @@ MAX_VISIBLE_TRAJECTORIES = 16
 MAX_WAYPOINTS_PER_TRAJECTORY = 4096
 MAX_TOTAL_WAYPOINTS = 16_384
 MAX_VISIBLE_WAYPOINTS = 4
+MAX_TRAJECTORY_SOURCES = 64
 _WAYPOINT_TYPES = frozenset({"PTP", "LIN", "CIRC", "WAIT", "UNDEF"})
+_CONTINUITY_MODES = {
+    "DontChange": "unchanged",
+    "Continues": "continuous",
+    "Discontinues": "discontinuous",
+}
+_PLACEMENT_MODES = {
+    "DontChange": "unchanged",
+    "UseOrientation": "replace_orientation",
+    "AddPosition": "translate",
+    "AddOrintation": "rotate",
+    "AddPositionAndOrientation": "transform",
+}
 
 
 class NativeRobotTrajectoryStateError(RuntimeError):
@@ -202,6 +215,134 @@ def _linked_object(value: Any) -> dict[str, Any] | None:
     }
 
 
+def _boolean(value: Any, field: str) -> bool:
+    if type(value) is not bool:
+        raise NativeRobotTrajectoryStateError(
+            f"A trajectory returned malformed {field} state."
+        )
+    return value
+
+
+def _enum(value: Any, values: Mapping[str, str], field: str) -> str:
+    result = values.get(str(value))
+    if result is None:
+        raise NativeRobotTrajectoryStateError(
+            f"A trajectory returned malformed {field} state."
+        )
+    return result
+
+
+def _link_sub(value: Any) -> dict[str, Any]:
+    try:
+        source, raw_subelements = value
+        subelements = tuple(str(item) for item in tuple(raw_subelements or ()))
+    except (TypeError, ValueError) as exc:
+        raise NativeRobotTrajectoryStateError(
+            "An edge trajectory returned malformed source state."
+        ) from exc
+    if len(subelements) > MAX_TRAJECTORY_SOURCES or len(subelements) != len(
+        set(subelements)
+    ):
+        raise NativeRobotTrajectoryStateError(
+            "An edge trajectory exceeds the bounded source-edge count."
+        )
+    if any(
+        not name.startswith("Edge") or not name[4:].isdigit() or int(name[4:]) < 1
+        for name in subelements
+    ):
+        raise NativeRobotTrajectoryStateError(
+            "An edge trajectory returned malformed edge names."
+        )
+    return {
+        "object": _linked_object(source),
+        "subelements": list(subelements),
+    }
+
+
+def _linked_trajectories(values: Any) -> list[dict[str, Any]]:
+    try:
+        sources = tuple(values or ())
+    except TypeError as exc:
+        raise NativeRobotTrajectoryStateError(
+            "A trajectory sequence returned malformed source state."
+        ) from exc
+    if len(sources) > MAX_TRAJECTORY_SOURCES or len(sources) != len(set(sources)):
+        raise NativeRobotTrajectoryStateError(
+            "A trajectory sequence exceeds the bounded unique source count."
+        )
+    return [_linked_object(source) for source in sources]
+
+
+def _trajectory_feature_state(trajectory: Any) -> dict[str, Any]:
+    type_id = str(getattr(trajectory, "TypeId", "") or "")
+    try:
+        if type_id == "Robot::Edge2TracObject":
+            return {
+                "kind": "edge",
+                "source": _link_sub(trajectory.Source),
+                "segmentation_mm": _finite(
+                    trajectory.SegValue,
+                    "edge segmentation",
+                ),
+                "use_rotation": _boolean(
+                    trajectory.UseRotation,
+                    "edge orientation",
+                ),
+            }
+        if type_id == "Robot::TrajectoryDressUpObject":
+            return {
+                "kind": "dress_up",
+                "source": _linked_object(trajectory.Source),
+                "speed_mm_per_s": _finite(trajectory.Speed, "dress-up speed"),
+                "use_speed": _boolean(trajectory.UseSpeed, "dress-up speed use"),
+                "acceleration_mm_per_s2": _finite(
+                    trajectory.Acceleration,
+                    "dress-up acceleration",
+                ),
+                "use_acceleration": _boolean(
+                    trajectory.UseAcceleration,
+                    "dress-up acceleration use",
+                ),
+                "continuity_mode": _enum(
+                    trajectory.ContType,
+                    _CONTINUITY_MODES,
+                    "dress-up continuity",
+                ),
+                "placement": robot_placement_summary(
+                    trajectory.PosAdd,
+                    "dress-up",
+                ),
+                "placement_mode": _enum(
+                    trajectory.AddType,
+                    _PLACEMENT_MODES,
+                    "dress-up placement mode",
+                ),
+            }
+        if type_id == "Robot::TrajectoryCompound":
+            return {
+                "kind": "compound",
+                "sources": _linked_trajectories(trajectory.Source),
+            }
+    except (AttributeError, ReferenceError, RuntimeError, TypeError) as exc:
+        raise NativeRobotTrajectoryStateError(
+            "A trajectory returned malformed feature state."
+        ) from exc
+    return {"kind": "trajectory" if type_id == "Robot::TrajectoryObject" else "other"}
+
+
+def _usable_at_history(trajectory: Any) -> bool:
+    document = getattr(trajectory, "Document", None)
+    reader = getattr(document, "isObjectUsableAtCurrentTimelinePosition", None)
+    if not callable(reader):
+        return True
+    try:
+        return bool(reader(trajectory))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError) as exc:
+        raise NativeRobotTrajectoryStateError(
+            "A trajectory returned malformed History usability state."
+        ) from exc
+
+
 def _trajectory_record(trajectory: Any) -> TrajectoryStateRecord:
     document = getattr(trajectory, "Document", None)
     name = str(getattr(trajectory, "Name", "") or "")
@@ -239,12 +380,14 @@ def _trajectory_record(trajectory: Any) -> TrajectoryStateRecord:
         "type_id": str(getattr(trajectory, "TypeId", "") or ""),
         "label": str(getattr(trajectory, "Label", "") or "")[:160],
         "base": robot_placement_summary(trajectory.Base, "base"),
+        "feature": _trajectory_feature_state(trajectory),
         "waypoint_count": len(waypoints),
         "waypoints_state_sha256": waypoint_digest,
         "length_mm": _finite(value.Length, "length"),
         "duration_seconds": _finite(value.Duration, "duration"),
         "suppressed": bool(getattr(trajectory, "Suppressed", False)),
         "valid": bool(trajectory.isValid()),
+        "usable_at_history": _usable_at_history(trajectory),
         "timeline": {
             "role": str(getattr(trajectory, "VibeCADTimelineRole", "") or ""),
             "owner": _linked_object(getattr(trajectory, "VibeCADTimelineOwner", None)),

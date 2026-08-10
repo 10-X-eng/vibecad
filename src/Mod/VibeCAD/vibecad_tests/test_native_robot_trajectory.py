@@ -33,12 +33,13 @@ def test_robot_trajectory_schema_covers_each_shipped_row_11_37_action() -> None:
     definition = robot_trajectory_capability_definition()
 
     assert definition.name == ROBOT_TRAJECTORY_CAPABILITY_NAME
-    assert tuple(variant.operation for variant in definition.variants) == (
+    row_variants = definition.variants[:3]
+    assert tuple(variant.operation for variant in row_variants) == (
         "create_trajectory",
         "insert_robot_waypoint",
         "insert_position_waypoint",
     )
-    assert tuple(variant.action_ids for variant in definition.variants) == (
+    assert tuple(variant.action_ids for variant in row_variants) == (
         frozenset({"Robot_CreateTrajectory"}),
         frozenset({"Robot_InsertWaypoint"}),
         frozenset({"Robot_InsertWaypointPreselect"}),
@@ -47,7 +48,7 @@ def test_robot_trajectory_schema_covers_each_shipped_row_11_37_action() -> None:
         variant.surface_ids == frozenset({"assemble"})
         and variant.transaction_behavior == "document"
         and variant.background_required is False
-        for variant in definition.variants
+        for variant in row_variants
     )
     assert _operation_variant("Robot_CreateTrajectory") == "create_trajectory"
     assert _operation_variant("Robot_InsertWaypoint") == "insert_robot_waypoint"

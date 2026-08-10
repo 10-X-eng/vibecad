@@ -267,7 +267,7 @@ def _run() -> None:
         registry = build_native_capability_registry()
         definition = registry.definition(ROBOT_TRAJECTORY_CAPABILITY_NAME)
         assert definition is not None
-        assert tuple(variant.operation for variant in definition.variants) == (
+        assert tuple(variant.operation for variant in definition.variants[:3]) == (
             "create_trajectory",
             "insert_robot_waypoint",
             "insert_position_waypoint",
