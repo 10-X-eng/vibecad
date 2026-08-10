@@ -49,7 +49,7 @@ class NativeRuntimeContext:
             raise TypeError("Native runtime guards must be callable")
         object.__setattr__(self, "document_uid", document_uid(self.document))
 
-    def guard(self) -> None:
+    def guard(self, *, allow_owned_playback: bool = False) -> None:
         self.reauthorize_turn()
         active = self.active_document()
         if (
@@ -59,3 +59,20 @@ class NativeRuntimeContext:
             raise NativeRuntimeContextError(
                 "The exact Native document is no longer active."
             )
+        if not bool(self.edit_or_task_active()):
+            return
+        if str(self.active_surface_id() or "") == "sketch.edit":
+            return
+        if allow_owned_playback:
+            try:
+                from VibeCADNativeAssemblyPlayback import (
+                    owns_active_native_assembly_playback,
+                )
+
+                if owns_active_native_assembly_playback(self.document):
+                    return
+            except (ImportError, RuntimeError):
+                pass
+        raise NativeRuntimeContextError(
+            "Finish or close the active task before using this Native operation."
+        )

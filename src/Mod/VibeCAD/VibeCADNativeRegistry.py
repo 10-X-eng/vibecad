@@ -16,6 +16,12 @@ from VibeCADNativeAssemblyJointBindings import (
 from VibeCADNativeAssemblyJointSchema import (
     register_assembly_joint_capability_definition,
 )
+from VibeCADNativeAssemblyPlaybackBindings import (
+    register_assembly_playback_capability_implementation,
+)
+from VibeCADNativeAssemblyPlaybackSchema import (
+    register_assembly_playback_capability_definition,
+)
 from VibeCADNativeAssemblyStructureBindings import (
     register_assembly_structure_capability_implementation,
 )
@@ -141,6 +147,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_assembly_diagnosis_capability_implementation(registry)
     register_assembly_joint_capability_definition(registry)
     register_assembly_joint_capability_implementation(registry)
+    register_assembly_playback_capability_definition(registry)
+    register_assembly_playback_capability_implementation(registry)
     register_assembly_structure_capability_definition(registry)
     register_assembly_structure_capability_implementation(registry)
     register_component_interface_capability_definition(registry)

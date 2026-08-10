@@ -37,9 +37,18 @@ class NativeSessionExecution:
 
 def _edit_or_task_active(service: Any) -> bool:
     summary = service.task_panel_summary()
-    return bool(
-        isinstance(summary, Mapping)
-        and (summary.get("active_dialog") or summary.get("edit_mode"))
+    if not isinstance(summary, Mapping):
+        return False
+    if summary.get("active_dialog"):
+        return True
+    if not summary.get("edit_mode"):
+        return False
+    if summary.get("active_sketch"):
+        return True
+    edit_object = summary.get("edit_object")
+    return not (
+        isinstance(edit_object, Mapping)
+        and str(edit_object.get("type") or "") == "Assembly::AssemblyObject"
     )
 
 

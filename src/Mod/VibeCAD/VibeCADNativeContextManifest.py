@@ -21,6 +21,7 @@ _CONTEXT_SOURCES = frozenset(
         "workbench_context",
         "drawing_canvas_context",
         "inspection_view_context",
+        "task_panel",
         "menu",
     }
 )
@@ -184,6 +185,43 @@ NATIVE_CONTEXT_ACTIONS = (
         "AssemblyContextMakeRigid", ("assemble",), ("tree_context",),
         "mutation", "assembly.structure", "make_rigid",
         "Assembly::AssemblyLink", "document",
+    ),
+    _action(
+        "AssemblyContextPlaySimulation", ("assemble",), ("tree_context",),
+        "view", "assembly.simulation", "open",
+        "App::FeaturePython/Simulation", "presentation",
+        source_command_id="Assembly_EditHistoryOperation",
+        interactive=True,
+    ),
+    _action(
+        "AssemblySimulationSeek", ("assemble",), ("task_panel",),
+        "view", "assembly.simulation", "seek",
+        "NativeOwnedAssemblyPlayback", "presentation",
+        interactive=True,
+    ),
+    _action(
+        "AssemblySimulationStep", ("assemble",), ("task_panel",),
+        "view", "assembly.simulation", "step",
+        "NativeOwnedAssemblyPlayback", "presentation",
+        interactive=True,
+    ),
+    _action(
+        "AssemblySimulationPlay", ("assemble",), ("task_panel",),
+        "view", "assembly.simulation", "play",
+        "NativeOwnedAssemblyPlayback", "presentation",
+        interactive=True,
+    ),
+    _action(
+        "AssemblySimulationPause", ("assemble",), ("task_panel",),
+        "view", "assembly.simulation", "pause",
+        "NativeOwnedAssemblyPlayback", "presentation",
+        interactive=True,
+    ),
+    _action(
+        "AssemblySimulationClose", ("assemble",), ("task_panel",),
+        "view", "assembly.simulation", "close",
+        "NativeOwnedAssemblyPlayback", "presentation",
+        interactive=True,
     ),
     _action(
         "CAM_ExportTemplate", ("manufacture",), ("workbench_context", "menu"),

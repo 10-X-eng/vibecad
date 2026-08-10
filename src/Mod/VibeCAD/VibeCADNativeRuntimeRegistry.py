@@ -12,6 +12,10 @@ from VibeCADNativeAssemblyDiagnosisBindings import (
 from VibeCADNativeAssemblyDiagnosisRuntime import NativeAssemblyDiagnosisRuntime
 from VibeCADNativeAssemblyJointBindings import assembly_joint_runtime_bindings
 from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
+from VibeCADNativeAssemblyPlaybackBindings import (
+    assembly_playback_runtime_bindings,
+)
+from VibeCADNativeAssemblyPlaybackRuntime import NativeAssemblyPlaybackRuntime
 from VibeCADNativeAssemblyStructureBindings import (
     assembly_structure_runtime_bindings,
 )
@@ -72,6 +76,7 @@ def build_native_runtime_bindings(
     common = NativeCommonRuntime(context=context)
     assembly_diagnosis = NativeAssemblyDiagnosisRuntime(context)
     assembly_joint = NativeAssemblyJointRuntime(context)
+    assembly_playback = NativeAssemblyPlaybackRuntime(context)
     assembly_structure = NativeAssemblyStructureRuntime(context)
     component_interface = NativeComponentInterfaceRuntime(context)
     model_catalog = NativeModelCatalogRuntime(context)
@@ -95,6 +100,7 @@ def build_native_runtime_bindings(
         **common_runtime_bindings(common),
         **assembly_diagnosis_runtime_bindings(assembly_diagnosis),
         **assembly_joint_runtime_bindings(assembly_joint),
+        **assembly_playback_runtime_bindings(assembly_playback),
         **assembly_structure_runtime_bindings(assembly_structure),
         **component_interface_runtime_bindings(component_interface),
         **model_catalog_runtime_bindings(model_catalog),

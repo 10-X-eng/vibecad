@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-10
-Checklist status: 360 complete / 386 pending / 746 total (48.3% by row count)
+Checklist status: 361 complete / 385 pending / 746 total (48.4% by row count)
 
 ## Purpose
 
@@ -139,8 +139,8 @@ implementation changes:
   Drawing IDs. It preserves live order, rejects unknown IDs, group drift, and
   composite-role drift, and contains no dispatch or activation API. Default,
   maximum, and all eight CAM-preference clean-profile GUI gates pass.
-- `VibeCADNativeContextManifest.py` separately inventories 19 current context
-  actions: three Assembly, four CAM-only additions, ten Drawing, and two
+- `VibeCADNativeContextManifest.py` separately inventories 25 current context
+  actions: nine Assembly, four CAM-only additions, ten Drawing, and two
   Inspection actions. Assembly context actions now have stable object names;
   source-drift tests prove the C++ and CAM context inventories exactly. The
   current VibeCAD fastener workflow adds no hidden context-only action: Model
@@ -5966,6 +5966,56 @@ implementation changes:
   immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
   Native mode remains globally unavailable until this entire plan is complete.
+- Assembly simulation playback is one exact presentation-only
+  `assembly.simulation` capability with the complete `open`, `seek`, `step`,
+  `play`, `pause`, and `close` lifecycle. The open variant maps only from the
+  shipped Simulation History context action on the human-selected Assemble
+  surface; the remaining variants map the controls of the player task panel.
+  Every control requires the exact 32-character Native playback identifier and
+  exact Simulation object, while open additionally requires the frozen
+  Assembly simulation-state digest and one exact generated output-grid time.
+  There is no command dispatcher, workbench switch, or legacy playback path.
+  Open validates the active Assembly, native Simulation ownership, complete
+  durable simulation graph, finite bounded grid, document size, recompute and
+  transaction state, and absence of another task before routing through the
+  shipped read-only `CommandCreateSimulation.openSimulation()` player. It
+  captures the exact document graph, solver placements and locks, component
+  and joint visibility, selection, camera pose/projection, and GUI dirty state
+  before generation. Launch postconditions prove that at least two frames were
+  generated without a durable graph, transaction, selection, or active-
+  Assembly change. A cryptographically random session ID is retained only for
+  the exact document and stable Qt form identity because the native task-dialog
+  binding returns a fresh Python wrapper on each query.
+  Seek and step pause before displaying one exact generated solver frame;
+  forward and backward play use the shipped timer controls; pause stops that
+  exact timer. Common state, view, and inspection reads remain available only
+  while the exact Native-owned player is live. Mutations, save, undo, another
+  task, a Sketch edit, unresolved edit state, and any non-Assembly edit remain
+  blocked by runtime guards. Normal Assembly edit mode is intentionally not
+  mistaken for a task panel, so the human-selected Assemble surface can start
+  a turn. Close routes the shipped rejection lifecycle and then verifies the
+  task is gone and the document graph, simulation records, placements and
+  locks, visibility, selection, camera, and dirty state are restored. Human
+  close and document teardown remove the exact registry entry immediately;
+  an old form callback cannot remove a replacement session. Saving from the
+  shipped player establishes a new clean close baseline even when playback
+  opened over a dirty GUI document.
+  The compiled GUI gate exercises the real Assembly solver and player and
+  reports `VIBECAD_NATIVE_ASSEMBLY_PLAYBACK_GUI_OK generated=true seek=true
+  step=true bidirectional=true pause=true mutation_blocked=true
+  save_baseline=true dirty_save_clean=true manual_close=true idempotent=true
+  restored=true selection_preserved=true`. All six pre-existing compiled
+  saved-simulation/player lifecycle tests pass. The focused contract suite has
+  27 passing tests, and the complete VibeCAD suite has 3,250 passing tests with
+  four intentional skips. Strict Ruff checks, formatting, Python compilation,
+  diff checks, source/build parity, and the VibeCADScripts and AssemblyScripts
+  targets are green. The protected current-source Sketcher, Part Design, and
+  Assembly VibeScript gates all exit zero; no VibeScript source changed. No
+  FreeCAD, FreeCADCmd, pytest, or build process remains. The preserved recovery
+  cache and lock are untouched, the forbidden crash lock remains absent, and
+  the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native mode remains globally unavailable until this entire plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6533,7 +6583,7 @@ concisely.
 - [x] 11.24 Implement joints-of-component reading.
 - [x] 11.25 Implement assembly view creation.
 - [x] 11.26 Implement simulation creation.
-- [ ] 11.27 Implement simulation playback and restoration.
+- [x] 11.27 Implement simulation playback and restoration.
 - [ ] 11.28 Implement BOM creation.
 - [ ] 11.29 Implement linked-source selection reading.
 - [ ] 11.30 Implement ASMT export with explicit path authorization.

@@ -36,6 +36,9 @@ from VibeCADNativeAssemblyJointConnectors import (
     placement_summary,
 )
 from VibeCADNativeAssemblyParallelJoint import parallel_axes_satisfied
+from VibeCADNativeAssemblyPlayback import (
+    active_native_assembly_playback_summary,
+)
 from VibeCADNativeAssemblyPerpendicularJoint import perpendicular_axes_satisfied
 from VibeCADNativeAssemblyRackPinionJoint import rack_pinion_dependency_summary
 from VibeCADNativeAssemblyScrewJoint import screw_dependency_summary
@@ -277,6 +280,7 @@ def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
             "available": False,
             "reason": str(exc)[:256],
         }
+    result["simulation_playback"] = active_native_assembly_playback_summary(assembly)
     return result
 
 

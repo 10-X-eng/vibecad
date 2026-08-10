@@ -61,8 +61,8 @@ class NativeCommonRuntime:
         self._active_surface_id = context.active_surface_id
         self._edit_or_task_active = context.edit_or_task_active
 
-    def _guard(self) -> None:
-        self._context.guard()
+    def _guard(self, *, allow_owned_playback: bool = False) -> None:
+        self._context.guard(allow_owned_playback=allow_owned_playback)
 
     def _object(self, value: Mapping[str, Any]) -> NativeObjectRef:
         if not isinstance(value, Mapping) or set(value) != {"object_name"}:
@@ -92,7 +92,7 @@ class NativeCommonRuntime:
             arguments,
             {"active": frozenset(), "selection": frozenset()},
         )
-        self._guard()
+        self._guard(allow_owned_playback=True)
         if operation == "selection":
             return read_current_selection(self._document)
         return self._snapshot()
@@ -110,7 +110,7 @@ class NativeCommonRuntime:
                 "capture_active_sketch": frozenset(),
             },
         )
-        self._guard()
+        self._guard(allow_owned_playback=True)
         if operation == "fit_all":
             return fit_all(self._document)
         if operation == "isometric":
@@ -150,7 +150,7 @@ class NativeCommonRuntime:
                 "validity": frozenset({"target"}),
             },
         )
-        self._guard()
+        self._guard(allow_owned_playback=True)
         if operation == "distance":
             return measure_distance(
                 self._document,
