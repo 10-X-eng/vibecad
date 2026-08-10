@@ -34,6 +34,7 @@ from VibeCADNativeModelStructureBindings import MODEL_STRUCTURE_CAPABILITY_NAMES
 from VibeCADNativeModelSurfaceBindings import MODEL_SURFACE_CAPABILITY_NAME
 from VibeCADNativeModelTransformBindings import MODEL_TRANSFORM_CAPABILITY_NAME
 from VibeCADNativeRegistry import build_native_capability_registry
+from VibeCADNativeRobotMotionSchema import ROBOT_MOTION_CAPABILITY_NAME
 from VibeCADNativeRobotSetupSchema import ROBOT_SETUP_CAPABILITY_NAME
 from VibeCADNativeRobotTrajectorySchema import ROBOT_TRAJECTORY_CAPABILITY_NAME
 from VibeCADNativeSketchBatchBindings import SKETCH_BATCH_CAPABILITY_NAME
@@ -46,8 +47,7 @@ from VibeCADNativeSketchPresentationBindings import (
 )
 
 
-def test_production_registry_assembles_finished_contracts_and_bindings_exactly(
-) -> None:
+def test_production_registry_has_every_finished_contract_and_binding() -> None:
     registry = build_native_capability_registry()
 
     assert registry.shared_definition_names == (
@@ -76,6 +76,7 @@ def test_production_registry_assembles_finished_contracts_and_bindings_exactly(
         MODEL_PART_CAPABILITY_NAME,
         MODEL_SURFACE_CAPABILITY_NAME,
         MODEL_TRANSFORM_CAPABILITY_NAME,
+        ROBOT_MOTION_CAPABILITY_NAME,
         ROBOT_SETUP_CAPABILITY_NAME,
         ROBOT_TRAJECTORY_CAPABILITY_NAME,
         SKETCH_BATCH_CAPABILITY_NAME,

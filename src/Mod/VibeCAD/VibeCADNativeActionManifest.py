@@ -867,7 +867,6 @@ _BACKGROUND_COMMAND_IDS = frozenset(
         "TechDraw_PrintAll",
         "TechDraw_ExportPageSVG",
         "TechDraw_ExportPageDXF",
-        "Robot_Simulate",
     }
 )
 
@@ -875,6 +874,7 @@ _SESSION_COMMAND_IDS = frozenset(
     {
         "Robot_SetDefaultOrientation",
         "Robot_SetDefaultValues",
+        "Robot_Simulate",
     }
 )
 

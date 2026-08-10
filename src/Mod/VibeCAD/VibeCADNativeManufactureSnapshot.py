@@ -6,6 +6,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADNativeRobotState import (
+    NativeRobotStateError,
+    capture_robot_setup_state,
+)
 from VibeCADNativeRobotToolState import (
     NativeRobotToolStateError,
     capture_robot_tool_shape_inventory,
@@ -62,6 +66,13 @@ def build_manufacture_snapshot(document: Any) -> dict[str, Any]:
         "job_count": len(jobs),
         "jobs": [_job_summary(value) for value in jobs[:MAX_JOBS]],
     }
+    try:
+        result["robot_setup"] = capture_robot_setup_state(document).summary()
+    except NativeRobotStateError as exc:
+        result["robot_setup"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
     try:
         result["robot_tool_shapes"] = capture_robot_tool_shape_inventory(
             document

@@ -1,10 +1,10 @@
 # Native AI Ribbon Mode — Official Implementation Plan
 
 Status: Official plan — active goal ledger
-Implementation status: In progress; Native remains disabled
+Implementation status: In progress; complete ribbons enabled, others fail-closed
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-10
-Checklist status: 372 complete / 374 pending / 746 total (49.9% by row count)
+Checklist status: 373 complete / 373 pending / 746 total (50.0% by row count)
 
 ## Purpose
 
@@ -5840,7 +5840,8 @@ implementation changes:
   and lock are untouched; the prior test-created crash lock remains absent;
   and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
-  Native mode remains globally unavailable until this entire plan is complete.
+  Native remains selectable only on complete ribbons; incomplete ribbons stay
+  fail-closed.
 - Assembly view creation is one exact mutating
   `assembly.structure/create_view` operation mapped only from the live
   `Assembly_CreateView` action on the human-selected Assemble ribbon. A new
@@ -6460,8 +6461,60 @@ implementation changes:
   lock remains absent, no FreeCAD process remains, and the immutable 5-axis
   fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
-  Native mode remains globally unavailable until this entire plan is complete;
-  row 11.39 is next.
+  Native mode remains globally unavailable until this entire plan is complete.
+- Robot home capture, home restoration, and preview-only simulation now share
+  the exact `robot.motion` capability with three action-specific variants.
+  Set Home freezes the complete Robot setup and exact Robot digest, predicts
+  the six float32 values stored by the shipped property, changes only `Home`,
+  and produces one verified transaction receipt. Restore Home requires an
+  exact six-axis stored home, changes only the six axes and derived TCP in one
+  transaction, and verifies every unrelated Robot record. Both variants reject
+  stale targets before mutation, return transaction-free verified no-ops, roll
+  back failed postconditions, retain provider-call idempotency, and preserve
+  human selection, History, undo/redo, and save/reopen semantics.
+  Simulation freezes the exact Robot, trajectory, global Robot and trajectory
+  digests, document boundary, and an explicitly ordered list of 1-64 float32
+  sample times. It returns bounded joint, TCP, path-target, and velocity samples
+  without a transaction, receipt, undo entry, task dialog, document revision,
+  or durable object change. The initial implementation exposed a genuine host
+  integration defect: calling `Trajectory.position()` on the Python property
+  copy emitted a false structural `Trajectory` notification. The final path is
+  the additive Robot-module `previewTrajectorySamples` boundary, which reads
+  the document property through the same const C++ path as the human command,
+  copies the Robot kinematic model, uses the shipped `Simulation` float-time and
+  tool semantics, and never mutates either document object. The post-evaluation
+  revision guard remains intact rather than suppressing observer safety. The
+  action manifest now classifies this bounded preview as session work rather
+  than a background document mutation; the live production resolver confirms
+  `robot.motion` is no longer missing or incomplete on either ribbon.
+  Assemble and Manufacture state now include the bounded Robot setup needed for
+  exact simulation targeting. The compiled lifecycle gate drives the three
+  shipped human commands and their Native variants and reports
+  `VIBECAD_NATIVE_ROBOT_MOTION_GUI_OK human_set_home_parity=true
+  human_restore_home_parity=true human_simulation_parity=true
+  exact_targets=true stale_noop=true rollback=true verified_noop=true
+  idempotent=true undo_redo=true preview_only=true manufacture_surface=true
+  reopen=true selection_preserved=true`. All five Native Robot compiled gates
+  and all 13 shipped Robot GUI tests are green. The complete VibeCAD suite has
+  3,317 passing tests with four intentional skips; the focused motion,
+  registry, manifest, capability, and snapshot suite has 82 passing tests.
+  VibeCADScripts, RobotScripts, Robot, and RobotGui build cleanly; Ruff, Python
+  compilation, diff checks, and declared source/build parity are green. The
+  protected current-source Sketcher lifecycle, all 17 Part Design phases,
+  Assembly, and Robot VibeScript lifecycles exit zero with their success
+  markers, and no VibeScript production source changed. The split motion,
+  binding, runtime, and schema modules are 649, 43, 122, and 123 lines; the
+  compiled gate is 574 lines. The production ribbon gate also confirms Model
+  and contextual Sketch are complete, selectable 19- and 10-tool Native
+  surfaces while incomplete ribbons remain fail-closed. The authoring-mode GUI
+  gate now uses that real production resolver without an availability stub and
+  proves the human can select Native on Model; the full Codex thread gate then
+  creates an exact Sketch line through the frozen provider surface on the GUI
+  thread. The preserved recovery cache and lock are
+  untouched, the forbidden crash lock remains absent, no FreeCAD process
+  remains, and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native remains selectable only on complete ribbons; row 11.40 is next.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -7041,7 +7094,7 @@ concisely.
 - [x] 11.36 Implement Robot tool shape, orientation, and default values.
 - [x] 11.37 Implement Robot trajectory and waypoint operations.
 - [x] 11.38 Implement Robot edge, dress-up, and compound trajectories.
-- [ ] 11.39 Implement Robot home, restore, and simulation.
+- [x] 11.39 Implement Robot home, restore, and simulation.
 - [ ] 11.40 Implement component-interface publication from Assemble.
 - [ ] 11.41 Return components, exact instance IDs, grounding, joints, remaining
   degrees of freedom, residuals, and conflicts concisely.

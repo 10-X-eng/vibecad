@@ -408,6 +408,47 @@ def test_robot_configuration_preserves_document_and_session_boundaries() -> None
     assert all(plan.classification.mutation for plan in plans)
 
 
+def test_robot_motion_preserves_document_and_preview_session_boundaries() -> None:
+    manifest = {
+        "schema_version": 1,
+        "surface_id": "assemble",
+        "groups": [
+            {
+                "label": "Motion",
+                "actions": [
+                    {
+                        "command_id": command_id,
+                        "kind": "command",
+                        "label": command_id,
+                        "available": True,
+                    }
+                    for command_id in (
+                        "Robot_SetHomePos",
+                        "Robot_RestoreHomePos",
+                        "Robot_Simulate",
+                    )
+                ],
+            }
+        ],
+    }
+
+    plans = classify_native_surface(_surface(manifest))
+
+    assert {plan.capability_family for plan in plans} == {"robot.motion"}
+    assert tuple(plan.operation_variant for plan in plans) == (
+        "set_home_pos",
+        "restore_home_pos",
+        "simulate",
+    )
+    assert tuple(plan.transaction_behavior for plan in plans) == (
+        "document",
+        "document",
+        "session",
+    )
+    assert all(plan.background_required is False for plan in plans)
+    assert all(plan.classification.mutation for plan in plans)
+
+
 def test_hole_is_a_focused_model_capability_instead_of_a_generic_feature() -> None:
     manifest = {
         "schema_version": 1,
@@ -811,7 +852,9 @@ def test_design_patterns_use_the_compact_typed_pattern_variant(command_id, label
         ],
     }
 
-    plan = classify_native_surface(RibbonSurface.from_manifest(manifest, revision=1))[0]
+    plan = classify_native_surface(
+        RibbonSurface.from_manifest(manifest, revision=1)
+    )[0]
 
     assert plan.capability_family == "model.transform"
     assert plan.operation_variant == "pattern"
@@ -873,9 +916,7 @@ def test_dressups_use_the_focused_model_dressup_capability(
             }
         ],
     }
-    plan = classify_native_surface(
-        RibbonSurface.from_manifest(manifest, revision=1)
-    )[0]
+    plan = classify_native_surface(RibbonSurface.from_manifest(manifest, revision=1))[0]
 
     assert plan.capability_family == "model.dressup"
     assert plan.operation_variant == operation

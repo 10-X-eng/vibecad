@@ -6,14 +6,12 @@ from __future__ import annotations
 
 import sys
 import traceback
-from types import SimpleNamespace
 
 import FreeCAD as App
 import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
 
 import VibeCADGui as VibeGui
-import VibeCADModelingSurface as modeling_surface_module
 from VibeCADCore import get_service
 
 
@@ -51,19 +49,10 @@ def _run() -> None:
         ]
         VibeGui._refresh_authoring_mode_selector()
         assert selector.currentData() == "vibescript"
-        assert selector.isEnabled() is False
+        assert selector.isEnabled() is True
         assert _item_enabled(selector, "vibescript") is True
-        assert _item_enabled(selector, "native") is False
-        assert "not yet complete" in selector.toolTip()
-
-        original_resolver = modeling_surface_module.resolve_modeling_surface
-        modeling_surface_module.resolve_modeling_surface = (
-            lambda workbench, engine: (
-                SimpleNamespace(available=True, unavailable_reason="")
-                if engine == "native"
-                else original_resolver(workbench, engine)
-            )
-        )
+        assert _item_enabled(selector, "native") is True
+        assert selector.property("VibeNativeAvailable") is True
 
         document.openTransaction("Authoring mode transaction blocker")
         VibeGui._refresh_authoring_mode_selector()

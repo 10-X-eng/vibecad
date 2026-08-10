@@ -56,6 +56,8 @@ from VibeCADNativeModelTransformBindings import model_transform_runtime_bindings
 from VibeCADNativeModelTransformRuntime import NativeModelTransformRuntime
 from VibeCADNativeRobotSetupBindings import robot_setup_runtime_bindings
 from VibeCADNativeRobotSetupRuntime import NativeRobotSetupRuntime
+from VibeCADNativeRobotMotionBindings import robot_motion_runtime_bindings
+from VibeCADNativeRobotMotionRuntime import NativeRobotMotionRuntime
 from VibeCADNativeRobotTrajectoryBindings import robot_trajectory_runtime_bindings
 from VibeCADNativeRobotTrajectoryRuntime import NativeRobotTrajectoryRuntime
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -104,6 +106,7 @@ def build_native_runtime_bindings(
     model_structure = NativeModelStructureRuntime(context)
     model_transform = NativeModelTransformRuntime(context)
     robot_setup = NativeRobotSetupRuntime(context)
+    robot_motion = NativeRobotMotionRuntime(context)
     robot_trajectory = NativeRobotTrajectoryRuntime(context)
     sketch_batch = NativeSketchBatchRuntime(context)
     sketch_constraint = NativeSketchConstraintRuntime(context)
@@ -133,6 +136,7 @@ def build_native_runtime_bindings(
         **model_structure_runtime_bindings(model_structure),
         **model_transform_runtime_bindings(model_transform),
         **robot_setup_runtime_bindings(robot_setup),
+        **robot_motion_runtime_bindings(robot_motion),
         **robot_trajectory_runtime_bindings(robot_trajectory),
         **sketch_batch_runtime_bindings(sketch_batch),
         **sketch_constraint_runtime_bindings(sketch_constraint),

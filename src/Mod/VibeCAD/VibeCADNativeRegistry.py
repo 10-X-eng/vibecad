@@ -123,6 +123,12 @@ from VibeCADNativeRobotSetupBindings import (
 from VibeCADNativeRobotSetupSchema import (
     register_robot_setup_capability_definition,
 )
+from VibeCADNativeRobotMotionBindings import (
+    register_robot_motion_capability_implementation,
+)
+from VibeCADNativeRobotMotionSchema import (
+    register_robot_motion_capability_definition,
+)
 from VibeCADNativeRobotTrajectoryBindings import (
     register_robot_trajectory_capability_implementation,
 )
@@ -213,6 +219,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_model_transform_capability_implementation(registry)
     register_robot_setup_capability_definition(registry)
     register_robot_setup_capability_implementation(registry)
+    register_robot_motion_capability_definition(registry)
+    register_robot_motion_capability_implementation(registry)
     register_robot_trajectory_capability_definition(registry)
     register_robot_trajectory_capability_implementation(registry)
     register_sketch_batch_capability_definition(registry)
