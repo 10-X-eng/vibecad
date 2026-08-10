@@ -36,6 +36,8 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyAngleJoint.py
     VibeCADNativeAssemblyBallJoint.py
     VibeCADNativeAssemblyBeltJoint.py
+    VibeCADNativeAssemblyBom.py
+    VibeCADNativeAssemblyBomState.py
     VibeCADNativeAssemblyComponents.py
     VibeCADNativeAssemblyComponentJoints.py
     VibeCADNativeAssemblyConflictDiagnosis.py
@@ -589,6 +591,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_sketch_state_gui_integration.py
         vibecad_tests/native_sketch_batch_gui_integration.py
         vibecad_tests/native_assembly_structure_gui_integration.py
+        vibecad_tests/native_assembly_bom_gui_integration.py
         vibecad_tests/native_assembly_playback_gui_integration.py
         vibecad_tests/native_assembly_simulation_gui_integration.py
         vibecad_tests/native_assembly_view_gui_integration.py
@@ -621,6 +624,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_native_assembly_redundant_diagnosis.py
         vibecad_tests/test_native_assembly_solve.py
         vibecad_tests/test_native_assembly_playback.py
+        vibecad_tests/test_native_assembly_bom.py
         vibecad_tests/test_native_assembly_simulation.py
         vibecad_tests/test_native_assembly_view.py
         vibecad_tests/native_sketch_batch_test_support.py

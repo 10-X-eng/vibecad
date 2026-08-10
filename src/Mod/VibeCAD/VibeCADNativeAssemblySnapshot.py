@@ -13,6 +13,10 @@ from VibeCADNativeAssemblyAngleJoint import (
     measured_axis_angle_degrees,
 )
 from VibeCADNativeAssemblyBeltJoint import belt_dependency_summary
+from VibeCADNativeAssemblyBomState import (
+    NativeAssemblyBomStateError,
+    assembly_bom_state_summary,
+)
 from VibeCADNativeAssemblyComponents import (
     assembly_components,
     available_component_sources,
@@ -277,6 +281,13 @@ def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
         result["simulation_state"] = assembly_simulation_state_summary(assembly)
     except NativeAssemblySimulationStateError as exc:
         result["simulation_state"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
+    try:
+        result["bom_state"] = assembly_bom_state_summary(assembly)
+    except NativeAssemblyBomStateError as exc:
+        result["bom_state"] = {
             "available": False,
             "reason": str(exc)[:256],
         }

@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-10
-Checklist status: 361 complete / 385 pending / 746 total (48.4% by row count)
+Checklist status: 362 complete / 384 pending / 746 total (48.5% by row count)
 
 ## Purpose
 
@@ -6016,6 +6016,52 @@ implementation changes:
   the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
   Native mode remains globally unavailable until this entire plan is complete.
+- Assembly BOM creation is one exact `assembly.structure/create_bom` mutation
+  mapped only from the shipped `Assembly_CreateBom` action on the
+  human-selected Assemble ribbon. A bounded BOM-state reader freezes the exact
+  active Assembly, direct-component count, native `OutList` source traversal,
+  link and link-element targets, occurrence ordering, mirroring and scale,
+  supported scalar and quantity properties, existing BOM operations and
+  tables, and one canonical SHA-256 digest. Provider state exposes concise
+  counts, supported built-in columns, bounded `.PropertyName` choices, existing
+  BOM settings, and table sizes without returning the complete source graph or
+  cell contents.
+  The closed schema requires one exact Assembly, 1 through 32 unique ordered
+  printable columns, the three native traversal flags, and the frozen digest,
+  component count, and BOM count. Preflight re-resolves the human-active
+  Assembly, rejects stale state before mutation, requires at least one active
+  component, and enforces explicit source, property, operation, row, and cell
+  bounds. Mutation uses the shipped `CommandCreateBom.createBomFeature()`
+  factory and the real `Assembly::BomObject` and `Assembly::BomGroup` types,
+  applies the exact native columns and settings, and generates the table in one
+  immediate document transaction without opening a task panel or spreadsheet
+  view. It preserves the human command's History behavior: the core enrolls
+  the BOM in History, and Native does not invent a `VibeCADTimelineRole` that
+  the human factory does not create.
+  Postconditions prove the exact Assembly owner and BOM-group order, accepted
+  and active History state, ordered table headers, bounded table digest and
+  preview, unchanged active Assembly and selection, unchanged source graph and
+  solver placements, prior-BOM preservation, and absence of stray document
+  objects. The shared mutation runtime provides one-step undo/redo and
+  idempotent same-call replay. The compiled lifecycle gate exercises property
+  columns, quantity aggregation across duplicate links, nested detail,
+  parts-only filtering, group reuse, stale no-op, replay, undo/redo, save and
+  reopen, ownership, and unchanged placements, reporting
+  `VIBECAD_NATIVE_ASSEMBLY_BOM_GUI_OK boms=2 rows=4 properties=true
+  quantity_aggregation=true parts_filter=true stale_noop=true idempotent=true
+  undo_redo=true reopen=true owner=true no_sheet_opened=true
+  placements_unchanged=true`.
+  The complete VibeCAD suite has 3,256 passing tests and four intentional
+  skips; the focused contract suite, targeted core BOM test, VibeCADScripts,
+  AssemblyScripts, FreeCADApp, FreeCADGui, Assembly, and AssemblyGui targets,
+  Ruff, formatting, Python compilation, diff checks, and declared source/build
+  parity are green. The protected current-source Sketcher, Part Design, and
+  Assembly VibeScript gates all exit zero, and no VibeScript source changed.
+  The preserved recovery cache and lock are untouched, the forbidden crash
+  lock remains absent, no FreeCAD process remains, and the immutable 5-axis
+  fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native mode remains globally unavailable until this entire plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6584,7 +6630,7 @@ concisely.
 - [x] 11.25 Implement assembly view creation.
 - [x] 11.26 Implement simulation creation.
 - [x] 11.27 Implement simulation playback and restoration.
-- [ ] 11.28 Implement BOM creation.
+- [x] 11.28 Implement BOM creation.
 - [ ] 11.29 Implement linked-source selection reading.
 - [ ] 11.30 Implement ASMT export with explicit path authorization.
 - [ ] 11.31 Implement Assemble-ribbon fastener insertion.

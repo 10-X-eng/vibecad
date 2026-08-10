@@ -19,6 +19,13 @@ from VibeCADNativeAssemblyComponents import (
     verify_created_part,
     verify_inserted_component,
 )
+from VibeCADNativeAssemblyBom import (
+    AssemblyBomCreateSpec,
+    NativeAssemblyBomError,
+    create_assembly_bom,
+    preflight_create_assembly_bom,
+    verify_created_assembly_bom,
+)
 from VibeCADNativeAssemblyStructure import (
     AssemblyCreateSpec,
     NativeAssemblyStructureError,
@@ -145,6 +152,25 @@ def _source_ref(value: Any) -> AssemblySourceRef:
         parts["object_name"],
         object_id,
     )
+
+
+def _bom_object_ref(document_uid: str, value: Any) -> NativeObjectRef:
+    if not isinstance(value, Mapping) or set(value) != {"object_name"}:
+        raise NativeAssemblyBomError(
+            "assembly must be one exact object reference."
+        )
+    try:
+        return NativeObjectRef(document_uid, str(value.get("object_name") or ""))
+    except Exception as exc:
+        raise NativeAssemblyBomError(
+            "assembly must be one exact object reference."
+        ) from exc
+
+
+def _bom_columns(value: Any) -> tuple[Any, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise NativeAssemblyBomError("columns must be one ordered list.")
+    return tuple(value)
 
 
 def _placement(value: Any) -> Any:
@@ -420,6 +446,19 @@ class NativeAssemblyStructureRuntime:
                         "expected_simulation_count",
                     }
                 ),
+                "create_bom": frozenset(
+                    {
+                        "assembly",
+                        "label",
+                        "columns",
+                        "detail_subassemblies",
+                        "detail_parts",
+                        "only_parts",
+                        "expected_bom_state_sha256",
+                        "expected_component_count",
+                        "expected_bom_count",
+                    }
+                ),
             },
         )
         if operation == "create_assembly":
@@ -438,6 +477,32 @@ class NativeAssemblyStructureRuntime:
                 transaction_name="Create Native Assembly",
                 mutate=lambda document: create_assembly(document, spec),
                 verify=verify_created_assembly,
+            )
+        if operation == "create_bom":
+            bom_spec = AssemblyBomCreateSpec(
+                assembly_ref=_bom_object_ref(
+                    self._context.document_uid,
+                    values["assembly"],
+                ),
+                label=values["label"],
+                columns=_bom_columns(values["columns"]),
+                detail_subassemblies=values["detail_subassemblies"],
+                detail_parts=values["detail_parts"],
+                only_parts=values["only_parts"],
+                expected_bom_state_sha256=values[
+                    "expected_bom_state_sha256"
+                ],
+                expected_component_count=values["expected_component_count"],
+                expected_bom_count=values["expected_bom_count"],
+            )
+            self._context.guard()
+            preflight_create_assembly_bom(self._context.document, bom_spec)
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name="Create Native Assembly BOM",
+                mutate=lambda document: create_assembly_bom(document, bom_spec),
+                verify=verify_created_assembly_bom,
             )
         assembly_ref = _object_ref(
             self._context.document_uid,

@@ -120,6 +120,21 @@ _SIMULATION_MOTION = {
     "required": ["joint", "motion_type", "formula"],
     "additionalProperties": False,
 }
+_BOM_COLUMNS = {
+    "type": "array",
+    "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 129,
+        "pattern": (
+            r"^(?:\.[A-Za-z_][A-Za-z0-9_]{0,127}|"
+            r"[^.\x00-\x1f\x7f][^\x00-\x1f\x7f]*)$"
+        ),
+    },
+    "minItems": 1,
+    "maxItems": 32,
+    "uniqueItems": True,
+}
 
 
 def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
@@ -383,6 +398,50 @@ def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
                         "expected_grounded_count",
                         "expected_eligible_joint_count",
                         "expected_simulation_count",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="create_bom",
+                description=(
+                    "Create one native Assembly bill-of-materials History "
+                    "operation with exact ordered columns and traversal settings."
+                ),
+                action_ids=frozenset({"Assembly_CreateBom"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactBomStateAndSourceGraph"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "label": _LABEL,
+                        "columns": _BOM_COLUMNS,
+                        "detail_subassemblies": {"type": "boolean"},
+                        "detail_parts": {"type": "boolean"},
+                        "only_parts": {"type": "boolean"},
+                        "expected_bom_state_sha256": _STATE_SHA256,
+                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
+                        "expected_bom_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1_024,
+                        },
+                    },
+                    "required": [
+                        "assembly",
+                        "label",
+                        "columns",
+                        "detail_subassemblies",
+                        "detail_parts",
+                        "only_parts",
+                        "expected_bom_state_sha256",
+                        "expected_component_count",
+                        "expected_bom_count",
                     ],
                     "additionalProperties": False,
                 },
