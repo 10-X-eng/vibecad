@@ -141,6 +141,7 @@ def test_structure_schema_exactly_covers_the_live_create_action() -> None:
         "insert_component",
         "create_part",
         "solve_assembly",
+        "create_view",
     )
     assert registry.implementation("assembly.structure") is not None
 

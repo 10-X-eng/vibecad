@@ -62,6 +62,47 @@ _EXPECTED_JOINT_COUNT = {
     "minimum": 0,
     "maximum": 256,
 }
+_STATE_SHA256 = {
+    "type": "string",
+    "minLength": 64,
+    "maxLength": 64,
+    "pattern": r"^[0-9a-f]{64}$",
+}
+_VIEW_TARGETS = {
+    "type": "array",
+    "items": _OBJECT_REF,
+    "minItems": 1,
+    "maxItems": 256,
+    "uniqueItems": True,
+}
+_VIEW_MOVE = {
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "const": "normal"},
+                "targets": _VIEW_TARGETS,
+                "transform": placement_schema(),
+            },
+            "required": ["kind", "targets", "transform"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "const": "radial"},
+                "targets": _VIEW_TARGETS,
+                "radial_distance_mm": {
+                    "type": "number",
+                    "exclusiveMinimum": 0.0,
+                    "maximum": 1_000_000.0,
+                },
+            },
+            "required": ["kind", "targets", "radial_distance_mm"],
+            "additionalProperties": False,
+        },
+    ]
+}
 
 
 def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
@@ -199,6 +240,55 @@ def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
                         "expected_component_count",
                         "expected_grounded_count",
                         "expected_joint_count",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="create_view",
+                description=(
+                    "Create one native exploded-view History operation with its "
+                    "complete ordered normal and radial move graph."
+                ),
+                action_ids=frozenset({"Assembly_CreateView"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type="HumanActiveAssemblyExactViewStateAndMovableTargets",
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "label": _LABEL,
+                        "parts_as_single_solid": {"type": "boolean"},
+                        "moves": {
+                            "type": "array",
+                            "items": _VIEW_MOVE,
+                            "minItems": 1,
+                            "maxItems": 256,
+                        },
+                        "expected_view_state_sha256": _STATE_SHA256,
+                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
+                        "expected_target_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4_096,
+                        },
+                        "expected_view_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1_024,
+                        },
+                    },
+                    "required": [
+                        "assembly",
+                        "label",
+                        "parts_as_single_solid",
+                        "moves",
+                        "expected_view_state_sha256",
+                        "expected_component_count",
+                        "expected_target_count",
+                        "expected_view_count",
                     ],
                     "additionalProperties": False,
                 },

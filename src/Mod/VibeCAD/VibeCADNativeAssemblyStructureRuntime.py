@@ -33,6 +33,14 @@ from VibeCADNativeAssemblySolve import (
     preflight_assembly_solve,
     verify_assembly_solve,
 )
+from VibeCADNativeAssemblyView import (
+    AssemblyViewCreateSpec,
+    AssemblyViewMoveSpec,
+    NativeAssemblyViewError,
+    create_assembly_view,
+    preflight_create_assembly_view,
+    verify_created_assembly_view,
+)
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeDesignResults import placement_from_mapping
 from VibeCADNativeModelErrors import NativeModelError
@@ -85,6 +93,17 @@ def _solver_state_sha256(value: Any) -> str:
     return result
 
 
+def _view_state_sha256(value: Any) -> str:
+    result = str(value or "")
+    if len(result) != 64 or any(
+        character not in "0123456789abcdef" for character in result
+    ):
+        raise NativeAssemblyViewError(
+            "expected_view_state_sha256 must be one lowercase SHA-256 digest."
+        )
+    return result
+
+
 def _object_ref(document_uid: str, value: Any, field: str) -> NativeObjectRef:
     if not isinstance(value, Mapping) or set(value) != {"object_name"}:
         raise NativeAssemblyComponentError(
@@ -127,6 +146,93 @@ def _placement(value: Any) -> Any:
         raise NativeAssemblyComponentError(
             "placement must contain a finite origin and non-zero axis rotation."
         ) from exc
+
+
+def _view_placement(value: Any) -> Any:
+    try:
+        return placement_from_mapping(value)
+    except (NativeModelError, KeyError, TypeError, ValueError) as exc:
+        raise NativeAssemblyViewError(
+            "A normal exploded-view transform must contain a finite origin and a finite rotation with a non-zero axis."
+        ) from exc
+
+
+def _view_count(value: Any, field: str, maximum: int) -> int:
+    if type(value) is not int or not 0 <= value <= maximum:
+        raise NativeAssemblyViewError(
+            f"{field} must be an integer from 0 through {maximum}."
+        )
+    return value
+
+
+def _view_moves(document_uid: str, value: Any) -> tuple[AssemblyViewMoveSpec, ...]:
+    if not isinstance(value, (list, tuple)) or not 1 <= len(value) <= 256:
+        raise NativeAssemblyViewError(
+            "moves must contain 1 through 256 ordered exploded-view moves."
+        )
+    result = []
+    total_targets = 0
+    for index, raw in enumerate(value):
+        if not isinstance(raw, Mapping):
+            raise NativeAssemblyViewError(
+                f"moves[{index}] must be one exact move object."
+            )
+        kind = str(raw.get("kind") or "")
+        required = (
+            {"kind", "targets", "transform"}
+            if kind == "normal"
+            else {"kind", "targets", "radial_distance_mm"}
+            if kind == "radial"
+            else set()
+        )
+        if not required or set(raw) != required:
+            raise NativeAssemblyViewError(
+                f"moves[{index}] must be exactly one normal or radial move."
+            )
+        targets = raw["targets"]
+        if not isinstance(targets, (list, tuple)) or not 1 <= len(targets) <= 256:
+            raise NativeAssemblyViewError(
+                f"moves[{index}].targets must contain 1 through 256 exact object references."
+            )
+        target_refs = tuple(
+            _object_ref(document_uid, target, f"moves[{index}].targets")
+            for target in targets
+        )
+        if len({target.object_name for target in target_refs}) != len(target_refs):
+            raise NativeAssemblyViewError(
+                f"moves[{index}].targets contains a duplicate object."
+            )
+        total_targets += len(target_refs)
+        if total_targets > 16_384:
+            raise NativeAssemblyViewError(
+                "moves may contain at most 16384 target references."
+            )
+        if kind == "normal":
+            result.append(
+                AssemblyViewMoveSpec(
+                    kind="normal",
+                    target_refs=target_refs,
+                    movement_transform=_view_placement(raw["transform"]),
+                )
+            )
+            continue
+        distance = raw["radial_distance_mm"]
+        if (
+            isinstance(distance, bool)
+            or not isinstance(distance, (int, float))
+            or not 0.0 < float(distance) <= 1_000_000.0
+        ):
+            raise NativeAssemblyViewError(
+                f"moves[{index}].radial_distance_mm must be greater than zero and at most 1000000."
+            )
+        result.append(
+            AssemblyViewMoveSpec(
+                kind="radial",
+                target_refs=target_refs,
+                radial_distance_mm=float(distance),
+            )
+        )
+    return tuple(result)
 
 
 class NativeAssemblyStructureRuntime:
@@ -190,6 +296,18 @@ class NativeAssemblyStructureRuntime:
                         "expected_component_count",
                         "expected_grounded_count",
                         "expected_joint_count",
+                    }
+                ),
+                "create_view": frozenset(
+                    {
+                        "assembly",
+                        "label",
+                        "parts_as_single_solid",
+                        "moves",
+                        "expected_view_state_sha256",
+                        "expected_component_count",
+                        "expected_target_count",
+                        "expected_view_count",
                     }
                 ),
             },
@@ -282,6 +400,48 @@ class NativeAssemblyStructureRuntime:
                 transaction_name="Solve Native Assembly",
                 mutate=lambda document: apply_assembly_solve(document, solve_spec),
                 verify=verify_assembly_solve,
+            )
+        if operation == "create_view":
+            parts_as_single_solid = values["parts_as_single_solid"]
+            if type(parts_as_single_solid) is not bool:
+                raise NativeAssemblyViewError(
+                    "parts_as_single_solid must be true or false."
+                )
+            view_spec = AssemblyViewCreateSpec(
+                assembly_ref=assembly_ref,
+                label=_label(values["label"]),
+                parts_as_single_solid=parts_as_single_solid,
+                moves=_view_moves(
+                    self._context.document_uid,
+                    values["moves"],
+                ),
+                expected_view_state_sha256=_view_state_sha256(
+                    values["expected_view_state_sha256"]
+                ),
+                expected_component_count=_view_count(
+                    values["expected_component_count"],
+                    "expected_component_count",
+                    100_000,
+                ),
+                expected_target_count=_view_count(
+                    values["expected_target_count"],
+                    "expected_target_count",
+                    4_096,
+                ),
+                expected_view_count=_view_count(
+                    values["expected_view_count"],
+                    "expected_view_count",
+                    1_024,
+                ),
+            )
+            self._context.guard()
+            preflight_create_assembly_view(self._context.document, view_spec)
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name="Create Native Assembly Exploded View",
+                mutate=lambda document: create_assembly_view(document, view_spec),
+                verify=verify_created_assembly_view,
             )
         raise NativeAssemblyStructureError(
             "The Assembly structure operation is not implemented."

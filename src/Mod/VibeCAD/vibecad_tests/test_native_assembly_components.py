@@ -163,6 +163,7 @@ def test_schema_covers_both_live_insert_actions_with_exact_targets() -> None:
         "insert_component",
         "create_part",
         "solve_assembly",
+        "create_view",
     )
     assert variants["insert_component"].action_ids == frozenset(
         {"Assembly_InsertLink"}

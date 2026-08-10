@@ -5841,6 +5841,79 @@ implementation changes:
   and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
   Native mode remains globally unavailable until this entire plan is complete.
+- Assembly view creation is one exact mutating
+  `assembly.structure/create_view` operation mapped only from the live
+  `Assembly_CreateView` action on the human-selected Assemble ribbon. A new
+  bounded view-state reader freezes the exact active Assembly, component
+  count, finite Assembly bounds, both native movable-target inventories from
+  `UtilsAssembly.getMovablePartsWithin()` (`individual_objects` and
+  `parts_as_single_solid`), canonical Assembly-rooted selection paths, target
+  placements and centers, the existing view/move graph, and a SHA-256 digest.
+  Provider state exposes concise identities, counts, bounds, target-mode
+  membership, and a bounded view preview; internal selection paths and the
+  full durable graph are not echoed to the provider. The closed request schema
+  requires that digest and every relevant count, one exact Assembly, one
+  scope, and an ordered bounded sequence of normal placement transforms or
+  positive radial distances against exact target references. Preflight
+  rechecks the human-active Assembly and presentation, requires the human
+  command's minimum of two components, resolves every identity into the
+  requested native target inventory, rejects duplicate, stale, zero-effect,
+  cross-scope, cross-root, non-finite, or unbounded requests, and preserves
+  selection without opening the human task panel.
+  Mutation uses the real `CommandCreateView` operation and step factories plus
+  their `ExplodedView` and `ExplodedViewStep` view-provider proxies. It creates
+  or reuses the native `Assembly::ViewGroup`, publishes every step as a
+  resource of one operation, assigns the exact native `References`,
+  `MoveType`, and `MovementTransform` properties, and finalizes the canonical
+  resource-first/owner-last History block through
+  `finalizeProvisionalTimelineOperationBlock()`. Before commit, every move is
+  exercised through its real `applyStep()` implementation; every exact target
+  must move and produce one native explosion line, after which all original
+  Assembly placements are restored exactly and every move resource is hidden.
+  Postcondition verification rechecks graph identity/order, proxies, History
+  role/owner/editor metadata, view-group membership, accepted visibility,
+  target inventories, bounds, prior views, human selection, active Assembly,
+  movement presentation, and restored placements. The concise result contains
+  only exact object identities, label/scope, counts, explosion-line count, the
+  new view-state digest, and explicit preservation facts. One transaction,
+  assistant-local undo, stale-state no-op behavior, and idempotent call replay
+  remain owned by the shared Native mutation runtime.
+  Repeated compiled save/reopen testing exposed a separate core lifecycle
+  defect: `DocumentTimeline::normalizeAfterRestore()` preserved the correct
+  `VisibilityAtEnd` bits but did not reapply them after Python-backed operation
+  proxies completed their restore callbacks, so an arbitrary move could reopen
+  visible. History now shares one end-state presentation reconciliation path
+  between restore and undo/redo, applied after the complete object graph is
+  reconstructed and while restore capture is suppressed. A deterministic
+  Assembly core regression intentionally makes a Python resource visible in
+  `onDocumentRestored()` and proves the accepted hidden state wins. The Native
+  GUI gate asserts live and accepted visibility after each create, each redo,
+  immediately before and after save, and after reopen. The unfixed build failed
+  four of five repeated runs; the repaired build passed five of five and the
+  final formatted build passed again. The gate also proves nested individual
+  targets, single-solid scope, normal and radial moves, malformed and stale
+  no-ops, exact task/edit/selection/presentation preservation, one-step
+  undo/redo, view-group reuse, proxy/owner restoration, and baseline placements,
+  reporting `VIBECAD_NATIVE_ASSEMBLY_VIEW_GUI_OK views=2 normal_moves=2
+  radial_moves=1 nested_target=true stale_noop=true undo_redo=true reopen=true
+  placements_restored=true`.
+  All 22 compiled Native Assembly lifecycle gates pass against the rebuilt
+  core, the focused view/structure/component suite has 19 passing tests, and
+  the complete VibeCAD suite has 3,236 passing tests with four intentional
+  skips. The new deterministic Assembly core test passes; the broader legacy
+  `AssemblyTests.TestCore` module retains an independently reproducible,
+  unrelated flexible-occurrence provisional-proof failure and was not hidden
+  by changing production behavior or assertions. Ruff, formatting of every
+  new file, compilation, diff checks, declared source/build parity, and the
+  VibeCADScripts, AssemblyScripts, FreeCADApp, FreeCADGui, Assembly, and
+  AssemblyGui targets are green. The protected Sketcher VibeScript lifecycle
+  passes, all 17 Part Design VibeScript phases pass, and the current-source
+  Assembly VibeScript integration exits zero. No VibeScript source changed.
+  No FreeCAD or FreeCADCmd process remains; the preserved recovery snapshot
+  and lock are untouched; the prior test-created crash lock remains absent;
+  and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native mode remains globally unavailable until this entire plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6406,7 +6479,7 @@ concisely.
 - [x] 11.22 Implement partially redundant-constraint diagnosis.
 - [x] 11.23 Implement malformed-constraint diagnosis.
 - [x] 11.24 Implement joints-of-component reading.
-- [ ] 11.25 Implement assembly view creation.
+- [x] 11.25 Implement assembly view creation.
 - [ ] 11.26 Implement simulation creation.
 - [ ] 11.27 Implement simulation playback and restoration.
 - [ ] 11.28 Implement BOM creation.

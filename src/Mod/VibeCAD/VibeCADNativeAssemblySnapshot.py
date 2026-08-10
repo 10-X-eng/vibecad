@@ -48,6 +48,10 @@ from VibeCADNativeAssemblySolveState import (
     NativeAssemblySolveStateError,
     assembly_solver_state_summary,
 )
+from VibeCADNativeAssemblyViewState import (
+    NativeAssemblyViewStateError,
+    assembly_view_state_summary,
+)
 from VibeCADNativeAssemblyState import read_active_assembly
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
@@ -252,6 +256,13 @@ def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
         result["solver_state"] = assembly_solver_state_summary(assembly)
     except NativeAssemblySolveStateError as exc:
         result["solver_state"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
+    try:
+        result["view_state"] = assembly_view_state_summary(assembly)
+    except NativeAssemblyViewStateError as exc:
+        result["view_state"] = {
             "available": False,
             "reason": str(exc)[:256],
         }

@@ -77,6 +77,8 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyStructureBindings.py
     VibeCADNativeAssemblyStructureRuntime.py
     VibeCADNativeAssemblyStructureSchema.py
+    VibeCADNativeAssemblyView.py
+    VibeCADNativeAssemblyViewState.py
     VibeCADNativeBackground.py
     VibeCADNativeCapabilityRegistry.py
     VibeCADNativeCommonBindings.py
@@ -581,6 +583,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_sketch_state_gui_integration.py
         vibecad_tests/native_sketch_batch_gui_integration.py
         vibecad_tests/native_assembly_structure_gui_integration.py
+        vibecad_tests/native_assembly_view_gui_integration.py
         vibecad_tests/native_assembly_grounding_gui_integration.py
         vibecad_tests/native_assembly_fixed_joint_gui_integration.py
         vibecad_tests/native_assembly_revolute_joint_gui_integration.py
@@ -609,6 +612,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_native_assembly_partial_redundancy_diagnosis.py
         vibecad_tests/test_native_assembly_redundant_diagnosis.py
         vibecad_tests/test_native_assembly_solve.py
+        vibecad_tests/test_native_assembly_view.py
         vibecad_tests/native_sketch_batch_test_support.py
         vibecad_tests/native_sketch_geometry_gui_support.py
         vibecad_tests/native_sketch_provider_turn.py
