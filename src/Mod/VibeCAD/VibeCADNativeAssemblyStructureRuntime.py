@@ -33,6 +33,14 @@ from VibeCADNativeAssemblySolve import (
     preflight_assembly_solve,
     verify_assembly_solve,
 )
+from VibeCADNativeAssemblySimulation import (
+    AssemblySimulationCreateSpec,
+    AssemblySimulationMotionSpec,
+    NativeAssemblySimulationError,
+    create_assembly_simulation,
+    preflight_create_assembly_simulation,
+    verify_created_assembly_simulation,
+)
 from VibeCADNativeAssemblyView import (
     AssemblyViewCreateSpec,
     AssemblyViewMoveSpec,
@@ -235,6 +243,91 @@ def _view_moves(document_uid: str, value: Any) -> tuple[AssemblyViewMoveSpec, ..
     return tuple(result)
 
 
+def _simulation_state_sha256(value: Any) -> str:
+    result = str(value or "")
+    if len(result) != 64 or any(
+        character not in "0123456789abcdef" for character in result
+    ):
+        raise NativeAssemblySimulationError(
+            "expected_simulation_state_sha256 must be one lowercase SHA-256 digest."
+        )
+    return result
+
+
+def _simulation_count(value: Any, field: str, maximum: int) -> int:
+    if type(value) is not int or not 0 <= value <= maximum:
+        raise NativeAssemblySimulationError(
+            f"{field} must be an integer from 0 through {maximum}."
+        )
+    return value
+
+
+def _simulation_number(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise NativeAssemblySimulationError(f"{field} must be a finite number.")
+    result = float(value)
+    if result != result or result in (float("inf"), float("-inf")):
+        raise NativeAssemblySimulationError(f"{field} must be a finite number.")
+    return result
+
+
+def _simulation_object_ref(
+    document_uid: str,
+    value: Any,
+    field: str,
+) -> NativeObjectRef:
+    if not isinstance(value, Mapping) or set(value) != {"object_name"}:
+        raise NativeAssemblySimulationError(
+            f"{field} must be one exact object reference."
+        )
+    try:
+        return NativeObjectRef(document_uid, str(value.get("object_name") or ""))
+    except Exception as exc:
+        raise NativeAssemblySimulationError(str(exc)) from exc
+
+
+def _simulation_motions(
+    document_uid: str,
+    value: Any,
+) -> tuple[AssemblySimulationMotionSpec, ...]:
+    if not isinstance(value, (list, tuple)) or not 1 <= len(value) <= 256:
+        raise NativeAssemblySimulationError(
+            "motions must contain 1 through 256 ordered Assembly motions."
+        )
+    result = []
+    for index, raw in enumerate(value):
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "joint",
+            "motion_type",
+            "formula",
+        }:
+            raise NativeAssemblySimulationError(
+                f"motions[{index}] must contain exactly joint, motion_type, and formula."
+            )
+        motion_type = raw["motion_type"]
+        formula = raw["formula"]
+        if motion_type not in {"angular", "linear"}:
+            raise NativeAssemblySimulationError(
+                f"motions[{index}].motion_type must be angular or linear."
+            )
+        if not isinstance(formula, str) or not 1 <= len(formula) <= 512:
+            raise NativeAssemblySimulationError(
+                f"motions[{index}].formula must contain 1 through 512 characters."
+            )
+        result.append(
+            AssemblySimulationMotionSpec(
+                joint_ref=_simulation_object_ref(
+                    document_uid,
+                    raw["joint"],
+                    f"motions[{index}].joint",
+                ),
+                motion_type=motion_type,
+                formula=formula,
+            )
+        )
+    return tuple(result)
+
+
 class NativeAssemblyStructureRuntime:
     """Execute only structure operations from one frozen Assemble turn."""
 
@@ -308,6 +401,23 @@ class NativeAssemblyStructureRuntime:
                         "expected_component_count",
                         "expected_target_count",
                         "expected_view_count",
+                    }
+                ),
+                "create_simulation": frozenset(
+                    {
+                        "assembly",
+                        "label",
+                        "time_start_seconds",
+                        "time_end_seconds",
+                        "output_time_step_seconds",
+                        "global_error_tolerance",
+                        "frames_per_second",
+                        "motions",
+                        "expected_simulation_state_sha256",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_eligible_joint_count",
+                        "expected_simulation_count",
                     }
                 ),
             },
@@ -442,6 +552,75 @@ class NativeAssemblyStructureRuntime:
                 transaction_name="Create Native Assembly Exploded View",
                 mutate=lambda document: create_assembly_view(document, view_spec),
                 verify=verify_created_assembly_view,
+            )
+        if operation == "create_simulation":
+            frames_per_second = values["frames_per_second"]
+            if type(frames_per_second) is not int:
+                raise NativeAssemblySimulationError(
+                    "frames_per_second must be an integer."
+                )
+            simulation_spec = AssemblySimulationCreateSpec(
+                assembly_ref=assembly_ref,
+                label=_label(values["label"]),
+                time_start_seconds=_simulation_number(
+                    values["time_start_seconds"],
+                    "time_start_seconds",
+                ),
+                time_end_seconds=_simulation_number(
+                    values["time_end_seconds"],
+                    "time_end_seconds",
+                ),
+                output_time_step_seconds=_simulation_number(
+                    values["output_time_step_seconds"],
+                    "output_time_step_seconds",
+                ),
+                global_error_tolerance=_simulation_number(
+                    values["global_error_tolerance"],
+                    "global_error_tolerance",
+                ),
+                frames_per_second=frames_per_second,
+                motions=_simulation_motions(
+                    self._context.document_uid,
+                    values["motions"],
+                ),
+                expected_simulation_state_sha256=_simulation_state_sha256(
+                    values["expected_simulation_state_sha256"]
+                ),
+                expected_component_count=_simulation_count(
+                    values["expected_component_count"],
+                    "expected_component_count",
+                    100_000,
+                ),
+                expected_grounded_count=_simulation_count(
+                    values["expected_grounded_count"],
+                    "expected_grounded_count",
+                    256,
+                ),
+                expected_eligible_joint_count=_simulation_count(
+                    values["expected_eligible_joint_count"],
+                    "expected_eligible_joint_count",
+                    256,
+                ),
+                expected_simulation_count=_simulation_count(
+                    values["expected_simulation_count"],
+                    "expected_simulation_count",
+                    1_024,
+                ),
+            )
+            self._context.guard()
+            preflight_create_assembly_simulation(
+                self._context.document,
+                simulation_spec,
+            )
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name="Create Native Assembly Simulation",
+                mutate=lambda document: create_assembly_simulation(
+                    document,
+                    simulation_spec,
+                ),
+                verify=verify_created_assembly_simulation,
             )
         raise NativeAssemblyStructureError(
             "The Assembly structure operation is not implemented."

@@ -103,6 +103,23 @@ _VIEW_MOVE = {
         },
     ]
 }
+_SIMULATION_MOTION = {
+    "type": "object",
+    "properties": {
+        "joint": _OBJECT_REF,
+        "motion_type": {
+            "type": "string",
+            "enum": ["angular", "linear"],
+        },
+        "formula": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+        },
+    },
+    "required": ["joint", "motion_type", "formula"],
+    "additionalProperties": False,
+}
 
 
 def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
@@ -289,6 +306,83 @@ def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
                         "expected_component_count",
                         "expected_target_count",
                         "expected_view_count",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="create_simulation",
+                description=(
+                    "Create one native Assembly simulation History operation "
+                    "with its complete ordered motion graph."
+                ),
+                action_ids=frozenset({"Assembly_CreateSimulation"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactSimulationStateAndDriveableJoints"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "label": _LABEL,
+                        "time_start_seconds": {
+                            "type": "number",
+                            "minimum": -1_000_000.0,
+                            "maximum": 1_000_000.0,
+                        },
+                        "time_end_seconds": {
+                            "type": "number",
+                            "minimum": -1_000_000.0,
+                            "maximum": 1_000_000.0,
+                        },
+                        "output_time_step_seconds": {
+                            "type": "number",
+                            "minimum": 1.0e-9,
+                            "maximum": 1_000_000.0,
+                        },
+                        "global_error_tolerance": {
+                            "type": "number",
+                            "minimum": 1.0e-12,
+                            "maximum": 1.0,
+                        },
+                        "frames_per_second": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 240,
+                        },
+                        "motions": {
+                            "type": "array",
+                            "items": _SIMULATION_MOTION,
+                            "minItems": 1,
+                            "maxItems": 256,
+                        },
+                        "expected_simulation_state_sha256": _STATE_SHA256,
+                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
+                        "expected_grounded_count": _EXPECTED_JOINT_COUNT,
+                        "expected_eligible_joint_count": _EXPECTED_JOINT_COUNT,
+                        "expected_simulation_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1_024,
+                        },
+                    },
+                    "required": [
+                        "assembly",
+                        "label",
+                        "time_start_seconds",
+                        "time_end_seconds",
+                        "output_time_step_seconds",
+                        "global_error_tolerance",
+                        "frames_per_second",
+                        "motions",
+                        "expected_simulation_state_sha256",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_eligible_joint_count",
+                        "expected_simulation_count",
                     ],
                     "additionalProperties": False,
                 },

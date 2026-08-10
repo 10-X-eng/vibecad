@@ -3,8 +3,8 @@
 Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
-Last updated: 2026-08-09
-Checklist status: 356 complete / 390 pending / 746 total (47.7% by row count)
+Last updated: 2026-08-10
+Checklist status: 360 complete / 386 pending / 746 total (48.3% by row count)
 
 ## Purpose
 
@@ -5914,6 +5914,58 @@ implementation changes:
   and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
   Native mode remains globally unavailable until this entire plan is complete.
+- Assembly simulation creation is one exact mutating
+  `assembly.structure/create_simulation` operation mapped only from the live
+  `Assembly_CreateSimulation` action on the human-selected Assemble ribbon.
+  It authors the durable Simulation/Motion History graph only; solver-frame
+  generation, playback, cancellation, and restoration remain the separate
+  row 11.27 lifecycle. This boundary matches the human command and keeps
+  document and GUI access on the main thread instead of pretending FreeCAD
+  objects are safe to mutate in a worker.
+  A bounded simulation-state reader freezes the exact human-active Assembly,
+  complete component and grounding graph, active regular-joint connector and
+  parameter records, solver-placement digest, eligible driveable joints,
+  existing Simulation/Motion graph, and one canonical SHA-256 digest. It
+  advertises only valid unsuppressed Revolute, Slider, and Cylindrical joints
+  with exact live connectors, mapping them respectively to angular, linear,
+  or both motion types. Provider state returns concise identities, labels,
+  supported motion types, counts, and bounded previews rather than the full
+  internal graph.
+  The closed schema requires one exact Assembly, finite bounded simulation
+  parameters, 1 through 256 ordered exact-joint motions, single-line formulas,
+  and the frozen digest and relevant counts. Preflight re-resolves every
+  target, rejects stale active state before mutation, requires two components,
+  a valid ground, and at least one driveable joint, enforces native joint/type
+  compatibility, permits the intentional angular-plus-linear pair on one
+  Cylindrical joint, rejects duplicate joint/type pairs, and bounds planned
+  output work to 10,000 intervals.
+  Mutation uses the shipped `CommandCreateSimulation.Simulation`, `Motion`,
+  `ViewProviderSimulation`, and `ViewProviderMotion` factories and
+  `UtilsAssembly.getSimulationGroup()`. It sets the exact native property
+  types and values, preserves requested motion order, marks every motion as a
+  resource owned by its Simulation, and finalizes one canonical
+  resource-first/owner-last History block. Postcondition verification proves
+  object types and proxies, ownership, group order, accepted visibility,
+  timeline editor metadata, prior-graph preservation, exact parameters,
+  unchanged selection and active Assembly, unchanged component placements,
+  and absence of stray objects. The concise result contains exact identities,
+  counts, parameters, motion-to-joint mappings, the new state digest, and an
+  explicit `kinematics_generated: false`. The shared mutation runtime provides
+  one semantic undo step and idempotent call replay.
+  The focused and complete VibeCAD suites pass, with 3,242 tests passing and
+  four intentional skips. The compiled GUI lifecycle gate passed repeatedly
+  and on the final source/build pair, reporting
+  `VIBECAD_NATIVE_ASSEMBLY_SIMULATION_GUI_OK simulations=2 motions=3
+  cylindrical_dual_motion=true kinematics_not_generated=true stale_noop=true
+  idempotent=true undo_redo=true reopen=true placements_unchanged=true`.
+  VibeCADScripts and AssemblyScripts build cleanly; Ruff, Python compilation,
+  diff checks, source/build parity, the protected Sketcher and Part Design
+  VibeScript lifecycles, and the current-source Assembly VibeScript integration
+  are green. No VibeScript source changed. The preserved recovery cache and
+  lock are untouched, the forbidden crash lock remains absent, and the
+  immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native mode remains globally unavailable until this entire plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6480,7 +6532,7 @@ concisely.
 - [x] 11.23 Implement malformed-constraint diagnosis.
 - [x] 11.24 Implement joints-of-component reading.
 - [x] 11.25 Implement assembly view creation.
-- [ ] 11.26 Implement simulation creation.
+- [x] 11.26 Implement simulation creation.
 - [ ] 11.27 Implement simulation playback and restoration.
 - [ ] 11.28 Implement BOM creation.
 - [ ] 11.29 Implement linked-source selection reading.

@@ -48,6 +48,10 @@ from VibeCADNativeAssemblySolveState import (
     NativeAssemblySolveStateError,
     assembly_solver_state_summary,
 )
+from VibeCADNativeAssemblySimulationState import (
+    NativeAssemblySimulationStateError,
+    assembly_simulation_state_summary,
+)
 from VibeCADNativeAssemblyViewState import (
     NativeAssemblyViewStateError,
     assembly_view_state_summary,
@@ -263,6 +267,13 @@ def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
         result["view_state"] = assembly_view_state_summary(assembly)
     except NativeAssemblyViewStateError as exc:
         result["view_state"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
+    try:
+        result["simulation_state"] = assembly_simulation_state_summary(assembly)
+    except NativeAssemblySimulationStateError as exc:
+        result["simulation_state"] = {
             "available": False,
             "reason": str(exc)[:256],
         }
