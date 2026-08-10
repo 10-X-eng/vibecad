@@ -8905,6 +8905,7 @@ void DocumentTimeline::clampPosition()
 void DocumentTimeline::normalizeAfterRestore()
 {
     normalizeStoredState(true);
+    reconcileEndStatePresentation();
 }
 
 void DocumentTimeline::normalizeStoredState(bool migrateLegacy)
@@ -9078,17 +9079,14 @@ void DocumentTimeline::normalizeStoredState(bool migrateLegacy)
     SchemaVersion.setValue(CurrentSchemaVersion);
 }
 
-void DocumentTimeline::onUndoRedoFinished()
+void DocumentTimeline::reconcileEndStatePresentation()
 {
-    normalizeStoredState(false);
-
     auto* document = getDocument();
     const auto operations = Operations.getValues();
     const auto visibility = VisibilityAtEnd.getValues();
     const auto suppression = SuppressionAtEnd.getValues();
     if (!document || Position.getValue() != static_cast<long>(operations.size())
         || visibility.size() != operations.size() || suppression.size() != operations.size()) {
-        DocumentObject::onUndoRedoFinished();
         return;
     }
 
@@ -9139,5 +9137,11 @@ void DocumentTimeline::onUndoRedoFinished()
             operation->Visibility.setValue(target.visible);
         }
     }
+}
+
+void DocumentTimeline::onUndoRedoFinished()
+{
+    normalizeStoredState(false);
+    reconcileEndStatePresentation();
     DocumentObject::onUndoRedoFinished();
 }
