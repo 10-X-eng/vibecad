@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-10
-Checklist status: 368 complete / 378 pending / 746 total (49.3% by row count)
+Checklist status: 369 complete / 377 pending / 746 total (49.5% by row count)
 
 ## Purpose
 
@@ -6251,6 +6251,55 @@ implementation changes:
   addition of either command to the shipped Assemble graph will fail manifest
   parity and require a new Assemble-scoped implementation before Native can be
   enabled there.
+- Assemble Robot creation is one exact `robot.setup/create` mutation mapped
+  only from the shipped `Robot_Create` action on the human-selected Assemble
+  surface. The closed provider schema accepts a printable label plus the exact
+  frozen Robot-state digest and count; it contains no path, directory, file,
+  command-dispatch, workbench-switching, or fuzzy-target field. A shared Native
+  input boundary asks the human through a host-owned existing-file dialog and
+  turns each selected VRML or CSV file into a request-bound, one-shot grant.
+  The grant rejects invalid suffixes, nonregular files, oversized content,
+  symlink/identity drift, reuse, and modification before or during its
+  descriptor-based read. Provider-visible summaries contain only the basename,
+  byte count, and SHA-256 digest.
+  Preflight proves the exact Robot graph, document object identities, History,
+  selection, transaction, and recompute state before either dialog and rechecks
+  them after both human choices. VRML must have a version 1.0 or 2.0 header;
+  kinematics must be UTF-8 CSV with one header and exactly six eight-value axis
+  rows, finite values, direction `-1` or `1`, ordered limits, and positive
+  velocity. One transaction creates the native `Robot::RobotObject`, embeds the
+  two authorized definitions, installs the validated six-axis kinematics, and
+  publishes exactly one final History operation while preserving the human
+  selection and every prior Robot.
+  Assemble context now exposes bounded, path-free Robot setup state with exact
+  object, definition-content, axes, home, Base, Tool, ToolBase, TCP, ToolShape,
+  validity, suppression, History, and presentation records plus per-Robot and
+  whole-setup SHA-256 digests. Signed zero is canonicalized without rounding any
+  nonzero value so the digest survives FCStd serialization exactly. The shared
+  Robot object now synchronizes its durable public `Tcp` property immediately
+  when `RobotKinematicFile` loads, fixing a real human-command persistence
+  defect found by parity testing; the upstream Robot GUI lifecycle test proves
+  the expected TCP before and after reopen.
+  The compiled lifecycle gate exercises the shipped human Robot command and
+  Native parity, path-free provider schema, human input authority, exact state
+  and History, malformed-file and input-drift no-ops, stale-state rejection,
+  cancellation, forced-verifier rollback, idempotent same-call replay, one-step
+  undo/redo, selection preservation, and FCStd save/reopen. It reports
+  `VIBECAD_NATIVE_ROBOT_SETUP_GUI_OK human_parity=true
+  human_input_authority=true provider_paths=false exact_history=true
+  exact_state=true malformed_noop=true input_drift_noop=true stale_noop=true
+  cancel_noop=true rollback=true idempotent=true undo_redo=true reopen=true
+  selection_preserved=true`. The complete VibeCAD suite has 3,301 passing tests
+  with four intentional skips; the focused input/setup suite has 14 passing
+  tests. Robot, RobotGui, RobotScripts, and VibeCADScripts build cleanly; Ruff,
+  formatting, Python compilation, diff checks, and declared source/build parity
+  are green. The protected current-source Sketcher lifecycle, all 17 Part Design
+  VibeScript phases, and Assembly VibeScript integration exit zero; no VibeScript
+  production source changed. The preserved recovery cache and lock are
+  untouched, the forbidden crash lock remains absent, no FreeCAD process
+  remains, and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native mode remains globally unavailable until this entire plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6826,7 +6875,7 @@ concisely.
 - [x] 11.32 Implement Assemble-ribbon fastener editing.
 - [x] 11.33 Implement Assemble-ribbon matching-hole action when present.
 - [x] 11.34 Implement Assemble-ribbon fastener attachment when present.
-- [ ] 11.35 Implement Robot creation and setup.
+- [x] 11.35 Implement Robot creation and setup.
 - [ ] 11.36 Implement Robot tool shape, orientation, and default values.
 - [ ] 11.37 Implement Robot trajectory and waypoint operations.
 - [ ] 11.38 Implement Robot edge, dress-up, and compound trajectories.

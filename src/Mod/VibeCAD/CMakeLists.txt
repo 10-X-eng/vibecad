@@ -142,6 +142,8 @@ set(VibeCAD_Scripts
     VibeCADNativeDesignSweep.py
     VibeCADNativeInspect.py
     VibeCADNativeImmediate.py
+    VibeCADNativeInput.py
+    VibeCADNativeInputGui.py
     VibeCADNativeManufactureSnapshot.py
     VibeCADNativeMeasure.py
     VibeCADNativeMeshSnapshot.py
@@ -220,6 +222,11 @@ set(VibeCAD_Scripts
     VibeCADNativeRegistry.py
     VibeCADNativeRuntimeRegistry.py
     VibeCADNativeRuntimeContext.py
+    VibeCADNativeRobotSetup.py
+    VibeCADNativeRobotSetupBindings.py
+    VibeCADNativeRobotSetupRuntime.py
+    VibeCADNativeRobotSetupSchema.py
+    VibeCADNativeRobotState.py
     VibeCADNativeSchemaRules.py
     VibeCADNativeSessionFactory.py
     VibeCADNativeSketchErrors.py
@@ -607,6 +614,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_sketch_batch_gui_integration.py
         vibecad_tests/native_assembly_structure_gui_integration.py
         vibecad_tests/native_assembly_fastener_gui_integration.py
+        vibecad_tests/native_robot_setup_gui_integration.py
         vibecad_tests/native_assembly_linked_source_gui_integration.py
         vibecad_tests/native_assembly_bom_gui_integration.py
         vibecad_tests/native_assembly_playback_gui_integration.py
@@ -643,6 +651,8 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_native_assembly_inspect.py
         vibecad_tests/test_native_assembly_export.py
         vibecad_tests/test_native_assembly_fastener.py
+        vibecad_tests/test_native_input.py
+        vibecad_tests/test_native_robot_setup.py
         vibecad_tests/test_native_assembly_solve.py
         vibecad_tests/test_native_assembly_playback.py
         vibecad_tests/test_native_assembly_bom.py

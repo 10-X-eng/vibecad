@@ -65,6 +65,10 @@ from VibeCADNativeAssemblyViewState import (
     assembly_view_state_summary,
 )
 from VibeCADNativeAssemblyState import read_active_assembly
+from VibeCADNativeRobotState import (
+    NativeRobotStateError,
+    capture_robot_setup_state,
+)
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
 
@@ -321,6 +325,13 @@ def build_assembly_snapshot(document: Any) -> dict[str, Any]:
         ],
         "available_component_sources": sources,
     }
+    try:
+        result["robot_setup"] = capture_robot_setup_state(document).summary()
+    except NativeRobotStateError as exc:
+        result["robot_setup"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
     if sources_truncated:
         result["available_component_sources_truncated"] = True
     return result

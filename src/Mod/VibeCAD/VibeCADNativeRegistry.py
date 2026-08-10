@@ -117,6 +117,12 @@ from VibeCADNativeModelTransformBindings import (
 from VibeCADNativeModelTransformSchema import (
     register_model_transform_capability_definition,
 )
+from VibeCADNativeRobotSetupBindings import (
+    register_robot_setup_capability_implementation,
+)
+from VibeCADNativeRobotSetupSchema import (
+    register_robot_setup_capability_definition,
+)
 from VibeCADNativeSketchBatchBindings import (
     register_sketch_batch_capability_implementation,
 )
@@ -199,6 +205,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_model_surface_capability_implementation(registry)
     register_model_transform_capability_definition(registry)
     register_model_transform_capability_implementation(registry)
+    register_robot_setup_capability_definition(registry)
+    register_robot_setup_capability_implementation(registry)
     register_sketch_batch_capability_definition(registry)
     register_sketch_batch_capability_implementation(registry)
     register_sketch_geometry_capability_definition(registry)

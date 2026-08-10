@@ -2907,6 +2907,14 @@ def _execute_assistant_run(
             parent=_find_dock() or dock,
         )
 
+    def _input_authorization_callback(request: Any) -> Any:
+        from VibeCADNativeInputGui import request_native_input_authorization
+
+        return request_native_input_authorization(
+            request,
+            parent=_find_dock() or dock,
+        )
+
     def _progress_on_document_thread(event: dict[str, Any]) -> None:
         current_dock = _find_dock() or dock
         if event.get("event") == "provider_turn_output":
@@ -3005,6 +3013,7 @@ def _execute_assistant_run(
             "steering_check": _steering_messages,
             "question_callback": _question_callback,
             "output_authorization_callback": _output_authorization_callback,
+            "input_authorization_callback": _input_authorization_callback,
             "document_thread_dispatch": _dispatch_to_document_thread,
         }
         try:

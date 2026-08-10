@@ -138,6 +138,9 @@ void RobotObject::onChanged(const Property* prop)
     if (prop == &RobotKinematicFile) {
         // load the new kinematic
         robot.readKinematic(RobotKinematicFile.getValue());
+        block = true;
+        Tcp.setValue(robot.getTcp());
+        block = false;
     }
 
     if (prop == &Axis1 && !block) {

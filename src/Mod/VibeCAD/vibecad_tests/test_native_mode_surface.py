@@ -169,6 +169,7 @@ def test_native_runner_assembly_returns_before_the_vibescript_runner_path(
     )
 
     output_authorizer = object()
+    input_authorizer = object()
     result = session.make_provider_tool_runner(
         _NativeService(),
         tool_trace=[],
@@ -177,6 +178,7 @@ def test_native_runner_assembly_returns_before_the_vibescript_runner_path(
         steering_check=None,
         question_callback=None,
         output_authorization_callback=output_authorizer,
+        input_authorization_callback=input_authorizer,
         document_thread_dispatch=lambda operation: operation(),
         turn_surface={"engine": "native", "domain": "model"},
         turn_schemas=[{"name": "model.feature"}],
@@ -193,3 +195,4 @@ def test_native_runner_assembly_returns_before_the_vibescript_runner_path(
         {"name": "model.feature"}
     ]
     assert captured["factory"]["output_authorizer"] is output_authorizer
+    assert captured["factory"]["input_authorizer"] is input_authorizer
