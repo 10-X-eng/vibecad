@@ -6274,8 +6274,9 @@ implementation changes:
   Assemble context now exposes bounded, path-free Robot setup state with exact
   object, definition-content, axes, home, Base, Tool, ToolBase, TCP, ToolShape,
   validity, suppression, History, and presentation records plus per-Robot and
-  whole-setup SHA-256 digests. Signed zero is canonicalized without rounding any
-  nonzero value so the digest survives FCStd serialization exactly. The shared
+  whole-setup SHA-256 digests. Signed zero and only the sub-picometre placement
+  tail beyond FCStd storage precision are canonicalized so unchanged Robot
+  digests survive ordinary save/reopen. The shared
   Robot object now synchronizes its durable public `Tcp` property immediately
   when `RobotKinematicFile` loads, fixing a real human-command persistence
   defect found by parity testing; the upstream Robot GUI lifecycle test proves
@@ -6298,6 +6299,64 @@ implementation changes:
   production source changed. The preserved recovery cache and lock are
   untouched, the forbidden crash lock remains absent, no FreeCAD process
   remains, and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  Native mode remains globally unavailable until this entire plan is complete.
+- Robot tool and waypoint configuration now complete the remaining shipped
+  `robot.setup` actions for row 11.36 without granting the provider selection,
+  command-dispatch, workbench-switching, filesystem-path, or document-lifecycle
+  authority. `Robot_AddToolShape` accepts one exact active-document Robot and
+  one exact Part feature or embedded VRML object, each with its frozen state
+  digest. Preflight rejects open transactions, pending recompute, stale Robot
+  setup, stale target identity, changed Part `Shape.Tag`, and changed VRML
+  content before opening one exact document transaction. Mutation changes only
+  the Robot's `ToolShape` link, recomputes only that Robot, preserves object
+  identities, selection, and History, and returns one normal receipt naming the
+  changed Robot. A link that is already exact is a verified no-op with no
+  transaction, receipt, revision, or undo entry.
+  Assemble state exposes a bounded path-free tool inventory with exact object,
+  placement, kind, and stale-state digests. Part discovery deliberately uses
+  FreeCAD's durable shape tag instead of validating or serializing every BREP;
+  the immutable 5-axis fixture's 53 candidates take 0.009 seconds rather than
+  the rejected eager-BREP design's 3.84 seconds. Embedded VRML records retain a
+  content SHA-256 because `PropertyFileIncluded` cache files are rewritten on
+  reopen even when their content is unchanged. The final chosen target is
+  re-read after mutation, so content or identity drift cannot be hidden by the
+  concise inventory.
+  `Robot_SetDefaultOrientation` and `Robot_SetDefaultValues` are modeled as the
+  application-session operations the shipped commands actually are. Their
+  schemas use explicit millimetres, degrees, millimetres per second, and
+  millimetres per second squared plus the frozen waypoint-default digest. They
+  update only RobotGui's five process globals, produce no Native document
+  receipt or structural revision, create no transaction or undo entry, and do
+  not dirty or serialize the FCStd. The boundary verifier freezes document
+  objects, selection, History, undo count, transaction state, and Native
+  revision; any mismatch restores only values still owned by the failed call.
+  Assemble state identifies these defaults as non-durable application-session
+  state so the provider cannot mistake them for document properties.
+  The new compiled lifecycle gate drives all three shipped human commands and
+  then Native Part, embedded-VRML, orientation, and motion-default operations.
+  It proves human semantic parity, path-free state, exact target and content
+  drift rejection, stale-state no-ops, forced-verifier rollback, same-call
+  replay, verified no-op, one-step undo/redo, selection preservation, no
+  document bytes from session defaults, defaults rollback, and FCStd
+  save/reopen with Part and VRML state stability. It reports
+  `VIBECAD_NATIVE_ROBOT_CONFIGURATION_GUI_OK human_tool_parity=true
+  exact_targets=true tool_drift_noop=true stale_noop=true rollback=true
+  idempotent=true undo_redo=true reopen=true vrml=true
+  human_defaults_parity=true session_only=true document_unchanged=true
+  defaults_rollback=true selection_preserved=true`. The pre-existing Robot
+  creation gate and all 13 shipped Robot GUI lifecycle tests remain green.
+  The complete VibeCAD suite has 3,304 passing tests with four intentional
+  skips; the focused registry, manifest, snapshot, input, and Robot suite has 78
+  passing tests. Robot, RobotGui, RobotScripts, and VibeCADScripts build cleanly;
+  Ruff, Python compilation, diff checks, and declared source/build parity are
+  green. The protected current-source Sketcher lifecycle, all 17
+  Part Design VibeScript phases, and Assembly VibeScript integration exit zero;
+  no VibeScript production source changed. The four execution modules are 376,
+  172, 325, and 193 lines, and the compiled gate is 616 lines, all below the
+  1,000-line ceiling. The preserved recovery cache and lock are untouched, the
+  forbidden crash lock remains absent, no FreeCAD process remains, and the
+  immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
   Native mode remains globally unavailable until this entire plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
@@ -6876,7 +6935,7 @@ concisely.
 - [x] 11.33 Implement Assemble-ribbon matching-hole action when present.
 - [x] 11.34 Implement Assemble-ribbon fastener attachment when present.
 - [x] 11.35 Implement Robot creation and setup.
-- [ ] 11.36 Implement Robot tool shape, orientation, and default values.
+- [x] 11.36 Implement Robot tool shape, orientation, and default values.
 - [ ] 11.37 Implement Robot trajectory and waypoint operations.
 - [ ] 11.38 Implement Robot edge, dress-up, and compound trajectories.
 - [ ] 11.39 Implement Robot home, restore, and simulation.

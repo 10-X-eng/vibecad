@@ -227,6 +227,10 @@ set(VibeCAD_Scripts
     VibeCADNativeRobotSetupRuntime.py
     VibeCADNativeRobotSetupSchema.py
     VibeCADNativeRobotState.py
+    VibeCADNativeRobotDefaults.py
+    VibeCADNativeRobotDefaultsState.py
+    VibeCADNativeRobotTool.py
+    VibeCADNativeRobotToolState.py
     VibeCADNativeSchemaRules.py
     VibeCADNativeSessionFactory.py
     VibeCADNativeSketchErrors.py
@@ -615,6 +619,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_assembly_structure_gui_integration.py
         vibecad_tests/native_assembly_fastener_gui_integration.py
         vibecad_tests/native_robot_setup_gui_integration.py
+        vibecad_tests/native_robot_configuration_gui_integration.py
         vibecad_tests/native_assembly_linked_source_gui_integration.py
         vibecad_tests/native_assembly_bom_gui_integration.py
         vibecad_tests/native_assembly_playback_gui_integration.py

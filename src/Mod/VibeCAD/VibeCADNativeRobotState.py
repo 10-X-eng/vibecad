@@ -73,7 +73,10 @@ def _finite(value: Any, field: str) -> float:
         raise NativeRobotStateError(f"A robot returned non-finite {field} state.")
     if result == 0.0:
         return 0.0
-    return result
+    # FCStd stores placements at lower precision than an in-memory double.
+    # Canonicalize only the sub-picometre tail so a normal save/reopen does not
+    # make an unchanged Robot look stale.
+    return round(result, 15)
 
 
 def _placement(value: Any, field: str) -> dict[str, list[float]]:

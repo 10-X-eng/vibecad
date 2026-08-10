@@ -10,6 +10,12 @@ from typing import Any, Mapping
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeInput import NativeInputError
+from VibeCADNativeRobotDefaults import (
+    prepare_robot_motion_defaults,
+    prepare_robot_orientation_defaults,
+    set_robot_motion_defaults,
+    set_robot_orientation_defaults,
+)
 from VibeCADNativeRobotSetup import (
     NativeRobotSetupError,
     RobotCreateSpec,
@@ -19,6 +25,14 @@ from VibeCADNativeRobotSetup import (
     robot_kinematic_input_request,
     robot_visual_input_request,
     verify_created_robot,
+)
+from VibeCADNativeRobotTool import (
+    attach_robot_tool_shape,
+    preflight_robot_tool_shape,
+    prepare_robot_tool_shape_spec,
+    robot_tool_shape_is_noop,
+    verify_robot_tool_shape_attachment,
+    verify_robot_tool_shape_noop,
 )
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
@@ -36,7 +50,7 @@ def _require_current_ticket(
 
 
 class NativeRobotSetupRuntime:
-    """Create Robots only in the exact frozen Assemble document."""
+    """Configure Robots only on the exact frozen Assemble surface."""
 
     def __init__(self, context: NativeRuntimeContext) -> None:
         if not isinstance(context, NativeRuntimeContext):
@@ -58,15 +72,62 @@ class NativeRobotSetupRuntime:
                         "expected_state_sha256",
                         "expected_robot_count",
                     }
-                )
+                ),
+                "add_tool_shape": frozenset(
+                    {
+                        "robot",
+                        "tool_shape",
+                        "expected_setup_state_sha256",
+                        "expected_robot_state_sha256",
+                        "expected_tool_shape_state_sha256",
+                    }
+                ),
+                "set_default_orientation": frozenset(
+                    {"expected_defaults_state_sha256", "placement"}
+                ),
+                "set_default_values": frozenset(
+                    {
+                        "expected_defaults_state_sha256",
+                        "speed_mm_per_s",
+                        "continuous",
+                        "acceleration_mm_per_s2",
+                    }
+                ),
             },
         )
+        self._context.guard()
+        _require_current_ticket(self._context, ticket)
+        if operation == "add_tool_shape":
+            prepared = preflight_robot_tool_shape(
+                self._context.document,
+                prepare_robot_tool_shape_spec(self._context.document_uid, values),
+            )
+            if robot_tool_shape_is_noop(prepared):
+                return verify_robot_tool_shape_noop(
+                    self._context.document,
+                    prepared,
+                )
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name="Attach Native Robot Tool",
+                mutate=partial(attach_robot_tool_shape, prepared=prepared),
+                verify=verify_robot_tool_shape_attachment,
+            )
+        if operation == "set_default_orientation":
+            return set_robot_orientation_defaults(
+                self._context,
+                prepare_robot_orientation_defaults(values),
+            )
+        if operation == "set_default_values":
+            return set_robot_motion_defaults(
+                self._context,
+                prepare_robot_motion_defaults(values),
+            )
         if operation != "create":
             raise NativeRobotSetupError(
                 "The requested Robot setup operation is not implemented."
             )
-        self._context.guard()
-        _require_current_ticket(self._context, ticket)
         boundary = preflight_robot_create_boundary(
             self._context.document,
             RobotCreateSpec(

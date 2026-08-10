@@ -871,6 +871,13 @@ _BACKGROUND_COMMAND_IDS = frozenset(
     }
 )
 
+_SESSION_COMMAND_IDS = frozenset(
+    {
+        "Robot_SetDefaultOrientation",
+        "Robot_SetDefaultValues",
+    }
+)
+
 _INTERACTIVE_COMMAND_IDS = (
     frozenset(
         {
@@ -1275,6 +1282,9 @@ def _plan(
         status = "human_only"
     elif action.command_id == "Sketcher_LeaveSketch":
         transaction_behavior = "edit_control"
+        status = "planned"
+    elif action.command_id in _SESSION_COMMAND_IDS:
+        transaction_behavior = "session"
         status = "planned"
     elif classification.view:
         transaction_behavior = "presentation"

@@ -20,6 +20,10 @@ from VibeCADNativeRobotSetupSchema import (
     register_robot_setup_capability_definition,
     robot_setup_capability_definition,
 )
+from VibeCADNativeRobotDefaults import (
+    prepare_robot_motion_defaults,
+    prepare_robot_orientation_defaults,
+)
 from VibeCADNativeRobotState import RobotSetupState, _finite
 
 
@@ -27,17 +31,30 @@ def _artifact(path: Path, request):
     return authorize_native_input_path(request, path).claim(request)
 
 
-def test_robot_setup_schema_covers_only_create_without_provider_paths() -> None:
+def test_robot_setup_schema_covers_each_shipped_configuration_action() -> None:
     definition = robot_setup_capability_definition()
 
     assert definition.name == ROBOT_SETUP_CAPABILITY_NAME
-    assert len(definition.variants) == 1
-    variant = definition.variants[0]
-    assert variant.operation == "create"
-    assert variant.action_ids == frozenset({"Robot_Create"})
-    assert variant.surface_ids == frozenset({"assemble"})
-    assert variant.transaction_behavior == "document"
-    assert variant.background_required is False
+    assert tuple(variant.operation for variant in definition.variants) == (
+        "create",
+        "add_tool_shape",
+        "set_default_orientation",
+        "set_default_values",
+    )
+    assert tuple(variant.action_ids for variant in definition.variants) == (
+        frozenset({"Robot_Create"}),
+        frozenset({"Robot_AddToolShape"}),
+        frozenset({"Robot_SetDefaultOrientation"}),
+        frozenset({"Robot_SetDefaultValues"}),
+    )
+    assert all(
+        variant.surface_ids == frozenset({"assemble"})
+        and variant.background_required is False
+        for variant in definition.variants
+    )
+    assert tuple(
+        variant.transaction_behavior for variant in definition.variants
+    ) == ("document", "document", "session", "session")
     schema = definition.provider_schema(("create",))
     properties = schema["parameters"]["oneOf"][0]["properties"]
     assert set(properties) == {
@@ -46,10 +63,82 @@ def test_robot_setup_schema_covers_only_create_without_provider_paths() -> None:
         "expected_state_sha256",
         "expected_robot_count",
     }
+    serialized = repr(
+        definition.provider_schema(
+            (
+                "create",
+                "add_tool_shape",
+                "set_default_orientation",
+                "set_default_values",
+            )
+        )
+    ).casefold()
+    assert "file_path" not in serialized
+    assert "directory" not in serialized
+    assert "runcommand" not in serialized
+    assert "workbench" not in serialized
 
     registry = NativeCapabilityRegistry()
     register_robot_setup_capability_definition(registry)
     assert registry.definition_names == (ROBOT_SETUP_CAPABILITY_NAME,)
+
+
+def test_robot_motion_defaults_are_explicit_positive_native_units() -> None:
+    spec = prepare_robot_motion_defaults(
+        {
+            "expected_defaults_state_sha256": "a" * 64,
+            "speed_mm_per_s": 2500.0,
+            "continuous": True,
+            "acceleration_mm_per_s2": 7000.0,
+        }
+    )
+
+    assert spec.speed_mm_per_s == 2500.0
+    assert spec.continuous is True
+    assert spec.acceleration_mm_per_s2 == 7000.0
+
+    with pytest.raises(NativeRobotSetupError, match="speed"):
+        prepare_robot_motion_defaults(
+            {
+                "expected_defaults_state_sha256": "a" * 64,
+                "speed_mm_per_s": 0.0,
+                "continuous": False,
+                "acceleration_mm_per_s2": 1.0,
+            }
+        )
+
+
+def test_robot_orientation_defaults_normalize_a_nonzero_axis() -> None:
+    spec = prepare_robot_orientation_defaults(
+        {
+            "expected_defaults_state_sha256": "b" * 64,
+            "placement": {
+                "origin_mm": {"x": 1.0, "y": -2.0, "z": 3.0},
+                "rotation": {
+                    "axis": {"x": 0.0, "y": 0.0, "z": 0.5},
+                    "angle_degrees": 45.0,
+                },
+            },
+        }
+    )
+
+    assert spec.displacement_mm == (1.0, -2.0, 3.0)
+    assert spec.rotation_axis == (0.0, 0.0, 1.0)
+    assert spec.angle_degrees == 45.0
+
+    with pytest.raises(NativeRobotSetupError, match="axis must be nonzero"):
+        prepare_robot_orientation_defaults(
+            {
+                "expected_defaults_state_sha256": "b" * 64,
+                "placement": {
+                    "origin_mm": {"x": 0.0, "y": 0.0, "z": 0.0},
+                    "rotation": {
+                        "axis": {"x": 0.0, "y": 0.0, "z": 0.0},
+                        "angle_degrees": 0.0,
+                    },
+                },
+            }
+        )
 
 
 def test_robot_definition_requests_are_host_owned_and_bounded() -> None:

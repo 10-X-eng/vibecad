@@ -69,6 +69,14 @@ from VibeCADNativeRobotState import (
     NativeRobotStateError,
     capture_robot_setup_state,
 )
+from VibeCADNativeRobotDefaultsState import (
+    NativeRobotDefaultsStateError,
+    capture_robot_waypoint_defaults,
+)
+from VibeCADNativeRobotToolState import (
+    NativeRobotToolStateError,
+    capture_robot_tool_shape_inventory,
+)
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
 
@@ -329,6 +337,24 @@ def build_assembly_snapshot(document: Any) -> dict[str, Any]:
         result["robot_setup"] = capture_robot_setup_state(document).summary()
     except NativeRobotStateError as exc:
         result["robot_setup"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
+    try:
+        result["robot_tool_shapes"] = capture_robot_tool_shape_inventory(
+            document
+        ).summary()
+    except NativeRobotToolStateError as exc:
+        result["robot_tool_shapes"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
+    try:
+        result["robot_waypoint_defaults"] = (
+            capture_robot_waypoint_defaults().summary()
+        )
+    except NativeRobotDefaultsStateError as exc:
+        result["robot_waypoint_defaults"] = {
             "available": False,
             "reason": str(exc)[:256],
         }

@@ -365,6 +365,49 @@ def test_assemble_fasteners_use_an_assembly_owned_capability_family() -> None:
     )
 
 
+def test_robot_configuration_preserves_document_and_session_boundaries() -> None:
+    manifest = {
+        "schema_version": 1,
+        "surface_id": "assemble",
+        "groups": [
+            {
+                "label": "Robot",
+                "actions": [
+                    {
+                        "command_id": command_id,
+                        "kind": "command",
+                        "label": command_id,
+                        "available": True,
+                    }
+                    for command_id in (
+                        "Robot_Create",
+                        "Robot_AddToolShape",
+                        "Robot_SetDefaultOrientation",
+                        "Robot_SetDefaultValues",
+                    )
+                ],
+            }
+        ],
+    }
+
+    plans = classify_native_surface(_surface(manifest))
+
+    assert {plan.capability_family for plan in plans} == {"robot.setup"}
+    assert tuple(plan.operation_variant for plan in plans) == (
+        "create",
+        "add_tool_shape",
+        "set_default_orientation",
+        "set_default_values",
+    )
+    assert tuple(plan.transaction_behavior for plan in plans) == (
+        "document",
+        "document",
+        "session",
+        "session",
+    )
+    assert all(plan.classification.mutation for plan in plans)
+
+
 def test_hole_is_a_focused_model_capability_instead_of_a_generic_feature() -> None:
     manifest = {
         "schema_version": 1,
