@@ -18,6 +18,7 @@ from VibeCADNativeAssemblyComponents import (
 )
 from VibeCADNativeAssemblyGrounding import active_grounded_joints
 from VibeCADNativeAssemblyDistanceJoint import distance_mode_from_joint
+from VibeCADNativeAssemblyGearJoint import gears_dependency_summary
 from VibeCADNativeAssemblyJointConnectors import (
     NativeAssemblyJointConnectorError,
     component_placement,
@@ -158,6 +159,21 @@ def _joint_summary(
             None if pitch is None else -pitch
         )
         dependencies = screw_dependency_summary(joint, active_joints)
+        summary["prerequisites_resolved"] = dependencies is not None
+        if dependencies is not None:
+            summary.update(dependencies)
+    if joint_type == "Gears":
+        radius1 = _quantity_value(joint, "Distance")
+        radius2 = _quantity_value(joint, "Distance2")
+        summary["radius1_mm"] = radius1
+        summary["radius2_mm"] = radius2
+        summary["second_rotation_per_first_rotation"] = (
+            None
+            if radius1 is None or radius2 is None or radius2 == 0.0
+            else -(radius1 / radius2)
+        )
+        summary["rotation_direction"] = "opposite"
+        dependencies = gears_dependency_summary(joint, active_joints)
         summary["prerequisites_resolved"] = dependencies is not None
         if dependencies is not None:
             summary.update(dependencies)

@@ -956,6 +956,7 @@ _OPERATION_VARIANT_OVERRIDES = {
     "Assembly_CreateJointAngle": "create_angle",
     "Assembly_CreateJointDistance": "create_distance",
     "Assembly_CreateJointFixed": "create_fixed",
+    "Assembly_CreateJointGears": "create_gears",
     "Assembly_CreateJointParallel": "create_parallel",
     "Assembly_CreateJointPerpendicular": "create_perpendicular",
     "Assembly_CreateJointRackPinion": "create_rack_pinion",

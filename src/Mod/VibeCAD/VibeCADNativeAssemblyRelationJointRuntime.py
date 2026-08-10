@@ -22,6 +22,14 @@ from VibeCADNativeAssemblyDistanceJoint import (
     preflight_distance_joint,
     verify_distance_joint,
 )
+from VibeCADNativeAssemblyGearJoint import (
+    GearJointSpec,
+    NativeAssemblyGearJointError,
+    apply_gear_joint,
+    gear_radius_mm,
+    preflight_gear_joint,
+    verify_gear_joint,
+)
 from VibeCADNativeAssemblyJointArguments import (
     joint_bool,
     joint_connector,
@@ -68,6 +76,7 @@ RELATION_JOINT_OPERATIONS = frozenset(
     {
         "create_angle",
         "create_distance",
+        "create_gears",
         "create_parallel",
         "create_perpendicular",
         "create_rack_pinion",
@@ -85,6 +94,72 @@ def execute_relation_joint(
     """Decode and execute one already-authorized relation-joint variant."""
 
     document_uid = context.document_uid
+    if operation == "create_gears":
+        spec = GearJointSpec(
+            assembly_ref=joint_object_ref(
+                document_uid,
+                values["assembly"],
+                "assembly",
+                NativeAssemblyGearJointError,
+            ),
+            first_gear_connector=joint_connector(
+                document_uid,
+                values["first_gear_connector"],
+                "first_gear_connector",
+                NativeAssemblyGearJointError,
+            ),
+            second_gear_connector=joint_connector(
+                document_uid,
+                values["second_gear_connector"],
+                "second_gear_connector",
+                NativeAssemblyGearJointError,
+            ),
+            first_revolute_joint_ref=joint_object_ref(
+                document_uid,
+                values["first_revolute_joint"],
+                "first_revolute_joint",
+                NativeAssemblyGearJointError,
+            ),
+            second_revolute_joint_ref=joint_object_ref(
+                document_uid,
+                values["second_revolute_joint"],
+                "second_revolute_joint",
+                NativeAssemblyGearJointError,
+            ),
+            label=joint_label(values["label"], NativeAssemblyGearJointError),
+            radius1_mm=gear_radius_mm(values["radius1_mm"], "radius1_mm"),
+            radius2_mm=gear_radius_mm(values["radius2_mm"], "radius2_mm"),
+            expected_component_count=joint_count(
+                values["expected_component_count"],
+                "expected_component_count",
+                NativeAssemblyGearJointError,
+            ),
+            expected_grounded_count=joint_count(
+                values["expected_grounded_count"],
+                "expected_grounded_count",
+                NativeAssemblyGearJointError,
+            ),
+            expected_joint_count=joint_count(
+                values["expected_joint_count"],
+                "expected_joint_count",
+                NativeAssemblyGearJointError,
+                256,
+            ),
+            expected_solve_on_creation=joint_bool(
+                values["expected_solve_on_creation"],
+                "expected_solve_on_creation",
+                NativeAssemblyGearJointError,
+            ),
+        )
+        context.guard()
+        preflight_gear_joint(context.document, spec)
+        return run_immediate_mutation(
+            context,
+            ticket=ticket,
+            transaction_name="Create Native Assembly Gears Joint",
+            mutate=lambda document: apply_gear_joint(document, spec),
+            verify=verify_gear_joint,
+        )
     if operation == "create_screw":
         spec = ScrewJointSpec(
             assembly_ref=joint_object_ref(

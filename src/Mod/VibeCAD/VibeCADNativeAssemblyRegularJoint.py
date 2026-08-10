@@ -50,6 +50,7 @@ REGULAR_JOINT_TYPE_INDICES = {
     "Angle": 8,
     "RackPinion": 9,
     "Screw": 10,
+    "Gears": 11,
 }
 REGULAR_JOINT_PROPERTIES = {
     "Fixed": frozenset(),
@@ -88,6 +89,7 @@ REGULAR_JOINT_PROPERTIES = {
     "Angle": frozenset({"Angle"}),
     "RackPinion": frozenset({"Distance"}),
     "Screw": frozenset({"Distance"}),
+    "Gears": frozenset({"Distance", "Distance2"}),
 }
 
 

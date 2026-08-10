@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 350 complete / 396 pending / 746 total (46.9% by row count)
+Checklist status: 351 complete / 395 pending / 746 total (47.1% by row count)
 
 ## Purpose
 
@@ -5496,14 +5496,56 @@ implementation changes:
   Assembly VibeScript integrations all exit zero, no VibeCAD test process
   remains, and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Assemble Gears Joint is an exact `assembly.joint/create_gears` operation
+  mapped from the live plural `Assembly_CreateJointGears` action and persisted
+  `Gears` joint type rather than inventing a renamed command or compatibility
+  alias. It uses Assembly type index 11 and persists the human task's two real
+  `Distance` and `Distance2` properties as `radius1_mm` and `radius2_mm`. Both
+  radii follow the task's strictly positive range and reject Boolean, zero,
+  negative, non-finite, sub-tolerance, and unbounded values before mutation.
+  The compiled `ASMTGearJoint` relation is
+  `theta2 + (radius1 / radius2) * theta1 = constant`, so concise output names
+  the second rotation per first rotation as `-(radius1 / radius2)` and reports
+  the opposite direction explicitly. The contract requires two distinct exact
+  active Revolute prerequisites and semantically named gear connectors that
+  exactly reuse their corresponding prerequisite side, including component,
+  element and anchor paths, and complete attachment offset. Preflight proves
+  the two Revolute joints constrain distinct ungrounded rotating components;
+  it deliberately does not invent an axis-parallelism rule absent from the
+  human task and compiled rotational coupling. Native persists the first and
+  second gear in radius order and verifies that the compiled solve did not
+  swap or drift that dependency graph. Reverse, angle, simplified
+  offset/rotation, and limit fields are absent: the human task's direction
+  checkbox switches between the separate Gears and Belt joint types instead
+  of setting a Gears property. Expected component, grounded, and regular-joint
+  counts plus the solve-on-creation preference guard stale requests before
+  mutation. Concise state reconstructs both Revolute prerequisites from
+  persisted connector equality after save/reopen and reports whether the
+  exact graph still resolves. A dispatcher-backed compiled GUI gate uses two
+  distinct real shaft axes, proves stale-count no-op, real solver status zero,
+  exact dependency reuse, radius order, ratio and direction, idempotent replay,
+  one-step undo/redo preserving both prerequisites, and FCStd
+  save/close/reopen with model and view proxies, references, offsets, semantic
+  state, and bounded summary restored. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_GEARS_JOINT_GUI_OK components=3 joints=3
+  prerequisites=true radius1_mm=20 radius2_mm=40 ratio=-0.5
+  direction=opposite transactions=1 reopen=true`; all eleven previously
+  completed compiled joint lifecycle gates remain green. The complete suite is
+  3,158 passed with four intentional skips; Ruff lint, new-file Ruff formatting,
+  compileall, diff checks, eight applicable source/build-tree byte comparisons,
+  and the VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui build
+  targets are green. The protected Sketcher, all 17 Part Design phases, and
+  Assembly VibeScript integrations all exit zero, no VibeCAD test process or
+  test-created crash lock remains, and the immutable 5-axis fixture remains
+  exactly `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - The Assembly joint runtime has been split by responsibility without changing
-  its public provider contract: the dispatcher is 214 lines, shared argument
+  its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
-  relation-joint execution is 448 lines. The Angle contract is 229 lines, the
+  relation-joint execution is 523 lines. The Angle contract is 229 lines, the
   Rack-and-Pinion contract is 350 lines, the shared coupled-joint geometry
-  layer is 194 lines, the Screw contract is 345 lines, and every execution
-  module remains below the 1,000-line ceiling.
-- The 1,403-line action inventory remains declarative rather than accumulating
+  layer is 194 lines, the Screw contract is 345 lines, the Gears contract is
+  323 lines, and every execution module remains below the 1,000-line ceiling.
+- The 1,404-line action inventory remains declarative rather than accumulating
   domain execution logic. New domain modules are split before they approach
   1,000 lines.
 
@@ -6052,7 +6094,7 @@ concisely.
 - [x] 11.14 Implement Angle joint.
 - [x] 11.15 Implement Rack-and-Pinion joint.
 - [x] 11.16 Implement Screw joint.
-- [ ] 11.17 Implement Gear joint.
+- [x] 11.17 Implement Gear joint.
 - [ ] 11.18 Implement Belt joint.
 - [ ] 11.19 Implement solver execution and exact placement verification.
 - [ ] 11.20 Implement conflicting-constraint diagnosis.
