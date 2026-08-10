@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 355 complete / 391 pending / 746 total (47.6% by row count)
+Checklist status: 356 complete / 390 pending / 746 total (47.7% by row count)
 
 ## Purpose
 
@@ -5662,8 +5662,8 @@ implementation changes:
   test-created crash lock remains absent; and the immutable 5-axis fixture
   remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
-  `assembly.diagnose` remains intentionally incomplete until rows 11.21 through
-  11.23 land, and Native mode remains globally unavailable until this entire
+  `assembly.diagnose` remains intentionally incomplete until row 11.23 lands,
+  and Native mode remains globally unavailable until this entire
   plan is complete.
 - Redundant-constraint diagnosis is an exact read-only
   `assembly.diagnose/select_redundant_constraints` operation mapped only from
@@ -5701,9 +5701,48 @@ implementation changes:
   recovery snapshot and lock are untouched; the prior test-created crash lock
   remains absent; and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
-  `assembly.diagnose` remains intentionally incomplete until rows 11.22 and
-  11.23 land, and Native mode remains globally unavailable until this entire
+  `assembly.diagnose` remains intentionally incomplete until row 11.23 lands,
+  and Native mode remains globally unavailable until this entire
   plan is complete.
+- Partially redundant-constraint diagnosis is an exact read-only
+  `assembly.diagnose/select_partially_redundant_constraints` operation mapped
+  only from the live `Assembly_SelectPartiallyRedundantConstraints` action. It
+  reads the same most-recent `getLastPartiallyRedundant()` set used by the human
+  command without solving, recomputing, selecting, opening a transaction, or
+  mutating the document. The shared exact diagnosis guard freezes and rechecks
+  the active Assembly, timeline, object identities, diagnosis SHA-256 and
+  counts, bounded page, turn, and human selection. Each returned joint proves
+  that its redundant-constraint count is strictly between zero and its total
+  constraint count, returns both semantic connectors and offsets plus aggregate
+  constraint/DoF evidence, and explicitly reports whether it also belongs to
+  the independently produced redundant set. This preserves the compiled
+  producer's intentional category overlap and status priority instead of
+  pretending the categories are disjoint. A dispatcher-backed compiled GUI
+  gate creates coincident Cylindrical and Slider joints between one grounded
+  and one moving component. Cylindrical removes four DoF with zero redundant
+  constraints; Slider then has five constraints, four redundant and one
+  effective, appears in both redundancy sets, leaves one DoF, and is the exact
+  sole selection of the human partial-redundancy command. The gate also proves
+  stale hash/count no-ops, unchanged selection/objects/placements/undo/
+  transaction/edit state, idempotent replay, and FCStd save/close/reopen
+  followed by a fresh compiled solve and read. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_PARTIAL_REDUNDANCY_DIAGNOSIS_GUI_OK components=2
+  joints=2 partial=1 redundant_overlap=1 solver_status=0 human_match=true
+  aggregate=4_of_5 stale_noop=true selection=true transactions=0 reopen=true`.
+  The combined diagnosis suite has 25 tests, all 19 Assembly GUI lifecycle
+  gates pass, and the complete VibeCAD suite is 3,218 passed with four
+  intentional skips. Ruff, compileall, diff checks, source/build parity, and
+  the VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui targets are
+  green. The protected Sketcher gate exits zero, all 17 Part Design phases pass
+  with final `"ok": true`, and the Assembly VibeScript gate exits zero with
+  top-level `"ok": true` and every ordinary and coupled joint solver code zero.
+  No VibeScript source changed; no FreeCAD process remains; the preserved
+  recovery snapshot and lock are untouched; the prior test-created crash lock
+  remains absent; and the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+  `assembly.diagnose` remains intentionally incomplete until row 11.23 lands,
+  and Native mode remains globally unavailable until this entire plan is
+  complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6266,7 +6305,7 @@ concisely.
 - [x] 11.19 Implement solver execution and exact placement verification.
 - [x] 11.20 Implement conflicting-constraint diagnosis.
 - [x] 11.21 Implement redundant-constraint diagnosis.
-- [ ] 11.22 Implement partially redundant-constraint diagnosis.
+- [x] 11.22 Implement partially redundant-constraint diagnosis.
 - [ ] 11.23 Implement malformed-constraint diagnosis.
 - [ ] 11.24 Implement joints-of-component reading.
 - [ ] 11.25 Implement assembly view creation.

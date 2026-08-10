@@ -16,10 +16,10 @@ from VibeCADNativeAssemblyDiagnosisState import (
     NativeAssemblyDiagnosisError,
     capture_assembly_diagnosis_state,
 )
-from VibeCADNativeAssemblyRedundantDiagnosis import (
-    RedundantConstraintsSpec,
-    preflight_redundant_constraints,
-    read_redundant_constraints,
+from VibeCADNativeAssemblyPartialRedundancyDiagnosis import (
+    PartiallyRedundantConstraintsSpec,
+    preflight_partially_redundant_constraints,
+    read_partially_redundant_constraints,
 )
 from VibeCADNativeTargets import NativeObjectRef
 from vibecad_tests.test_native_assembly_conflict_diagnosis import (
@@ -38,156 +38,167 @@ def _active_timeline(monkeypatch):
     )
 
 
-def _redundant_fixture(*, redundant_count: int = 3):
+def _partial_fixture(*, partial_count: int = 3, overlap_count: int = 2):
     document, assembly, group, ground, components, joints = _fixture(conflict_count=0)
-    redundant_names = [joint.Name for joint in joints[:redundant_count]]
+    partial_names = [joint.Name for joint in joints[:partial_count]]
+    redundant_names = [joint.Name for joint in joints[:overlap_count]]
     assembly._diagnostics.update(
         {
             "remaining_degrees_of_freedom": 8,
             "has_redundancies": bool(redundant_names),
+            "has_partial_redundancies": bool(partial_names),
             "redundant_joints": redundant_names,
+            "partially_redundant_joints": partial_names,
         }
     )
     for item in assembly._diagnostics["joints"]:
-        redundant = item["joint"] in redundant_names
+        partial = item["joint"] in partial_names
+        overlap = item["joint"] in redundant_names
+        if not partial:
+            continue
         item.update(
             {
-                "status": "redundant" if redundant else "satisfied",
-                "redundant_constraint_count": 1 if redundant else 0,
-                "removed_degrees_of_freedom": 0 if redundant else 1,
+                "status": "redundant" if overlap else "partially_redundant",
+                "constraint_count": 2,
+                "redundant_constraint_count": 1,
+                "removed_degrees_of_freedom": 1,
             }
         )
-        constraint = item["constraints"][0]
-        constraint["redundant"] = redundant
-        if redundant:
-            constraint["specification"] = "RedundantConstraintDistanceConstraintIJ"
+        item["constraints"][0]["redundant"] = True
+        if overlap:
+            item["constraints"][0]["specification"] = (
+                "RedundantConstraintDistanceConstraintIJ"
+            )
+        item["constraints"].append(
+            {
+                "specification": "DirectionCosineConstraintIzJx",
+                "residual": 0.0,
+                "absolute_residual": 0.0,
+                "redundant": False,
+            }
+        )
     assembly.getSolverDiagnostics = lambda: deepcopy(assembly._diagnostics)
     return document, assembly, group, ground, components, joints
 
 
 def _spec(document, assembly, state, *, offset: int = 0, limit: int = 32):
-    return RedundantConstraintsSpec(
+    return PartiallyRedundantConstraintsSpec(
         assembly_ref=NativeObjectRef(document.Uid, assembly.Name),
         expected_diagnosis_state_sha256=state.state_sha256,
         expected_component_count=len(state.components),
         expected_grounded_count=len(state.grounded_joints),
         expected_joint_count=len(state.regular_joints),
-        expected_redundant_count=len(state.redundant_names),
+        expected_partially_redundant_count=len(state.partially_redundant_names),
         offset=offset,
         limit=limit,
     )
 
 
-def test_schema_maps_the_live_redundant_action_to_the_shared_exact_read() -> None:
+def test_schema_maps_the_live_partial_action_to_the_shared_exact_read() -> None:
     definition = assembly_diagnosis_capability_definition()
     variants = {variant.operation: variant for variant in definition.variants}
-    variant = variants["select_redundant_constraints"]
-    schema = definition.provider_schema((variant.operation,))["parameters"]["oneOf"][0]
+    variant = variants["select_partially_redundant_constraints"]
+    schema = definition.provider_schema((variant.operation,))["parameters"]["oneOf"][
+        0
+    ]
 
     assert tuple(variants) == (
         "select_conflicting_constraints",
         "select_redundant_constraints",
         "select_partially_redundant_constraints",
     )
-    assert variant.action_ids == frozenset({"Assembly_SelectRedundantConstraints"})
+    assert variant.action_ids == frozenset(
+        {"Assembly_SelectPartiallyRedundantConstraints"}
+    )
     assert variant.surface_ids == frozenset({"assemble"})
     assert variant.exact_target_type == "HumanActiveAssemblyAndExactSolverDiagnosis"
     assert variant.transaction_behavior == "none"
     assert schema["additionalProperties"] is False
-    assert "expected_redundant_count" in schema["required"]
-    assert "expected_conflicting_count" not in schema["properties"]
+    assert "expected_partially_redundant_count" in schema["required"]
+    assert "expected_redundant_count" not in schema["properties"]
 
 
-def test_state_matches_native_overlapping_redundancy_categories() -> None:
-    document, assembly, _group, _ground, components, _joints = _redundant_fixture()
+def test_state_accepts_native_overlap_and_requires_exact_partial_aggregate() -> None:
+    _document, assembly, _group, _ground, _components, _joints = _partial_fixture()
     state = capture_assembly_diagnosis_state(assembly)
-    assert state.summary()["redundant_count"] == 3
-    assert all(item.status == "redundant" for item in state.joint_diagnostics)
+
+    assert state.summary()["partially_redundant_count"] == 3
+    assert state.summary()["redundant_count"] == 2
+    assert [item.status for item in state.joint_diagnostics] == [
+        "redundant",
+        "redundant",
+        "partially_redundant",
+    ]
 
     first = assembly._diagnostics["joints"][0]
-    first["constraints"].append(
-        {
-            "specification": "DistanceConstraintIJ",
-            "residual": 0.0,
-            "absolute_residual": 0.0,
-            "redundant": False,
-        }
-    )
-    first["constraint_count"] = 2
-    assembly._diagnostics["joints"][0]["removed_degrees_of_freedom"] = 1
-    assembly._diagnostics["partially_redundant_joints"] = [state.redundant_names[0]]
-    assembly._diagnostics["has_partial_redundancies"] = True
-    overlapping = capture_assembly_diagnosis_state(assembly)
-    assert overlapping.redundant_names[0] == overlapping.partially_redundant_names[0]
-    assert overlapping.joint_diagnostics[0].status == "redundant"
-    result = read_redundant_constraints(
-        _context(document),
-        _spec(document, assembly, overlapping),
-        active_reader=lambda _document: assembly,
-        selection_reader=lambda _document: _selection(document, (components[0].Name,)),
-    )
-    assert result["redundant_joints"][0]["redundancy"] == "partial"
-
-    first["constraints"][0]["specification"] = "DistanceConstraintIJ"
-    with pytest.raises(NativeAssemblyDiagnosisError, match="redundant joint"):
+    first["constraints"][1]["redundant"] = True
+    first["redundant_constraint_count"] = 2
+    first["removed_degrees_of_freedom"] = 0
+    with pytest.raises(NativeAssemblyDiagnosisError, match="partially redundant joint"):
         capture_assembly_diagnosis_state(assembly)
 
 
-def test_redundant_read_is_exact_paginated_and_selection_preserving() -> None:
-    document, assembly, _group, _ground, components, joints = _redundant_fixture()
+def test_partial_read_is_exact_paginated_and_selection_preserving() -> None:
+    document, assembly, _group, _ground, components, joints = _partial_fixture()
     context = _context(document)
     state = capture_assembly_diagnosis_state(assembly)
-    selected = _selection(document, (components[2].Name,))
+    selected = _selection(document, (components[1].Name,))
     before_objects = tuple(document.Objects)
     before_placements = tuple(component.Placement for component in components)
 
-    first = read_redundant_constraints(
+    first = read_partially_redundant_constraints(
         context,
         _spec(document, assembly, state, limit=2),
         active_reader=lambda _document: assembly,
         selection_reader=lambda _document: selected,
     )
-    second = read_redundant_constraints(
+    second = read_partially_redundant_constraints(
         context,
         _spec(document, assembly, state, offset=2, limit=2),
         active_reader=lambda _document: assembly,
         selection_reader=lambda _document: selected,
     )
 
-    assert first["operation"] == "select_redundant_constraints"
+    assert first["operation"] == "select_partially_redundant_constraints"
     assert first["diagnosis_state_sha256"] == state.state_sha256
     assert first["solver_status"] == 0
     assert first["remaining_degrees_of_freedom"] == 8
-    assert first["redundant_joint_count"] == 3
+    assert first["partially_redundant_joint_count"] == 3
     assert first["returned_count"] == 2
     assert first["next_offset"] == 2
-    assert [item["joint"]["object_name"] for item in first["redundant_joints"]] == [
-        joints[0].Name,
-        joints[1].Name,
-    ]
-    assert [item["joint"]["object_name"] for item in second["redundant_joints"]] == [
-        joints[2].Name
-    ]
-    item = first["redundant_joints"][0]
+    assert [
+        item["joint"]["object_name"]
+        for item in first["partially_redundant_joints"]
+    ] == [joints[0].Name, joints[1].Name]
+    assert [
+        item["joint"]["object_name"]
+        for item in second["partially_redundant_joints"]
+    ] == [joints[2].Name]
+    assert first["partially_redundant_joints"][0]["diagnostic_status"] == (
+        "redundant"
+    )
+    assert first["partially_redundant_joints"][0]["also_in_redundant_set"] is True
+    assert second["partially_redundant_joints"][0]["diagnostic_status"] == (
+        "partially_redundant"
+    )
+    assert second["partially_redundant_joints"][0]["also_in_redundant_set"] is False
+    item = first["partially_redundant_joints"][0]
     assert item["first"]["element_path"] == "Vertex1"
-    assert item["constraint_count"] == 1
+    assert item["constraint_count"] == 2
     assert item["redundant_constraint_count"] == 1
-    assert item["removed_degrees_of_freedom"] == 0
-    assert item["diagnostic_status"] == "redundant"
-    assert item["redundancy"] == "complete"
+    assert item["removed_degrees_of_freedom"] == 1
     assert "next_offset" not in second
     assert tuple(document.Objects) == before_objects
     assert tuple(component.Placement for component in components) == before_placements
 
 
-def test_redundant_read_rejects_stale_count_offset_and_selection_drift() -> None:
-    document, assembly, _group, _ground, components, _joints = _redundant_fixture()
+def test_partial_read_rejects_stale_count_offset_and_selection_drift() -> None:
+    document, assembly, _group, _ground, components, _joints = _partial_fixture()
     context = _context(document)
     state = capture_assembly_diagnosis_state(assembly)
     selected = _selection(document, (components[0].Name,))
-
     stale = _spec(document, assembly, state)
-    stale = RedundantConstraintsSpec(
+    stale = PartiallyRedundantConstraintsSpec(
         stale.assembly_ref,
         stale.expected_diagnosis_state_sha256,
         stale.expected_component_count,
@@ -197,15 +208,16 @@ def test_redundant_read_rejects_stale_count_offset_and_selection_drift() -> None
         stale.offset,
         stale.limit,
     )
+
     with pytest.raises(NativeAssemblyDiagnosisError, match="counts changed"):
-        preflight_redundant_constraints(
+        preflight_partially_redundant_constraints(
             context,
             stale,
             active_reader=lambda _document: assembly,
             selection_reader=lambda _document: selected,
         )
     with pytest.raises(NativeAssemblyDiagnosisError, match="offset"):
-        preflight_redundant_constraints(
+        preflight_partially_redundant_constraints(
             context,
             _spec(document, assembly, state, offset=3),
             active_reader=lambda _document: assembly,
@@ -220,7 +232,7 @@ def test_redundant_read_rejects_stale_count_offset_and_selection_drift() -> None
         return selected if calls == 1 else _selection(document)
 
     with pytest.raises(NativeAssemblyDiagnosisError, match="selection changed"):
-        read_redundant_constraints(
+        read_partially_redundant_constraints(
             context,
             _spec(document, assembly, state),
             active_reader=lambda _document: assembly,
@@ -228,46 +240,47 @@ def test_redundant_read_rejects_stale_count_offset_and_selection_drift() -> None
         )
 
 
-def test_empty_redundant_read_returns_one_exact_empty_page() -> None:
-    document, assembly, _group, _ground, _components, _joints = _redundant_fixture(
-        redundant_count=0
+def test_empty_partial_read_returns_one_exact_empty_page() -> None:
+    document, assembly, _group, _ground, _components, _joints = _partial_fixture(
+        partial_count=0,
+        overlap_count=0,
     )
     context = _context(document)
     state = capture_assembly_diagnosis_state(assembly)
-    result = read_redundant_constraints(
+    result = read_partially_redundant_constraints(
         context,
         _spec(document, assembly, state, limit=1),
         active_reader=lambda _document: assembly,
         selection_reader=lambda target: _selection(target),
     )
 
-    assert result["redundant_joint_count"] == 0
+    assert result["partially_redundant_joint_count"] == 0
     assert result["returned_count"] == 0
-    assert result["redundant_joints"] == []
+    assert result["partially_redundant_joints"] == []
     assert "next_offset" not in result
 
 
-def test_runtime_parses_closed_exact_redundant_arguments(monkeypatch) -> None:
-    document, assembly, _group, _ground, _components, _joints = _redundant_fixture()
+def test_runtime_parses_closed_exact_partial_arguments(monkeypatch) -> None:
+    document, assembly, _group, _ground, _components, _joints = _partial_fixture()
     context = _context(document)
     state = capture_assembly_diagnosis_state(assembly)
     runtime = NativeAssemblyDiagnosisRuntime(context)
     captured = []
     monkeypatch.setattr(
         runtime_module,
-        "read_redundant_constraints",
+        "read_partially_redundant_constraints",
         lambda exact_context, spec: (
             captured.append((exact_context, spec)) or {"ok": True}
         ),
     )
     arguments = {
-        "operation": "select_redundant_constraints",
+        "operation": "select_partially_redundant_constraints",
         "assembly": {"object_name": assembly.Name},
         "expected_diagnosis_state_sha256": state.state_sha256,
         "expected_component_count": 3,
         "expected_grounded_count": 1,
         "expected_joint_count": 3,
-        "expected_redundant_count": 3,
+        "expected_partially_redundant_count": 3,
         "offset": 0,
         "limit": 2,
     }
@@ -275,4 +288,4 @@ def test_runtime_parses_closed_exact_redundant_arguments(monkeypatch) -> None:
     assert runtime.diagnose(arguments) == {"ok": True}
     assert captured == [(context, _spec(document, assembly, state, limit=2))]
     with pytest.raises(RuntimeError, match="do not match"):
-        runtime.diagnose({**arguments, "expected_conflicting_count": 3})
+        runtime.diagnose({**arguments, "expected_redundant_count": 2})

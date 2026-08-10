@@ -12,6 +12,10 @@ from VibeCADNativeAssemblyConflictDiagnosis import (
     read_conflicting_constraints,
 )
 from VibeCADNativeAssemblyDiagnosisState import NativeAssemblyDiagnosisError
+from VibeCADNativeAssemblyPartialRedundancyDiagnosis import (
+    PartiallyRedundantConstraintsSpec,
+    read_partially_redundant_constraints,
+)
 from VibeCADNativeAssemblyRedundantDiagnosis import (
     RedundantConstraintsSpec,
     read_redundant_constraints,
@@ -40,6 +44,18 @@ _REDUNDANT_FIELDS = frozenset(
         "expected_grounded_count",
         "expected_joint_count",
         "expected_redundant_count",
+        "offset",
+        "limit",
+    }
+)
+_PARTIALLY_REDUNDANT_FIELDS = frozenset(
+    {
+        "assembly",
+        "expected_diagnosis_state_sha256",
+        "expected_component_count",
+        "expected_grounded_count",
+        "expected_joint_count",
+        "expected_partially_redundant_count",
         "offset",
         "limit",
     }
@@ -100,6 +116,9 @@ class NativeAssemblyDiagnosisRuntime:
             {
                 "select_conflicting_constraints": _CONFLICT_FIELDS,
                 "select_redundant_constraints": _REDUNDANT_FIELDS,
+                "select_partially_redundant_constraints": (
+                    _PARTIALLY_REDUNDANT_FIELDS
+                ),
             },
         )
         common = {
@@ -148,6 +167,16 @@ class NativeAssemblyDiagnosisRuntime:
                 ),
             )
             return read_redundant_constraints(self._context, spec)
+        if operation == "select_partially_redundant_constraints":
+            spec = PartiallyRedundantConstraintsSpec(
+                **common,
+                expected_partially_redundant_count=_count(
+                    values["expected_partially_redundant_count"],
+                    "expected_partially_redundant_count",
+                    256,
+                ),
+            )
+            return read_partially_redundant_constraints(self._context, spec)
         raise NativeAssemblyDiagnosisError(
             "The Assembly diagnosis operation is not implemented."
         )

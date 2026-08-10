@@ -101,6 +101,21 @@ def assembly_diagnosis_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=_parameters("expected_redundant_count"),
             ),
+            NativeCapabilityVariant(
+                operation="select_partially_redundant_constraints",
+                description=(
+                    "Read one exact bounded page of joints the human partial-"
+                    "redundancy selection command identifies."
+                ),
+                action_ids=frozenset(
+                    {"Assembly_SelectPartiallyRedundantConstraints"}
+                ),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type="HumanActiveAssemblyAndExactSolverDiagnosis",
+                transaction_behavior="none",
+                background_required=False,
+                parameters=_parameters("expected_partially_redundant_count"),
+            ),
         ),
     )
 

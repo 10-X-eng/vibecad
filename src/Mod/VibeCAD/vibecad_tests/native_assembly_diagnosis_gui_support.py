@@ -60,9 +60,9 @@ def joint_group(assembly):
     return groups[0]
 
 
-def create_fixed_joint(group, first, second, name: str):
+def _create_joint(group, first, second, name: str, joint_type: int):
     joint = group.newObject("App::FeaturePython", name)
-    JointObject.Joint(joint, 0)
+    JointObject.Joint(joint, joint_type)
     JointObject.ensureViewProviderJoint(joint)
     joint.Proxy.setJointConnectors(
         joint,
@@ -72,6 +72,18 @@ def create_fixed_joint(group, first, second, name: str):
         ],
     )
     return joint
+
+
+def create_fixed_joint(group, first, second, name: str):
+    return _create_joint(group, first, second, name, 0)
+
+
+def create_cylindrical_joint(group, first, second, name: str):
+    return _create_joint(group, first, second, name, 2)
+
+
+def create_slider_joint(group, first, second, name: str):
+    return _create_joint(group, first, second, name, 3)
 
 
 def assembly_summary(state: dict, assembly_name: str) -> dict:
