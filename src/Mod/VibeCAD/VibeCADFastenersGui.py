@@ -12,7 +12,11 @@ import FreeCAD as App
 import FreeCADGui as Gui
 
 from VibeCADFastenerAttachment import attach_model_fastener_graph
-from VibeCADFastenerAssembly import create_assembly_fastener_graph
+from VibeCADFastenerAssembly import (
+    assembly_fastener_graph_for_occurrence,
+    create_assembly_fastener_graph,
+    edit_assembly_fastener_graph,
+)
 from VibeCADFastenerModel import (
     copy_fastener_appearance as _copy_fastener_appearance,
     create_model_fastener_graph,
@@ -1069,7 +1073,33 @@ class _EditStandardFastenerCommand:
                     if operation is None
                     else None
                 )
-                if legacy_body is not None:
+                assembly_graph = (
+                    assembly_fastener_graph_for_occurrence(
+                        document,
+                        occurrence,
+                    )
+                    if operation is None
+                    else None
+                )
+                if assembly_graph is not None:
+                    edit_assembly_fastener_graph(
+                        document,
+                        assembly=assembly_graph.assembly,
+                        occurrence=assembly_graph.occurrence,
+                        label=visible_label,
+                        **{
+                            key: values[key]
+                            for key in (
+                                "standard",
+                                "nominal_thread",
+                                "length_mm",
+                                "model_thread",
+                                "left_handed",
+                                "options",
+                            )
+                        },
+                    )
+                elif legacy_body is not None:
                     update_values["label"] = f"{visible_label} generator"
 
                     def configure(converted_operation, converted_generator):

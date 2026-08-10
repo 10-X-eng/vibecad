@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-10
-Checklist status: 365 complete / 381 pending / 746 total (48.9% by row count)
+Checklist status: 366 complete / 380 pending / 746 total (49.1% by row count)
 
 ## Purpose
 
@@ -6191,6 +6191,48 @@ implementation changes:
   fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
   Native mode remains globally unavailable until this entire plan is complete.
+- Assemble-ribbon standard-fastener editing is the second typed
+  `assembly.fastener` variant and is mapped only from the shipped
+  `VibeCAD_EditStandardFastener` action on the human-selected Assemble
+  surface. The closed provider request names the exact active Assembly,
+  selected visible occurrence, hidden definition source, replacement catalog
+  constructor, printable label, current per-fastener SHA-256 state, and frozen
+  Assembly diagnosis digest and counts. It exposes no placement, workbench,
+  command-dispatch, filesystem, or fuzzy-target authority.
+  The modern human command and Native runtime now converge on one shared
+  in-place graph editor. Preflight requires the requested occurrence to be the
+  sole human selection, re-resolves its exact hidden source, rejects stale
+  fastener or Assembly state and incompatible standards, and proves the source
+  is owned by exactly that occurrence rather than shared through another link.
+  Mutation retains the Assembly, occurrence, and source identities and changes
+  only the source definition and visible occurrence label. Postconditions prove
+  unchanged document object membership, source-then-occurrence History order
+  and presentation, active Assembly, selection, components, joints, placement
+  locks, and every existing component placement. The concise result returns
+  only the exact graph references, new catalog identity and per-fastener state
+  digest, solid/volume evidence, Assembly counts and digest, and the normal
+  bounded receipt.
+  The expanded compiled lifecycle gate drives the actual human insertion and
+  edit command before exercising Native. It proves human/Native geometry and
+  graph parity, exact selected-target and hidden-source enforcement,
+  incompatible-standard and manually shared-definition guards, stale and
+  malformed no-ops, forced-verifier rollback, identity-preserving edit,
+  idempotent same-call replay, one-step undo/redo, snapshot continuation,
+  placement preservation, and FCStd save/reopen. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_FASTENER_GUI_OK human_parity=true
+  hidden_definition=true visible_occurrence=true exact_history=true
+  edit_in_place=true exact_selected_target=true compatible_guard=true
+  shared_definition_guard=true stale_noop=true invalid_catalog_noop=true
+  rollback=true idempotent=true undo_redo=true reopen=true snapshot=true
+  placements_unchanged=true`.
+  The complete VibeCAD suite has 3,287 passing tests with four intentional
+  skips; the focused fastener, catalog, registry, and manifest suite has 109
+  passing tests. VibeCADScripts, AssemblyScripts, Assembly, and AssemblyGui
+  build cleanly; strict Ruff checks, Python compilation, diff checks, and
+  declared source/build parity are green. The protected current-source
+  Sketcher lifecycle, all 17 Part Design VibeScript phases, and Assembly
+  VibeScript integration exit zero; no VibeScript source changed. Native mode
+  remains globally unavailable until this entire plan is complete.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6763,7 +6805,7 @@ concisely.
 - [x] 11.29 Implement linked-source selection reading.
 - [x] 11.30 Implement ASMT export with explicit path authorization.
 - [x] 11.31 Implement Assemble-ribbon fastener insertion.
-- [ ] 11.32 Implement Assemble-ribbon fastener editing.
+- [x] 11.32 Implement Assemble-ribbon fastener editing.
 - [ ] 11.33 Implement Assemble-ribbon matching-hole action when present.
 - [ ] 11.34 Implement Assemble-ribbon fastener attachment when present.
 - [ ] 11.35 Implement Robot creation and setup.

@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Shared retained Assembly graph for standard-fastener insertion."""
+"""Shared retained Assembly graph for standard-fastener insertion and editing."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import math
 from typing import Any, Mapping
 
@@ -188,6 +190,29 @@ def assembly_fastener_graph_from_occurrence(
     return AssemblyFastenerGraph(assembly, occurrence, source, identity)
 
 
+def assembly_fastener_graph_for_occurrence(
+    document: Any,
+    occurrence: Any,
+) -> AssemblyFastenerGraph | None:
+    """Resolve a selected direct Assembly fastener, or return None if unrelated."""
+
+    if document is None or not _live_object(document, occurrence, "App::Link"):
+        return None
+    assemblies = tuple(
+        candidate
+        for candidate in tuple(getattr(document, "Objects", ()) or ())
+        if str(getattr(candidate, "TypeId", "") or "") == "Assembly::AssemblyObject"
+        and occurrence in tuple(getattr(candidate, "Group", ()) or ())
+    )
+    if not assemblies:
+        return None
+    if len(assemblies) != 1:
+        raise RuntimeError(
+            "The selected standard-fastener occurrence has ambiguous Assembly ownership."
+        )
+    return assembly_fastener_graph_from_occurrence(assemblies[0], occurrence)
+
+
 def validate_assembly_fastener_graph(
     document: Any,
     graph: AssemblyFastenerGraph,
@@ -236,6 +261,22 @@ def validate_assembly_fastener_graph(
         history_violations.append("occurrence activity")
     if not _timeline_active(source):
         history_violations.append("definition activity")
+    assembly_owners = tuple(
+        candidate
+        for candidate in tuple(getattr(document, "Objects", ()) or ())
+        if str(getattr(candidate, "TypeId", "") or "") == "Assembly::AssemblyObject"
+        and occurrence in tuple(getattr(candidate, "Group", ()) or ())
+    )
+    source_links = tuple(
+        candidate
+        for candidate in tuple(getattr(document, "Objects", ()) or ())
+        if str(getattr(candidate, "TypeId", "") or "") == "App::Link"
+        and getattr(candidate, "LinkedObject", None) is source
+    )
+    if assembly_owners != (assembly,):
+        history_violations.append("Assembly ownership")
+    if source_links != (occurrence,):
+        history_violations.append("shared definition")
     if history_violations:
         raise RuntimeError(
             "The Assembly standard-fastener History ownership is inconsistent: "
@@ -264,6 +305,8 @@ def validate_assembly_fastener_graph(
         timeline is None
         or str(getattr(timeline, "TypeId", "") or "") != "App::DocumentTimeline"
         or len(operations) != len(visibility)
+        or operations.count(source) != 1
+        or operations.count(occurrence) != 1
         or resources != (source,)
         or source_index + 1 != occurrence_index
         or bool(visibility[source_index])
@@ -295,6 +338,120 @@ def validate_assembly_fastener_graph(
     return resolved.identity
 
 
+def edit_assembly_fastener_graph(
+    document: Any,
+    *,
+    assembly: Any,
+    occurrence: Any,
+    label: str,
+    standard: Any,
+    nominal_thread: Any,
+    length_mm: Any,
+    model_thread: bool,
+    left_handed: bool,
+    options: Mapping[str, Any],
+    targeted_recompute: bool = False,
+) -> AssemblyFastenerGraph:
+    """Edit one direct Assembly fastener without replacing graph identities."""
+
+    from VibeCADFasteners import update_fastener_feature
+
+    visible_label = str(label or "").strip()
+    if not visible_label:
+        raise ValueError("An Assembly standard-fastener label is required.")
+    if not isinstance(targeted_recompute, bool):
+        raise TypeError("targeted_recompute must be a boolean")
+    if document is None or int(document.getBookedTransactionID()) == 0:
+        raise RuntimeError(
+            "Assembly fastener editing requires one active document transaction."
+        )
+    graph = assembly_fastener_graph_from_occurrence(assembly, occurrence)
+    validate_assembly_fastener_graph(
+        document,
+        graph,
+        label=str(graph.occurrence.Label),
+        canonical_key=str(graph.identity["canonical_key"]),
+    )
+    graph.occurrence.Label = visible_label
+    identity = update_fastener_feature(
+        graph.source,
+        standard=standard,
+        nominal_thread=nominal_thread,
+        length_mm=length_mm,
+        model_thread=model_thread,
+        left_handed=left_handed,
+        options=options,
+        label=visible_label,
+        targeted_recompute=targeted_recompute,
+    )
+    updated = AssemblyFastenerGraph(
+        graph.assembly,
+        graph.occurrence,
+        graph.source,
+        dict(identity),
+    )
+    validate_assembly_fastener_graph(
+        document,
+        updated,
+        label=visible_label,
+        canonical_key=str(identity["canonical_key"]),
+    )
+    return updated
+
+
+def _fastener_state_sha256(
+    document: Any,
+    graph: AssemblyFastenerGraph,
+    identity: Mapping[str, Any],
+) -> str:
+    timeline = document.getObject("VibeCADTimeline")
+    operations = tuple(getattr(timeline, "Operations", ()) or ())
+    visibility = tuple(bool(value) for value in timeline.VisibilityAtEnd)
+    occurrence_index = operations.index(graph.occurrence)
+    source_index = operations.index(graph.source)
+    source_view = getattr(graph.source, "ViewObject", None)
+    occurrence_view = getattr(graph.occurrence, "ViewObject", None)
+
+    def object_record(obj: Any) -> dict[str, Any]:
+        return {
+            "object_name": str(obj.Name),
+            "object_id": int(obj.ID),
+            "type_id": str(obj.TypeId),
+            "label": str(obj.Label),
+        }
+
+    canonical = {
+        "assembly": object_record(graph.assembly),
+        "occurrence": object_record(graph.occurrence),
+        "definition_source": object_record(graph.source),
+        "canonical_key": str(identity["canonical_key"]),
+        "occurrence_shape": _shape_summary(graph.occurrence.Shape),
+        "source_shape": _shape_summary(graph.source.Shape),
+        "history": {
+            "source_index": source_index,
+            "occurrence_index": occurrence_index,
+            "source_visible_at_end": visibility[source_index],
+            "occurrence_visible_at_end": visibility[occurrence_index],
+        },
+        "presentation": {
+            "source_visible": bool(getattr(source_view, "Visibility", False)),
+            "source_show_in_tree": bool(getattr(source_view, "ShowInTree", False)),
+            "occurrence_visible": bool(getattr(occurrence_view, "Visibility", True)),
+            "occurrence_show_in_tree": bool(
+                getattr(occurrence_view, "ShowInTree", True)
+            ),
+        },
+    }
+    encoded = json.dumps(
+        canonical,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def assembly_fastener_summary(
     assembly: Any,
     occurrence: Any,
@@ -313,6 +470,11 @@ def assembly_fastener_summary(
         return None
     return {
         "source": {"object_name": str(graph.source.Name)},
+        "state_sha256": _fastener_state_sha256(
+            assembly.Document,
+            graph,
+            identity,
+        ),
         "canonical_key": str(identity["canonical_key"]),
         "part_number": str(identity["part_number"]),
         "standard": str(identity["standard"]),

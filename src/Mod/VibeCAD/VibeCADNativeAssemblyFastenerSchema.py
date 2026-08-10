@@ -72,6 +72,48 @@ def assembly_fastener_capability_definition() -> NativeCapabilityDefinition:
                     ),
                 ),
             ),
+            NativeCapabilityVariant(
+                operation="edit_standard_fastener",
+                description=(
+                    "Edit the exact selected direct Assembly fastener definition "
+                    "in place without replacing its visible occurrence."
+                ),
+                action_ids=frozenset({"VibeCAD_EditStandardFastener"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type="SelectedAssemblyFastenerOccurrenceAndDefinition",
+                transaction_behavior="document",
+                background_required=False,
+                parameters=parameters_schema(
+                    {
+                        "assembly": object_reference_schema(),
+                        "occurrence": object_reference_schema(),
+                        "definition_source": object_reference_schema(),
+                        "label": LABEL_SCHEMA,
+                        "definition": standard_fastener_definition_schema(),
+                        "expected_fastener_state_sha256": _STATE_SHA256,
+                        "expected_state_sha256": _STATE_SHA256,
+                        "expected_component_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 100_000,
+                        },
+                        "expected_grounded_count": _COUNT,
+                        "expected_joint_count": _COUNT,
+                    },
+                    (
+                        "assembly",
+                        "occurrence",
+                        "definition_source",
+                        "label",
+                        "definition",
+                        "expected_fastener_state_sha256",
+                        "expected_state_sha256",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                    ),
+                ),
+            ),
         ),
     )
 

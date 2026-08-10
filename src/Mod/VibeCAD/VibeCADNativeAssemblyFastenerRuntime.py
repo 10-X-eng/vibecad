@@ -9,10 +9,14 @@ from typing import Any, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeAssemblyFastener import (
+    AssemblyFastenerEditSpec,
     AssemblyFastenerInsertSpec,
     NativeAssemblyFastenerError,
+    edit_assembly_fastener,
     insert_assembly_fastener,
+    preflight_edit_assembly_fastener,
     preflight_insert_assembly_fastener,
+    verify_edited_assembly_fastener,
     verify_inserted_assembly_fastener,
 )
 from VibeCADNativeImmediate import run_immediate_mutation
@@ -49,28 +53,72 @@ class NativeAssemblyFastenerRuntime:
                         "expected_joint_count",
                     }
                 ),
+                "edit_standard_fastener": frozenset(
+                    {
+                        "assembly",
+                        "occurrence",
+                        "definition_source",
+                        "label",
+                        "definition",
+                        "expected_fastener_state_sha256",
+                        "expected_state_sha256",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                    }
+                ),
             },
         )
+
+        def exact_reference(field: str) -> NativeObjectRef:
+            value = values[field]
+            if not isinstance(value, Mapping) or set(value) != {"object_name"}:
+                raise NativeAssemblyFastenerError(
+                    f"{field} must contain one exact object_name."
+                )
+            try:
+                return NativeObjectRef(
+                    self._context.document_uid,
+                    str(value["object_name"]),
+                )
+            except Exception as exc:
+                raise NativeAssemblyFastenerError(
+                    f"{field}.object_name must identify one exact document object."
+                ) from exc
+
+        assembly_ref = exact_reference("assembly")
+        self._context.guard()
+        if operation == "edit_standard_fastener":
+            prepared_edit = preflight_edit_assembly_fastener(
+                self._context.document,
+                AssemblyFastenerEditSpec(
+                    assembly_ref=assembly_ref,
+                    occurrence_ref=exact_reference("occurrence"),
+                    definition_source_ref=exact_reference("definition_source"),
+                    label=values["label"],
+                    definition=values["definition"],
+                    expected_fastener_state_sha256=values[
+                        "expected_fastener_state_sha256"
+                    ],
+                    expected_state_sha256=values["expected_state_sha256"],
+                    expected_component_count=values["expected_component_count"],
+                    expected_grounded_count=values["expected_grounded_count"],
+                    expected_joint_count=values["expected_joint_count"],
+                ),
+            )
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name="Edit Native Assembly Fastener",
+                mutate=partial(edit_assembly_fastener, prepared=prepared_edit),
+                verify=verify_edited_assembly_fastener,
+            )
         if operation != "insert_standard_fastener":
             raise NativeAssemblyFastenerError(
                 "The Assembly fastener operation is not implemented."
             )
-        assembly = values["assembly"]
-        if not isinstance(assembly, Mapping) or set(assembly) != {"object_name"}:
-            raise NativeAssemblyFastenerError(
-                "assembly must contain one exact object_name."
-            )
-        try:
-            reference = NativeObjectRef(
-                self._context.document_uid,
-                str(assembly["object_name"]),
-            )
-        except Exception as exc:
-            raise NativeAssemblyFastenerError(
-                "assembly.object_name must identify one exact Assembly."
-            ) from exc
         spec = AssemblyFastenerInsertSpec(
-            assembly_ref=reference,
+            assembly_ref=assembly_ref,
             label=values["label"],
             definition=values["definition"],
             expected_state_sha256=values["expected_state_sha256"],
@@ -78,7 +126,6 @@ class NativeAssemblyFastenerRuntime:
             expected_grounded_count=values["expected_grounded_count"],
             expected_joint_count=values["expected_joint_count"],
         )
-        self._context.guard()
         prepared = preflight_insert_assembly_fastener(
             self._context.document,
             spec,
