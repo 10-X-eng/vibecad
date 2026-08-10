@@ -58,6 +58,8 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyRotationCoupling.py
     VibeCADNativeAssemblyRevoluteJoint.py
     VibeCADNativeAssemblyScrewJoint.py
+    VibeCADNativeAssemblySolve.py
+    VibeCADNativeAssemblySolveState.py
     VibeCADNativeAssemblySliderJoint.py
     VibeCADNativeAssemblySnapshot.py
     VibeCADNativeAssemblyState.py
@@ -583,7 +585,9 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_assembly_screw_joint_gui_integration.py
         vibecad_tests/native_assembly_gears_joint_gui_integration.py
         vibecad_tests/native_assembly_belt_joint_gui_integration.py
+        vibecad_tests/native_assembly_solve_gui_integration.py
         vibecad_tests/test_native_assembly_components.py
+        vibecad_tests/test_native_assembly_solve.py
         vibecad_tests/native_sketch_batch_test_support.py
         vibecad_tests/native_sketch_geometry_gui_support.py
         vibecad_tests/native_sketch_provider_turn.py

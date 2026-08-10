@@ -26,6 +26,13 @@ from VibeCADNativeAssemblyStructure import (
     preflight_create_assembly,
     verify_created_assembly,
 )
+from VibeCADNativeAssemblySolve import (
+    AssemblySolveSpec,
+    NativeAssemblySolveError,
+    apply_assembly_solve,
+    preflight_assembly_solve,
+    verify_assembly_solve,
+)
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeDesignResults import placement_from_mapping
 from VibeCADNativeModelErrors import NativeModelError
@@ -57,6 +64,25 @@ def _expected_component_count(value: Any) -> int:
             "expected_component_count must be an integer from 0 through 100000."
         )
     return value
+
+
+def _expected_joint_count(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 256:
+        raise NativeAssemblySolveError(
+            f"{field} must be an integer from 0 through 256."
+        )
+    return value
+
+
+def _solver_state_sha256(value: Any) -> str:
+    result = str(value or "")
+    if len(result) != 64 or any(
+        character not in "0123456789abcdef" for character in result
+    ):
+        raise NativeAssemblySolveError(
+            "expected_solver_state_sha256 must be one lowercase SHA-256 digest."
+        )
+    return result
 
 
 def _object_ref(document_uid: str, value: Any, field: str) -> NativeObjectRef:
@@ -157,6 +183,15 @@ class NativeAssemblyStructureRuntime:
                         "expected_component_count",
                     }
                 ),
+                "solve_assembly": frozenset(
+                    {
+                        "assembly",
+                        "expected_solver_state_sha256",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                    }
+                ),
             },
         )
         if operation == "create_assembly":
@@ -222,6 +257,31 @@ class NativeAssemblyStructureRuntime:
                 transaction_name="Create Native Assembly Part",
                 mutate=lambda document: create_part(document, part_spec),
                 verify=verify_created_part,
+            )
+        if operation == "solve_assembly":
+            solve_spec = AssemblySolveSpec(
+                assembly_ref=assembly_ref,
+                expected_solver_state_sha256=_solver_state_sha256(
+                    values["expected_solver_state_sha256"]
+                ),
+                expected_component_count=expected_components,
+                expected_grounded_count=_expected_joint_count(
+                    values["expected_grounded_count"],
+                    "expected_grounded_count",
+                ),
+                expected_joint_count=_expected_joint_count(
+                    values["expected_joint_count"],
+                    "expected_joint_count",
+                ),
+            )
+            self._context.guard()
+            preflight_assembly_solve(self._context.document, solve_spec)
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name="Solve Native Assembly",
+                mutate=lambda document: apply_assembly_solve(document, solve_spec),
+                verify=verify_assembly_solve,
             )
         raise NativeAssemblyStructureError(
             "The Assembly structure operation is not implemented."

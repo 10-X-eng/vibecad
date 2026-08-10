@@ -57,6 +57,11 @@ _EXPECTED_COMPONENT_COUNT = {
     "minimum": 0,
     "maximum": 100_000,
 }
+_EXPECTED_JOINT_COUNT = {
+    "type": "integer",
+    "minimum": 0,
+    "maximum": 256,
+}
 
 
 def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
@@ -159,6 +164,41 @@ def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
                         "label",
                         "placement",
                         "expected_component_count",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="solve_assembly",
+                description=(
+                    "Run the native solver for the exact human-active Assembly "
+                    "and verify every bounded placement before commit."
+                ),
+                action_ids=frozenset({"Assembly_SolveAssembly"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type="HumanActiveAssemblyAndExactSolverState",
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "expected_solver_state_sha256": {
+                            "type": "string",
+                            "minLength": 64,
+                            "maxLength": 64,
+                            "pattern": r"^[0-9a-f]{64}$",
+                        },
+                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
+                        "expected_grounded_count": _EXPECTED_JOINT_COUNT,
+                        "expected_joint_count": _EXPECTED_JOINT_COUNT,
+                    },
+                    "required": [
+                        "assembly",
+                        "expected_solver_state_sha256",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
                     ],
                     "additionalProperties": False,
                 },

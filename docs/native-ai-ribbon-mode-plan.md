@@ -4,7 +4,7 @@ Status: Official plan — active goal ledger
 Implementation status: In progress; Native remains disabled
 Scope owner: VibeCAD AI-assisted native authoring
 Last updated: 2026-08-09
-Checklist status: 352 complete / 394 pending / 746 total (47.2% by row count)
+Checklist status: 353 complete / 393 pending / 746 total (47.3% by row count)
 
 ## Purpose
 
@@ -5584,6 +5584,46 @@ implementation changes:
   snapshot and lock are untouched, the prior test-created crash lock remains
   absent, and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
+- Solve Assembly is an exact `assembly.structure/solve_assembly` operation
+  mapped only from the live `Assembly_SolveAssembly` action. It accepts only
+  the exact human-active Assembly plus the current component, grounded-joint,
+  and regular-joint counts and a lowercase SHA-256 of its bounded solver state.
+  That state fingerprints at most 128 native solver placement objects by
+  document identity, object identity and type, exact placement, and both
+  `Placement` and `LinkPlacement` read-only state. Stale counts, stale state,
+  a different active Assembly, inactive timeline objects, or an oversized
+  placement graph all fail before a transaction opens. The implementation
+  follows the human command's native lifecycle with `assembly.solve(False)`
+  followed by one full document recompute inside one named transaction. A
+  solver exception, nonzero status, invalid Assembly, recompute failure,
+  deleted object, changed placement-object graph, unexpected created object,
+  post-solve drift, active-Assembly drift, selection drift, or moved grounded
+  component aborts the transaction. The only allowed solver-created objects
+  are exact native grounding repairs for components whose placement was
+  already locked; those repairs, their targets, and the JointGroup membership
+  are verified before commit. Success returns only before/after state hashes,
+  bounded exact placement changes, lock changes, grounding repairs, counts,
+  and concise solver health instead of the raw diagnostic graph. The focused
+  solve and state modules are 473 and 230 lines, and the dispatcher-backed
+  compiled GUI gate proves free-motion solving, native grounding repair, stale
+  state no-op, exact constrained movement, unchanged grounded placement,
+  preserved selection and active Assembly, idempotent replay, one-step
+  undo/redo, and FCStd save/close/reopen. It reports
+  `VIBECAD_NATIVE_ASSEMBLY_SOLVE_GUI_OK components=2 joints=1 grounded=1
+  moved=1 free_motion=true grounding_repair=true stale_noop=true
+  selection=true transactions=2 undo_redo=true reopen=true`. All thirteen
+  compiled joint lifecycle gates plus the structure, grounding, and solve gates
+  pass. The complete VibeCAD suite is 3,193 passed with four intentional skips;
+  Ruff, compileall, diff checks, source/build parity, and the VibeCADScripts,
+  AssemblyScripts, Assembly, and AssemblyGui targets are green. The protected
+  Sketcher gate exits zero, all 17 Part Design phases report
+  `VIBECAD_VIBESCRIPT_PHASE_OK`, and the Assembly VibeScript gate returns
+  explicit `"ok": true`, every published joint solver code zero, and
+  `VIBECAD_ASSEMBLY_VIBESCRIPT_GATE_EXIT 0`. No VibeScript source changed. No
+  FreeCAD or FreeCADCmd process remains, the preserved recovery snapshot and
+  lock are untouched, the prior test-created crash lock remains absent, and
+  the immutable 5-axis fixture remains exactly
+  `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6143,7 +6183,7 @@ concisely.
 - [x] 11.16 Implement Screw joint.
 - [x] 11.17 Implement Gear joint.
 - [x] 11.18 Implement Belt joint.
-- [ ] 11.19 Implement solver execution and exact placement verification.
+- [x] 11.19 Implement solver execution and exact placement verification.
 - [ ] 11.20 Implement conflicting-constraint diagnosis.
 - [ ] 11.21 Implement redundant-constraint diagnosis.
 - [ ] 11.22 Implement partially redundant-constraint diagnosis.

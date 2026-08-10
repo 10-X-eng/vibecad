@@ -36,6 +36,10 @@ from VibeCADNativeAssemblyJointGraph import (
     reference_summary,
     solver_diagnostics,
 )
+from VibeCADNativeAssemblySolveState import (
+    NativeAssemblySolveStateError,
+    assembly_solver_state_summary,
+)
 from VibeCADNativeAssemblyState import read_active_assembly
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
@@ -222,6 +226,13 @@ def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
     result["components"] = component_summaries
     result["joints"] = [_joint_summary(value, joints) for value in joints[:32]]
     result["last_solver"] = solver_diagnostics(assembly)
+    try:
+        result["solver_state"] = assembly_solver_state_summary(assembly)
+    except NativeAssemblySolveStateError as exc:
+        result["solver_state"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
     return result
 
 
