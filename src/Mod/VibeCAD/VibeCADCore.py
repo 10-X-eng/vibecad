@@ -1877,6 +1877,16 @@ class VibeCADService:
         ]
         return {"count": len(images), "images": images}
 
+    def provider_reference_image_attachments(self) -> dict[str, Any]:
+        """Return every human-attached reference for each provider turn.
+
+        References are durable project context.  Unlike a captured viewport,
+        they remain attached until the human explicitly removes or clears
+        them, so every provider turn must receive the actual image again.
+        """
+
+        return self.reference_images_summary()
+
     def consume_reference_image_attachments(
         self, references: dict[str, Any] | None
     ) -> dict[str, Any]:
@@ -5039,7 +5049,7 @@ class VibeCADService:
             "document": self.provider_turn_document_summary(),
             "selection": self.provider_turn_selection_summary(),
             "view_screenshot": self.view_screenshot_summary(),
-            "reference_images": self.pending_reference_image_attachments(),
+            "reference_images": self.provider_reference_image_attachments(),
         }
 
     def _register_core_tools(self) -> None:

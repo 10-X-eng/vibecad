@@ -151,6 +151,8 @@ class SketcherExport SketchObject: public Part::Part2DObject
     typedef Part::Part2DObject inherited;
     PROPERTY_HEADER_WITH_OVERRIDE(Sketcher::SketchObject);
 
+    friend class SketchObjectPy;
+
 public:
     SketchObject();
     ~SketchObject() override;

@@ -53,6 +53,15 @@ class _ThreadedCodexClient:
     def start(self) -> None:
         return None
 
+    def set_handlers(
+        self,
+        *,
+        notification_handler,
+        server_request_handler,
+    ) -> None:
+        self.notification_handler = notification_handler
+        self.server_request_handler = server_request_handler
+
     def request(self, method, params, timeout):
         del timeout
         if method == "thread/start":

@@ -66,6 +66,52 @@ using namespace Sketcher;
 
 namespace
 {
+constexpr const char* mutationStateCapsuleName = "Sketcher.SketchMutationState";
+
+struct SketchMutationState
+{
+    // Property Copy/Paste is the same typed state mechanism used by document
+    // transactions; keeping it opaque avoids a lossy Python serialization.
+    explicit SketchMutationState(SketchObject* sketch)
+        : owner(sketch)
+        , document(sketch ? sketch->getDocument() : nullptr)
+        , transactionId(document ? document->getBookedTransactionID() : App::NullTransaction)
+        , objectName(sketch && sketch->getNameInDocument() ? sketch->getNameInDocument() : "")
+        , expressionEngine(sketch->ExpressionEngine.Copy())
+        , constraints(sketch->Constraints.Copy())
+        , geometry(sketch->Geometry.Copy())
+        , externalTypes(sketch->ExternalTypes.Copy())
+        , externalGeometry(sketch->ExternalGeometry.Copy())
+        , externalGeo(sketch->ExternalGeo.Copy())
+        , exports(sketch->Exports.Copy())
+    {}
+
+    SketchObject* owner;
+    App::Document* document;
+    int transactionId;
+    std::string objectName;
+    std::unique_ptr<App::Property> expressionEngine;
+    std::unique_ptr<App::Property> constraints;
+    std::unique_ptr<App::Property> geometry;
+    std::unique_ptr<App::Property> externalTypes;
+    std::unique_ptr<App::Property> externalGeometry;
+    std::unique_ptr<App::Property> externalGeo;
+    std::unique_ptr<App::Property> exports;
+    bool restored = false;
+};
+
+void deleteMutationStateCapsule(PyObject* capsule)
+{
+    auto* state = static_cast<SketchMutationState*>(
+        PyCapsule_GetPointer(capsule, mutationStateCapsuleName)
+    );
+    if (!state) {
+        PyErr_Clear();
+        return;
+    }
+    delete state;
+}
+
 struct SketchMutationSnapshot
 {
     std::vector<std::string> geometryTags;
@@ -2153,6 +2199,75 @@ PyObject* SketchObjectPy::deleteAllGeometry(PyObject* args)
     }
 
     return mutationResult(before, sketch);
+}
+
+PyObject* SketchObjectPy::captureMutationState()
+{
+    auto* sketch = this->getSketchObjectPtr();
+    auto* document = sketch ? sketch->getDocument() : nullptr;
+    if (
+        !sketch || !document || !sketch->getNameInDocument()
+        || document->getBookedTransactionID() == App::NullTransaction
+        || !document->hasPendingTransaction()
+    ) {
+        throw Py::RuntimeError("The Sketch has no exact active mutation transaction");
+    }
+    auto* state = new SketchMutationState(sketch);
+    PyObject* capsule = PyCapsule_New(
+        state,
+        mutationStateCapsuleName,
+        deleteMutationStateCapsule
+    );
+    if (!capsule) {
+        delete state;
+        throw Py::Exception();
+    }
+    return capsule;
+}
+
+PyObject* SketchObjectPy::restoreMutationState(PyObject* args)
+{
+    PyObject* capsule = nullptr;
+    if (!PyArg_ParseTuple(args, "O", &capsule)) {
+        return nullptr;
+    }
+    auto* state = static_cast<SketchMutationState*>(
+        PyCapsule_GetPointer(capsule, mutationStateCapsuleName)
+    );
+    if (!state) {
+        throw Py::TypeError("state must be an exact Sketch mutation savepoint");
+    }
+    auto* sketch = this->getSketchObjectPtr();
+    if (state->restored) {
+        throw Py::RuntimeError("This Sketch mutation savepoint was already restored");
+    }
+    if (
+        !sketch || sketch != state->owner || sketch->getDocument() != state->document
+        || !sketch->getNameInDocument() || state->objectName != sketch->getNameInDocument()
+        || !state->document->hasPendingTransaction()
+        || state->document->getBookedTransactionID() != state->transactionId
+    ) {
+        throw Py::RuntimeError("The exact Sketch mutation transaction is no longer available");
+    }
+
+    sketch->setStatus(App::ObjectStatus::Restore, true);
+    try {
+        sketch->ExpressionEngine.Paste(*state->expressionEngine);
+        sketch->Constraints.Paste(*state->constraints);
+        sketch->Geometry.Paste(*state->geometry);
+        sketch->ExternalTypes.Paste(*state->externalTypes);
+        sketch->ExternalGeometry.Paste(*state->externalGeometry);
+        sketch->ExternalGeo.Paste(*state->externalGeo);
+        sketch->Exports.Paste(*state->exports);
+    }
+    catch (...) {
+        sketch->setStatus(App::ObjectStatus::Restore, false);
+        throw;
+    }
+    sketch->setStatus(App::ObjectStatus::Restore, false);
+    sketch->onSketchRestore();
+    state->restored = true;
+    Py_RETURN_NONE;
 }
 
 PyObject* SketchObjectPy::detectDegeneratedGeometries(PyObject* args)

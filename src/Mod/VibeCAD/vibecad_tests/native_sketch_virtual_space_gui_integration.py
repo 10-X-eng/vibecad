@@ -17,6 +17,7 @@ import SketcherGui
 
 import VibeCADGui as VibeGui
 import VibeCADNativeSketchConstraintRuntime as ConstraintRuntimeModule
+import VibeCADNativeSketchGeometryRuntime as GeometryRuntimeModule
 import VibeCADProvider as ProviderModule
 from VibeCADCore import get_service
 from VibeCADEditState import active_edit_object
@@ -42,6 +43,21 @@ def _phase(name: str) -> None:
     os.write(2, f"VIBECAD_NATIVE_SKETCH_VIRTUAL_SPACE_PHASE {name}\n".encode())
 
 
+def _accept_orientation_dialog() -> None:
+    attempts = [0]
+
+    def accept() -> None:
+        attempts[0] += 1
+        modal = QtWidgets.QApplication.activeModalWidget()
+        if modal is None:
+            if attempts[0] < 200:
+                QtCore.QTimer.singleShot(5, accept)
+            return
+        modal.accept()
+
+    QtCore.QTimer.singleShot(0, accept)
+
+
 def _run() -> None:
     application = QtWidgets.QApplication.instance()
     document = None
@@ -54,9 +70,6 @@ def _run() -> None:
         VibeGui._connect_document_observer()
         service = get_service()
         service.select_modeling_engine("native")
-        sketch = document.addObject("Sketcher::SketchObject", "FreshNativeSketch")
-        sketch.Label = "Fresh Native Sketch provider gate"
-        document.recompute()
         process_events(16)
 
         controller = Gui.getMainWindow().findChild(
@@ -73,8 +86,26 @@ def _run() -> None:
         assert model_provider.available is True, model_provider.debug_summary()
         assert model_provider.tool_names
 
-        assert Gui.activeDocument().setEdit(sketch.Name)
-        process_events(24)
+        original_objects = tuple(document.Objects)
+        original_undo_count = int(document.UndoCount)
+        Gui.activateWorkbench("SketcherWorkbench")
+        Gui.Selection.clearSelection()
+        _accept_orientation_dialog()
+        Gui.runCommand("Sketcher_NewSketch", 0)
+        process_events(100)
+        created_sketches = [
+            obj
+            for obj in document.Objects
+            if obj not in original_objects
+            and obj.isDerivedFrom("Sketcher::SketchObject")
+        ]
+        assert len(created_sketches) == 1, created_sketches
+        sketch = created_sketches[0]
+        sketch.Label = "Fresh Native Sketch provider gate"
+        assert active_edit_object() is sketch
+        assert int(document.getBookedTransactionID()) != 0
+        assert bool(document.HasPendingTransaction)
+        assert document.isProvisionallyEnrolledInTimelineByCurrentTransaction(sketch)
         surface = read_active_ribbon_surface(controller)
         assert surface.surface_id == "sketch.edit"
         assert active_edit_object() is sketch
@@ -93,6 +124,19 @@ def _run() -> None:
             schema for schema in production.schemas if schema["name"] == "sketch.constraint"
         )
         assert "set_virtual_space" in json.dumps(constraint_schema, sort_keys=True)
+
+        plan_context = _capture_context_for_provider(
+            service,
+            interaction_mode="plan",
+        )
+        plan_names = plan_context["provider_tool_surface"]["tool_names"]
+        assert plan_names
+        assert set(plan_names) < set(production.tool_names)
+        assert "sketch.geometry" not in plan_names
+        assert "sketch.constraint" not in plan_names
+        assert plan_context["_vibecad_codex_thread_surface"][
+            "provider_tool_surface"
+        ]["tool_names"] == list(production.tool_names)
 
         _phase("provider_surface")
         context = _capture_context_for_provider(service)
@@ -134,7 +178,65 @@ def _run() -> None:
         assert line_response.get("ok") is True, line_response
         assert int(sketch.GeometryCount) == 1
         assert line_response["geometry"]["kind"] == "line"
+        assert line_response["assistant_undo_available"] is False
         assert edit_boundary(document, sketch, controller) == boundary
+
+        line_operation = GeometryRuntimeModule._OPERATIONS["create_line"]
+
+        def fail_line_verifier(_document, _draft):
+            raise RuntimeError("forced provisional Sketch postcondition failure")
+
+        GeometryRuntimeModule._OPERATIONS["create_line"] = (
+            *line_operation[:3],
+            fail_line_verifier,
+            line_operation[4],
+        )
+        try:
+            rolled_back_line = execution.dispatcher.call(
+                SKETCH_GEOMETRY_CAPABILITY_NAME,
+                json.dumps(
+                    line_arguments(
+                        sketch,
+                        geometry_count=1,
+                        start=(-5.0, 2.0),
+                        end=(5.0, 2.0),
+                    ),
+                    separators=(",", ":"),
+                ),
+                "fresh-sketch-provider-forced-rollback",
+            )
+        finally:
+            GeometryRuntimeModule._OPERATIONS["create_line"] = line_operation
+        assert rolled_back_line.get("ok") is False, rolled_back_line
+        assert int(sketch.GeometryCount) == 1
+        assert edit_boundary(document, sketch, controller) == boundary
+
+        execution.close()
+        execution = None
+        Gui.runCommand("Sketcher_LeaveSketch", 0)
+        process_events(80)
+        assert active_edit_object() is None
+        assert int(document.getBookedTransactionID()) == 0
+        assert not bool(document.HasPendingTransaction)
+        assert document.getObject(sketch.Name) is sketch
+        assert int(document.UndoCount) == original_undo_count + 1
+
+        assert Gui.activeDocument().setEdit(sketch.Name)
+        process_events(32)
+        production_registry, production = resolve_production_native_surface()
+        assert production.available is True, production.debug_summary()
+        context = _capture_context_for_provider(service)
+        turn_surface = context["provider_tool_surface"]
+        schemas = context["provider_tool_schemas"]
+        execution = create_native_session_execution(
+            service=service,
+            expected_surface=turn_surface,
+            expected_schemas=schemas,
+            registry=production_registry,
+            controller=controller,
+        )
+        boundary = edit_boundary(document, sketch, controller)
+        assert boundary[-2:] == (0, False)
 
         _phase("view_actions")
         presentation_base = {
@@ -202,7 +304,8 @@ def _run() -> None:
                 f"virtual-space-focused-{call_number}",
             )
             assert response.get("ok") is succeeds, response
-            assert edit_boundary(document, sketch, controller) == boundary
+            current_boundary = edit_boundary(document, sketch, controller)
+            assert current_boundary == boundary, (boundary, current_boundary)
             return response
 
         def install_failing_verifier():
@@ -234,7 +337,13 @@ def _run() -> None:
         execution.close()
         execution = None
         Gui.activeDocument().resetEdit()
-        process_events(20)
+        process_events(32)
+        assert active_edit_object() is None
+        assert int(document.getBookedTransactionID()) == 0
+        assert not bool(document.HasPendingTransaction)
+        assert document.getObject(sketch.Name) is sketch
+        Gui.activateWorkbench("PartDesignWorkbench")
+        process_events(24)
         next_surface = read_active_ribbon_surface(controller)
         assert next_surface.surface_id == "model"
         next_context = _capture_context_for_provider(service)
@@ -249,13 +358,14 @@ def _run() -> None:
             Path(tempfile.mkdtemp(prefix="vibecad-native-virtual-space-"))
             / "NativeVirtualSpace.FCStd"
         )
+        sketch_name = sketch.Name
         document.saveAs(str(save_path))
         App.closeDocument(document.Name)
         document = App.openDocument(str(save_path))
         document.recompute()
         VibeGui._connect_document_observer()
         process_events(16)
-        reopened = document.getObject("FreshNativeSketch")
+        reopened = document.getObject(sketch_name)
         assert reopened is not None
         assert Gui.activeDocument().setEdit(reopened.Name)
         process_events(24)
@@ -271,8 +381,9 @@ def _run() -> None:
         _phase("complete")
         print(
             "VIBECAD_NATIVE_FRESH_SKETCH_PROVIDER_GUI_OK "
-            "nonempty codex-declarations real-line view-actions inter-turn-swap "
-            "virtual-view constraints atomic stale rollback reopen",
+            "provisional-transaction nonempty codex-declarations real-line "
+            "view-actions inter-turn-swap virtual-view constraints atomic "
+            "stale rollback one-undo reopen",
             flush=True,
         )
         exit_code = 0

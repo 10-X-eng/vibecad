@@ -53,6 +53,7 @@ class NativeMutationExecution:
     result: dict[str, Any]
     receipt: NativeOperationReceipt | None
     duplicate: bool
+    committed_undo_entry: bool = True
 
 
 MutationHandler = Callable[[Any], NativeMutationDraft]
@@ -153,14 +154,20 @@ class NativeMutationRunner:
         state: NativeDocumentStateStore,
         *,
         transaction_factory: TransactionFactory = _default_transaction_factory,
+        active_transaction_factory: TransactionFactory | None = None,
         document_is_live: DocumentLiveness = _default_document_is_live,
     ) -> None:
         if not isinstance(state, NativeDocumentStateStore):
             raise TypeError("state must be a NativeDocumentStateStore")
         if not callable(transaction_factory) or not callable(document_is_live):
             raise TypeError("Native mutation host callbacks must be callable")
+        if active_transaction_factory is not None and not callable(
+            active_transaction_factory
+        ):
+            raise TypeError("active_transaction_factory must be callable or None")
         self._state = state
         self._transaction_factory = transaction_factory
+        self._active_transaction_factory = active_transaction_factory
         self._document_is_live = document_is_live
 
     def run(
@@ -192,7 +199,10 @@ class NativeMutationRunner:
                 NATIVE_DOCUMENT_UNAVAILABLE,
                 "The exact Native target document is no longer open.",
             )
+        transaction_factory = self._transaction_factory
         if _transaction_is_open(document):
+            transaction_factory = self._active_transaction_factory
+        if transaction_factory is None:
             raise NativeMutationError(
                 NATIVE_TRANSACTION_ACTIVE,
                 "Finish or cancel the active document transaction before retrying.",
@@ -204,12 +214,17 @@ class NativeMutationRunner:
                 result=dict(authorization.prior_verified_result or {}),
                 receipt=None,
                 duplicate=True,
+                committed_undo_entry=False,
             )
 
         transaction = None
+        committed_undo_entry = False
         stage = NATIVE_TRANSACTION_FAILED
         try:
-            transaction = self._transaction_factory(document, name)
+            transaction = transaction_factory(document, name)
+            committed_undo_entry = bool(
+                getattr(transaction, "creates_undo_entry", True)
+            )
             self._state.begin_mutation_observation(ticket)
             stage = NATIVE_EXECUTION_FAILED
             draft = mutate(document)
@@ -253,6 +268,7 @@ class NativeMutationRunner:
                 result=json.loads(prepared.verified_result_json),
                 receipt=receipt,
                 duplicate=False,
+                committed_undo_entry=committed_undo_entry,
             )
         except NativeMutationError:
             abort_error = _abort_owned_transaction(transaction, self._state, ticket)

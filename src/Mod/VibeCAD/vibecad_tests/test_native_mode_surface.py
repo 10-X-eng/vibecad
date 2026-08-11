@@ -113,6 +113,8 @@ def test_native_availability_queries_use_the_manifest_surface(
     import VibeCADNativeProviderContext as provider_context
     import VibeCADSession as session
 
+    definition = SimpleNamespace(primary_classification="read")
+    registry = SimpleNamespace(definition=lambda name: definition if name == "state.read" else None)
     provider = SimpleNamespace(
         available=True,
         tool_names=("model.feature", "state.read"),
@@ -120,7 +122,7 @@ def test_native_availability_queries_use_the_manifest_surface(
     monkeypatch.setattr(
         provider_context,
         "resolve_production_native_surface",
-        lambda: (object(), provider),
+        lambda: (registry, provider),
     )
     service = _NativeService()
 
@@ -129,11 +131,16 @@ def test_native_availability_queries_use_the_manifest_surface(
     assert (
         session.is_provider_safe_tool(
             service,
-            "model.feature",
+            "state.read",
             interaction_mode="plan",
         )
-        is False
+        is True
     )
+    assert session.is_provider_safe_tool(
+        service,
+        "model.feature",
+        interaction_mode="plan",
+    ) is False
 
 
 def test_native_runner_assembly_returns_before_the_vibescript_runner_path(

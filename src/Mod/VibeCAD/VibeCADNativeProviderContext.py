@@ -30,10 +30,11 @@ def native_provider_tool_schemas(
     *,
     interaction_mode: str,
 ) -> list[dict[str, Any]]:
-    _registry, surface = resolve_production_native_surface()
+    registry, surface = resolve_production_native_surface()
     return schemas_for_native_provider_surface(
         surface,
         interaction_mode=interaction_mode,
+        registry=registry,
     )
 
 
@@ -41,19 +42,34 @@ def schemas_for_native_provider_surface(
     surface: NativeProviderSurface,
     *,
     interaction_mode: str,
+    registry: NativeCapabilityRegistry | None = None,
 ) -> list[dict[str, Any]]:
     """Copy schemas from one already-resolved live manifest surface."""
 
     if not isinstance(surface, NativeProviderSurface):
         raise TypeError("surface must be a NativeProviderSurface")
-    # Native planning needs its own read/view-only frozen turn contract. Keep
-    # it unavailable until that contract is implemented instead of leaking
-    # mutation schemas into Plan mode.
-    if str(interaction_mode or "build").strip().lower() != "build":
-        return []
     if not surface.available:
         return []
-    return json.loads(json.dumps(surface.schemas))
+    mode = str(interaction_mode or "build").strip().lower()
+    if mode == "build":
+        schemas = surface.schemas
+    elif mode == "plan":
+        selected_registry = registry or build_native_capability_registry()
+        schemas = []
+        for name, schema in zip(
+            surface.tool_names,
+            surface.schemas,
+            strict=True,
+        ):
+            definition = selected_registry.definition(name)
+            if (
+                definition is not None
+                and definition.primary_classification in {"read", "view"}
+            ):
+                schemas.append(schema)
+    else:
+        raise ValueError(f"Unknown Native interaction mode {mode!r}.")
+    return json.loads(json.dumps(schemas))
 
 
 def native_active_state(service: Any) -> dict[str, Any]:

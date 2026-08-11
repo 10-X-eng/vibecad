@@ -254,6 +254,7 @@ set(VibeCAD_Scripts
     VibeCADNativeSketchBatchPlan.py
     VibeCADNativeSketchBatchRuntime.py
     VibeCADNativeSketchBatchSchema.py
+    VibeCADNativeSketchTaskMutation.py
     VibeCADNativeSketchBSpline.py
     VibeCADNativeSketchArbitraryRegularPolygon.py
     VibeCADNativeSketchCircularArc.py

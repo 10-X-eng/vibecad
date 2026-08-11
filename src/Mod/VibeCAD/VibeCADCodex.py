@@ -9,8 +9,10 @@ owns the local JSON-RPC connection and its deliberately narrow capabilities.
 
 from __future__ import annotations
 
+import atexit
 from collections import deque
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
@@ -431,6 +433,18 @@ class CodexAppServerClient:
             message["params"] = dict(params)
         self._write_message(message)
 
+    def set_handlers(
+        self,
+        *,
+        notification_handler: NotificationHandler | None,
+        server_request_handler: ServerRequestHandler | None,
+    ) -> None:
+        """Bind callbacks for the one VibeCAD turn currently using this client."""
+
+        with self._state_lock:
+            self._notification_handler = notification_handler
+            self._server_request_handler = server_request_handler
+
     def close(self) -> None:
         process = self._process
         if process is None:
@@ -541,9 +555,11 @@ class CodexAppServerClient:
             )
             thread.start()
             return
-        if method and self._notification_handler is not None:
+        with self._state_lock:
+            notification_handler = self._notification_handler
+        if method and notification_handler is not None:
             try:
-                self._notification_handler(method, clean_params)
+                notification_handler(method, clean_params)
             except Exception as exc:
                 self._record_stderr(f"Notification handler failed for {method}: {exc}")
 
@@ -553,7 +569,9 @@ class CodexAppServerClient:
         method: str,
         params: dict[str, Any],
     ) -> None:
-        if self._server_request_handler is None:
+        with self._state_lock:
+            server_request_handler = self._server_request_handler
+        if server_request_handler is None:
             self._write_message(
                 {
                     "id": request_id,
@@ -565,7 +583,7 @@ class CodexAppServerClient:
             )
             return
         try:
-            result = self._server_request_handler(method, params)
+            result = server_request_handler(method, params)
             self._write_message({"id": request_id, "result": result})
         except Exception as exc:
             self._write_message(
@@ -582,6 +600,133 @@ class CodexAppServerClient:
         for pending in values:
             pending.error = {"code": -32099, "message": message}
             pending.event.set()
+
+
+@dataclass(slots=True)
+class _ManagedCodexRuntime:
+    lock: threading.RLock
+    client: Any = None
+    thread_ids: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class ManagedCodexSession:
+    """Exclusive access to one app-server and one remembered Codex thread."""
+
+    client: Any
+    thread_id: str
+    _runtime: _ManagedCodexRuntime
+    _thread_key: str
+
+    def remember_thread(self, thread_id: str) -> None:
+        clean = str(thread_id or "").strip()
+        if not clean:
+            raise ValueError("Codex thread id cannot be empty.")
+        self._runtime.thread_ids[self._thread_key] = clean
+        self.thread_id = clean
+
+
+_managed_codex_lock = threading.RLock()
+_managed_codex_runtimes: dict[tuple[int, str], _ManagedCodexRuntime] = {}
+
+
+def _set_client_handlers(
+    client: Any,
+    notification_handler: NotificationHandler | None,
+    server_request_handler: ServerRequestHandler | None,
+) -> None:
+    setter = getattr(client, "set_handlers", None)
+    if not callable(setter):
+        raise CodexAppServerError(
+            "Managed Codex transport cannot rebind turn callbacks."
+        )
+    setter(
+        notification_handler=notification_handler,
+        server_request_handler=server_request_handler,
+    )
+
+
+@contextmanager
+def managed_codex_session(
+    *,
+    runtime_key: str,
+    thread_key: str,
+    client_factory: Callable[..., Any],
+    notification_handler: NotificationHandler,
+    server_request_handler: ServerRequestHandler,
+    environment: Mapping[str, str] | None = None,
+):
+    """Reuse an app-server thread across turns in one VibeCAD conversation.
+
+    The lease is exclusive because app-server callbacks are bound to the
+    currently executing turn. Different human-selected ribbon surfaces retain
+    different thread ids while sharing the same managed runtime process.
+    """
+
+    clean_runtime = str(runtime_key or "").strip()
+    clean_thread = str(thread_key or "").strip()
+    if not clean_runtime or not clean_thread or not callable(client_factory):
+        raise ValueError("Managed Codex session keys and client factory are required.")
+    key = (id(client_factory), clean_runtime)
+    with _managed_codex_lock:
+        runtime = _managed_codex_runtimes.setdefault(
+            key,
+            _ManagedCodexRuntime(lock=threading.RLock()),
+        )
+    with runtime.lock:
+        client = runtime.client
+        if client is None or not bool(getattr(client, "alive", False)):
+            client = client_factory(
+                notification_handler=notification_handler,
+                server_request_handler=server_request_handler,
+                environment=environment,
+            )
+            client.start()
+            runtime.client = client
+        else:
+            _set_client_handlers(client, notification_handler, server_request_handler)
+        lease = ManagedCodexSession(
+            client=client,
+            thread_id=str(runtime.thread_ids.get(clean_thread) or ""),
+            _runtime=runtime,
+            _thread_key=clean_thread,
+        )
+        try:
+            yield lease
+        finally:
+            _set_client_handlers(client, None, None)
+
+
+def reset_managed_codex_sessions() -> None:
+    """Close managed transports and forget their in-process thread mapping."""
+
+    with _managed_codex_lock:
+        runtimes = list(_managed_codex_runtimes.values())
+        _managed_codex_runtimes.clear()
+    for runtime in runtimes:
+        with runtime.lock:
+            client = runtime.client
+            thread_ids = tuple(dict.fromkeys(runtime.thread_ids.values()))
+            runtime.client = None
+            runtime.thread_ids.clear()
+            if client is not None:
+                try:
+                    if bool(getattr(client, "alive", False)):
+                        for thread_id in thread_ids:
+                            try:
+                                client.request(
+                                    "thread/delete",
+                                    {"threadId": thread_id},
+                                    timeout=5.0,
+                                )
+                            except Exception:
+                                pass
+                    client.close()
+                except Exception:
+                    pass
+
+
+atexit.register(reset_managed_codex_sessions)
 
 
 def load_codex_skill_catalog(

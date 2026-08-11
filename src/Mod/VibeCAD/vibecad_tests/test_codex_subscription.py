@@ -593,6 +593,52 @@ def test_session_consumes_the_exact_view_after_copying_provider_context() -> Non
     assert context["view_screenshot"] == screenshot
 
 
+def test_session_never_consumes_durable_reference_images() -> None:
+    consumed: list[dict] = []
+    service = SimpleNamespace(
+        consume_reference_image_attachments=lambda value: consumed.append(dict(value))
+    )
+    references = {
+        "count": 1,
+        "images": [{"id": "blade", "path": "/project/references/blade.png"}],
+    }
+
+    session._consume_context_view_attachment(
+        service,
+        {"reference_images": references},
+        lambda operation: operation(),
+    )
+
+    assert consumed == []
+
+
+def test_codex_resends_the_same_reference_as_image_input_each_turn(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "blade.png"
+    reference.write_bytes(b"same-image-bytes")
+    context = {
+        "reference_images": {
+            "count": 1,
+            "images": [
+                {
+                    "id": "blade",
+                    "name": "blade.png",
+                    "path": str(reference),
+                }
+            ],
+        }
+    }
+
+    first = provider._codex_turn_input("first", context)
+    second = provider._codex_turn_input("second", context)
+    first_images = [item for item in first if item.get("type") == "image"]
+    second_images = [item for item in second if item.get("type") == "image"]
+
+    assert len(first_images) == 1
+    assert second_images == first_images
+
+
 def test_codex_thread_config_disables_non_vibecad_tool_surfaces() -> None:
     config = codex.vibecad_thread_config()
     assert config["orchestrator.mcp.enabled"] is False
@@ -1022,6 +1068,142 @@ def test_openai_api_key_and_plan_mode_run_through_codex(
     }
     assert result.final_output == "Inspect, then revise."
     assert result.raw["interaction_mode"] == "plan"
+
+
+def test_codex_plan_and_build_resume_one_conversation_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Client:
+        instance = None
+
+        def __init__(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+            environment=None,
+        ) -> None:
+            del server_request_handler, environment
+            self.notification_handler = notification_handler
+            self.requests: list[tuple[str, dict]] = []
+            self.alive = True
+            self.turn_number = 0
+            _Client.instance = self
+
+        @property
+        def stderr_tail(self) -> list[str]:
+            return []
+
+        def start(self) -> None:
+            return None
+
+        def set_handlers(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+        ) -> None:
+            del server_request_handler
+            self.notification_handler = notification_handler
+
+        def request(self, method: str, params: dict, timeout: float) -> dict:
+            del timeout
+            self.requests.append((method, dict(params)))
+            if method == "thread/start":
+                return {"thread": {"id": "shared-thread"}, "model": "gpt-test"}
+            if method == "thread/resume":
+                assert params == {"threadId": "shared-thread"}
+                return {"thread": {"id": "shared-thread"}, "model": "gpt-test"}
+            if method == "turn/start":
+                self.turn_number += 1
+                turn_id = f"turn-{self.turn_number}"
+                item_type = "plan" if "collaborationMode" in params else "agentMessage"
+                self.notification_handler(
+                    "item/completed",
+                    {
+                        "threadId": "shared-thread",
+                        "turnId": turn_id,
+                        "item": {
+                            "type": item_type,
+                            "text": "Plan saved." if item_type == "plan" else "Plan used.",
+                        },
+                    },
+                )
+                self.notification_handler(
+                    "turn/completed",
+                    {
+                        "threadId": "shared-thread",
+                        "turnId": turn_id,
+                        "turn": {"id": turn_id, "status": "completed"},
+                    },
+                )
+                return {"turn": {"id": turn_id}}
+            raise AssertionError(method)
+
+        def close(self) -> None:
+            self.alive = False
+
+    codex.reset_managed_codex_sessions()
+    monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
+    context = _surface_context("core.set_view")
+    context["_vibecad_codex_thread_surface"] = {
+        "provider_tool_schemas": list(context["provider_tool_schemas"]),
+        "provider_tool_surface": dict(context["provider_tool_surface"]),
+    }
+    context["_vibecad_codex_session"] = {
+        "conversation_id": "a" * 32,
+        "conversation_path": "/project/conversations/" + "a" * 32 + ".json",
+    }
+    plan_context = dict(context)
+    plan_context["_vibecad_interaction_mode"] = "plan"
+    build_context = dict(context)
+    build_context["_vibecad_interaction_mode"] = "build"
+    first_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="test-key",
+        auth_mode="api_key",
+    )
+    second_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="test-key",
+        auth_mode="api_key",
+    )
+    first_prompt = session._provider_prompt("Make a plan.", plan_context)
+    second_prompt = session._provider_prompt(
+        "Build it.",
+        build_context,
+        recent_conversation=[
+            {"role": "user", "content": "Make a plan."},
+            {"role": "assistant", "content": "Plan saved."},
+        ],
+    )
+
+    requests_before_cleanup: list[tuple[str, dict]] = []
+    try:
+        planned = first_provider.run(first_prompt, plan_context)
+        built = second_provider.run(second_prompt, build_context)
+    finally:
+        if _Client.instance is not None:
+            requests_before_cleanup = list(_Client.instance.requests)
+        codex.reset_managed_codex_sessions()
+
+    client = _Client.instance
+    assert client is not None
+    assert planned.final_output == "Plan saved."
+    assert built.final_output == "Plan used."
+    methods = [method for method, _params in requests_before_cleanup]
+    assert methods.count("thread/start") == 1
+    assert methods.count("thread/resume") == 1
+    assert methods.count("turn/start") == 2
+    assert "thread/delete" not in methods
+    second_turn = [
+        params for method, params in requests_before_cleanup if method == "turn/start"
+    ][1]
+    text_input = next(
+        item["text"] for item in second_turn["input"] if item["type"] == "text"
+    )
+    assert '"turns":[]' in text_input
+    assert "Plan saved." not in text_input
 
 
 def test_codex_client_initializes_and_reads_account_from_json_rpc(

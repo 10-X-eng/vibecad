@@ -7,7 +7,9 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
-from VibeCADNativeImmediate import run_immediate_mutation
+from VibeCADNativeSketchTaskMutation import (
+    run_active_sketch_mutation as run_immediate_mutation,
+)
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeSketchErrors import NativeSketchError
 from VibeCADNativeSketchArbitraryRegularPolygon import (

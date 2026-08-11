@@ -731,15 +731,22 @@ def is_provider_safe_tool(
         callable(modeling_engine)
         and str(modeling_engine() or "").strip().lower() == "native"
     ):
-        if str(interaction_mode or "build").strip().lower() != "build":
-            return False
         from VibeCADNativeProviderContext import resolve_production_native_surface
 
         try:
-            _registry, surface = resolve_production_native_surface()
+            registry, surface = resolve_production_native_surface()
         except Exception:
             return False
-        return surface.available and str(tool_name) in surface.tool_names
+        clean_name = str(tool_name)
+        if not surface.available or clean_name not in surface.tool_names:
+            return False
+        if normalize_interaction_mode(interaction_mode) == "build":
+            return True
+        definition = registry.definition(clean_name)
+        return bool(
+            definition is not None
+            and definition.primary_classification in {"read", "view"}
+        )
     try:
         tool = service.registry.get(tool_name)
     except KeyError:
@@ -1199,6 +1206,12 @@ def _capture_context_for_provider(
         schemas = schemas_for_native_provider_surface(
             native_provider_surface,
             interaction_mode=clean_interaction_mode,
+            registry=_native_registry,
+        )
+        codex_thread_schemas = schemas_for_native_provider_surface(
+            native_provider_surface,
+            interaction_mode="build",
+            registry=_native_registry,
         )
     elif not native_engine:
         schemas = provider_tool_schemas(
@@ -1207,8 +1220,15 @@ def _capture_context_for_provider(
             runtime_state=runtime_state,
             interaction_mode=clean_interaction_mode,
         )
+        codex_thread_schemas = provider_tool_schemas(
+            service,
+            workbench,
+            runtime_state=runtime_state,
+            interaction_mode="build",
+        )
     else:
         schemas = []
+        codex_thread_schemas = []
     context["provider_tool_schemas"] = schemas
     context["_vibecad_interaction_mode"] = clean_interaction_mode
     try:
@@ -1226,6 +1246,15 @@ def _capture_context_for_provider(
         }
     else:
         context["provider_tool_surface"] = turn_surface
+    if codex_thread_schemas:
+        context["_vibecad_codex_thread_surface"] = {
+            "provider_tool_schemas": codex_thread_schemas,
+            "provider_tool_surface": _turn_start_tool_surface(
+                workbench,
+                codex_thread_schemas,
+                resolution=resolution,
+            ),
+        }
     if session_trigger:
         context["session_trigger"] = dict(session_trigger)
     return context
@@ -1355,7 +1384,11 @@ def _consume_context_view_attachment(
     context: Mapping[str, Any],
     dispatch: DocumentThreadDispatch | None,
 ) -> None:
-    """Consume the exact one-shot images already copied into provider context."""
+    """Consume the exact one-shot viewport already copied into provider context.
+
+    Human reference images are durable context and deliberately remain
+    attached across turns until the human removes them.
+    """
 
     screenshot = context.get("view_screenshot")
     consume = getattr(service, "consume_view_screenshot_attachment", None)
@@ -1367,21 +1400,6 @@ def _consume_context_view_attachment(
     ):
         frozen = dict(screenshot)
         _on_document_thread(dispatch, lambda: consume(frozen))
-    references = context.get("reference_images")
-    consume_references = getattr(service, "consume_reference_image_attachments", None)
-    if (
-        isinstance(references, dict)
-        and references.get("images")
-        and callable(consume_references)
-    ):
-        frozen_references = {
-            "images": [
-                dict(item)
-                for item in list(references.get("images") or [])
-                if isinstance(item, dict)
-            ]
-        }
-        _on_document_thread(dispatch, lambda: consume_references(frozen_references))
 
 
 def _persist_session_conversation_turn(
@@ -5053,6 +5071,11 @@ def _run_session_turn(
         clean_interaction_mode,
         document_thread_dispatch,
     )
+    if turn_conversation_id:
+        context["_vibecad_codex_session"] = {
+            "conversation_id": turn_conversation_id,
+            "conversation_path": str(recorded.get("path") or ""),
+        }
     _consume_context_view_attachment(active_service, context, document_thread_dispatch)
     tool_trace: list[dict[str, Any]] = []
     _emit(

@@ -301,7 +301,10 @@ def test_provider_context_does_not_copy_conversation_cache() -> None:
     service.provider_turn_document_summary = lambda: _active_state()["document"]
     service.provider_turn_selection_summary = lambda: _active_state()["selection"]
     service.view_screenshot_summary = lambda: {"captured": False}
-    service.pending_reference_image_attachments = lambda: []
+    service.provider_reference_image_attachments = lambda: {
+        "count": 0,
+        "images": [],
+    }
     service._conversation_cache = [
         {"role": "user", "content": f"must not leak {index}"}
         for index in range(1000)

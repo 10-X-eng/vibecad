@@ -149,6 +149,15 @@ class SketchObject(Part2DObject):
         """
         ...
 
+    @no_args
+    def captureMutationState(self) -> object:
+        """Capture an opaque savepoint inside the exact active Sketch transaction."""
+        ...
+
+    def restoreMutationState(self, state: object, /) -> None:
+        """Restore one savepoint without closing the surrounding task transaction."""
+        ...
+
     def detectDegeneratedGeometries(self, tolerance: float, /) -> int:
         """
         Detect degenerated geometries. A curve geometry is considered degenerated

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
@@ -486,6 +486,27 @@ def _codex_turn_input(prompt: str, context: dict[str, Any]) -> list[dict[str, An
     return items
 
 
+def _codex_prompt_without_replayed_conversation(prompt: str) -> str:
+    """Remove text-history replay once the Codex thread already owns it."""
+
+    start = "RECENT_CONVERSATION_JSON\n"
+    end = "\nEND_RECENT_CONVERSATION_JSON"
+    if start not in prompt or end not in prompt:
+        return prompt
+    prefix, remainder = prompt.split(start, 1)
+    _prior, suffix = remainder.split(end, 1)
+    empty = json.dumps(
+        {
+            "turns": [],
+            "omitted_turn_count": 0,
+            "truncated_turn_count": 0,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return prefix + start + empty + end + suffix
+
+
 def _codex_tool_image_content_items(
     context: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -559,6 +580,7 @@ class CodexProvider(BaseProvider):
             CodexAppServerError,
             codex_workspace,
             load_codex_skill_catalog,
+            managed_codex_session,
             read_codex_skill_resource,
             update_cached_account,
             vibecad_thread_config,
@@ -575,11 +597,22 @@ class CodexProvider(BaseProvider):
                 f"Unknown VibeCAD interaction mode {interaction_mode!r}."
             )
         plan_mode = interaction_mode == "plan"
-        dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(live_context)
-        if not dynamic_tools:
+        current_dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(
+            live_context
+        )
+        if not current_dynamic_tools:
             raise ProviderUnavailable(
                 "Codex mode has no declared VibeCAD tools for the current workbench."
             )
+        thread_surface = live_context.get("_vibecad_codex_thread_surface")
+        if isinstance(thread_surface, dict):
+            thread_context = dict(live_context)
+            thread_context.update(thread_surface)
+        else:
+            thread_context = live_context
+        thread_dynamic_tools, _thread_name_map = _codex_dynamic_tool_surface(
+            thread_context
+        )
 
         state_lock = threading.RLock()
         turn_completed = threading.Event()
@@ -751,6 +784,12 @@ class CodexProvider(BaseProvider):
 
             tool_name = dynamic_name_map.get((namespace, function_name))
             if tool_name is None:
+                declared_name = _thread_name_map.get((namespace, function_name))
+                if declared_name is not None:
+                    raise CodexAppServerError(
+                        f"VibeCAD tool {declared_name} is not available in this "
+                        f"{interaction_mode} turn."
+                    )
                 raise CodexAppServerError(
                     f"Unknown VibeCAD dynamic tool {namespace}.{function_name}."
                 )
@@ -821,22 +860,87 @@ class CodexProvider(BaseProvider):
 
         if self.auth_mode == "api_key" and not self.api_key:
             raise ProviderUnavailable("No OpenAI API key is configured.")
-        client = CodexAppServerClient(
-            notification_handler=notification,
-            server_request_handler=server_request,
-            environment=(
-                {CODEX_OPENAI_API_KEY_ENV: self.api_key}
-                if self.auth_mode == "api_key" and self.api_key
-                else None
-            ),
+        environment = (
+            {CODEX_OPENAI_API_KEY_ENV: self.api_key}
+            if self.auth_mode == "api_key" and self.api_key
+            else None
         )
+        session_identity = live_context.get("_vibecad_codex_session")
+        thread_declaration = thread_context.get("provider_tool_surface")
+        managed = bool(
+            isinstance(session_identity, dict)
+            and str(session_identity.get("conversation_id") or "").strip()
+            and isinstance(thread_declaration, dict)
+            and thread_declaration.get("kind") == "turn_start_snapshot"
+        )
+        managed_stack = ExitStack()
+        managed_lease = None
+        if managed:
+            runtime_payload = {
+                "auth_mode": self.auth_mode,
+                "model": self.model,
+                "base_url": self.base_url or "",
+                "web_search_enabled": self.web_search_enabled,
+                "skills_enabled": self.skills_enabled,
+                "api_key_sha256": (
+                    hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()
+                    if self.api_key
+                    else ""
+                ),
+            }
+            runtime_key = hashlib.sha256(
+                json.dumps(
+                    runtime_payload,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            thread_payload = {
+                "conversation_id": str(session_identity["conversation_id"]),
+                "conversation_path": str(
+                    session_identity.get("conversation_path") or ""
+                ),
+                "workbench": str(thread_declaration.get("workbench") or ""),
+                "engine": str(thread_declaration.get("engine") or ""),
+                "surface_id": str(thread_declaration.get("surface_id") or ""),
+                "schema_sha256": str(
+                    thread_declaration.get("schema_sha256") or ""
+                ),
+            }
+            thread_key = hashlib.sha256(
+                json.dumps(
+                    thread_payload,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            managed_lease = managed_stack.enter_context(
+                managed_codex_session(
+                    runtime_key=runtime_key,
+                    thread_key=thread_key,
+                    client_factory=CodexAppServerClient,
+                    notification_handler=notification,
+                    server_request_handler=server_request,
+                    environment=environment,
+                )
+            )
+            client = managed_lease.client
+        else:
+            client = CodexAppServerClient(
+                notification_handler=notification,
+                server_request_handler=server_request,
+                environment=environment,
+            )
         deadline = (
             time.monotonic() + self.timeout_seconds
             if self.timeout_seconds is not None and self.timeout_seconds > 0
             else None
         )
         try:
-            client.start()
+            if managed_lease is None:
+                client.start()
             if self.auth_mode == "chatgpt":
                 account_result = client.request(
                     "account/read", {"refreshToken": False}, timeout=30.0
@@ -860,7 +964,7 @@ class CodexProvider(BaseProvider):
                     cwd=codex_workspace(),
                 )
                 if skill_catalog:
-                    dynamic_tools.append(_codex_skill_read_tool())
+                    thread_dynamic_tools.append(_codex_skill_read_tool())
 
             forbidden_capabilities = [
                 "shell",
@@ -890,13 +994,13 @@ class CodexProvider(BaseProvider):
                 "sandbox": "read-only",
                 "baseInstructions": _provider_instructions(live_context),
                 "developerInstructions": developer_instructions,
-                "ephemeral": True,
+                "ephemeral": not managed,
                 "environments": [],
-                "dynamicTools": dynamic_tools,
+                "dynamicTools": thread_dynamic_tools,
                 "config": vibecad_thread_config(
                     web_search_enabled=self.web_search_enabled,
                     skills_enabled=self.skills_enabled,
-                    collaboration_mode_enabled=plan_mode,
+                    collaboration_mode_enabled=managed or plan_mode,
                     openai_base_url=(
                         (self.base_url or "") if self.auth_mode == "api_key" else None
                     ),
@@ -907,25 +1011,59 @@ class CodexProvider(BaseProvider):
                 thread_request["modelProvider"] = CODEX_OPENAI_PROVIDER_ID
             if self.model:
                 thread_request["model"] = self.model
-            _capture_outbound_request(
-                live_context,
-                provider=self.provider_id,
-                sdk_call="codex-app-server.thread/start",
-                turn=1,
-                request=thread_request,
-                base_url=(self.base_url if self.auth_mode == "api_key" else None),
-            )
-            thread_result = client.request("thread/start", thread_request, timeout=30.0)
+            if managed_lease is not None and managed_lease.thread_id:
+                resume_request = {"threadId": managed_lease.thread_id}
+                _capture_outbound_request(
+                    live_context,
+                    provider=self.provider_id,
+                    sdk_call="codex-app-server.thread/resume",
+                    turn=1,
+                    request=resume_request,
+                    base_url=(
+                        self.base_url if self.auth_mode == "api_key" else None
+                    ),
+                )
+                thread_result = client.request(
+                    "thread/resume",
+                    resume_request,
+                    timeout=30.0,
+                )
+            else:
+                _capture_outbound_request(
+                    live_context,
+                    provider=self.provider_id,
+                    sdk_call="codex-app-server.thread/start",
+                    turn=1,
+                    request=thread_request,
+                    base_url=(
+                        self.base_url if self.auth_mode == "api_key" else None
+                    ),
+                )
+                thread_result = client.request(
+                    "thread/start", thread_request, timeout=30.0
+                )
             thread = (
                 thread_result.get("thread") if isinstance(thread_result, dict) else None
             )
             if not isinstance(thread, dict) or not thread.get("id"):
                 raise ProviderUnavailable("Codex app-server created no VibeCAD thread.")
             thread_id = str(thread["id"])
+            resumed_thread = bool(
+                managed_lease is not None and managed_lease.thread_id
+            )
+            if managed_lease is not None:
+                managed_lease.remember_thread(thread_id)
 
             turn_request: dict[str, Any] = {
                 "threadId": thread_id,
-                "input": _codex_turn_input(prompt, live_context),
+                "input": _codex_turn_input(
+                    (
+                        _codex_prompt_without_replayed_conversation(prompt)
+                        if resumed_thread
+                        else prompt
+                    ),
+                    live_context,
+                ),
                 "environments": [],
             }
             effort = _provider_reasoning_effort(self.reasoning_effort)
@@ -1018,14 +1156,17 @@ class CodexProvider(BaseProvider):
         except CodexAppServerError as exc:
             raise ProviderUnavailable(str(exc)) from exc
         finally:
-            if client.alive and thread_id:
-                try:
-                    client.request(
-                        "thread/delete", {"threadId": thread_id}, timeout=5.0
-                    )
-                except Exception:
-                    pass
-            client.close()
+            if managed_lease is not None:
+                managed_stack.close()
+            else:
+                if client.alive and thread_id:
+                    try:
+                        client.request(
+                            "thread/delete", {"threadId": thread_id}, timeout=5.0
+                        )
+                    except Exception:
+                        pass
+                client.close()
 
 
 class AnthropicProvider(BaseProvider):
