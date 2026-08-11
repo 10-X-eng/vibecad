@@ -86,6 +86,9 @@ constexpr std::array<DomainDefinition, 7> domains = {{
     {"Parameters", "SpreadsheetWorkbench", "parameters"},
 }};
 
+constexpr auto chromePreferencesPath = "User parameter:BaseApp/Preferences/VibeCAD/Chrome";
+constexpr auto showFullMenuBarPreference = "ShowFullMenuBar";
+
 struct CommandEntry
 {
     QAction* action = nullptr;
@@ -1007,7 +1010,11 @@ struct Gui::VibeCADRibbon::Private
     explicit Private(VibeCADRibbon* owner, MainWindow* window)
         : q(owner)
         , mainWindow(window)
-    {}
+    {
+        legacyMenuVisible = App::GetApplication()
+                                .GetParameterGroupByPath(chromePreferencesPath)
+                                ->GetBool(showFullMenuBarPreference, false);
+    }
 
     CommandEntry commandEntry(const QString& commandName, bool useToolBarPresentation = false) const
     {
@@ -1840,6 +1847,7 @@ struct Gui::VibeCADRibbon::Private
         mainWindow->addToolBar(Qt::TopToolBarArea, toolbar);
 
         fullMenuAction = new QAction(QObject::tr("Show full menu bar"), q);
+        fullMenuAction->setObjectName(QStringLiteral("VibeCADShowFullMenuBarAction"));
         fullMenuAction->setCheckable(true);
         fullMenuAction->setChecked(legacyMenuVisible);
         QObject::connect(fullMenuAction, &QAction::toggled, q, [this](bool visible) {
@@ -1868,6 +1876,9 @@ struct Gui::VibeCADRibbon::Private
     void setLegacyMenuVisible(bool visible)
     {
         legacyMenuVisible = visible;
+        App::GetApplication()
+            .GetParameterGroupByPath(chromePreferencesPath)
+            ->SetBool(showFullMenuBarPreference, visible);
         fullMenuAction->setChecked(visible);
         QMenuBar* menu = mainWindow->menuBar();
         menu->setVisible(visible);
@@ -2151,7 +2162,7 @@ struct Gui::VibeCADRibbon::Private
     bool syncingTabs = false;
     bool syncingDocumentTabs = false;
     bool inSketchEdit = false;
-    bool legacyMenuVisible = true;
+    bool legacyMenuVisible = false;
     int previousDomain = 0;
     qulonglong surfaceRevision = 0;
     QVariantMap activeSurfaceManifest;

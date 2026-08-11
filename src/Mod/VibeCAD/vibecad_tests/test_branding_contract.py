@@ -278,7 +278,7 @@ class TestVibeCADRibbonChrome(unittest.TestCase):
             self.skipTest("FreeCAD GUI mode is required")
 
         import FreeCADGui as Gui
-        from PySide import QtCore, QtWidgets
+        from PySide import QtCore, QtGui, QtWidgets
 
         application = QtWidgets.QApplication.instance()
         main_window = Gui.getMainWindow()
@@ -294,6 +294,9 @@ class TestVibeCADRibbonChrome(unittest.TestCase):
         theme_toggle = main_window.findChild(
             QtWidgets.QToolButton, "VibeCADThemeToggle"
         )
+        full_menu_action = main_window.findChild(
+            QtGui.QAction, "VibeCADShowFullMenuBarAction"
+        )
 
         self.assertIsNotNone(ribbon)
         self.assertIsNotNone(toolbar)
@@ -301,9 +304,31 @@ class TestVibeCADRibbonChrome(unittest.TestCase):
         self.assertIsNotNone(search)
         self.assertIsNotNone(app_button)
         self.assertIsNotNone(theme_toggle)
+        self.assertIsNotNone(full_menu_action)
         self.assertTrue(toolbar.isVisible())
         self.assertFalse(toolbar.toggleViewAction().isVisible())
+        self.assertFalse(main_window.menuBar().isVisible())
+
+        chrome_preferences = App.ParamGet(
+            "User parameter:BaseApp/Preferences/VibeCAD/Chrome"
+        )
+        self.assertFalse(full_menu_action.isChecked())
+        full_menu_action.setChecked(True)
+        application.processEvents()
         self.assertTrue(main_window.menuBar().isVisible())
+        self.assertTrue(chrome_preferences.GetBool("ShowFullMenuBar", False))
+        full_menu_action.setChecked(False)
+        application.processEvents()
+        self.assertFalse(main_window.menuBar().isVisible())
+        self.assertFalse(chrome_preferences.GetBool("ShowFullMenuBar", True))
+
+        main_window.menuBar().show()
+        application.processEvents()
+        self.assertFalse(main_window.menuBar().isVisible())
+        Gui.activateWorkbench("PartDesignWorkbench")
+        application.processEvents()
+        self.assertFalse(main_window.menuBar().isVisible())
+        self.assertFalse(full_menu_action.isChecked())
         self.assertEqual(
             [tabs.tabText(index) for index in range(tabs.count())],
             [
@@ -1046,7 +1071,10 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
     assert "Qt::Key_Alt" not in ribbon
     assert "Qt::Key_F10" not in ribbon
     assert "mainWindow->menuBar()->setVisible(legacyMenuVisible);" in ribbon
-    assert "bool legacyMenuVisible = true;" in ribbon
+    assert 'showFullMenuBarPreference = "ShowFullMenuBar"' in ribbon
+    assert "GetBool(showFullMenuBarPreference, false)" in ribbon
+    assert "SetBool(showFullMenuBarPreference, visible)" in ribbon
+    assert "bool legacyMenuVisible = false;" in ribbon
     assert "sourceDocumentTabs->hide();" in ribbon
     assert "documentTabs->setTabsClosable(true);" in ribbon
     assert "groupMenu->setPopupMode(QToolButton::InstantPopup);" in ribbon

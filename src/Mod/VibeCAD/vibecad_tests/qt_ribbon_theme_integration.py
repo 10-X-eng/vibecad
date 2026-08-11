@@ -1258,6 +1258,9 @@ def _run():
         settings_button = main_window.findChild(
             QtWidgets.QToolButton, "VibeCADRibbonSettings"
         )
+        full_menu_action = main_window.findChild(
+            QtGui.QAction, "VibeCADShowFullMenuBarAction"
+        )
         assert ribbon is not None and ribbon.isVisible()
         assert root is not None and root.isVisible()
         assert tabs is not None
@@ -1277,6 +1280,7 @@ def _run():
         assert document_tabs.tabsClosable()
         assert document_tabs.isMovable()
         assert theme_button is not None
+        assert full_menu_action is not None
         assert search_button is not None and search_button.isVisible()
         assert new_document_button is not None and new_document_button.isVisible()
         assert search is not None and search.completer() is not None
@@ -1314,7 +1318,19 @@ def _run():
         finally:
             VibeCADUpdateGui.show_check_for_updates = original_show_check
         assert update_calls == [{}]
+        chrome_preferences = App.ParamGet(
+            "User parameter:BaseApp/Preferences/VibeCAD/Chrome"
+        )
+        assert not full_menu_action.isChecked()
+        assert not main_window.menuBar().isVisible()
+        full_menu_action.setChecked(True)
+        _process_events()
         assert main_window.menuBar().isVisible()
+        assert chrome_preferences.GetBool("ShowFullMenuBar", False)
+        full_menu_action.setChecked(False)
+        _process_events()
+        assert not main_window.menuBar().isVisible()
+        assert not chrome_preferences.GetBool("ShowFullMenuBar", True)
         assert _visible_main_window_toolbars(main_window) == [ribbon]
         _assert_application_strip_actions(main_window)
         print("VIBECAD_RIBBON_STAGE application-strip", flush=True)
@@ -2182,7 +2198,7 @@ def _run():
         assert_tree_rendered()
         print("VIBECAD_RIBBON_STAGE draft-compatibility", flush=True)
 
-        assert main_window.menuBar().isVisible()
+        assert not main_window.menuBar().isVisible()
         VibeCADUpdateGui.ensure_registered()
         help_menu = VibeCADUpdateGui._find_help_menu(main_window)
         assert help_menu is not None
@@ -2258,7 +2274,7 @@ def _run():
         assert preferences_check.get("ok"), preferences_check.get("error")
         _process_events()
         assert _visible_main_window_toolbars(main_window) == [ribbon]
-        assert main_window.menuBar().isVisible()
+        assert not main_window.menuBar().isVisible()
         print("VIBECAD_RIBBON_STAGE preferences", flush=True)
 
         tabs.setCurrentIndex(0)
