@@ -622,6 +622,170 @@ class TestDesignModeling(unittest.TestCase):
         for obj in document.Objects:
             visit(obj)
 
+    def test_profile_dependency_preflight_rejects_before_state_publication(self):
+        _, body, _ = self._component_body("Preflight", 0)
+        sketch = self._rectangle_sketch("PreflightSketch", 0, 5, 0, 5)
+
+        self.document.openTransaction("Reject incomplete Sketch identity")
+        sketch.VibeCADTimelineRole = ""
+        operation = self.document.addObject(
+            "PartDesign::DesignExtrude",
+            "PreflightExtrude",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Profile = sketch
+        operation.Length = 5
+        PartDesign.setDesignOperationTargets(edit, "Join", [body])
+        self.document.recompute()
+
+        expected = (
+            "references reusable definition 'PreflightSketch'.*"
+            "root lacks History operation classification"
+        )
+        for _ in range(2):
+            with self.assertRaisesRegex(RuntimeError, expected):
+                PartDesign.finalizeDesignOperationEdit(edit)
+            self.assertEqual(
+                [
+                    state
+                    for state in self.document.findObjects(
+                        "PartDesign::DesignBodyState"
+                    )
+                    if state.Operation is operation
+                ],
+                [],
+            )
+        self._assert_dependency_graph_acyclic(self.document)
+        self.document.abortTransaction()
+
+    def test_late_validation_failure_retries_one_persisted_output_state(self):
+        self.document.openTransaction("Create unrelated definition")
+        definition = self.document.addObject(
+            "Part::Feature",
+            "UnrelatedDefinition",
+        )
+        definition.Shape = Part.makeBox(2, 2, 2)
+        PartDesign.finalizeDesignDefinition(definition)
+        self.document.commitTransaction()
+
+        self.document.openTransaction("Retry accepted operation validation")
+        definition.DesignId = "00000000-0000-4000-8000-000000000001"
+        operation = self.document.addObject(
+            "PartDesign::DesignBox",
+            "RetrySafeBox",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        PartDesign.setDesignOperationTargets(edit, "New Body", [])
+        self.document.recompute()
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Reusable definition does not belong to this saved Design",
+        ):
+            PartDesign.finalizeDesignOperationEdit(edit)
+
+        states = [
+            state
+            for state in self.document.findObjects(
+                "PartDesign::DesignBodyState"
+            )
+            if state.Operation is operation
+        ]
+        self.assertEqual(len(states), 1)
+        retained_state = states[0]
+
+        definition.DesignId = self.document.VibeCADTimeline.DesignId
+        outputs = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+        self.assertEqual(len(outputs), 1)
+        self.assertIs(outputs[0].Tip.CurrentState, retained_state)
+        self.assertEqual(
+            [
+                state
+                for state in self.document.findObjects(
+                    "PartDesign::DesignBodyState"
+                )
+                if state.Operation is operation
+            ],
+            [retained_state],
+        )
+        PartDesign.validateDesign(operation)
+        self._assert_dependency_graph_acyclic(self.document)
+
+    def test_interrupted_publication_recovery_keeps_canonical_state(self):
+        _, body, prior = self._component_body("Recovery", 0)
+        sketch = self._rectangle_sketch("RecoverySketch", 0, 5, 0, 5)
+
+        self.document.openTransaction("Create recoverable Extrude")
+        operation = self.document.addObject(
+            "PartDesign::DesignExtrude",
+            "RecoverableExtrude",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Profile = sketch
+        operation.Length = 5
+        PartDesign.setDesignOperationTargets(edit, "Join", [body])
+        self.document.recompute()
+        PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+        retained_state = body.Tip.CurrentState
+        publication = body.Tip
+
+        self.document.openTransaction("Simulate interrupted retry")
+        duplicate = self.document.addObject(
+            "PartDesign::DesignBodyState",
+            "InterruptedBodyState",
+        )
+        duplicate.Operation = operation
+        duplicate.OutputIndex = 0
+        duplicate.DesignId = operation.DesignId
+        duplicate.OperationId = operation.OperationId
+        duplicate.BodyId = body.VibeCADBodyId
+        duplicate.PreviousState = prior
+        duplicate.addProperty(
+            "App::PropertyString",
+            "VibeCADTimelineRole",
+            "Timeline",
+        )
+        duplicate.addProperty(
+            "App::PropertyLinkHidden",
+            "VibeCADTimelineOwner",
+            "Timeline",
+        )
+        duplicate.VibeCADTimelineRole = "resource"
+        duplicate.VibeCADTimelineOwner = operation
+        duplicate_name = duplicate.Name
+        retained_state.PreviousState = duplicate
+        operation.InputStates = [duplicate]
+        publication.CurrentState = retained_state
+        self.document.commitTransaction()
+        history_count = len(self.document.VibeCADTimeline.Operations)
+
+        self.document.openTransaction("Recover interrupted retry")
+        PartDesign.beginDesignOperationEdit(operation)
+        self.document.recompute()
+        self.assertIsNone(self.document.getObject(duplicate_name))
+        self.assertEqual(
+            len(self.document.VibeCADTimeline.Operations),
+            history_count - 1,
+        )
+        self.assertEqual(operation.InputStates, [prior])
+        self.assertIs(retained_state.PreviousState, prior)
+        self.assertIs(publication.CurrentState, retained_state)
+        self.assertEqual(
+            [
+                state
+                for state in self.document.findObjects(
+                    "PartDesign::DesignBodyState"
+                )
+                if state.Operation is operation
+            ],
+            [retained_state],
+        )
+        self.assertTrue(operation.isValid(), operation.getStatusString())
+        PartDesign.validateDesign(operation)
+        self._assert_dependency_graph_acyclic(self.document)
+        self.document.commitTransaction()
+
     def test_design_primitives_share_one_global_result_contract(self):
         primitive_types = (
             "Box",

@@ -303,6 +303,19 @@ public:
     );
 
     /**
+     * Repair output resources left by an interrupted new-operation publish.
+     *
+     * Recovery is deliberately narrow: one already-persisted output state
+     * must precede its operation, later duplicates must form one exact chain
+     * back to the same prior Body state, and the operation must consume that
+     * duplicate chain. No labels or geometry are used to infer identity. The
+     * caller owns the transaction. Returns the number of repaired operations.
+     */
+    static std::size_t recoverInterruptedOperationPublications(
+        App::Document& document
+    );
+
+    /**
      * Capture one operation's existing resource graph.
      *
      * Call exactly once after opening the task transaction and before changing

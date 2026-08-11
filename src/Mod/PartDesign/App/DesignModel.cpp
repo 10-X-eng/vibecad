@@ -483,6 +483,90 @@ App::DocumentObject* timelineRoot(App::Document& document, App::DocumentObject* 
     return nullptr;
 }
 
+void preflightReusableDefinitionDependencies(App::DocumentObject& operation)
+{
+    auto* document = operation.getDocument();
+    auto* timeline = App::DocumentTimeline::get(document);
+    if (!document || !timeline) {
+        throw Base::RuntimeError(
+            "A Design operation requires one live document with global History"
+        );
+    }
+
+    const auto& history = timeline->Operations.getValues();
+    std::unordered_map<App::DocumentObject*, std::size_t> historyPositions;
+    historyPositions.reserve(history.size());
+    for (std::size_t index = 0; index < history.size(); ++index) {
+        auto* entry = history[index];
+        if (!entry || !historyPositions.emplace(entry, index).second) {
+            throw Base::RuntimeError(
+                "Global History contains a missing or duplicate object"
+            );
+        }
+    }
+
+    const auto operationPosition = historyPositions.find(&operation);
+    if (operationPosition == historyPositions.end()) {
+        throw Base::RuntimeError(
+            std::string("Design operation '") + operation.getNameInDocument()
+            + "' is not enrolled in global History"
+        );
+    }
+
+    std::vector<App::Property*> properties;
+    operation.getPropertyList(properties);
+    for (auto* property : properties) {
+        auto* link = freecad_cast<App::PropertyLinkBase*>(property);
+        if (!link) {
+            continue;
+        }
+        std::vector<App::DocumentObject*> linked;
+        link->getLinks(linked, true);
+        for (auto* target : linked) {
+            const auto* sketchId = target
+                ? target->PropertyContainer::getPropertyByName("VibeCADSketchId")
+                : nullptr;
+            const auto* definitionId = target
+                ? target->PropertyContainer::getPropertyByName("VibeCADDefinitionId")
+                : nullptr;
+            if (!sketchId && !definitionId) {
+                continue;
+            }
+
+            const char* targetName = target && target->getNameInDocument()
+                ? target->getNameInDocument()
+                : "<missing>";
+            auto* root = timelineRoot(*document, target);
+            const auto targetPosition = root ? historyPositions.find(root)
+                                             : historyPositions.end();
+            const std::string storedPosition = targetPosition != historyPositions.end()
+                ? std::to_string(targetPosition->second)
+                : std::string("<missing>");
+            const std::string prefix = std::string("Design operation '")
+                + operation.getNameInDocument() + "' references reusable definition '"
+                + targetName + "' at History position " + storedPosition;
+
+            if (!root) {
+                throw Base::RuntimeError(prefix + ", but it has no History root");
+            }
+            if (!App::DocumentTimeline::hasTimelineOperationRole(root)) {
+                throw Base::RuntimeError(
+                    prefix + ", but its root lacks History operation classification"
+                );
+            }
+            if (targetPosition == historyPositions.end()) {
+                throw Base::RuntimeError(prefix + ", but its root is absent from global History");
+            }
+            if (targetPosition->second >= operationPosition->second) {
+                throw Base::RuntimeError(
+                    prefix + ", not before operation position "
+                    + std::to_string(operationPosition->second)
+                );
+            }
+        }
+    }
+}
+
 }  // namespace
 
 Body* DesignModel::bodyWithId(App::Document& document, const std::string& bodyId)
@@ -1833,6 +1917,7 @@ DesignOperationEdit DesignModel::beginOperationEdit(App::DocumentObject& operati
     if (!document || !properties) {
         throw Base::TypeError("Operation editing requires one live Design operation");
     }
+    recoverInterruptedOperationPublications(*document);
     ensureDesignOperationPortSchema(operation);
 
     DesignOperationEdit edit;
@@ -1926,6 +2011,17 @@ std::vector<Body*> DesignModel::finalizeOperationImpl(
     }
     ensureDesignOperationPortSchema(*operation);
 
+    auto* timeline = App::DocumentTimeline::get(document);
+    if (edit.provisionalOperation
+        && (!timeline
+            || !timeline->isProvisionallyEnrolledByCurrentTransaction(operation))) {
+        throw Base::RuntimeError(
+            std::string("New Design operation '") + operation->getNameInDocument()
+            + "' is no longer enrolled by the active creation transaction; cancel "
+              "this task and start the operation again"
+        );
+    }
+
     // Recompute the edited controller and its prerequisites before changing
     // the persistent state graph. A full document recompute here would also
     // execute old state resources whose output slots are intentionally being
@@ -1946,6 +2042,11 @@ std::vector<Body*> DesignModel::finalizeOperationImpl(
         throw Base::RuntimeError("The Design operation did not produce one atomic output per "
                                  "declared output Body port");
     }
+
+    // Reusable definitions are immutable History inputs.  Reject incomplete
+    // identity or forward-ordering state before creating Bodies, publications,
+    // or BodyState resources for this operation.
+    preflightReusableDefinitionDependencies(*operation);
 
     std::vector<Body*> targets;
     if (edit.provisionalOperation) {
@@ -2540,6 +2641,13 @@ void DesignModel::finalizeNewOperation(DesignOperationEdit& edit, std::vector<Bo
     }
     block.push_back(operation);
     App::DocumentTimeline::ensure(document)->finalizeProvisionalOperationBlock(operation, block);
+
+    // The semantic block is now persistent.  Any later recompute or Design
+    // validation failure must retry this as an existing operation rather than
+    // publishing another set of BodyState resources.
+    edit.originalStates.assign(states.begin(), states.end());
+    edit.provisionalOperation = false;
+    edit.resourcesStaged = false;
 }
 
 void DesignModel::finalizeExistingOperation(DesignOperationEdit& edit, std::vector<Body*>& targets)
@@ -3609,10 +3717,15 @@ void DesignModel::validateDesign(App::Document& document)
                     auto* root = timelineRoot(document, target);
                     const auto targetPosition = root ? historyPositions.find(root)
                                                      : historyPositions.end();
-                    if (!root || !App::DocumentTimeline::hasTimelineOperationRole(root)
-                        || targetPosition == historyPositions.end()
-                        || (!historyPublicationPending
-                            && targetPosition->second >= operationHistoryPosition->second)) {
+                    if (!root) {
+                        throw Base::RuntimeError(
+                            std::string("Design operation '") + object->getNameInDocument()
+                            + "' references reusable definition '"
+                            + (target ? target->getNameInDocument() : "<missing>")
+                            + "', but that definition has no History root"
+                        );
+                    }
+                    if (!App::DocumentTimeline::hasTimelineOperationRole(root)) {
                         throw Base::RuntimeError(
                             std::string("Design operation '") + object->getNameInDocument()
                             + "' references reusable definition '"
@@ -3621,7 +3734,26 @@ void DesignModel::validateDesign(App::Document& document)
                             + (targetPosition != historyPositions.end()
                                    ? std::to_string(targetPosition->second)
                                    : std::string("<missing>"))
-                            + ", not before position "
+                            + ", but its root lacks History operation classification"
+                        );
+                    }
+                    if (targetPosition == historyPositions.end()) {
+                        throw Base::RuntimeError(
+                            std::string("Design operation '") + object->getNameInDocument()
+                            + "' references reusable definition '"
+                            + (target ? target->getNameInDocument() : "<missing>")
+                            + "', but its root is absent from global History"
+                        );
+                    }
+                    if (!historyPublicationPending
+                        && targetPosition->second >= operationHistoryPosition->second) {
+                        throw Base::RuntimeError(
+                            std::string("Design operation '") + object->getNameInDocument()
+                            + "' references reusable definition '"
+                            + (target ? target->getNameInDocument() : "<missing>")
+                            + "' at History position "
+                            + std::to_string(targetPosition->second)
+                            + ", not before operation position "
                             + (operationHistoryPosition != historyPositions.end()
                                    ? std::to_string(operationHistoryPosition->second)
                                    : std::string("<pending>"))

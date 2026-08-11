@@ -208,6 +208,36 @@ class TestDesignProfileRegionsGui(unittest.TestCase):
         self.assertAlmostEqual(body.Shape.Volume, 90 * 3.14159265, places=4)
         PartDesign.validateDesign(operation)
 
+    def test_command_repairs_incomplete_persisted_sketch_identity(self):
+        sketch = self._master_sketch()
+        sketch.setPropertyStatus(
+            "VibeCADTimelineRole",
+            "-LockDynamic",
+        )
+        sketch.removeProperty("VibeCADTimelineRole")
+        self.assertNotIn("VibeCADTimelineRole", sketch.PropertiesList)
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(sketch, "InternalFace1")
+        self._process_events()
+        Gui.runCommand("PartDesign_DesignExtrude", 0)
+        self._process_events(50)
+
+        self.assertTrue(Gui.Control.activeDialog())
+        operation = self.document.ActiveObject
+        self.assertEqual(sketch.VibeCADTimelineRole, "operation")
+        self.assertEqual(
+            self.document.VibeCADTimeline.Operations.count(sketch),
+            1,
+        )
+        self._close_task(QtGui.QDialogButtonBox.Ok)
+        self.assertEqual(sketch.VibeCADTimelineRole, "operation")
+        self.assertEqual(
+            self.document.VibeCADTimeline.Operations.count(sketch),
+            1,
+        )
+        PartDesign.validateDesign(operation)
+
     def test_command_accepts_multiple_areas_but_not_ambiguous_edges(self):
         sketch = self._master_sketch()
 
