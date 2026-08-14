@@ -43,8 +43,8 @@ public:
         Reference,
         Group,
         Other,
-        // Design-global operations are edited through the bottom History,
-        // never duplicated in the model browser.
+        // User-authored modeling operations remain available in both the
+        // ownership-oriented model browser and the chronological History.
         History,
         // Body states, publications, and other owned implementation objects
         // have no independent browser representation.
@@ -132,6 +132,10 @@ private:
 
     static Ownership resolveOwnership(const App::DocumentObject* object);
     static App::DocumentObject* findOriginParent(const App::DocumentObject* object);
+
+    // History edits reorder the persisted document timeline independently of
+    // creation order. Preserve that chronology inside every ownership folder.
+    void orderOperationsByTimeline(const App::Document* document);
 
     // PartDesign move up/down edits the Body's Group order, so Group order --
     // not creation order -- is the feature history the browser must present.

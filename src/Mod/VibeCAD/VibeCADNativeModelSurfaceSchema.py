@@ -77,14 +77,24 @@ def _filling_definition() -> dict[str, Any]:
             },
             "iterations": {"type": "integer", "minimum": 1, "maximum": 1_000},
             "anisotropy": {"type": "boolean"},
-            "tolerance_2d": _POSITIVE_TOLERANCE,
-            "tolerance_3d": _POSITIVE_TOLERANCE,
+            "tolerance_2d": {
+                **_POSITIVE_TOLERANCE,
+                "description": "Dimensionless 2D parametric filling tolerance.",
+            },
+            "tolerance_3d": {
+                **_POSITIVE_TOLERANCE,
+                "description": "Model-space filling tolerance in millimetres.",
+            },
             "angular_tolerance": {
                 "type": "number",
                 "exclusiveMinimum": 0.0,
                 "maximum": 3.141592653589793,
+                "description": "G1 angular tolerance in radians.",
             },
-            "curvature_tolerance": _POSITIVE_TOLERANCE,
+            "curvature_tolerance": {
+                **_POSITIVE_TOLERANCE,
+                "description": "G2 curvature tolerance in inverse millimetres.",
+            },
             "maximum_degree": {
                 "type": "integer",
                 "minimum": 2,
@@ -162,7 +172,12 @@ def _extend_definition() -> dict[str, Any]:
             "v_negative": extension,
             "v_positive": extension,
             "v_symmetric": {"type": "boolean"},
-            "tolerance": {"type": "number", "minimum": 0.0, "maximum": 10.0},
+            "tolerance": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 10.0,
+                "description": "Model-space extension tolerance in millimetres.",
+            },
             "samples_u": samples,
             "samples_v": samples,
         },
@@ -194,7 +209,12 @@ def _curve_on_mesh_definition() -> dict[str, Any]:
             "approximate": {"type": "boolean"},
             "maximum_degree": {"type": "integer", "minimum": 1, "maximum": 8},
             "continuity": {"type": "string", "enum": ["C0", "C1", "C2", "C3"]},
-            "tolerance": {"type": "number", "minimum": 0.001, "maximum": 10.0},
+            "tolerance": {
+                "type": "number",
+                "minimum": 0.001,
+                "maximum": 10.0,
+                "description": "Curve approximation tolerance in millimetres.",
+            },
             "split_angle_degrees": {
                 "type": "number",
                 "minimum": 5.0,

@@ -1820,9 +1820,11 @@ def test_unfinished_constraint_family_remains_completely_unadvertised() -> None:
 
     resolved = resolve_native_provider_surface(surface, registry)
 
-    assert registry.definition(SKETCH_CONSTRAINT_CAPABILITY_NAME) is not None
-    assert registry.implementation(SKETCH_CONSTRAINT_CAPABILITY_NAME) is not None
+    assert registry.definition(SKETCH_CONSTRAINT_CAPABILITY_NAME) is None
     assert resolved.available is False
     assert resolved.tool_names == ()
     assert resolved.schemas == ()
-    assert SKETCH_CONSTRAINT_CAPABILITY_NAME in resolved.incomplete_definition_names
+    assert resolved.missing_action_ids
+    assert SKETCH_CONSTRAINT_CAPABILITY_NAME not in (
+        resolved.incomplete_definition_names
+    )

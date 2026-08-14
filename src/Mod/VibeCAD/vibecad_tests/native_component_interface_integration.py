@@ -23,24 +23,25 @@ from VibeCADComponentCatalog import (
     prepare_captured_component_catalog,
 )
 from VibeCADCore import get_service
-from VibeCADNativeCapabilityRegistry import NativeProviderSurface
+from VibeCADNativeCapabilityRegistry import resolve_native_provider_surface
 from VibeCADNativeComponentInterface import (
     NativeComponentInterfaceError,
     prepare_component_interface,
     publish_component_interface,
 )
 import VibeCADNativeComponentInterfaceRuntime as runtime_module
-from VibeCADNativeComponentInterfaceSchema import (
-    component_interface_capability_definition,
-)
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeModelSnapshot import build_model_snapshot
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
-from VibeCADNativeSurface import NativeSurfaceSnapshot
+from VibeCADNativeSurface import (
+    NativeSurfaceSnapshot,
+    require_frozen_native_surface,
+)
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
+from VibeCADRibbonSurface import read_active_ribbon_surface
 from VibeCADReferenceContracts import (
     PROP_NATIVE_INTERFACE,
     connector_frame_placement,
@@ -53,6 +54,23 @@ def _process_events(rounds: int = 20) -> None:
     for _index in range(rounds):
         Gui.updateGui()
         QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 25)
+
+
+def _select_assemble_ribbon(main_window) -> None:
+    tabs = main_window.findChild(QtWidgets.QTabBar, "VibeCADRibbonTabs")
+    assert tabs is not None
+    index = next(
+        (
+            candidate
+            for candidate in range(tabs.count())
+            if str(tabs.tabData(candidate)) == "AssemblyWorkbench"
+        ),
+        -1,
+    )
+    assert index >= 0
+    tabs.setCurrentIndex(index)
+    _process_events(24)
+    assert Gui.activeWorkbench().name() == "AssemblyWorkbench"
 
 
 def _new_component(document, name: str, placement, *, scripted: bool = False):
@@ -215,29 +233,6 @@ def _human_parity(document, body, lcs):
     return expected
 
 
-def _turn() -> NativeTurnSnapshot:
-    definition = component_interface_capability_definition()
-    surface = NativeProviderSurface(
-        snapshot=NativeSurfaceSnapshot(
-            "model",
-            1,
-            "e" * 64,
-            ("VibeCAD_PublishInterface",),
-            (),
-            (),
-        ),
-        available=True,
-        unavailable_reason="",
-        tool_names=(definition.name,),
-        schemas=(definition.provider_schema(("publish_interface",)),),
-        human_only_action_ids=(),
-        missing_definition_names=(),
-        missing_implementation_names=(),
-        incomplete_definition_names=(),
-    )
-    return NativeTurnSnapshot.from_provider_surface(surface)
-
-
 def _arguments(
     component,
     lcs,
@@ -324,11 +319,32 @@ def _run() -> None:
         VibeGui._connect_document_observer()
         setup = _setup(document)
         _process_events()
-        workbench = Gui.activeWorkbench().name()
+        model_workbench = Gui.activeWorkbench().name()
 
         human_body, _human_feature, human_lcs = setup["human"]
         human = _human_parity(document, human_body, human_lcs)
-        assert Gui.activeWorkbench().name() == workbench
+        assert Gui.activeWorkbench().name() == model_workbench
+
+        main_window = Gui.getMainWindow()
+        controller = main_window.findChild(
+            QtCore.QObject,
+            "VibeCADRibbonController",
+        )
+        assert controller is not None
+        _select_assemble_ribbon(main_window)
+        surface = read_active_ribbon_surface(controller)
+        assert surface.surface_id == "assemble"
+        frozen_surface = NativeSurfaceSnapshot.from_surface(surface)
+        registry = build_native_capability_registry()
+        production = resolve_native_provider_surface(surface, registry)
+        assert production.available is True, production.debug_summary()
+        assert "component.interface" in production.tool_names
+        assert "VibeCAD_PublishInterface" in surface.command_ids
+        assert "AssemblyContextToggleActive" in production.human_only_action_ids
+        workbench = Gui.activeWorkbench().name()
+
+        def reauthorize() -> None:
+            require_frozen_native_surface(frozen_surface, controller)
 
         service = get_service()
         service.select_modeling_engine("native")
@@ -340,19 +356,19 @@ def _run() -> None:
             document=document,
             state=state,
             undo_ledger=ledger,
-            reauthorize_turn=lambda: None,
+            reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
-            active_surface_id=lambda: "model",
+            active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: False,
         )
-        turn = _turn()
+        turn = NativeTurnSnapshot.from_provider_surface(production)
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state,
-            registry=build_native_capability_registry(),
+            registry=registry,
             turn=turn,
             runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=lambda: None,
+            reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )
         Gui.Selection.clearSelection()

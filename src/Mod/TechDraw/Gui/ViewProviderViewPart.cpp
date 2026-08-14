@@ -20,6 +20,8 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
+
 #include <QMessageBox>
 #include <QTextStream>
 
@@ -235,12 +237,17 @@ std::vector<App::DocumentObject*> ViewProviderViewPart::claimChildren() const
     //    - GeomHatches
     //    - any drawing views declaring this view as their parent
     std::vector<App::DocumentObject*> temp;
+    const auto appendUnique = [&temp](App::DocumentObject* child) {
+        if (std::ranges::find(temp, child) == temp.end()) {
+            temp.push_back(child);
+        }
+    };
     const std::vector<App::DocumentObject *> &views = getViewPart()->getInList();
     try {
       for(std::vector<App::DocumentObject *>::const_iterator it = views.begin(); it != views.end(); ++it) {
           auto view = dynamic_cast<TechDraw::DrawView *>(*it);
           if (view && view->claimParent() == getViewPart()) {
-              temp.push_back(view);
+              appendUnique(view);
               continue;
           }
 
@@ -256,16 +263,16 @@ std::vector<App::DocumentObject*> ViewProviderViewPart::claimChildren() const
                   }
               }
               if (!skip) {
-                  temp.push_back(*it);
+                  appendUnique(*it);
               }
           } else if ((*it)->isDerivedFrom<TechDraw::DrawHatch>()) {
-              temp.push_back((*it));
+              appendUnique(*it);
           } else if ((*it)->isDerivedFrom<TechDraw::DrawGeomHatch>()) {
-              temp.push_back((*it));
+              appendUnique(*it);
           } else if ((*it)->isDerivedFrom<TechDraw::DrawViewBalloon>()) {
-              temp.push_back((*it));
+              appendUnique(*it);
           } else if ((*it)->isDerivedFrom<TechDraw::DrawLeaderLine>()) {
-              temp.push_back((*it));
+              appendUnique(*it);
           }
       }
       return temp;

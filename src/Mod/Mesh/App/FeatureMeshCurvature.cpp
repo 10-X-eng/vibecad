@@ -38,6 +38,13 @@ Curvature::Curvature()
 {
     ADD_PROPERTY(Source, (nullptr));
     ADD_PROPERTY(CurvInfo, (CurvatureInfo()));
+    ADD_PROPERTY_TYPE(
+        SampleCount,
+        (0),
+        "Curvature",
+        App::Prop_ReadOnly,
+        "Number of computed per-vertex curvature samples"
+    );
 }
 
 short Curvature::mustExecute() const
@@ -76,6 +83,7 @@ App::DocumentObjectExecReturn* Curvature::execute()
     }
 
     CurvInfo.setValues(values);
+    SampleCount.setValue(static_cast<int>(values.size()));
 
     return App::DocumentObject::StdReturn;
 }

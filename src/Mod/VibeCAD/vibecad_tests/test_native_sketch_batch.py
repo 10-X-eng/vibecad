@@ -40,7 +40,13 @@ def test_batch_contract_is_shared_only_with_the_active_sketch_surface() -> None:
 
     registry = build_native_capability_registry()
     assert SKETCH_BATCH_CAPABILITY_NAME in registry.shared_definition_names
-    assert registry.definition(SKETCH_BATCH_CAPABILITY_NAME) == definition
+    provider_definition = registry.definition(SKETCH_BATCH_CAPABILITY_NAME)
+    assert provider_definition is not None
+    provider_parameters = provider_definition.variants[0].parameters
+    assert "revision" in provider_parameters["properties"]
+    assert "sketch" not in provider_parameters["properties"]
+    assert "expected_geometry_count" not in provider_parameters["properties"]
+    assert "expected_constraint_count" not in provider_parameters["properties"]
     assert registry.implementation(SKETCH_BATCH_CAPABILITY_NAME) is not None
 
 
@@ -56,7 +62,12 @@ def test_batch_schema_is_closed_bounded_and_concise() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert len(encoded) <= 4_300
+    assert len(encoded) <= 5_200
+    constraints_schema = schema["parameters"]["oneOf"][0]["properties"][
+        "constraints"
+    ]
+    assert constraints_schema["maxItems"] == 128
+    assert "1 through 128" in constraints_schema["description"]
 
     for invalid in (
         {**valid, "unexpected": True},
@@ -64,7 +75,7 @@ def test_batch_schema_is_closed_bounded_and_concise() -> None:
         {**valid, "geometry": []},
         {**valid, "geometry": valid["geometry"] * 9},
         {**valid, "constraints": []},
-        {**valid, "constraints": valid["constraints"] * 2},
+        {**valid, "constraints": valid["constraints"] * 12},
         {
             **valid,
             "geometry": [{**valid["geometry"][0], "unexpected": True}],
@@ -78,7 +89,9 @@ def test_batch_schema_is_closed_bounded_and_concise() -> None:
 
 
 def test_batch_plan_resolves_every_local_reference_before_mutation() -> None:
-    plan = prepare_sketch_batch("document-uid", _values(_arguments()))
+    values = _values(_arguments())
+    values["constraints"][8]["first"]["position"] = "point"
+    plan = prepare_sketch_batch("document-uid", values)
 
     assert [item.local_ref for item in plan.geometry] == [
         "bottom",

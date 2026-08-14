@@ -20,6 +20,9 @@ from vibecad_tests.native_sketch_block_gui_case import exercise_block_case
 from vibecad_tests.native_sketch_carbon_copy_gui_case import exercise_carbon_copy_case
 from vibecad_tests.native_sketch_chamfer_gui_case import exercise_chamfer_case
 from vibecad_tests.native_sketch_driving_gui_case import exercise_driving_case
+from vibecad_tests.native_sketch_delete_geometry_gui_case import (
+    exercise_delete_geometry_case,
+)
 from vibecad_tests.native_sketch_equal_gui_case import exercise_equal_case
 from vibecad_tests.native_sketch_extend_gui_case import exercise_extend_case
 from vibecad_tests.native_sketch_fillet_gui_case import exercise_fillet_case
@@ -210,6 +213,7 @@ _CASES = (
     ("TrimSketch", exercise_trim_case),
     ("SplitSketch", exercise_split_case),
     ("ExtendSketch", exercise_extend_case),
+    ("DeleteGeometrySketch", exercise_delete_geometry_case),
     ("ProjectionSketch", exercise_projection_case),
     ("IntersectionSketch", exercise_intersection_case),
     ("CarbonCopySketch", exercise_carbon_copy_case),

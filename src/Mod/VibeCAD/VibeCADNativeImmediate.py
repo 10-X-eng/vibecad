@@ -21,7 +21,9 @@ def run_immediate_mutation(
     transaction_name: str,
     mutate: Callable[[Any], NativeMutationDraft],
     verify: Callable[[Any, NativeMutationDraft], Mapping[str, Any]],
+    transaction_factory: Callable[[Any, str], Any] | None = None,
     active_transaction_factory: Callable[[Any, str], Any] | None = None,
+    after_abort: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     """Run one guarded mutation and append its bounded host-owned receipt."""
 
@@ -31,16 +33,19 @@ def run_immediate_mutation(
         raise TypeError("ticket must be a NativeCallTicket")
     context.guard()
     checkpoint = context.undo_ledger.checkpoint(context.document)
-    execution = NativeMutationRunner(
-        context.state,
-        active_transaction_factory=active_transaction_factory,
-    ).run(
+    runner_options = {"active_transaction_factory": active_transaction_factory}
+    if transaction_factory is not None:
+        if not callable(transaction_factory):
+            raise TypeError("transaction_factory must be callable or None")
+        runner_options["transaction_factory"] = transaction_factory
+    execution = NativeMutationRunner(context.state, **runner_options).run(
         ticket=ticket,
         document=context.document,
         transaction_name=transaction_name,
         reauthorize_turn=context.guard,
         mutate=mutate,
         verify=verify,
+        after_abort=after_abort,
     )
     result = dict(execution.result)
     if execution.receipt is not None:

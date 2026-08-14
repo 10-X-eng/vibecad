@@ -354,7 +354,7 @@ def _run() -> None:
         assert edit_variant.surface_ids == frozenset({"assemble"})
         assert registry.implementation(ASSEMBLY_FASTENER_CAPABILITY_NAME) is not None
         production = resolve_native_provider_surface(surface, registry)
-        assert production.available is False
+        assert production.available is True, production.summary()
         assert ASSEMBLY_FASTENER_CAPABILITY_NAME not in (
             production.missing_definition_names
         )

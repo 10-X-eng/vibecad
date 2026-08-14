@@ -140,12 +140,42 @@ def test_structure_schema_exactly_covers_the_live_create_action() -> None:
         "create_assembly",
         "insert_component",
         "create_part",
+        "make_flexible",
+        "make_rigid",
         "solve_assembly",
         "create_view",
         "create_simulation",
         "create_bom",
     )
     assert registry.implementation("assembly.structure") is not None
+
+    conversion_schemas = definition.provider_schema(
+        ("make_flexible", "make_rigid")
+    )["parameters"]
+    assert conversion_schemas["properties"]["operation"]["type"] == "string"
+    assert conversion_schemas["properties"]["operation"]["enum"] == [
+        "make_flexible",
+        "make_rigid",
+    ]
+    assert set(conversion_schemas["required"]) == {
+        "operation",
+        "assembly",
+        "link",
+        "expected_state_sha256",
+        "expected_component_count",
+        "expected_grounded_count",
+        "expected_joint_count",
+    }
+    assert conversion_schemas["additionalProperties"] is False
+    variants = {variant.operation: variant for variant in definition.variants}
+    assert variants["make_flexible"].action_ids == frozenset(
+        {"AssemblyContextMakeFlexible"}
+    )
+    assert variants["make_rigid"].action_ids == frozenset(
+        {"AssemblyContextMakeRigid"}
+    )
+    assert variants["make_flexible"].surface_ids == frozenset({"assemble"})
+    assert variants["make_rigid"].surface_ids == frozenset({"assemble"})
 
 
 def test_active_assembly_read_is_exact_and_nonmutating() -> None:

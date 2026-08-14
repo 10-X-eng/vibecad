@@ -44,6 +44,12 @@ class NativeRuntimeContext:
         repr=False,
         compare=False,
     )
+    background_manager: Any | None = field(default=None, repr=False, compare=False)
+    document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     document_uid: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -63,9 +69,18 @@ class NativeRuntimeContext:
             raise TypeError("Native output authorizer must be callable")
         if self.authorize_input is not None and not callable(self.authorize_input):
             raise TypeError("Native input authorizer must be callable")
+        if self.document_thread_dispatch is not None and not callable(
+            self.document_thread_dispatch
+        ):
+            raise TypeError("Native document-thread dispatcher must be callable")
         object.__setattr__(self, "document_uid", document_uid(self.document))
 
-    def guard(self, *, allow_owned_playback: bool = False) -> None:
+    def guard(
+        self,
+        *,
+        allow_owned_playback: bool = False,
+        allow_owned_cam_simulation: bool = False,
+    ) -> None:
         self.reauthorize_turn()
         active = self.active_document()
         if (
@@ -86,6 +101,16 @@ class NativeRuntimeContext:
                 )
 
                 if owns_active_native_assembly_playback(self.document):
+                    return
+            except (ImportError, RuntimeError):
+                pass
+        if allow_owned_cam_simulation:
+            try:
+                from Path.Main.Gui.SimulatorGL import (
+                    owns_active_prepared_simulation,
+                )
+
+                if owns_active_prepared_simulation(self.document):
                     return
             except (ImportError, RuntimeError):
                 pass

@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeSketchConstraintAppend import (
+    NativeSketchConstraintFeasibilityError,
     add_exact_constraint,
     diagnose_exact_constraint,
     make_dimensional_constraint,
@@ -105,6 +106,47 @@ class PreparedSketchCircularSize:
     spec: SketchCircularSizeSpec
     resolved: ResolvedSketchCircularSize
     solver_issues: tuple[tuple[int, ...], ...]
+
+
+class NativeSketchSemicircleRadiusRedundant(NativeSketchError):
+    """Guide a redundant semicircle size request to its exact span constraint."""
+
+    def __init__(self, geometry_index: int, span_degrees: float) -> None:
+        super().__init__(
+            "The requested radius or diameter is solver-redundant on this "
+            "semicircular arc. Constrain the circular-arc span instead."
+        )
+        self.geometry_index = geometry_index
+        self.span_degrees = span_degrees
+
+    def failure(self) -> dict[str, Any]:
+        return {
+            "error_code": "NATIVE_SKETCH_CONSTRAINT_REDUNDANT",
+            "message": str(self),
+            "repair": {
+                "tool": "sketch.dimension",
+                "reason": (
+                    "Use the supported circular_arc_span angle form for this "
+                    "semicircle."
+                ),
+                "arguments": {
+                    "operation": "constrain_angle",
+                    "selection": [
+                        {
+                            "geometry_index": self.geometry_index,
+                            "position": "whole",
+                        }
+                    ],
+                    "expected_form": "circular_arc_span",
+                    "dimension": {
+                        "value": self.span_degrees,
+                        "unit": "deg",
+                    },
+                    "driving": True,
+                },
+            },
+            "retry_same_call": False,
+        }
 
 
 def _require_mode(mode: Any) -> SketchCircularSizeMode:
@@ -252,6 +294,25 @@ def _constraint_arguments(
     )
 
 
+def _circular_arc_span_degrees(
+    sketch: Any,
+    resolved: ResolvedSketchCircularSize,
+) -> float | None:
+    geometry = sketch_constraint_geometry(sketch, resolved.element.geometry_index)
+    if str(getattr(geometry, "TypeId", "") or "") != _ARC_TYPE:
+        return None
+    try:
+        span = float(geometry.LastParameter) - float(geometry.FirstParameter)
+    except Exception:
+        return None
+    if not math.isfinite(span):
+        return None
+    span = math.fmod(span, math.tau)
+    if span <= 0.0:
+        span += math.tau
+    return math.degrees(span)
+
+
 def preflight_sketch_circular_size(
     context: NativeRuntimeContext,
     spec: SketchCircularSizeSpec,
@@ -277,12 +338,25 @@ def preflight_sketch_circular_size(
         _constraint_arguments(prepared),
         driving=spec.driving,
     )
-    diagnose_exact_constraint(
-        sketch,
-        constraint,
-        expected_index=spec.target.target.expected_constraint_count,
-        label=spec.mode.label,
-    )
+    try:
+        diagnose_exact_constraint(
+            sketch,
+            constraint,
+            expected_index=spec.target.target.expected_constraint_count,
+            label=spec.mode.label,
+        )
+    except NativeSketchConstraintFeasibilityError as exc:
+        span_degrees = _circular_arc_span_degrees(sketch, resolved)
+        if (
+            "redundant" in exc.reasons
+            and span_degrees is not None
+            and math.isclose(span_degrees, 180.0, abs_tol=1.0e-6)
+        ):
+            raise NativeSketchSemicircleRadiusRedundant(
+                resolved.element.geometry_index,
+                span_degrees,
+            ) from exc
+        raise
     geometry, constraints, external = current_sketch_constraint_records(
         sketch,
         spec.target,

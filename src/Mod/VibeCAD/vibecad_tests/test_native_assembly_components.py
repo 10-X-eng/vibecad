@@ -162,6 +162,8 @@ def test_schema_covers_both_live_insert_actions_with_exact_targets() -> None:
         "create_assembly",
         "insert_component",
         "create_part",
+        "make_flexible",
+        "make_rigid",
         "solve_assembly",
         "create_view",
         "create_simulation",

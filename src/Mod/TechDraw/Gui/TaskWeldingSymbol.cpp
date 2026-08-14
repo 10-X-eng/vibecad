@@ -41,6 +41,7 @@
 #include "ui_TaskWeldingSymbol.h"
 #include "PreferencesGui.h"
 #include "SymbolChooser.h"
+#include "WeldSymbolBuilder.h"
 
 
 using namespace Gui;
@@ -484,9 +485,13 @@ void TaskWeldingSymbol::collectOtherData()
 void TaskWeldingSymbol::getTileFeats()
 {
 //    Base::Console().message("TWS::getTileFeats()\n");
-    std::vector<TechDraw::DrawTileWeld*> tiles = m_weldFeat->getTiles();
     m_arrowFeat = nullptr;
     m_otherFeat = nullptr;
+    if (!m_weldFeat) {
+        return;
+    }
+
+    std::vector<TechDraw::DrawTileWeld*> tiles = m_weldFeat->getTiles();
 
     if (tiles.empty()) {
         return;
@@ -516,27 +521,8 @@ TechDraw::DrawWeldSymbol* TaskWeldingSymbol::createWeldingSymbol()
             "The weld-symbol target is no longer available"
         );
     }
-    App::Document* doc = m_documentIdentity.resolve();
-    auto weldSymbol = doc->addObject<TechDraw::DrawWeldSymbol>("WeldSymbol");
-    if (!weldSymbol) {
-        throw Base::RuntimeError("TaskWeldingSymbol - new symbol object not found");
-    }
-
-    weldSymbol->AllAround.setValue(ui->cbAllAround->isChecked());
-    weldSymbol->FieldWeld.setValue(ui->cbFieldWeld->isChecked());
-    weldSymbol->AlternatingWeld.setValue(ui->cbAltWeld->isChecked());
-    weldSymbol->TailText.setValue(ui->leTailText->text().toStdString());
-    weldSymbol->Leader.setValue(m_leadFeat);
-
-    TechDraw::DrawPage *page = m_leadFeat->findParentPage();
-    if (page) {
-        page->addView(weldSymbol);
-    }
-    else {
-        throw Base::RuntimeError(
-            "The weld-symbol leader is not on a drawing page"
-        );
-    }
+    auto* weldSymbol = TechDrawGui::createDrawingWeldSymbol(
+        m_leadFeat, currentSpec());
     m_weldIdentity =
         TaskInternal::ObjectIdentity<TechDraw::DrawWeldSymbol>(
             weldSymbol
@@ -547,10 +533,46 @@ TechDraw::DrawWeldSymbol* TaskWeldingSymbol::createWeldingSymbol()
 
 void TaskWeldingSymbol::updateWeldingSymbol()
 {
-    m_weldFeat->AllAround.setValue(ui->cbAllAround->isChecked());
-    m_weldFeat->FieldWeld.setValue(ui->cbFieldWeld->isChecked());
-    m_weldFeat->AlternatingWeld.setValue(ui->cbAltWeld->isChecked());
-    m_weldFeat->TailText.setValue(ui->leTailText->text().toStdString());
+    if (!m_weldFeat) {
+        return;
+    }
+    TechDrawGui::changeDrawingWeldSymbol(m_weldFeat, currentSpec());
+    getTileFeats();
+}
+
+DrawingWeldSymbolSpec TaskWeldingSymbol::currentSpec()
+{
+    getTileFeats();
+    auto symbolFile = [](const QString& pending,
+                         TechDraw::DrawTileWeld* existing) {
+        if (!pending.isEmpty()) {
+            return pending.toStdString();
+        }
+        if (existing && !std::string(existing->SymbolFile.getValue()).empty()) {
+            return std::string(existing->SymbolFile.getValue());
+        }
+        return drawingWeldSymbolFileForCatalogKey("blank");
+    };
+    return {
+        ui->cbAllAround->isChecked(),
+        ui->cbFieldWeld->isChecked(),
+        ui->cbAltWeld->isChecked(),
+        ui->leTailText->text().toStdString(),
+        {
+            ui->leArrowTextL->text().toStdString(),
+            ui->leArrowTextC->text().toStdString(),
+            ui->leArrowTextR->text().toStdString(),
+            symbolFile(m_arrowPath, m_arrowFeat),
+        },
+        {
+            ui->leOtherTextL->text().toStdString(),
+            ui->leOtherTextC->text().toStdString(),
+            ui->leOtherTextR->text().toStdString(),
+            symbolFile(m_otherPath, m_otherFeat),
+        },
+        m_weldFeat ? std::string(m_weldFeat->Label.getValue())
+                   : std::string("WeldSymbol"),
+    };
 }
 
 void TaskWeldingSymbol::updateTiles()
@@ -624,18 +646,12 @@ bool TaskWeldingSymbol::accept()
         return false;
     }
     try {
-        if (m_createMode) {
-            if (!m_weldFeat) {
-                m_weldFeat = createWeldingSymbol();
-            }
-            else {
-                updateWeldingSymbol();
-            }
-            updateTiles();
+        if (m_createMode && !m_weldFeat) {
+            m_weldFeat = createWeldingSymbol();
+            getTileFeats();
         }
         else {
             updateWeldingSymbol();
-            updateTiles();
         }
         if (!m_weldFeat) {
             throw Base::RuntimeError(
@@ -646,38 +662,6 @@ bool TaskWeldingSymbol::accept()
         if (m_weldFeat->isError()) {
             throw Base::RuntimeError(
                 "The weld symbol could not produce a valid result"
-            );
-        }
-        if (m_createMode) {
-            auto* timeline =
-                App::DocumentTimeline::get(document);
-            if (!timeline) {
-                throw Base::RuntimeError(
-                    "The weld symbol could not access document history"
-                );
-            }
-            std::vector<App::DocumentObject*> timelineBlock;
-            timelineBlock.reserve(3);
-            for (auto* tile : {m_arrowFeat, m_otherFeat}) {
-                if (!tile || tile->getDocument() != document
-                    || !document->containsObject(tile)
-                    || App::DocumentTimeline::timelineOwner(tile)
-                        != m_weldFeat
-                    || !timeline
-                            ->isProvisionallyEnrolledByCurrentTransaction(
-                                tile
-                            )) {
-                    throw Base::RuntimeError(
-                        "The weld symbol did not retain its exact generated "
-                        "tiles"
-                    );
-                }
-                timelineBlock.push_back(tile);
-            }
-            timelineBlock.push_back(m_weldFeat);
-            timeline->finalizeProvisionalOperationBlock(
-                m_weldFeat,
-                timelineBlock
             );
         }
     }

@@ -8,6 +8,7 @@ from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeSketchConstraintSchema import (
     sketch_constraint_capability_definition,
 )
+from VibeCADNativeSketchCleanupSchema import sketch_cleanup_capability_definitions
 from VibeCADNativeSketchControlSchema import sketch_control_capability_definition
 from VibeCADNativeSketchGeometrySchema import sketch_geometry_capability_definition
 from VibeCADNativeSketchInspectSchema import sketch_inspect_capability_definition
@@ -20,6 +21,7 @@ from VibeCADNativeTurn import NativeTurnSnapshot
 
 def provider_turn(surface) -> NativeTurnSnapshot:
     geometry = sketch_geometry_capability_definition()
+    cleanup = sketch_cleanup_capability_definitions()
     constraint = sketch_constraint_capability_definition()
     control = sketch_control_capability_definition()
     inspect = sketch_inspect_capability_definition()
@@ -30,6 +32,7 @@ def provider_turn(surface) -> NativeTurnSnapshot:
         unavailable_reason="",
         tool_names=(
             geometry.name,
+            *(definition.name for definition in cleanup),
             constraint.name,
             control.name,
             inspect.name,
@@ -70,9 +73,6 @@ def provider_turn(surface) -> NativeTurnSnapshot:
                     "toggle_construction",
                     "create_fillet",
                     "create_chamfer",
-                    "trim",
-                    "split",
-                    "extend",
                     "project_external_geometry",
                     "intersect_external_geometry",
                     "carbon_copy",
@@ -91,6 +91,12 @@ def provider_turn(surface) -> NativeTurnSnapshot:
                     "join_curves",
                     "restore_internal_alignment_geometry",
                 )
+            ),
+            *(
+                definition.provider_schema(
+                    tuple(variant.operation for variant in definition.variants)
+                )
+                for definition in cleanup
             ),
             constraint.provider_schema(
                 (

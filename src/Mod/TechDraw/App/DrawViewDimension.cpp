@@ -247,6 +247,21 @@ DrawViewDimension::DrawViewDimension()
     ADD_PROPERTY_TYPE(ShowUnits, (Preferences::showUnits()), "Format", App::Prop_None,
                                           "Show or hide the units.");
 
+    static const char* arcLengthGroup = "Arc Length";
+    const auto arcLengthFlags = static_cast<App::PropertyType>(
+        App::Prop_Output | App::Prop_ReadOnly | App::Prop_Hidden);
+    ADD_PROPERTY_TYPE(ArcLengthSource,
+                      (nullptr),
+                      arcLengthGroup,
+                      arcLengthFlags,
+                      "Projected circular arc used by an arc-length dimension.");
+    ArcLengthSource.setScope(App::LinkScope::Global);
+    ADD_PROPERTY_TYPE(ArcLengthValue,
+                      (0.0),
+                      arcLengthGroup,
+                      arcLengthFlags,
+                      "Persisted unscaled circular arc length.");
+
     static const char* cacheGroup = "Precomputed Dimension";
     const auto cacheFlags = static_cast<App::PropertyType>(
         App::Prop_Output | App::Prop_ReadOnly | App::Prop_Hidden | App::Prop_NoRecompute);
@@ -368,9 +383,9 @@ void DrawViewDimension::setPrecomputedDimension(
                 "Precomputed TechDraw dimension contains an invalid scalar");
         }
     }
-    if (!flags[0] || !flags[3]) {
+    if (!flags[0]) {
         throw Base::ValueError(
-            "Precomputed TechDraw dimension must have valid geometry and references");
+            "Precomputed TechDraw dimension must have valid descriptive geometry");
     }
 
     pointPair linear(vectors[0], vectors[1], vectors[2], vectors[3]);
@@ -406,7 +421,7 @@ void DrawViewDimension::setPrecomputedDimension(
     m_arcPoints = arc;
     m_areaPoint = area;
     m_hasGeometry = true;
-    m_referencesCorrect = true;
+    m_referencesCorrect = flags[3];
     overrideKeepUpdated(false);
     requestPaint();
 }
@@ -666,6 +681,7 @@ App::DocumentObjectExecReturn* DrawViewDimension::execute()
     resetAngular();
     resetArc();
     resetArea();
+    m_hasGeometry = false;
 
     // we have either or both valid References3D and References2D
     ReferenceVector references = getEffectiveReferences();
@@ -710,6 +726,13 @@ App::DocumentObjectExecReturn* DrawViewDimension::execute()
         }
         m_areaPoint = getAreaParameters(references);
         m_hasGeometry = true;
+    }
+
+    if (m_hasGeometry) {
+        // A native recompute supersedes any persisted worker result.  Keep the
+        // old cache intact when execution cannot produce geometry, but make a
+        // successful recompute immediately authoritative for reads and saves.
+        PrecomputedDimensionVectors.setValues({});
     }
 
     overrideKeepUpdated(false);
@@ -859,7 +882,12 @@ double DrawViewDimension::getDimValue()
         return result;
     }
 
-    if (MeasureType.isValue("True")) {
+    if (ArcLengthSource.getValue()
+        && !ArcLengthSource.getSubValues().empty()
+        && ArcLengthValue.getValue() > Base::Vector3d::epsilon()) {
+        result = ArcLengthValue.getValue();
+    }
+    else if (MeasureType.isValue("True")) {
         // True Values
         if (!measurement->has3DReferences()) {
             Base::Console().warning("%s - True dimension has no 3D References\n",
@@ -1023,6 +1051,13 @@ pointPair DrawViewDimension::getPointsOneEdge(ReferenceVector references)
             std::stringstream ssMessage;
             ssMessage << getNameInDocument() << " can not find geometry for 2d reference (1)";
             throw Base::RuntimeError(ssMessage.str());
+        }
+        if (geom->getGeomType() == GeomType::ARCOFCIRCLE) {
+            // A one-edge Distance dimension on an open circular arc uses the
+            // projected arc endpoints.  Arc-length dimensions retain the arc
+            // itself as their durable reference and use these points only for
+            // extension-line placement; no cosmetic view geometry is needed.
+            return {geom->getStartPoint(), geom->getEndPoint()};
         }
         if (geom->getGeomType() != GeomType::GENERIC) {
             std::stringstream ssMessage;

@@ -49,13 +49,13 @@ class ObjectProbing(PathOp.ObjectOp):
 
     def initOperation(self, obj):
         obj.addProperty(
-            "App::PropertyLength",
+            "App::PropertyDistance",
             "Xoffset",
             "Probe",
             QT_TRANSLATE_NOOP("App::Property", "X offset between tool and probe"),
         )
         obj.addProperty(
-            "App::PropertyLength",
+            "App::PropertyDistance",
             "Yoffset",
             "Probe",
             QT_TRANSLATE_NOOP("App::Property", "Y offset between tool and probe"),
@@ -148,8 +148,13 @@ def SetupProperties():
     return setup
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns a Probing operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    proxy = ObjectProbing(obj, name, parentJob)
+    ObjectProbing(
+        obj,
+        name,
+        parentJob,
+        toolController=toolController,
+    )
     return obj

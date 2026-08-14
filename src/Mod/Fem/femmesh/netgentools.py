@@ -73,24 +73,25 @@ class NetgenTools(ObjectTools):
     name = "Netgen"
     __param_grp = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Netgen")
 
-    def __init__(self, obj):
-        super().__init__(obj)
+    def __init__(self, obj, *, detached=False):
+        super().__init__(obj, detached=detached)
         self.fem_mesh = None
         self.mesh_params = {}
 
-    def write_geom(self):
+    def write_geom(self, working_directory=None):
         global_pla = self.obj.Shape.getGlobalPlacement()
         geom = self.obj.Shape.getPropertyOfGeometry()
         # get partner shape
         geom_trans = geom.transformed(FreeCAD.Placement().Matrix)
         geom_trans.Placement = global_pla
-        self.brep_file = os.path.join(self.obj.WorkingDirectory, "shape.brep")
-        self.result_file = os.path.join(self.obj.WorkingDirectory, "result.npy")
-        self.model_file = os.path.join(self.obj.WorkingDirectory, "code.py")
+        directory = working_directory or self.obj.WorkingDirectory
+        self.brep_file = os.path.join(directory, "shape.brep")
+        self.result_file = os.path.join(directory, "result.npy")
+        self.model_file = os.path.join(directory, "code.py")
         geom_trans.exportBrep(self.brep_file)
 
-    def prepare(self):
-        self.write_geom()
+    def prepare(self, working_directory=None):
+        self.write_geom(working_directory)
         self.mesh_params = {
             "brep_file": self.brep_file,
             "threads": self.__param_grp.GetInt("NumOfThreads", QThread.idealThreadCount()),
@@ -277,10 +278,16 @@ run_netgen(**{kwds})
     """
 
     def fem_mesh_from_result(self):
+        return self.fem_mesh_from_result_file(self.result_file)
+
+    @staticmethod
+    def fem_mesh_from_result_file(result_file):
+        """Create one FemMesh from a detached Netgen result file."""
+
         fem_mesh = Fem.FemMesh()
 
         # load Netgen result
-        netgen_result, groups = np.load(self.result_file, allow_pickle=True)
+        netgen_result, groups = np.load(result_file, allow_pickle=True)
 
         for node in netgen_result["coords"]:
             fem_mesh.addNode(*node)

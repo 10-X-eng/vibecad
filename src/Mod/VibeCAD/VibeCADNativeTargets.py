@@ -21,9 +21,18 @@ _SUBELEMENT_NAME = re.compile(r"^(Face|Edge|Vertex)[1-9][0-9]*$")
 class NativeTargetError(RuntimeError):
     """An exact Native target is missing, stale, or belongs elsewhere."""
 
-    def __init__(self, message: str, *, exact_target: Mapping[str, Any] | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        exact_target: Mapping[str, Any] | None = None,
+        actual_type: str | None = None,
+        accepted_types: tuple[str, ...] = (),
+    ):
         super().__init__(str(message).strip())
         self.exact_target = dict(exact_target) if exact_target is not None else None
+        self.actual_type = str(actual_type or "").strip() or None
+        self.accepted_types = tuple(str(value) for value in accepted_types if str(value))
 
     def failure(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -32,6 +41,10 @@ class NativeTargetError(RuntimeError):
         }
         if self.exact_target is not None:
             result["exact_target"] = self.exact_target
+        if self.actual_type is not None:
+            result["actual_type"] = self.actual_type
+        if self.accepted_types:
+            result["accepted_types"] = list(self.accepted_types)
         return result
 
 
@@ -152,9 +165,14 @@ def resolve_object(
             exact_target=reference.summary(),
         )
     if not _matches_expected_type(obj, tuple(expected_types)):
+        actual_type = str(getattr(obj, "TypeId", "") or "") or "unknown"
+        accepted = tuple(str(value) for value in expected_types)
         raise NativeTargetError(
-            "The exact object target has the wrong type for this operation.",
+            f"The exact object target has type {actual_type!r}; this operation "
+            f"accepts {', '.join(accepted)}.",
             exact_target=reference.summary(),
+            actual_type=actual_type,
+            accepted_types=accepted,
         )
     return obj
 

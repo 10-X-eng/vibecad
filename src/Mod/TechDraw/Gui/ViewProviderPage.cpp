@@ -58,6 +58,7 @@
 
 #include "ViewProviderPage.h"
 #include "MDIViewPage.h"
+#include "PageUpdateBuilder.h"
 #include "PreferencesGui.h"
 #include "QGITemplate.h"
 #include "QGSPage.h"
@@ -274,19 +275,13 @@ bool ViewProviderPage::toggleKeepUpdated()
     }
 
     TaskInternal::ObjectIdentity<TechDraw::DrawPage> pageIdentity(page);
-    const bool keepUpdated = !page->KeepUpdated.getValue();
+    const bool keepUpdated = !inspectDrawingKeepUpdated(page).keepUpdated;
     try {
         TaskInternal::OwnedDocumentTransaction transaction(
             document,
             QT_TRANSLATE_NOOP("Command", "Toggle keep updated")
         );
-        const std::string pageCommand = Gui::Command::getObjectCmd(page);
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "%s.KeepUpdated = %s",
-            pageCommand.c_str(),
-            keepUpdated ? "True" : "False"
-        );
+        changeDrawingKeepUpdated(page, keepUpdated);
 
         page = pageIdentity.resolve();
         if (!page || page->KeepUpdated.getValue() != keepUpdated) {

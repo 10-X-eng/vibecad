@@ -306,7 +306,7 @@ class ObjectOp(object):
             QT_TRANSLATE_NOOP("App::Property", "Distance for collision detection"),
         )
 
-    def __init__(self, obj, name, parentJob=None):
+    def __init__(self, obj, name, parentJob=None, toolController=None):
         Path.Log.track()
         PathUtil.markTimelineOperation(obj)
 
@@ -519,7 +519,7 @@ class ObjectOp(object):
                 self.model = parentJob.Model.Group if parentJob.Model else []
                 self.stock = parentJob.Stock if hasattr(parentJob, "Stock") else None
                 parentJob.Proxy.addOperation(obj)
-            job = self.setDefaultValues(obj)
+            job = self.setDefaultValues(obj, toolController=toolController)
             if job:
                 job.SetupSheet.Proxy.setOperationProperties(obj, name)
                 obj.recompute()
@@ -560,7 +560,11 @@ class ObjectOp(object):
         self._generation_diagnostics.update(details)
 
     def _failGeneration(self, obj, stage, code, message, **details):
-        obj.Path = Path.Path()
+        path = Path.Path()
+        job = getattr(self, "job", None) or PathUtils.findParentJob(obj)
+        if job is not None:
+            path.Center = job.Path.Center
+        obj.Path = path
         self._updateGenerationDiagnostics(
             stage,
             status="failed",
@@ -751,6 +755,15 @@ class ObjectOp(object):
             | FeatureCoolant
         )
 
+    def opOwnsCoolantCommands(self, obj):
+        """Return whether the operation supplies its own coolant command stream.
+
+        Most operations describe a coolant mode and let the base generator add
+        the corresponding commands. Operations that embed an already-generated
+        executable path override this hook so those commands are not duplicated.
+        """
+        return False
+
     def initOperation(self, obj):
         """initOperation(obj) ... implement to create additional properties.
         Should be overwritten by subclasses."""
@@ -828,7 +841,7 @@ class ObjectOp(object):
                     if hasattr(shape, "ShapeType"):
                         Path.Log.debug(f"  Shape type: {shape.ShapeType}")
                     if hasattr(shape, "isNull") and shape.isNull():
-                        Path.Log.warning(f"  Transformed shape is null, using original")
+                        Path.Log.warning("  Transformed shape is null, using original")
                         shape = base_obj.Shape
                     elif hasattr(shape, "Volume") and shape.Volume < 1e-9:
                         Path.Log.debug(f"  Transformed shape has very small volume: {shape.Volume}")
@@ -837,7 +850,7 @@ class ObjectOp(object):
                     if hasattr(shape, "Faces"):
                         Path.Log.debug(f"  Shape has {len(shape.Faces)} faces")
                         if len(shape.Faces) == 0:
-                            Path.Log.warning(f"  Transformed shape has no faces!")
+                            Path.Log.warning("  Transformed shape has no faces!")
 
                     proxy_cache[key] = _TransformedShapeProxy(base_obj, shape)
                 else:
@@ -873,7 +886,7 @@ class ObjectOp(object):
             return True
         return False
 
-    def setDefaultValues(self, obj):
+    def setDefaultValues(self, obj, toolController=None):
         """setDefaultValues(obj) ... base implementation.
         Do not overwrite, overwrite opSetDefaultValues() instead."""
         if self.job:
@@ -889,12 +902,21 @@ class ObjectOp(object):
         features = self.opFeatures(obj)
 
         if FeatureTool & features:
-            for op in job.Operations.Group[-2::-1]:
-                obj.ToolController = PathUtil.toolControllerForOp(op)
-                if obj.ToolController:
-                    break
+            if toolController is not None:
+                supported = PathUtils.getToolControllers(obj, self)
+                if toolController not in supported:
+                    raise ValueError(
+                        "The requested Tool Controller is not an eligible resource "
+                        "of the operation's parent Job"
+                    )
+                obj.ToolController = toolController
             else:
-                obj.ToolController = PathUtils.findToolController(obj, self)
+                for op in job.Operations.Group[-2::-1]:
+                    obj.ToolController = PathUtil.toolControllerForOp(op)
+                    if obj.ToolController:
+                        break
+                else:
+                    obj.ToolController = PathUtils.findToolController(obj, self)
             if not obj.ToolController:
                 raise PathNoTCException()
             obj.OpToolDiameter = obj.ToolController.Tool.Diameter
@@ -1202,9 +1224,12 @@ class ObjectOp(object):
         """
         Path.Log.track()
         self._beginGenerationDiagnostics(obj)
+        job = getattr(self, "job", None) or PathUtils.findParentJob(obj)
 
         if getattr(obj, "Suppressed", False):
             path = Path.Path("(suppressed operation)")
+            if job is not None:
+                path.Center = job.Path.Center
             obj.Path = path
             self._updateGenerationDiagnostics(
                 "operation_state",
@@ -1218,7 +1243,6 @@ class ObjectOp(object):
             )
             return
 
-        job = getattr(self, "job", None) or PathUtils.findParentJob(obj)
         if job and "freezed" in job.getStatusString().casefold():
             self._updateGenerationDiagnostics(
                 "job_state",
@@ -1232,6 +1256,8 @@ class ObjectOp(object):
 
         if not obj.Active:
             path = Path.Path("(inactive operation)")
+            if job is not None:
+                path.Center = job.Path.Center
             obj.Path = path
             self._updateGenerationDiagnostics(
                 "operation_state",
@@ -1417,14 +1443,20 @@ class ObjectOp(object):
         # if the coolant mode is not None, add the command to turn it on right before the first non-rapid
         # move in the command list.
         # Add the command to turn it off right after the last non-rapid move in the command list.
-        if hasattr(obj, "CoolantMode") and obj.CoolantMode != "None":
-            # Find the first and last cutting moves (includes G1, G2, G3, and canned drill cycles)
-            # Use Path.Geom.CmdMove which includes: G1, G2, G3, G73, G81, G82, G83, G85
+        if (
+            hasattr(obj, "CoolantMode")
+            and obj.CoolantMode != "None"
+            and not self.opOwnsCoolantCommands(obj)
+        ):
+            # Find the first and last cutting moves. Path.Geom.CmdMove covers
+            # milling and drilling cycles; tapping cycles are also feed moves
+            # even though the legacy geometry constant classifies them as
+            # extended drill codes.
             first_feed_index = None
             last_feed_index = None
 
             for i, cmd in enumerate(self.commandlist):
-                if cmd.Name in Path.Geom.CmdMove:
+                if cmd.Name in Path.Geom.CmdMove or cmd.Name in {"G74", "G84"}:
                     if first_feed_index is None:
                         first_feed_index = i
                     last_feed_index = i
@@ -1453,6 +1485,8 @@ class ObjectOp(object):
             self.commandlist.append(Path.Command("G0", {"Z": obj.ClearanceHeight.Value}))
 
         path = Path.Path(self.commandlist)
+        if job is not None:
+            path.Center = job.Path.Center
 
         # Clean up temporary 3+2 attributes
         for attr in ("_geometry_rotation", "_geom_transform_matrix"):
@@ -1467,7 +1501,22 @@ class ObjectOp(object):
             command_types[command.Name] = command_types.get(command.Name, 0) + 1
         cutting_commands = sum(
             command_types.get(name, 0)
-            for name in ("G1", "G01", "G2", "G02", "G3", "G03", "G73", "G81", "G82", "G83")
+            for name in (
+                "G1",
+                "G01",
+                "G2",
+                "G02",
+                "G3",
+                "G03",
+                "G73",
+                "G74",
+                "G81",
+                "G82",
+                "G83",
+                "G84",
+                "G85",
+                *Path.Geom.CmdProbe,
+            )
         )
         if cutting_commands == 0:
             operation_properties = {}

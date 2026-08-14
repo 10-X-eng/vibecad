@@ -11,9 +11,11 @@ import pytest
 from VibeCADNativeOutput import (
     NATIVE_OUTPUT_AUTHORIZATION_FAILED,
     NativeOutputError,
+    NativeOutputBundleItem,
     NativeOutputRequest,
     authorize_native_output_path,
     publish_authorized_output,
+    publish_authorized_output_bundle,
 )
 from VibeCADNativeOutputGui import request_native_output_authorization
 
@@ -206,3 +208,109 @@ def test_gui_chooser_returns_only_the_exact_human_selected_grant(
     assert dialog.default_suffix == "asmt"
     assert dialog.confirm_overwrite is True
     assert dialog.selected_default == request.suggested_file_name
+
+
+def _bundle_item(
+    tmp_path: Path,
+    file_name: str,
+    content: bytes,
+) -> NativeOutputBundleItem:
+    request = NativeOutputRequest(
+        purpose="cam_post",
+        title="Save CAM program",
+        suggested_file_name=file_name,
+        allowed_suffixes=(".nc",),
+        name_filter="NC program (*.nc)",
+        maximum_bytes=1024,
+    )
+    authorization = authorize_native_output_path(request, tmp_path / file_name)
+    return NativeOutputBundleItem(
+        request=request,
+        authorization=authorization,
+        writer=lambda path: Path(path).write_bytes(content),
+        temporary_suffix=".nc",
+    )
+
+
+def test_authorized_output_bundle_publishes_complete_validated_set(
+    tmp_path: Path,
+) -> None:
+    first = _bundle_item(tmp_path, "setup.nc", b"G21\nG0 X0\n")
+    second_path = tmp_path / "finish.nc"
+    second_path.write_bytes(b"original\n")
+    second = _bundle_item(tmp_path, "finish.nc", b"G1 X10\nM30\n")
+    guards = []
+
+    artifacts = publish_authorized_output_bundle(
+        (first, second),
+        guard=lambda: guards.append(True),
+    )
+
+    assert (tmp_path / "setup.nc").read_bytes() == b"G21\nG0 X0\n"
+    assert second_path.read_bytes() == b"G1 X10\nM30\n"
+    assert [artifact.file_name for artifact in artifacts] == ["setup.nc", "finish.nc"]
+    assert [artifact.replaced_existing for artifact in artifacts] == [False, True]
+    assert len(guards) == 2
+    assert not list(tmp_path.glob(".*.vibecad-*"))
+
+
+def test_authorized_output_bundle_rejects_duplicate_destinations_before_writing(
+    tmp_path: Path,
+) -> None:
+    request_a = _request()
+    request_b = _request()
+    destination = tmp_path / "Assembly.asmt"
+    calls = []
+    items = (
+        NativeOutputBundleItem(
+            request_a,
+            authorize_native_output_path(request_a, destination),
+            lambda _path: calls.append("a"),
+        ),
+        NativeOutputBundleItem(
+            request_b,
+            authorize_native_output_path(request_b, destination),
+            lambda _path: calls.append("b"),
+        ),
+    )
+
+    with pytest.raises(NativeOutputError, match="same destination"):
+        publish_authorized_output_bundle(items, guard=lambda: None)
+
+    assert calls == []
+    assert not destination.exists()
+
+
+def test_authorized_output_bundle_restores_every_original_on_publish_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    first_path = tmp_path / "setup.nc"
+    second_path = tmp_path / "finish.nc"
+    first_path.write_bytes(b"first original\n")
+    second_path.write_bytes(b"second original\n")
+    first = _bundle_item(tmp_path, "setup.nc", b"first replacement\n")
+    second = _bundle_item(tmp_path, "finish.nc", b"second replacement\n")
+
+    import VibeCADNativeOutput as output_module
+
+    real_replace = output_module.os.replace
+    publish_count = 0
+
+    def failing_replace(source, destination) -> None:
+        nonlocal publish_count
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if ".vibecad-" in source_path.name and destination_path.suffix == ".nc":
+            publish_count += 1
+            if publish_count == 2:
+                raise OSError("injected second publish failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(output_module.os, "replace", failing_replace)
+    with pytest.raises(NativeOutputError, match="could not be generated and published"):
+        publish_authorized_output_bundle((first, second), guard=lambda: None)
+
+    assert first_path.read_bytes() == b"first original\n"
+    assert second_path.read_bytes() == b"second original\n"
+    assert not list(tmp_path.glob(".*.vibecad-*"))

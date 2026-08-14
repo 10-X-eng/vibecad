@@ -160,6 +160,65 @@ def test_success_is_one_transaction_revision_and_exact_recompute() -> None:
     assert (transactions.opens, transactions.commits, transactions.aborts) == (1, 1, 0)
 
 
+def test_after_recompute_stabilizes_before_postcondition() -> None:
+    state, document, transactions, runner, ticket = _host()
+    events = []
+
+    def mutate(target):
+        draft = _successful_mutation(state, target)
+        return NativeMutationDraft(
+            value=draft.value,
+            recompute_targets=draft.recompute_targets,
+            created=draft.created,
+            after_recompute=lambda current: events.append(
+                ("stabilize", tuple(current.recompute_calls))
+            ),
+        )
+
+    def verify(target, draft):
+        events.append(("verify", tuple(target.recompute_calls)))
+        return _verify(target, draft)
+
+    runner.run(
+        ticket=ticket,
+        document=document,
+        transaction_name="Stabilize exact presentation",
+        reauthorize_turn=lambda: None,
+        mutate=mutate,
+        verify=verify,
+    )
+
+    assert events == [
+        ("stabilize", (("Box",),)),
+        ("verify", (("Box",),)),
+    ]
+    assert (transactions.commits, transactions.aborts) == (1, 0)
+
+
+def test_abort_stabilizes_after_document_rollback() -> None:
+    state, document, transactions, runner, ticket = _host()
+    observed = []
+
+    def fail_verify(_target, _draft):
+        raise RuntimeError("invalid postcondition")
+
+    with pytest.raises(NativeMutationError) as caught:
+        runner.run(
+            ticket=ticket,
+            document=document,
+            transaction_name="Abort and stabilize presentation",
+            reauthorize_turn=lambda: None,
+            mutate=lambda target: _successful_mutation(state, target),
+            verify=fail_verify,
+            after_abort=lambda current: observed.append(current.snapshot()),
+        )
+
+    assert caught.value.error_code == NATIVE_POSTCONDITION_FAILED
+    assert observed == [{}]
+    assert document.objects == {}
+    assert (transactions.commits, transactions.aborts) == (0, 1)
+
+
 def test_committed_operation_is_one_exact_undo_and_redo_step() -> None:
     state, document, _transactions, runner, ticket = _host()
     before = document.snapshot()

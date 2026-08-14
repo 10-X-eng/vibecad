@@ -125,55 +125,6 @@ def _fillet_chamfer_parameters() -> dict:
     )
 
 
-def _curve_point_parameters() -> dict:
-    return _geometry_parameters(
-        {
-            "expected_external_geometry_count": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 1_000_000,
-            },
-            "target": parameters_schema(
-                {
-                    "geometry_index": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 999_999,
-                    },
-                    "reference_point_mm": _point_2d_schema(),
-                },
-                ("geometry_index", "reference_point_mm"),
-            ),
-        },
-        ("expected_external_geometry_count", "target"),
-    )
-
-
-def _curve_endpoint_parameters() -> dict:
-    return _geometry_parameters(
-        {
-            "expected_external_geometry_count": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 1_000_000,
-            },
-            "target": parameters_schema(
-                {
-                    "geometry_index": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 999_999,
-                    },
-                    "endpoint": {"type": "string", "enum": ["start", "end"]},
-                    "target_point_mm": _point_2d_schema(),
-                },
-                ("geometry_index", "endpoint", "target_point_mm"),
-            ),
-        },
-        ("expected_external_geometry_count", "target"),
-    )
-
-
 def _line_parameters() -> dict:
     return _geometry_parameters(
         {"start_mm": _point_2d_schema(), "end_mm": _point_2d_schema()},
@@ -897,43 +848,6 @@ def sketch_geometry_capability_definition() -> NativeCapabilityDefinition:
                 transaction_behavior="document",
                 background_required=False,
                 parameters=_fillet_chamfer_parameters(),
-            ),
-            NativeCapabilityVariant(
-                operation="trim",
-                description=(
-                    "Trim one exact human-selectable curve at an exact reference point."
-                ),
-                action_ids=frozenset({"Sketcher_Trimming"}),
-                surface_ids=frozenset({"sketch.edit"}),
-                exact_target_type="ActiveSketchExactTrimTargetAndExpectedState",
-                transaction_behavior="document",
-                background_required=False,
-                parameters=_curve_point_parameters(),
-            ),
-            NativeCapabilityVariant(
-                operation="split",
-                description=(
-                    "Split one exact human-selectable curve at an exact reference point."
-                ),
-                action_ids=frozenset({"Sketcher_Split"}),
-                surface_ids=frozenset({"sketch.edit"}),
-                exact_target_type="ActiveSketchExactSplitTargetAndExpectedState",
-                transaction_behavior="document",
-                background_required=False,
-                parameters=_curve_point_parameters(),
-            ),
-            NativeCapabilityVariant(
-                operation="extend",
-                description=(
-                    "Extend or shorten one exact line or circular-arc endpoint "
-                    "to an exact projected target point."
-                ),
-                action_ids=frozenset({"Sketcher_Extend"}),
-                surface_ids=frozenset({"sketch.edit"}),
-                exact_target_type="ActiveSketchExactExtendTargetAndExpectedState",
-                transaction_behavior="document",
-                background_required=False,
-                parameters=_curve_endpoint_parameters(),
             ),
             NativeCapabilityVariant(
                 operation="project_external_geometry",

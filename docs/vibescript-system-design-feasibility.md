@@ -1,5 +1,11 @@
 # Workbench-shaped VibeScript architecture
 
+> Historical scope note: this document remains the design record for the
+> VibeScript engine. VibeCAD now also provides a separate human-selected,
+> ribbon-scoped Native authoring mode. The current cross-engine authority
+> contract is documented in `docs/vibecad-authoring-modes.md`; statements below
+> that the assistant has no alternate engine apply only to VibeScript mode.
+
 ## Scope
 
 The VibeCAD assistant always authors through VibeScript. The active FreeCAD

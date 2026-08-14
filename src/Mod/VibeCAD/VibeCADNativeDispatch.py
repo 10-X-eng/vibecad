@@ -26,12 +26,19 @@ MAX_NATIVE_FAILURE_TEXT_CHARACTERS = 512
 
 
 class NativeDispatchError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
         super().__init__(str(message))
         self.code = str(code)
+        self.details = dict(details or {})
 
     def failure(self) -> dict[str, Any]:
-        return {"error_code": self.code, "message": str(self)}
+        return {"error_code": self.code, "message": str(self), **self.details}
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +86,94 @@ def _schema_error(error: Any) -> str:
     ]
 
 
+def _bounded_argument_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(name): _bounded_argument_value(item)
+            for name, item in list(value.items())[:8]
+        }
+    if isinstance(value, list):
+        return [_bounded_argument_value(item) for item in value[:8]]
+    if isinstance(value, str):
+        return value[:160]
+    if value is None or type(value) in {bool, int, float}:
+        return value
+    return str(value)[:160]
+
+
+def _schema_expectation(error: Any) -> dict[str, Any]:
+    validator = str(getattr(error, "validator", "") or "")
+    if validator == "required":
+        message = str(getattr(error, "message", "") or "")
+        missing = (
+            message.split("'", 2)[1]
+            if message.startswith("'") and "' is a required property" in message
+            else ""
+        )
+        return {"rule": validator, "required_field": missing}
+    return {
+        "rule": validator,
+        "expected": _bounded_argument_value(
+            getattr(error, "validator_value", None)
+        ),
+    }
+
+
+def _schema_example(schema: Mapping[str, Any], *, depth: int = 0) -> Any:
+    if depth > 6:
+        return None
+    if "const" in schema:
+        return schema["const"]
+    values = schema.get("enum")
+    if isinstance(values, list) and values:
+        return values[0]
+    kind = schema.get("type")
+    if kind == "object":
+        properties = dict(schema.get("properties") or {})
+        return {
+            name: _schema_example(properties[name], depth=depth + 1)
+            for name in schema.get("required", [])
+            if name in properties
+        }
+    if kind == "array":
+        minimum = max(1, int(schema.get("minItems", 1) or 1))
+        item = _schema_example(
+            dict(schema.get("items") or {}),
+            depth=depth + 1,
+        )
+        return [item for _index in range(min(minimum, 2))]
+    if kind == "string":
+        pattern = str(schema.get("pattern") or "")
+        if pattern.startswith("^sketch-v1:"):
+            return "sketch-v1:" + ("0" * 64)
+        return "value"
+    if kind == "integer":
+        return int(schema.get("minimum", 0) or 0)
+    if kind == "number":
+        if "exclusiveMinimum" in schema:
+            return float(schema["exclusiveMinimum"]) + 1.0
+        return float(schema.get("minimum", 0.0) or 0.0)
+    if kind == "boolean":
+        return True
+    return None
+
+
+def _schema_error_details(error: Any, schema: Mapping[str, Any]) -> dict[str, Any]:
+    expectation = _schema_expectation(error)
+    path = [str(value) for value in error.absolute_path]
+    missing = str(expectation.get("required_field") or "")
+    if missing:
+        path.append(missing)
+    return {
+        "argument_error": {
+            "path": path,
+            **expectation,
+            "received": _bounded_argument_value(getattr(error, "instance", None)),
+            "valid_example": _schema_example(schema),
+        }
+    }
+
+
 def _failure_payload(exc: BaseException) -> dict[str, Any]:
     failure = getattr(exc, "failure", None)
     raw = failure() if callable(failure) else None
@@ -107,6 +202,10 @@ def _failure_payload(exc: BaseException) -> dict[str, Any]:
         "current_surface",
         "repair",
         "retry_same_call",
+        "argument_error",
+        "exact_target",
+        "actual_type",
+        "accepted_types",
     ):
         if name in details:
             result[name] = details[name]
@@ -233,12 +332,19 @@ class NativeTurnDispatcher:
                     }
                 )
                 cause = cause.__cause__
+            failure = getattr(exc, "failure", None)
+            raw_failure = failure() if callable(failure) else None
             self._debug_sink(
                 {
                     "event": "native_call_failed",
                     "tool_name": tool_name,
                     "exception_type": type(exc).__name__,
-                    "diagnostic": str(exc),
+                    "diagnostic": str(exc)[:4096],
+                    "failure": (
+                        _bounded_argument_value(raw_failure)
+                        if isinstance(raw_failure, Mapping)
+                        else None
+                    ),
                     "causes": causes,
                 }
             )
@@ -300,13 +406,6 @@ class NativeTurnDispatcher:
         tool_name: str,
         arguments: Mapping[str, Any],
     ) -> Any:
-        validator = Draft202012Validator(self._schemas[tool_name]["parameters"])
-        error = next(iter(validator.iter_errors(arguments)), None)
-        if error is not None:
-            raise NativeDispatchError(
-                "NATIVE_ARGUMENTS_INVALID",
-                _schema_error(error),
-            )
         definition = self._registry.definition(tool_name)
         operation = arguments.get("operation")
         variant = (
@@ -322,16 +421,34 @@ class NativeTurnDispatcher:
             else None
         )
         if variant is None:
+            operations = (
+                [item.operation for item in definition.variants]
+                if definition is not None
+                else []
+            )
             raise NativeDispatchError(
                 "NATIVE_ARGUMENTS_INVALID",
                 "Native tool arguments name an unavailable operation.",
+                details={
+                    "argument_error": {
+                        "path": ["operation"],
+                        "rule": "enum",
+                        "expected": operations,
+                        "received": _bounded_argument_value(operation),
+                        "valid_example": (
+                            {"operation": operations[0]} if operations else {}
+                        ),
+                    }
+                },
             )
-        exact_validator = Draft202012Validator(variant.provider_parameters())
+        exact_schema = variant.provider_parameters()
+        exact_validator = Draft202012Validator(exact_schema)
         exact_error = next(iter(exact_validator.iter_errors(arguments)), None)
         if exact_error is not None:
             raise NativeDispatchError(
                 "NATIVE_ARGUMENTS_INVALID",
                 _schema_error(exact_error),
+                details=_schema_error_details(exact_error, exact_schema),
             )
         return variant
 
@@ -412,6 +529,26 @@ class NativeTurnDispatcher:
                         "A Native capability returned an invalid result contract.",
                     )
                 self._guard_after_call(variant, payload)
+                definition = self._registry.definition(name)
+                if (
+                    definition is not None
+                    and definition.primary_classification in {"read", "view"}
+                ):
+                    revision_after = self._state.current_revision(self._document_uid)
+                    if revision_after != ticket.expected_revision:
+                        raise NativeDispatchError(
+                            "NATIVE_READ_SIDE_EFFECT",
+                            "A read-only Native capability changed the document; "
+                            "its result was rejected.",
+                            details={
+                                "current_revision": revision_after,
+                                "repair": {
+                                    "operation": arguments.get("operation"),
+                                    "revision_before": ticket.expected_revision,
+                                    "revision_after": revision_after,
+                                },
+                            },
+                        )
                 response = {"ok": True, **dict(payload)}
                 record.result_json = _canonical_json(
                     response,

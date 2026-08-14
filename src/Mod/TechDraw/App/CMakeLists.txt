@@ -42,6 +42,10 @@ generate_from_py(DrawTileWeld)
 generate_from_py(DrawWeldSymbol)
 generate_from_py(CosmeticExtension)
 generate_from_py(DrawBrokenView)
+generate_from_py(DrawViewSection)
+generate_from_py(DrawComplexSection)
+generate_from_py(DrawViewDetail)
+generate_from_py(DrawViewDraft)
 
 SET(Draw_SRCS
     DrawPage.cpp
@@ -96,6 +100,7 @@ SET(Draw_SRCS
     DrawGeomHatch.h
     DrawViewDraft.cpp
     DrawViewDraft.h
+    DrawViewDraftPyImp.cpp
     DrawViewMulti.cpp
     DrawViewMulti.h
     DrawViewImage.cpp
@@ -242,6 +247,12 @@ SET(Python_SRCS
     CosmeticExtensionPyImp.cpp
     DrawBrokenView.pyi
     DrawBrokenViewPyImp.cpp
+    DrawViewSection.pyi
+    DrawViewSectionPyImp.cpp
+    DrawComplexSection.pyi
+    DrawComplexSectionPyImp.cpp
+    DrawViewDetail.pyi
+    DrawViewDetailPyImp.cpp
 )
 
 SOURCE_GROUP("Mod" FILES ${TechDraw_SRCS})

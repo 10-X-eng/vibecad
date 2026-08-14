@@ -35,8 +35,10 @@
 #include <Gui/MainWindow.h>
 #include <Gui/WidgetFactory.h>
 #include <Mod/Spreadsheet/App/Sheet.h>
+#include <Mod/Spreadsheet/App/SheetPy.h>
 
 #include "DlgSettingsImp.h"
+#include "MutationSupport.h"
 #include "SheetTableViewAccessibleInterface.h"
 #include "ViewProviderSpreadsheet.h"
 #include "Workbench.h"
@@ -62,6 +64,11 @@ public:
     {
         add_varargs_method("open", &Module::open);
         add_varargs_method("insert", &Module::insert);
+        add_varargs_method(
+            "publishCreatedSheet",
+            &Module::publishCreatedSheet,
+            "publishCreatedSheet(sheet) -- publish one newly created sheet as an exact History operation."
+        );
         initialize("This module is the SpreadsheetGui module.");  // register with Python
     }
 
@@ -114,6 +121,25 @@ private:
         }
         load(pcDoc, EncodedName);
 
+        return Py::None();
+    }
+
+    Py::Object publishCreatedSheet(const Py::Tuple& args)
+    {
+        PyObject* sheetPy = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O!", &Spreadsheet::SheetPy::Type, &sheetPy)) {
+            throw Py::TypeError("expected one Spreadsheet::Sheet");
+        }
+        auto* sheet = static_cast<Spreadsheet::SheetPy*>(sheetPy)->getSheetPtr();
+        if (!sheet || !sheet->getDocument()) {
+            throw Py::RuntimeError("the spreadsheet is not attached to a document");
+        }
+        try {
+            SpreadsheetGui::MutationSupport::publishCreatedSheet(*sheet);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
         return Py::None();
     }
 };

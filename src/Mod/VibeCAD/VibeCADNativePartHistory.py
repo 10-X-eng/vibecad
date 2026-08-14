@@ -23,6 +23,9 @@ class CurrentPartSource:
     target: Any
     presentation: Any
     shape: Any
+    raw_shape: Any | None = None
+    global_placement: Any | None = None
+    shape_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +99,23 @@ def resolve_current_part_source(
     elif shape_type not in allowed_types:
         raise NativeModelError(f"That current Part shape type cannot be used by {operation}.")
     presentation = PartGui.resolveModelingPresentationObject(target)
-    return CurrentPartSource(target, presentation or visible, shape)
+    try:
+        raw_shape = Part.getShape(target, transform=False)
+    except Exception:
+        raw_shape = None
+    placement_getter = getattr(target, "getGlobalPlacement", None)
+    try:
+        global_placement = placement_getter() if callable(placement_getter) else None
+    except Exception:
+        global_placement = None
+    return CurrentPartSource(
+        target,
+        presentation or visible,
+        shape,
+        raw_shape,
+        global_placement,
+        _shape_fingerprint(shape),
+    )
 
 
 def resolve_current_part_edge(
@@ -259,23 +278,18 @@ def _presentation_still_resolves(
 
 
 def current_part_source_is_exact(document: Any, source: CurrentPartSource) -> bool:
-    import Part
-
-    name = str(getattr(source.target, "Name", "") or "")
-    if (
-        not name
-        or document.getObject(name) is not source.target
-        or not _presentation_still_resolves(
-            document,
-            source.presentation,
+    return current_part_element_is_exact(
+        document,
+        CurrentPartElement(
             source.target,
-        )
-    ):
-        return False
-    try:
-        return _shape_is_exact(Part.getShape(source.target, transform=True), source.shape)
-    except Exception:
-        return False
+            source.shape,
+            None,
+            source.raw_shape,
+            source.global_placement,
+            source.shape_fingerprint,
+            source.presentation,
+        ),
+    )
 
 
 def current_part_edge_is_exact(document: Any, edge: CurrentPartEdge) -> bool:

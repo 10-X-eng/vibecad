@@ -107,6 +107,7 @@ def create_native_session_execution(
     controller: Any | None = None,
     output_authorizer: NativeOutputAuthorizer | None = None,
     input_authorizer: NativeInputAuthorizer | None = None,
+    document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None = None,
 ) -> NativeSessionExecution:
     if str(service.modeling_engine() or "").strip().lower() != "native":
         raise NativeDispatchError(
@@ -146,8 +147,14 @@ def create_native_session_execution(
         return require_frozen_native_turn(turn, controller, selected_registry)
 
     run_id = secrets.token_hex(16)
-    undo = NativeAssistantUndoLedger()
+    undo = service.native_assistant_undo_ledger()
+    if not isinstance(undo, NativeAssistantUndoLedger):
+        raise NativeDispatchError(
+            "NATIVE_UNDO_UNAVAILABLE",
+            "The Native host has no assistant undo provenance store.",
+        )
     undo.begin_run(run_id)
+    background_manager_factory = getattr(service, "native_background_manager", None)
     context = NativeRuntimeContext(
         service=service,
         document=document,
@@ -159,6 +166,12 @@ def create_native_session_execution(
         edit_or_task_active=lambda: _edit_or_task_active(service),
         authorize_output=output_authorizer,
         authorize_input=input_authorizer,
+        background_manager=(
+            background_manager_factory()
+            if callable(background_manager_factory)
+            else None
+        ),
+        document_thread_dispatch=document_thread_dispatch,
     )
     dispatcher = NativeTurnDispatcher(
         document=document,

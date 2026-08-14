@@ -45,7 +45,9 @@
 #include <Mod/TechDraw/App/DrawWeldSymbol.h>
 #include <Mod/TechDraw/App/DrawUtil.h>
 
+#include "CosmeticVertexBuilder.h"
 #include "DrawGuiUtil.h"
+#include "FrameVisibilityBuilder.h"
 #include "QGIView.h"
 #include "TaskCenterLine.h"
 #include "TaskCosmeticLine.h"
@@ -390,81 +392,82 @@ void execMidpoints(Gui::Command* cmd)
     if (!dvp || selectedEdges.empty())
         return;
 
-    const TechDraw::BaseGeomPtrVector edges = dvp->getEdgeGeometry();
-    std::vector<Base::Vector3d> points;
-    points.reserve(selectedEdges.size());
-    for (auto& s: selectedEdges) {
-        const int geometryId = TechDraw::DrawUtil::getIndexFromName(s);
-        if (geometryId < 0
-            || static_cast<std::size_t>(geometryId) >= edges.size()
-            || !edges[static_cast<std::size_t>(geometryId)]) {
-            return;
-        }
-        TechDraw::BaseGeomPtr geom =
-            edges[static_cast<std::size_t>(geometryId)];
-        Base::Vector3d mid = geom->getMidPoint();
-        // invert the point so the math works correctly
-        mid = DrawUtil::invertY(mid);
-        mid = CosmeticVertex::makeCanonicalPoint(dvp, mid);
-        points.push_back(mid);
+    try {
+        (void)validateDrawingMidpointVertices(dvp, selectedEdges);
     }
-    if (points.empty()) {
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Midpoint Vertices"),
+            QString::fromUtf8(error.what())
+        );
         return;
     }
 
-    cmd->openCommand(
+    const int transactionId = cmd->openCommand(
         dvp->getDocument(),
         QT_TRANSLATE_NOOP("Command", "Add midpoint vertices")
     );
-    for (const auto& point : points) {
-        dvp->addCosmeticVertex(point);
+    if (transactionId == App::NullTransaction) {
+        return;
     }
-
-    cmd->commitCommand();
+    try {
+        (void)createDrawingMidpointVertices(dvp, selectedEdges);
+        cmd->commitCommand();
+    }
+    catch (const Base::Exception& error) {
+        Gui::Command::abortCommand(transactionId);
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Midpoint Vertices"),
+            QString::fromUtf8(error.what())
+        );
+        return;
+    }
 
     dvp->recomputeFeature();
 }
 
 void execQuadrants(Gui::Command* cmd)
 {
-//    Base::Console().message("execQuadrants()\n");
     TechDraw::DrawViewPart* dvp = nullptr;
     std::vector<std::string> selectedEdges = CommandHelpers::getSelectedSubElements(cmd, dvp, "Edge");
 
     if (!dvp || selectedEdges.empty())
         return;
 
-    const TechDraw::BaseGeomPtrVector edges = dvp->getEdgeGeometry();
-    std::vector<Base::Vector3d> points;
-    for (auto& s: selectedEdges) {
-        const int geometryId = TechDraw::DrawUtil::getIndexFromName(s);
-        if (geometryId < 0
-            || static_cast<std::size_t>(geometryId) >= edges.size()
-            || !edges[static_cast<std::size_t>(geometryId)]) {
-            return;
-        }
-        TechDraw::BaseGeomPtr geom =
-            edges[static_cast<std::size_t>(geometryId)];
-        std::vector<Base::Vector3d> quads = geom->getQuads();
-        for (auto& q: quads) {
-            // invert the point so the math works correctly
-            Base::Vector3d iq = DrawUtil::invertY(q);
-            iq = CosmeticVertex::makeCanonicalPoint(dvp, iq);
-            points.push_back(iq);
-        }
+    try {
+        (void)validateDrawingQuadrantVertices(dvp, selectedEdges);
     }
-    if (points.empty()) {
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Quadrant Vertices"),
+            QString::fromUtf8(error.what())
+        );
         return;
     }
 
-    cmd->openCommand(
+    const int transactionId = cmd->openCommand(
         dvp->getDocument(),
         QT_TRANSLATE_NOOP("Command", "Add Quadrant vertices")
     );
-    for (const auto& point : points) {
-        dvp->addCosmeticVertex(point);
+    if (transactionId == App::NullTransaction) {
+        return;
     }
-    cmd->commitCommand();
+    try {
+        (void)createDrawingQuadrantVertices(dvp, selectedEdges);
+        cmd->commitCommand();
+    }
+    catch (const Base::Exception& error) {
+        Gui::Command::abortCommand(transactionId);
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Quadrant Vertices"),
+            QString::fromUtf8(error.what())
+        );
+        return;
+    }
 
     dvp->recomputeFeature();
 }
@@ -1614,14 +1617,8 @@ void CmdTechDrawShowAll::activated(int iMsg)
         return;
     }
 
-    Gui::ViewProvider* vp = QGIView::getViewProvider(baseFeat);
-    auto partVP = freecad_cast<ViewProviderViewPart*>(vp);
-    if (partVP) {
-        bool state = partVP->ShowAllEdges.getValue();
-        state = !state;
-        partVP->ShowAllEdges.setValue(state);
-        baseFeat->requestPaint();
-    }
+    const auto current = inspectDrawingHiddenEdgeVisibility(baseFeat);
+    changeDrawingHiddenEdgeVisibility(baseFeat, !current.visible);
 }
 
 bool CmdTechDrawShowAll::isActive()

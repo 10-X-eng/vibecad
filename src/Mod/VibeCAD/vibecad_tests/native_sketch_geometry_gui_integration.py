@@ -26,6 +26,11 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
 from VibeCADNativeSketchConstraintBindings import SKETCH_CONSTRAINT_CAPABILITY_NAME
 from VibeCADNativeSketchGeometryBindings import SKETCH_GEOMETRY_CAPABILITY_NAME
+from VibeCADNativeSketchCleanupSchema import (
+    SKETCH_CUT_CAPABILITY_NAME,
+    SKETCH_DELETE_CAPABILITY_NAME,
+    SKETCH_EXTEND_CAPABILITY_NAME,
+)
 from VibeCADNativeSketchInspectBindings import SKETCH_INSPECT_CAPABILITY_NAME
 from VibeCADNativeSketchPresentationBindings import (
     SKETCH_PRESENTATION_CAPABILITY_NAME,
@@ -195,6 +200,9 @@ def _run() -> None:
         assert production.incomplete_definition_names == ()
         assert set(production.tool_names) >= {
             SKETCH_GEOMETRY_CAPABILITY_NAME,
+            SKETCH_CUT_CAPABILITY_NAME,
+            SKETCH_EXTEND_CAPABILITY_NAME,
+            SKETCH_DELETE_CAPABILITY_NAME,
             SKETCH_CONSTRAINT_CAPABILITY_NAME,
             SKETCH_INSPECT_CAPABILITY_NAME,
             SKETCH_PRESENTATION_CAPABILITY_NAME,
@@ -249,6 +257,14 @@ def _run() -> None:
                 tool_name = SKETCH_PRESENTATION_CAPABILITY_NAME
             elif operation in SKETCH_CONSTRAINT_OPERATIONS:
                 tool_name = SKETCH_CONSTRAINT_CAPABILITY_NAME
+            elif operation == "trim":
+                tool_name = SKETCH_CUT_CAPABILITY_NAME
+            elif operation == "split":
+                tool_name = SKETCH_CUT_CAPABILITY_NAME
+            elif operation == "extend":
+                tool_name = SKETCH_EXTEND_CAPABILITY_NAME
+            elif operation == "delete_geometry":
+                tool_name = SKETCH_DELETE_CAPABILITY_NAME
             else:
                 tool_name = SKETCH_GEOMETRY_CAPABILITY_NAME
             response = active_call_state["dispatcher"].call(

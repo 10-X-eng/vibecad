@@ -19,6 +19,13 @@ from VibeCADNativeAssemblyComponents import (
     verify_created_part,
     verify_inserted_component,
 )
+from VibeCADNativeAssemblyRigidity import (
+    AssemblyRigiditySpec,
+    NativeAssemblyRigidityError,
+    apply_assembly_rigidity,
+    preflight_assembly_rigidity,
+    verify_assembly_rigidity,
+)
 from VibeCADNativeAssemblyBom import (
     AssemblyBomCreateSpec,
     NativeAssemblyBomError,
@@ -125,6 +132,24 @@ def _object_ref(document_uid: str, value: Any, field: str) -> NativeObjectRef:
             f"{field} must be one exact object reference."
         )
     return NativeObjectRef(document_uid, str(value.get("object_name") or ""))
+
+
+def _rigidity_object_ref(
+    document_uid: str,
+    value: Any,
+    field: str,
+) -> NativeObjectRef:
+    if not isinstance(value, Mapping) or set(value) != {"object_name"}:
+        raise NativeAssemblyRigidityError(
+            f"{field} must be one exact object reference."
+        )
+    try:
+        return NativeObjectRef(
+            document_uid,
+            str(value.get("object_name") or ""),
+        )
+    except Exception as exc:
+        raise NativeAssemblyRigidityError(str(exc)) from exc
 
 
 def _source_ref(value: Any) -> AssemblySourceRef:
@@ -408,6 +433,26 @@ class NativeAssemblyStructureRuntime:
                         "expected_component_count",
                     }
                 ),
+                "make_flexible": frozenset(
+                    {
+                        "assembly",
+                        "link",
+                        "expected_state_sha256",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                    }
+                ),
+                "make_rigid": frozenset(
+                    {
+                        "assembly",
+                        "link",
+                        "expected_state_sha256",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                    }
+                ),
                 "solve_assembly": frozenset(
                     {
                         "assembly",
@@ -503,6 +548,43 @@ class NativeAssemblyStructureRuntime:
                 transaction_name="Create Native Assembly BOM",
                 mutate=lambda document: create_assembly_bom(document, bom_spec),
                 verify=verify_created_assembly_bom,
+            )
+        if operation in {"make_flexible", "make_rigid"}:
+            rigidity_spec = AssemblyRigiditySpec(
+                assembly_ref=_rigidity_object_ref(
+                    self._context.document_uid,
+                    values["assembly"],
+                    "assembly",
+                ),
+                link_ref=_rigidity_object_ref(
+                    self._context.document_uid,
+                    values["link"],
+                    "link",
+                ),
+                expected_state_sha256=values["expected_state_sha256"],
+                expected_component_count=values["expected_component_count"],
+                expected_grounded_count=values["expected_grounded_count"],
+                expected_joint_count=values["expected_joint_count"],
+                desired_rigid=operation == "make_rigid",
+            )
+            self._context.guard()
+            prepared_rigidity = preflight_assembly_rigidity(
+                self._context.document,
+                rigidity_spec,
+            )
+            return run_immediate_mutation(
+                self._context,
+                ticket=ticket,
+                transaction_name=(
+                    "Make Native AssemblyLink Rigid"
+                    if rigidity_spec.desired_rigid
+                    else "Make Native AssemblyLink Flexible"
+                ),
+                mutate=lambda document: apply_assembly_rigidity(
+                    document,
+                    prepared_rigidity,
+                ),
+                verify=verify_assembly_rigidity,
             )
         assembly_ref = _object_ref(
             self._context.document_uid,

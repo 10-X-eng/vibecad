@@ -37,6 +37,8 @@ class NativeProviderToolRunner:
         frozen_schemas: list[dict[str, Any]],
         frozen_modeling_surface: Mapping[str, Any],
         tool_trace: list[dict[str, Any]],
+        debug_events: list[dict[str, Any]] | None = None,
+        debug_capture_directory: str = "",
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         cancellation_check: Callable[[], bool] | None = None,
         steering_check: Callable[[], list[str]] | None = None,
@@ -52,6 +54,8 @@ class NativeProviderToolRunner:
         self._frozen_schemas = _frozen_copy(frozen_schemas)
         self._frozen_modeling_surface = _frozen_copy(dict(frozen_modeling_surface))
         self._tool_trace = tool_trace
+        self._debug_events = debug_events
+        self._debug_capture_directory = str(debug_capture_directory or "")
         self._progress = progress_callback
         self._cancelled = cancellation_check
         self._steering = steering_check
@@ -88,6 +92,22 @@ class NativeProviderToolRunner:
                 provider_call_id,
             )
         )
+        if self._debug_events is not None and self._debug_capture_directory:
+            events = [dict(event) for event in self._debug_events]
+            self._debug_events.clear()
+            if events:
+                from VibeCADDebug import capture_native_diagnostic
+
+                for event in events:
+                    try:
+                        capture_native_diagnostic(
+                            directory=self._debug_capture_directory,
+                            provider_call_id=provider_call_id,
+                            event=event,
+                        )
+                    except Exception:
+                        # Debug capture must never change Native execution.
+                        pass
         if not isinstance(result, dict):
             result = {
                 "ok": False,

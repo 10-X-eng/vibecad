@@ -58,6 +58,7 @@ class QGIView;
 class QGILeaderLine;
 class QGIWeldSymbol;
 class MDIViewPage;
+struct DrawingWeldSymbolSpec;
 //class ViewProviderWeld;
 
 class TileImage
@@ -129,6 +130,7 @@ protected:
 
     TechDraw::DrawWeldSymbol* createWeldingSymbol();
     void updateWeldingSymbol();
+    DrawingWeldSymbolSpec currentSpec();
 
     void getTileFeats();
     void updateTiles();

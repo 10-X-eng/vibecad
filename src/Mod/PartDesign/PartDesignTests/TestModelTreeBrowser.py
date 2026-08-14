@@ -18,6 +18,7 @@ from pivy import coin
 
 
 BROWSER_FOLDER_TYPE = 1002
+BROWSER_DETAIL_TYPE = 1003
 TREE_PARAMETER_PATH = "User parameter:BaseApp/Preferences/TreeView"
 
 
@@ -37,6 +38,16 @@ def _tag_scripted_object(obj, *, role, model_id, output_key=""):
                 "VibeCAD Publication",
             )
         setattr(obj, name, value)
+
+
+def _tag_timeline_role(obj, role):
+    if "VibeCADTimelineRole" not in obj.PropertiesList:
+        obj.addProperty(
+            "App::PropertyString",
+            "VibeCADTimelineRole",
+            "VibeCAD History",
+        )
+    obj.VibeCADTimelineRole = role
 
 
 def _visible_children(item):
@@ -287,6 +298,7 @@ class TestModelTreeBrowser(unittest.TestCase):
         )
         self.feature.Label = "Extrude Feature"
         self.feature.Shape = Part.makeBox(3, 4, 5)
+        _tag_timeline_role(self.feature, "operation")
         self.feature_body.Tip = self.feature
         self.reference = self.feature_body.newObject(
             "PartDesign::SubShapeBinder",
@@ -309,6 +321,31 @@ class TestModelTreeBrowser(unittest.TestCase):
             "ReleaseMetadata",
         )
         self.release_metadata.Label = "Release Metadata"
+
+        self.component_operation = self.document.addObject(
+            "Part::Feature",
+            "ComponentOperation",
+        )
+        self.component_operation.Label = "Component Operation"
+        self.component_operation.Shape = Part.makeBox(1, 1, 1)
+        _tag_timeline_role(self.component_operation, "operation")
+        self.component.addObject(self.component_operation)
+
+        self.root_operation = self.document.addObject(
+            "Part::Feature",
+            "RootOperation",
+        )
+        self.root_operation.Label = "Root Operation"
+        self.root_operation.Shape = Part.makeBox(1, 2, 1)
+        _tag_timeline_role(self.root_operation, "operation")
+
+        self.internal_state = self.document.addObject(
+            "Part::Feature",
+            "InternalOperationState",
+        )
+        self.internal_state.Label = "Internal Operation State"
+        self.internal_state.Shape = Part.makeBox(1, 1, 2)
+        _tag_timeline_role(self.internal_state, "internal")
 
         model_id = "browser-body-backed-publication"
         self.vibe_component = self.document.addObject(
@@ -542,6 +579,7 @@ class TestModelTreeBrowser(unittest.TestCase):
                 "Parameters",
                 "Bodies",
                 "Sketches",
+                "Operations",
                 "References",
                 "Groups",
             },
@@ -558,8 +596,12 @@ class TestModelTreeBrowser(unittest.TestCase):
             [item.text(0) for item in _visible_children(bodies)],
             ["Sketch Body", "Feature Body"],
         )
-        for body in _visible_children(bodies):
-            self.assertEqual(_visible_children(body), [])
+        sketch_body, feature_body = _visible_children(bodies)
+        self.assertEqual(_visible_children(sketch_body), [])
+        self.assertEqual(
+            [item.text(0) for item in _visible_children(feature_body)],
+            [self.feature.Label],
+        )
 
         sketches = _child(component, "Sketches", BROWSER_FOLDER_TYPE)
         self.assertEqual(
@@ -592,11 +634,22 @@ class TestModelTreeBrowser(unittest.TestCase):
             [self.manufacturing_note.Label],
         )
 
-        visible_labels = {
-            item.text(0) for item in _visible_walk(document_item)
-        }
+        operations = _child(component, "Operations", BROWSER_FOLDER_TYPE)
+        self.assertEqual(
+            [item.text(0) for item in _visible_children(operations)],
+            [self.component_operation.Label],
+        )
+
+        visible_labels = {item.text(0) for item in _visible_walk(document_item)}
         self.assertNotIn("Features", visible_labels)
-        self.assertNotIn(self.feature.Label, visible_labels)
+        self.assertIn(self.feature.Label, visible_labels)
+        self.assertNotIn(self.internal_state.Label, visible_labels)
+
+        root_operations = _child(document_item, "Operations", BROWSER_FOLDER_TYPE)
+        self.assertEqual(
+            [item.text(0) for item in _visible_children(root_operations)],
+            [self.root_operation.Label],
+        )
 
         # Real loose legacy geometry remains reachable, but no feature owned by
         # a Body is duplicated in this fallback.
@@ -752,8 +805,22 @@ class TestModelTreeBrowser(unittest.TestCase):
             "BrowserBoms",
         )
         bom_group.Label = "Bills of Materials"
-        bom = bom_group.newObject("App::FeaturePython", "BrowserBom")
+        bom = bom_group.newObject("Assembly::BomObject", "BrowserBom")
         bom.Label = "Production BOM"
+        bom.autoGenerate = False
+        bom.columnsNames = ["Index", "Name", "Quantity"]
+        for address, value in (
+            ("A1", "Index"),
+            ("B1", "Name"),
+            ("C1", "Quantity"),
+            ("A2", "1"),
+            ("B2", "Ring Housing"),
+            ("C2", "1"),
+            ("A3", "2"),
+            ("B3", "Planet Gear"),
+            ("C3", "4"),
+        ):
+            bom.set(address, value)
         for obj, output_type in (
             (occurrence, "component_link"),
             (joint, "joint"),
@@ -791,6 +858,16 @@ class TestModelTreeBrowser(unittest.TestCase):
             cycle = _snapshot_child(simulation_group, "Run Cycle")
             service_view = _snapshot_child(exploded_group, "Service View")
             production_bom = _snapshot_child(bills_group, "Production BOM")
+            housing_row = _snapshot_child(
+                production_bom,
+                "1. Ring Housing  ×1",
+                BROWSER_DETAIL_TYPE,
+            )
+            planet_row = _snapshot_child(
+                production_bom,
+                "2. Planet Gear  ×4",
+                BROWSER_DETAIL_TYPE,
+            )
             values = (
                 snapshot,
                 item,
@@ -806,6 +883,8 @@ class TestModelTreeBrowser(unittest.TestCase):
                 cycle,
                 service_view,
                 production_bom,
+                housing_row,
+                planet_row,
             )
             return values if all(value is not None for value in values) else None
 
@@ -826,8 +905,12 @@ class TestModelTreeBrowser(unittest.TestCase):
             cycle,
             service_view,
             production_bom,
+            housing_row,
+            planet_row,
         ) = observed
         self.assertIsNone(_snapshot_child(item, "Groups", BROWSER_FOLDER_TYPE))
+        self.assertEqual(housing_row[2], ())
+        self.assertEqual(planet_row[2], ())
         self.assertTrue(
             all(
                 value is not None

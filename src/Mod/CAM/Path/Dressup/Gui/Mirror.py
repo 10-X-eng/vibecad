@@ -18,13 +18,12 @@
 #                                                                              #
 ################################################################################
 
-import Constants
 import FreeCAD
 import FreeCADGui
-import Path
 import Path.Base.Util as PathUtil
 import Path.Main.Job as PathJob
 import PathScripts.PathUtils as PathUtils
+from Path.Dressup import Mirror as MirrorCore
 import Path.Dressup.Utils as PathDressup
 from Path.CommandBoundary import (
     can_start_document_command,
@@ -41,183 +40,10 @@ __doc__ = """Mirror Dressup object. This dressup create mirrored path."""
 translate = FreeCAD.Qt.translate
 
 
-class ObjectDressup:
-    def __init__(self, obj):
-        obj.addProperty(
-            "App::PropertyLink",
-            "Base",
-            "Path",
-            QT_TRANSLATE_NOOP("App::Property", "The base path for mirroring"),
-        )
-        obj.addProperty(
-            "App::PropertyEnumeration",
-            "MirrorAxis",
-            "Path",
-            QT_TRANSLATE_NOOP("App::Property", "The mirroring axis"),
-        )
-        obj.addProperty(
-            "App::PropertyVectorDistance",
-            "Offset",
-            "Path",
-            QT_TRANSLATE_NOOP("App::Property", "Offset for the mirroring axis "),
-        )
-        obj.addProperty(
-            "App::PropertyBool",
-            "CenterModel",
-            "Path",
-            QT_TRANSLATE_NOOP("App::Property", "Mirroring at the center of base model"),
-        )
-        obj.addProperty(
-            "App::PropertyBool",
-            "KeepBasePath",
-            "Path",
-            QT_TRANSLATE_NOOP("App::Property", "Add path from base operation"),
-        )
-        obj.addProperty(
-            "App::PropertyLinkSubGlobal",
-            "Reference",
-            "Path",
-            QT_TRANSLATE_NOOP("App::Property", "Define the reference edge or plane for mirroring"),
-        )
-        obj.MirrorAxis = ("X", "Y", "XY", "Reference", "None")
-        obj.Proxy = self
-        self.setEditorModes(obj)
+class ObjectDressup(MirrorCore.ObjectDressup):
+    """GUI-restorable proxy backed by the shared headless generator."""
 
-    def dumps(self):
-        return
-
-    def loads(self, state):
-        return
-
-    def onDocumentRestored(self, obj):
-        self.setEditorModes(obj)
-
-    def onChanged(self, obj, prop):
-        if prop == "MirrorAxis":
-            self.setEditorModes(obj)
-        elif prop == "Path" and obj.ViewObject:
-            obj.ViewObject.signalChangeIcon()
-
-    def setEditorModes(self, obj):
-        centerModelMode = 2 if obj.MirrorAxis in ("None", "Reference") else 0
-        keepBasePathMode = 2 if obj.MirrorAxis == "None" else 0
-        referenceMode = 0 if obj.MirrorAxis == "Reference" else 2
-
-        obj.setEditorMode("CenterModel", centerModelMode)
-        obj.setEditorMode("KeepBasePath", keepBasePathMode)
-        obj.setEditorMode("Reference", referenceMode)
-
-    def execute(self, obj):
-        if not PathUtil.activeForOp(obj):
-            obj.Path = Path.Path()
-            return
-        if not obj.Base:
-            obj.Path = Path.Path()
-            Path.Log.warning(translate("MirrorDressup", "No base operation"))
-            return
-
-        if not obj.Base.isDerivedFrom("Path::Feature"):
-            obj.Path = Path.Path()
-            Path.Log.warning(
-                translate("MirrorDressup", "Base object '%s' is not derived from Path::Feature")
-                % obj.Base.Label
-            )
-            return
-
-        if not obj.Base.Path.Commands:
-            obj.Path = Path.Path()
-            Path.Log.warning(
-                translate("MirrorDressup", "Base operation '%s' with empty path") % obj.Base.Label
-            )
-            return
-
-        if obj.MirrorAxis == "None":
-            obj.Path = obj.Base.Path
-            return
-
-        offsetX = obj.Offset.x
-        offsetY = obj.Offset.y
-        offsetZ = obj.Offset.z
-
-        if obj.MirrorAxis == "Reference":
-            if not obj.Reference or not obj.Reference[1]:
-                obj.Path = obj.Base.Path
-                return
-            model, subName = obj.Reference
-            sub = model.Shape.getElement(subName[0])
-            bb = sub.BoundBox
-            if Path.Geom.isRoughly(bb.XLength, 0):
-                mirrorAxis = "Y"
-                offsetX += 2 * bb.XMin
-            elif Path.Geom.isRoughly(bb.YLength, 0):
-                mirrorAxis = "X"
-                offsetY += 2 * bb.YMin
-        else:
-            mirrorAxis = obj.MirrorAxis
-
-        # Calculate offset for center of model
-        if obj.CenterModel and obj.MirrorAxis != "Reference":
-            # if possible get model from base operation
-            baseOp = PathDressup.baseOp(obj)
-            if (
-                hasattr(baseOp, "Base")
-                and isinstance(baseOp.Base, (list, tuple))
-                and baseOp.Base
-                and isinstance(baseOp.Base[0], (list, tuple))
-                and baseOp.Base[0]
-                and baseOp.Base[0][0].isDerivedFrom("Part::Feature")
-            ):
-                model = baseOp.Base[0][0]
-            else:
-                # otherwise get first model from Model group of the Job
-                job = PathUtils.findParentJob(obj)
-                model = job.Model.Group[0]
-
-            offsetX += model.Shape.BoundBox.XMax + model.Placement.Base.x
-            offsetY += model.Shape.BoundBox.YMax + model.Placement.Base.y
-
-        commands = PathUtils.getPathWithPlacement(obj.Base).Commands
-        for cmd in commands:
-            if cmd.Name not in Constants.GCODE_MOVE_ALL:
-                # command without move, change nothing
-                continue
-            else:
-                if cmd.x is not None:
-                    # process X move
-                    if mirrorAxis in ("Y", "XY"):
-                        cmd.x = -cmd.x
-                    cmd.x += offsetX
-
-                if cmd.y is not None:
-                    # process Y move
-                    if mirrorAxis in ("X", "XY"):
-                        cmd.y = -cmd.y
-                    cmd.y += offsetY
-
-                if cmd.z is not None:
-                    # process Z move
-                    cmd.z += offsetZ
-
-                if cmd.i is not None and mirrorAxis in ("Y", "XY"):
-                    # process I (X offset) from Arc move
-                    cmd.i = -cmd.i
-
-                if cmd.j is not None and mirrorAxis in ("X", "XY"):
-                    # process J (Y offset) from Arc move
-                    cmd.j = -cmd.j
-
-                if mirrorAxis != "XY" and cmd.Name in Constants.GCODE_MOVE_ARC:
-                    # change direction of Arc move
-                    if cmd.Name in Constants.GCODE_MOVE_CCW:
-                        cmd.Name = "G2"
-                    else:
-                        cmd.Name = "G3"
-
-        if obj.KeepBasePath:
-            obj.Path = PathUtils.getPathWithPlacement(obj.Base)
-            obj.Path.addCommands(commands)
-        else:
-            obj.Path = Path.Path(commands)
+    pass
 
 
 class ViewProviderDressup:
@@ -246,14 +72,6 @@ class ViewProviderDressup:
         return
 
     def claimChildren(self):
-        if hasattr(self.obj.Base, "InList"):
-            for i in self.obj.Base.InList:
-                if hasattr(i, "Group"):
-                    group = i.Group
-                    for g in group:
-                        if g.Name == self.obj.Base.Name:
-                            group.remove(g)
-                    i.Group = group
         return [self.obj.Base]
 
     def _restore_base_before_delete(self, vobj):
@@ -362,7 +180,19 @@ def _validated_base(base, document):
     return job
 
 
-def _validate_result(document, result, base, job):
+def _validate_result(
+    document,
+    result,
+    result_name,
+    result_id,
+    base,
+    base_name,
+    base_id,
+    job,
+    job_name,
+    job_id,
+    base_was_visible,
+):
     has_active_source_path = (
         PathUtil.activeForOp(base)
         and getattr(base, "Path", None)
@@ -371,12 +201,39 @@ def _validate_result(document, result, base, job):
     if (
         result is None
         or result.Document is not document
-        or not result.isDerivedFrom("Path::Feature")
+        or result.TypeId != "Path::FeaturePython"
+        or document.getObject(result_name) is not result
+        or document.getObject(result_id) is not result
+        or str(result.Name) != result_name
+        or int(result.ID) != result_id
         or not isinstance(getattr(result, "Proxy", None), ObjectDressup)
+        or not isinstance(
+            getattr(result.ViewObject, "Proxy", None),
+            ViewProviderDressup,
+        )
         or result.Base is not base
+        or base.Document is not document
+        or document.getObject(base_name) is not base
+        or document.getObject(base_id) is not base
+        or str(base.Name) != base_name
+        or int(base.ID) != base_id
+        or job.Document is not document
+        or document.getObject(job_name) is not job
+        or document.getObject(job_id) is not job
+        or str(job.Name) != job_name
+        or int(job.ID) != job_id
         or not result.isValid()
         or PathUtils.findParentJob(result) is not job
-        or result not in job.Operations.Group
+        or PathUtil.timelineParentJob(result) is not job
+        or result not in tuple(job.Operations.Group or ())
+        or base in tuple(job.Operations.Group or ())
+        or not document.isProvisionallyEnrolledInTimelineByCurrentTransaction(
+            result
+        )
+        or tuple(result.VibeCADTimelineReplacedInputs)
+        != ((base,) if base_was_visible else ())
+        or bool(base.ViewObject.Visibility)
+        or not bool(result.ViewObject.Visibility)
         or (
             has_active_source_path
             and (
@@ -388,15 +245,36 @@ def _validate_result(document, result, base, job):
         raise RuntimeError("The mirrored CAM toolpath was not created correctly")
 
 
-def createDressupFeature(document):
+def createDressupFeature(document, name="MirrorDressup"):
     """Create and initialize one exact mirror dress-up feature."""
     if document is None:
         raise RuntimeError("A document is required for a mirror dress-up")
     result = document.addObject(
         "Path::FeaturePython",
-        "MirrorDressup",
+        name,
     )
     ObjectDressup(result)
+    return result
+
+
+def CreateInTransaction(base, name="MirrorDressup", hide_base=True):
+    """Create one Mirror replacement inside its caller-owned transaction."""
+
+    document = getattr(base, "Document", None)
+    job = _validated_base(base, document)
+    if job is None:
+        raise RuntimeError("The selected CAM operation cannot be mirror-dressed")
+    base_was_visible = bool(base.ViewObject and base.ViewObject.Visibility)
+    result = createDressupFeature(document, name)
+    result.Base = base
+    job.Proxy.addOperation(result, base, removeBefore=True)
+    result.ViewObject.Proxy = ViewProviderDressup(result.ViewObject)
+    PathUtil.markTimelineReplacedInputs(
+        result,
+        [base] if base_was_visible else [],
+    )
+    if hide_base:
+        base.ViewObject.Visibility = False
     return result
 
 
@@ -427,46 +305,29 @@ class CommandPathDressup:
         if job is None:
             return
 
+        base_name = str(op.Name)
+        base_id = int(op.ID)
+        job_name = str(job.Name)
+        job_id = int(job.ID)
+        base_was_visible = bool(op.ViewObject.Visibility)
+
         transaction = _OwnedDocumentTransaction(
             document,
             "Create CAM mirror dress-up",
         )
         try:
             FreeCADGui.addModule("Path.Dressup.Gui.Mirror")
-            FreeCADGui.addModule("Path.Base.Util")
-            FreeCADGui.addModule("PathScripts.PathUtils")
             FreeCADGui.doCommand(
                 f"document = FreeCAD.getDocument({document.Name!r})"
             )
+            FreeCADGui.doCommand(f"baseOp = document.getObject({op.Name!r})")
             result = FreeCADGui.runDocumentObjectCommand(
                 document,
-                "Path.Dressup.Gui.Mirror.createDressupFeature(document)",
+                "Path.Dressup.Gui.Mirror.CreateInTransaction(baseOp)",
                 "Path::FeaturePython",
             )
-            result_name = result.Name
+            result_name = str(result.Name)
             result_id = int(result.ID)
-            result_expression = "document.getObject(%r)" % result_name
-            FreeCADGui.doCommand(
-                f"baseOp = document.getObject({op.Name!r})"
-            )
-            FreeCADGui.doCommand(
-                "_cam_base_was_visible = bool(baseOp.ViewObject.Visibility)"
-            )
-            FreeCADGui.doCommand("job = PathScripts.PathUtils.findParentJob(baseOp)")
-            FreeCADGui.doCommand(f"{result_expression}.Base = baseOp")
-            FreeCADGui.doCommand(
-                f"job.Proxy.addOperation({result_expression}, baseOp)"
-            )
-            FreeCADGui.doCommand(
-                "Path.Dressup.Gui.Mirror.ViewProviderDressup("
-                f"{result_expression}.ViewObject)"
-            )
-            FreeCADGui.doCommand(
-                "Path.Base.Util.markTimelineReplacedInputs("
-                f"{result_expression}, "
-                "[baseOp] if _cam_base_was_visible else [])"
-            )
-            FreeCADGui.doCommand("baseOp.Visibility = False")
 
             document.recompute()
             resolved = document.getObject(result_name)
@@ -482,7 +343,19 @@ class CommandPathDressup:
                 raise RuntimeError(
                     "The mirror dress-up command did not return its exact output"
                 )
-            _validate_result(document, result, op, job)
+            _validate_result(
+                document,
+                result,
+                result_name,
+                result_id,
+                op,
+                base_name,
+                base_id,
+                job,
+                job_name,
+                job_id,
+                base_was_visible,
+            )
         except Exception:
             transaction.abort()
             raise

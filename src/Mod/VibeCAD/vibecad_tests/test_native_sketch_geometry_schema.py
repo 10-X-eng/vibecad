@@ -12,6 +12,7 @@ from VibeCADNativeCapabilityRegistry import (
     resolve_native_provider_surface,
 )
 from VibeCADNativeRegistry import build_native_capability_registry
+from VibeCADNativeSketchCleanupSchema import sketch_cleanup_capability_definitions
 from VibeCADNativeSketchGeometryBindings import SKETCH_GEOMETRY_CAPABILITY_NAME
 from VibeCADNativeSketchGeometrySchema import sketch_geometry_capability_definition
 from VibeCADRibbonSurface import RibbonAction, RibbonGroup, RibbonSurface
@@ -25,6 +26,14 @@ def _arguments() -> dict[str, object]:
         "expected_constraint_count": 3,
         "position_mm": {"x": 12.5, "y": -4.0},
     }
+
+
+def _cleanup_definition(operation: str):
+    return next(
+        definition
+        for definition in sketch_cleanup_capability_definitions()
+        if any(variant.operation == operation for variant in definition.variants)
+    )
 
 
 def test_finished_geometry_variants_match_live_ribbon_actions_exactly() -> None:
@@ -66,9 +75,6 @@ def test_finished_geometry_variants_match_live_ribbon_actions_exactly() -> None:
         "toggle_construction",
         "create_fillet",
         "create_chamfer",
-        "trim",
-        "split",
-        "extend",
         "project_external_geometry",
         "intersect_external_geometry",
         "carbon_copy",
@@ -165,9 +171,6 @@ def test_finished_geometry_variants_match_live_ribbon_actions_exactly() -> None:
     assert variants["create_chamfer"].action_ids == frozenset(
         {"Sketcher_CreateChamfer"}
     )
-    assert variants["trim"].action_ids == frozenset({"Sketcher_Trimming"})
-    assert variants["split"].action_ids == frozenset({"Sketcher_Split"})
-    assert variants["extend"].action_ids == frozenset({"Sketcher_Extend"})
     assert variants["project_external_geometry"].action_ids == frozenset(
         {"Sketcher_Projection"}
     )
@@ -1712,7 +1715,7 @@ def test_construction_provider_schema_is_closed_bounded_and_exact() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert len(encoded) == 14_998
+    assert len(encoded) == 13_968
     assert len(encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 
@@ -1800,13 +1803,13 @@ def test_fillet_chamfer_provider_schema_is_closed_bounded_and_exact(
 
 @pytest.mark.parametrize(
     ("operation", "encoded_size"),
-    (("trim", 1_190), ("split", 1_191)),
+    (("trim", 1_144), ("split", 1_145)),
 )
 def test_curve_point_provider_schema_is_closed_bounded_and_exact(
     operation: str,
     encoded_size: int,
 ) -> None:
-    definition = sketch_geometry_capability_definition()
+    definition = _cleanup_definition(operation)
     schema = definition.provider_schema((operation,))
     validator = Draft202012Validator(schema["parameters"])
     valid = {
@@ -1852,7 +1855,7 @@ def test_curve_point_provider_schema_is_closed_bounded_and_exact(
 
 
 def test_extend_provider_schema_is_closed_bounded_and_exact() -> None:
-    definition = sketch_geometry_capability_definition()
+    definition = _cleanup_definition("extend")
     schema = definition.provider_schema(("extend",))
     validator = Draft202012Validator(schema["parameters"])
     valid = {
@@ -1895,8 +1898,62 @@ def test_extend_provider_schema_is_closed_bounded_and_exact() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert len(encoded) == 1_249
+    assert len(encoded) == 1_209
     assert len(encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
+
+
+def test_cleanup_tools_expose_only_their_exact_operation_arguments() -> None:
+    definitions = {
+        variant.operation: definition
+        for definition in sketch_cleanup_capability_definitions()
+        for variant in definition.variants
+    }
+    assert set(definitions) == {"trim", "split", "extend", "delete_geometry"}
+
+    cut = definitions["trim"].provider_schema(("trim", "split"))
+    cut_parameters = cut["parameters"]
+    assert set(cut_parameters["properties"]) == {
+        "operation",
+        "sketch",
+        "expected_geometry_count",
+        "expected_constraint_count",
+        "expected_external_geometry_count",
+        "target",
+    }
+    assert set(cut_parameters["required"]) == set(cut_parameters["properties"])
+    assert cut_parameters["properties"]["operation"]["enum"] == ["trim", "split"]
+    assert "geometry_index" not in cut_parameters["properties"]
+    assert "parameter" not in cut_parameters["properties"]
+    assert (
+        len(
+            json.dumps(
+                [cut],
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        == 1_312
+    )
+
+    delete = definitions["delete_geometry"].provider_schema(("delete_geometry",))
+    validator = Draft202012Validator(delete["parameters"])
+    valid = {
+        "operation": "delete_geometry",
+        "sketch": {"object_name": "Sketch"},
+        "expected_geometry_count": 12,
+        "expected_constraint_count": 4,
+        "geometry_indices": [2, 7],
+    }
+    assert list(validator.iter_errors(valid)) == []
+    for invalid in (
+        {**valid, "geometry_indices": []},
+        {**valid, "geometry_indices": [2, 2]},
+        {**valid, "geometry_indices": [-1]},
+        {**valid, "geometry_indices": list(range(65))},
+        {**valid, "target": {"geometry_index": 2}},
+    ):
+        assert list(validator.iter_errors(invalid))
 
 
 @pytest.mark.parametrize(
@@ -2031,7 +2088,7 @@ def test_carbon_copy_provider_schema_is_closed_bounded_and_exact() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert len(all_encoded) == 17_107
+    assert len(all_encoded) == 16_077
     assert len(all_encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 
@@ -2150,7 +2207,7 @@ def test_rotate_provider_schema_is_closed_bounded_and_exact() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert len(all_encoded) == 17_539
+    assert len(all_encoded) == 16_509
     assert len(all_encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 
@@ -2219,7 +2276,7 @@ def test_scale_provider_schema_is_closed_bounded_and_exact() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert len(all_encoded) == 17_852
+    assert len(all_encoded) == 16_822
     assert len(all_encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 
@@ -2288,7 +2345,7 @@ def test_offset_provider_schema_is_closed_bounded_and_exact() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert len(all_encoded) == 18_482
+    assert len(all_encoded) == 17_452
     assert len(all_encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 
@@ -2355,7 +2412,7 @@ def test_symmetry_provider_schema_is_closed_bounded_and_exact() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert len(all_encoded) == 18_954
+    assert len(all_encoded) == 17_924
     assert len(all_encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 
@@ -2415,7 +2472,7 @@ def test_remove_axis_alignment_provider_schema_is_closed_bounded_and_exact() -> 
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert len(all_encoded) == 19_165
+    assert len(all_encoded) == 18_135
     assert len(all_encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 
@@ -2459,9 +2516,9 @@ def test_partial_geometry_family_remains_completely_unadvertised() -> None:
 
     resolved = resolve_native_provider_surface(surface, registry)
 
-    assert registry.definition(SKETCH_GEOMETRY_CAPABILITY_NAME) is not None
-    assert registry.implementation(SKETCH_GEOMETRY_CAPABILITY_NAME) is not None
+    assert registry.definition(SKETCH_GEOMETRY_CAPABILITY_NAME) is None
     assert resolved.available is False
     assert resolved.tool_names == ()
     assert resolved.schemas == ()
-    assert SKETCH_GEOMETRY_CAPABILITY_NAME in resolved.incomplete_definition_names
+    assert resolved.missing_action_ids
+    assert SKETCH_GEOMETRY_CAPABILITY_NAME not in resolved.incomplete_definition_names

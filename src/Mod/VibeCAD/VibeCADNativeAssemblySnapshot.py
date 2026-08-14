@@ -29,8 +29,9 @@ from VibeCADNativeAssemblyGrounding import active_grounded_joints
 from VibeCADFastenerAssembly import assembly_fastener_summary
 from VibeCADNativeAssemblyDistanceJoint import distance_mode_from_joint
 from VibeCADNativeAssemblyDiagnosisState import (
+    AssemblyDiagnosisState,
     NativeAssemblyDiagnosisError,
-    assembly_diagnosis_state_summary,
+    capture_assembly_diagnosis_state,
 )
 from VibeCADNativeAssemblyGearJoint import gears_dependency_summary
 from VibeCADNativeAssemblyJointConnectors import (
@@ -50,7 +51,6 @@ from VibeCADNativeAssemblyScrewJoint import screw_dependency_summary
 from VibeCADNativeAssemblyJointGraph import (
     active_regular_joints,
     reference_summary,
-    solver_diagnostics,
 )
 from VibeCADNativeAssemblySolveState import (
     NativeAssemblySolveStateError,
@@ -113,10 +113,21 @@ def _component_summary(
     ground_joint: Any | None,
 ) -> dict[str, Any]:
     summary = concise_object(component)
+    summary["object_id"] = int(component.ID)
     summary["grounded"] = ground_joint is not None
     summary["grounded_joint"] = (
-        concise_object(ground_joint) if ground_joint is not None else None
+        {**concise_object(ground_joint), "object_id": int(ground_joint.ID)}
+        if ground_joint is not None
+        else None
     )
+    if str(getattr(component, "TypeId", "") or "") == "Assembly::AssemblyLink":
+        summary["rigid"] = bool(getattr(component, "Rigid", True))
+        linked = getattr(component, "LinkedObject", None)
+        if linked is not None:
+            summary["linked_assembly"] = {
+                **concise_object(linked),
+                "object_id": int(linked.ID),
+            }
     try:
         summary["placement"] = placement_summary(component_placement(component))
     except NativeAssemblyJointConnectorError:
@@ -143,6 +154,7 @@ def _joint_summary(
     active_joints: tuple[Any, ...] = (),
 ) -> dict[str, Any]:
     summary = concise_object(joint)
+    summary["object_id"] = int(joint.ID)
     joint_type = str(getattr(joint, "JointType", "") or "")
     summary["joint_type"] = joint_type
     summary["suppressed"] = bool(getattr(joint, "Suppressed", False))
@@ -238,8 +250,43 @@ def _joint_summary(
     return summary
 
 
+def _solver_health(state: AssemblyDiagnosisState) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": state.solver_status,
+        "remaining_degrees_of_freedom": state.remaining_degrees_of_freedom,
+        "residual_tolerance": state.residual_tolerance,
+        "maximum_absolute_residual": max(
+            (
+                diagnosis.maximum_absolute_residual
+                for diagnosis in state.joint_diagnostics
+            ),
+            default=0.0,
+        ),
+        "conflict_counts": {
+            "conflicting": len(state.conflicting_names),
+            "redundant": len(state.redundant_names),
+            "partially_redundant": len(state.partially_redundant_names),
+            "malformed": len(state.malformed_names),
+        },
+    }
+    if state.solver_message:
+        result["message"] = state.solver_message[:512]
+    for key, names in (
+        ("conflicting_joints", state.conflicting_names),
+        ("redundant_joints", state.redundant_names),
+        ("partially_redundant_joints", state.partially_redundant_names),
+        ("malformed_joints", state.malformed_names),
+    ):
+        if names:
+            result[key] = list(names[:8])
+            if len(names) > 8:
+                result[f"{key}_truncated"] = True
+    return result
+
+
 def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
     result = concise_object(assembly)
+    result["object_id"] = int(assembly.ID)
     result["active"] = assembly is active
     children = list(getattr(assembly, "Group", []) or [])
     joint_groups = [
@@ -272,11 +319,20 @@ def _assembly_summary(assembly: Any, active: Any | None) -> dict[str, Any]:
     }
     result["components"] = component_summaries
     result["joints"] = [_joint_summary(value, joints) for value in joints[:32]]
-    result["last_solver"] = solver_diagnostics(assembly)
+    if len(components) > len(component_summaries):
+        result["components_truncated"] = True
+    if len(joints) > 32:
+        result["joints_truncated"] = True
     try:
-        result["diagnosis_state"] = assembly_diagnosis_state_summary(assembly)
+        diagnosis = capture_assembly_diagnosis_state(assembly)
+        result["diagnosis_state"] = diagnosis.summary()
+        result["solver_health"] = _solver_health(diagnosis)
     except NativeAssemblyDiagnosisError as exc:
         result["diagnosis_state"] = {
+            "available": False,
+            "reason": str(exc)[:256],
+        }
+        result["solver_health"] = {
             "available": False,
             "reason": str(exc)[:256],
         }
@@ -331,7 +387,11 @@ def build_assembly_snapshot(document: Any) -> dict[str, Any]:
         "kind": "assembly",
         "assembly_count": len(assemblies),
         "solve_on_joint_creation": _solve_on_joint_creation(),
-        "active_assembly": concise_object(active) if active is not None else None,
+        "active_assembly": (
+            {**concise_object(active), "object_id": int(active.ID)}
+            if active is not None
+            else None
+        ),
         "assemblies": [
             _assembly_summary(value, active) for value in assemblies[:MAX_ASSEMBLIES]
         ],

@@ -204,8 +204,6 @@ def _resolve_point_point(
             "coincident."
         )
     separation = _separation(first_value, second_value)
-    if separation <= _LINEAR_TOLERANCE:
-        raise NativeSketchError(f"{_LABEL} points are already coincident.")
     references = (first, second)
     _refuse_hidden_tangent_substitution(sketch, references)
     return ResolvedSketchCoincident("point_point", references, separation)
@@ -234,8 +232,6 @@ def _resolve_concentric(
         _point(sketch, references[0], role="first center"),
         _point(sketch, references[1], role="second center"),
     )
-    if separation <= _LINEAR_TOLERANCE:
-        raise NativeSketchError(f"{_LABEL} conics are already concentric.")
     _refuse_hidden_tangent_substitution(sketch, references)
     return ResolvedSketchCoincident("concentric", references, separation)
 
@@ -245,7 +241,7 @@ def _resolve_point_on_object(
     selection: tuple[SketchConstraintElement, ...],
 ) -> ResolvedSketchCoincident:
     point, curve = selection
-    point_value = _point(sketch, point, role="point")
+    _point(sketch, point, role="point")
     if curve.position != "whole":
         raise NativeSketchError(f"{_LABEL} curve must use whole position.")
     if point.geometry_index == curve.geometry_index:
@@ -257,8 +253,8 @@ def _resolve_point_on_object(
         raise NativeSketchError(
             f"{_LABEL} point_on_object does not support {curve_type or 'geometry'}."
         )
-    if _point_on_curve(sketch, point_value, curve):
-        raise NativeSketchError(f"{_LABEL} point already lies on the curve.")
+    if not callable(getattr(sketch, "isPointOnCurve", None)):
+        raise NativeSketchError(f"{_LABEL} point-on-curve query is unavailable.")
     references = (point, curve)
     _refuse_hidden_tangent_substitution(sketch, references)
     return ResolvedSketchCoincident("point_on_object", references, None)

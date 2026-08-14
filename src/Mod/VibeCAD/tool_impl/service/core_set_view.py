@@ -54,8 +54,8 @@ def camera_schema(*, allow_auto: bool, default_mode: str) -> dict[str, Any]:
                     "mode": {
                         "const": "auto",
                         "description": (
-                            "Keep the current camera for an open sketch; otherwise "
-                            "use the isometric preset."
+                            "Align perpendicular to an open sketch; otherwise use "
+                            "the isometric preset."
                         ),
                     }
                 },
@@ -488,7 +488,7 @@ def resolve_camera_request(
             )
         if mode == "auto":
             resolved = (
-                {"mode": "unchanged"}
+                {"mode": "active_sketch"}
                 if active_sketch
                 else {"mode": "preset", "preset": "isometric"}
             )
@@ -497,7 +497,7 @@ def resolve_camera_request(
                 "requested": {"mode": "auto"},
                 "resolved": resolved,
                 "auto_reason": (
-                    "preserve_open_sketch_orientation"
+                    "align_perpendicular_to_open_sketch"
                     if active_sketch
                     else "default_model_isometric"
                 ),
@@ -587,8 +587,12 @@ def apply_camera(view: Any, resolution: dict[str, Any]) -> dict[str, Any]:
     before = camera_state(view)
     resolved = dict(resolution["resolved"])
     mode = resolved["mode"]
+    expected_sketch_orientation = None
     if mode == "preset":
         _set_camera_orientation(view, PRESET_QUATERNIONS[resolved["preset"]])
+    elif mode == "active_sketch":
+        expected_sketch_orientation = _active_sketch_camera_orientation()
+        _set_camera_orientation(view, expected_sketch_orientation.Q)
     elif mode == "direction":
         _set_camera_basis(
             view,
@@ -600,7 +604,15 @@ def apply_camera(view: Any, resolution: dict[str, Any]) -> dict[str, Any]:
     view.redraw()
     effective = camera_state(view)
 
-    if mode == "direction":
+    if expected_sketch_orientation is not None:
+        current_orientation = view.getCameraOrientation()
+        if not bool(current_orientation.isSame(expected_sketch_orientation, 1.0e-9)):
+            raise RuntimeError(
+                "The active camera did not align perpendicular to the open Sketch."
+            )
+        direction_error = None
+        up_error = None
+    elif mode == "direction":
         direction_error = _vector_angle_degrees(
             resolved["view_direction"], effective["view_direction"]
         )
@@ -643,6 +655,21 @@ def apply_camera(view: Any, resolution: dict[str, Any]) -> dict[str, Any]:
             "up_direction": up_error,
         }
     return result
+
+
+def _active_sketch_camera_orientation() -> Any:
+    try:
+        import FreeCAD as App
+        import FreeCADGui as Gui
+
+        gui_document = Gui.activeDocument()
+        if gui_document is None:
+            raise RuntimeError("No active GUI document")
+        return App.Placement(gui_document.EditingTransform).Rotation
+    except Exception as exc:
+        raise RuntimeError(
+            "The open Sketch edit plane has no usable camera orientation."
+        ) from exc
 
 
 def camera_state(view: Any) -> dict[str, Any]:

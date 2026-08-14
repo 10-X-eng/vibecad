@@ -63,6 +63,7 @@
 #include <Mod/TechDraw/App/Preferences.h>
 
 #include "MDIViewPage.h"
+#include "FrameVisibilityBuilder.h"
 #include "QGIDatumLabel.h"
 #include "QGIEdge.h"
 #include "QGIFace.h"
@@ -492,11 +493,15 @@ void MDIViewPage::contextMenuEvent(QContextMenuEvent* event)
     }
 }
 
-void MDIViewPage::toggleFrame() { m_vpPage->toggleFrameState(); }
+void MDIViewPage::toggleFrame()
+{
+    changeDrawingFrameVisibility(m_vpPage, !m_vpPage->getFrameState());
+}
 
 void MDIViewPage::toggleGrid()
 {
-    m_vpPage->ShowGrid.setValue(!m_vpPage->ShowGrid.getValue());
+    const auto current = inspectDrawingGridVisibility(m_vpPage);
+    changeDrawingGridVisibility(m_vpPage, !current.visible);
 }
 
 void MDIViewPage::toggleKeepUpdated()
@@ -652,8 +657,16 @@ void MDIViewPage::printAllPages()
 /// prints all pages in the specified document, provided it remains open
 void MDIViewPage::printAllPages(App::Document* document)
 {
+    static_cast<void>(requestPrintAllPages(document));
+}
+
+PrintAllPagesResult MDIViewPage::requestPrintAllPages(
+    App::Document* document,
+    const std::function<void()>& validateBeforePrint)
+{
+    PrintAllPagesResult result;
     if (!document) {
-        return;
+        return result;
     }
     const std::string documentName = document->getName();
 
@@ -662,18 +675,35 @@ void MDIViewPage::printAllPages(App::Document* document)
 
     QPrintDialog dlg(&printer, Gui::getMainWindow());
     if (dlg.exec() == QDialog::Accepted) {
+        result.authorized = true;
         App::Document* liveDocument =
             App::GetApplication().getDocument(documentName.c_str());
         if (liveDocument != document) {
-            return;
+            return result;
+        }
+        if (validateBeforePrint) {
+            validateBeforePrint();
+        }
+        const auto pages = liveDocument->getObjectsOfType(
+            TechDraw::DrawPage::getClassTypeId());
+        for (const auto* page : pages) {
+            if (liveDocument->isObjectUsableAtCurrentTimelinePosition(page)) {
+                ++result.pageCount;
+            }
+        }
+        if (result.pageCount == 0) {
+            return result;
         }
         if (printer.outputFileName().isEmpty()) {
             PagePrinter::printAll(&printer, liveDocument);
         }
         else {
+            result.fileOutput = true;
             PagePrinter::printAllPdf(&printer, liveDocument);
         }
+        result.submitted = true;
     }
+    return result;
 }
 
 /////////////// Selection Routines ///////////////////

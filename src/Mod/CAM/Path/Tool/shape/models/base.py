@@ -757,6 +757,48 @@ class ToolBitShape(Asset):
                 # Restore the original setting
                 param.SetBool("DuplicateLabels", original_setting)
 
+    def update_body(self, body: "FreeCAD.DocumentObject") -> None:
+        """Update one copied tool body from this shape's current parameters.
+
+        ``make_body()`` imports a complete parametric body, including the
+        property object that drives its expressions.  Editing an attached
+        ToolBit must update that existing graph instead of deleting and
+        importing another copy: callers may retain links to the body and its
+        features, and those identities are part of document history.
+        """
+        document = getattr(body, "Document", None)
+        if (
+            document is None
+            or document.getObject(str(getattr(body, "Name", ""))) is not body
+        ):
+            raise ValueError("The ToolBit body is not in a live document")
+
+        expected = set(self.schema())
+        pending = [body]
+        visited = []
+        while pending:
+            candidate = pending.pop(0)
+            if candidate is None or candidate in visited:
+                continue
+            visited.append(candidate)
+            pending.extend(tuple(getattr(candidate, "Group", ()) or ()))
+
+        parameter_objects = [
+            candidate
+            for candidate in visited
+            if expected.issubset(set(getattr(candidate, "PropertiesList", ()) or ()))
+        ]
+        if len(parameter_objects) != 1:
+            raise ValueError(
+                "The ToolBit body must contain exactly one parameter object "
+                f"for shape '{self.name}'"
+            )
+
+        parameters = {name: self.get_parameter(name) for name in self.schema()}
+        update_shape_object_properties(parameter_objects[0], parameters)
+        if document.recompute([body], True, True) is False:
+            raise RuntimeError("The ToolBit body failed to recompute")
+
         """
         Retrieves the thumbnail data for the tool bit shape in PNG format.
         """

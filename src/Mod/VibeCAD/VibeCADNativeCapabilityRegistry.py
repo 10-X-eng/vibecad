@@ -31,8 +31,29 @@ from VibeCADNativeSchemaRules import (
 from VibeCADRibbonSurface import RibbonSurface, SURFACE_IDS
 
 
-MAX_NATIVE_TOOLS_PER_SURFACE = 24
+MAX_NATIVE_TOOLS_PER_SURFACE = 28
+MAX_NATIVE_TOOLS_BY_SURFACE = {"analyze": 32, "drawing": 40}
 MAX_NATIVE_SCHEMAS_JSON_BYTES = 64 * 1024
+# Analyze owns more than one hundred semantically distinct human actions across
+# structural, thermal, fluid, electromagnetic, meshing, solver, and post domains.
+# Its exact schemas remain below the session's 128-KiB transport ceiling while
+# this tighter surface budget preserves measurable headroom against regression.
+# Manufacture's CAM operations and dress-ups require exact, operation-specific
+# geometry, process, depth, entry, and toolpath contracts. Keeping those fields
+# strongly typed is more useful and safer than replacing them with one generic
+# property bag merely to meet the cross-surface default. Its surface remains
+# below the same 128-KiB provider transport ceiling with measured headroom.
+# Drawing likewise owns more than one hundred shipped actions. Its focused
+# families use the same compact provider form as Model: an exact operation
+# field map on the wire followed by validation against the selected variant's
+# original closed schema before dispatch. The surface stays below the provider
+# transport ceiling while retaining the focused tools requested during live
+# acceptance.
+MAX_NATIVE_SCHEMAS_JSON_BYTES_BY_SURFACE = {
+    "analyze": 120 * 1024,
+    "manufacture": 120 * 1024,
+    "drawing": 120 * 1024,
+}
 _CAPABILITY_NAME = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 _VARIANT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 _PRIMARY_CLASSES = frozenset({"read", "mutation", "view", "export"})
@@ -44,7 +65,12 @@ class NativeCapabilityRegistryError(RuntimeError):
 
 def _compact_integral_json_numbers(value: Any) -> Any:
     """Use JSON integers for integral schema numbers without changing semantics."""
-    if type(value) is float and math.isfinite(value) and value.is_integer():
+    if (
+        type(value) is float
+        and math.isfinite(value)
+        and value.is_integer()
+        and abs(value) <= 9_007_199_254_740_991
+    ):
         return int(value)
     if isinstance(value, Mapping):
         return {
@@ -118,13 +144,46 @@ def _operation_field_map(
         )
         optional = tuple(name for name in properties if name not in required)
         grouped.setdefault((required, optional), []).append(operation)
+    groups = list(grouped.items())
+    dominant: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+    if len(groups) > 1:
+        candidate = max(groups, key=lambda item: len(item[1]))
+        if len(candidate[1]) >= 5 and len(operations) - len(candidate[1]) <= 3:
+            dominant = candidate[0]
+            groups = [item for item in groups if item[0] != dominant]
+            groups.append(candidate)
     entries = []
-    for (required, optional), group_operations in grouped.items():
+    for (required, optional), group_operations in groups:
         fields = ",".join(required) if required else "none"
         if optional:
-            fields += f"; optional {','.join(optional)}"
-        entries.append(f"{'|'.join(group_operations)}={fields}")
-    return "Fields by operation: " + "; ".join(entries) + "."
+            fields += (
+                f"; optional {','.join(optional)}"
+                if len(optional) <= 4
+                else "+schema options"
+            )
+        if len(groups) == 1:
+            entries.append(fields)
+        elif dominant == (required, optional):
+            entries.append(f"otherwise={fields}")
+        else:
+            entries.append(f"{'|'.join(group_operations)}={fields}")
+    return "Fields: " + "; ".join(entries) + "."
+
+
+def _exact_target_prerequisites(
+    operations: tuple[str, ...],
+    variants: Mapping[str, "NativeCapabilityVariant"],
+) -> str:
+    targeted = tuple(
+        operation
+        for operation in operations
+        if str(variants[operation].exact_target_type or "").strip()
+    )
+    if not targeted:
+        return ""
+    if len(targeted) == len(operations):
+        return " Requires the exact current-document targets and state hashes shown."
+    return " Operations with target fields require exact current-document state."
 
 
 def _serialized_schema(value: Mapping[str, Any]) -> str:
@@ -356,6 +415,105 @@ def _compact_closed_object_options(
     ) else None
 
 
+def _kind_labels(branch: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """Return one closed branch's explicit kind discriminator values."""
+
+    if (
+        branch.get("type") != "object"
+        or branch.get("additionalProperties") is not False
+        or not isinstance(branch.get("properties"), Mapping)
+        or "kind" not in branch.get("required", ())
+    ):
+        return None
+    kind = branch["properties"].get("kind")
+    if not isinstance(kind, Mapping) or kind.get("type") != "string":
+        return None
+    values = kind.get("enum", [kind.get("const")])
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(not isinstance(value, str) or not value for value in values)
+    ):
+        return None
+    return tuple(values)
+
+
+def _compact_nested_provider_unions(value: Any) -> Any:
+    """Compact repeated nested provider branches without weakening dispatch.
+
+    Multi-operation families can otherwise repeat the same exact target and
+    machining grammars many times inside a top-level field union. The provider
+    receives one bounded closed field union and an exact per-kind field map;
+    Native dispatch still validates the call against the selected variant's
+    original closed schema before it creates a ticket or runs an implementation.
+    """
+
+    if isinstance(value, list):
+        return [_compact_nested_provider_unions(item) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+
+    if set(value) <= {"anyOf", "description"} and isinstance(
+        value.get("anyOf"), list
+    ):
+        flattened: list[Mapping[str, Any]] = []
+        for option in value["anyOf"]:
+            if not isinstance(option, Mapping):
+                flattened = []
+                break
+            if set(option) == {"oneOf"} and isinstance(option.get("oneOf"), list):
+                branches = option["oneOf"]
+            elif set(option) == {"anyOf"} and isinstance(
+                option.get("anyOf"), list
+            ):
+                branches = option["anyOf"]
+            else:
+                branches = [option]
+            if any(not isinstance(branch, Mapping) for branch in branches):
+                flattened = []
+                break
+            flattened.extend(branches)
+        if flattened:
+            compact = _compact_schema_options(
+                tuple(
+                    _compact_nested_provider_unions(branch)
+                    for branch in flattened
+                )
+            )
+            if "description" in value:
+                compact["description"] = value["description"]
+            if len(_serialized_schema(compact)) < len(_serialized_schema(value)):
+                return compact
+
+    result = {
+        key: _compact_nested_provider_unions(item)
+        for key, item in value.items()
+    }
+    if set(result) <= {"oneOf", "description"} and isinstance(
+        result.get("oneOf"), list
+    ):
+        branches = result["oneOf"]
+        labels = [
+            _kind_labels(branch) if isinstance(branch, Mapping) else None
+            for branch in branches
+        ]
+        if branches and all(labels):
+            compact = _compact_closed_object_options(
+                tuple("/".join(label) for label in labels if label is not None),
+                tuple(branches),
+            )
+            if compact is not None:
+                if "description" in result:
+                    compact["description"] = (
+                        f"{result['description']} {compact['description']}"
+                    )
+                if len(_serialized_schema(compact)) < len(
+                    _serialized_schema(result)
+                ):
+                    return compact
+    return result
+
+
 def _compact_multi_variant_parameters(
     operations: tuple[str, ...],
     branches: tuple[Mapping[str, Any], ...],
@@ -392,12 +550,12 @@ def _compact_multi_variant_parameters(
         if name == "operation"
         or all(name in branch.get("required", ()) for branch in branches[1:])
     ]
-    parameters = {
+    parameters = _compact_nested_provider_unions({
         "type": "object",
         "properties": properties,
         "required": required,
         "additionalProperties": False,
-    }
+    })
     try:
         validate_bounded_parameter_schema(parameters)
     except NativeSchemaRuleError as exc:
@@ -415,6 +573,7 @@ class NativeCapabilityVariant:
     transaction_behavior: str
     background_required: bool
     parameters: Mapping[str, Any] = field(repr=False, compare=False)
+    provider_supplemental: bool = False
     _parameters_json: str = field(init=False, repr=False, compare=True)
 
     def __post_init__(self) -> None:
@@ -441,6 +600,10 @@ class NativeCapabilityVariant:
             raise NativeCapabilityRegistryError(
                 f"Capability variant {self.operation!r} needs transaction behavior."
             )
+        if type(self.provider_supplemental) is not bool:
+            raise NativeCapabilityRegistryError(
+                f"Capability variant {self.operation!r} has invalid supplemental state."
+            )
         object.__setattr__(self, "_parameters_json", _canonical_schema(self.parameters))
 
     def provider_parameters(self) -> dict[str, Any]:
@@ -464,6 +627,7 @@ class NativeCapabilityDefinition:
     description: str
     primary_classification: str
     variants: tuple[NativeCapabilityVariant, ...]
+    preserve_operation_branches: bool = False
 
     def __post_init__(self) -> None:
         if not _CAPABILITY_NAME.fullmatch(self.name):
@@ -481,6 +645,10 @@ class NativeCapabilityDefinition:
         if not self.variants:
             raise NativeCapabilityRegistryError(
                 f"Capability {self.name!r} has no operation variants."
+            )
+        if type(self.preserve_operation_branches) is not bool:
+            raise NativeCapabilityRegistryError(
+                f"Capability {self.name!r} has invalid branch-preservation state."
             )
         operations = [variant.operation for variant in self.variants]
         if len(operations) != len(set(operations)):
@@ -503,16 +671,18 @@ class NativeCapabilityDefinition:
             variants[operation].provider_parameters() for operation in ordered
         )
         operation_summary = ", ".join(ordered)
+        prerequisite_summary = _exact_target_prerequisites(ordered, variants)
         return {
             "name": self.name,
             "description": (
-                f"{self.description} Operations: {operation_summary}."
+                f"{self.description}{prerequisite_summary} "
+                f"Operations: {operation_summary}."
                 if len(ordered) > 1
-                else self.description
+                else f"{self.description}{prerequisite_summary}"
             ),
             "parameters": (
                 {"oneOf": list(branches)}
-                if len(branches) == 1
+                if len(branches) == 1 or self.preserve_operation_branches
                 else _compact_multi_variant_parameters(ordered, branches)
             ),
         }
@@ -635,6 +805,7 @@ class _RequiredAction:
     capability_family: str
     operation_variant: str
     primary_classification: str
+    exact_target_type: str | None
     transaction_behavior: str
     background_required: bool
 
@@ -669,6 +840,7 @@ def _required_actions(
                 plan.capability_family,
                 plan.operation_variant,
                 _primary_classification(plan.classification),
+                plan.exact_target_type,
                 plan.transaction_behavior,
                 plan.background_required,
             )
@@ -684,6 +856,7 @@ def _required_actions(
                 plan.capability_family,
                 plan.operation_variant,
                 _primary_classification(plan.classification),
+                plan.exact_target_type,
                 plan.transaction_behavior,
                 plan.background_required,
             )
@@ -711,6 +884,7 @@ def _shared_requirements(
                     definition.name,
                     variant.operation,
                     definition.primary_classification,
+                    variant.exact_target_type,
                     variant.transaction_behavior,
                     variant.background_required,
                 )
@@ -727,6 +901,10 @@ def _definition_covers(
         variant.operation == requirement.operation_variant
         and requirement.action_id in variant.action_ids
         and surface_id in variant.surface_ids
+        and (
+            requirement.exact_target_type is None
+            or variant.exact_target_type == requirement.exact_target_type
+        )
         and variant.transaction_behavior == requirement.transaction_behavior
         and variant.background_required is requirement.background_required
         for variant in definition.variants
@@ -758,10 +936,14 @@ def resolve_native_provider_surface(
         *_required_actions(surface, action_inventory.plans),
     )
     families = tuple(dict.fromkeys(item.capability_family for item in requirements))
-    if len(families) > MAX_NATIVE_TOOLS_PER_SURFACE:
+    tool_limit = MAX_NATIVE_TOOLS_BY_SURFACE.get(
+        surface.surface_id,
+        MAX_NATIVE_TOOLS_PER_SURFACE,
+    )
+    if len(families) > tool_limit:
         raise NativeCapabilityRegistryError(
             f"Native surface {surface.surface_id!r} requires {len(families)} tools; "
-            f"limit is {MAX_NATIVE_TOOLS_PER_SURFACE}."
+            f"limit is {tool_limit}."
         )
 
     family_classes: dict[str, set[str]] = {}
@@ -795,9 +977,18 @@ def resolve_native_provider_surface(
             ):
                 incomplete_definitions.append(family)
             else:
+                operations = [
+                    item.operation_variant for item in family_requirements
+                ]
+                operations.extend(
+                    variant.operation
+                    for variant in definition.variants
+                    if variant.provider_supplemental
+                    and surface.surface_id in variant.surface_ids
+                )
                 schemas.append(
                     definition.provider_schema(
-                        tuple(item.operation_variant for item in family_requirements)
+                        tuple(dict.fromkeys(operations))
                     )
                 )
         if implementation is None:
@@ -821,6 +1012,10 @@ def resolve_native_provider_surface(
         or incomplete_definitions
     )
     if complete:
+        schema_limit = MAX_NATIVE_SCHEMAS_JSON_BYTES_BY_SURFACE.get(
+            surface.surface_id,
+            MAX_NATIVE_SCHEMAS_JSON_BYTES,
+        )
         schema_bytes = len(
             json.dumps(
                 schemas,
@@ -829,10 +1024,30 @@ def resolve_native_provider_surface(
                 separators=(",", ":"),
             ).encode("utf-8")
         )
-        if schema_bytes > MAX_NATIVE_SCHEMAS_JSON_BYTES:
+        if schema_bytes > schema_limit:
+            family_sizes = sorted(
+                (
+                    (
+                        str(schema.get("name") or "unknown"),
+                        len(
+                            json.dumps(
+                                schema,
+                                ensure_ascii=True,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ),
+                    )
+                    for schema in schemas
+                ),
+                key=lambda item: (-item[1], item[0]),
+            )
+            largest = ", ".join(
+                f"{name}={size}" for name, size in family_sizes[:5]
+            )
             raise NativeCapabilityRegistryError(
                 f"Native surface schemas use {schema_bytes} bytes; limit is "
-                f"{MAX_NATIVE_SCHEMAS_JSON_BYTES}."
+                f"{schema_limit}. Largest families: {largest}."
             )
     else:
         schemas = []

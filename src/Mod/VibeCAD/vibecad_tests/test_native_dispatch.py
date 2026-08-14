@@ -16,6 +16,7 @@ from VibeCADNativeCapabilityRegistry import (
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeSurface import NativeSurfaceSnapshot
+from VibeCADNativeTargets import NativeTargetError
 from VibeCADNativeTurn import NativeTurnSnapshot
 
 
@@ -124,6 +125,53 @@ def test_dispatch_injects_one_host_ticket_and_returns_concise_success() -> None:
     assert len(calls) == 1
     assert calls[0].ticket.capability_name == "test.execute"
     assert len(calls[0].ticket.idempotency_token) == 32
+
+
+def test_read_capability_cannot_report_success_after_a_structural_change() -> None:
+    state_holder = {}
+
+    def handler(call):
+        state_holder["state"].note_structural_change(call.ticket.document_uid)
+        return {"value": call.arguments["value"]}
+
+    dispatcher, state, _debug = _dispatcher(handler)
+    state_holder["state"] = state
+
+    result = dispatcher.call("test.execute", _arguments(12), "provider-call-1")
+
+    assert result == {
+        "ok": False,
+        "error_code": "NATIVE_READ_SIDE_EFFECT",
+        "error": (
+            "A read-only Native capability changed the document; its result was "
+            "rejected."
+        ),
+        "current_revision": 1,
+        "repair": {
+            "operation": "read",
+            "revision_before": 0,
+            "revision_after": 1,
+        },
+    }
+
+
+def test_target_type_diagnostic_reaches_the_provider_as_structured_data() -> None:
+    def handler(_call):
+        raise NativeTargetError(
+            "The exact target has an unsupported type.",
+            exact_target={"document_uid": "document-a", "object_name": "Sketch"},
+            actual_type="Sketcher::SketchObject",
+            accepted_types=("PartDesign::Feature", "Part::Feature"),
+        )
+
+    dispatcher, _state, _debug = _dispatcher(handler)
+
+    result = dispatcher.call("test.execute", _arguments(12), "provider-call-1")
+
+    assert result["error_code"] == "NATIVE_TARGET_INVALID"
+    assert result["actual_type"] == "Sketcher::SketchObject"
+    assert result["accepted_types"] == ["PartDesign::Feature", "Part::Feature"]
+    assert result["exact_target"]["object_name"] == "Sketch"
 
 
 def test_duplicate_provider_call_returns_exact_prior_result_without_execution() -> None:

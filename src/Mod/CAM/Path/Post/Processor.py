@@ -26,9 +26,11 @@ The base classes for post processors in the CAM workbench.
 """
 
 import argparse
+import ast
 import importlib.util
 import json
 import os
+from pathlib import Path as FilePath
 import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 import datetime
@@ -215,6 +217,142 @@ Visible = Dict[str, bool]
 
 class PostProcessorFactory:
     """Factory class for creating post processors."""
+
+    @staticmethod
+    def resolve_post_processor_path(postname):
+        """Resolve the first configured post script without importing it.
+
+        Native callers use this to freeze the exact source file before an
+        isolated process loads any postprocessor code. Existing dynamic lookup
+        remains unchanged for human commands.
+        """
+
+        if (
+            not isinstance(postname, str)
+            or not postname
+            or not postname[0].isalpha()
+            or any(not (character.isalnum() or character == "_") for character in postname)
+        ):
+            return None
+        paths = list(Path.Preferences.searchPathsPost())
+        paths.extend(sys.path)
+        file_name = f"{postname}_post.py"
+        for value in paths:
+            try:
+                root = FilePath(value or os.curdir).resolve(strict=True)
+                candidate = (root / file_name).resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+            if candidate.is_file():
+                return str(candidate)
+        return None
+
+    @staticmethod
+    def is_modern_post_processor(module_path, postname):
+        """Return whether exact source declares the expected processor class."""
+
+        if not isinstance(module_path, (str, os.PathLike)):
+            return False
+        if not isinstance(postname, str) or not postname:
+            return False
+        try:
+            source = FilePath(module_path).read_bytes()
+        except OSError:
+            return False
+        return PostProcessorFactory.is_modern_post_processor_source(
+            source,
+            postname,
+            module_path=module_path,
+        )
+
+    @staticmethod
+    def is_modern_post_processor_source(source, postname, *, module_path="<postprocessor>"):
+        """Classify authenticated postprocessor source without reopening its file."""
+
+        if not isinstance(postname, str) or not postname:
+            return False
+        if not isinstance(source, (bytes, bytearray, memoryview)):
+            return False
+        encoded = bytes(source)
+        if not encoded or len(encoded) > 16 * 1024 * 1024:
+            return False
+        try:
+            tree = ast.parse(encoded, filename=os.fspath(module_path))
+        except (SyntaxError, ValueError):
+            return False
+        class_name = postname.title()
+        return any(
+            isinstance(node, ast.ClassDef) and node.name == class_name
+            for node in tree.body
+        )
+
+    @staticmethod
+    def get_post_processor_from_path(job, postname, module_path):
+        """Load one exact post script instead of repeating search-path lookup."""
+
+        path = FilePath(module_path).resolve(strict=True)
+        if not path.is_file():
+            return None
+        source = path.read_bytes()
+        try:
+            return PostProcessorFactory.get_post_processor_from_source(
+                job,
+                postname,
+                path,
+                source,
+            )
+        except AttributeError:
+            module_name = f"{postname}_post"
+            return WrapperPost(job, str(path), module_name)
+
+    @staticmethod
+    def get_post_processor_from_source(
+        job,
+        postname,
+        module_path,
+        source,
+        *,
+        operations=None,
+    ):
+        """Instantiate a modern processor from already-authenticated source bytes."""
+
+        path = FilePath(module_path).resolve(strict=True)
+        if not path.is_file():
+            return None
+        if not isinstance(source, (bytes, bytearray, memoryview)):
+            raise TypeError("postprocessor source must be bytes")
+        encoded = bytes(source)
+        if not encoded or len(encoded) > 16 * 1024 * 1024:
+            raise ValueError("postprocessor source is empty or exceeds 16 MiB")
+        module_name = f"{postname}_post"
+        class_name = postname.title()
+        spec = importlib.util.spec_from_file_location(module_name, str(path))
+        if not spec:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        code = compile(encoded, str(path), "exec")
+        parent = str(path.parent)
+        inserted = parent not in sys.path
+        if inserted:
+            sys.path.insert(0, parent)
+        try:
+            exec(code, module.__dict__)
+        finally:
+            if inserted:
+                try:
+                    sys.path.remove(parent)
+                except ValueError:
+                    pass
+        try:
+            post_class = getattr(module, class_name)
+        except AttributeError as exc:
+            raise AttributeError(
+                f"postprocessor source has no modern class {class_name!r}"
+            ) from exc
+        processor = post_class(job)
+        if operations is not None:
+            processor.set_operations(operations)
+        return processor
 
     @staticmethod
     def get_post_processor(job, postname):
@@ -665,6 +803,20 @@ class PostProcessor:
             self._operations = (
                 getattr(self._job.Operations, "Group", []) if self._job is not None else []
             )
+
+    def set_operations(self, operations):
+        """Select a non-empty ordered operation subset after normal Job setup.
+
+        This keeps machine and Job initialization bound to the actual Job while
+        allowing authenticated callers to supply an already-validated subset.
+        Existing dictionary-based selected-post callers remain supported.
+        """
+
+        if not isinstance(operations, (list, tuple)) or not operations:
+            raise ValueError("At least one selected CAM operation must be provided")
+        if any(not hasattr(operation, "Path") for operation in operations):
+            raise TypeError("Every selected CAM operation must provide a Path")
+        self._operations = list(operations)
 
     @classmethod
     def exists(cls, processor):

@@ -23,10 +23,15 @@ from VibeCADNativeState import (
     "property_name",
     (
         "Visibility",
+        "VisibilityAtEnd",
         "LineColor",
         "SelectionStyle",
         "Touched",
         "_LinkTouched",
+        "_GroupTouched",
+        "PrecomputedDimensionFlags",
+        "PrecomputedDimensionScalars",
+        "PrecomputedDimensionVectors",
         "VibeCADVibeScriptEditorDraft",
     ),
 )

@@ -92,13 +92,22 @@ def setupPipeline(
         if named_pipeline:
             pipeline_obj = named_pipeline
 
-        if _result_graph is not None:
+        if (
+            _result_graph is not None
+            and _result_graph["track_reconciliation"]
+            and _result_graph["reconciliation"] is None
+        ):
             from femcommands.manager import (
                 _stage_timeline_result_graph,
             )
 
+            solver = _result_graph.get("solver")
+            if solver is None:
+                raise RuntimeError(
+                    "A retained CalculiX pipeline import requires its exact solver"
+                )
             _result_graph["reconciliation"] = (
-                _stage_timeline_result_graph(pipeline_obj)
+                _stage_timeline_result_graph(solver, pipeline_obj)
             )
 
         if FreeCAD.GuiUp:
@@ -372,6 +381,8 @@ def importFrdResultGraph(
     result_name_prefix="",
     result_analysis_type="",
     include_reconciliation=False,
+    solver=None,
+    reconciliation=None,
 ):
     """Return the exact semantic object graph created by one FRD import.
 
@@ -385,7 +396,9 @@ def importFrdResultGraph(
         "objects": [],
         "pipeline": None,
         "pipeline_created": False,
-        "reconciliation": None,
+        "reconciliation": reconciliation,
+        "solver": solver,
+        "track_reconciliation": bool(include_reconciliation),
     }
     legacy_result = importFrd(
         filename,

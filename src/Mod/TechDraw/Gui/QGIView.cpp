@@ -571,15 +571,29 @@ void QGIView::hoverLeaveEvent(QGraphicsSceneHoverEvent *event)
     drawBorder();
 }
 
-//! get the X&Y position from the feature in Page coords (could be parent coords?), convert to Qt coords and update
-//! this graphic item's scene position.
+//! Get the feature X/Y position, convert it to Qt coordinates, and update this
+//! graphics item. Leaders, Dimensions, and Balloons store owner-local
+//! coordinates. Other owner-linked Drawing items store page coordinates even
+//! though their graphics items are grouped beneath the owner, so map the page
+//! position back into the owner's local coordinate system before calling
+//! setPos().
 void QGIView::updatePositionFromFeatureXY()
 {
     if (getViewObject()) {
         m_inhibitSnapOnPosChange = true;
         double xFeat = Rez::guiX(getViewObject()->X.getValue());
         double yFeat = Rez::guiX(getViewObject()->Y.getValue());
-        setPos(xFeat, -yFeat);
+        QPointF position(xFeat, -yFeat);
+        const bool usesOwnerLocalCoordinates =
+            type() == UserType::QGILeaderLine
+            || type() == UserType::QGIViewDimension
+            || type() == UserType::QGIViewBalloon;
+        if (parentItem()
+            && getViewObject()->claimParent()
+            && !usesOwnerLocalCoordinates) {
+            position = parentItem()->mapFromScene(position);
+        }
+        setPos(position);
     }
 }
 

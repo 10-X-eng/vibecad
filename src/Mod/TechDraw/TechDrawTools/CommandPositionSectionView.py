@@ -36,6 +36,15 @@ import FreeCAD as App
 import FreeCADGui as Gui
 
 from VibeCADNativeTransaction import _OwnedDocumentTransaction
+from SectionViewPosition import (
+    SectionViewPositionError,
+    alignment_base,
+    apply_section_view_position,
+    calculate_axis_alignment,
+    calculate_edge_vertex_alignment,
+    same_drawing,
+    triangle_point,
+)
 
 class CommandPositionSectionView:
     """Orthogonally align a section view with its source view."""
@@ -66,11 +75,10 @@ class CommandPositionSectionView:
             "Position section view",
         )
         try:
-            sectionView.X = (
-                sectionView.X.Value - moveVector.x
-            )
-            sectionView.Y = (
-                sectionView.Y.Value - moveVector.y
+            apply_section_view_position(
+                sectionView,
+                sectionView.X.Value - moveVector.x,
+                sectionView.Y.Value - moveVector.y,
             )
             document.recompute()
             if {"Invalid", "Error"} & set(sectionView.State):
@@ -109,30 +117,11 @@ class CommandPositionSectionView:
                 != "TechDraw::DrawViewSection"
             ):
                 return None
-            baseView = self._alignmentBase(
-                sectionView.BaseView
-            )
-            if not self._sameDrawing(
-                sectionView,
-                baseView,
-            ):
+            try:
+                prepared = calculate_axis_alignment(sectionView, "nearest")
+            except SectionViewPositionError:
                 return None
-            basePoint = App.Vector(
-                baseView.X.Value,
-                baseView.Y.Value,
-                0.0,
-            )
-            sectionPoint = App.Vector(
-                sectionView.X.Value,
-                sectionView.Y.Value,
-                0.0,
-            )
-            moveVector = sectionPoint.sub(basePoint)
-            if abs(moveVector.x) > abs(moveVector.y):
-                moveVector.x = 0.0
-            else:
-                moveVector.y = 0.0
-            return sectionView, moveVector
+            return sectionView, prepared["move_vector"]
 
         sectionSelection = None
         baseSelection = None
@@ -164,96 +153,22 @@ class CommandPositionSectionView:
 
         sectionView = sectionSelection.Object
         selectedBaseView = baseSelection.Object
-        baseView = self._alignmentBase(selectedBaseView)
-        if not self._sameDrawing(sectionView, baseView):
-            return None
-
-        sectionEdge = sectionView.getEdgeBySelection(
-            sectionSelection.SubElementNames[0]
-        )
-        baseVertex = selectedBaseView.getVertexBySelection(
-            baseSelection.SubElementNames[0]
-        )
-        if (
-            sectionEdge is None
-            or baseVertex is None
-            or len(sectionEdge.Vertexes) < 1
-            or not hasattr(sectionEdge.Curve, "Direction")
-        ):
-            return None
-        sectionDirection = sectionEdge.Curve.Direction
-        if sectionDirection.Length <= 1e-12:
-            return None
-
-        basePoint = baseVertex.Point
-        sectionPoint = sectionEdge.Vertexes[0].Point
-        baseScale = float(baseView.getScale())
-        sectionScale = float(sectionView.getScale())
-        if baseScale <= 0.0 or sectionScale <= 0.0:
-            return None
-        basePoint = (
-            App.Vector(
-                baseView.X.Value,
-                baseView.Y.Value,
-                0.0,
+        try:
+            prepared = calculate_edge_vertex_alignment(
+                sectionView,
+                sectionSelection.SubElementNames[0],
+                selectedBaseView,
+                baseSelection.SubElementNames[0],
             )
-            + basePoint * baseScale
-        )
-        sectionPoint = (
-            App.Vector(
-                sectionView.X.Value,
-                sectionView.Y.Value,
-                0.0,
-            )
-            + sectionPoint * sectionScale
-        )
-        trianglePoint = self.getTrianglePoint(
-            sectionPoint,
-            sectionDirection,
-            basePoint,
-        )
-        if trianglePoint is None:
+        except (AttributeError, SectionViewPositionError):
             return None
-        return sectionView, trianglePoint.sub(basePoint)
+        return sectionView, prepared["move_vector"]
 
     def _alignmentBase(self, baseView):
-        if (
-            baseView is not None
-            and baseView.TypeId
-            == "TechDraw::DrawProjGroupItem"
-        ):
-            parents = [
-                obj
-                for obj in baseView.InList
-                if obj.TypeId == "TechDraw::DrawProjGroup"
-            ]
-            if len(parents) != 1:
-                return None
-            return parents[0]
-        return baseView
+        return alignment_base(baseView)
 
     def _sameDrawing(self, sectionView, baseView):
-        if sectionView is None or baseView is None:
-            return False
-        document = sectionView.Document
-        try:
-            document_is_live = (
-                document is not None
-                and App.getDocument(document.Name) is document
-            )
-        except (NameError, ReferenceError, RuntimeError):
-            document_is_live = False
-        if (
-            not document_is_live
-            or baseView.Document is not document
-        ):
-            return False
-        sectionPage = sectionView.findParentPage()
-        basePage = baseView.findParentPage()
-        return (
-            sectionPage is not None
-            and basePage is sectionPage
-        )
+        return same_drawing(sectionView, baseView)
 
     def getTrianglePoint(self,p1,dir,p2):
         '''
@@ -266,16 +181,10 @@ class CommandPositionSectionView:
         Returns:
         p3 : the third vertex completing the right triangle
         '''
-        a = -dir.y
-        b = dir.x
-        c1 = p1.x * a + p1.y * b
-        c2 = -p2.x * b + p2.y * a
-        ab = a * a + b * b
-        if ab <= 1e-24:
+        try:
+            return triangle_point(p1, dir, p2)
+        except SectionViewPositionError:
             return None
-        x = (c1 * a - c2 * b) / ab
-        y = (c2 * a + c1 * b) / ab
-        return App.Vector(x,y,0.0)
 
 # The command must be "registered" with a unique name by calling its class.
 Gui.addCommand('TechDraw_ExtensionPositionSectionView', CommandPositionSectionView())

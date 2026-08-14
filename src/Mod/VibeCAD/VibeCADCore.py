@@ -35,6 +35,7 @@ from VibeCADIntentMemory import (
 from VibeCADModelingSurface import resolve_modeling_surface
 from VibeCADNativeBackground import NativeBackgroundManager
 from VibeCADNativeState import NativeDocumentStateStore
+from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADNativeStatePersistence import (
     native_state_path,
     read_native_state,
@@ -212,6 +213,7 @@ class VibeCADService:
         self._provider_working_document_uid: str | None = None
         self._project_store = VibeCADProjectStore(self._local_session_id)
         self._native_document_states = NativeDocumentStateStore()
+        self._native_assistant_undo = NativeAssistantUndoLedger()
         self._native_background_jobs = NativeBackgroundManager()
         self._native_state_restores: set[tuple[str, str]] = set()
         self._native_state_restore_errors: dict[str, str] = {}
@@ -591,15 +593,24 @@ class VibeCADService:
         from VibeCADRibbonSurface import read_active_ribbon_surface
 
         surface = read_active_ribbon_surface()
+        background_job = None
+        if surface.surface_id == "analyze":
+            background_job = self._native_background_jobs.latest_document_snapshot(
+                str(document.Uid),
+                capability_prefix="analyze.solver_execution",
+            )
         return build_active_snapshot(
             document,
             surface.surface_id,
             self.native_document_state(),
+            background_job=background_job,
         )
 
     def close_native_document_state(self, document_uid: str) -> None:
         uid = str(document_uid or "").strip()
         self._native_background_jobs.cancel_document(uid)
+        if uid:
+            self._native_assistant_undo.close_document(uid)
         self._native_document_states.close_document(uid)
         self._native_state_restore_errors.pop(uid, None)
         self._native_state_restores = {
@@ -615,6 +626,11 @@ class VibeCADService:
         """Return host-owned Native state; this is never a provider tool."""
 
         return self._native_document_states
+
+    def native_assistant_undo_ledger(self) -> NativeAssistantUndoLedger:
+        """Return document-lifetime assistant undo provenance."""
+
+        return self._native_assistant_undo
 
     def provider_debug_config(self) -> dict[str, Any]:
         settings = load_debug_settings()

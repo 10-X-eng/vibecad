@@ -224,6 +224,7 @@ void CosmeticEdge::Save(Base::Writer &writer) const
     }
 
     writer.Stream() << writer.ind() << "<LineNumber value=\"" <<  m_format.getLineNumber() << "\"/>" << endl;
+    Tag::Save(writer);
 
 }
 
@@ -277,24 +278,31 @@ void CosmeticEdge::Restore(Base::XMLReader &reader)
     // older documents may not have the LineNumber element, so we need to check the
     // next entry.  if it is a start element, then we check if it is a start element
     // for LineNumber.
-    if (reader.readNextElement()) {
+    bool hasNextElement = reader.readNextElement();
+    if (hasNextElement) {
         if(strcmp(reader.localName(),"LineNumber") == 0 ) {
             // this CosmeticEdge has an LineNumber attribute
             m_format.setLineNumber(reader.getAttribute<long>("value"));
+            hasNextElement = reader.readNextElement();
         } else {
             // LineNumber not found.
             // TODO: line number should be set to DashedLineGenerator.fromQtStyle(m_format.m_style)
             m_format.setLineNumber(LineFormat::InvalidLine);
         }
     }
+    if (hasNextElement && strcmp(reader.localName(), "Tag") == 0) {
+        setTag(Tag::fromString(reader.getAttribute<const char*>("value")));
+    }
 }
 
 CosmeticEdge* CosmeticEdge::clone() const
 {
-    Base::Console().message("CE::clone()\n");
     CosmeticEdge* cpy = new CosmeticEdge();
     cpy->m_geometry = m_geometry->copy();
     cpy->m_format = m_format;
+    cpy->permaStart = permaStart;
+    cpy->permaEnd = permaEnd;
+    cpy->permaRadius = permaRadius;
     cpy->setTag(this->getTag());
     return cpy;
 }
@@ -453,4 +461,3 @@ bool CosmeticVertex::restoreCosmetic()
 {
     return Preferences::getPreferenceGroup("General")->GetBool("restoreCosmetic", true);
 }
-

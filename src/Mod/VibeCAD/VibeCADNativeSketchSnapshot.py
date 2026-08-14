@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADNativeSketchRevision import sketch_revision
 from VibeCADNativeSketchState import serialize_sketch_state
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
@@ -106,6 +107,7 @@ def build_sketch_snapshot(document: Any, surface_id: str) -> dict[str, Any]:
         "sketch_count": len(sketches),
     }
     if active is not None:
+        result["revision"] = sketch_revision(active)
         result["active_sketch"] = _detailed_state(active)
         result["source_sketches"] = [
             _summary(value) for value in sketches if value is not active

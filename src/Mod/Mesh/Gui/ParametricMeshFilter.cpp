@@ -10,6 +10,7 @@
 
 #include <App/Document.h>
 #include <App/DocumentTimeline.h>
+#include <App/GeoFeature.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 #include <Base/Exception.h>
@@ -663,6 +664,152 @@ Mesh::OutputGroup* MeshGui::createSourcePreservingOutputGroup(
         throw Base::RuntimeError("A source-preserving output group must not publish bypass geometry");
     }
     return group;
+}
+
+Mesh::OutputGroup* MeshGui::createReplacingOutputGroup(
+    App::Document& document,
+    const std::vector<App::DocumentObject*>& sources,
+    const std::vector<App::DocumentObject*>& outputs,
+    const char* objectName,
+    const char* label,
+    const char* operationKind
+)
+{
+    if (sources.empty() || sources.size() != outputs.size()) {
+        throw Base::ValueError(
+            "A replacement mesh operation requires one paired source per output"
+        );
+    }
+    std::vector<App::DocumentObject*> uniqueSourceObjects;
+    std::vector<App::DocumentObject*> visibleSources;
+    std::unordered_set<App::DocumentObject*> seenSources;
+    std::unordered_set<App::DocumentObject*> seenOutputs;
+    uniqueSourceObjects.reserve(sources.size());
+    visibleSources.reserve(sources.size());
+    for (std::size_t index = 0; index < sources.size(); ++index) {
+        auto* source = sources[index];
+        auto* output = outputs[index];
+        auto* sourceMesh = freecad_cast<Mesh::Feature*>(source);
+        auto* sourceGeometry = freecad_cast<App::GeoFeature*>(source);
+        const auto* geometryProperty = sourceGeometry
+            ? sourceGeometry->getPropertyOfGeometry()
+            : nullptr;
+        if ((!sourceMesh && (!geometryProperty || !geometryProperty->getComplexData()))
+            || source->getDocument() != &document
+            || !source->getNameInDocument() || !document.containsObject(source)
+            || !MeshGui::isNativeMeshInputActive(source)
+            || (sourceMesh && sourceMesh->Mesh.getValue().countFacets() == 0)) {
+            throw Base::ValueError(
+                "A replacement geometry source must be live and usable at the current History position"
+            );
+        }
+        if (!output || output->getDocument() != &document
+            || !output->getNameInDocument() || !document.containsObject(output)
+            || source == output || !seenOutputs.insert(output).second) {
+            throw Base::ValueError(
+                "Replacement outputs must be distinct live document objects"
+            );
+        }
+        const auto dependencies = output->getOutListRecursive();
+        if (std::ranges::find(dependencies, source) == dependencies.end()) {
+            throw Base::ValueError(
+                "Every replacement mesh output must retain its paired source dependency"
+            );
+        }
+        if (seenSources.insert(source).second) {
+            uniqueSourceObjects.push_back(source);
+            if (source->Visibility.getValue()) {
+                visibleSources.push_back(source);
+            }
+        }
+    }
+
+    Mesh::OutputGroup* group = nullptr;
+    if (outputs.size() > 1) {
+        group = createOutputGroup(
+            document,
+            uniqueSourceObjects,
+            objectName,
+            label,
+            operationKind,
+            OutputInputMode::Replacement
+        );
+        ownOutputResources(*group, outputs);
+        markMeshTimelineReplacement(*group, visibleSources);
+        finalizeOutputTimelineBlock(document, outputs, group);
+    }
+    else {
+        std::vector<App::DocumentObject*> replaced;
+        if (sources.front()->Visibility.getValue()) {
+            replaced.push_back(sources.front());
+        }
+        markMeshTimelineReplacement(*outputs.front(), replaced);
+        finalizeOutputTimelineBlock(document, outputs, nullptr);
+    }
+
+    for (auto* source : uniqueSourceObjects) {
+        if (auto* sourceView = Gui::Application::Instance->getViewProvider(source)) {
+            sourceView->setVisible(false);
+        }
+    }
+    return group;
+}
+
+void MeshGui::createReplacingOperation(
+    App::Document& document,
+    const std::vector<App::DocumentObject*>& sources,
+    App::DocumentObject& operation
+)
+{
+    if (sources.empty() || sources.size() > 32) {
+        throw Base::ValueError(
+            "A replacement operation requires 1 to 32 Mesh sources"
+        );
+    }
+    if (operation.getDocument() != &document || !operation.getNameInDocument()
+        || !document.containsObject(&operation)) {
+        throw Base::ValueError(
+            "The replacement operation must be live in the exact document"
+        );
+    }
+
+    const auto dependencies = operation.getOutListRecursive();
+    std::vector<App::DocumentObject*> uniqueSources;
+    std::vector<App::DocumentObject*> visibleSources;
+    std::unordered_set<App::DocumentObject*> seen;
+    uniqueSources.reserve(sources.size());
+    visibleSources.reserve(sources.size());
+    for (auto* source : sources) {
+        auto* sourceMesh = freecad_cast<Mesh::Feature*>(source);
+        if (!sourceMesh || source == &operation || source->getDocument() != &document
+            || !source->getNameInDocument() || !document.containsObject(source)
+            || !MeshGui::isNativeMeshInputActive(source)
+            || sourceMesh->Mesh.getValue().countFacets() == 0) {
+            throw Base::ValueError(
+                "Every replacement source must be a distinct live nonempty current-History Mesh"
+            );
+        }
+        if (!seen.insert(source).second) {
+            throw Base::ValueError("Replacement Mesh sources must not repeat");
+        }
+        if (std::ranges::find(dependencies, source) == dependencies.end()) {
+            throw Base::ValueError(
+                "The replacement operation must retain a native dependency on every source"
+            );
+        }
+        uniqueSources.push_back(source);
+        if (source->Visibility.getValue()) {
+            visibleSources.push_back(source);
+        }
+    }
+
+    markMeshTimelineReplacement(operation, visibleSources);
+    finalizeOutputTimelineBlock(document, {&operation}, nullptr);
+    for (auto* source : uniqueSources) {
+        if (auto* sourceView = Gui::Application::Instance->getViewProvider(source)) {
+            sourceView->setVisible(false);
+        }
+    }
 }
 
 Mesh::OutputGroup* MeshGui::createStandaloneOutputGroup(

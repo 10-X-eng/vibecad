@@ -47,6 +47,7 @@ class ViewProviderDocumentObject;
 class DocumentObjectItem;
 class DocumentObjectData;
 class BrowserFolderItem;
+class BrowserDetailItem;
 using DocumentObjectDataPtr = std::shared_ptr<DocumentObjectData>;
 class TreeWidgetItemDelegate;
 
@@ -102,6 +103,7 @@ public:
     static const int DocumentType;
     static const int ObjectType;
     static const int BrowserFolderType;
+    static const int BrowserDetailType;
 
     void markItem(const App::DocumentObject* Obj, bool mark);
     void syncView(ViewProviderDocumentObject* vp);
@@ -350,6 +352,7 @@ private:
     friend class DocumentItem;
     friend class DocumentObjectItem;
     friend class BrowserFolderItem;
+    friend class BrowserDetailItem;
     friend class TreeParams;
     friend class TreeWidgetItemDelegate;
 

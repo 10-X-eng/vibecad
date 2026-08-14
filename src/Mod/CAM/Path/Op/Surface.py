@@ -2574,8 +2574,13 @@ def SetupProperties():
     return [tup[1] for tup in ObjectSurface.opPropertyDefinitions(False)]
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns a Surface operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectSurface(obj, name, parentJob)
+    obj.Proxy = ObjectSurface(
+        obj,
+        name,
+        parentJob,
+        toolController=toolController,
+    )
     return obj

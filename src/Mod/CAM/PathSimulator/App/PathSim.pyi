@@ -48,6 +48,10 @@ class PathSim(BaseClass):
         """
         ...
 
+    def GetCombinedResultMesh(self) -> Mesh:
+        """Return one complete outer-and-inner material-result mesh."""
+        ...
+
     def GetSimulationStats(self) -> dict[str, Any]:
         """Return voxel resolution, command counters, and removed-stock statistics."""
         ...

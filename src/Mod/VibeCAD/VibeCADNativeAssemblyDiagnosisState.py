@@ -174,11 +174,15 @@ def _name_sequence(value: Any, field: str) -> tuple[str, ...]:
 
 
 def _object_identity_record(obj: Any) -> dict[str, Any]:
-    return {
+    result = {
         "object_name": str(getattr(obj, "Name", "") or ""),
         "object_id": int(getattr(obj, "ID", -1)),
         "type_id": str(getattr(obj, "TypeId", "") or ""),
     }
+    if "Rigid" in set(getattr(obj, "PropertiesList", ()) or ()):
+        rigid = getattr(obj, "Rigid", None)
+        result["rigid"] = rigid if type(rigid) is bool else {"malformed": True}
+    return result
 
 
 def _reference_record(reference: Any) -> dict[str, Any] | None:

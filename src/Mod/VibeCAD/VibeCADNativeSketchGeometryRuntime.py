@@ -66,6 +66,12 @@ from VibeCADNativeSketchConstruction import (
     prepare_sketch_construction,
     verify_sketch_construction,
 )
+from VibeCADNativeSketchDeleteGeometry import (
+    create_sketch_delete_geometry,
+    preflight_sketch_delete_geometry,
+    prepare_sketch_delete_geometry,
+    verify_sketch_delete_geometry,
+)
 from VibeCADNativeSketchChamfer import (
     create_sketch_chamfer,
     preflight_sketch_chamfer,
@@ -610,6 +616,14 @@ _OUTER_FIELDS = {
             "target",
         }
     ),
+    "delete_geometry": frozenset(
+        {
+            "sketch",
+            "expected_geometry_count",
+            "expected_constraint_count",
+            "geometry_indices",
+        }
+    ),
     "project_external_geometry": _EXTERNAL_OPERATION_FIELDS,
     "intersect_external_geometry": _EXTERNAL_OPERATION_FIELDS,
     "carbon_copy": frozenset(
@@ -877,6 +891,13 @@ _OPERATIONS = {
         create_sketch_extend,
         verify_sketch_extend,
         "Extend Native Sketch Geometry",
+    ),
+    "delete_geometry": (
+        prepare_sketch_delete_geometry,
+        preflight_sketch_delete_geometry,
+        create_sketch_delete_geometry,
+        verify_sketch_delete_geometry,
+        "Delete Native Sketch Geometry",
     ),
     "project_external_geometry": (
         prepare_sketch_projection,

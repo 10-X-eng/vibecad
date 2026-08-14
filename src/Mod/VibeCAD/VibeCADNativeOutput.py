@@ -67,7 +67,7 @@ class NativeOutputRequest:
         suffixes = tuple(self.allowed_suffixes)
         if (
             not suffixes
-            or len(suffixes) > 8
+            or len(suffixes) > 16
             or len(set(suffixes)) != len(suffixes)
             or any(
                 not isinstance(value, str)
@@ -192,6 +192,41 @@ class NativeOutputArtifact:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class NativeOutputBundleItem:
+    """One independently authorized file in an all-or-rollback output bundle."""
+
+    request: NativeOutputRequest
+    authorization: NativeOutputAuthorization
+    writer: Callable[[str], Any] = field(repr=False, compare=False)
+    validator: Callable[[Path], None] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    temporary_suffix: str = ".tmp"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, NativeOutputRequest):
+            raise TypeError("request must be a NativeOutputRequest")
+        if not isinstance(self.authorization, NativeOutputAuthorization):
+            raise NativeOutputError(
+                NATIVE_OUTPUT_AUTHORIZATION_FAILED,
+                "VibeCAD did not receive a valid human output authorization.",
+            )
+        if not callable(self.writer):
+            raise TypeError("Native output writer must be callable")
+        if self.validator is not None and not callable(self.validator):
+            raise TypeError("Native output validator must be callable")
+        if (
+            not isinstance(self.temporary_suffix, str)
+            or not self.temporary_suffix.startswith(".")
+            or len(self.temporary_suffix) > 16
+            or not self.temporary_suffix[1:].isalnum()
+        ):
+            raise ValueError("Native output temporary suffix is invalid")
+
+
 def authorize_native_output_path(
     request: NativeOutputRequest,
     path: str | os.PathLike[str],
@@ -309,6 +344,7 @@ def publish_authorized_output(
     writer: Callable[[str], Any],
     guard: Callable[[], None],
     validator: Callable[[Path], None] | None = None,
+    temporary_suffix: str = ".tmp",
 ) -> NativeOutputArtifact:
     """Write privately, verify, then atomically publish one authorized file."""
 
@@ -323,6 +359,13 @@ def publish_authorized_output(
         raise TypeError("Native output writer and guard must be callable")
     if validator is not None and not callable(validator):
         raise TypeError("Native output validator must be callable")
+    if (
+        not isinstance(temporary_suffix, str)
+        or not temporary_suffix.startswith(".")
+        or len(temporary_suffix) > 16
+        or not temporary_suffix[1:].isalnum()
+    ):
+        raise ValueError("Native output temporary suffix is invalid")
 
     destination = authorization.claim(request)
     guard()
@@ -332,7 +375,7 @@ def publish_authorized_output(
     try:
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{destination.name}.vibecad-",
-            suffix=".tmp",
+            suffix=temporary_suffix,
             dir=str(destination.parent),
         )
         temporary = Path(temporary_name)
@@ -363,3 +406,155 @@ def publish_authorized_output(
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+@dataclass(slots=True)
+class _PreparedBundleItem:
+    item: NativeOutputBundleItem
+    destination: Path
+    temporary: Path | None
+    size: int
+    digest: str
+    replaced: bool
+    backup: Path | None = None
+    published: bool = False
+
+
+def _private_sibling(path: Path, suffix: str) -> Path:
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{path.name}.vibecad-",
+        suffix=suffix,
+        dir=str(path.parent),
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def _cleanup_path(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def publish_authorized_output_bundle(
+    items: tuple[NativeOutputBundleItem, ...] | list[NativeOutputBundleItem],
+    *,
+    guard: Callable[[], None],
+) -> tuple[NativeOutputArtifact, ...]:
+    """Stage every file, then publish the authorized set with rollback.
+
+    The function cannot provide one filesystem transaction across directories,
+    but it does preserve existing destinations until every generated file has
+    passed validation and restores the original set if publication fails.
+    """
+
+    if not callable(guard):
+        raise TypeError("Native output guard must be callable")
+    values = tuple(items)
+    if not 1 <= len(values) <= 64:
+        raise ValueError("A Native output bundle must contain one through 64 files.")
+    if any(not isinstance(item, NativeOutputBundleItem) for item in values):
+        raise TypeError("Every Native output bundle entry must be an item.")
+
+    prepared: list[_PreparedBundleItem] = []
+    destinations: set[str] = set()
+    try:
+        # Consume every human grant before generating anything. A duplicate or
+        # mismatched destination therefore fails before any writer is invoked.
+        for item in values:
+            destination = item.authorization.claim(item.request)
+            identity = os.path.normcase(str(destination))
+            if identity in destinations:
+                raise NativeOutputError(
+                    NATIVE_OUTPUT_AUTHORIZATION_FAILED,
+                    "A Native output bundle cannot publish two files to the same destination.",
+                )
+            destinations.add(identity)
+            prepared.append(
+                _PreparedBundleItem(
+                    item=item,
+                    destination=destination,
+                    temporary=None,
+                    size=0,
+                    digest="",
+                    replaced=item.authorization._destination_state.exists,
+                )
+            )
+
+        guard()
+        for entry in prepared:
+            entry.item.authorization.verify_destination_unchanged()
+
+        # Generate and validate the complete set in private sibling files.
+        for entry in prepared:
+            entry.temporary = _private_sibling(
+                entry.destination,
+                entry.item.temporary_suffix,
+            )
+            entry.item.writer(str(entry.temporary))
+            if entry.item.validator is not None:
+                entry.item.validator(entry.temporary)
+            entry.size, entry.digest = _read_output(
+                entry.temporary,
+                entry.item.request.maximum_bytes,
+            )
+
+        guard()
+        for entry in prepared:
+            entry.item.authorization.verify_destination_unchanged()
+
+        # Move originals aside and publish each already-validated sibling. The
+        # backups stay in place until the complete set has been published.
+        try:
+            for entry in prepared:
+                if entry.replaced:
+                    entry.backup = _private_sibling(entry.destination, ".bak")
+                    entry.backup.unlink()
+                    os.replace(entry.destination, entry.backup)
+                os.replace(entry.temporary, entry.destination)
+                entry.temporary = None
+                entry.published = True
+        except Exception:
+            rollback_failed = False
+            for entry in reversed(prepared):
+                try:
+                    if entry.published:
+                        entry.destination.unlink(missing_ok=True)
+                    if entry.backup is not None and entry.backup.exists():
+                        os.replace(entry.backup, entry.destination)
+                        entry.backup = None
+                except OSError:
+                    rollback_failed = True
+            if rollback_failed:
+                raise NativeOutputError(
+                    NATIVE_OUTPUT_FAILED,
+                    "The output bundle failed and one or more original files could not be restored.",
+                )
+            raise
+
+        artifacts = tuple(
+            NativeOutputArtifact(
+                entry.destination.name,
+                entry.size,
+                entry.digest,
+                entry.replaced,
+            )
+            for entry in prepared
+        )
+        for entry in prepared:
+            _cleanup_path(entry.backup)
+            entry.backup = None
+        return artifacts
+    except NativeOutputError:
+        raise
+    except Exception as exc:
+        raise NativeOutputError(
+            NATIVE_OUTPUT_FAILED,
+            "The authorized output bundle could not be generated and published.",
+        ) from exc
+    finally:
+        for entry in prepared:
+            _cleanup_path(entry.temporary)

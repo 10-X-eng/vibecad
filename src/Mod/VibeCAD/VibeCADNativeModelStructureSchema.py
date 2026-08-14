@@ -15,6 +15,7 @@ from VibeCADNativeCapabilityRegistry import (
 
 
 MODEL_SURFACE = frozenset({"model"})
+REUSABLE_SKETCH_SURFACES = frozenset({"model", "sketch.setup"})
 _LABEL = {
     "type": "string",
     "minLength": 1,
@@ -123,12 +124,13 @@ def _variant(
     *,
     exact_target_type: str | None,
     transaction_behavior: str,
+    surface_ids: frozenset[str] = MODEL_SURFACE,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
         description=description,
         action_ids=frozenset({action_id}),
-        surface_ids=MODEL_SURFACE,
+        surface_ids=surface_ids,
         exact_target_type=exact_target_type,
         transaction_behavior=transaction_behavior,
         background_required=False,
@@ -230,6 +232,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
                 ),
                 exact_target_type="SketchSupport",
                 transaction_behavior="document",
+                surface_ids=REUSABLE_SKETCH_SURFACES,
             ),
         ),
     )
@@ -245,6 +248,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
                 _parameters({"target": _object_ref()}, ("target",)),
                 exact_target_type="Sketcher::SketchObject",
                 transaction_behavior="none",
+                surface_ids=REUSABLE_SKETCH_SURFACES,
             ),
         ),
     )

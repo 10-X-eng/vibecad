@@ -36,6 +36,7 @@ def _variant(
     exact_target_type: str | None = None,
     parameters: dict[str, object] | None = None,
     action_ids: frozenset[str] | None = None,
+    provider_supplemental: bool = False,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
@@ -46,6 +47,7 @@ def _variant(
         transaction_behavior=transaction_behavior,
         background_required=False,
         parameters=parameters or _parameters(),
+        provider_supplemental=provider_supplemental,
     )
 
 
@@ -213,6 +215,37 @@ def test_complete_registry_emits_only_live_variants_in_live_family_order() -> No
     assert "runCommand" not in serialized
 
 
+def test_complete_family_includes_declared_supplemental_operations() -> None:
+    feature = NativeCapabilityDefinition(
+        name="model.feature",
+        description="Create or configure one exact solid feature.",
+        primary_classification="mutation",
+        variants=(
+            _feature_definition().variants[0],
+            _variant(
+                "configure",
+                "VibeCAD_ModelConfigureFeature",
+                transaction_behavior="document",
+                provider_supplemental=True,
+            ),
+        ),
+    )
+    registry = NativeCapabilityRegistry()
+    for definition in (feature, _inspection_definition()):
+        registry.register_definition(definition)
+        registry.register_implementation(
+            NativeCapabilityImplementation(definition.name, lambda _arguments: {})
+        )
+
+    surface = resolve_native_provider_surface(_surface(), registry)
+
+    assert surface.available is True
+    assert surface.schemas[0]["parameters"]["properties"]["operation"]["enum"] == [
+        "primitive",
+        "configure",
+    ]
+
+
 def test_fixed_surface_fails_closed_when_a_manifest_required_action_is_missing() -> None:
     manifest = _manifest()
     manifest["groups"] = [
@@ -251,7 +284,7 @@ def test_provider_lists_operations_once_without_repeating_variant_prose() -> Non
     operation = parameters["properties"]["operation"]
     assert operation["enum"] == ["primitive", "profile"]
     assert operation["description"] == (
-        "Fields by operation: primitive|profile=none."
+        "Fields: none."
     )
     assert all(variant.description not in repr(schema) for variant in definition.variants)
 
@@ -286,7 +319,7 @@ def test_compact_multi_operation_schema_keeps_closed_typed_field_union() -> None
     assert set(parameters["properties"]) == {"operation", "value"}
     assert parameters["properties"]["operation"]["enum"] == ["number", "name"]
     assert parameters["properties"]["operation"]["description"] == (
-        "Fields by operation: number|name=value."
+        "Fields: value."
     )
     assert parameters["properties"]["value"]["anyOf"] == [
         {"minimum": 0, "type": "number"},
@@ -352,7 +385,7 @@ def test_compact_multi_operation_schema_merges_repeated_closed_objects() -> None
         "type": "string",
     }
     assert definition_schema["description"] == (
-        "Fields by operation: first=kind,distance; second=kind,count."
+        "Fields: first=kind,distance; second=kind,count."
     )
 
 
@@ -539,6 +572,23 @@ def test_canonical_schema_uses_compact_integral_json_numbers() -> None:
     assert type(number["maximum"]) is float
 
 
+def test_canonical_schema_keeps_large_bounds_in_scientific_json() -> None:
+    variant = _variant(
+        "bounded",
+        "Part_Bounded",
+        transaction_behavior="document",
+        parameters=_parameters(
+            value={"type": "number", "minimum": -1.0e30, "maximum": 1.0e30}
+        ),
+    )
+
+    number = variant.provider_parameters()["properties"]["value"]
+
+    assert number == {"type": "number", "minimum": -1.0e30, "maximum": 1.0e30}
+    assert type(number["minimum"]) is float
+    assert type(number["maximum"]) is float
+
+
 def test_tool_and_schema_budgets_fail_before_advertisement(monkeypatch) -> None:
     monkeypatch.setattr(registry_module, "MAX_NATIVE_TOOLS_PER_SURFACE", 1)
     with pytest.raises(NativeCapabilityRegistryError, match="requires 2 tools"):
@@ -547,6 +597,15 @@ def test_tool_and_schema_budgets_fail_before_advertisement(monkeypatch) -> None:
     monkeypatch.setattr(registry_module, "MAX_NATIVE_TOOLS_PER_SURFACE", 24)
     monkeypatch.setattr(registry_module, "MAX_NATIVE_SCHEMAS_JSON_BYTES", 10)
     with pytest.raises(NativeCapabilityRegistryError, match="schemas use"):
+        resolve_native_provider_surface(_surface(), _register_complete())
+
+    monkeypatch.setattr(registry_module, "MAX_NATIVE_SCHEMAS_JSON_BYTES", 64 * 1024)
+    monkeypatch.setattr(
+        registry_module,
+        "MAX_NATIVE_SCHEMAS_JSON_BYTES_BY_SURFACE",
+        {"model": 10},
+    )
+    with pytest.raises(NativeCapabilityRegistryError, match="limit is 10"):
         resolve_native_provider_surface(_surface(), _register_complete())
 
 

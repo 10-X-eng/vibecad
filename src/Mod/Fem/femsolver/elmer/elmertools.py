@@ -43,35 +43,41 @@ class ElmerTools(ObjectTools):
 
     name = "Elmer"
 
-    def __init__(self, obj):
-        super().__init__(obj)
+    def __init__(self, obj, *, detached=False, working_directory=None):
+        super().__init__(
+            obj,
+            detached=detached,
+            working_directory=working_directory,
+        )
         self.model_file = ""
         self._result_format = ""
 
-    def prepare(self):
+    def prepare(self, *, run_grid=True):
         grid_bin = settings.require_binary("ElmerGrid")
-        w = writer.Writer(self.obj, self.obj.WorkingDirectory)
+        w = writer.Writer(self.obj, self.working_directory)
         w.write_solver_input()
 
         mesh = w.getMesh()
-        mesh_file = os.path.join(self.obj.WorkingDirectory, "mesh.unv")
+        mesh_file = os.path.join(self.working_directory, "mesh.unv")
         mesh.FemMesh.write(mesh_file)
 
         env = QProcessEnvironment.systemEnvironment()
-        p = QProcess()
-        p.setProcessEnvironment(env)
-        p.setWorkingDirectory(self.obj.WorkingDirectory)
-        grid_args = ["8", "2", mesh_file, "-out", self.obj.WorkingDirectory]
-        p.start(grid_bin, grid_args)
-        p.waitForFinished(-1)
+        grid_args = ["8", "2", mesh_file, "-out", self.working_directory]
+        self.grid_commands = [(grid_bin, list(grid_args))]
         num_proc = self.fem_param.GetGroup("Elmer").GetInt("NumberOfTasks", 1)
         if num_proc > 1:
             # MPI parallel computing version
             grid_args.extend(["-partdual", "-metiskway", str(num_proc)])
-            p.start(grid_bin, grid_args)
-            p.waitForFinished(-1)
+            self.grid_commands.append((grid_bin, list(grid_args)))
+        if run_grid:
+            p = QProcess()
+            p.setProcessEnvironment(env)
+            p.setWorkingDirectory(self.working_directory)
+            for program, arguments in self.grid_commands:
+                p.start(program, arguments)
+                p.waitForFinished(-1)
 
-        self.model_file = os.path.join(self.obj.WorkingDirectory, writer._SIF_NAME)
+        self.model_file = os.path.join(self.working_directory, writer._SIF_NAME)
         handled = w.getHandledConstraints()
         allConstraints = membertools.get_member(self.analysis, "Fem::Constraint")
         for obj in set(allConstraints) - handled:
@@ -90,7 +96,7 @@ class ElmerTools(ObjectTools):
         env = QProcessEnvironment.systemEnvironment()
         env.insert("OMP_NUM_THREADS", str(num_thr))
         self.process.setProcessEnvironment(env)
-        self.process.setWorkingDirectory(self.obj.WorkingDirectory)
+        self.process.setWorkingDirectory(self.working_directory)
 
         if num_proc > 1:
             # MPI parallel computing version
@@ -117,15 +123,12 @@ class ElmerTools(ObjectTools):
             for result in self.obj.Results:
                 if result.isDerivedFrom("Fem::FemPostPipeline"):
                     retained_pipeline = result
-        reconciliation = None
-        if retained_pipeline is not None:
-            from femcommands.manager import (
-                _stage_timeline_result_graph,
-            )
+        from femcommands.manager import _stage_timeline_result_graph
 
-            reconciliation = _stage_timeline_result_graph(
-                retained_pipeline
-            )
+        reconciliation = _stage_timeline_result_graph(
+            self.obj,
+            retained_pipeline,
+        )
         pipeline, pipeline_created = self._load_vtk_results()
         dat, dat_created = self._load_dat_results()
         if pipeline is not None:
@@ -146,9 +149,9 @@ class ElmerTools(ObjectTools):
         return None
 
     def _clear_results(self):
-        dir_content = os.listdir(self.obj.WorkingDirectory)
+        dir_content = os.listdir(self.working_directory)
         for f in dir_content:
-            path = os.path.join(self.obj.WorkingDirectory, f)
+            path = os.path.join(self.working_directory, f)
             base, ext = os.path.splitext(path)
             if ext in [".vtu", ".vtp", ".pvtu", ".pvd", ".dat"]:
                 os.remove(path)
@@ -171,11 +174,11 @@ class ElmerTools(ObjectTools):
             self.obj.Results = tmp
             create = True
 
-        files = os.listdir(self.obj.WorkingDirectory)
+        files = os.listdir(self.working_directory)
         for f in files:
             base, ext = os.path.splitext(f)
             if ext == self._result_format:
-                res = os.path.join(self.obj.WorkingDirectory, f)
+                res = os.path.join(self.working_directory, f)
                 pipeline.read(res)
                 break
 
@@ -209,10 +212,10 @@ class ElmerTools(ObjectTools):
             self.obj.Results = tmp
             create = True
 
-        files = os.listdir(self.obj.WorkingDirectory)
+        files = os.listdir(self.working_directory)
         for f in files:
             if f.endswith(".dat"):
-                dat_file = os.path.join(self.obj.WorkingDirectory, f)
+                dat_file = os.path.join(self.working_directory, f)
                 with open(dat_file, "r") as file:
                     dat.Text = file.read()
                 break

@@ -110,7 +110,7 @@ def test_internal_alignment_action_is_a_document_mutation_in_geometry() -> None:
     variant = sketch_internal_alignment_variants()[0]
     assert plan.classification.mutation is True
     assert plan.classification.view is False
-    assert plan.capability_family == "sketch.geometry"
+    assert plan.capability_family == "sketch.edit"
     assert plan.operation_variant == variant.operation
     assert plan.transaction_behavior == "document"
     assert variant.action_ids == frozenset(

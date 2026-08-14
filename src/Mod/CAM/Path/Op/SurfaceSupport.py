@@ -89,14 +89,17 @@ class PathGeometryGenerator:
             if hasattr(self, "_" + pattern):
                 self.pattern = pattern
 
-        if shape.BoundBox.ZMin != 0.0:
-            shape.translate(FreeCAD.Vector(0.0, 0.0, 0.0 - shape.BoundBox.ZMin))
-        if shape.BoundBox.ZLength > 1.0e-8:
+        owned_shape = shape.copy()
+        if owned_shape.BoundBox.ZMin != 0.0:
+            owned_shape.translate(
+                FreeCAD.Vector(0.0, 0.0, 0.0 - owned_shape.BoundBox.ZMin)
+            )
+        if owned_shape.BoundBox.ZLength > 1.0e-8:
             msg = translate("PathSurfaceSupport", "Shape appears to not be horizontal planar.")
-            msg += " ZMax == {} mm.\n".format(shape.BoundBox.ZMax)
+            msg += " ZMax == {} mm.\n".format(owned_shape.BoundBox.ZMax)
             FreeCAD.Console.PrintWarning(msg)
         else:
-            self.shape = shape
+            self.shape = owned_shape
             self._prepareConstants()
 
     def _prepareConstants(self):
@@ -666,7 +669,11 @@ class ProcessSelectedFaces:
         add = faceCnt - self.obj.AvoidLastX_Faces
         for bst in range(0, faceCnt):
             m, base, sub = TUPS[bst]
-            shape = getattr(base.Shape, sub)
+            # Selected Job resources can share OCC storage with their public
+            # source.  Surface projection and offset helpers translate and
+            # tessellate downstream geometry, so detach the Face before it
+            # enters that pipeline.
+            shape = getattr(base.Shape, sub).copy()
             if isinstance(shape, Part.Face):
                 faceIdx = int(sub[4:]) - 1
                 if bst < add:
@@ -894,12 +901,13 @@ class ProcessSelectedFaces:
         # baseEnv = PathUtils.getEnvelope(base.Shape, subshape=None, depthparams=self.depthParams)
 
         try:
+            base_shape = base.Shape.copy()
             baseEnv = PathUtils.getEnvelope(
-                partshape=base.Shape, subshape=None, depthparams=self.depthParams
+                partshape=base_shape, subshape=None, depthparams=self.depthParams
             )  # Produces .Shape
         except Exception as ee:
             Path.Log.error(str(ee))
-            shell = base.Shape.Shells[0]
+            shell = base.Shape.copy().Shells[0]
             solid = Part.makeSolid(shell)
             try:
                 baseEnv = PathUtils.getEnvelope(
@@ -1144,7 +1152,8 @@ def getCrossSection(shape):
 def getShapeEnvelope(shape):
     Path.Log.debug("getShapeEnvelope()")
 
-    wBB = shape.BoundBox
+    owned_shape = shape.copy()
+    wBB = owned_shape.BoundBox
     extFwd = wBB.ZLength + 10.0
     minz = wBB.ZMin
     maxz = wBB.ZMin + extFwd
@@ -1152,7 +1161,10 @@ def getShapeEnvelope(shape):
     dep_par = PathUtils.depth_params(maxz + 5.0, maxz + 3.0, maxz, stpDwn, 0.0, minz)
 
     try:
-        env = PathUtils.getEnvelope(partshape=shape, depthparams=dep_par)  # Produces .Shape
+        env = PathUtils.getEnvelope(
+            partshape=owned_shape,
+            depthparams=dep_par,
+        )  # Produces .Shape
     except Exception as ee:
         FreeCAD.Console.PrintError("PathUtils.getEnvelope() failed.\n" + str(ee) + "\n")
         return False
@@ -1199,7 +1211,7 @@ def _makeSafeSTL(self, JOB, obj, mdlIdx, faceShapes, voidShapes, ocl):
     sBB = JOB.Stock.Shape.BoundBox
 
     # add Model shape to safeSTL shape
-    fuseShapes.append(Mdl.Shape)
+    fuseShapes.append(Mdl.Shape.copy())
 
     if obj.BoundBox == "BaseBoundBox":
         cont = False
@@ -1211,12 +1223,12 @@ def _makeSafeSTL(self, JOB, obj, mdlIdx, faceShapes, voidShapes, ocl):
 
         try:
             envBB = PathUtils.getEnvelope(
-                partshape=Mdl.Shape, depthparams=dep_par
+                partshape=Mdl.Shape.copy(), depthparams=dep_par
             )  # Produces .Shape
             cont = True
         except Exception as ee:
             Path.Log.error(str(ee))
-            shell = Mdl.Shape.Shells[0]
+            shell = Mdl.Shape.copy().Shells[0]
             solid = Part.makeSolid(shell)
             try:
                 envBB = PathUtils.getEnvelope(
@@ -1227,7 +1239,7 @@ def _makeSafeSTL(self, JOB, obj, mdlIdx, faceShapes, voidShapes, ocl):
                 Path.Log.error(str(eee))
 
         if cont:
-            stckWst = JOB.Stock.Shape.cut(envBB)
+            stckWst = JOB.Stock.Shape.copy().cut(envBB)
             if obj.BoundaryAdjustment > 0.0:
                 cmpndFS = Part.makeCompound(faceShapes)
                 baBB = PathUtils.getEnvelope(
@@ -1295,9 +1307,9 @@ def _makeSTL(model, obj, ocl, model_type=None):
         facets = model.Mesh.Facets.Points
     else:
         if hasattr(model, "Shape"):
-            shape = model.Shape
+            shape = model.Shape.copy()
         else:
-            shape = model
+            shape = model.copy()
         # vertices, facet_indices = shape.tessellate(obj.LinearDeflection.Value) # tessellate workaround
         # Workaround for tessellate bug
         mesh = MeshPart.meshFromShape(
@@ -1891,7 +1903,11 @@ class FindUnifiedRegions:
     It finds the unified horizontal unified regions, if they exist."""
 
     def __init__(self, facesList, geomToler):
-        self.FACES = facesList  # format is tuple (faceShape, faceIndex_on_base)
+        # The legacy caller may hand us subshapes sharing storage with a Job
+        # model.  This class extrudes, fuses, slices, and translates its inputs;
+        # retain only detached copies so those operations cannot rewrite the
+        # linked public source.
+        self.FACES = [(face.copy(), index) for face, index in facesList]
         self.geomToler = geomToler
         self.tempGroup = None
         self.topFaces = []

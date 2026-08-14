@@ -30,7 +30,6 @@
 
 #include <App/Document.h>
 #include <Base/Console.h>
-#include <Base/Interpreter.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
@@ -53,6 +52,7 @@
 #include "QGVPage.h"
 #include "QGSPage.h"
 #include "Rez.h"
+#include "RichAnnotationBuilder.h"
 #include "ViewProviderPage.h"
 #include "ViewProviderRichAnno.h"
 
@@ -805,121 +805,52 @@ void TaskRichAnno::createAnnoFeature(const QPointF* scenePos)
             "The annotation target or transaction is no longer available"
         );
     }
-    auto* document = m_documentIdentity.resolve();
-    const std::string objectName{QT_TR_NOOP("RichTextAnnotation")};
-    std::string annoName =
-        document->getUniqueObjectName(objectName.c_str());
-    std::string annoType = "TechDraw::DrawRichAnno";
-    const std::string documentName =
-        Base::InterpreterSingleton::strToPython(
-            document->getName()
-        );
-    const QString annotationFactory =
-        QStringLiteral(
-            "App.getDocument('%1').addObject('%2', '%3')"
-        )
-            .arg(
-                QString::fromStdString(documentName),
-                QString::fromStdString(annoType),
-                QString::fromStdString(annoName)
-            );
-    auto* object = Gui::Command::runDocumentObjectCommand(
-        Command::Doc,
-        *document,
-        annotationFactory.toUtf8(),
-        TechDraw::DrawRichAnno::getClassTypeId()
-    );
-    m_annoFeat =
-        dynamic_cast<TechDraw::DrawRichAnno*>(object);
-    if (!m_annoFeat) {
-        throw Base::RuntimeError(
-            "The annotation object could not be created"
-        );
+    double xMm = 0.0;
+    double yMm = 0.0;
+    if (scenePos) {
+        xMm = Rez::appX(scenePos->x());
+        yMm = -Rez::appX(scenePos->y());
     }
-    annoName = m_annoFeat->getNameInDocument();
-    const std::string generatedSuffix =
-        annoName.rfind(objectName, 0) == 0
-        ? annoName.substr(objectName.length())
-        : annoName;
+    else if (m_baseFeat) {
+        const QPointF start = calcTextStartPos(m_baseFeat->getScale());
+        xMm = Rez::appX(start.x());
+        yMm = Rez::appX(start.y());
+    }
+    else {
+        xMm = m_basePage->getPageWidth() / 2.0;
+        yMm = m_basePage->getPageHeight() / 2.0;
+    }
+
+    Base::Color frameColor;
+    frameColor.setValue<QColor>(ui->cpFrameColor->color());
+    const DrawingRichAnnotationFrameStyle frame {
+        ui->gbFrame->isChecked(),
+        ui->dsbWidth->rawValue(),
+        ui->cFrameStyle->currentIndex(),
+        frameColor,
+    };
+    const std::string objectLabel =
+        tr(QT_TR_NOOP("RichTextAnnotation")).toStdString();
+    m_annoFeat = createDrawingRichAnnotation(
+        m_basePage,
+        m_baseFeat,
+        DrawingRichAnnotationContentKind::HumanEditorHtml,
+        m_toolbar->toHtml().toUtf8().toStdString(),
+        objectLabel,
+        xMm,
+        yMm,
+        ui->dsbMaxWidth->value().getValue(),
+        frame);
     m_annotationIdentity =
         TaskInternal::ObjectIdentity<TechDraw::DrawRichAnno>(
             m_annoFeat
         );
-    const std::string pageCommand =
-        Gui::Command::getObjectCmd(m_basePage);
-    const std::string annotationCommand =
-        Gui::Command::getObjectCmd(m_annoFeat);
-    Command::doCommand(
-        Command::Doc,
-        "%s.addView(%s)",
-        pageCommand.c_str(),
-        annotationCommand.c_str()
-    );
-
-    if (m_baseFeat) {
-        const std::string baseCommand =
-            Gui::Command::getObjectCmd(m_baseFeat);
-        Command::doCommand(
-            Command::Doc,
-            "%s.AnnoParent = %s",
-            annotationCommand.c_str(),
-            baseCommand.c_str()
+    Gui::ViewProvider* provider = QGIView::getViewProvider(m_annoFeat);
+    m_annoVP = freecad_cast<ViewProviderRichAnno*>(provider);
+    if (!m_annoVP) {
+        throw Base::RuntimeError(
+            "The annotation object has no compatible graphical provider"
         );
-    }
-    commonFeatureUpdate();
-    if (scenePos) {
-        m_annoFeat->X.setValue(Rez::appX(scenePos->x()));
-        m_annoFeat->Y.setValue(-Rez::appX(scenePos->y()));
-    }
-    else if (m_baseFeat) {
-        QPointF qTemp = calcTextStartPos(m_annoFeat->getScale());
-        Base::Vector3d vTemp(qTemp.x(), qTemp.y());
-        m_annoFeat->X.setValue(Rez::appX(vTemp.x));
-        m_annoFeat->Y.setValue(Rez::appX(vTemp.y));
-    }
-    else {
-        m_annoFeat->X.setValue(m_basePage->getPageWidth() / 2.0);
-        m_annoFeat->Y.setValue(m_basePage->getPageHeight() / 2.0);
-    }
-
-    if (m_annoFeat) {
-        Gui::ViewProvider* vp = QGIView::getViewProvider(m_annoFeat);
-        m_annoVP = freecad_cast<ViewProviderRichAnno*>(vp); // Store m_annoVP
-        if (m_annoVP) {
-            Base::Color ac;
-            ac.setValue<QColor>(ui->cpFrameColor->color());
-            m_annoVP->LineColor.setValue(ac);
-            m_annoVP->LineWidth.setValue(ui->dsbWidth->rawValue());
-            m_annoVP->LineStyle.setValue(ui->cFrameStyle->currentIndex());
-
-            // Set initial VP property readonly state based on ShowFrame
-            bool editable = m_annoFeat->ShowFrame.getValue();
-            m_annoVP->LineWidth.setStatus(App::Property::ReadOnly, !editable);
-            m_annoVP->LineStyle.setStatus(App::Property::ReadOnly, !editable);
-            m_annoVP->LineColor.setStatus(App::Property::ReadOnly, !editable);
-        }
-    }
-
-    std::string translatedObjectName{tr(objectName.c_str()).toStdString()};
-    m_annoFeat->Label.setValue(
-        translatedObjectName + generatedSuffix
-    );
-
-    //trigger claimChildren in tree
-    if (m_baseFeat) {
-        m_baseFeat->touch();
-    }
-
-    m_basePage->touch();
-
-    if (m_annoFeat) {
-        m_annoFeat->recomputeFeature();
-        if (m_annoFeat->isError()) {
-            throw Base::RuntimeError(
-                "The annotation could not produce a valid result"
-            );
-        }
-        m_annoFeat->requestPaint();
     }
 }
 

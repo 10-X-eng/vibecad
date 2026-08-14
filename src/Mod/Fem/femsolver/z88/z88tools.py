@@ -52,8 +52,12 @@ class Z88Tools(ObjectTools):
 
     name = "Z88"
 
-    def __init__(self, obj):
-        super().__init__(obj)
+    def __init__(self, obj, *, detached=False, working_directory=None):
+        super().__init__(
+            obj,
+            detached=detached,
+            working_directory=working_directory,
+        )
         self.model_file = ""
 
     def prepare(self):
@@ -84,7 +88,7 @@ class Z88Tools(ObjectTools):
             self.obj,
             mesh_obj,
             meshdatagetter.member,
-            self.obj.WorkingDirectory,
+            self.working_directory,
         )
         w.write_solver_input()
 
@@ -93,7 +97,7 @@ class Z88Tools(ObjectTools):
         self._clear_results()
         env = QProcessEnvironment.systemEnvironment()
         self.process.setProcessEnvironment(env)
-        self.process.setWorkingDirectory(self.obj.WorkingDirectory)
+        self.process.setWorkingDirectory(self.working_directory)
         command_list = ["-t", "-" + self.obj.SolverType]
 
         if self.obj.AnalysisType == "test":
@@ -104,7 +108,7 @@ class Z88Tools(ObjectTools):
             prepare_process = QProcess()
             prepare_env = QProcessEnvironment.systemEnvironment()
             prepare_process.setProcessEnvironment(prepare_env)
-            prepare_process.setWorkingDirectory(self.obj.WorkingDirectory)
+            prepare_process.setWorkingDirectory(self.working_directory)
             prepare_process.start(z88_bin, command_list)
             prepare_process.waitForFinished(-1)
 
@@ -124,15 +128,12 @@ class Z88Tools(ObjectTools):
             for result in self.obj.Results:
                 if result.isDerivedFrom("Fem::FemPostPipeline"):
                     retained_pipeline = result
-        reconciliation = None
-        if retained_pipeline is not None:
-            from femcommands.manager import (
-                _stage_timeline_result_graph,
-            )
+        from femcommands.manager import _stage_timeline_result_graph
 
-            reconciliation = _stage_timeline_result_graph(
-                retained_pipeline
-            )
+        reconciliation = _stage_timeline_result_graph(
+            self.obj,
+            retained_pipeline,
+        )
         pipeline, pipeline_created = self._load_vtk_results()
         dat, dat_created = self._load_dat_results()
         if pipeline is not None:
@@ -154,10 +155,10 @@ class Z88Tools(ObjectTools):
 
     def _clear_results(self):
         # results are z88oN.txt files
-        dir_content = os.listdir(self.obj.WorkingDirectory)
+        dir_content = os.listdir(self.working_directory)
         for f in dir_content:
             if re.match(r"^z88o\d+\.txt$", f) or re.match(r"^.+\.dat$", f):
-                path = os.path.join(self.obj.WorkingDirectory, f)
+                path = os.path.join(self.working_directory, f)
                 os.remove(path)
 
     def _load_dat_results(self):
@@ -230,7 +231,7 @@ class Z88Tools(ObjectTools):
 
     def load_mesh(self):
         try:
-            path_o0 = os.path.join(self.obj.WorkingDirectory, self.mesh_file)
+            path_o0 = os.path.join(self.working_directory, self.mesh_file)
             grid = z88utils.load_mesh(path_o0)
             return grid
         except Exception as e:
@@ -252,7 +253,7 @@ class Z88Tools(ObjectTools):
             FreeCAD.Console.PrintError("".join(format_exception_only(e)))
 
     def load_displacement(self, grid):
-        path_o2 = os.path.join(self.obj.WorkingDirectory, self.disp_file)
+        path_o2 = os.path.join(self.working_directory, self.disp_file)
         disp = z88utils.read_nodal_result(path_o2, grid)
         if disp is None:
             return
@@ -272,7 +273,7 @@ class Z88Tools(ObjectTools):
             grid.GetPointData().AddArray(disp_vtk)
 
     def load_force(self, grid):
-        path_o4 = os.path.join(self.obj.WorkingDirectory, self.force_file)
+        path_o4 = os.path.join(self.working_directory, self.force_file)
         force = z88utils.read_nodal_result(path_o4, grid)
         if force is None:
             return
@@ -316,12 +317,12 @@ class Z88Tools(ObjectTools):
         points.SetData(disp_points)
 
     def save_section_print(self, grid):
-        path_section_print = os.path.join(self.obj.WorkingDirectory, self.section_print_file)
+        path_section_print = os.path.join(self.working_directory, self.section_print_file)
         if not os.path.exists(path_section_print):
             return
 
         sp_dict = np.load(path_section_print, allow_pickle=True).item()
-        path_print = os.path.join(self.obj.WorkingDirectory, self.print_file)
+        path_print = os.path.join(self.working_directory, self.print_file)
         data_file = open(path_print, "w")
 
         pd = grid.GetPointData()
@@ -353,11 +354,11 @@ class Z88Tools(ObjectTools):
         data_file.close()
 
     def append_section(self, obj, target_file):
-        files = os.listdir(self.obj.WorkingDirectory)
+        files = os.listdir(self.working_directory)
         for f in files:
             if f.lower() == target_file:
                 section_header = "#" * 80 + "\n" + "Output file: " + f + "\n\n"
-                data_file = os.path.join(self.obj.WorkingDirectory, f)
+                data_file = os.path.join(self.working_directory, f)
                 with open(data_file, "r") as file:
                     obj.Text = obj.Text + section_header + file.read() + "\n"
                 break

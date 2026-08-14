@@ -25,6 +25,7 @@ _LABELS = {
     "TrimSketch": "Native Trim lifecycle",
     "SplitSketch": "Native Split lifecycle",
     "ExtendSketch": "Native Extend lifecycle",
+    "DeleteGeometrySketch": "Native Delete Geometry lifecycle",
     "ProjectionSketch": "Native Projection lifecycle",
     "IntersectionSketch": "Native Intersection lifecycle",
     "CarbonCopySketch": "Native Carbon Copy lifecycle",

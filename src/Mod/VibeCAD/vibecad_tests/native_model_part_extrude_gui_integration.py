@@ -102,6 +102,22 @@ def _publish_source(document, name: str, shape):
     return obj
 
 
+def _publish_circle_source(document, name: str):
+    circle = document.addObject("Part::Circle", name)
+    circle.Label = name
+    circle.Radius = 2.5
+    circle.Placement = App.Placement(
+        App.Vector(72.0, 5.0, 0.0),
+        App.Rotation(),
+    )
+    PartDesign.initializeDesignDefinition(circle)
+    document.publishProvisionalTimelineOperationBlock(circle, (), ())
+    assert document.recompute([circle], True, True) is not False
+    PartDesign.finalizeDesignDefinition(circle)
+    assert PartGui.isModelingObjectActive(circle)
+    return circle
+
+
 def _rectangle(x: float, y: float, width: float = 5.0, height: float = 4.0):
     return Part.makePolygon(
         [
@@ -180,6 +196,10 @@ def _create_sources(document) -> tuple[dict[str, object], str]:
                 document,
                 "DirectionCircle",
                 Part.Wire([Part.makeCircle(3, App.Vector(25, 15, 0))]),
+            ),
+            "ParametricCircle": _publish_circle_source(
+                document,
+                "ParametricCircle",
             ),
         }
         stale = _publish_source(
@@ -283,6 +303,10 @@ def _cases() -> tuple[dict[str, object], ...]:
                 },
                 along=6.0,
             ),
+        },
+        {
+            "label": "Gate Parametric Circle Extrude",
+            "definition": _definition(("ParametricCircle",), along=5.0),
         },
     )
 

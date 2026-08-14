@@ -242,6 +242,74 @@ def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
                 },
             ),
             NativeCapabilityVariant(
+                operation="make_flexible",
+                description=(
+                    "Convert one exact active AssemblyLink to flexible mode; "
+                    "the native lifecycle removes incompatible grounding."
+                ),
+                action_ids=frozenset({"AssemblyContextMakeFlexible"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactAssemblyLinkAndFrozenAssemblyState"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "link": _OBJECT_REF,
+                        "expected_state_sha256": _STATE_SHA256,
+                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
+                        "expected_grounded_count": _EXPECTED_JOINT_COUNT,
+                        "expected_joint_count": _EXPECTED_JOINT_COUNT,
+                    },
+                    "required": [
+                        "assembly",
+                        "link",
+                        "expected_state_sha256",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="make_rigid",
+                description=(
+                    "Convert one exact active AssemblyLink to rigid mode; the "
+                    "native lifecycle rewrites joints and incompatible grounding."
+                ),
+                action_ids=frozenset({"AssemblyContextMakeRigid"}),
+                surface_ids=frozenset({"assemble"}),
+                exact_target_type=(
+                    "HumanActiveAssemblyExactAssemblyLinkAndFrozenAssemblyState"
+                ),
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "assembly": _OBJECT_REF,
+                        "link": _OBJECT_REF,
+                        "expected_state_sha256": _STATE_SHA256,
+                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
+                        "expected_grounded_count": _EXPECTED_JOINT_COUNT,
+                        "expected_joint_count": _EXPECTED_JOINT_COUNT,
+                    },
+                    "required": [
+                        "assembly",
+                        "link",
+                        "expected_state_sha256",
+                        "expected_component_count",
+                        "expected_grounded_count",
+                        "expected_joint_count",
+                    ],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
                 operation="solve_assembly",
                 description=(
                     "Run the native solver for the exact human-active Assembly "

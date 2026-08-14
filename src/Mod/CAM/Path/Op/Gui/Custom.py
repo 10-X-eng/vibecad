@@ -23,8 +23,11 @@
 
 import FreeCAD
 import FreeCADGui
+import Path.Base.Util as PathUtil
+import Path.Main.Job as PathJob
 import Path.Op.Custom as PathCustom
 import Path.Op.Gui.Base as PathOpGui
+import PathScripts.PathUtils as PathUtils
 from Path.Main.Gui.Editor import CodeEditor
 
 from PySide import QtGui
@@ -131,6 +134,100 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         if filename and filename[0]:
             self.obj.GcodeFile = str(filename[0])
             self.setFields(self.obj)
+
+
+def CreateInTransaction(
+    document,
+    job,
+    *,
+    name="Custom",
+    label="Custom",
+    tool_controller,
+    coolant_mode="None",
+    gcode=(),
+):
+    """Create one fully configured Custom operation in the caller transaction."""
+
+    if document is None or getattr(job, "Document", None) is not document:
+        raise ValueError("A CAM Custom operation requires one Job in the target document")
+    if not isinstance(getattr(job, "Proxy", None), PathJob.ObjectJob):
+        raise ValueError("A CAM Custom operation requires a native CAM Job")
+    if (
+        getattr(tool_controller, "Document", None) is not document
+        or tool_controller
+        not in tuple(getattr(getattr(job, "Tools", None), "Group", ()) or ())
+    ):
+        raise ValueError(
+            "A CAM Custom operation requires one controller owned by its Job"
+        )
+    internal_name = str(name or "").strip()
+    tree_label = str(label or "").strip()
+    if not internal_name or not tree_label:
+        raise ValueError("A CAM Custom operation requires a nonempty name and label")
+    coolant = str(coolant_mode or "").strip().capitalize()
+    if coolant not in {"None", "Flood", "Mist"}:
+        raise ValueError("A CAM Custom coolant mode must be None, Flood, or Mist")
+    lines = tuple(gcode)
+    if not lines or any(not isinstance(line, str) or not line for line in lines):
+        raise ValueError("A CAM Custom operation requires nonempty G-code lines")
+
+    result = document.addObject("Path::FeaturePython", internal_name)
+    result = PathCustom.Create(
+        internal_name,
+        obj=result,
+        parentJob=job,
+        toolController=tool_controller,
+    )
+    result.Label = tree_label
+    result.Source = "Text"
+    result.GcodeFile = ""
+    result.Gcode = list(lines)
+    result.CoolantMode = coolant
+    if FreeCAD.GuiUp and getattr(result, "ViewObject", None) is not None:
+        result.ViewObject.Proxy = PathOpGui.ViewProvider(result.ViewObject, Command.res)
+    return result
+
+
+def _validate_custom_result(
+    document,
+    job,
+    result,
+    tool_controller,
+    coolant_mode,
+    *,
+    require_path=True,
+):
+    """Reject a Custom result that lost its exact durable CAM identity."""
+
+    result_name = str(getattr(result, "Name", "") or "")
+    result_id = int(getattr(result, "ID", 0) or 0)
+    view = getattr(result, "ViewObject", None)
+    if (
+        not result_name
+        or not result_id
+        or document.getObject(result_name) is not result
+        or document.getObject(result_id) is not result
+        or getattr(result, "Document", None) is not document
+        or not result.isDerivedFrom("Path::Feature")
+        or not isinstance(getattr(result, "Proxy", None), PathCustom.ObjectCustom)
+        or isinstance(getattr(result, "Proxy", None), PathCustom.ObjectEmbeddedPath)
+        or view is None
+        or not isinstance(getattr(view, "Proxy", None), PathOpGui.ViewProvider)
+        or result not in tuple(getattr(job.Operations, "Group", ()) or ())
+        or PathUtils.findParentJob(result) is not job
+        or PathUtil.timelineParentJob(result) is not job
+        or PathUtil.toolControllerForOp(result) is not tool_controller
+        or PathUtil.coolantModeForOp(result) != coolant_mode
+        or str(result.Source) != "Text"
+        or str(result.GcodeFile)
+        or not tuple(result.Gcode)
+        or not document.isProvisionallyEnrolledInTimelineByCurrentTransaction(result)
+        or tuple(getattr(result, "VibeCADTimelineReplacedInputs", ()) or ())
+        or not result.isValid()
+        or (require_path and not tuple(getattr(result.Path, "Commands", ()) or ()))
+    ):
+        raise RuntimeError("The CAM Custom operation was not created correctly")
+    return result
 
 
 Command = PathOpGui.SetupOperation(

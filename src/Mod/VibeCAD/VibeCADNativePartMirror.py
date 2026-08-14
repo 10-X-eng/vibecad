@@ -33,12 +33,7 @@ from VibeCADNativeTargets import (
 
 
 _DEFINITION_FIELDS = frozenset({"sources", "plane"})
-_PLANE_FIELDS = {
-    "xy": frozenset({"kind", "base_mm"}),
-    "xz": frozenset({"kind", "base_mm"}),
-    "yz": frozenset({"kind", "base_mm"}),
-    "reference": frozenset({"kind", "reference"}),
-}
+_STANDARD_PLANES = frozenset({"xy", "xz", "yz"})
 _REFERENCE_NAME = re.compile(r"^(?:Face|Edge)[1-9][0-9]*$")
 _MAX_SOURCES = 32
 _MAX_COORDINATE = 1_000_000.0
@@ -112,16 +107,20 @@ def _plane(document_uid: str, value: Any) -> PartMirrorPlaneSpec:
         raise NativeModelError("A Part Mirror plane is invalid.")
     values = dict(value)
     kind = str(values.get("kind") or "").strip()
-    expected = _PLANE_FIELDS.get(kind)
-    if expected is None or set(values) != expected:
-        raise NativeModelError("The Part Mirror plane fields do not match its kind.")
-    if kind != "reference":
+    if kind in _STANDARD_PLANES:
+        if set(values) not in ({"kind"}, {"kind", "base_mm"}):
+            raise NativeModelError("The Part Mirror plane fields do not match its kind.")
         return PartMirrorPlaneSpec(
             kind,
-            _vector(values["base_mm"], "plane base"),
+            _vector(
+                values.get("base_mm", {"x": 0.0, "y": 0.0, "z": 0.0}),
+                "plane base",
+            ),
             None,
             None,
         )
+    if kind != "reference" or set(values) != {"kind", "reference"}:
+        raise NativeModelError("The Part Mirror plane fields do not match its kind.")
     reference = values["reference"]
     if not isinstance(reference, Mapping) or set(reference) not in (
         {"object_name"},

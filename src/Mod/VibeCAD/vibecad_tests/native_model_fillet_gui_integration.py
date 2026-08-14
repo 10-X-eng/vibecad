@@ -256,6 +256,7 @@ def _run() -> None:
         assert tuple(obj.Name for obj in document.Objects) == before
 
         boxes = {}
+        box_operations = {}
         for index, label in enumerate(
             (
                 "Explicit A",
@@ -271,7 +272,21 @@ def _run() -> None:
             )
             body_name = response["bodies"][0]["body"]["object_name"]
             boxes[label] = body_name
+            box_operations[label] = response["operation"]["object_name"]
             assert abs(_volume(document, body_name) - 1000.0) < 1.0e-7
+
+        operation_target = box_operations["Explicit A"]
+        before = tuple(obj.Name for obj in document.Objects)
+        wrong_type = native_call(
+            "model.dressup",
+            _all_edges_fillet("Wrong Target Type", 1.0, operation_target),
+            succeeds=False,
+        )
+        assert wrong_type["error_code"] == "NATIVE_TARGET_INVALID"
+        assert wrong_type["actual_type"] == document.getObject(operation_target).TypeId
+        assert wrong_type["accepted_types"] == ["PartDesign::Body"]
+        assert wrong_type["exact_target"]["object_name"] == operation_target
+        assert tuple(obj.Name for obj in document.Objects) == before
 
         before = tuple(obj.Name for obj in document.Objects)
         invalid_edge = _explicit_fillet(

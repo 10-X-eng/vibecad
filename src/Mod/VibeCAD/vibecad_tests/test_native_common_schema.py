@@ -41,13 +41,22 @@ def test_common_registry_is_five_small_intent_focused_tools() -> None:
 
 def test_common_variants_use_explicit_eligible_surfaces() -> None:
     definitions = common_capability_definitions()
+    variants = {
+        (definition.name, variant.operation): variant
+        for definition in definitions
+        for variant in definition.variants
+    }
 
     assert all(
         variant.surface_ids == COMMON_NATIVE_SURFACES
         for definition in definitions
         if definition.name != "document.save"
         for variant in definition.variants
+        if variant.operation != "drawing_projected_geometry"
     )
+    drawing_projection = variants[("inspect.query", "drawing_projected_geometry")]
+    assert drawing_projection.surface_ids == frozenset({"drawing"})
+    assert drawing_projection.provider_supplemental is True
     assert DOCUMENT_SAVE_SURFACES == COMMON_NATIVE_SURFACES - {"sketch.edit"}
     assert all(
         variant.surface_ids == DOCUMENT_SAVE_SURFACES
@@ -76,6 +85,7 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
         "mass_properties",
         "visual_result",
         "element",
+        "drawing_projected_geometry",
         "validity",
     ]
 

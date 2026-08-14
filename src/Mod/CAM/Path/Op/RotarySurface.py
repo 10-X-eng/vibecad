@@ -388,9 +388,14 @@ class ObjectRotarySurface(PathOp.ObjectOp):
         for base, subs in base_list:
             if not hasattr(base, "Shape"):
                 continue
+            # A selected Job resource can share its OCC TShape with the public
+            # model source.  Tessellation attaches triangulation data to the
+            # shape, so project only an owned copy; otherwise merely generating
+            # a Rotary Surface path mutates the source model's durable BREP.
+            owned_shape = base.Shape.copy()
             for sub in subs:
                 try:
-                    shape = base.Shape.getElement(sub)
+                    shape = owned_shape.getElement(sub).copy()
                 except Exception:
                     continue
                 if not hasattr(shape, "tessellate"):
@@ -718,8 +723,13 @@ def SetupProperties():
     ]
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Factory used by the Op-Gui SetupOperation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectRotarySurface(obj, name, parentJob)
+    obj.Proxy = ObjectRotarySurface(
+        obj,
+        name,
+        parentJob,
+        toolController=toolController,
+    )
     return obj

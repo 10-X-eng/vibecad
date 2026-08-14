@@ -18,7 +18,10 @@ import Robot
 import RobotGui  # noqa: F401 - registers the shipped human commands
 from VibeCADCore import get_service
 import VibeCADGui as VibeGui
-from VibeCADNativeCapabilityRegistry import NativeProviderSurface
+from VibeCADNativeCapabilityRegistry import (
+    NativeProviderSurface,
+    resolve_native_provider_surface,
+)
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureSnapshot import build_manufacture_snapshot
 from VibeCADNativeRegistry import build_native_capability_registry
@@ -751,6 +754,19 @@ def _run() -> None:
         assert native_sources[2].Visibility is False
 
         controller, manufacture_surface = _ribbon_surface("CAMWorkbench", "manufacture")
+        manufacture_provider = resolve_native_provider_surface(
+            manufacture_surface,
+            registry,
+        )
+        assert ROBOT_TRAJECTORY_CAPABILITY_NAME not in (
+            manufacture_provider.missing_definition_names
+        )
+        assert ROBOT_TRAJECTORY_CAPABILITY_NAME not in (
+            manufacture_provider.missing_implementation_names
+        )
+        assert ROBOT_TRAJECTORY_CAPABILITY_NAME not in (
+            manufacture_provider.incomplete_definition_names
+        )
         manufacture_dispatcher = _dispatcher(
             document=document,
             controller=controller,
@@ -765,6 +781,23 @@ def _run() -> None:
         assert manufacture_snapshot["robot_trajectories"]["available"] is True
         assert str(temporary.name) not in snapshot_json
 
+        edge_noop = _edge_arguments(
+            document,
+            native_edge_source,
+            mode="edit",
+            target=native_edge,
+            segmentation=1.25,
+            use_rotation=True,
+        )
+        dress_noop = _dress_arguments(
+            document,
+            native_sources[0],
+            mode="edit",
+            target=native_dress,
+            speed=3200.0,
+            acceleration=4400.0,
+            continuity="discontinuous",
+        )
         compound_noop = _compound_arguments(
             document,
             native_sources[1:],
@@ -772,12 +805,13 @@ def _run() -> None:
             target=native_compound,
         )
         before_manufacture_noop = int(document.UndoCount)
-        manufacture_result = call(
-            compound_noop,
-            selected_dispatcher=manufacture_dispatcher,
-        )
-        assert manufacture_result["changed"] is False
-        assert "receipt" not in manufacture_result
+        for arguments in (edge_noop, dress_noop, compound_noop):
+            manufacture_result = call(
+                arguments,
+                selected_dispatcher=manufacture_dispatcher,
+            )
+            assert manufacture_result["changed"] is False
+            assert "receipt" not in manufacture_result
         assert int(document.UndoCount) == before_manufacture_noop
 
         final_operations = tuple(document.VibeCADTimeline.Operations)

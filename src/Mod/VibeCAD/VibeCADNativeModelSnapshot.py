@@ -16,6 +16,8 @@ from VibeCADReferenceContracts import (
 
 MAX_MODEL_ITEMS = 24
 MAX_COMPONENT_RESOURCES = 16
+MAX_VISIBLE_MODEL_ITEMS = 24
+MAX_HISTORY_OPERATIONS = 24
 
 
 def _shape_counts(obj: Any) -> dict[str, int]:
@@ -93,6 +95,7 @@ def _component_resources(component: Any) -> dict[str, Any]:
 
 def _body_summary(body: Any) -> dict[str, Any]:
     result = concise_object(body)
+    result["visible"] = bool(getattr(body.ViewObject, "Visibility", False))
     members = list(getattr(body, "Group", []) or [])
     result["feature_count"] = len(members)
     result.update(_component_resources(body))
@@ -100,11 +103,14 @@ def _body_summary(body: Any) -> dict[str, Any]:
     if tip is not None:
         result["tip"] = concise_object(tip)
         result["tip"]["shape"] = _shape_counts(tip)
+        if str(getattr(tip, "TypeId", "") or "") == "PartDesign::DesignBodyPublication":
+            result["tip_policy"] = "stable_body_result"
     return result
 
 
 def _part_summary(part: Any) -> dict[str, Any]:
     result = concise_object(part)
+    result["visible"] = bool(getattr(part.ViewObject, "Visibility", False))
     result["member_count"] = len(list(getattr(part, "Group", []) or []))
     result.update(_component_resources(part))
     return result
@@ -112,6 +118,7 @@ def _part_summary(part: Any) -> dict[str, Any]:
 
 def _sketch_summary(sketch: Any) -> dict[str, Any]:
     result = concise_object(sketch)
+    result["visible"] = bool(getattr(sketch.ViewObject, "Visibility", False))
     try:
         result["geometry_count"] = int(sketch.GeometryCount)
     except Exception:
@@ -137,6 +144,129 @@ def _mesh_summary(mesh_object: Any) -> dict[str, Any]:
     except Exception:
         pass
     result["visible"] = bool(getattr(mesh_object, "Visibility", False))
+    return result
+
+
+def _timeline_role(obj: Any) -> str:
+    return str(getattr(obj, "VibeCADTimelineRole", "") or "").strip()
+
+
+def _is_public_model_container(obj: Any) -> bool:
+    check = getattr(obj, "isDerivedFrom", None)
+    if not callable(check):
+        return str(getattr(obj, "TypeId", "") or "") in {
+            "App::Part",
+            "PartDesign::Body",
+            "PartDesign::Component",
+        }
+    try:
+        return bool(check("App::Part") or check("PartDesign::Body"))
+    except Exception:
+        return False
+
+
+def _visibility_parent(obj: Any) -> Any | None:
+    for method_name in ("getParentGroup", "getParentGeoFeatureGroup"):
+        parent = getattr(obj, method_name, None)
+        if not callable(parent):
+            continue
+        try:
+            value = parent()
+        except (AttributeError, ReferenceError, RuntimeError):
+            continue
+        if value is not None:
+            return value
+    return None
+
+
+def _effectively_visible(obj: Any) -> bool:
+    visited = set()
+    current = obj
+    while current is not None:
+        identity = id(current)
+        if identity in visited:
+            return False
+        visited.add(identity)
+        try:
+            if not bool(current.ViewObject.Visibility):
+                return False
+        except (AttributeError, ReferenceError, RuntimeError):
+            return False
+        current = _visibility_parent(current)
+    return True
+
+
+def _is_intrinsic_origin_feature(obj: Any) -> bool:
+    parent = getattr(obj, "getParentGeoFeatureGroup", None)
+    if not callable(parent):
+        return False
+    try:
+        owner = parent()
+        origin = getattr(owner, "Origin", None) if owner is not None else None
+        features = list(getattr(origin, "OriginFeatures", []) or [])
+        return obj in features
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        return False
+
+
+def _visible_geometry_summary(obj: Any) -> dict[str, Any] | None:
+    shape = _shape_counts(obj)
+    if (
+        not shape
+        or (
+            _timeline_role(obj) in {"internal", "resource"}
+            and not _is_public_model_container(obj)
+        )
+        or _is_intrinsic_origin_feature(obj)
+    ):
+        return None
+    if not _effectively_visible(obj):
+        return None
+    result = concise_object(obj)
+    result["shape"] = shape
+    role = _timeline_role(obj)
+    if role:
+        result["history_role"] = role
+    parent = _visibility_parent(obj)
+    if parent is not None:
+        result["container"] = concise_object(parent)
+    return result
+
+
+def _history_operation_summaries(document: Any) -> list[dict[str, Any]]:
+    timelines = [
+        obj
+        for obj in list(getattr(document, "Objects", []) or [])
+        if str(getattr(obj, "TypeId", "") or "") == "App::DocumentTimeline"
+    ]
+    if len(timelines) != 1:
+        return []
+    operations = list(getattr(timelines[0], "Operations", []) or [])
+    result = []
+    for position, operation in enumerate(operations):
+        if operation is None or _timeline_role(operation) != "operation":
+            continue
+        summary = concise_object(operation)
+        summary["history_position"] = position
+        status = [
+            str(value)
+            for value in list(getattr(operation, "State", []) or [])
+            if str(value)
+        ][:8]
+        if status:
+            summary["status"] = status
+        source_owned = bool(
+            getattr(operation, "VibeCADVibeScriptProgramId", "")
+            or getattr(operation, "VibeCADScriptedModelId", "")
+            or str(getattr(operation, "TypeId", "") or "")
+            == "PartDesign::DesignScriptOperation"
+        )
+        summary["source_owned"] = source_owned
+        if hasattr(operation, "Suppressed"):
+            summary["suppressed"] = bool(operation.Suppressed)
+            summary["native_suppression_available"] = not source_owned
+        summary["native_delete_available"] = not source_owned
+        result.append(summary)
     return result
 
 
@@ -182,6 +312,12 @@ def build_model_snapshot(document: Any) -> dict[str, Any]:
         for body in bodies
         if (summary := _standard_fastener_summary(document, body)) is not None
     ]
+    visible_geometry = [
+        summary
+        for obj in list(getattr(document, "Objects", []) or [])
+        if (summary := _visible_geometry_summary(obj)) is not None
+    ]
+    history_operations = _history_operation_summaries(document)
     return {
         "kind": "model",
         "counts": {
@@ -197,4 +333,9 @@ def build_model_snapshot(document: Any) -> dict[str, Any]:
         "sketches": [_sketch_summary(value) for value in sketches[:MAX_MODEL_ITEMS]],
         "meshes": [_mesh_summary(value) for value in meshes[:MAX_MODEL_ITEMS]],
         "standard_fasteners": standard_fasteners[:MAX_MODEL_ITEMS],
+        "history_operations": history_operations[:MAX_HISTORY_OPERATIONS],
+        "history_operations_truncated": len(history_operations) > MAX_HISTORY_OPERATIONS,
+        "body_tip_policy": "stable_body_result",
+        "visible_geometry": visible_geometry[:MAX_VISIBLE_MODEL_ITEMS],
+        "visible_geometry_truncated": len(visible_geometry) > MAX_VISIBLE_MODEL_ITEMS,
     }

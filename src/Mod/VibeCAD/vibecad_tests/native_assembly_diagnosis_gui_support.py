@@ -135,7 +135,7 @@ def dispatcher(document, surface, registry, controller, run_id, operations):
         reauthorize_turn=reauthorize,
         active_document=lambda: App.ActiveDocument,
         active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
-        edit_or_task_active=lambda: Gui.Control.activeDialog() is not None,
+        edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
     )
     turn = focused_turn(surface, registry, operations)
     return NativeTurnDispatcher(

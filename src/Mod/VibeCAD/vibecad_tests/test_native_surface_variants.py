@@ -120,9 +120,9 @@ def test_analyze_matrix_covers_every_valid_vtk_and_netgen_combination() -> None:
     baseline = KNOWN_ACTIONS_BY_SURFACE["analyze"]
     observed_names = set()
     expected_counts = {
-        (False, False): 81,
-        (True, False): 98,
-        (True, True): 103,
+        (False, False): 82,
+        (True, False): 99,
+        (True, True): 104,
     }
     for netgen, (vtk, vtk_python) in product(
         (False, True),
@@ -215,7 +215,7 @@ def test_manufacture_matrix_covers_preferences_runtime_options_and_robot() -> No
             ocl = "CAM_3dTools" in variant.composite_map
             camotics = "CAM_Camotics" in variant.command_ids
             expected_count = (
-                54
+                    59
                 - (0 if robot else 6)
                 + (2 if experimental else 0)
                 + (3 if ocl else 0)

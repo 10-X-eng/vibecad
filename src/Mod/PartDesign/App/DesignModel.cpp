@@ -3076,6 +3076,10 @@ void DesignModel::validateDesign(App::Document& document)
 
         requireDesignIdentity(*object, designId, "History operation");
         insertUniqueIdentity(operations, properties->OperationId.getValueStr(), object, "History operation");
+        if (Body::findBodyOf(object) || App::GeoFeatureGroupExtension::getGroupOfObject(object)
+            || App::GroupExtension::getGroupOfObject(object)) {
+            throw Base::RuntimeError("A Design History operation is not at Design scope");
+        }
         if (!App::DocumentTimeline::hasTimelineOperationRole(object)) {
             throw Base::RuntimeError("A Design operation is missing from global History");
         }
@@ -3809,6 +3813,10 @@ void DesignModel::validateDesign(App::Document& document)
     for (auto* state : document.getObjectsOfType<DesignBodyState>()) {
         requireDesignIdentity(*state, designId, "Body state");
         insertUniqueIdentity(states, state->BodyStateId.getValueStr(), state, "Body state");
+        if (Body::findBodyOf(state) || App::GeoFeatureGroupExtension::getGroupOfObject(state)
+            || App::GroupExtension::getGroupOfObject(state)) {
+            throw Base::RuntimeError("A Design Body state is not at Design scope");
+        }
         const auto body = bodies.find(state->BodyId.getValueStr());
         if (body == bodies.end()) {
             throw Base::RuntimeError("A Body state has no persistent Body");
@@ -3896,6 +3904,14 @@ void DesignModel::validateDesign(App::Document& document)
         auto* publication = findDesignBodyPublication(body);
         if (!publication) {
             throw Base::RuntimeError("A Design Body does not have exactly one stable publication");
+        }
+        const auto bodyMembers = body->Group.getValues();
+        if (bodyMembers.size() != 1 || bodyMembers.front() != publication
+            || body->Tip.getValue() != publication || Body::findBodyOf(publication) != body
+            || publication->BaseFeature.getValue()) {
+            throw Base::RuntimeError(
+                "A Design Body does not contain exactly its stable publication as the Tip"
+            );
         }
         requireDesignIdentity(*publication, designId, "Body publication");
         auto* current = freecad_cast<Part::Feature*>(publication->CurrentState.getValue());

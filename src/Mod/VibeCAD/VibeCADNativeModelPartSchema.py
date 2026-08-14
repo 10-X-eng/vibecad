@@ -277,20 +277,31 @@ def _mirror_definition() -> dict[str, Any]:
         },
         ("object_name",),
     )
-    plane = parameters_schema(
-        {
-            "kind": {
-                "type": "string",
-                "enum": ["xy", "xz", "yz", "reference"],
-            },
-            "base_mm": vector_schema(
-                minimum=-1_000_000.0,
-                maximum=1_000_000.0,
-            ),
-            "reference": reference,
-        },
-        ("kind",),
+    base = vector_schema(
+        minimum=-1_000_000.0,
+        maximum=1_000_000.0,
     )
+    plane = {
+        "oneOf": [
+            parameters_schema(
+                {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["xy", "xz", "yz"],
+                    },
+                    "base_mm": base,
+                },
+                ("kind",),
+            ),
+            parameters_schema(
+                {
+                    "kind": {"type": "string", "const": "reference"},
+                    "reference": reference,
+                },
+                ("kind", "reference"),
+            ),
+        ]
+    }
     return parameters_schema(
         {
             "sources": {

@@ -26,7 +26,10 @@
 #include "CAMSim.h"
 
 #include "DlgCAMSimulator.h"
+#include <QCoreApplication>
+#include <QThread>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 using namespace Base;
@@ -36,9 +39,37 @@ TYPESYSTEM_SOURCE(CAMSimulator::CAMSim, Base::BaseClass);
 namespace CAMSimulator
 {
 
+namespace
+{
+void requireGuiThread(const char* operation)
+{
+    const auto* application = QCoreApplication::instance();
+    if (!application || QThread::currentThread() != application->thread()) {
+        throw std::runtime_error(
+            std::string(operation) + " may only present CAM simulation on the GUI thread"
+        );
+    }
+}
+}  // namespace
+
 void CAMSim::BeginSimulation(const Part::TopoShape& stock, float quality)
 {
     DlgCAMSimulator::instance()->startSimulation(stock, quality);
+}
+
+std::string CAMSim::PrepareShapeMesh(const Part::TopoShape& shape, float resolution) const
+{
+    return DlgCAMSimulator::prepareShapeMesh(shape, resolution);
+}
+
+void CAMSim::BeginPreparedSimulation(
+    const Part::TopoShape& stock,
+    std::string_view preparedMesh,
+    float quality
+)
+{
+    requireGuiThread("BeginPreparedSimulation");
+    DlgCAMSimulator::instance()->startPreparedSimulation(stock, preparedMesh, quality);
 }
 
 void CAMSim::resetSimulation(Gui::Document* doc)
@@ -65,10 +96,32 @@ void CAMSim::SetBaseShape(const Part::TopoShape& baseShape, float resolution)
     DlgCAMSimulator::instance()->setBaseShape(baseShape, resolution);
 }
 
+void CAMSim::SetPreparedBaseShape(
+    const Part::TopoShape& baseShape,
+    std::string_view preparedMesh
+)
+{
+    requireGuiThread("SetPreparedBaseShape");
+    if (baseShape.isNull()) {
+        return;
+    }
+    DlgCAMSimulator::instance()->setPreparedBaseShape(baseShape, preparedMesh);
+}
+
 void CAMSim::AddCommand(Command* cmd)
 {
     std::string gline = cmd->toGCode();
     DlgCAMSimulator::instance()->addGcodeCommand(gline.c_str());
+}
+
+void CAMSim::AddGCode(std::string_view command)
+{
+    requireGuiThread("AddGCode");
+    if (command.empty()) {
+        throw std::runtime_error("CAM simulator G-code commands may not be empty");
+    }
+    const std::string ownedCommand(command);
+    DlgCAMSimulator::instance()->addGcodeCommand(ownedCommand.c_str());
 }
 
 }  // namespace CAMSimulator

@@ -82,32 +82,33 @@ def _compact_kinded(
     return schema
 
 
+def _exact_kind(kind: str, properties: dict[str, Any]) -> dict[str, Any]:
+    fields = {"kind": {"type": "string", "const": kind}, **properties}
+    return parameters_schema(fields, tuple(fields))
+
+
 def _side_termination() -> dict[str, Any]:
-    # This object occurs three times in the two-sided extent schema. Keeping
-    # one closed bounded field set avoids serializing the same exact-target
-    # link schemas in fifteen oneOf branches. The selected kind's required and
-    # forbidden field set is enforced again by the pre-transaction runtime.
-    return parameters_schema(
-        {
-            "kind": {
-                "type": "string",
-                "enum": [
-                    "length",
-                    "up_to_last",
-                    "up_to_first",
-                    "up_to_face",
-                    "up_to_shape",
-                ],
-            },
-            "length_mm": POSITIVE_MM_SCHEMA,
-            "taper_degrees": _TAPER,
-            "target": {
-                "anyOf": [_FACE, _SHAPE],
-            },
-            "offset_mm": SIGNED_MM_SCHEMA,
-        },
-        ("kind",),
-    )
+    return {
+        "oneOf": [
+            _exact_kind(
+                "length",
+                {
+                    "length_mm": POSITIVE_MM_SCHEMA,
+                    "taper_degrees": _TAPER,
+                },
+            ),
+            _exact_kind("up_to_last", {"offset_mm": SIGNED_MM_SCHEMA}),
+            _exact_kind("up_to_first", {"offset_mm": SIGNED_MM_SCHEMA}),
+            _exact_kind(
+                "up_to_face",
+                {"target": _FACE, "offset_mm": SIGNED_MM_SCHEMA},
+            ),
+            _exact_kind(
+                "up_to_shape",
+                {"target": _SHAPE, "offset_mm": SIGNED_MM_SCHEMA},
+            ),
+        ]
+    }
 
 
 def _extrude_extent() -> dict[str, Any]:
@@ -134,19 +135,28 @@ def _extrude_extent() -> dict[str, Any]:
 
 
 def _extrude_direction() -> dict[str, Any]:
-    return _compact_kinded(
-        ("sketch_normal", "reference_axis", "custom_vector"),
-        {
-            "target": _AXIS,
-            "vector": vector_schema(
-                minimum=-1_000_000.0,
-                maximum=1_000_000.0,
+    return {
+        "oneOf": [
+            _exact_kind("sketch_normal", {}),
+            _exact_kind(
+                "reference_axis",
+                {
+                    "target": _AXIS,
+                    "along_sketch_normal": {"type": "boolean"},
+                },
             ),
-            "along_sketch_normal": {"type": "boolean"},
-        },
-        "Kind fields: sketch_normal none; reference_axis target/along_sketch_normal; "
-        "custom_vector vector/along_sketch_normal.",
-    )
+            _exact_kind(
+                "custom_vector",
+                {
+                    "vector": vector_schema(
+                        minimum=-1_000_000.0,
+                        maximum=1_000_000.0,
+                    ),
+                    "along_sketch_normal": {"type": "boolean"},
+                },
+            ),
+        ]
+    }
 
 
 def _revolve_extent() -> dict[str, Any]:
@@ -258,6 +268,7 @@ def _profile_definition() -> dict[str, Any]:
                 "type": "number",
                 "minimum": 0.1,
                 "maximum": 1_000_000.0,
+                "description": "Dimensionless PartDesign helix fusion-tolerance multiplier.",
             },
         },
         "Kind fields: extrude direction/extent; revolve axis/extent; loft "

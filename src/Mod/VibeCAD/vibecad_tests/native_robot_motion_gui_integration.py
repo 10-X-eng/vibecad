@@ -61,27 +61,34 @@ def _selection() -> tuple[tuple[object, tuple[str, ...]], ...]:
     )
 
 
-def _select_assemble_ribbon(main_window) -> tuple[object, object]:
+def _select_ribbon(
+    main_window,
+    workbench_name: str,
+    surface_id: str,
+) -> tuple[object, object]:
     controller = main_window.findChild(QtCore.QObject, "VibeCADRibbonController")
     tabs = main_window.findChild(QtWidgets.QTabBar, "VibeCADRibbonTabs")
     assert controller is not None and tabs is not None
     index = next(
         candidate
         for candidate in range(tabs.count())
-        if str(tabs.tabData(candidate)) == "AssemblyWorkbench"
+        if str(tabs.tabData(candidate)) == workbench_name
     )
     tabs.setCurrentIndex(index)
     _process_events(24)
     surface = read_active_ribbon_surface(controller)
-    assert surface.surface_id == "assemble"
+    assert surface.surface_id == surface_id
     return controller, surface
 
 
-def _focused_turn(surface, registry) -> NativeTurnSnapshot:
+def _focused_turn(
+    surface,
+    registry,
+    operations: tuple[str, ...] = ("set_home_pos", "restore_home_pos", "simulate"),
+) -> NativeTurnSnapshot:
     state = registry.definition("state.read")
     motion = robot_motion_capability_definition()
     assert state is not None
-    operations = ("set_home_pos", "restore_home_pos", "simulate")
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
@@ -234,7 +241,11 @@ def _run() -> None:
         assert int(document.UndoCount) == human_undo + 1
 
         VibeGui._connect_document_observer()
-        controller, surface = _select_assemble_ribbon(Gui.getMainWindow())
+        controller, surface = _select_ribbon(
+            Gui.getMainWindow(),
+            "AssemblyWorkbench",
+            "assemble",
+        )
         frozen = NativeSurfaceSnapshot.from_surface(surface)
         registry = build_native_capability_registry()
         definition = registry.definition(ROBOT_MOTION_CAPABILITY_NAME)
@@ -308,11 +319,17 @@ def _run() -> None:
         )
         call_index = 0
 
-        def call(arguments: dict, *, succeeds: bool = True, call_id: str = "") -> dict:
+        def call(
+            arguments: dict,
+            *,
+            succeeds: bool = True,
+            call_id: str = "",
+            selected_dispatcher: NativeTurnDispatcher | None = None,
+        ) -> dict:
             nonlocal call_index
             call_index += 1
             selection_before = _selection()
-            result = dispatcher.call(
+            result = (selected_dispatcher or dispatcher).call(
                 ROBOT_MOTION_CAPABILITY_NAME,
                 json.dumps(arguments, separators=(",", ":")),
                 call_id or f"native-robot-motion-{call_index}",
@@ -494,6 +511,69 @@ def _run() -> None:
         assert (
             capture_robot_trajectory_state(document) == trajectories_before_simulation
         )
+        assert int(document.UndoCount) == simulation_undo
+        assert state_store.current_revision(str(document.Uid)) == simulation_revision
+
+        manufacture_controller, manufacture_surface = _select_ribbon(
+            Gui.getMainWindow(),
+            "CAMWorkbench",
+            "manufacture",
+        )
+        manufacture_provider = resolve_native_provider_surface(
+            manufacture_surface,
+            registry,
+        )
+        assert ROBOT_MOTION_CAPABILITY_NAME not in (
+            manufacture_provider.missing_definition_names
+        )
+        assert ROBOT_MOTION_CAPABILITY_NAME not in (
+            manufacture_provider.missing_implementation_names
+        )
+        assert ROBOT_MOTION_CAPABILITY_NAME not in (
+            manufacture_provider.incomplete_definition_names
+        )
+        manufacture_frozen = NativeSurfaceSnapshot.from_surface(manufacture_surface)
+
+        def reauthorize_manufacture() -> None:
+            require_frozen_native_surface(manufacture_frozen, manufacture_controller)
+
+        manufacture_context = NativeRuntimeContext(
+            service=service,
+            document=document,
+            state=state_store,
+            undo_ledger=ledger,
+            reauthorize_turn=reauthorize_manufacture,
+            active_document=lambda: App.ActiveDocument,
+            active_surface_id=lambda: read_active_ribbon_surface(
+                manufacture_controller
+            ).surface_id,
+            edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
+        )
+        manufacture_turn = _focused_turn(
+            manufacture_surface,
+            registry,
+            ("simulate",),
+        )
+        manufacture_dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=manufacture_turn,
+            runtimes=build_native_runtime_bindings(
+                manufacture_context,
+                manufacture_turn.tool_names,
+            ),
+            reauthorize_turn=reauthorize_manufacture,
+            active_document=lambda: App.ActiveDocument,
+        )
+        manufacture_simulation = call(
+            simulation_arguments,
+            call_id="native-robot-manufacture-simulation",
+            selected_dispatcher=manufacture_dispatcher,
+        )
+        assert manufacture_simulation["samples"] == simulation["samples"]
+        assert manufacture_simulation["changed"] is False
+        assert manufacture_simulation["preview_only"] is True
         assert int(document.UndoCount) == simulation_undo
         assert state_store.current_revision(str(document.Uid)) == simulation_revision
 

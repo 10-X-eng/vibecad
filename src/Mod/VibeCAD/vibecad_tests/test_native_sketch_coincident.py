@@ -330,18 +330,18 @@ def test_coincident_creates_exact_concentric_conics(monkeypatch, second_kind) ->
 
 
 @pytest.mark.parametrize(
-    ("target", "setup", "message"),
+    ("target", "setup", "constraint_type"),
     (
-        (_point_point(0, "start", 1, "start"), "point_at_origin", "already coincident"),
-        (_point_on_object(), "point_on_line", "already lies"),
-        (_concentric(), "same_centers", "already concentric"),
+        (_point_point(0, "start", 1, "start"), "point_at_origin", "Coincident"),
+        (_point_on_object(), "point_on_line", "PointOnObject"),
+        (_concentric(), "same_centers", "Coincident"),
     ),
 )
-def test_coincident_refuses_already_satisfied_target(
+def test_coincident_persists_geometrically_satisfied_target(
     monkeypatch,
     target,
     setup,
-    message,
+    constraint_type,
 ) -> None:
     document, sketch, context = install_fake_sketch_host(monkeypatch)
     if setup == "point_at_origin":
@@ -357,13 +357,16 @@ def test_coincident_refuses_already_satisfied_target(
         )
         sketch.addGeometry(FakeEllipse(_point(1.0, 2.0), 5.0, 2.0), False)
         expected = 3
-    with pytest.raises(NativeSketchError, match=message):
-        _prepared(
-            document,
-            context,
-            _values(expected_geometry_count=expected, target=target),
-        )
-    assert sketch.ConstraintCount == 0
+    prepared = _prepared(
+        document,
+        context,
+        _values(expected_geometry_count=expected, target=target),
+    )
+    result = _apply(document, prepared)
+
+    assert sketch.ConstraintCount == 1
+    assert sketch.Constraints[0].Type == constraint_type
+    assert result["constraint"]["type"] == constraint_type
 
 
 @pytest.mark.parametrize(

@@ -14,6 +14,7 @@ from VibeCADNativeSketchConstraintTargets import (
     current_sketch_constraint_records,
 )
 from VibeCADNativeSketchErrors import NativeSketchError
+from VibeCADNativeSketchLimits import MAX_SKETCH_BATCH_CONSTRAINTS
 from VibeCADNativeSketchState import serialize_sketch_constraint
 
 
@@ -52,6 +53,17 @@ class ExactConstraintExpectation:
     value: float | None
     tolerance: float
     allowed_values: tuple[float, ...] = ()
+
+
+class NativeSketchConstraintFeasibilityError(NativeSketchError):
+    """A complete solver diagnosis rejected the proposed exact constraint."""
+
+    def __init__(self, label: str, reasons: tuple[str, ...], action: str) -> None:
+        self.reasons = reasons
+        self.action = action
+        reason = ", ".join(reasons) if reasons else "unsolved"
+        verb = "added" if action == "append" else "changed"
+        super().__init__(f"{label} would be {reason}; no constraint was {verb}.")
 
 
 def sketch_solver_issues(sketch: Any, label: str) -> tuple[tuple[int, ...], ...]:
@@ -154,10 +166,10 @@ def _verify_feasibility_result(
             )
             if issues[field]
         ]
-        reason = ", ".join(reasons) if reasons else "unsolved"
-        verb = "added" if action == "append" else "changed"
-        raise NativeSketchError(
-            f"{label} would be {reason}; no constraint was {verb}."
+        raise NativeSketchConstraintFeasibilityError(
+            label,
+            tuple(reasons),
+            action,
         )
     if degrees < 0 or status != 0 or any(issues.values()):
         raise NativeSketchError(
@@ -172,8 +184,13 @@ def diagnose_exact_constraints(
     expected_index: int,
     label: str,
 ) -> None:
-    if not isinstance(constraints, tuple) or not 1 <= len(constraints) <= 16:
-        raise TypeError("constraints must contain one to sixteen constraints")
+    if not isinstance(constraints, tuple) or not (
+        1 <= len(constraints) <= MAX_SKETCH_BATCH_CONSTRAINTS
+    ):
+        raise TypeError(
+            "constraints must contain one to "
+            f"{MAX_SKETCH_BATCH_CONSTRAINTS} constraints"
+        )
     diagnose = getattr(sketch, "diagnoseAdditionalConstraints", None)
     if not callable(diagnose):
         raise NativeSketchError(f"{label} solver feasibility is unavailable.")
@@ -201,8 +218,13 @@ def diagnose_exact_block_constraints(
 ) -> None:
     """Diagnose Block against copied geometry carrying the proposed blocked state."""
 
-    if not isinstance(constraints, tuple) or not 1 <= len(constraints) <= 16:
-        raise TypeError("constraints must contain one to sixteen constraints")
+    if not isinstance(constraints, tuple) or not (
+        1 <= len(constraints) <= MAX_SKETCH_BATCH_CONSTRAINTS
+    ):
+        raise TypeError(
+            "constraints must contain one to "
+            f"{MAX_SKETCH_BATCH_CONSTRAINTS} constraints"
+        )
     diagnose = getattr(sketch, "diagnoseBlockConstraints", None)
     if not callable(diagnose):
         raise NativeSketchError(f"{label} Block feasibility is unavailable.")
@@ -289,8 +311,13 @@ def add_exact_constraints(
     expected_index: int,
     label: str,
 ) -> tuple[int, ...]:
-    if not isinstance(constraints, tuple) or not 1 <= len(constraints) <= 16:
-        raise TypeError("constraints must contain one to sixteen constraints")
+    if not isinstance(constraints, tuple) or not (
+        1 <= len(constraints) <= MAX_SKETCH_BATCH_CONSTRAINTS
+    ):
+        raise TypeError(
+            "constraints must contain one to "
+            f"{MAX_SKETCH_BATCH_CONSTRAINTS} constraints"
+        )
     try:
         raw_indices = sketch.addConstraint(list(constraints))
         indices = tuple(int(value) for value in raw_indices)

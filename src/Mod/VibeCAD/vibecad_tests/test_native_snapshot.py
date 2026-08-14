@@ -8,8 +8,16 @@ import pytest
 
 import VibeCADNativeSnapshot as snapshot_module
 import VibeCADNativeAssemblySnapshot as assembly_snapshot_module
+import VibeCADNativeAnalyzeSnapshot as analyze_snapshot_module
 import VibeCADNativeModelSnapshot as model_snapshot_module
-from VibeCADNativeSnapshot import NativeSnapshotError, build_active_snapshot
+import VibeCADNativeManufactureSnapshot as manufacture_snapshot_module
+import VibeCADNativeSketchSnapshot as sketch_snapshot_module
+from VibeCADNativeManufactureReadiness import resolve_active_job
+from VibeCADNativeSnapshot import (
+    NativeSnapshotError,
+    build_active_snapshot,
+    concise_object,
+)
 
 
 class _Object:
@@ -33,11 +41,29 @@ class _Document:
 
     def add(self, name: str, type_id: str):
         value = _Object(self, name, type_id)
+        value.ID = len(self.Objects) + 1
         self.Objects.append(value)
         return value
 
     def getObject(self, name: str):
         return next((value for value in self.Objects if value.Name == name), None)
+
+
+class _ReadTouchObject:
+    def __init__(self, document, *, touched: bool = False):
+        self.Document = document
+        self.Name = "ToolBit"
+        self.TypeId = "Part::FeaturePython"
+        self.State = ["Touched"] if touched else []
+
+    @property
+    def Label(self):
+        if "Touched" not in self.State:
+            self.State.append("Touched")
+        return "Tool Bit"
+
+    def purgeTouched(self):
+        self.State = [value for value in self.State if value != "Touched"]
 
 
 def _document() -> _Document:
@@ -120,6 +146,29 @@ def _state() -> dict:
     }
 
 
+def test_concise_object_restores_a_read_induced_touch() -> None:
+    obj = _ReadTouchObject(_Document())
+
+    result = concise_object(obj)
+
+    assert result == {
+        "document_uid": "document-a",
+        "object_name": "ToolBit",
+        "type_id": "Part::FeaturePython",
+        "label": "Tool Bit",
+    }
+    assert obj.State == []
+
+
+def test_concise_object_preserves_a_preexisting_touch() -> None:
+    obj = _ReadTouchObject(_Document(), touched=True)
+
+    result = concise_object(obj)
+
+    assert result["state"] == ["Touched"]
+    assert obj.State == ["Touched"]
+
+
 @pytest.mark.parametrize(
     ("surface_id", "kind"),
     (
@@ -145,6 +194,55 @@ def test_each_surface_builds_only_its_live_domain(
         "read_active_assembly",
         lambda _document: None,
     )
+    if surface_id == "sketch.edit":
+        monkeypatch.setattr(
+            sketch_snapshot_module,
+            "build_sketch_snapshot",
+            lambda _document, _surface_id: {
+                "kind": "sketch",
+                "context": "edit",
+                "revision": "sketch-v1:" + ("a" * 64),
+                "active_sketch": {"object_name": "Sketch"},
+            },
+        )
+    if surface_id == "analyze":
+        monkeypatch.setattr(
+            analyze_snapshot_module,
+            "build_analyze_snapshot",
+            lambda _document, *, background_job=None: {
+                "kind": "analyze",
+                "run_status": {
+                    "phase": "idle" if background_job is None else "queued"
+                },
+            },
+        )
+    if surface_id == "manufacture":
+        monkeypatch.setattr(
+            manufacture_snapshot_module,
+            "capture_job_creation_environment",
+            lambda: SimpleNamespace(
+                summary=lambda: {
+                    "state_sha256": "a" * 64,
+                    "template_count": 0,
+                    "templates": [],
+                    "templates_truncated": False,
+                    "default_template_id": None,
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            manufacture_snapshot_module,
+            "capture_tool_catalog",
+            lambda: SimpleNamespace(
+                page=lambda _offset, _page_size: {
+                    "state_sha256": "b" * 64,
+                    "count": 0,
+                    "offset": 0,
+                    "items": [],
+                    "next_offset": None,
+                }
+            ),
+        )
     selection = {
         "document_uid": "document-a",
         "selected_count": 1,
@@ -169,6 +267,9 @@ def test_each_surface_builds_only_its_live_domain(
     assert result["surface_id"] == surface_id
     assert result["structural_revision"] == 7
     assert result["domain"]["kind"] == kind
+    if surface_id == "sketch.edit":
+        assert result["revision"] == "sketch-v1:" + ("a" * 64)
+        assert "revision" not in result["domain"]
     assert [item["object_name"] for item in result["working_set"]] == [
         "Body",
         "Mesh",
@@ -386,6 +487,54 @@ def test_live_state_continues_without_any_prior_tool_transcript() -> None:
     )
     assert "conversation" not in after
     assert "transcript" not in after
+
+
+def test_manufacture_active_job_is_human_selected_or_unambiguous() -> None:
+    document = _Document()
+    first_job = document.add("FirstJob", "App::FeaturePython")
+    second_job = document.add("SecondJob", "App::FeaturePython")
+    first_operation = document.add("FirstOperation", "Path::Feature")
+    second_operation = document.add("SecondOperation", "Path::Feature")
+    for job, operation in (
+        (first_job, first_operation),
+        (second_job, second_operation),
+    ):
+        job.Model = SimpleNamespace(Group=[])
+        job.Tools = SimpleNamespace(Group=[])
+        job.Operations = SimpleNamespace(Group=[operation])
+        job.SetupSheet = None
+        job.Stock = None
+
+    empty = {"document_uid": document.Uid, "items": []}
+    assert resolve_active_job(document, (first_job,), empty) == (
+        first_job,
+        "only_job",
+    )
+    assert resolve_active_job(document, (first_job, second_job), empty) == (
+        None,
+        "choose_job",
+    )
+    first_selected = {
+        "document_uid": document.Uid,
+        "items": [{"object": {"object_name": first_operation.Name}}],
+    }
+    assert resolve_active_job(
+        document,
+        (first_job, second_job),
+        first_selected,
+    ) == (first_job, "selection")
+    both_selected = {
+        "document_uid": document.Uid,
+        "items": [
+            {"object": {"object_name": first_operation.Name}},
+            {"object": {"object_name": second_operation.Name}},
+        ],
+    }
+    assert resolve_active_job(
+        document,
+        (first_job, second_job),
+        both_selected,
+    ) == (None, "ambiguous_selection")
 
 
 def test_snapshot_refuses_wrong_document_or_unbounded_output(monkeypatch) -> None:

@@ -191,7 +191,7 @@ def _run() -> None:
 
         registry = build_native_capability_registry()
         production = resolve_native_provider_surface(surface, registry)
-        assert production.available is False
+        assert production.available is True, production.summary()
         assert "assembly.joint" not in production.missing_definition_names
         assert "assembly.joint" not in production.missing_implementation_names
         assert "assembly.joint" not in production.incomplete_definition_names
@@ -213,7 +213,7 @@ def _run() -> None:
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
-            edit_or_task_active=lambda: Gui.Control.activeDialog() is not None,
+            edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
         turn = _focused_turn(surface, registry)
         dispatcher = NativeTurnDispatcher(

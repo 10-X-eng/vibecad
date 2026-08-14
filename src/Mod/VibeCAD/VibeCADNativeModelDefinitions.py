@@ -35,11 +35,20 @@ def _resolved_design_reference(
 ) -> tuple[Any, list[str]]:
     import PartDesign
 
-    resolved, canonical = PartDesign.resolveDesignDefinitionSubelementReference(
-        definition,
-        source,
-        subelements,
-    )
+    try:
+        resolved, canonical = PartDesign.resolveDesignDefinitionSubelementReference(
+            definition,
+            source,
+            subelements,
+        )
+    except Exception as exc:
+        detail = " ".join(str(exc).split())
+        if len(detail) > 320:
+            detail = detail[:317] + "..."
+        message = "The exact Design support is not valid before this definition in History."
+        if detail:
+            message += " " + detail
+        raise NativeModelError(message) from exc
     values = [str(value) for value in list(canonical or [])]
     if resolved is None or getattr(resolved, "Document", None) is not definition.Document:
         raise NativeModelError("A Design reference did not resolve in the exact document.")
@@ -116,7 +125,14 @@ def verify_subshape_binder(document: Any, draft: NativeMutationDraft) -> dict[st
     }
 
 
-def _base_plane_placement(plane: str, offset_mm: float) -> Any:
+def reusable_sketch_base_plane_placement(
+    plane: str,
+    offset_mm: float,
+    *,
+    reverse_normal: bool = False,
+) -> Any:
+    """Return one explicit global-plane placement for a reusable Sketch."""
+
     import FreeCAD as App
 
     normals = {
@@ -127,11 +143,13 @@ def _base_plane_placement(plane: str, offset_mm: float) -> Any:
     normal = normals.get(plane)
     if normal is None:
         raise NativeModelError("Sketch base plane must be XY, XZ, or YZ.")
+    if bool(reverse_normal):
+        normal = normal * -1.0
     rotation = App.Rotation(App.Vector(0.0, 0.0, 1.0), normal)
     return App.Placement(normal * float(offset_mm), rotation)
 
 
-def _configure_sketch_support(
+def configure_reusable_sketch_support(
     document: Any,
     sketch: Any,
     support: Mapping[str, Any],
@@ -140,8 +158,9 @@ def _configure_sketch_support(
     if kind == "base_plane":
         plane = str(support["plane"])
         offset = float(support["offset_mm"])
+        sketch.AttachmentSupport = None
         sketch.MapMode = "Deactivated"
-        sketch.Placement = _base_plane_placement(plane, offset)
+        sketch.Placement = reusable_sketch_base_plane_placement(plane, offset)
         return {"kind": kind, "plane": plane, "offset_mm": offset}
 
     target = support.get("target")
@@ -199,7 +218,7 @@ def create_reusable_sketch(
         raise NativeModelError("The Sketch factory returned the wrong object type.")
     sketch.Label = label
     PartDesign.initializeDesignDefinition(sketch)
-    support_result = _configure_sketch_support(document, sketch, support)
+    support_result = configure_reusable_sketch_support(document, sketch, support)
     document.recompute([sketch], True, True)
     if not sketch.isValid():
         raise NativeModelError("The empty reusable Sketch is not valid on its support.")

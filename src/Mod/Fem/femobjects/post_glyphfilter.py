@@ -267,7 +267,7 @@ class PostGlyphFilter(base_fempythonobject.BaseFemPythonObject):
                     masking = self._algorithms[filter][1]
                     masking.SetMaximumNumberOfPoints(obj.MaxNumber)
 
-        if prop == "OrientationData" or prop == "ScaleData":
+        if prop in {"OrientationData", "ScaleData", "VectorScaleMode"}:
             for filter in self._algorithms:
                 glyph = self._algorithms[filter][2]
                 self.__setupGlyphFilter(obj, glyph)

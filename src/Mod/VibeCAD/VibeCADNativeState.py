@@ -35,6 +35,7 @@ PRESENTATION_PROPERTY_NAMES = frozenset(
         "ShapeColor",
         "Transparency",
         "Visibility",
+        "VisibilityAtEnd",
     }
 )
 NON_STRUCTURAL_INTERNAL_PROPERTIES = frozenset(
@@ -42,6 +43,10 @@ NON_STRUCTURAL_INTERNAL_PROPERTIES = frozenset(
         "_LinkTouched",
         "RecomputePending",
         "Touched",
+        "_GroupTouched",
+        "PrecomputedDimensionFlags",
+        "PrecomputedDimensionScalars",
+        "PrecomputedDimensionVectors",
         "VibeCADVibeScriptEditorDraft",
     }
 )

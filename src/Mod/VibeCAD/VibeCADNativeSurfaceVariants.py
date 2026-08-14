@@ -148,6 +148,7 @@ _MANUFACTURE_GROUP_ANCHORS = (
     ("View", "Std_ViewFitAll"),
     ("Setup", "CAM_Job"),
     ("Tools", "CAM_SimTools"),
+    ("Program", "CAM_Comment"),
     ("Operations", "CAM_Profile"),
     ("Modify", "CAM_OperationCopy"),
     ("Robot", "Robot_Edge2Trac"),

@@ -771,6 +771,25 @@ public:
     );
 
     /**
+     * @brief Copy objects with explicit control of automatic History adoption.
+     *
+     * This overload preserves the established three-argument ABI while
+     * allowing exact graph-copy workflows to defer adoption inside their
+     * caller-owned transaction.
+     *
+     * @param[in] adoptTimeline If true, automatically adopt copied objects
+     * into document History. If false, the caller-owned transaction must
+     * explicitly adopt or classify the copied provisional objects before it
+     * commits.
+     */
+    std::vector<DocumentObject*> copyObject(
+        const std::vector<DocumentObject*>& objs,
+        bool recursive,
+        bool returnAll,
+        bool adoptTimeline
+    );
+
+    /**
      * @brief Move an object from another document to this document.
      *
      * @param[in] obj The object to move.

@@ -6,35 +6,24 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADNativeParametersState import (
+    NativeParametersStateError,
+    parameter_sheet_summary,
+)
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
 
 MAX_SHEETS = 24
-MAX_ALIASES = 48
 
 
 def _sheet_summary(sheet: Any) -> dict[str, Any]:
-    result = concise_object(sheet)
     try:
-        cells = sorted(str(value) for value in list(sheet.getNonEmptyCells()) or [])
-    except Exception:
-        cells = []
-    aliases = []
-    get_alias = getattr(sheet, "getAlias", None)
-    if callable(get_alias):
-        for cell in cells:
-            try:
-                alias = str(get_alias(cell) or "").strip()
-            except Exception:
-                continue
-            if alias:
-                aliases.append({"cell": cell, "alias": alias[:160]})
-                if len(aliases) >= MAX_ALIASES:
-                    break
-    result["non_empty_cell_count"] = len(cells)
-    if aliases:
-        result["aliases"] = aliases
-    return result
+        return parameter_sheet_summary(sheet)
+    except NativeParametersStateError as exc:
+        result = concise_object(sheet)
+        result["state_error"] = str(exc)
+        result["state_error_code"] = exc.error_code
+        return result
 
 
 def build_parameters_snapshot(document: Any) -> dict[str, Any]:

@@ -76,9 +76,23 @@ def _geometry_item_schema() -> dict:
 
 def _point_ref_schema() -> dict:
     return {
+        "description": (
+            "Use exactly {origin:true} (optionally position:'point') for the "
+            "Sketch origin, or {geometry_ref,position} for request-local geometry."
+        ),
         "oneOf": [
             parameters_schema(
-                {"origin": {"type": "boolean", "const": True}},
+                {
+                    "origin": {"type": "boolean", "const": True},
+                    "position": {
+                        "type": "string",
+                        "const": "point",
+                        "description": (
+                            "Optional normalization accepted only with origin=true; "
+                            "omit it for the canonical origin reference."
+                        ),
+                    },
+                },
                 ("origin",),
             ),
             parameters_schema(
@@ -168,6 +182,10 @@ def _batch_parameters() -> dict:
                 "items": _constraint_item_schema(),
                 "minItems": 1,
                 "maxItems": MAX_BATCH_CONSTRAINTS,
+                "description": (
+                    f"Create 1 through {MAX_BATCH_CONSTRAINTS} constraints in this "
+                    "same atomic request. Constraint refs are request-local."
+                ),
             },
         },
         (
@@ -192,8 +210,9 @@ def sketch_batch_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="create",
                 description=(
-                    "Create 1-32 primitive elements and 1-16 feasible constraints "
-                    "in one exact transaction."
+                    f"Create 1-{MAX_BATCH_GEOMETRY} primitive elements and "
+                    f"1-{MAX_BATCH_CONSTRAINTS} feasible constraints in one exact "
+                    "transaction. Local refs exist only inside this request."
                 ),
                 action_ids=frozenset({"VibeCAD_NativeSketchBatch"}),
                 surface_ids=frozenset({"sketch.edit"}),

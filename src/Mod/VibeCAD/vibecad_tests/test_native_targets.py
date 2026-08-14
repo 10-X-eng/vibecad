@@ -75,12 +75,14 @@ def test_wrong_document_and_type_fail_with_exact_target() -> None:
         "object_name": "Box",
     }
 
-    with pytest.raises(NativeTargetError, match="wrong type"):
+    with pytest.raises(NativeTargetError, match="accepts Mesh::Feature") as wrong_type:
         resolve_object(
             document,
             NativeObjectRef("document-a", "Box"),
             expected_types=("Mesh::Feature",),
         )
+    assert wrong_type.value.failure()["actual_type"] == "PartDesign::Feature"
+    assert wrong_type.value.failure()["accepted_types"] == ["Mesh::Feature"]
 
 
 def test_subelement_reference_is_strict_and_resolved_on_live_shape() -> None:

@@ -25,6 +25,8 @@
 #pragma once
 
 #include <memory>
+#include <string>
+#include <string_view>
 #include <TopoDS_Shape.hxx>
 
 #include <Mod/CAM/App/Command.h>
@@ -59,6 +61,15 @@ public:
     CAMSim() = default;
 
     void BeginSimulation(const Part::TopoShape& stock, float resolution);
+    [[nodiscard]] std::string PrepareShapeMesh(
+        const Part::TopoShape& shape,
+        float resolution
+    ) const;
+    void BeginPreparedSimulation(
+        const Part::TopoShape& stock,
+        std::string_view preparedMesh,
+        float quality
+    );
     void resetSimulation(Gui::Document* doc);
     void addTool(
         const std::vector<float>& toolProfilePoints,
@@ -67,7 +78,12 @@ public:
         float resolution
     );
     void SetBaseShape(const Part::TopoShape& baseShape, float resolution);
+    void SetPreparedBaseShape(
+        const Part::TopoShape& baseShape,
+        std::string_view preparedMesh
+    );
     void AddCommand(Command* cmd);
+    void AddGCode(std::string_view command);
 };
 
 }  // namespace CAMSimulator

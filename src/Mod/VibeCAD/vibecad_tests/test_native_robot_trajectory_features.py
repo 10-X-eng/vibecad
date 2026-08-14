@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
+import VibeCADNativeManufactureSnapshot as manufacture_snapshot_module
 from VibeCADNativeActionManifest import _operation_variant
 from VibeCADNativeManufactureSnapshot import build_manufacture_snapshot
 from VibeCADNativeRobotTrajectory import NativeRobotTrajectoryError
@@ -299,7 +301,24 @@ def test_feature_state_digest_includes_exact_controls_and_source_order() -> None
     ] == ["Trajectory001", "Trajectory"]
 
 
-def test_manufacture_snapshot_exposes_frozen_robot_feature_inputs() -> None:
+def test_manufacture_snapshot_exposes_frozen_robot_feature_inputs(monkeypatch) -> None:
+    monkeypatch.setattr(
+        manufacture_snapshot_module,
+        "capture_job_creation_environment",
+        lambda: SimpleNamespace(summary=lambda: {"state_sha256": "a" * 64}),
+    )
+    monkeypatch.setattr(
+        manufacture_snapshot_module,
+        "capture_tool_catalog",
+        lambda: SimpleNamespace(
+            page=lambda _offset, _page_size: {
+                "state_sha256": "b" * 64,
+                "count": 0,
+                "items": [],
+                "next_offset": None,
+            }
+        ),
+    )
     snapshot = build_manufacture_snapshot(_Document())
 
     assert snapshot["kind"] == "manufacture"

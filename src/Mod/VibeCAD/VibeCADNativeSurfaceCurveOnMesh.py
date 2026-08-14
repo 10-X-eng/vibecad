@@ -5,11 +5,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import math
-import struct
 from typing import Any, Mapping, Sequence
 
+from VibeCADNativeMeshState import mesh_geometry_sha256
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import (
@@ -211,13 +210,13 @@ def _local_direction(mesh: Any, direction: Sequence[float]) -> tuple[float, floa
 
 
 def _is_active_mesh(source: Any) -> bool:
-    import PartGui
+    import MeshGui
 
     mesh = getattr(source, "Mesh", None)
     try:
         return (
-            str(source.TypeId).startswith("Mesh::")
-            and bool(PartGui.isModelingObjectActive(source))
+            bool(source.isDerivedFrom("Mesh::Feature"))
+            and bool(MeshGui.isNativeMeshInputActive(source))
             and int(mesh.CountFacets) > 0
         )
     except Exception:
@@ -227,21 +226,7 @@ def _is_active_mesh(source: Any) -> bool:
 def _mesh_fingerprint(mesh: Any) -> str:
     """Hash complete world-space topology and segment membership."""
     try:
-        points, facets = mesh.Topology
-        digest = hashlib.sha256()
-        digest.update(struct.pack("!QQ", len(points), len(facets)))
-        for point in points:
-            digest.update(struct.pack("!ddd", *_tuple3(point)))
-        for facet in facets:
-            digest.update(struct.pack("!QQQ", *(int(index) for index in facet)))
-        segment_count = int(mesh.countSegments())
-        digest.update(struct.pack("!Q", segment_count))
-        for index in range(segment_count):
-            segment = tuple(int(value) for value in mesh.getSegment(index))
-            digest.update(struct.pack("!Q", len(segment)))
-            for facet_index in segment:
-                digest.update(struct.pack("!Q", facet_index))
-        return digest.hexdigest()
+        return mesh_geometry_sha256(mesh)
     except Exception as exc:
         raise NativeModelError("Curve on Mesh could not fingerprint its exact source mesh.") from exc
 

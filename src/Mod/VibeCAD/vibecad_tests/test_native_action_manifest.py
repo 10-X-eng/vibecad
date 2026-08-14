@@ -14,17 +14,18 @@ from VibeCADNativeActionManifest import (
     OPTIONAL_ACTIONS_BY_SURFACE,
     classify_native_surface,
     planned_provider_capability_families,
+    _plan,
 )
-from VibeCADRibbonSurface import RibbonSurface
+from VibeCADRibbonSurface import RibbonAction, RibbonSurface
 
 from vibecad_tests.test_ribbon_surface import _manifest
 
 
 EXPECTED_DEFAULT_COUNTS = {
-    "analyze": 103,
+    "analyze": 104,
     "assemble": 53,
     "drawing": 107,
-    "manufacture": 54,
+    "manufacture": 59,
     "mesh": 60,
     "model": 75,
     "parameters": 24,
@@ -74,7 +75,7 @@ def test_default_inventory_has_exact_proven_counts_without_duplicates() -> None:
     unique_ids = set().union(
         *(set(command_ids) for command_ids in KNOWN_ACTIONS_BY_SURFACE.values())
     )
-    assert len(unique_ids) == DEFAULT_UNIQUE_ACTION_COUNT == 527
+    assert len(unique_ids) == DEFAULT_UNIQUE_ACTION_COUNT == 533
     all_known_ids = unique_ids | set().union(
         *(set(command_ids) for command_ids in OPTIONAL_ACTIONS_BY_SURFACE.values())
     )
@@ -107,6 +108,142 @@ def test_optional_inventory_is_explicit_and_does_not_change_default_counts() -> 
         ALLOWED_ACTION_IDS_BY_SURFACE[surface_id]
         == set(default_ids) | set(OPTIONAL_ACTIONS_BY_SURFACE[surface_id])
         for surface_id, default_ids in KNOWN_ACTIONS_BY_SURFACE.items()
+    )
+
+
+def test_expensive_manufacture_workflows_require_background_execution() -> None:
+    expected = {
+        "CAM_Camotics": ("Operations", "presentation"),
+        "CAM_SimulatorGL": ("Program", "presentation"),
+        "CAM_Simulator": ("Program", "background"),
+        "CAM_DressupZCorrect": ("Modify", "background"),
+        "CAM_Post": ("Program", "background_output"),
+        "CAM_PostSelected": ("Program", "background_output"),
+    }
+
+    plans = {
+        command_id: _plan(
+            "manufacture",
+            group_label,
+            RibbonAction(
+                command_id=command_id,
+                label=command_id,
+                available=True,
+                kind="command",
+            ),
+        )
+        for command_id, (group_label, _transaction_behavior) in expected.items()
+    }
+
+    assert set(plans) == set(expected)
+    assert all(plan.background_required for plan in plans.values())
+    assert {
+        command_id: plan.transaction_behavior
+        for command_id, plan in plans.items()
+    } == {
+        command_id: transaction_behavior
+        for command_id, (_group_label, transaction_behavior) in expected.items()
+    }
+
+
+def test_drawing_page_actions_resolve_to_four_exact_variants() -> None:
+    expected = {
+        "TechDraw_PageDefault": (
+            "page_default",
+            "NewDrawingPageWithConfiguredTemplate",
+        ),
+        "TechDraw_PageTemplate": (
+            "page_template",
+            "HumanAuthorizedSvgTemplateForNewDrawingPage",
+        ),
+        "TechDraw_FillTemplateFields": (
+            "fill_template_fields",
+            "ExactDrawingPageAndEditableTemplateFields",
+        ),
+        "TechDraw_RedrawPage": (
+            "redraw_page",
+            "ExactDrawingPageAndActiveViewGraph",
+        ),
+    }
+    plans = {
+        command_id: _plan(
+            "drawing",
+            "Page",
+            RibbonAction(
+                command_id=command_id,
+                label=command_id,
+                available=True,
+                kind="command",
+            ),
+        )
+        for command_id in expected
+    }
+
+    assert all(plan.capability_family == "drawing.page" for plan in plans.values())
+    assert {
+        command_id: (plan.transaction_behavior, plan.background_required)
+        for command_id, plan in plans.items()
+    } == {
+        "TechDraw_PageDefault": ("document", False),
+        "TechDraw_PageTemplate": ("document", False),
+        "TechDraw_FillTemplateFields": ("document", False),
+        "TechDraw_RedrawPage": ("background", True),
+    }
+    assert {
+        command_id: (plan.operation_variant, plan.exact_target_type)
+        for command_id, plan in plans.items()
+    } == expected
+
+
+def test_drawing_broken_view_resolves_to_exact_background_variant() -> None:
+    plan = _plan(
+        "drawing",
+        "Views",
+        RibbonAction(
+            command_id="TechDraw_BrokenView",
+            label="Broken View",
+            available=True,
+            kind="command",
+        ),
+    )
+    assert (
+        plan.capability_family,
+        plan.operation_variant,
+        plan.exact_target_type,
+        plan.transaction_behavior,
+        plan.background_required,
+    ) == (
+        "drawing.view",
+        "create_broken_view",
+        "ExactDrawingPageSourcesBreakDefinitionsAndProjectionSettings",
+        "background",
+        True,
+    )
+
+
+def test_drawing_active_view_resolves_to_exact_immediate_capture() -> None:
+    plan = _plan(
+        "drawing",
+        "Views",
+        RibbonAction(
+            command_id="TechDraw_ActiveView",
+            label="Active View",
+            available=True,
+            kind="command",
+        ),
+    )
+    assert (
+        plan.capability_family,
+        plan.operation_variant,
+        plan.exact_target_type,
+        plan.transaction_behavior,
+        plan.background_required,
+    ) == (
+        "drawing.active_view",
+        "create_active_view",
+        "ExactDrawingPageActive3DViewportAndCaptureSettings",
+        "document",
+        False,
     )
 
 
@@ -149,6 +286,27 @@ def test_model_classifier_rejects_a_sketch_edit_geometry_action() -> None:
 
     with pytest.raises(NativeActionManifestError, match="unclassified actions"):
         classify_native_surface(_surface(manifest))
+
+
+def test_analyze_examples_remains_human_only_instructional_ui() -> None:
+    plan = _plan(
+        "analyze",
+        "Utilities",
+        RibbonAction(
+            command_id="FEM_Examples",
+            label="Examples",
+            available=True,
+            kind="command",
+        ),
+    )
+
+    assert plan.command_id == "FEM_Examples"
+    assert plan.classification.human_only is True
+    assert plan.classification.interactive is True
+    assert plan.operation_variant is None
+    assert plan.transaction_behavior == "human"
+    assert plan.implementation_status == "human_only"
+    assert planned_provider_capability_families((plan,)) == ()
 
 
 def _model_composite_manifest() -> dict[str, object]:
@@ -328,6 +486,43 @@ def test_provider_families_exclude_parent_only_actions_and_preserve_order() -> N
     assert planned_provider_capability_families(plans) == (
         "model.feature",
         "inspect.query",
+    )
+
+
+def test_assemble_insert_actions_use_the_structure_contract_operations() -> None:
+    manifest = {
+        "schema_version": 1,
+        "surface_id": "assemble",
+        "groups": [
+            {
+                "label": "Assembly",
+                "actions": [
+                    {
+                        "command_id": "Assembly_InsertLink",
+                        "kind": "command",
+                        "label": "Insert Component",
+                        "available": True,
+                    },
+                    {
+                        "command_id": "Assembly_InsertNewPart",
+                        "kind": "command",
+                        "label": "Insert New Part",
+                        "available": True,
+                    },
+                ],
+            }
+        ],
+    }
+
+    plans = classify_native_surface(_surface(manifest))
+
+    assert tuple(plan.capability_family for plan in plans) == (
+        "assembly.structure",
+        "assembly.structure",
+    )
+    assert tuple(plan.operation_variant for plan in plans) == (
+        "insert_component",
+        "create_part",
     )
 
 

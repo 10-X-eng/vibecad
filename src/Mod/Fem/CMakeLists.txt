@@ -43,6 +43,7 @@ SET(FemBaseModules_SRCS
 
 SET(FemCommands_SRCS
     femcommands/__init__.py
+    femcommands/clipping.py
     femcommands/commands.py
     femcommands/manager.py
 )
@@ -251,6 +252,7 @@ endif(BUILD_FEM_VTK_PYTHON)
 
 SET(FemResult_SRCS
     femresult/__init__.py
+    femresult/resultpresentation.py
     femresult/resulttools.py
 )
 
@@ -351,6 +353,7 @@ SET(FemSolverMystran_SRCS
     femsolver/mystran/add_femelement_material.py
     femsolver/mystran/add_mesh.py
     femsolver/mystran/add_solver_control.py
+    femsolver/mystran/mystrantools.py
     femsolver/mystran/solver.py
     femsolver/mystran/tasks.py
     femsolver/mystran/writer.py

@@ -13,8 +13,11 @@ from typing import Any
 
 
 CAPTURE_SCHEMA = "vibecad-provider-request-v1"
+NATIVE_DIAGNOSTIC_SCHEMA = "vibecad-native-diagnostic-v1"
 CAPTURE_DIRECTORY_ENV = "VIBECAD_CONTEXT_DEBUG_DIR"
 LATEST_CAPTURE_NAME = "latest.json"
+LATEST_NATIVE_DIAGNOSTIC_NAME = "latest-native.json"
+MAX_NATIVE_DIAGNOSTIC_JSON_BYTES = 64 * 1024
 
 
 def vibecad_home() -> Path:
@@ -94,6 +97,45 @@ def capture_provider_request(
         "path": str(timestamped_path),
         "latest_path": str(latest_path),
         "size_bytes": len(content.encode("utf-8")),
+    }
+
+
+def capture_native_diagnostic(
+    *,
+    directory: str | Path,
+    provider_call_id: str,
+    event: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist one opt-in Native failure diagnostic outside provider results."""
+
+    if not isinstance(event, dict):
+        raise TypeError("Native diagnostic capture requires an event dictionary.")
+    captured_at = datetime.now(timezone.utc)
+    envelope = {
+        "schema": NATIVE_DIAGNOSTIC_SCHEMA,
+        "captured_at": captured_at.isoformat(timespec="milliseconds"),
+        "provider_call_id": str(provider_call_id or "")[:256],
+        "diagnostic": event,
+    }
+    content = json.dumps(envelope, ensure_ascii=True, indent=2) + "\n"
+    size_bytes = len(content.encode("utf-8"))
+    if size_bytes > MAX_NATIVE_DIAGNOSTIC_JSON_BYTES:
+        raise ValueError("Native diagnostic capture exceeds its 64-KiB bound.")
+
+    capture_dir = resolve_capture_directory(directory)
+    timestamp = captured_at.strftime("%Y%m%dT%H%M%S.%fZ")
+    filename = (
+        f"{timestamp}-native-call-pid-{os.getpid()}-"
+        f"{uuid.uuid4().hex[:12]}.json"
+    )
+    timestamped_path = capture_dir / filename
+    latest_path = capture_dir / LATEST_NATIVE_DIAGNOSTIC_NAME
+    _atomic_write_text(timestamped_path, content)
+    _atomic_write_text(latest_path, content)
+    return {
+        "path": str(timestamped_path),
+        "latest_path": str(latest_path),
+        "size_bytes": size_bytes,
     }
 
 

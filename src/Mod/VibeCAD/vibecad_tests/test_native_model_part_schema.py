@@ -342,14 +342,12 @@ def test_part_mirror_contract_matches_every_live_task_control() -> None:
     assert mirror["required"] == ["sources", "plane"]
     assert mirror["additionalProperties"] is False
     plane = mirror["properties"]["plane"]
-    assert plane["required"] == ["kind"]
-    assert plane["additionalProperties"] is False
-    assert plane["properties"]["kind"]["enum"] == [
-        "xy",
-        "xz",
-        "yz",
-        "reference",
-    ]
+    standard, referenced = plane["oneOf"]
+    assert standard["required"] == ["kind"]
+    assert standard["additionalProperties"] is False
+    assert standard["properties"]["kind"]["enum"] == ["xy", "xz", "yz"]
+    assert referenced["required"] == ["kind", "reference"]
+    assert referenced["properties"]["kind"]["const"] == "reference"
 
 
 def test_part_mirror_targets_and_reference_are_closed_bounded_and_compact() -> None:
@@ -361,7 +359,9 @@ def test_part_mirror_targets_and_reference_are_closed_bounded_and_compact() -> N
         32,
         True,
     )
-    reference = mirror["properties"]["plane"]["properties"]["reference"]
+    reference = mirror["properties"]["plane"]["oneOf"][1]["properties"][
+        "reference"
+    ]
     assert reference["required"] == ["object_name"]
     assert reference["additionalProperties"] is False
     assert reference["properties"]["subelement"]["pattern"] == (

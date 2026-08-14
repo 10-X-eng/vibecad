@@ -96,7 +96,7 @@ const char* ConstraintTransform::getViewProviderName() const
 
 void ConstraintTransform::onChanged(const App::Property* prop)
 {
-    if (prop == &References) {
+    if (prop == &References || prop == &TransformType) {
         std::string transform_type = TransformType.getValueAsString();
         if (transform_type == "Cylindrical") {
             // Extract geometry from References

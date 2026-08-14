@@ -1702,8 +1702,8 @@ def SetupProperties():
     return [tup[1] for tup in ObjectSlot.opPropertyDefinitions(False)]
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns a Slot operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectSlot(obj, name, parentJob)
+    obj.Proxy = ObjectSlot(obj, name, parentJob, toolController=toolController)
     return obj

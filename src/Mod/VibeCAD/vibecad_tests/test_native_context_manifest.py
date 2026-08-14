@@ -20,6 +20,100 @@ from VibeCADNativeContextManifest import (
 MOD_ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED_CONTEXT_ACTION_IDS = {
+    "VibeCAD_NativeSketchState",
+    "SketchEditDeleteGeometry",
+    "VibeCAD_AnalyzeReadAnalysis",
+    "VibeCAD_AnalyzeReadMaterial",
+    "VibeCAD_AnalyzeSearchMaterialCatalog",
+    "VibeCAD_AnalyzeReadElementDefinition",
+    "VibeCAD_AnalyzeUpdateBeamSection",
+    "VibeCAD_AnalyzeUpdateBeamRotation",
+    "VibeCAD_AnalyzeUpdateShellThickness",
+    "VibeCAD_AnalyzeUpdateFluidSection",
+    "VibeCAD_AnalyzeReadElectromagneticConstraint",
+    "VibeCAD_AnalyzeUpdateElectromagnetic",
+    "VibeCAD_AnalyzeUpdateCurrentDensity",
+    "VibeCAD_AnalyzeUpdateMagnetization",
+    "VibeCAD_AnalyzeUpdateElectricChargeDensity",
+    "VibeCAD_AnalyzeReadFluidConstraint",
+    "VibeCAD_AnalyzeUpdateInitialFlowVelocity",
+    "VibeCAD_AnalyzeUpdateInitialPressure",
+    "VibeCAD_AnalyzeUpdateFlowVelocity",
+    "VibeCAD_AnalyzeReadGeometricalFeature",
+    "VibeCAD_AnalyzeUpdatePlaneRotation",
+    "VibeCAD_AnalyzeUpdateSectionPrint",
+    "VibeCAD_AnalyzeUpdateTransform",
+    "VibeCAD_AnalyzeReadSupportCondition",
+    "VibeCAD_AnalyzeUpdateFixed",
+    "VibeCAD_AnalyzeUpdateRigidBody",
+    "VibeCAD_AnalyzeUpdateDisplacement",
+    "VibeCAD_AnalyzeUpdateSpring",
+    "VibeCAD_AnalyzeReadConnection",
+    "VibeCAD_AnalyzeUpdateContact",
+    "VibeCAD_AnalyzeUpdateTie",
+    "VibeCAD_AnalyzeReadLoad",
+    "VibeCAD_AnalyzeUpdateForce",
+    "VibeCAD_AnalyzeUpdatePressure",
+    "VibeCAD_AnalyzeUpdateCentrifugal",
+    "VibeCAD_AnalyzeUpdateGravity",
+    "VibeCAD_AnalyzeReadThermalCondition",
+    "VibeCAD_AnalyzeCreateConvection",
+    "VibeCAD_AnalyzeCreateRadiation",
+    "VibeCAD_AnalyzeCreateConcentratedHeatInput",
+    "VibeCAD_AnalyzeCreateTotalBodyPower",
+    "VibeCAD_AnalyzeUpdateInitialTemperature",
+    "VibeCAD_AnalyzeUpdateSurfaceHeatFlux",
+    "VibeCAD_AnalyzeUpdateConvection",
+    "VibeCAD_AnalyzeUpdateRadiation",
+    "VibeCAD_AnalyzeUpdateBoundaryTemperature",
+    "VibeCAD_AnalyzeUpdateConcentratedHeatInput",
+    "VibeCAD_AnalyzeUpdateMassHeatGeneration",
+    "VibeCAD_AnalyzeUpdateTotalBodyPower",
+    "VibeCAD_AnalyzeReadMeshDefinition",
+    "VibeCAD_AnalyzeUpdateGmshMesh",
+    "VibeCAD_AnalyzeUpdateNetgenMesh",
+    "VibeCAD_AnalyzeGenerateGmshMesh",
+    "VibeCAD_AnalyzeGenerateNetgenMesh",
+    "VibeCAD_AnalyzeReadMeshRefinement",
+    "VibeCAD_AnalyzeUpdateMeshRegion",
+    "VibeCAD_AnalyzeUpdateMeshGroup",
+    "VibeCAD_AnalyzeUpdateMeshDistance",
+    "VibeCAD_AnalyzeUpdateMeshBoundaryLayer",
+    "VibeCAD_AnalyzeUpdateMeshShape",
+    "VibeCAD_AnalyzeCreateMeshThreshold",
+    "VibeCAD_AnalyzeCreateMeshMean",
+    "VibeCAD_AnalyzeCreateMeshGradient",
+    "VibeCAD_AnalyzeCreateMeshCurvature",
+    "VibeCAD_AnalyzeCreateMeshLaplacian",
+    "VibeCAD_AnalyzeCreateMeshMathEval",
+    "VibeCAD_AnalyzeCreateMeshMathEvalAniso",
+    "VibeCAD_AnalyzeCreateMeshFieldDistance",
+    "VibeCAD_AnalyzeCreateMeshResult",
+    "VibeCAD_AnalyzeUpdateMeshRestrict",
+    "VibeCAD_AnalyzeUpdateMeshThreshold",
+    "VibeCAD_AnalyzeUpdateMeshMean",
+    "VibeCAD_AnalyzeUpdateMeshGradient",
+    "VibeCAD_AnalyzeUpdateMeshCurvature",
+    "VibeCAD_AnalyzeUpdateMeshLaplacian",
+    "VibeCAD_AnalyzeUpdateMeshAttractorAnisoCurve",
+    "VibeCAD_AnalyzeUpdateMeshMathEval",
+    "VibeCAD_AnalyzeUpdateMeshMathEvalAniso",
+    "VibeCAD_AnalyzeUpdateMeshFieldDistance",
+    "VibeCAD_AnalyzeUpdateMeshResult",
+    "VibeCAD_AnalyzeUpdateTransfiniteCurve",
+    "VibeCAD_AnalyzeUpdateTransfiniteSurface",
+    "VibeCAD_AnalyzeUpdateTransfiniteVolume",
+    "VibeCAD_AnalyzeReadFemMeshElements",
+    "VibeCAD_AnalyzeEraseMeshElements",
+    "VibeCAD_AnalyzeEraseMeshElementRanges",
+    "VibeCAD_AnalyzeConvertFemMeshSurface",
+    "VibeCAD_AnalyzeConvertDeformedFemMeshSurface",
+    "VibeCAD_AnalyzeReadSolver",
+    "VibeCAD_AnalyzeUpdateCalculiXSolver",
+    "VibeCAD_AnalyzeUpdateElmerSolver",
+    "VibeCAD_AnalyzeUpdateZ88Solver",
+    "VibeCAD_AnalyzeReadEquation",
+    "VibeCAD_AnalyzeReadResult",
     "AssemblyContextToggleActive",
     "AssemblyContextMakeFlexible",
     "AssemblyContextMakeRigid",
@@ -31,6 +125,12 @@ EXPECTED_CONTEXT_ACTION_IDS = {
     "AssemblySimulationPlay",
     "AssemblySimulationPause",
     "AssemblySimulationClose",
+    "VibeCAD_ManufactureReadJob",
+    "VibeCAD_ManufactureReadThreadCatalog",
+    "VibeCAD_ManufactureListTools",
+    "VibeCAD_ManufactureReadTool",
+    "VibeCAD_ManufactureUpdateController",
+    "VibeCAD_ManufactureUpdateToolBit",
     "CAM_ExportTemplate",
     "CAM_SetStartPoint",
     "CAM_ToolBitSave",
@@ -82,9 +182,11 @@ def test_context_inventory_is_complete_unique_and_small() -> None:
     assert {action.action_id for action in NATIVE_CONTEXT_ACTIONS} == (
         EXPECTED_CONTEXT_ACTION_IDS
     )
-    assert len(NATIVE_CONTEXT_ACTIONS) == 27
-    assert len({action.action_id for action in NATIVE_CONTEXT_ACTIONS}) == 27
-    assert sum(action.classification.human_only for action in NATIVE_CONTEXT_ACTIONS) == 5
+    assert len(NATIVE_CONTEXT_ACTIONS) == 127
+    assert len({action.action_id for action in NATIVE_CONTEXT_ACTIONS}) == 127
+    assert (
+        sum(action.classification.human_only for action in NATIVE_CONTEXT_ACTIONS) == 5
+    )
     assert all(action.exact_target_type for action in NATIVE_CONTEXT_ACTIONS)
 
 
@@ -93,11 +195,114 @@ def test_surface_filtering_never_leaks_context_actions() -> None:
     assert len(provider_context_actions_for_surface("drawing")) == 8
     assert len(context_actions_for_surface("assemble")) == 13
     assert len(provider_context_actions_for_surface("assemble")) == 10
-    assert len(context_actions_for_surface("manufacture")) == 6
-    assert len(provider_context_actions_for_surface("manufacture")) == 4
+    assert len(context_actions_for_surface("manufacture")) == 12
+    assert len(provider_context_actions_for_surface("manufacture")) == 10
     assert len(context_actions_for_surface("model")) == 2
     assert provider_context_actions_for_surface("model") == ()
-    assert context_actions_for_surface("sketch.edit") == ()
+    analyze = context_actions_for_surface("analyze")
+    assert tuple(action.action_id for action in analyze) == (
+        "VibeCAD_AnalyzeReadAnalysis",
+        "VibeCAD_AnalyzeReadMaterial",
+        "VibeCAD_AnalyzeSearchMaterialCatalog",
+        "VibeCAD_AnalyzeReadElementDefinition",
+        "VibeCAD_AnalyzeUpdateBeamSection",
+        "VibeCAD_AnalyzeUpdateBeamRotation",
+        "VibeCAD_AnalyzeUpdateShellThickness",
+        "VibeCAD_AnalyzeUpdateFluidSection",
+        "VibeCAD_AnalyzeReadElectromagneticConstraint",
+        "VibeCAD_AnalyzeUpdateElectromagnetic",
+        "VibeCAD_AnalyzeUpdateCurrentDensity",
+        "VibeCAD_AnalyzeUpdateMagnetization",
+        "VibeCAD_AnalyzeUpdateElectricChargeDensity",
+        "VibeCAD_AnalyzeReadFluidConstraint",
+        "VibeCAD_AnalyzeUpdateInitialFlowVelocity",
+        "VibeCAD_AnalyzeUpdateInitialPressure",
+        "VibeCAD_AnalyzeUpdateFlowVelocity",
+        "VibeCAD_AnalyzeReadGeometricalFeature",
+        "VibeCAD_AnalyzeUpdatePlaneRotation",
+        "VibeCAD_AnalyzeUpdateSectionPrint",
+        "VibeCAD_AnalyzeUpdateTransform",
+        "VibeCAD_AnalyzeReadSupportCondition",
+        "VibeCAD_AnalyzeUpdateFixed",
+        "VibeCAD_AnalyzeUpdateRigidBody",
+        "VibeCAD_AnalyzeUpdateDisplacement",
+        "VibeCAD_AnalyzeUpdateSpring",
+        "VibeCAD_AnalyzeReadConnection",
+        "VibeCAD_AnalyzeUpdateContact",
+        "VibeCAD_AnalyzeUpdateTie",
+        "VibeCAD_AnalyzeReadLoad",
+        "VibeCAD_AnalyzeUpdateForce",
+        "VibeCAD_AnalyzeUpdatePressure",
+        "VibeCAD_AnalyzeUpdateCentrifugal",
+        "VibeCAD_AnalyzeUpdateGravity",
+        "VibeCAD_AnalyzeReadThermalCondition",
+        "VibeCAD_AnalyzeCreateConvection",
+        "VibeCAD_AnalyzeCreateRadiation",
+        "VibeCAD_AnalyzeCreateConcentratedHeatInput",
+        "VibeCAD_AnalyzeCreateTotalBodyPower",
+        "VibeCAD_AnalyzeUpdateInitialTemperature",
+        "VibeCAD_AnalyzeUpdateSurfaceHeatFlux",
+        "VibeCAD_AnalyzeUpdateConvection",
+        "VibeCAD_AnalyzeUpdateRadiation",
+        "VibeCAD_AnalyzeUpdateBoundaryTemperature",
+        "VibeCAD_AnalyzeUpdateConcentratedHeatInput",
+        "VibeCAD_AnalyzeUpdateMassHeatGeneration",
+        "VibeCAD_AnalyzeUpdateTotalBodyPower",
+        "VibeCAD_AnalyzeReadMeshDefinition",
+        "VibeCAD_AnalyzeUpdateGmshMesh",
+        "VibeCAD_AnalyzeUpdateNetgenMesh",
+        "VibeCAD_AnalyzeGenerateGmshMesh",
+        "VibeCAD_AnalyzeGenerateNetgenMesh",
+        "VibeCAD_AnalyzeReadMeshRefinement",
+        "VibeCAD_AnalyzeUpdateMeshRegion",
+        "VibeCAD_AnalyzeUpdateMeshGroup",
+        "VibeCAD_AnalyzeUpdateMeshDistance",
+        "VibeCAD_AnalyzeUpdateMeshBoundaryLayer",
+        "VibeCAD_AnalyzeUpdateMeshShape",
+        "VibeCAD_AnalyzeCreateMeshThreshold",
+        "VibeCAD_AnalyzeCreateMeshMean",
+        "VibeCAD_AnalyzeCreateMeshGradient",
+        "VibeCAD_AnalyzeCreateMeshCurvature",
+        "VibeCAD_AnalyzeCreateMeshLaplacian",
+        "VibeCAD_AnalyzeCreateMeshMathEval",
+        "VibeCAD_AnalyzeCreateMeshMathEvalAniso",
+        "VibeCAD_AnalyzeCreateMeshFieldDistance",
+        "VibeCAD_AnalyzeCreateMeshResult",
+        "VibeCAD_AnalyzeUpdateMeshRestrict",
+        "VibeCAD_AnalyzeUpdateMeshThreshold",
+        "VibeCAD_AnalyzeUpdateMeshMean",
+        "VibeCAD_AnalyzeUpdateMeshGradient",
+        "VibeCAD_AnalyzeUpdateMeshCurvature",
+        "VibeCAD_AnalyzeUpdateMeshLaplacian",
+        "VibeCAD_AnalyzeUpdateMeshAttractorAnisoCurve",
+        "VibeCAD_AnalyzeUpdateMeshMathEval",
+        "VibeCAD_AnalyzeUpdateMeshMathEvalAniso",
+        "VibeCAD_AnalyzeUpdateMeshFieldDistance",
+        "VibeCAD_AnalyzeUpdateMeshResult",
+        "VibeCAD_AnalyzeUpdateTransfiniteCurve",
+        "VibeCAD_AnalyzeUpdateTransfiniteSurface",
+        "VibeCAD_AnalyzeUpdateTransfiniteVolume",
+        "VibeCAD_AnalyzeReadFemMeshElements",
+        "VibeCAD_AnalyzeEraseMeshElements",
+        "VibeCAD_AnalyzeEraseMeshElementRanges",
+        "VibeCAD_AnalyzeConvertFemMeshSurface",
+        "VibeCAD_AnalyzeConvertDeformedFemMeshSurface",
+        "VibeCAD_AnalyzeReadSolver",
+        "VibeCAD_AnalyzeUpdateCalculiXSolver",
+        "VibeCAD_AnalyzeUpdateElmerSolver",
+        "VibeCAD_AnalyzeUpdateZ88Solver",
+        "VibeCAD_AnalyzeReadEquation",
+        "VibeCAD_AnalyzeReadResult",
+        "InspectionContextAnnotation",
+        "InspectionContextLeaveInfoMode",
+    )
+    assert provider_context_actions_for_surface("analyze") == analyze[:-2]
+    sketch = context_actions_for_surface("sketch.edit")
+    assert tuple(action.action_id for action in sketch) == (
+        "VibeCAD_NativeSketchState",
+        "SketchEditDeleteGeometry",
+    )
+    assert provider_context_actions_for_surface("sketch.edit") == sketch
 
 
 @pytest.mark.parametrize("surface_id", ("unavailable", "DraftWorkbench", ""))
@@ -125,7 +330,59 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
     assert provider_actions["AssemblyContextMakeFlexible"].operation_variant == (
         "make_flexible"
     )
-    assert provider_actions["AssemblyContextMakeRigid"].operation_variant == "make_rigid"
+    assert (
+        provider_actions["AssemblyContextMakeRigid"].operation_variant == "make_rigid"
+    )
+    assert provider_actions["VibeCAD_AnalyzeReadAnalysis"].operation_variant == (
+        "analysis"
+    )
+    assert provider_actions["VibeCAD_AnalyzeReadMaterial"].operation_variant == (
+        "material"
+    )
+    assert provider_actions["VibeCAD_AnalyzeReadResult"].operation_variant == "result"
+    assert (
+        provider_actions["VibeCAD_AnalyzeSearchMaterialCatalog"].operation_variant
+        == "material_catalog"
+    )
+    assert (
+        provider_actions["VibeCAD_AnalyzeReadElementDefinition"].operation_variant
+        == "element_definition"
+    )
+    assert all(
+        provider_actions[action_id].classification.read
+        and provider_actions[action_id].transaction_behavior == "none"
+        for action_id in {
+            "VibeCAD_AnalyzeReadAnalysis",
+            "VibeCAD_AnalyzeReadMaterial",
+            "VibeCAD_AnalyzeSearchMaterialCatalog",
+            "VibeCAD_AnalyzeReadElementDefinition",
+            "VibeCAD_AnalyzeReadResult",
+        }
+    )
+    assert {
+        provider_actions[action_id].operation_variant
+        for action_id in {
+            "VibeCAD_AnalyzeUpdateBeamSection",
+            "VibeCAD_AnalyzeUpdateBeamRotation",
+            "VibeCAD_AnalyzeUpdateShellThickness",
+            "VibeCAD_AnalyzeUpdateFluidSection",
+        }
+    } == {
+        "update_beam_section",
+        "update_beam_rotation",
+        "update_shell_thickness",
+        "update_fluid_section",
+    }
+    assert all(
+        provider_actions[action_id].classification.mutation
+        and provider_actions[action_id].transaction_behavior == "document"
+        for action_id in {
+            "VibeCAD_AnalyzeUpdateBeamSection",
+            "VibeCAD_AnalyzeUpdateBeamRotation",
+            "VibeCAD_AnalyzeUpdateShellThickness",
+            "VibeCAD_AnalyzeUpdateFluidSection",
+        }
+    )
     assert provider_actions["Assembly_LinkSelectLinked"].operation_variant == (
         "linked_source"
     )
@@ -160,9 +417,9 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
         }
     )
     assert provider_actions["TechDrawContextToggleKeepUpdated"].classification.mutation
-    assert provider_actions["TechDrawContextToggleKeepUpdated"].transaction_behavior == (
-        "document"
-    )
+    assert provider_actions[
+        "TechDrawContextToggleKeepUpdated"
+    ].transaction_behavior == ("document")
     assert provider_actions["TechDrawContextToggleGrid"].classification.view
     assert provider_actions["TechDrawContextToggleGrid"].transaction_behavior == (
         "presentation"

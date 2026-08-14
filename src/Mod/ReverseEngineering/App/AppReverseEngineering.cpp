@@ -31,9 +31,13 @@
 #include <Base/Converter.h>
 #include <Base/GeometryPyCXX.h>
 #include <Base/Interpreter.h>
+#include <Base/PlacementPy.h>
 #include <Base/PyWrapParseTupleAndKeywords.h>
+#include <App/ComplexGeoDataPy.h>
 #include <Mod/Mesh/App/MeshPy.h>
 #include <Mod/Part/App/BSplineSurfacePy.h>
+#include <Mod/Part/App/TopoShape.h>
+#include <Mod/Part/App/TopoShapePy.h>
 #include <Mod/Points/App/PointsPy.h>
 #if defined(HAVE_PCL_FILTERS)
 # include <pcl/filters/passthrough.h>
@@ -43,6 +47,7 @@
 
 #include "ApproxSurface.h"
 #include "BSplineFitting.h"
+#include "NativeApproximation.h"
 #include "RegionGrowing.h"
 #include "SampleConsensus.h"
 #include "Segmentation.h"
@@ -95,6 +100,31 @@ public:
             "PatchFactor: create an extended surface\n"
             "UVDirs: set the u,v parameter directions as tuple of two vectors\n"
             "        If not set then they will be determined by computing a best-fit plane\n"
+        );
+        add_varargs_method(
+            "fitNativePlane",
+            &Module::fitNativePlane,
+            "Fit a detached geometry source to a plane without changing a document."
+        );
+        add_varargs_method(
+            "fitNativeCylinder",
+            &Module::fitNativeCylinder,
+            "Fit a detached Mesh to a cylinder without changing a document."
+        );
+        add_varargs_method(
+            "fitNativeSphere",
+            &Module::fitNativeSphere,
+            "Fit a detached Mesh to a sphere without changing a document."
+        );
+        add_varargs_method(
+            "fitNativePolynomial",
+            &Module::fitNativePolynomial,
+            "Fit a detached Mesh to a quadratic Bezier surface without changing a document."
+        );
+        add_varargs_method(
+            "triangulateNativeStructured",
+            &Module::triangulateNativeStructured,
+            "Triangulate a detached structured point grid without changing a document."
         );
 #if defined(HAVE_PCL_SURFACE)
         add_keyword_method("triangulate",&Module::triangulate,
@@ -161,6 +191,157 @@ public:
     }
 
 private:
+    Py::Object fitNativePlane(const Py::Tuple& args)
+    {
+        PyObject* pythonGeometry {};
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "O!",
+                &Data::ComplexGeoDataPy::Type,
+                &pythonGeometry
+            )) {
+            throw Py::Exception();
+        }
+        try {
+            Reen::NativePlaneFit fit;
+            {
+                Base::PyGILStateRelease release;
+                fit = Reen::fitNativePlane(
+                    *static_cast<Data::ComplexGeoDataPy*>(pythonGeometry)
+                         ->getComplexGeoDataPtr()
+                );
+            }
+            Py::Dict result;
+            result.setItem("length_mm", Py::Float(fit.length));
+            result.setItem("width_mm", Py::Float(fit.width));
+            result.setItem("rms_deviation_mm", Py::Float(fit.rmsDeviation));
+            result.setItem(
+                "placement",
+                Py::asObject(new Base::PlacementPy(new Base::Placement(fit.placement)))
+            );
+            return result;
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+    }
+
+    Py::Object fitNativeCylinder(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        if (!PyArg_ParseTuple(args.ptr(), "O!", &Mesh::MeshPy::Type, &pythonMesh)) {
+            throw Py::Exception();
+        }
+        try {
+            Reen::NativeCylinderFit fit;
+            {
+                Base::PyGILStateRelease release;
+                fit = Reen::fitNativeCylinder(
+                    *static_cast<Mesh::MeshPy*>(pythonMesh)->getMeshObjectPtr()
+                );
+            }
+            Py::Dict result;
+            result.setItem("radius_mm", Py::Float(fit.radius));
+            result.setItem("height_mm", Py::Float(fit.height));
+            result.setItem("rms_deviation_mm", Py::Float(fit.rmsDeviation));
+            result.setItem(
+                "placement",
+                Py::asObject(new Base::PlacementPy(new Base::Placement(fit.placement)))
+            );
+            return result;
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+    }
+
+    Py::Object fitNativeSphere(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        if (!PyArg_ParseTuple(args.ptr(), "O!", &Mesh::MeshPy::Type, &pythonMesh)) {
+            throw Py::Exception();
+        }
+        try {
+            Reen::NativeSphereFit fit;
+            {
+                Base::PyGILStateRelease release;
+                fit = Reen::fitNativeSphere(
+                    *static_cast<Mesh::MeshPy*>(pythonMesh)->getMeshObjectPtr()
+                );
+            }
+            Py::Dict result;
+            result.setItem("radius_mm", Py::Float(fit.radius));
+            result.setItem("rms_deviation_mm", Py::Float(fit.rmsDeviation));
+            result.setItem("center", Py::Vector(fit.center));
+            return result;
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+    }
+
+    Py::Object fitNativePolynomial(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        if (!PyArg_ParseTuple(args.ptr(), "O!", &Mesh::MeshPy::Type, &pythonMesh)) {
+            throw Py::Exception();
+        }
+        try {
+            Reen::NativePolynomialFit fit;
+            {
+                Base::PyGILStateRelease release;
+                fit = Reen::fitNativePolynomial(
+                    *static_cast<Mesh::MeshPy*>(pythonMesh)->getMeshObjectPtr()
+                );
+            }
+            Py::Dict result;
+            result.setItem("rms_deviation_mm", Py::Float(fit.rmsDeviation));
+            result.setItem(
+                "shape",
+                Py::asObject(new Part::TopoShapePy(new Part::TopoShape(fit.shape)))
+            );
+            return result;
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+    }
+
+    Py::Object triangulateNativeStructured(const Py::Tuple& args)
+    {
+        PyObject* pythonPoints {};
+        Py_ssize_t width {};
+        Py_ssize_t height {};
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "O!nn",
+                &Points::PointsPy::Type,
+                &pythonPoints,
+                &width,
+                &height
+            )) {
+            throw Py::Exception();
+        }
+        if (width < 0 || height < 0) {
+            throw Py::ValueError("structured point dimensions cannot be negative");
+        }
+        try {
+            Mesh::MeshObject result;
+            {
+                Base::PyGILStateRelease release;
+                result = Reen::triangulateNativeStructuredPoints(
+                    *static_cast<Points::PointsPy*>(pythonPoints)->getPointKernelPtr(),
+                    static_cast<std::size_t>(width),
+                    static_cast<std::size_t>(height)
+                );
+            }
+            return Py::asObject(new Mesh::MeshPy(new Mesh::MeshObject(std::move(result))));
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+    }
+
     static std::vector<Base::Vector3d> getPoints(PyObject* pts, bool closed)
     {
         std::vector<Base::Vector3d> data;
@@ -217,7 +398,10 @@ private:
         std::vector<Base::Vector3d> data = getPoints(pts, Base::asBoolean(closed));
 
         Part::GeomBSplineCurve curve;
-        curve.approximate(data, minDegree, maxDegree, GeomAbs_Shape(cont), tol3d);
+        {
+            Base::PyGILStateRelease release;
+            curve.approximate(data, minDegree, maxDegree, GeomAbs_Shape(cont), tol3d);
+        }
         return curve.getPyObject();
     }
 
@@ -257,7 +441,10 @@ private:
         }
 
         Part::GeomBSplineCurve curve;
-        curve.approximate(data, pt, minDegree, maxDegree, GeomAbs_Shape(cont), tol3d);
+        {
+            Base::PyGILStateRelease release;
+            curve.approximate(data, pt, minDegree, maxDegree, GeomAbs_Shape(cont), tol3d);
+        }
         return curve.getPyObject();
     }
 
@@ -291,7 +478,18 @@ private:
         std::vector<Base::Vector3d> data = getPoints(pts, Base::asBoolean(closed));
 
         Part::GeomBSplineCurve curve;
-        curve.approximate(data, weight1, weight2, weight3, maxDegree, GeomAbs_Shape(cont), tol3d);
+        {
+            Base::PyGILStateRelease release;
+            curve.approximate(
+                data,
+                weight1,
+                weight2,
+                weight3,
+                maxDegree,
+                GeomAbs_Shape(cont),
+                tol3d
+            );
+        }
         return curve.getPyObject();
     }
 
@@ -428,7 +626,15 @@ private:
                 pc.SetUV(u, v);
             }
             pc.EnableSmoothing(Base::asBoolean(smooth), weight, grad, bend, curv);
-            hSurf = pc.CreateSurface(clPoints, iteration, Base::asBoolean(correction), factor);
+            {
+                Base::PyGILStateRelease release;
+                hSurf = pc.CreateSurface(
+                    clPoints,
+                    iteration,
+                    Base::asBoolean(correction),
+                    factor
+                );
+            }
             if (!hSurf.IsNull()) {
                 return Py::asObject(new Part::BSplineSurfacePy(new Part::GeomBSplineSurface(hSurf)));
             }
@@ -542,9 +748,13 @@ Mesh.show(m)
                 Base::Vector3d v = Py::Vector(*it).toVector();
                 normals.push_back(Base::convertTo<Base::Vector3f>(v));
             }
-            poisson.perform(normals);
+            {
+                Base::PyGILStateRelease release;
+                poisson.perform(normals);
+            }
         }
         else {
+            Base::PyGILStateRelease release;
             poisson.perform(ksearch);
         }
 

@@ -386,6 +386,8 @@ SET(Mesh_SRCS
     MeshPyImp.cpp
     MeshTexture.cpp
     MeshTexture.h
+    NativeInspection.cpp
+    NativeInspection.h
     PreCompiled.h
     Segment.cpp
     Segment.h

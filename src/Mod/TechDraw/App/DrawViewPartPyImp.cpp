@@ -36,6 +36,7 @@
 # include <TopoDS.hxx>
 # include <TopoDS_Compound.hxx>
 # include <TopoDS_Edge.hxx>
+# include <TopoDS_Face.hxx>
 # include <TopoDS_Shape.hxx>
 # include <TopoDS_Vertex.hxx>
 
@@ -88,19 +89,20 @@ const char* edgeClassName(EdgeClass edgeClass)
     return "unknown";
 }
 
-Py::Dict vectorDescriptor(const Base::Vector3d& value)
+Py::Dict pointDescriptor(const Base::Vector3d& value, bool conventionalCoordinates)
 {
     Py::Dict result;
     result.setItem("x", Py::Float(value.x));
-    result.setItem("y", Py::Float(value.y));
+    result.setItem(
+        "y", Py::Float(conventionalCoordinates ? -value.y : value.y));
     return result;
 }
 
-Py::Dict edgeBounds(const TopoDS_Edge& edge)
+Py::Dict shapeBounds(const TopoDS_Shape& shape, bool conventionalCoordinates)
 {
     Bnd_Box box;
     box.SetGap(0.0);
-    BRepBndLib::AddOptimal(edge, box);
+    BRepBndLib::AddOptimal(shape, box);
     Standard_Real xmin = 0.0;
     Standard_Real ymin = 0.0;
     Standard_Real zmin = 0.0;
@@ -110,9 +112,11 @@ Py::Dict edgeBounds(const TopoDS_Edge& edge)
     box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
     Py::Dict result;
     result.setItem("min_x", Py::Float(xmin));
-    result.setItem("min_y", Py::Float(ymin));
+    result.setItem(
+        "min_y", Py::Float(conventionalCoordinates ? -ymax : ymin));
     result.setItem("max_x", Py::Float(xmax));
-    result.setItem("max_y", Py::Float(ymax));
+    result.setItem(
+        "max_y", Py::Float(conventionalCoordinates ? -ymin : ymax));
     result.setItem("width", Py::Float(xmax - xmin));
     result.setItem("height", Py::Float(ymax - ymin));
     return result;
@@ -259,6 +263,105 @@ Py::Dict sourceMappingForVertex(const Base::Vector3d& point,
     return result;
 }
 
+Py::Dict projectedElementDescriptors(DrawViewPart* view,
+                                     bool conventionalCoordinates,
+                                     bool includeFaces)
+{
+    if (!view->hasGeometry()) {
+        throw Py::RuntimeError("The TechDraw view has no projected geometry.");
+    }
+
+    const ProjectedSources projectedSources = projectSourceSubelements(view);
+    Py::List edgesOut;
+    const auto edges = view->getEdgeGeometry();
+    for (size_t index = 0; index < edges.size(); ++index) {
+        const auto& geometry = edges.at(index);
+        const TopoDS_Edge edge = geometry->getOCCEdge();
+        GProp_GProps properties;
+        BRepGProp::LinearProperties(edge, properties);
+
+        Py::Dict descriptor;
+        descriptor.setItem("name", Py::String("Edge" + std::to_string(index)));
+        descriptor.setItem("element_type", Py::String("edge"));
+        descriptor.setItem("geometry_type", Py::String(geometry->geomTypeName()));
+        descriptor.setItem("edge_class", Py::String(edgeClassName(geometry->getClassOfEdge())));
+        descriptor.setItem("visible", Py::Boolean(geometry->getHlrVisible()));
+        descriptor.setItem("closed", Py::Boolean(geometry->closed()));
+        descriptor.setItem("length_view_mm", Py::Float(properties.Mass()));
+        descriptor.setItem("bounds_2d", shapeBounds(edge, conventionalCoordinates));
+        descriptor.setItem(
+            "start_2d", pointDescriptor(geometry->getStartPoint(), conventionalCoordinates));
+        descriptor.setItem(
+            "end_2d", pointDescriptor(geometry->getEndPoint(), conventionalCoordinates));
+        descriptor.setItem(
+            "midpoint_2d", pointDescriptor(geometry->getMidPoint(), conventionalCoordinates));
+        descriptor.setItem("hlr_source_index", Py::Long(geometry->sourceIndex()));
+        descriptor.setItem(
+            "source_mapping",
+            sourceMappingForEdge(edge, geometry->getClassOfEdge(), projectedSources));
+
+        if (auto circle = std::dynamic_pointer_cast<TechDraw::Circle>(geometry)) {
+            descriptor.setItem(
+                "center_2d", pointDescriptor(circle->center, conventionalCoordinates));
+            descriptor.setItem("radius_view_mm", Py::Float(circle->radius));
+        }
+        edgesOut.append(descriptor);
+    }
+
+    Py::List verticesOut;
+    const auto vertices = view->getVertexGeometry();
+    for (size_t index = 0; index < vertices.size(); ++index) {
+        const auto& vertex = vertices.at(index);
+        const Base::Vector3d point = vertex->point();
+        Py::Dict descriptor;
+        descriptor.setItem("name", Py::String("Vertex" + std::to_string(index)));
+        descriptor.setItem("element_type", Py::String("vertex"));
+        descriptor.setItem("point_2d", pointDescriptor(point, conventionalCoordinates));
+        descriptor.setItem("visible", Py::Boolean(vertex->getHlrVisible()));
+        descriptor.setItem("is_center", Py::Boolean(vertex->isCenter()));
+        descriptor.setItem("is_reference", Py::Boolean(vertex->isReference()));
+        descriptor.setItem(
+            "source_mapping",
+            sourceMappingForVertex(point, vertex->isCenter(), projectedSources));
+        verticesOut.append(descriptor);
+    }
+
+    Py::Dict result;
+    result.setItem("coordinate_space", Py::String("view_projection_scaled_centered"));
+    result.setItem("view_scale", Py::Float(view->getScale()));
+    result.setItem("edges", edgesOut);
+    result.setItem("vertices", verticesOut);
+    if (!includeFaces) {
+        return result;
+    }
+
+    Py::List facesOut;
+    const auto faces = view->getFaceGeometry();
+    const bool facesVisible = view->handleFaces() && !view->CoarseView.getValue();
+    for (size_t index = 0; index < faces.size(); ++index) {
+        const auto& face = faces.at(index);
+        const TopoDS_Face occFace = face->toOccFace();
+        if (occFace.IsNull()) {
+            continue;
+        }
+        Py::Dict descriptor;
+        descriptor.setItem("name", Py::String("Face" + std::to_string(index)));
+        descriptor.setItem("element_type", Py::String("face"));
+        descriptor.setItem("visible", Py::Boolean(facesVisible));
+        descriptor.setItem("area_view_mm2", Py::Float(face->getArea()));
+        descriptor.setItem(
+            "center_2d", pointDescriptor(face->getCenter(), conventionalCoordinates));
+        descriptor.setItem("bounds_2d", shapeBounds(occFace, conventionalCoordinates));
+        descriptor.setItem(
+            "wire_count",
+            Py::Long(static_cast<long>(face->wires.size())));
+        facesOut.append(descriptor);
+    }
+    result.setItem("axis_convention", Py::String("x_right_y_up"));
+    result.setItem("faces", facesOut);
+    return result;
+}
+
 }  // namespace
 
 // returns a string which represents the object e.g. when printed in python
@@ -350,69 +453,17 @@ PyObject* DrawViewPartPy::getProjectedElementDescriptors(PyObject* args)
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
+    return Py::new_reference_to(
+        projectedElementDescriptors(getDrawViewPartPtr(), false, false));
+}
 
-    DrawViewPart* view = getDrawViewPartPtr();
-    if (!view->hasGeometry()) {
-        throw Py::RuntimeError("The TechDraw view has no projected geometry.");
+PyObject* DrawViewPartPy::getExactProjectedElementDescriptors(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
     }
-
-    const ProjectedSources projectedSources = projectSourceSubelements(view);
-    Py::List edgesOut;
-    const auto edges = view->getEdgeGeometry();
-    for (size_t index = 0; index < edges.size(); ++index) {
-        const auto& geometry = edges.at(index);
-        const TopoDS_Edge edge = geometry->getOCCEdge();
-        GProp_GProps properties;
-        BRepGProp::LinearProperties(edge, properties);
-
-        Py::Dict descriptor;
-        descriptor.setItem("name", Py::String("Edge" + std::to_string(index)));
-        descriptor.setItem("element_type", Py::String("edge"));
-        descriptor.setItem("geometry_type", Py::String(geometry->geomTypeName()));
-        descriptor.setItem("edge_class", Py::String(edgeClassName(geometry->getClassOfEdge())));
-        descriptor.setItem("visible", Py::Boolean(geometry->getHlrVisible()));
-        descriptor.setItem("closed", Py::Boolean(geometry->closed()));
-        descriptor.setItem("length_view_mm", Py::Float(properties.Mass()));
-        descriptor.setItem("bounds_2d", edgeBounds(edge));
-        descriptor.setItem("start_2d", vectorDescriptor(geometry->getStartPoint()));
-        descriptor.setItem("end_2d", vectorDescriptor(geometry->getEndPoint()));
-        descriptor.setItem("midpoint_2d", vectorDescriptor(geometry->getMidPoint()));
-        descriptor.setItem("hlr_source_index", Py::Long(geometry->sourceIndex()));
-        descriptor.setItem(
-            "source_mapping",
-            sourceMappingForEdge(edge, geometry->getClassOfEdge(), projectedSources));
-
-        if (auto circle = std::dynamic_pointer_cast<TechDraw::Circle>(geometry)) {
-            descriptor.setItem("center_2d", vectorDescriptor(circle->center));
-            descriptor.setItem("radius_view_mm", Py::Float(circle->radius));
-        }
-        edgesOut.append(descriptor);
-    }
-
-    Py::List verticesOut;
-    const auto vertices = view->getVertexGeometry();
-    for (size_t index = 0; index < vertices.size(); ++index) {
-        const auto& vertex = vertices.at(index);
-        const Base::Vector3d point = vertex->point();
-        Py::Dict descriptor;
-        descriptor.setItem("name", Py::String("Vertex" + std::to_string(index)));
-        descriptor.setItem("element_type", Py::String("vertex"));
-        descriptor.setItem("point_2d", vectorDescriptor(point));
-        descriptor.setItem("visible", Py::Boolean(vertex->getHlrVisible()));
-        descriptor.setItem("is_center", Py::Boolean(vertex->isCenter()));
-        descriptor.setItem("is_reference", Py::Boolean(vertex->isReference()));
-        descriptor.setItem(
-            "source_mapping",
-            sourceMappingForVertex(point, vertex->isCenter(), projectedSources));
-        verticesOut.append(descriptor);
-    }
-
-    Py::Dict result;
-    result.setItem("coordinate_space", Py::String("view_projection_scaled_centered"));
-    result.setItem("view_scale", Py::Float(view->getScale()));
-    result.setItem("edges", edgesOut);
-    result.setItem("vertices", verticesOut);
-    return Py::new_reference_to(result);
+    return Py::new_reference_to(
+        projectedElementDescriptors(getDrawViewPartPtr(), true, true));
 }
 
 PyObject* DrawViewPartPy::getPrecomputedProjection(PyObject* args)

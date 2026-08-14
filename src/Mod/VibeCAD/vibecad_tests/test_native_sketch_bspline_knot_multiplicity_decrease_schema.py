@@ -62,7 +62,7 @@ def test_knot_multiplicity_decrease_schema_is_closed_bounded_and_exact() -> None
         if variant.operation not in {"insert_bspline_knot", "join_curves"}
     )
     all_encoded = _encoded(definition.provider_schema(all_operations))
-    assert len(all_encoded) == 20_775
+    assert len(all_encoded) == 19_745
     assert len(all_encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 

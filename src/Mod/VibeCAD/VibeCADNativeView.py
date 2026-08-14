@@ -8,12 +8,18 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from VibeCADNativeTargets import NativeObjectRef, document_uid, resolve_object
+from VibeCADNativeTargets import (
+    NativeObjectRef,
+    document_uid,
+    object_reference,
+    resolve_object,
+)
 
 
 MAX_NATIVE_SCREENSHOT_BYTES = 20 * 1024 * 1024
 MAX_NATIVE_SCREENSHOT_RESULT_BYTES = 64 * 1024
 MAX_NATIVE_ARTIFACT_PATH_CHARACTERS = 4096
+MAX_NATIVE_VISIBILITY_TARGETS = 16
 
 
 class NativeViewError(RuntimeError):
@@ -93,6 +99,109 @@ def set_grid_visible(document: Any, visible: bool) -> dict[str, bool]:
     return {"grid_visible": observed}
 
 
+def _is_derived_from(obj: Any, type_id: str) -> bool:
+    check = getattr(obj, "isDerivedFrom", None)
+    if not callable(check):
+        return str(getattr(obj, "TypeId", "") or "") == type_id
+    try:
+        return bool(check(type_id))
+    except Exception:
+        return False
+
+
+def _has_renderable_model_presentation(obj: Any) -> bool:
+    if _is_derived_from(obj, "App::Part") or _is_derived_from(
+        obj,
+        "PartDesign::Body",
+    ):
+        return True
+    shape = getattr(obj, "Shape", None)
+    if shape is not None:
+        try:
+            if not bool(shape.isNull()):
+                return True
+        except (AttributeError, ReferenceError, RuntimeError):
+            pass
+    mesh = getattr(obj, "Mesh", None)
+    if mesh is not None:
+        try:
+            return int(mesh.CountPoints) > 0
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+    return _is_derived_from(obj, "Sketcher::SketchObject")
+
+
+def set_object_visibility(
+    document: Any,
+    targets: tuple[NativeObjectRef, ...],
+    visible: bool,
+) -> dict[str, Any]:
+    """Set exact user-facing model presentation without changing topology."""
+
+    document_uid(document)
+    if type(visible) is not bool:
+        raise TypeError("visible must be a boolean")
+    if not 1 <= len(targets) <= MAX_NATIVE_VISIBILITY_TARGETS:
+        raise NativeViewError(
+            "Model visibility requires 1 to 16 exact object targets."
+        )
+
+    resolved = []
+    names = set()
+    for target in targets:
+        obj = resolve_object(document, target)
+        name = str(getattr(obj, "Name", "") or "")
+        if not name or name in names:
+            raise NativeViewError("Model visibility targets must be distinct.")
+        names.add(name)
+        role = str(getattr(obj, "VibeCADTimelineRole", "") or "")
+        public_container = _is_derived_from(obj, "App::Part") or _is_derived_from(
+            obj,
+            "PartDesign::Body",
+        )
+        if role in {"internal", "resource"} and not public_container:
+            raise NativeViewError(
+                f"{name!r} is an internal History resource; target its public Body or result."
+            )
+        if not _has_renderable_model_presentation(obj):
+            raise NativeViewError(
+                f"{name!r} does not directly own model presentation geometry."
+            )
+        view = getattr(obj, "ViewObject", None)
+        if view is None or not hasattr(view, "Visibility"):
+            raise NativeViewError(f"{name!r} has no controllable model visibility.")
+        resolved.append((obj, view, bool(view.Visibility)))
+
+    try:
+        for _obj, view, _before in resolved:
+            view.Visibility = visible
+    except Exception as exc:
+        for _obj, view, before in resolved:
+            try:
+                view.Visibility = before
+            except Exception:
+                pass
+        raise NativeViewError("Model visibility could not be applied atomically.") from exc
+
+    if any(bool(view.Visibility) is not visible for _obj, view, _before in resolved):
+        for _obj, view, before in resolved:
+            try:
+                view.Visibility = before
+            except Exception:
+                pass
+        raise NativeViewError("Model objects did not reach the requested visibility.")
+
+    return {
+        "visible": visible,
+        "objects": [object_reference(obj) for obj, _view, _before in resolved],
+        "changed": [
+            object_reference(obj)
+            for obj, _view, before in resolved
+            if before is not visible
+        ],
+    }
+
+
 def capture_screenshot(
     service: Any,
     document: Any,
@@ -117,7 +226,7 @@ def capture_screenshot(
 
     raw = core_capture_view_screenshot.run(
         service,
-        camera={"mode": "unchanged"},
+        camera={"mode": "auto"},
         frame=frame_mode,
         object_names=names,
         sketch_annotations="clean",
@@ -147,13 +256,29 @@ def capture_screenshot(
         or reported_size != actual_size
     ):
         raise NativeViewError("Viewport screenshot artifact violates its size bound.")
+    size = raw.get("size")
+    image_size = (
+        [int(size[0]), int(size[1])]
+        if isinstance(size, (list, tuple))
+        and len(size) == 2
+        and all(type(value) is int and value > 0 for value in size)
+        else None
+    )
+    target = raw.get("target")
     result: dict[str, Any] = {
         "captured": True,
-        "artifact": {
-            "path": artifact_path,
+        "image": {
+            "mime_type": "image/png",
             "size_bytes": actual_size,
+            **({"size_px": image_size} if image_size is not None else {}),
         },
+        "new_observation": bool(raw.get("new_observation", True)),
     }
+    if isinstance(target, Mapping) and target:
+        result["target"] = dict(target)
+    duplicate_of = raw.get("duplicate_of")
+    if isinstance(duplicate_of, str) and duplicate_of:
+        result["duplicate_observation"] = True
     observation = raw.get("visual_observation")
     if isinstance(observation, Mapping) and observation:
         result["visual_observation"] = dict(observation)

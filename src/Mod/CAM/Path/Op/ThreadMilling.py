@@ -560,8 +560,13 @@ def SetupProperties():
     return setup
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns a thread milling operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectThreadMilling(obj, name, parentJob)
+    obj.Proxy = ObjectThreadMilling(
+        obj,
+        name,
+        parentJob,
+        toolController=toolController,
+    )
     return obj

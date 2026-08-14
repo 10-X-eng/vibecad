@@ -167,52 +167,12 @@ class TaskHoleShaftFit:
             selectedField = self.shaftValues[currentIndex][1]
         else:
             selectedField = self.holeValues[currentIndex][1]
-        fieldChar = selectedField[0]
-        quality = int(selectedField[1:])
         dim = self.dimension
-        property_names = (
-            "FormatSpec",
-            "EqualTolerance",
-            "OverTolerance",
-            "UnderTolerance",
-            "FormatSpecOverTolerance",
-            "FormatSpecUnderTolerance",
-        )
-        original_values = {
-            name: getattr(dim, name)
-            for name in property_names
-        }
         try:
-            value = dim.getRawValue()
-            iso = ISO286()
-            iso.calculate(value, fieldChar, quality)
-            rangeValues = iso.getValues()
-            mainFormat = dim.FormatSpec
-            dim.FormatSpec = mainFormat + " " + selectedField
-            dim.EqualTolerance = False
-            dim.OverTolerance = rangeValues[0]
-            dim.UnderTolerance = rangeValues[1]
-            if dim.OverTolerance < 0:
-                dim.FormatSpecOverTolerance = "(%-0.6w)"
-            elif dim.OverTolerance > 0:
-                dim.FormatSpecOverTolerance = "(+%-0.6w)"
-            else:
-                dim.FormatSpecOverTolerance = "( %-0.6w)"
-            if dim.UnderTolerance < 0:
-                dim.FormatSpecUnderTolerance = "(%-0.6w)"
-            elif dim.UnderTolerance > 0:
-                dim.FormatSpecUnderTolerance = "(+%-0.6w)"
-            else:
-                dim.FormatSpecUnderTolerance = "( %-0.6w)"
+            from .FitBuilder import apply_iso_286_fit
+
+            apply_iso_286_fit(dim, selectedField)
         except Exception as error:
-            for name, value in original_values.items():
-                try:
-                    setattr(dim, name, value)
-                except Exception as restore_error:
-                    App.Console.PrintError(
-                        "Could not restore TechDraw dimension property "
-                        f"{name}: {restore_error}\n"
-                    )
             App.Console.PrintError(
                 "Could not apply the hole/shaft fit: "
                 f"{error}\n"

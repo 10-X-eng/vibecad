@@ -23,15 +23,19 @@
 
 #pragma once
 
+#include <vector>
+
 #include <Mod/Assembly/AssemblyGlobal.h>
 
+#include <Gui/TreeViewDetail.h>
 #include <Mod/Spreadsheet/Gui/ViewProviderSpreadsheet.h>
 
 
 namespace AssemblyGui
 {
 
-class AssemblyGuiExport ViewProviderBom: public SpreadsheetGui::ViewProviderSheet
+class AssemblyGuiExport ViewProviderBom: public SpreadsheetGui::ViewProviderSheet,
+                                         public Gui::TreeViewDetailProvider
 {
     PROPERTY_HEADER_WITH_OVERRIDE(AssemblyGui::ViewProviderBom);
 
@@ -41,6 +45,8 @@ public:
     ~ViewProviderBom() override;
 
     QIcon getIcon() const override;
+
+    std::vector<Gui::TreeViewDetail> getTreeViewDetails() const override;
 
     bool doubleClicked() override;
 };

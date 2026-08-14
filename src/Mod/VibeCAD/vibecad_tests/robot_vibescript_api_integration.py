@@ -10,6 +10,9 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import traceback
+
+print("Robot VibeScript gate: importing production modules", flush=True)
 
 MODULE_ROOT = Path(__file__).resolve().parent.parent
 while str(MODULE_ROOT) in sys.path:
@@ -56,6 +59,8 @@ from vibescript_robot_worker import (  # noqa: E402
     validate_and_build_robot,
     validate_robot_definition,
 )
+
+print("Robot VibeScript gate: production modules imported", flush=True)
 
 
 EXPORTS = (
@@ -1093,14 +1098,36 @@ def _exercise_lifecycle() -> dict[str, object]:
 
 
 def main() -> int:
+    print("Robot VibeScript gate: source API", flush=True)
     _exercise_source_api()
+    print("Robot VibeScript gate: coordinate frames", flush=True)
     _exercise_frame_contract()
+    print("Robot VibeScript gate: native kinematic persistence", flush=True)
     _exercise_native_kinematic_persistence()
+    print("Robot VibeScript gate: component layout", flush=True)
     _exercise_component_layout()
+    print("Robot VibeScript gate: publication lifecycle", flush=True)
     result = _exercise_lifecycle()
     print(json.dumps({"integration": "robot_vibescript_api", "ok": True, **result}))
     return 0
 
 
-if __name__ == "__main__":
+def _run_gui() -> None:
+    from PySide import QtWidgets
+
+    application = QtWidgets.QApplication.instance()
+    exit_code = 1
+    try:
+        exit_code = main()
+    except Exception:
+        traceback.print_exc(file=sys.__stderr__)
+    finally:
+        application.exit(exit_code)
+
+
+if bool(getattr(App, "GuiUp", False)):
+    from PySide import QtCore
+
+    QtCore.QTimer.singleShot(1000, _run_gui)
+elif __name__ == "__main__":
     raise SystemExit(main())

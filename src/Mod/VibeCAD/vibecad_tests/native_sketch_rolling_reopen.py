@@ -19,6 +19,9 @@ from vibecad_tests.native_sketch_carbon_copy_gui_case import (
 )
 from vibecad_tests.native_sketch_chamfer_gui_case import verify_reopened_chamfer
 from vibecad_tests.native_sketch_driving_gui_case import verify_reopened_driving
+from vibecad_tests.native_sketch_delete_geometry_gui_case import (
+    verify_reopened_delete_geometry,
+)
 from vibecad_tests.native_sketch_equal_gui_case import verify_reopened_equal
 from vibecad_tests.native_sketch_extend_gui_case import verify_reopened_extend
 from vibecad_tests.native_sketch_fillet_gui_case import verify_reopened_fillet
@@ -110,6 +113,7 @@ _CASE_VERIFIERS: dict[str, Callable[[Any, dict[str, Any]], None]] = {
     "TrimSketch": verify_reopened_trim,
     "SplitSketch": verify_reopened_split,
     "ExtendSketch": verify_reopened_extend,
+    "DeleteGeometrySketch": verify_reopened_delete_geometry,
     "ProjectionSketch": verify_reopened_projection,
     "IntersectionSketch": verify_reopened_intersection,
     "CarbonCopySketch": verify_reopened_carbon_copy,

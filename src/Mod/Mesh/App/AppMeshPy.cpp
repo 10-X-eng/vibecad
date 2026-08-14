@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <cstring>
 #include <map>
 #include <memory>
 
@@ -36,6 +37,7 @@
 #include <Base/PyWrapParseTupleAndKeywords.h>
 #include <Base/VectorPy.h>
 #include "Core/Approximation.h"
+#include "Core/Definitions.h"
 #include "Core/Evaluation.h"
 #include "Core/Iterator.h"
 #include "Core/MeshIO.h"
@@ -46,6 +48,7 @@
 #include "Importer.h"
 #include "Mesh.h"
 #include "MeshPy.h"
+#include "NativeInspection.h"
 
 
 using namespace Mesh;
@@ -97,6 +100,16 @@ public:
         add_varargs_method("createCone", &Module::createCone, "Create a tessellated cone");
         add_varargs_method("createTorus", &Module::createTorus, "Create a tessellated torus");
         add_varargs_method(
+            "evaluateNative",
+            &Module::evaluateNative,
+            "Evaluate a detached mesh with the complete bounded native defect report."
+        );
+        add_varargs_method(
+            "inspectNativeFacets",
+            &Module::inspectNativeFacets,
+            "Read bounded exact facet geometry from a mesh without materializing all facets."
+        );
+        add_varargs_method(
             "calculateEigenTransform",
             &Module::calculateEigenTransform,
             "calculateEigenTransform(seq(Base.Vector))\n"
@@ -134,6 +147,184 @@ public:
     }
 
 private:
+    static Py::Object vectorValue(const Base::Vector3d& value)
+    {
+        Py::List result;
+        result.append(Py::Float(value.x));
+        result.append(Py::Float(value.y));
+        result.append(Py::Float(value.z));
+        return result;
+    }
+
+    static Py::Object findingValue(const NativeInspectionFinding& finding)
+    {
+        Py::Dict result;
+        result.setItem("count", Py::Long(static_cast<unsigned long>(finding.count)));
+        if (!finding.sampleIndices.empty()) {
+            Py::List samples;
+            for (const unsigned long index : finding.sampleIndices) {
+                samples.append(Py::Long(index));
+            }
+            result.setItem("sample_indices", samples);
+        }
+        return result;
+    }
+
+    static Py::Object pairFindingValue(const NativeInspectionPairFinding& finding)
+    {
+        Py::Dict result;
+        result.setItem("count", Py::Long(static_cast<unsigned long>(finding.count)));
+        if (!finding.samplePairs.empty()) {
+            Py::List samples;
+            for (const auto& [first, second] : finding.samplePairs) {
+                Py::List pair;
+                pair.append(Py::Long(first));
+                pair.append(Py::Long(second));
+                samples.append(pair);
+            }
+            result.setItem("sample_pairs", samples);
+        }
+        return result;
+    }
+
+    Py::Object evaluateNative(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        const char* degenerationMode {};
+        unsigned long sampleLimit {};
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "O!sk",
+                &MeshPy::Type,
+                &pythonMesh,
+                &degenerationMode,
+                &sampleLimit
+            )) {
+            throw Py::Exception();
+        }
+        if ((!degenerationMode || (strcmp(degenerationMode, "strict") != 0
+                                   && strcmp(degenerationMode, "mesh_tolerance") != 0))
+            || sampleLimit < 1 || sampleLimit > 32) {
+            throw Py::ValueError(
+                "degeneration mode must be strict or mesh_tolerance and sample limit must be 1 to 32"
+            );
+        }
+        const float degenerationTolerance = strcmp(degenerationMode, "strict") == 0
+            ? 0.0F
+            : MeshCore::MeshDefinitions::_fMinPointDistanceP2;
+        const auto* mesh = static_cast<MeshPy*>(pythonMesh)->getMeshObjectPtr();
+        NativeMeshInspection inspection;
+        {
+            Base::PyGILStateRelease release;
+            inspection = inspectNativeMesh(
+                *mesh,
+                degenerationTolerance,
+                static_cast<std::size_t>(sampleLimit)
+            );
+        }
+
+        Py::Dict topology;
+        topology.setItem("points", Py::Long(inspection.pointCount));
+        topology.setItem("edges", Py::Long(inspection.edgeCount));
+        topology.setItem("facets", Py::Long(inspection.facetCount));
+        topology.setItem("components", Py::Long(inspection.componentCount));
+        Py::Dict metrics;
+        metrics.setItem("surface_area_mm2", Py::Float(inspection.surfaceArea));
+        metrics.setItem("volume_mm3", Py::Float(inspection.volume));
+        Py::Dict issues;
+        issues.setItem("non_uniform_orientation", findingValue(inspection.nonUniformOrientation));
+        issues.setItem("non_manifold_edges", pairFindingValue(inspection.nonManifoldEdges));
+        issues.setItem("non_manifold_points", findingValue(inspection.nonManifoldPoints));
+        issues.setItem(
+            "facet_indices_out_of_range",
+            findingValue(inspection.facetIndicesOutOfRange)
+        );
+        issues.setItem(
+            "point_indices_out_of_range",
+            findingValue(inspection.pointIndicesOutOfRange)
+        );
+        issues.setItem("corrupted_facets", findingValue(inspection.corruptedFacets));
+        issues.setItem("invalid_neighbourhood", findingValue(inspection.invalidNeighbourhood));
+        issues.setItem("degenerated_facets", findingValue(inspection.degeneratedFacets));
+        issues.setItem("duplicated_facets", findingValue(inspection.duplicatedFacets));
+        issues.setItem("duplicated_points", findingValue(inspection.duplicatedPoints));
+        issues.setItem("nan_points", findingValue(inspection.nanPoints));
+        issues.setItem("self_intersections", pairFindingValue(inspection.selfIntersections));
+        issues.setItem("surface_folds", findingValue(inspection.surfaceFolds));
+        issues.setItem("boundary_folds", findingValue(inspection.boundaryFolds));
+        issues.setItem("surface_fold_overs", findingValue(inspection.surfaceFoldOvers));
+
+        Py::Dict result;
+        result.setItem("topology", topology);
+        result.setItem("metrics", metrics);
+        result.setItem("solid", Py::Boolean(inspection.solid));
+        result.setItem("watertight", Py::Boolean(inspection.openEdgeCount == 0));
+        result.setItem("open_edge_count", Py::Long(inspection.openEdgeCount));
+        result.setItem("issues", issues);
+        return result;
+    }
+
+    Py::Object inspectNativeFacets(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        PyObject* pythonIndices {};
+        if (!PyArg_ParseTuple(args.ptr(), "O!O", &MeshPy::Type, &pythonMesh, &pythonIndices)) {
+            throw Py::Exception();
+        }
+        PyObject* sequence = PySequence_Fast(
+            pythonIndices,
+            "facet indices must contain 1 to 32 unique non-negative integers"
+        );
+        if (!sequence) {
+            throw Py::Exception();
+        }
+        Py::Object owner(sequence, true);
+        const Py_ssize_t count = PySequence_Fast_GET_SIZE(sequence);
+        if (count < 1 || count > 32) {
+            throw Py::ValueError("facet indices must contain 1 to 32 values");
+        }
+        std::vector<MeshCore::FacetIndex> indices;
+        indices.reserve(static_cast<std::size_t>(count));
+        for (Py_ssize_t offset = 0; offset < count; ++offset) {
+            const unsigned long index = PyLong_AsUnsignedLong(
+                PySequence_Fast_GET_ITEM(sequence, offset)
+            );
+            if (PyErr_Occurred()) {
+                throw Py::ValueError("every facet index must be a non-negative integer");
+            }
+            indices.push_back(index);
+        }
+        auto sorted = indices;
+        std::ranges::sort(sorted);
+        if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
+            throw Py::ValueError("facet indices must not contain duplicates");
+        }
+        const auto* mesh = static_cast<MeshPy*>(pythonMesh)->getMeshObjectPtr();
+        const auto inspected = Mesh::inspectNativeFacets(*mesh, indices);
+        Py::List result;
+        for (const auto& facet : inspected) {
+            Py::Dict value;
+            value.setItem("facet_index", Py::Long(facet.index));
+            Py::List pointIndices;
+            Py::List neighbourIndices;
+            Py::List points;
+            for (std::size_t slot = 0; slot < 3; ++slot) {
+                pointIndices.append(Py::Long(facet.pointIndices[slot]));
+                neighbourIndices.append(Py::Long(facet.neighbourIndices[slot]));
+                points.append(vectorValue(facet.points[slot]));
+            }
+            value.setItem("point_indices", pointIndices);
+            value.setItem("neighbour_facet_indices", neighbourIndices);
+            value.setItem("vertices_mm", points);
+            value.setItem("normal", vectorValue(facet.normal));
+            value.setItem("area_mm2", Py::Float(facet.area));
+            value.setItem("aspect_ratio", Py::Float(facet.aspectRatio));
+            value.setItem("roundness", Py::Float(facet.roundness));
+            result.append(value);
+        }
+        return result;
+    }
+
     Py::Object invoke_method_varargs(void* method_def, const Py::Tuple& args) override
     {
         try {

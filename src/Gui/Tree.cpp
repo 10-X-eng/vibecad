@@ -71,6 +71,7 @@
 #include "ModelTreeBrowser.h"
 #include "TaskView/TaskDialog.h"
 #include "TimelineImport.h"
+#include "TreeViewDetail.h"
 #include "TreeParams.h"
 #include "View3DInventor.h"
 #include "ViewProviderDocumentObject.h"
@@ -101,6 +102,7 @@ static TreeWidget* _LastSelectedTreeWidget;
 const int TreeWidget::DocumentType = 1000;
 const int TreeWidget::ObjectType = 1001;
 const int TreeWidget::BrowserFolderType = 1002;
+const int TreeWidget::BrowserDetailType = 1003;
 static bool _DraggingActive;
 static bool _DragEventFilter;
 
@@ -381,6 +383,32 @@ public:
         for (auto item : items) {
             item->setHighlight(set, mode);
         }
+    }
+};
+
+// ---------------------------------------------------------------------------
+
+class Gui::BrowserDetailItem: public QTreeWidgetItem
+{
+public:
+    BrowserDetailItem(QTreeWidgetItem* parent, const TreeViewDetail& detail)
+        : QTreeWidgetItem(parent, TreeWidget::BrowserDetailType)
+    {
+        setFlags(Qt::ItemIsEnabled);
+        setText(0, QString::fromUtf8(detail.label.c_str()));
+        setText(1, QString::fromUtf8(detail.secondaryText.c_str()));
+        setToolTip(0, QString::fromUtf8(detail.toolTip.c_str()));
+        setData(0, Qt::UserRole, QString::fromUtf8(detail.key.c_str()));
+        QIcon icon = parent->icon(0);
+        if (!detail.iconName.empty()) {
+            const QIcon requested =
+                BitmapFactory().iconFromTheme(detail.iconName.c_str());
+            if (!requested.isNull()) {
+                icon = requested;
+            }
+        }
+        setIcon(0, icon);
+        setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator);
     }
 };
 
@@ -5733,6 +5761,35 @@ void DocumentItem::rebuildModelBrowser()
         if (!item) {
             return nullptr;
         }
+        try {
+            const auto* detailProvider =
+                dynamic_cast<const TreeViewDetailProvider*>(item->object());
+            const auto details = detailProvider
+                ? detailProvider->getTreeViewDetails()
+                : std::vector<TreeViewDetail> {};
+            for (const auto& detail : details) {
+                if (detail.key.empty() || detail.label.empty()) {
+                    continue;
+                }
+                new BrowserDetailItem(item, detail);
+            }
+        }
+        catch (const Base::Exception& error) {
+            Base::Console().warning(
+                "Could not build model-tree details for %s: %s\n",
+                entry.object->getFullName().c_str(),
+                error.what());
+        }
+        catch (const std::exception& error) {
+            Base::Console().warning(
+                "Could not build model-tree details for %s: %s\n",
+                entry.object->getFullName().c_str(),
+                error.what());
+        }
+        item->setChildIndicatorPolicy(
+            item->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
+                                   : QTreeWidgetItem::DontShowIndicator
+        );
         if (entry.compatibilityResultLabel && entry.body) {
             // Substitute the clean "Result" only while the feature still
             // carries the legacy uniquified duplicate of its Body's label.
@@ -5783,8 +5840,9 @@ void DocumentItem::rebuildModelBrowser()
 
     // Origin and OriginFeature entries keyed by their logical parent object.
     std::unordered_map<RoleContextKey, EntryBucket, RoleContextKeyHash> entriesByLogicalParentRole;
-    // Feature entries keyed by their owning Body.
-    std::unordered_map<const App::DocumentObject*, EntryBucket> featureEntriesByBody;
+    // User-facing feature and History entries keyed by their owning Body.
+    // Internal/resource state has its own role and never enters this bucket.
+    std::unordered_map<const App::DocumentObject*, EntryBucket> operationEntriesByBody;
     // Entries keyed by their immediate plain organizational group.
     std::unordered_map<const App::DocumentObject*, EntryBucket> entriesByGroup;
     // Entries keyed by (owning component, role); the nullptr-component bucket
@@ -5797,8 +5855,8 @@ void DocumentItem::rebuildModelBrowser()
         if (entry.role == Role::Origin || entry.role == Role::OriginFeature) {
             entriesByLogicalParentRole[{entry.logicalParent, entry.role}].push_back(&entry);
         }
-        if (entry.role == Role::Feature && entry.body) {
-            featureEntriesByBody[entry.body].push_back(&entry);
+        if ((entry.role == Role::Feature || entry.role == Role::History) && entry.body) {
+            operationEntriesByBody[entry.body].push_back(&entry);
         }
         if (entry.group) {
             entriesByGroup[entry.group].push_back(&entry);
@@ -6025,12 +6083,14 @@ void DocumentItem::rebuildModelBrowser()
             return;
         }
 
-        // Body history is presented by the bottom timeline. Mark the native
-        // history objects as intentionally consumed so the browser's safety
-        // sweep cannot recreate them under an "Other" folder.
-        const auto features = takeBucket(findBucket(featureEntriesByBody, bodyEntry.object));
-        for (const auto* feature : features) {
-            rendered.insert(feature->object);
+        // A Body is an independently usable modeling object, so expose its
+        // user-facing feature chain here as well as in chronological History.
+        // Resource/internal state never enters operationEntriesByBody.
+        const auto operations = takeBucket(
+            findBucket(operationEntriesByBody, bodyEntry.object)
+        );
+        for (const auto* operation : operations) {
+            renderObject(*operation, bodyItem, bodyItem);
         }
         bodyItem->setChildIndicatorPolicy(
             bodyItem->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
@@ -6183,6 +6243,25 @@ void DocumentItem::rebuildModelBrowser()
             TreeWidget::tr("Sketches"),
             "Sketcher_NewSketch",
             sketches
+        );
+
+        const auto operations = filterBucket(
+            findBucket(
+                entriesByComponentRole,
+                RoleContextKey {componentEntry.object, Role::History}
+            ),
+            [](const Entry& entry) {
+                return !entry.body;
+            }
+        );
+        renderCategory(
+            componentItem,
+            componentItem,
+            componentEntry.object,
+            "operations",
+            TreeWidget::tr("Operations"),
+            "PartDesignWorkbench",
+            operations
         );
 
         const auto vibeCADOutputs = filterBucket(
@@ -6341,6 +6420,22 @@ void DocumentItem::rebuildModelBrowser()
         rootSketches
     );
 
+    const auto rootOperations = filterBucket(
+        findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::History}),
+        [](const Entry& entry) {
+            return !entry.body;
+        }
+    );
+    renderCategory(
+        this,
+        nullptr,
+        nullptr,
+        "operations",
+        TreeWidget::tr("Operations"),
+        "PartDesignWorkbench",
+        rootOperations
+    );
+
     const auto rootOccurrences =
         componentRoleEntries(nullptr, Role::AssemblyOccurrence);
     renderCategory(
@@ -6437,16 +6532,15 @@ void DocumentItem::rebuildModelBrowser()
     );
 
     // A third-party or partially restored object must never disappear because
-    // its role or ownership pattern was unknown. Deliberately internal
-    // publications and Body history are the only objects omitted here.
+    // its role or ownership pattern was unknown. Only deliberately internal
+    // publications and implementation objects are omitted here.
     EntryBucket unrendered;
     for (const auto& entry : entries) {
         if (!entryAvailable(entry) || rendered.contains(entry.object)) {
             continue;
         }
         if (entry.publishedImplementation || entry.bodyRepresentation
-            || entry.role == Role::History || entry.role == Role::Internal
-            || (entry.role == Role::Feature && entry.body)) {
+            || entry.role == Role::Internal) {
             rendered.insert(entry.object);
             continue;
         }

@@ -8,6 +8,11 @@ from typing import Any, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeDocument import guarded_save
+from VibeCADNativeDrawingGeometryState import (
+    NativeDrawingGeometryStateError,
+    drawing_projected_geometry_page,
+)
+from VibeCADNativeDrawingViewState import drawing_view_state
 from VibeCADNativeInspect import (
     geometry_validity,
     inspect_element,
@@ -26,10 +31,12 @@ from VibeCADNativeTargets import (
     NativeElementRef,
     NativeObjectRef,
     read_current_selection,
+    resolve_object,
 )
 from VibeCADNativeView import (
     capture_screenshot,
     fit_all,
+    set_object_visibility,
     set_grid_visible,
     set_isometric,
 )
@@ -87,6 +94,37 @@ class NativeCommonRuntime:
             self._state.snapshot(self._document_uid),
         )
 
+    def _drawing_projected_geometry(
+        self,
+        values: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        target = values["view"]
+        if not isinstance(target, Mapping) or set(target) != {
+            "object_name",
+            "expected_state_sha256",
+        }:
+            raise NativeCommonRuntimeError(
+                "An exact Drawing view target is invalid."
+            )
+        view = resolve_object(
+            self._document,
+            NativeObjectRef(self._document_uid, str(target["object_name"])),
+            expected_types=("TechDraw::DrawViewPart",),
+        )
+        current = drawing_view_state(view)
+        if str(target["expected_state_sha256"]) != current["state_sha256"]:
+            raise NativeDrawingGeometryStateError(
+                "The exact Drawing view changed after it was inspected."
+            )
+        return drawing_projected_geometry_page(
+            view,
+            offset=int(values["offset"]),
+            page_size=int(values["page_size"]),
+            expected_projection_state_sha256=str(
+                values["expected_projection_state_sha256"]
+            ),
+        )
+
     def read_state(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         operation, _values = strict_variant_arguments(
             arguments,
@@ -104,6 +142,7 @@ class NativeCommonRuntime:
                 "fit_all": frozenset(),
                 "isometric": frozenset(),
                 "set_grid": frozenset({"visible"}),
+                "set_object_visibility": frozenset({"targets", "visible"}),
                 "capture_all": frozenset(),
                 "capture_selection": frozenset(),
                 "capture_objects": frozenset({"targets"}),
@@ -117,6 +156,15 @@ class NativeCommonRuntime:
             return set_isometric(self._document)
         if operation == "set_grid":
             return set_grid_visible(self._document, values["visible"])
+        if operation == "set_object_visibility":
+            targets = tuple(
+                self._object(value) for value in list(values["targets"])
+            )
+            return set_object_visibility(
+                self._document,
+                targets,
+                values["visible"],
+            )
         frames = {
             "capture_all": "all",
             "capture_selection": "selection",
@@ -147,6 +195,14 @@ class NativeCommonRuntime:
                 "mass_properties": frozenset({"targets"}),
                 "visual_result": frozenset({"target"}),
                 "element": frozenset({"target"}),
+                "drawing_projected_geometry": frozenset(
+                    {
+                        "view",
+                        "offset",
+                        "page_size",
+                        "expected_projection_state_sha256",
+                    }
+                ),
                 "validity": frozenset({"target"}),
             },
         )
@@ -173,6 +229,8 @@ class NativeCommonRuntime:
                 self._document,
                 self._element(values["target"]),
             )
+        if operation == "drawing_projected_geometry":
+            return self._drawing_projected_geometry(values)
         target = self._object(values["target"])
         if operation == "visual_result":
             return visual_inspection_result(self._document, target)

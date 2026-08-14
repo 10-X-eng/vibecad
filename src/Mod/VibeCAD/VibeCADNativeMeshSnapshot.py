@@ -1,57 +1,57 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Concise live state for the Mesh ribbon."""
+"""Concise, bounded live state for the Mesh ribbon."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from VibeCADNativeSnapshot import concise_object
+from VibeCADNativeMeshState import mesh_inventory_digest, mesh_object_state
 
 
 MAX_MESH_OBJECTS = 32
 
 
-def _mesh_summary(obj: Any) -> dict[str, Any]:
-    result = concise_object(obj)
-    mesh = getattr(obj, "Mesh", None)
-    points = getattr(obj, "Points", None)
-    for key, source, attribute in (
-        ("points", mesh, "CountPoints"),
-        ("edges", mesh, "CountEdges"),
-        ("facets", mesh, "CountFacets"),
-        ("points", points, "CountPoints"),
-    ):
-        if source is None or key in result:
+def build_mesh_snapshot(document: Any) -> dict[str, Any]:
+    values = []
+    for obj in list(getattr(document, "Objects", []) or []):
+        type_id = str(getattr(obj, "TypeId", "") or "")
+        if type_id.startswith(("Mesh::", "MeshPart::", "Points::", "ReverseEngineering::")):
+            values.append(obj)
             continue
         try:
-            result[key] = int(getattr(source, attribute))
+            if bool(obj.isDerivedFrom("Part::Plane")):
+                values.append(obj)
         except Exception:
             continue
-    return result
-
-
-def build_mesh_snapshot(document: Any) -> dict[str, Any]:
-    values = [
-        obj
-        for obj in list(getattr(document, "Objects", []) or [])
-        if str(getattr(obj, "TypeId", "") or "").startswith(
-            ("Mesh::", "Points::", "ReverseEngineering::")
-        )
-    ]
-    counts = {"mesh": 0, "points": 0, "reverse_engineering": 0}
+    counts = {
+        "mesh": 0,
+        "mesh_part": 0,
+        "points": 0,
+        "reverse_engineering": 0,
+        "datum_plane": 0,
+    }
     for obj in values:
         type_id = str(getattr(obj, "TypeId", "") or "")
-        category = (
-            "mesh"
-            if type_id.startswith("Mesh::")
-            else "points"
-            if type_id.startswith("Points::")
-            else "reverse_engineering"
-        )
+        if type_id.startswith("Mesh::"):
+            category = "mesh"
+        elif type_id.startswith("MeshPart::"):
+            category = "mesh_part"
+        elif type_id.startswith("Points::"):
+            category = "points"
+        elif type_id.startswith("ReverseEngineering::"):
+            category = "reverse_engineering"
+        else:
+            category = "datum_plane"
         counts[category] += 1
-    return {
+    objects = [mesh_object_state(value) for value in values[:MAX_MESH_OBJECTS]]
+    result = {
         "kind": "mesh",
         "counts": counts,
-        "objects": [_mesh_summary(value) for value in values[:MAX_MESH_OBJECTS]],
+        "objects": objects,
+        "inventory_sha256": mesh_inventory_digest(objects),
     }
+    if len(values) > len(objects):
+        result["truncated"] = True
+        result["total_objects"] = len(values)
+    return result

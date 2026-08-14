@@ -50,6 +50,10 @@ public:
     ~DrawViewBalloon() override;
 
     App::PropertyLink SourceView;
+    App::PropertyLinkSub AnchorSource;
+    App::PropertyEnumeration MeasurementKind;
+    App::PropertyLinkSub MeasurementSource;
+    App::PropertyFloat MeasurementValue;
     App::PropertyString Text;
     App::PropertyEnumeration EndType;
     App::PropertyEnumeration BubbleShape;
@@ -74,6 +78,7 @@ public:
     const char* getViewProviderName() const override { return "TechDrawGui::ViewProviderBalloon"; }
 
     static const char* balloonTypeEnums[];
+    static const char* measurementKindEnums[];
 
     void handleXYLock() override;
 

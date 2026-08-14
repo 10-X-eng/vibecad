@@ -1,0 +1,414 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+"""Compiled-GUI lifecycle gate for atomic Native CAM Job creation."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+import tempfile
+import traceback
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import Path.Preferences as CamPreferences
+from PySide import QtCore, QtWidgets
+
+import VibeCADGui as VibeGui
+from VibeCADCore import get_service
+from VibeCADNativeActionManifest import resolve_native_action_inventory
+from VibeCADNativeCapabilityRegistry import NativeProviderSurface
+from VibeCADNativeDispatch import NativeTurnDispatcher
+from VibeCADNativeManufactureJobSchema import MANUFACTURE_JOB_CAPABILITY_NAME
+from VibeCADNativeManufactureSnapshot import build_manufacture_snapshot
+from VibeCADNativeManufactureState import job_state
+from VibeCADNativeRegistry import build_native_capability_registry
+from VibeCADNativeRuntimeContext import NativeRuntimeContext
+from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
+from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
+from VibeCADNativeTurn import NativeTurnSnapshot
+from VibeCADNativeUndo import NativeAssistantUndoLedger
+from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+def _events(rounds: int = 16) -> None:
+    for _index in range(rounds):
+        Gui.updateGui()
+        QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 25)
+
+
+def _surface():
+    Gui.activateWorkbench("CAMWorkbench")
+    _events(24)
+    controller = Gui.getMainWindow().findChild(
+        QtCore.QObject,
+        "VibeCADRibbonController",
+    )
+    assert controller is not None
+    surface = read_active_ribbon_surface(controller)
+    assert surface.surface_id == "manufacture", surface.surface_id
+    return controller, surface
+
+
+def _commit(document, label: str, action):
+    document.openTransaction(label)
+    transaction = int(document.getBookedTransactionID())
+    assert transaction
+    try:
+        value = action()
+        assert document.recompute(None, True, True) is not False
+    except Exception:
+        App.closeActiveTransaction(True, transaction)
+        raise
+    App.closeActiveTransaction(False, transaction)
+    return value
+
+
+def _model(document, name: str, *, visible: bool, x: float):
+    def create():
+        model = document.addObject("Part::Feature", name)
+        model.Label = name.replace("Model", " model")
+        model.Shape = Part.makeBox(30.0, 20.0, 8.0, App.Vector(x, 0.0, 0.0))
+        model.ViewObject.Visibility = visible
+        document.publishProvisionalTimelineOperationBlock(model, (), ())
+        return model
+
+    return _commit(document, f"Create {name}", create)
+
+
+def _selection() -> tuple:
+    return tuple(
+        (item.Object.Name, tuple(item.SubElementNames))
+        for item in Gui.Selection.getSelectionEx()
+    )
+
+
+def _turn(surface, registry) -> NativeTurnSnapshot:
+    definition = registry.definition(MANUFACTURE_JOB_CAPABILITY_NAME)
+    assert definition is not None
+    schema = definition.provider_schema(("create_job",))
+    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    assert "unknown" not in encoded.lower()
+    assert "replace_in_history" in encoded
+    assert "expected_creation_state_sha256" in encoded
+    assert "expected_content_sha256" in encoded
+    return NativeTurnSnapshot.from_provider_surface(
+        NativeProviderSurface(
+            snapshot=NativeSurfaceSnapshot.from_surface(surface),
+            available=True,
+            unavailable_reason="",
+            tool_names=(MANUFACTURE_JOB_CAPABILITY_NAME,),
+            schemas=(schema,),
+            human_only_action_ids=(),
+            missing_definition_names=(),
+            missing_implementation_names=(),
+            incomplete_definition_names=(),
+        )
+    )
+
+
+def _arguments(snapshot: dict, *, label: str = "Native production Job") -> dict:
+    candidates = {item["object_name"]: item for item in snapshot["model_candidates"]}
+    template = next(
+        item for item in snapshot["job_creation"]["templates"] if item["is_default"]
+    )
+    return {
+        "operation": "create_job",
+        "label": label,
+        "models": [
+            {
+                "target": {
+                    "object_name": name,
+                    "expected_state_sha256": candidates[name]["state_sha256"],
+                },
+                "replace_in_history": candidates[name][
+                    "job_create_replaces_in_history"
+                ],
+            }
+            for name in ("VisibleModel", "HiddenModel")
+        ],
+        "template": {
+            "kind": "catalog",
+            "template_id": template["template_id"],
+            "expected_content_sha256": template["content_sha256"],
+        },
+        "expected_creation_state_sha256": snapshot["job_creation"][
+            "state_sha256"
+        ],
+        "expected_job_count": snapshot["job_count"],
+    }
+
+
+def _job_resources(document, job) -> tuple:
+    return tuple(
+        obj
+        for obj in document.Objects
+        if str(getattr(obj, "VibeCADTimelineRole", "") or "") == "resource"
+        and getattr(obj, "VibeCADTimelineOwner", None) is job
+    )
+
+
+def _assert_job_graph(document, job, visible, hidden) -> tuple:
+    resources = _job_resources(document, job)
+    assert resources
+    assert tuple(job.VibeCADTimelineReplacedInputs) == (visible,)
+    assert not visible.ViewObject.Visibility
+    assert not hidden.ViewObject.Visibility
+    assert len(job.Model.Group) == 2
+    assert tuple(job.Proxy.baseObject(job, clone) for clone in job.Model.Group) == (
+        visible,
+        hidden,
+    )
+    assert len(job.Tools.Group) >= 1
+    assert job.Stock is not None
+    timeline = document.getObject("VibeCADTimeline")
+    assert timeline is not None
+    operations = tuple(timeline.Operations)
+    job_index = operations.index(job)
+    assert set(operations[job_index - len(resources) : job_index]) == set(resources)
+    return resources
+
+
+def _run() -> None:
+    application = QtWidgets.QApplication.instance()
+    document = None
+    temporary = None
+    template_preferences = None
+    prior_default_template = ""
+    exit_code = 1
+    try:
+        temporary = tempfile.TemporaryDirectory(prefix="vibecad-native-cam-job-")
+        save_path = Path(temporary.name) / "native-manufacture-job.FCStd"
+        template_path = Path(temporary.name) / "job_native_gate.json"
+        template_path.write_text(
+            json.dumps(
+                {
+                    "Version": 1,
+                    "Desc": "Catalog-authenticated Native Job",
+                },
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        template_preferences = CamPreferences.preferences()
+        prior_default_template = template_preferences.GetString(
+            CamPreferences.DefaultJobTemplate,
+            "",
+        )
+        template_preferences.SetString(
+            CamPreferences.DefaultJobTemplate,
+            str(template_path),
+        )
+        document = App.newDocument("NativeManufactureJobGate")
+        document.UndoMode = 1
+        VibeGui._connect_document_observer()
+        controller, surface = _surface()
+        plans = {
+            plan.command_id: plan
+            for plan in resolve_native_action_inventory(surface).plans
+        }
+        assert (
+            plans["CAM_Job"].capability_family,
+            plans["CAM_Job"].operation_variant,
+            plans["CAM_Job"].exact_target_type,
+        ) == (
+            MANUFACTURE_JOB_CAPABILITY_NAME,
+            "create_job",
+            "ExactCurrentCamModelsAndCreationEnvironment",
+        )
+
+        visible = _model(document, "VisibleModel", visible=True, x=0.0)
+        hidden = _model(document, "HiddenModel", visible=False, x=40.0)
+        initial_names = tuple(obj.Name for obj in document.Objects)
+        initial_timeline = tuple(document.VibeCADTimeline.Operations)
+        snapshot = build_manufacture_snapshot(document)
+        assert snapshot["job_count"] == 0
+        assert snapshot["job_creation"]["default_template_id"] is not None
+        assert sum(
+            1 for item in snapshot["job_creation"]["templates"] if item["is_default"]
+        ) == 1
+        candidate_names = {item["object_name"] for item in snapshot["model_candidates"]}
+        assert candidate_names == {visible.Name, hidden.Name}, snapshot["model_candidates"]
+        assert next(
+            item for item in snapshot["model_candidates"] if item["object_name"] == visible.Name
+        )["job_create_replaces_in_history"] is True
+        assert next(
+            item for item in snapshot["model_candidates"] if item["object_name"] == hidden.Name
+        )["job_create_replaces_in_history"] is False
+
+        registry = build_native_capability_registry()
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        service = get_service()
+        service.select_modeling_engine("native")
+        state_store = service.native_document_state_store()
+        ledger = NativeAssistantUndoLedger()
+        ledger.begin_run("native-manufacture-job-gui")
+
+        def reauthorize() -> None:
+            require_frozen_native_surface(frozen, controller)
+
+        context = NativeRuntimeContext(
+            service=service,
+            document=document,
+            state=state_store,
+            undo_ledger=ledger,
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+            active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
+            edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
+        )
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
+        call_index = 0
+
+        def call(arguments: dict, *, succeeds: bool = True) -> dict:
+            nonlocal call_index
+            call_index += 1
+            response = dispatcher.call(
+                MANUFACTURE_JOB_CAPABILITY_NAME,
+                json.dumps(arguments, separators=(",", ":")),
+                f"native-manufacture-job-{call_index}",
+            )
+            assert response.get("ok") is succeeds, response
+            return response
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(visible, "Edge1")
+        selection_before = _selection()
+        revision_before = state_store.current_revision(context.document_uid)
+        undo_before = int(document.UndoCount)
+        arguments = _arguments(snapshot)
+
+        stale_environment = dict(arguments)
+        stale_environment["expected_creation_state_sha256"] = "0" * 64
+        stale = call(stale_environment, succeeds=False)
+        assert stale["error_code"] == "NATIVE_MANUFACTURE_STATE_STALE", stale
+        assert int(document.UndoCount) == undo_before
+        assert tuple(obj.Name for obj in document.Objects) == initial_names
+
+        visible.ViewObject.Visibility = False
+        stale_visibility = call(arguments, succeeds=False)
+        assert stale_visibility["error_code"] == "NATIVE_MANUFACTURE_STATE_STALE"
+        visible.ViewObject.Visibility = True
+        assert int(document.UndoCount) == undo_before
+        assert tuple(obj.Name for obj in document.Objects) == initial_names
+
+        duplicate = json.loads(json.dumps(arguments))
+        duplicate["models"][1] = duplicate["models"][0]
+        duplicate_failure = call(duplicate, succeeds=False)
+        assert duplicate_failure["error_code"] == "NATIVE_ARGUMENTS_INVALID"
+        assert int(document.UndoCount) == undo_before
+
+        result = call(arguments)
+        _events(12)
+        job_name = result["job"]["object_name"]
+        job = document.getObject(job_name)
+        assert job is not None
+        resources = _assert_job_graph(document, job, visible, hidden)
+        resource_names = tuple(obj.Name for obj in resources)
+        created_names = tuple(
+            obj.Name for obj in document.Objects if obj.Name not in initial_names
+        )
+        assert {job_name, *resource_names}.issubset(set(created_names))
+        implicit_names = set(created_names) - {job_name, *resource_names}
+        assert implicit_names
+        expected_implicit = set()
+        for resource in resources:
+            origin = getattr(resource, "Origin", None)
+            if origin is not None:
+                expected_implicit.add(origin.Name)
+                expected_implicit.update(
+                    item.Name for item in tuple(origin.OriginFeatures)
+                )
+        assert implicit_names == expected_implicit
+        assert result["resource_count"] == len(resources)
+        assert result["template"] == {
+            "kind": "catalog",
+            "template_id": arguments["template"]["template_id"],
+            "content_sha256": arguments["template"]["expected_content_sha256"],
+        }
+        assert job.Description == "Catalog-authenticated Native Job"
+        assert result["history_replacements"] == [
+            {
+                "document_uid": str(document.Uid),
+                "object_name": visible.Name,
+                "type_id": visible.TypeId,
+            }
+        ]
+        assert [item["object_name"] for item in result["receipt"]["created"]] == [
+            job_name
+        ]
+        assert [item["object_name"] for item in result["receipt"]["replaced"]] == [
+            visible.Name
+        ]
+        assert result["assistant_undo_available"] is True
+        assert int(document.UndoCount) == undo_before + 1
+        assert state_store.current_revision(context.document_uid) == revision_before + 1
+        assert _selection() == selection_before
+        assert not Gui.Control.activeDialog()
+        created_state = job_state(job)
+
+        document.undo()
+        _events(12)
+        assert not any(document.getObject(name) for name in created_names)
+        assert visible.ViewObject.Visibility
+        assert not hidden.ViewObject.Visibility
+        assert tuple(document.VibeCADTimeline.Operations) == initial_timeline
+
+        document.redo()
+        _events(12)
+        job = document.getObject(job_name)
+        visible = document.getObject("VisibleModel")
+        hidden = document.getObject("HiddenModel")
+        assert job is not None and visible is not None and hidden is not None
+        _assert_job_graph(document, job, visible, hidden)
+        assert job_state(job)["state_sha256"] == created_state["state_sha256"]
+
+        document.saveAs(str(save_path))
+        document_name = document.Name
+        App.closeDocument(document_name)
+        document = App.openDocument(str(save_path))
+        job = document.getObject(job_name)
+        visible = document.getObject("VisibleModel")
+        hidden = document.getObject("HiddenModel")
+        assert job is not None and visible is not None and hidden is not None
+        reopened_resources = _assert_job_graph(document, job, visible, hidden)
+        assert {obj.Name for obj in reopened_resources} == set(resource_names)
+        assert all(document.getObject(name) is not None for name in created_names)
+        assert job_state(job)["state_sha256"] == created_state["state_sha256"]
+        assert job.ViewObject.Proxy.__class__.__name__ == "ViewProvider"
+        assert job.Description == "Catalog-authenticated Native Job"
+
+        print(
+            "VIBECAD_NATIVE_MANUFACTURE_JOB_GUI_OK "
+            "exact_targets=true replacement=true resource_graph=true "
+            "rollback=true undo=true redo=true reopen=true",
+            flush=True,
+        )
+        exit_code = 0
+    except Exception:
+        traceback.print_exc(file=sys.__stderr__)
+    finally:
+        if document is not None and document.Name in App.listDocuments():
+            App.closeDocument(document.Name)
+        if template_preferences is not None:
+            template_preferences.SetString(
+                CamPreferences.DefaultJobTemplate,
+                prior_default_template,
+            )
+        if temporary is not None:
+            temporary.cleanup()
+        application.exit(exit_code)
+
+
+QtCore.QTimer.singleShot(1000, _run)

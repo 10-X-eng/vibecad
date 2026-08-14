@@ -385,8 +385,13 @@ def _getPartEdges(obj, vWire, geom):
 class ObjectVcarve(PathEngraveBase.ObjectOp):
     """Proxy class for Vcarve operation."""
 
-    def __init__(self, obj, name, parentJob):
-        super().__init__(obj, name, parentJob)
+    def __init__(self, obj, name, parentJob, toolController=None):
+        super().__init__(
+            obj,
+            name,
+            parentJob,
+            toolController=toolController,
+        )
         self.wires = []
 
     def opFeatures(self, obj):
@@ -700,20 +705,20 @@ class ObjectVcarve(PathEngraveBase.ObjectOp):
                     transformed = base.Shape.copy().transformShape(matrix, True, False)
                     faces.extend(transformed.Faces)
                 else:
-                    faces.extend(base.Shape.Faces)
+                    faces.extend(face.copy() for face in base.Shape.Faces)
 
             for base, subs in self.baseShapes(obj):
                 for sub in subs:
                     shape = base.Shape.getElement(sub)
                     if isinstance(shape, Part.Face):
-                        faces.append(shape)
+                        faces.append(shape.copy())
 
             if not faces:
                 for model in self.model:
                     if model.isDerivedFrom("Sketcher::SketchObject") or model.isDerivedFrom(
                         "Part::Part2DObject"
                     ):
-                        faces.extend(model.Shape.Faces)
+                        faces.extend(face.copy() for face in model.Shape.Faces)
 
             if faces:
                 self.commandlist.extend(self.buildCommandList(obj, faces))
@@ -820,8 +825,13 @@ def SetupProperties():
     return ["Discretize"]
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns a Vcarve operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectVcarve(obj, name, parentJob)
+    obj.Proxy = ObjectVcarve(
+        obj,
+        name,
+        parentJob,
+        toolController=toolController,
+    )
     return obj

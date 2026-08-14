@@ -4061,6 +4061,10 @@ def make_provider_tool_runner(
             raise RuntimeError(
                 "Native Plan mode is unavailable until its read-only turn contract is complete."
             )
+        debug_config = service.provider_debug_config()
+        debug_events: list[dict[str, Any]] | None = (
+            [] if debug_config.get("enabled") else None
+        )
         execution = _on_document_thread(
             document_thread_dispatch,
             lambda: create_native_session_execution(
@@ -4069,6 +4073,8 @@ def make_provider_tool_runner(
                 expected_schemas=[dict(value) for value in (turn_schemas or [])],
                 output_authorizer=output_authorization_callback,
                 input_authorizer=input_authorization_callback,
+                document_thread_dispatch=document_thread_dispatch,
+                debug_sink=(debug_events.append if debug_events is not None else None),
             ),
         )
         return NativeProviderToolRunner(
@@ -4087,6 +4093,12 @@ def make_provider_tool_runner(
             frozen_schemas=[dict(value) for value in (turn_schemas or [])],
             frozen_modeling_surface=dict(turn_modeling_surface or {}),
             tool_trace=tool_trace,
+            debug_events=debug_events,
+            debug_capture_directory=(
+                str(debug_config.get("capture_directory") or "")
+                if debug_events is not None
+                else ""
+            ),
             progress_callback=progress_callback,
             cancellation_check=cancellation_check,
             steering_check=steering_check,

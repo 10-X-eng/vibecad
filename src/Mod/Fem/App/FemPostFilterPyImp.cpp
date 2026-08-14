@@ -25,6 +25,10 @@
 #include <Base/FileInfo.h>
 #include <Base/UnitPy.h>
 
+#include <vtkDataArray.h>
+#include <vtkDataSet.h>
+#include <vtkPointData.h>
+
 // clang-format off
 #include "FemPostGroupExtension.h"
 #include "FemPostFilter.h"
@@ -204,6 +208,106 @@ PyObject* FemPostFilterPy::getOutputAlgorithm([[maybe_unused]] PyObject* args)
     PyErr_SetString(PyExc_NotImplementedError, "VTK python wrapper not available");
     return nullptr;
 #endif
+}
+
+PyObject* FemPostFilterPy::configureDataAlongLine(PyObject* args)
+{
+    const char* fieldName = nullptr;
+    int component = 0;
+    const char* unit = nullptr;
+    if (!PyArg_ParseTuple(args, "si|s", &fieldName, &component, &unit)) {
+        return nullptr;
+    }
+
+    auto* filter = dynamic_cast<FemPostDataAlongLineFilter*>(getFemPostFilterPtr());
+    if (!filter) {
+        PyErr_SetString(
+            PyExc_TypeError,
+            "configureDataAlongLine requires a FemPostDataAlongLineFilter"
+        );
+        return nullptr;
+    }
+    if (!fieldName || fieldName[0] == '\0') {
+        PyErr_SetString(PyExc_ValueError, "field_name must not be empty");
+        return nullptr;
+    }
+
+    vtkSmartPointer<vtkDataSet> data = filter->getInputData();
+    vtkDataArray* field = data && data->GetPointData()
+        ? data->GetPointData()->GetArray(fieldName)
+        : nullptr;
+    if (!field) {
+        PyErr_SetString(PyExc_ValueError, "field_name is not an available point field");
+        return nullptr;
+    }
+
+    const int componentCount = field->GetNumberOfComponents();
+    const int maximumSelectableComponent = componentCount == 6
+        ? 6
+        : (componentCount >= 2 && componentCount <= 3 ? componentCount : 0);
+    if (component < 0 || component > maximumSelectableComponent) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "component must be 0 for scalar or magnitude, or a valid one-based field component"
+        );
+        return nullptr;
+    }
+
+    std::vector<std::string> componentNames;
+    if (componentCount == 1) {
+        componentNames.emplace_back("Scalar");
+    }
+    else if (componentCount == 6) {
+        componentNames = {"Magnitude", "XX", "YY", "ZZ", "XY", "YZ", "ZX"};
+    }
+    else {
+        componentNames.emplace_back("Magnitude");
+        static constexpr const char* names[] = {"X", "Y", "Z"};
+        for (int index = 0; index < componentCount && index < 3; ++index) {
+            componentNames.emplace_back(names[index]);
+        }
+    }
+    filter->PlotDataComponent.setEnums(componentNames);
+    filter->PlotData.setValue(fieldName);
+    filter->PlotDataComponent.setValue(component);
+    filter->Unit.setValue(unit ? unit : "");
+    filter->GetAxisData();
+    Py_Return;
+}
+
+PyObject* FemPostFilterPy::configureDataAtPoint(PyObject* args)
+{
+    const char* fieldName = nullptr;
+    const char* unit = nullptr;
+    if (!PyArg_ParseTuple(args, "ss", &fieldName, &unit)) {
+        return nullptr;
+    }
+
+    auto* filter = dynamic_cast<FemPostDataAtPointFilter*>(getFemPostFilterPtr());
+    if (!filter) {
+        PyErr_SetString(
+            PyExc_TypeError,
+            "configureDataAtPoint requires a FemPostDataAtPointFilter"
+        );
+        return nullptr;
+    }
+    if (!fieldName || fieldName[0] == '\0') {
+        PyErr_SetString(PyExc_ValueError, "field_name must not be empty");
+        return nullptr;
+    }
+
+    vtkSmartPointer<vtkDataSet> data = filter->getInputData();
+    vtkDataArray* field = data && data->GetPointData()
+        ? data->GetPointData()->GetArray(fieldName)
+        : nullptr;
+    if (!field) {
+        PyErr_SetString(PyExc_ValueError, "field_name is not an available point field");
+        return nullptr;
+    }
+
+    filter->FieldName.setValue(fieldName);
+    filter->Unit.setValue(unit ? unit : "");
+    Py_Return;
 }
 
 PyObject* FemPostFilterPy::getCustomAttributes(const char* /*attr*/) const

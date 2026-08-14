@@ -3200,6 +3200,32 @@ void DocumentTimeline::publishProvisionalOperationBlock(
         }
     }
 
+    // Replacement metadata is an authored end-state visibility transition,
+    // not merely a deletion hint.  Semantic publication can occur at any
+    // History marker, where captureVisibility() intentionally refuses to
+    // rewrite the accepted end state.  Apply the exact declared transition
+    // here while every input identity and chronological relationship is still
+    // validated.  Inputs omitted from the contract retain their prior state.
+    if (const auto* replacementProperty
+        = localTimelineMetadataProperty(operation, ReplacedInputsPropertyName)) {
+        const auto* replacements
+            = dynamic_cast<const PropertyLinkListHidden*>(replacementProperty);
+        if (!replacements) {
+            throw Base::RuntimeError(
+                "Published replacement metadata changed type before acceptance"
+            );
+        }
+        for (auto* input : replacements->getValues()) {
+            const auto accepted = finalIndices.find(input);
+            if (accepted == finalIndices.end()) {
+                throw Base::RuntimeError(
+                    "A published replacement input lost its exact History identity"
+                );
+            }
+            finalVisibilityValues[accepted->second] = false;
+        }
+    }
+
     boost::dynamic_bitset<> finalVisibility(finalOperations.size());
     boost::dynamic_bitset<> finalSuppression(finalOperations.size());
     for (std::size_t index = 0; index < finalOperations.size(); ++index) {
@@ -8764,8 +8790,12 @@ void DocumentTimeline::captureVisibility()
     }
 
     ApplyingScope applying(*this);
-    VisibilityAtEnd.setValues(visibility);
-    SuppressionAtEnd.setValues(suppression);
+    if (visibility != VisibilityAtEnd.getValues()) {
+        VisibilityAtEnd.setValues(visibility);
+    }
+    if (suppression != SuppressionAtEnd.getValues()) {
+        SuppressionAtEnd.setValues(suppression);
+    }
     for (const auto& target : resourceVisibilityTargets) {
         auto* operation
             = resolveExactTimelineIdentity(document, target.object.objectId, target.object.objectName);

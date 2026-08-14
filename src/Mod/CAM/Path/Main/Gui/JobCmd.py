@@ -21,7 +21,7 @@
 # *                                                                         *
 # ***************************************************************************
 
-from PySide import QtCore, QtGui
+from PySide import QtGui
 from PySide.QtCore import QT_TRANSLATE_NOOP
 import FreeCAD
 import FreeCADGui
@@ -35,7 +35,6 @@ from Path.CommandBoundary import (
 )
 import Path.Main.Gui.JobDlg as PathJobDlg
 import Path.Main.Job as PathJob
-import Path.Main.Stock as PathStock
 import json
 import os
 
@@ -198,58 +197,28 @@ class CommandJobTemplateExport:
 
     @classmethod
     def Execute(cls, job, path, dialog=None):
-        attrs = job.Proxy.templateAttrs(job)
-
-        # description: override (or remove) using the dialog's edited value
-        if dialog:
-            desc = dialog.description()
-            if desc:
-                attrs[PathJob.JobTemplate.Description] = desc
-            else:
-                attrs.pop(PathJob.JobTemplate.Description, None)
-
-        # post processor settings
-        if dialog and not dialog.includePostProcessing():
-            attrs.pop(PathJob.JobTemplate.PostProcessor, None)
-            attrs.pop(PathJob.JobTemplate.PostProcessorArgs, None)
-            attrs.pop(PathJob.JobTemplate.PostProcessorOutputFile, None)
-
-        # tool controller settings
-        toolControllers = dialog.includeToolControllers() if dialog else job.Tools.Group
-        if toolControllers:
-            tcAttrs = [tc.Proxy.templateAttrs(tc) for tc in toolControllers]
-            attrs[PathJob.JobTemplate.ToolController] = tcAttrs
-
-        # stock settings
-        stockAttrs = None
-        if dialog:
-            if dialog.includeStock():
-                stockAttrs = PathStock.TemplateAttributes(
-                    job.Stock,
-                    dialog.includeStockExtent(),
-                    dialog.includeStockPlacement(),
-                )
-        else:
-            stockAttrs = PathStock.TemplateAttributes(job.Stock)
-        if stockAttrs:
-            attrs[PathJob.JobTemplate.Stock] = stockAttrs
-
-        # setup sheet
-        setupSheetAttrs = None
-        if dialog:
-            setupSheetAttrs = job.Proxy.setupSheet.templateAttributes(
-                dialog.includeSettingToolRapid(),
-                dialog.includeSettingCoolant(),
-                dialog.includeSettingOperationHeights(),
-                dialog.includeSettingOperationDepths(),
-                dialog.includeSettingOpsSettings(),
-            )
-        else:
-            setupSheetAttrs = job.Proxy.setupSheet.templateAttributes(True, True, True)
-        if setupSheetAttrs:
-            attrs[PathJob.JobTemplate.SetupSheet] = setupSheetAttrs
-
-        encoded = job.Proxy.setupSheet.encodeTemplateAttributes(attrs)
+        encoded = job.Proxy.exportTemplateAttributes(
+            job,
+            description=(dialog.description() if dialog else None),
+            includePostProcessing=(dialog.includePostProcessing() if dialog else True),
+            toolControllers=(dialog.includeToolControllers() if dialog else None),
+            includeStock=(dialog.includeStock() if dialog else True),
+            includeStockExtent=(dialog.includeStockExtent() if dialog else True),
+            includeStockPlacement=(dialog.includeStockPlacement() if dialog else True),
+            includeSettingToolRapid=(
+                dialog.includeSettingToolRapid() if dialog else True
+            ),
+            includeSettingCoolant=(dialog.includeSettingCoolant() if dialog else True),
+            includeSettingOperationHeights=(
+                dialog.includeSettingOperationHeights() if dialog else True
+            ),
+            includeSettingOperationDepths=(
+                dialog.includeSettingOperationDepths() if dialog else True
+            ),
+            includeSettingOperations=(
+                dialog.includeSettingOpsSettings() if dialog else None
+            ),
+        )
         # write template
         with open(str(path), "w") as fp:
             json.dump(encoded, fp, sort_keys=True, indent=2)

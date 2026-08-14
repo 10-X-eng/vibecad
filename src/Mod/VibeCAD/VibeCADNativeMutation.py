@@ -46,6 +46,11 @@ class NativeMutationDraft:
     changed: tuple[NativeObjectIdentity, ...] = ()
     deleted: tuple[NativeObjectIdentity, ...] = ()
     replaced: tuple[NativeObjectIdentity, ...] = ()
+    after_recompute: Callable[[Any], None] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +66,7 @@ PostconditionHandler = Callable[[Any, NativeMutationDraft], Mapping[str, Any]]
 TransactionFactory = Callable[[Any, str], Any]
 TurnReauthorizer = Callable[[], Any]
 DocumentLiveness = Callable[[Any], bool]
+AbortStabilizer = Callable[[Any], None]
 
 
 def _default_transaction_factory(document: Any, name: str) -> Any:
@@ -179,11 +185,14 @@ class NativeMutationRunner:
         reauthorize_turn: TurnReauthorizer,
         mutate: MutationHandler,
         verify: PostconditionHandler,
+        after_abort: AbortStabilizer | None = None,
     ) -> NativeMutationExecution:
         if not isinstance(ticket, NativeCallTicket):
             raise TypeError("ticket must be a NativeCallTicket")
         if not all(callable(item) for item in (reauthorize_turn, mutate, verify)):
             raise TypeError("Native mutation callbacks must be callable")
+        if after_abort is not None and not callable(after_abort):
+            raise TypeError("Native abort stabilization must be callable or None")
         name = str(transaction_name or "").strip()
         if not name or len(name) > 80:
             raise ValueError("transaction_name must contain 1 to 80 characters")
@@ -239,6 +248,10 @@ class NativeMutationRunner:
             stage = NATIVE_RECOMPUTE_FAILED
             _recompute_exact(document, draft.recompute_targets)
             stage = NATIVE_POSTCONDITION_FAILED
+            if draft.after_recompute is not None:
+                if not callable(draft.after_recompute):
+                    raise TypeError("Native after-recompute stabilization must be callable.")
+                draft.after_recompute(document)
             verified = verify(document, draft)
             if not isinstance(verified, Mapping):
                 raise TypeError("Native postcondition must return a result object.")
@@ -272,6 +285,11 @@ class NativeMutationRunner:
             )
         except NativeMutationError:
             abort_error = _abort_owned_transaction(transaction, self._state, ticket)
+            if abort_error is None and after_abort is not None:
+                try:
+                    after_abort(document)
+                except BaseException as exc:
+                    abort_error = exc
             if abort_error is not None:
                 raise NativeMutationError(
                     NATIVE_TRANSACTION_FAILED,
@@ -280,6 +298,11 @@ class NativeMutationRunner:
             raise
         except Exception as exc:
             abort_error = _abort_owned_transaction(transaction, self._state, ticket)
+            if abort_error is None and after_abort is not None:
+                try:
+                    after_abort(document)
+                except BaseException as stabilization_error:
+                    abort_error = stabilization_error
             if abort_error is not None:
                 raise NativeMutationError(
                     NATIVE_TRANSACTION_FAILED,

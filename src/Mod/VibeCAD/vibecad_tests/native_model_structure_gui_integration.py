@@ -12,7 +12,9 @@ import traceback
 
 import FreeCAD as App
 import FreeCADGui as Gui
+import Part
 import PartDesign
+import Sketcher
 from PySide import QtCore, QtWidgets
 
 import VibeCADGui as VibeGui
@@ -22,6 +24,7 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeModelStructureSchema import (
     model_structure_capability_definitions,
 )
+from VibeCADNativeSketchSetupSchema import sketch_setup_capability_definition
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
@@ -54,7 +57,7 @@ def _make_source_body(document):
     return operation, outputs[0]
 
 
-def _turn(definitions):
+def _turn(definitions, surface_id="model"):
     schemas = tuple(
         definition.provider_schema(
             tuple(variant.operation for variant in definition.variants)
@@ -63,7 +66,7 @@ def _turn(definitions):
     )
     surface = NativeProviderSurface(
         snapshot=NativeSurfaceSnapshot(
-            "model",
+            surface_id,
             1,
             "b" * 64,
             tuple(
@@ -119,6 +122,7 @@ def _run() -> None:
         definitions = model_structure_capability_definitions()
         turn = _turn(definitions)
         registry = build_native_capability_registry()
+        debug_events = []
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state,
@@ -127,6 +131,7 @@ def _run() -> None:
             runtimes=build_native_runtime_bindings(context, turn.tool_names),
             reauthorize_turn=lambda: None,
             active_document=lambda: App.ActiveDocument,
+            debug_sink=debug_events.append,
         )
         call_number = 0
 
@@ -138,7 +143,10 @@ def _run() -> None:
                 json.dumps(arguments, separators=(",", ":")),
                 f"model-structure-call-{call_number}",
             )
-            assert result.get("ok") is succeeds, result
+            assert result.get("ok") is succeeds, {
+                "result": result,
+                "diagnostic": debug_events[-1] if debug_events else None,
+            }
             return result
 
         def undo_redo(*names):
@@ -291,6 +299,157 @@ def _run() -> None:
         undo_redo(clone_name, clone_body_name)
         PartDesign.validateDesign(document.getObject(clone_name))
 
+        # Exercise the complete pre-edit Sketch ribbon through its own frozen
+        # provider surface. These calls must never enter Sketch edit mode.
+        sketch = document.getObject(sketch_name)
+        face_sketch = document.getObject(face_sketch_name)
+        document.openTransaction("Populate Sketch setup gate sources")
+        first_geometry = sketch.addGeometry(
+            Part.LineSegment(App.Vector(0.0, 0.0), App.Vector(10.0, 0.0)),
+            False,
+        )
+        first_constraint = sketch.addConstraint(
+            Sketcher.Constraint("Distance", first_geometry, 10.0)
+        )
+        sketch.setExpression(f"Constraints[{first_constraint}]", "10 mm")
+        second_geometry = face_sketch.addGeometry(
+            Part.LineSegment(App.Vector(0.0, 0.0), App.Vector(0.0, 8.0)),
+            False,
+        )
+        face_sketch.addConstraint(
+            Sketcher.Constraint("Vertical", second_geometry)
+        )
+        document.recompute([sketch, face_sketch], True, True)
+        document.commitTransaction()
+        PartDesign.validateDesign(sketch)
+        PartDesign.validateDesign(face_sketch)
+
+        Gui.activateWorkbench("SketcherWorkbench")
+        _process_events()
+        setup_context = NativeRuntimeContext(
+            service=service,
+            document=document,
+            state=state,
+            undo_ledger=ledger,
+            reauthorize_turn=lambda: None,
+            active_document=lambda: App.ActiveDocument,
+            active_surface_id=lambda: "sketch.setup",
+            edit_or_task_active=lambda: False,
+        )
+        setup_definitions = tuple(
+            definition
+            for definition in definitions
+            if definition.name in {"model.sketch", "sketch.validate"}
+        ) + (sketch_setup_capability_definition(),)
+        setup_turn = _turn(setup_definitions, "sketch.setup")
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state,
+            registry=registry,
+            turn=setup_turn,
+            runtimes=build_native_runtime_bindings(
+                setup_context,
+                setup_turn.tool_names,
+            ),
+            reauthorize_turn=lambda: None,
+            active_document=lambda: App.ActiveDocument,
+            debug_sink=debug_events.append,
+        )
+
+        support_before_map = [
+            (obj.Name, tuple(str(name) for name in subelements))
+            for obj, subelements in face_sketch.AttachmentSupport
+        ]
+        mapped = native_call(
+            "sketch.setup",
+            {
+                "operation": "map_sketch",
+                "target": {"object_name": face_sketch_name},
+                "support": {
+                    "kind": "planar_face",
+                    "target": {
+                        "object_name": source_body.Name,
+                        "subelement": "Face1",
+                    },
+                },
+            },
+        )
+        assert mapped["map_mode"] == "FlatFace"
+        assert mapped["entered_edit_mode"] is False
+        assert Gui.activeDocument().getInEdit() is None
+        support_after_map = [
+            (obj.Name, tuple(str(name) for name in subelements))
+            for obj, subelements in document.getObject(
+                face_sketch_name
+            ).AttachmentSupport
+        ]
+        assert support_after_map != support_before_map
+        document.undo()
+        _process_events()
+        assert [
+            (obj.Name, tuple(str(name) for name in subelements))
+            for obj, subelements in document.getObject(
+                face_sketch_name
+            ).AttachmentSupport
+        ] == support_before_map
+        document.redo()
+        _process_events()
+        assert [
+            (obj.Name, tuple(str(name) for name in subelements))
+            for obj, subelements in document.getObject(
+                face_sketch_name
+            ).AttachmentSupport
+        ] == support_after_map
+
+        reoriented = native_call(
+            "sketch.setup",
+            {
+                "operation": "reorient_sketch",
+                "target": {"object_name": face_sketch_name},
+                "plane": "XZ",
+                "offset_mm": 4.0,
+                "reverse_normal": False,
+            },
+        )
+        assert reoriented["map_mode"] == "Deactivated"
+        assert reoriented["support"] == []
+        assert reoriented["entered_edit_mode"] is False
+
+        merged = native_call(
+            "sketch.setup",
+            {
+                "operation": "merge_sketches",
+                "sources": [
+                    {"object_name": sketch_name},
+                    {"object_name": face_sketch_name},
+                ],
+                "label": "Merged Setup Profile",
+            },
+        )
+        merged_name = merged["sketches"][0]["object_name"]
+        merged_sketch = document.getObject(merged_name)
+        assert int(merged_sketch.GeometryCount) == 2
+        assert int(merged_sketch.ConstraintCount) == 2
+        assert len(list(merged_sketch.ExpressionEngine)) == 1
+        undo_redo(merged_name)
+
+        mirrored = native_call(
+            "sketch.setup",
+            {
+                "operation": "mirror_sketch",
+                "sources": [{"object_name": merged_name}],
+                "reference": "y_axis",
+                "label_prefix": "Mirrored Setup Profile",
+            },
+        )
+        mirrored_name = mirrored["sketches"][0]["object_name"]
+        mirrored_sketch = document.getObject(mirrored_name)
+        assert int(mirrored_sketch.GeometryCount) == 2
+        assert int(mirrored_sketch.ConstraintCount) == 2
+        assert len(list(mirrored_sketch.ExpressionEngine)) == 1
+        assert Gui.activeDocument().getInEdit() is None
+        undo_redo(mirrored_name)
+
         save_directory = Path(tempfile.mkdtemp(prefix="vibecad-native-model-"))
         save_path = save_directory / "ModelStructure.FCStd"
         document.saveAs(str(save_path))
@@ -307,6 +466,8 @@ def _run() -> None:
             reference_name,
             clone_name,
             clone_body_name,
+            merged_name,
+            mirrored_name,
         ):
             assert document.getObject(name) is not None, name
         assert str(document.getObject(clone_body_name).VibeCADBodyId) == clone_body_id

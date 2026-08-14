@@ -59,7 +59,7 @@ def test_knot_insertion_schema_is_closed_bounded_and_exact() -> None:
         if variant.operation != "join_curves"
     )
     all_encoded = _encoded(definition.provider_schema(all_operations))
-    assert len(all_encoded) == 21_061
+    assert len(all_encoded) == 20_031
     assert len(all_encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 

@@ -18,6 +18,10 @@ from VibeCADNativeSketchGeometryValues import (
     sketch_start_angle_degrees,
     sketch_sweep_angle_degrees,
 )
+from VibeCADNativeSketchLimits import (
+    MAX_SKETCH_BATCH_CONSTRAINTS,
+    MAX_SKETCH_BATCH_GEOMETRY,
+)
 from VibeCADNativeSketchTargets import (
     ActiveSketchTargetSpec,
     MAX_SKETCH_ELEMENTS,
@@ -25,8 +29,8 @@ from VibeCADNativeSketchTargets import (
 )
 
 
-MAX_BATCH_GEOMETRY = 32
-MAX_BATCH_CONSTRAINTS = 16
+MAX_BATCH_GEOMETRY = MAX_SKETCH_BATCH_GEOMETRY
+MAX_BATCH_CONSTRAINTS = MAX_SKETCH_BATCH_CONSTRAINTS
 BATCH_LOCAL_REF_PATTERN = r"^[A-Za-z][A-Za-z0-9_]{0,31}$"
 _LOCAL_REF = re.compile(BATCH_LOCAL_REF_PATTERN)
 _OUTER_FIELDS = frozenset(
@@ -189,9 +193,14 @@ def _geometry_spec(value: Any, offset: int) -> SketchBatchGeometrySpec:
 def _point_ref(value: Any, label: str) -> SketchBatchPointRef:
     if not isinstance(value, Mapping):
         raise NativeSketchError(f"Sketch batch {label} must be a point reference.")
-    if set(value) == {"origin"} and value["origin"] is True:
+    fields = set(value)
+    if (
+        value.get("origin") is True
+        and fields in ({"origin"}, {"origin", "position"})
+        and value.get("position", "point") == "point"
+    ):
         return SketchBatchPointRef(None, "origin")
-    if set(value) != {"geometry_ref", "position"}:
+    if fields != {"geometry_ref", "position"}:
         raise NativeSketchError(f"Sketch batch {label} has incorrect fields.")
     position = value["position"]
     if not isinstance(position, str) or position not in {

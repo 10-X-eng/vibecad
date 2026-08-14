@@ -583,17 +583,21 @@ PyObject* DocumentPy::copyObject(PyObject* args, PyObject* kwd)
     PyObject* obj;
     PyObject* rec = Py_False;
     PyObject* retAll = Py_False;
-    static constexpr std::array<const char*, 4> kwlist {"object", "recursive", "return_all", nullptr};
+    PyObject* adoptTimeline = Py_True;
+    static constexpr std::array<const char*, 5> kwlist {
+        "object", "recursive", "return_all", "adopt_timeline", nullptr};
     if (!Base::Wrapped_ParseTupleAndKeywords(
             args,
             kwd,
-            "O|O!O!",
+            "O|O!O!O!",
             kwlist,
             &obj,
             &PyBool_Type,
             &rec,
             &PyBool_Type,
-            &retAll
+            &retAll,
+            &PyBool_Type,
+            &adoptTimeline
         )) {
         return nullptr;
     }
@@ -627,7 +631,12 @@ PyObject* DocumentPy::copyObject(PyObject* args, PyObject* kwd)
 
     PY_TRY
     {
-        auto ret = getDocumentPtr()->copyObject(objs, Base::asBoolean(rec), Base::asBoolean(retAll));
+        auto ret = getDocumentPtr()->copyObject(
+            objs,
+            Base::asBoolean(rec),
+            Base::asBoolean(retAll),
+            Base::asBoolean(adoptTimeline)
+        );
         if (ret.size() == 1 && single) {
             return ret[0]->getPyObject();
         }

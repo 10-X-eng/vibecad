@@ -2902,17 +2902,21 @@ def _execute_assistant_run(
     def _output_authorization_callback(request: Any) -> Any:
         from VibeCADNativeOutputGui import request_native_output_authorization
 
-        return request_native_output_authorization(
-            request,
-            parent=_find_dock() or dock,
+        return _dispatch_to_document_thread(
+            lambda: request_native_output_authorization(
+                request,
+                parent=_find_dock() or dock,
+            )
         )
 
     def _input_authorization_callback(request: Any) -> Any:
         from VibeCADNativeInputGui import request_native_input_authorization
 
-        return request_native_input_authorization(
-            request,
-            parent=_find_dock() or dock,
+        return _dispatch_to_document_thread(
+            lambda: request_native_input_authorization(
+                request,
+                parent=_find_dock() or dock,
+            )
         )
 
     def _progress_on_document_thread(event: dict[str, Any]) -> None:

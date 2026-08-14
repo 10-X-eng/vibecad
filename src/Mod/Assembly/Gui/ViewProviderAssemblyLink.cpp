@@ -26,6 +26,7 @@
 #include <QMenu>
 #include <algorithm>
 #include <exception>
+#include <optional>
 #include <ranges>
 #include <string>
 #include <tuple>
@@ -112,6 +113,142 @@ std::pair<App::Document*, Assembly::AssemblyLink*> resolveAssemblyLink(
     }
     catch (...) {
         return {};
+    }
+}
+
+const App::DocumentObject* semanticTimelineRoot(
+    const App::DocumentObject* object
+) noexcept
+{
+    std::unordered_set<const App::DocumentObject*> visited;
+    while (object
+           && App::DocumentTimeline::hasTimelineResourceRole(object)) {
+        if (!visited.insert(object).second) {
+            return nullptr;
+        }
+        object = App::DocumentTimeline::timelineOwner(object);
+    }
+    return object;
+}
+
+struct TimelineMemberSnapshot
+{
+    long objectId {-1};
+    bool visible {false};
+    bool suppressed {false};
+};
+
+struct TimelineBlockSnapshot
+{
+    long rootId {-1};
+    std::vector<TimelineMemberSnapshot> members;
+};
+
+struct TimelineSnapshot
+{
+    std::vector<TimelineBlockSnapshot> blocks;
+    long position {0};
+    std::size_t memberCount {0};
+};
+
+bool sameTimelineMember(
+    const TimelineMemberSnapshot& left,
+    const TimelineMemberSnapshot& right
+) noexcept
+{
+    return left.objectId == right.objectId
+        && left.visible == right.visible
+        && left.suppressed == right.suppressed;
+}
+
+bool sameTimelineBlock(
+    const TimelineBlockSnapshot& left,
+    const TimelineBlockSnapshot& right
+) noexcept
+{
+    if (left.rootId != right.rootId
+        || left.members.size() != right.members.size()) {
+        return false;
+    }
+    return std::ranges::equal(
+        left.members,
+        right.members,
+        sameTimelineMember
+    );
+}
+
+std::optional<TimelineSnapshot> captureTimelineSnapshot(
+    const App::DocumentTimeline* timeline
+) noexcept
+{
+    if (!timeline) {
+        return TimelineSnapshot {};
+    }
+    try {
+        const auto operations = timeline->Operations.getValues();
+        const auto visibility = timeline->VisibilityAtEnd.getValues();
+        const auto suppression = timeline->SuppressionAtEnd.getValues();
+        if (visibility.size() != operations.size()
+            || suppression.size() != operations.size()) {
+            return std::nullopt;
+        }
+
+        TimelineSnapshot snapshot;
+        snapshot.position = timeline->Position.getValue();
+        snapshot.memberCount = operations.size();
+        std::unordered_set<const App::DocumentObject*> operationSet;
+        operationSet.reserve(operations.size());
+        for (const auto* operation : operations) {
+            if (!operation || !operationSet.insert(operation).second) {
+                return std::nullopt;
+            }
+        }
+
+        std::unordered_set<long> seenRootIds;
+        for (std::size_t index = 0; index < operations.size(); ++index) {
+            const auto* operation = operations[index];
+            const auto* root = semanticTimelineRoot(operation);
+            if (!root || !operationSet.contains(root)) {
+                return std::nullopt;
+            }
+            const long rootId = root->getID();
+            if (snapshot.blocks.empty()
+                || snapshot.blocks.back().rootId != rootId) {
+                if (!seenRootIds.insert(rootId).second) {
+                    return std::nullopt;
+                }
+                snapshot.blocks.push_back(
+                    {.rootId = rootId, .members = {}}
+                );
+            }
+            snapshot.blocks.back().members.push_back(
+                {
+                    .objectId = operation->getID(),
+                    .visible = visibility[index],
+                    .suppressed = suppression[index],
+                }
+            );
+        }
+        for (const auto& block : snapshot.blocks) {
+            if (block.members.empty()
+                || block.members.back().objectId != block.rootId
+                || std::ranges::count_if(
+                       block.members,
+                       [&block](const TimelineMemberSnapshot& member) {
+                           return member.objectId == block.rootId;
+                       }
+                   ) != 1) {
+                return std::nullopt;
+            }
+        }
+        if (snapshot.position < 0
+            || snapshot.position > static_cast<long>(snapshot.memberCount)) {
+            return std::nullopt;
+        }
+        return snapshot;
+    }
+    catch (...) {
+        return std::nullopt;
     }
 }
 }  // namespace
@@ -287,27 +424,12 @@ void ViewProviderAssemblyLink::setupContextMenu(QMenu* menu, QObject* receiver, 
             }
         }
         const auto* timeline = App::DocumentTimeline::get(document);
-        if (timeline
-            && timeline->Position.getValue()
-                != static_cast<long>(
-                    timeline->Operations.getSize()
-                )) {
+        const bool hadTimeline = timeline != nullptr;
+        const auto timelineBefore = captureTimelineSnapshot(timeline);
+        if (!timelineBefore
+            || timelineBefore->position
+                != static_cast<long>(timelineBefore->memberCount)) {
             return;
-        }
-        std::vector<long> timelineOperationIds;
-        if (timeline) {
-            timelineOperationIds.reserve(
-                timeline->Operations.getSize()
-            );
-            for (const auto* operation :
-                 timeline->Operations.getValues()) {
-                if (!operation) {
-                    return;
-                }
-                timelineOperationIds.push_back(
-                    operation->getID()
-                );
-            }
         }
         const int transactionId =
             Gui::Command::openDocumentCommand(
@@ -391,50 +513,105 @@ void ViewProviderAssemblyLink::setupContextMenu(QMenu* menu, QObject* receiver, 
                 );
             }
             timeline = App::DocumentTimeline::get(document);
-            std::vector<long> currentOperationIds;
-            if (timeline) {
-                currentOperationIds.reserve(
-                    timeline->Operations.getSize()
+            if ((timeline != nullptr) != hadTimeline) {
+                throw Base::RuntimeError(
+                    "Toggling rigidity changed the document History identity"
                 );
-                for (const auto* operation :
-                     timeline->Operations.getValues()) {
-                    if (!operation) {
+            }
+            const auto timelineAfter = captureTimelineSnapshot(timeline);
+            if (!timelineAfter) {
+                throw Base::RuntimeError(
+                    "Toggling rigidity produced a malformed document History"
+                );
+            }
+            if (hadTimeline) {
+                std::size_t afterBlockIndex = 0;
+                bool foundLinkBlock = false;
+                std::unordered_set<long> removedGroundRootIds;
+                for (const auto& beforeBlock : timelineBefore->blocks) {
+                    if (expectedDeletedGroundJointIds.contains(
+                            beforeBlock.rootId
+                        )) {
+                        removedGroundRootIds.insert(beforeBlock.rootId);
+                        for (const auto& member : beforeBlock.members) {
+                            if (document->getObjectByID(member.objectId)) {
+                                throw Base::RuntimeError(
+                                    "Toggling rigidity left an incompatible "
+                                    "grounding History block in the document"
+                                );
+                            }
+                        }
+                        continue;
+                    }
+                    if (afterBlockIndex >= timelineAfter->blocks.size()) {
                         throw Base::RuntimeError(
-                            "The assembly history contains a missing operation"
+                            "Toggling rigidity deleted an unrelated semantic "
+                            "History block"
                         );
                     }
-                    currentOperationIds.push_back(
-                        operation->getID()
+                    const auto& afterBlock =
+                        timelineAfter->blocks[afterBlockIndex++];
+                    if (afterBlock.rootId != beforeBlock.rootId) {
+                        throw Base::RuntimeError(
+                            "Toggling rigidity inserted or reordered a semantic "
+                            "History block"
+                        );
+                    }
+                    if (beforeBlock.rootId != identity.objectId) {
+                        if (!sameTimelineBlock(beforeBlock, afterBlock)) {
+                            throw Base::RuntimeError(
+                                "Toggling rigidity changed an unrelated semantic "
+                                "History block"
+                            );
+                        }
+                        continue;
+                    }
+
+                    foundLinkBlock = true;
+                    if (beforeBlock.members.empty()
+                        || afterBlock.members.empty()
+                        || !sameTimelineMember(
+                            beforeBlock.members.back(),
+                            afterBlock.members.back()
+                        )) {
+                        throw Base::RuntimeError(
+                            "Toggling rigidity changed the AssemblyLink History root"
+                        );
+                    }
+                    for (const auto& beforeMember : beforeBlock.members) {
+                        if (!document->getObjectByID(beforeMember.objectId)) {
+                            continue;
+                        }
+                        const auto retained = std::ranges::find_if(
+                            afterBlock.members,
+                            [&beforeMember](const TimelineMemberSnapshot& member) {
+                                return member.objectId == beforeMember.objectId;
+                            }
+                        );
+                        if (retained == afterBlock.members.end()
+                            || !sameTimelineMember(beforeMember, *retained)) {
+                            throw Base::RuntimeError(
+                                "Toggling rigidity changed or detached a retained "
+                                "AssemblyLink History resource"
+                            );
+                        }
+                    }
+                }
+                if (afterBlockIndex != timelineAfter->blocks.size()) {
+                    throw Base::RuntimeError(
+                        "Toggling rigidity inserted an unrelated semantic "
+                        "History block"
                     );
                 }
-            }
-            auto expected = timelineOperationIds.begin();
-            for (const long currentId : currentOperationIds) {
-                expected = std::find(
-                    expected,
-                    timelineOperationIds.end(),
-                    currentId
-                );
-                if (expected == timelineOperationIds.end()) {
+                if (!foundLinkBlock) {
                     throw Base::RuntimeError(
-                        "Toggling rigidity inserted or reordered document history"
+                        "The AssemblyLink has no semantic History block"
                     );
                 }
-                ++expected;
-            }
-            for (const long originalId : timelineOperationIds) {
-                if (std::ranges::find(currentOperationIds, originalId)
-                    != currentOperationIds.end()) {
-                    continue;
-                }
-                if (!expectedDeletedGroundJointIds.contains(originalId)) {
+                if (removedGroundRootIds != expectedDeletedGroundJointIds) {
                     throw Base::RuntimeError(
-                        "Toggling rigidity deleted an unrelated document-history operation"
-                    );
-                }
-                if (document->getObjectByID(originalId)) {
-                    throw Base::RuntimeError(
-                        "Toggling rigidity removed a live operation from document history"
+                        "The expected grounding operations do not match exact "
+                        "semantic History roots"
                     );
                 }
             }
@@ -452,13 +629,8 @@ void ViewProviderAssemblyLink::setupContextMenu(QMenu* menu, QObject* receiver, 
                 || !App::GetApplication().transactionIsActive(
                     transactionId
                 )
-                || (timeline
-                    && timeline->Position.getValue()
-                        != static_cast<long>(
-                            currentOperationIds.size()
-                        ))
-                || (!timeline
-                    && !timelineOperationIds.empty())) {
+                || timelineAfter->position
+                    != static_cast<long>(timelineAfter->memberCount)) {
                 throw Base::RuntimeError(
                     "Toggling assembly rigidity produced an invalid tracked state"
                 );

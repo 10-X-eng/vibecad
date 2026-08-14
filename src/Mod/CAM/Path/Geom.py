@@ -93,6 +93,7 @@ CmdMoveArc = Constants.GCODE_MOVE_ARC
 CmdMoveMill = Constants.GCODE_MOVE_MILL
 CmdMove = Constants.GCODE_MOVE
 CmdMoveAll = Constants.GCODE_MOVE_ALL
+CmdProbe = Constants.GCODE_PROBE
 
 
 def isRoughly(float1, float2, error=Tolerance):

@@ -2042,13 +2042,17 @@ void CmdTechDrawBalloon::activated(int iMsg)
 
     auto* view = dynamic_cast<QGIView*>(viewVP->getQView());
     QPointF placement;
+    const auto subNames = selection[0].getSubNames();
     if (view
         && _checkDirectPlacement(
             view,
-            selection[0].getSubNames(),
+            subNames,
             placement
         )) {
-        scenePage->createBalloon(placement, objFeat);
+        scenePage->createBalloon(
+            placement,
+            objFeat,
+            subNames.front());
         return;
     }
     viewPage->startBalloonPlacing(objFeat);

@@ -64,7 +64,7 @@ def test_bspline_degree_decrease_schema_is_closed_bounded_and_exact() -> None:
         }
     )
     all_encoded = _encoded(definition.provider_schema(all_operations))
-    assert len(all_encoded) == 20_175
+    assert len(all_encoded) == 19_145
     assert len(all_encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 

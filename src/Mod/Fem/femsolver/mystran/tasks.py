@@ -53,6 +53,69 @@ from femtools import membertools
 _inputFileName = None
 
 
+def import_result_graph(directory, input_file_name, analysis):
+    """Import one exact Mystran result graph in the caller's transaction."""
+
+    if result_reading is not True:
+        raise RuntimeError("The Mystran result importer is unavailable")
+    document = analysis.Document
+    neu_result_file = os.path.join(directory, input_file_name + ".NEU")
+    if not os.path.isfile(neu_result_file):
+        raise RuntimeError(
+            f"Mystran produced no result file at {neu_result_file}"
+        )
+    imported = hfcMystranNeuIn.import_neu(neu_result_file)
+    if isinstance(imported, (tuple, list)) and len(imported) == 2:
+        result, reported_resources = imported
+    else:
+        result = imported
+        reported_resources = ()
+    if (
+        result is None
+        or getattr(result, "Document", None) is not document
+        or document.getObject(getattr(result, "Name", "")) is not result
+        or not document.isProvisionallyEnrolledInTimelineByCurrentTransaction(
+            result
+        )
+    ):
+        raise RuntimeError(
+            "The Mystran importer must return its exact result object"
+        )
+
+    resources = []
+    for resource in reported_resources:
+        if (
+            resource is result
+            or resource in resources
+            or getattr(resource, "Document", None) is not document
+            or document.getObject(getattr(resource, "Name", "")) is not resource
+            or not document.isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                resource
+            )
+        ):
+            raise RuntimeError(
+                "The Mystran importer returned an invalid exact result resource"
+            )
+        resources.append(resource)
+
+    result_mesh = getattr(result, "Mesh", None)
+    if (
+        result_mesh is not None
+        and getattr(result_mesh, "Document", None) is document
+        and document.getObject(getattr(result_mesh, "Name", "")) is result_mesh
+        and document.isProvisionallyEnrolledInTimelineByCurrentTransaction(
+            result_mesh
+        )
+        and result_mesh not in resources
+    ):
+        resources.append(result_mesh)
+
+    analysis.addObject(result)
+    if result not in analysis.Group:
+        raise RuntimeError("The Mystran result was not added to its analysis")
+    return result, tuple(resources)
+
+
 class Check(run.Check):
 
     def run(self):
@@ -163,31 +226,54 @@ class Results(run.Results):
                 raise RuntimeError(
                     "Could not open the Mystran result import transaction"
                 )
-            if not keep_results:
-                self.purge_results()
             if result_reading is not True:
                 raise RuntimeError(
                     "The Mystran result importer is unavailable"
                 )
+            from femtools.objecttools import (
+                _ensure_exact_retained_result_graph,
+            )
+            from femcommands.manager import (
+                _finalize_timeline_result_graph,
+                _stage_timeline_result_graph,
+            )
+
+            _ensure_exact_retained_result_graph(self.solver)
+            replacement_roots = (
+                tuple(
+                    result
+                    for result in tuple(self.solver.Results or ())
+                    if getattr(
+                        result,
+                        "VibeCADTimelineOwner",
+                        None,
+                    )
+                    is self.solver
+                )
+                if not keep_results
+                else ()
+            )
+            reconciliation = _stage_timeline_result_graph(
+                self.solver,
+                replacement_roots=replacement_roots,
+            )
             result_graph = self.load_results()
             if result_graph is None:
                 raise RuntimeError(
                     "The Mystran result importer returned no result graph"
                 )
             root, resources = result_graph
-            from femcommands.manager import (
-                _finalize_timeline_result_graph,
-            )
+            solver_results = list(self.solver.Results)
+            if root not in solver_results:
+                solver_results.append(root)
+                self.solver.Results = solver_results
 
             _finalize_timeline_result_graph(
                 self.solver,
                 root,
                 resources,
+                reconciliation=reconciliation,
             )
-            solver_results = list(self.solver.Results)
-            if root not in solver_results:
-                solver_results.append(root)
-                self.solver.Results = solver_results
             document.recompute()
             FreeCAD.closeActiveTransaction(False, transaction_id)
             transaction_id = 0
@@ -211,83 +297,11 @@ class Results(run.Results):
 
     def load_results(self):
         self.pushStatus("Import new results...\n")
-        neu_result_file = os.path.join(self.directory, _inputFileName + ".NEU")
-        if os.path.isfile(neu_result_file):
-            document = self.analysis.Document
-            imported = hfcMystranNeuIn.import_neu(neu_result_file)
-            if (
-                isinstance(imported, (tuple, list))
-                and len(imported) == 2
-            ):
-                result, reported_resources = imported
-            else:
-                result = imported
-                reported_resources = ()
-            if (
-                result is None
-                or getattr(result, "Document", None) is not document
-                or document.getObject(
-                    getattr(result, "Name", "")
-                )
-                is not result
-                or not document
-                .isProvisionallyEnrolledInTimelineByCurrentTransaction(
-                    result
-                )
-            ):
-                raise RuntimeError(
-                    "The Mystran importer must return its exact result "
-                    "object"
-                )
-
-            resources = []
-            for resource in reported_resources:
-                if (
-                    resource is result
-                    or resource in resources
-                    or getattr(resource, "Document", None) is not document
-                    or document.getObject(
-                        getattr(resource, "Name", "")
-                    )
-                    is not resource
-                    or not document
-                    .isProvisionallyEnrolledInTimelineByCurrentTransaction(
-                        resource
-                    )
-                ):
-                    raise RuntimeError(
-                        "The Mystran importer returned an invalid exact "
-                        "result resource"
-                    )
-                resources.append(resource)
-
-            result_mesh = getattr(result, "Mesh", None)
-            if (
-                result_mesh is not None
-                and getattr(result_mesh, "Document", None) is document
-                and document.getObject(
-                    getattr(result_mesh, "Name", "")
-                )
-                is result_mesh
-                and document
-                .isProvisionallyEnrolledInTimelineByCurrentTransaction(
-                    result_mesh
-                )
-                and result_mesh not in resources
-            ):
-                resources.append(result_mesh)
-
-            self.analysis.addObject(result)
-            if result not in self.analysis.Group:
-                raise RuntimeError(
-                    "The Mystran result was not added to its analysis"
-                )
-            return result, tuple(resources)
-        else:
-            # TODO: use solver framework status message system
-            FreeCAD.Console.PrintError(f"FEM: No results found at {neu_result_file}!\n")
-            self.fail()
-        return None
+        return import_result_graph(
+            self.directory,
+            _inputFileName,
+            self.analysis,
+        )
 
 
 ##  @}

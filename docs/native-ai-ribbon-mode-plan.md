@@ -1,10 +1,10 @@
 # Native AI Ribbon Mode — Official Implementation Plan
 
 Status: Official plan — active goal ledger
-Implementation status: In progress; complete ribbons enabled, others fail-closed
+Implementation status: Complete; production and live-provider acceptance green
 Scope owner: VibeCAD AI-assisted native authoring
-Last updated: 2026-08-10
-Checklist status: 373 complete / 373 pending / 746 total (50.0% by row count)
+Last updated: 2026-08-14
+Checklist status: 772 complete / 0 pending / 772 total (100% by row count)
 
 ## Purpose
 
@@ -86,17 +86,31 @@ implementation changes:
   `VibeCADActiveSurfaceRevision`, and `VibeCADActiveSurfaceManifest` from the
   same deduplicated command entries used to build the visible page.
 - A clean-profile GUI gate currently observes Model 75, Assemble 53, Mesh 60,
-  Analyze 103, Manufacture 54, Drawing 107, Parameters 24, Sketch setup 15,
-  and Sketch edit 105 actions, with 527 unique command IDs. These are the
+  Analyze 104, Manufacture 59, Drawing 107, Parameters 24, Sketch setup 15,
+  and Sketch edit 105 actions, with 533 unique command IDs. These are the
   current default-preference build counts. With advanced and experimental CAM
   plus separated Drawing dimensions enabled, the same gate observes
-  Manufacture 60 and Drawing 112 on the current build. The classified union is
-  Manufacture 61 when optional CAMotics is available, Drawing 113 across both
-  dimension layouts, and 540 unique ribbon command IDs overall.
+  Manufacture 65 and Drawing 112 on the current build. The classified union is
+  Manufacture 66 when optional CAMotics is available, Drawing 113 across both
+  dimension layouts, and 546 unique ribbon command IDs overall.
+- The Parameters ribbon is complete through five sharp capability families:
+  sheet lifecycle, bounded exact reads, atomic cell/formula edits, explicit
+  formatting, and human-authorized CSV output. All 16 shipped Spreadsheet
+  actions map to exact variants, while provider-only reads and batch writes
+  are shared only on the Parameters surface. The common SpreadsheetGui
+  publication path gives human and Native sheet creation the same History
+  semantics. UTF-8 CSV parsing and output generation run off the document/UI
+  thread, use bounded detached data, never expose host paths, and commit only
+  after exact document revalidation. The compiled lifecycle gate proves human
+  parity, exact hashes, values, canonical formulas, aliases, model-expression
+  propagation, merge/split, cell properties, all six alignments, all three
+  styles, stale refusal, selection preservation, responsive import/export,
+  History, undo/redo, and FCStd save/reopen. SpreadsheetGui and VibeCADScripts
+  build cleanly, and the gate reports `VIBECAD_NATIVE_PARAMETERS_GUI_OK`.
 - `VibeCADNativeSurfaceVariants.py` now constrains conditional live surfaces to
   graphs the shipped workbenches can actually produce. Analyze covers both
   Netgen build states and the three valid VTK states as six environments with
-  exact 81, 98, or 103-action group/composite graphs; VTK Python without VTK
+  exact 82, 99, or 104-action group/composite graphs; VTK Python without VTK
   is rejected. Manufacture covers all eight CAM preference states, both Robot
   build states, and the valid OCL/CAMotics runtime combinations as 40 exact
   environments and 32 distinct visible graphs. Classification rejects an
@@ -104,15 +118,81 @@ implementation changes:
   group, and flattened order disguised with the wrong composite parentage.
   Separate compiled GUI processes prove all eight CAM preference states on the
   current OCL-enabled/CAMotics-absent build: both simulator orders preserve
-  Manufacture counts 54, 56, 57, and 60. The harness restores the exact prior
+  Manufacture counts 59, 61, 62, and 65. The harness restores the exact prior
   preference values and key presence in `finally`; the default and maximum
   Drawing/CAM gates remain green.
+- The complete 105-action Sketch edit ribbon resolves to 27 total provider
+  tools including shared state, view, inspect, and undo tools. Drawing is
+  exposed as focused line, arc, three-point arc, circle, ellipse, standard
+  profile, spline, and text tools; the three-point arc schema has one operation
+  and explicitly requires `first_endpoint_mm`, `rim_point_mm`, and
+  `second_endpoint_mm`. The full schema set is 47,616 bytes, the Sketch-specific
+  contracts contain no nested `oneOf`/`anyOf`/`allOf` composition after their
+  provider root, and the retired `sketch.geometry`, `sketch.constraint`,
+  `sketch.cut`, and broad `sketch.draw` families are absent. A compiled real-GUI
+  gate reads the initial Sketch revision, rejects malformed drawing arguments
+  with a structured field diagnostic, creates and constrains geometry, rejects
+  a stale revision without mutation, executes an atomic batch, captures a clean
+  head-on Sketch image through the private multimodal attachment path, deletes
+  geometry, and leaves Sketch with the required turn invalidation.
 - The clean-profile GUI gate now computes named stale-manifest and unclassified
   live-action deltas before enforcing exact default order. Its maximum variant
   also proves the supported Drawing and Manufacture inventory union, while the
   pure conditional matrix proves every allowed Analyze/Manufacture action
   belongs to at least one valid environment. Removing a shipped action or
   retaining an optional action in no valid graph therefore fails the gate.
+- The completed cross-ribbon gate now resolves the production registry and
+  constructs the actual frozen-turn Codex dynamic-tool surface for every
+  permanent and contextual ribbon state. The default graph reports 19 Model,
+  17 Assemble, 18 Mesh, 30 Analyze, 23 Manufacture, 40 Drawing, 10 Parameters,
+  8 Sketch setup, and 27 Sketch edit tools across 533 unique human commands.
+  The maximum preference graph reports 24 Manufacture and 40 Drawing tools
+  across 544 unique commands. Both graphs remain under the 128-KiB provider
+  wire ceiling. Drawing and Parameters use the same compact provider form as
+  Model, while dispatch revalidates every call against the selected operation's
+  original closed schema. Nested CAM kind grammars likewise compact only on
+  the provider wire; the untouched exact variant remains the execution
+  authority. Reviewed SHA-256 snapshots lock the complete provider schema and
+  action/context route graph for all nine states. The gate also proves common
+  tools are byte-identical on every eligible state and cannot leak onto an
+  ineligible one. Default and maximum live runs report
+  `VIBECAD_NATIVE_RIBBON_SURFACE_GUI_OK`.
+- A separate saved-document acceptance gate now drives the visible UI through
+  Model, Assemble, Mesh, Analyze, Manufacture, Drawing, Parameters, Sketch
+  setup, and Sketch edit while retaining one Codex conversation. Every turn
+  traverses the production `CodexProvider`, the frozen dynamic-tool adapter,
+  the parent tool runner, and document-thread dispatch; its nested app-server
+  callback invokes the real `state.read` tool and observes the matching live
+  domain. It also proves that Save remains available in all eligible states
+  and absent during Sketch edit. The clean-profile run reports
+  `VIBECAD_NATIVE_CODEX_CROSS_RIBBON_GUI_OK`. This replaces inference about
+  inter-turn tool swapping with executable production-path evidence. The same
+  harness has an explicit live-provider mode. Against the configured ChatGPT
+  Codex provider, one temporary saved document and one conversation traversed
+  all nine states; the external model invoked exactly one `state.read` per
+  state, selected no mutation tools, and received the matching live domain.
+  That run reports `VIBECAD_NATIVE_CODEX_LIVE_CROSS_RIBBON_GUI_OK`.
+- The final completion audit rebuilt the complete release tree successfully,
+  reran both default and maximum live manifest/provider graphs, and passed all
+  152 retired-architecture, modeling-surface, and Native authority guardrails.
+  The VibeScript production files touched by the wider branch were exercised
+  in their required runtimes: CAM and Robot passed their real-GUI lifecycle
+  gates, while TechDraw passed its native worker/publication lifecycle gate.
+  The acceptance documents and profiles were temporary; no user document was
+  opened or changed.
+- Sketch setup is a complete production surface rather than an empty fallback.
+  It can create and validate reusable sketches and can map, reorient, merge, or
+  mirror exact reusable Sketch definitions without entering edit mode. The
+  compiled lifecycle gate preserves construction geometry, constraints,
+  virtual constraints, expressions, History identity, undo/redo, and
+  save/reopen state and reports `VIBECAD_NATIVE_MODEL_STRUCTURE_GUI_OK`.
+- Compiled responsiveness gates prove point-cloud import/export and mutation
+  stay backgrounded, expensive Drawing redraw keeps the GUI responsive, and
+  SVG, DXF, and PDF Drawing output remains backgrounded, atomic, path-private,
+  revision-stable, and undo-stable. They report
+  `VIBECAD_NATIVE_MESH_POINTS_GUI_OK`,
+  `VIBECAD_NATIVE_DRAWING_REDRAW_GUI_OK`, and
+  `VIBECAD_NATIVE_DRAWING_OUTPUT_GUI_OK`.
 - `VibeCADRibbonSurface.py` strictly validates the live schema, action order,
   dropdown parentage, duplicate IDs, controller agreement, and revision. It
   exposes no activation or switching API.
@@ -148,7 +228,8 @@ implementation changes:
 - `VibeCADNativeCapabilityRegistry.py` separates provider definitions from
   callable implementations, requires exact `domain.operation` names and
   discriminated variants, rejects open JSON objects and raw command dispatch,
-  and enforces 24-tool and 64-KiB serialized-schema limits per surface.
+  and enforces default plus explicit high-complexity surface tool/schema
+  budgets below the provider transport ceiling.
   `VibeCADNativeSchemaRules.py` recursively rejects unbounded text and arrays,
   open nested objects, malformed required fields, and schema references. The
   production registry now contains the five finished common families, the
@@ -162,11 +243,18 @@ implementation changes:
   boundary for the remaining Design transformations. The focused
   `model.surface` family now supplies Surface Filling, Geometric Fill,
   Sections, Extend Face, Curve on Mesh, and Blend Curve through one shared
-  clean boundary. The registered Model definition set currently serializes to
-  65,527 bytes, 9 bytes below the
-  unchanged 64-KiB hard limit, without opening any schema object. An incomplete
+  clean boundary. The default live Model provider surface currently serializes
+  to 62,016 bytes, 3,520 bytes below the unchanged 64-KiB hard limit, without
+  opening any schema object. An incomplete
   ribbon still exposes zero Native tools; no legacy `core.*` tool leaks through
   that unavailable surface.
+- Provider contracts now state exact current-document target/state
+  prerequisites without publishing internal target-class names or duplicating
+  operation prose. Required and optional fields remain mapped per operation.
+  Physical quantities use unit-bearing field names or typed quantity objects;
+  underlying CAD/VTK properties with ambiguous host names now carry explicit
+  millimetre, inverse-millimetre, radian, pixel, or dimensionless descriptions.
+  Default and maximum live graphs remain within their unchanged hard budgets.
 - `VibeCADNativeTurn.py` freezes the exact human ribbon identity, ordered tool
   names, and canonical provider-schema digest without owning dispatch. It
   cannot start against the incomplete production registry; focused tests prove
@@ -4949,6 +5037,26 @@ implementation changes:
   green. The shared GUI support module was split at 1,076 lines into focused
   950-line support and 133-line provider-turn modules without changing its
   existing imports.
+- Destructive curve cleanup now uses three focused provider contracts instead
+  of advertising Trim, Split, and Extend through the broad
+  `sketch.geometry` union. `sketch.cut` exposes only the identical exact
+  curve-and-point fields shared by Trim and Split, `sketch.extend` exposes
+  only its exact endpoint target, and `sketch.delete` exposes one bounded list
+  of exact geometry indices. The provider schema rejects the misleading
+  root-level `geometry_index`, `parameter`, and structured `target` shapes that
+  caused the reported cleanup calls to fail. Delete Geometry freezes durable
+  geometry and constraint identities, expands group handles and native
+  internal-alignment helpers, refuses direct group-member/helper deletion,
+  verifies every survivor and deletion against Sketcher's native mutation
+  receipt, and preserves unrelated constraints, expressions, external
+  geometry, and solver state. The production frozen Sketch surface is 65,516
+  bytes under the unchanged 65,536-byte limit. Real compiled GUI gates pass
+  fresh provider launch, all Trim outcomes, both Split outcomes, and exact
+  Delete Geometry with related-constraint cleanup, one undo, redo, and FCStd
+  save/reopen. The complete Python regression suite is 3,328 passed with four
+  intentional skips. The expanded rolling GUI gate reaches and passes the new
+  Delete case, then currently stops later at an unrelated Scale-case undo
+  count assertion; the dedicated cleanup gates are green.
 - The `sketch.edit` surface now excludes `document.save` and continues to
   exclude `document.open`. It exposes one `sketch.control/leave` operation that
   exact-targets the active document UID, Sketch object, and expected geometry
@@ -5010,8 +5118,8 @@ implementation changes:
   frozen turn without mutation. The compiled Drawing GUI lifecycle toggles a
   graph-shaping preference and proves revision, manifest digest, and
   environment digest all change, then restores the user's exact prior value.
-  Default live counts remain Model 75, Assemble 53, Mesh 60, Analyze 103,
-  Manufacture 54, Drawing 107, Parameters 24, Sketch setup 15, and Sketch edit
+  Default live counts remain Model 75, Assemble 53, Mesh 60, Analyze 104,
+  Manufacture 57, Drawing 107, Parameters 24, Sketch setup 15, and Sketch edit
   105. The real Model provider workflow, fresh-Sketch inter-turn swap, and
   exact Leave Sketch lifecycle all pass. The complete current Python suite,
   final sequential VibeCADScripts/SketcherScripts/Sketcher/SketcherGui builds,
@@ -6514,7 +6622,68 @@ implementation changes:
   untouched, the forbidden crash lock remains absent, no FreeCAD process
   remains, and the immutable 5-axis fixture remains exactly
   `19a445d49a18b6cd997e51eadd2c0c8f89eca29533281e2015601874c0f58cbe`.
-  Native remains selectable only on complete ribbons; row 11.40 is next.
+  At that checkpoint row 11.40 remained next; the completed Assemble closure
+  is recorded below.
+- The compact Sketch provider contract now carries the exact `sketch-v1` hash
+  at the top level of the turn-start active-domain state, matching the revision
+  required by every subsequent Sketch mutation. Runtime and published schemas
+  share one limits module: atomic batches accept and advertise up to 32
+  geometry elements and 128 feasible constraints, while inspect advertises its
+  exact 1-48 page-size bound and default. Batch origin references normalize
+  both `{origin:true}` and `{origin:true,position:"point"}` without inventing
+  durable local-ref state. Coincident now distinguishes coordinates that
+  already overlap from an actual persistent constraint and lets Sketcher's
+  feasibility diagnosis decide whether the exact constraint can be added.
+  Redundant size requests on a semicircular arc return a structured
+  `sketch.dimension/constrain_angle` repair for the `circular_arc_span` form,
+  including the current revision. Captured pixels travel exactly once through
+  Codex's typed `inputImage.imageUrl` dynamic-tool content item; provider text
+  contains only bounded JSON metadata and rejects any embedded data URL.
+  The compiled production gate reports
+  `VIBECAD_NATIVE_SKETCH_PROVIDER_SURFACE_GUI_OK tools=27 schemas=47616B
+  turn_revision batch128 origin coincidence repair typed_capture delete leave
+  diagnostics`. The complete VibeCAD suite has 3,331 passing tests with four
+  intentional skips; VibeCADScripts builds cleanly and the focused corrected
+  contract set has 58 passing tests. VibeScript production source remains
+  unchanged.
+- The human-selected 53-action Assemble ribbon now resolves as one complete
+  production Native surface with 17 focused provider tools and 61,325 bytes of
+  canonical schemas. Resolution reports no missing definitions, missing
+  implementations, or incomplete families. `component.interface` publishes
+  exact document/object IDs through the real production turn, while
+  `AssemblyContextToggleActive` remains explicitly human-only and no Native
+  operation can change the active Assembly or ribbon.
+  Bounded Assemble state now reports exact component, joint, Assembly, linked
+  source, and active-Assembly identities; rigid/flexible mode; grounding;
+  concise solver status, remaining degrees of freedom, tolerance, maximum
+  residual, and bounded conflict summaries; truncation markers; and one
+  structural digest. The digest includes `AssemblyLink.Rigid`, so a conversion
+  invalidates stale calls without requiring the assistant to reconstruct prior
+  tool history. Normal results contain exact targets, outcome counts, state
+  digest, and one mutation receipt rather than raw solver or document dumps.
+  Exact-target `make_rigid` and `make_flexible` use the native `AssemblyLink`
+  lifecycle in one owned transaction. History verification now follows the
+  real `DocumentTimeline` contract: it compares semantic operation blocks,
+  preserves every unrelated block and root order exactly, and permits only the
+  selected link's native resource reconciliation plus predicted incompatible
+  grounding deletion. The same correction is applied to the human context
+  action, so owned joint-group creation or retirement is not misclassified as
+  insertion or deletion of an unrelated user operation.
+  The compiled production structure gate reports
+  `VIBECAD_NATIVE_ASSEMBLY_STRUCTURE_GUI_OK actions=53 tools=17
+  schemas=61325B assemblies=2 components=4 transactions=8
+  rigid_flexible=true grounding_cleanup=true active_read=true`; it also proves
+  stale-state rejection, idempotent replay, undo/redo, save/reopen, selection
+  preservation, exact resource ownership, and the human-only Active control.
+  The production component-interface gate reports
+  `VIBECAD_NATIVE_COMPONENT_INTERFACE_GUI_OK`. Representative real-GUI gates
+  independently pass insert/ground/revolute-joint/solve/BOM/simulation
+  workflows, including stale no-ops, undo/redo, and reopen where applicable.
+  The focused manifest, context, Assemble, registry, session, capability, and
+  common-read suite has 103 passing tests; Ruff and Python compilation are
+  clean, and `AssemblyGui` plus `VibeCADScripts` build cleanly. No VibeScript
+  production source changed. Assemble is therefore enabled as a complete
+  Native surface while unfinished ribbons continue to fail closed.
 - The Assembly joint runtime has been split by responsibility without changing
   its public provider contract: the dispatcher is 228 lines, shared argument
   decoding is 158 lines, motion-joint execution is 440 lines, and
@@ -6565,13 +6734,13 @@ The current maximum ribbon inventory is:
 | Model | 75 |
 | Assemble | 53 |
 | Mesh | 60 |
-| Analyze | 103 |
-| Manufacture | 61 |
+| Analyze | 104 |
+| Manufacture | 66 |
 | Drawing | 113 |
 | Parameters | 24 |
 | Contextual Sketch setup and edit | 117 |
 
-There are 540 unique command IDs after shared actions are deduplicated. These
+There are 546 unique command IDs after shared actions are deduplicated. These
 numbers are a baseline, not a manually maintained source of truth. The live
 ribbon manifest must remain authoritative as conditional build features and
 preferences change.
@@ -6637,7 +6806,7 @@ concisely.
 ### 0. Freeze scope and authority
 
 - [x] 0.1 Record this plan as the sole Native-mode implementation ledger.
-- [ ] 0.2 Record the owner approval for breaking old Native tool contracts in
+- [x] 0.2 Record the owner approval for breaking old Native tool contracts in
   the first implementation PR.
 - [x] 0.3 State explicitly that the approval does not cover VibeScript APIs.
 - [x] 0.4 Define `native` and `vibescript` as the only authoring modes.
@@ -6709,8 +6878,8 @@ concisely.
   state contracts; delete their old wrapper modules and compatibility branches.
 - [x] 2.14 Delete old workbench-pack contract tests.
 - [x] 2.15 Delete old native tool-name compatibility tests.
-- [ ] 2.16 Delete tests expecting old verbose result shapes.
-- [ ] 2.17 Delete prompt prose that teaches the assistant old tool sequences.
+- [x] 2.16 Delete tests expecting old verbose result shapes.
+- [x] 2.17 Delete prompt prose that teaches the assistant old tool sequences.
 - [x] 2.18 Delete provider-accessible workbench-switch registration.
 - [x] 2.19 Delete arbitrary command enumeration from normal model context.
 - [x] 2.20 Prove no removed native name remains registered or advertised.
@@ -6777,16 +6946,16 @@ concisely.
 - [x] 5.4 Ban generic `execute`, `run_command`, and arbitrary command-ID inputs.
 - [x] 5.5 Use discriminated unions for operation variants.
 - [x] 5.6 Make irrelevant variant fields impossible in JSON Schema.
-- [ ] 5.7 Use exact document/object/subelement references.
-- [ ] 5.8 Use explicit unit-bearing fields or typed quantities.
+- [x] 5.7 Use exact document/object/subelement references.
+- [x] 5.8 Use explicit unit-bearing fields or typed quantities.
 - [x] 5.9 Bound arrays, text, object lists, and file result sizes.
 - [x] 5.10 Give every tool one short intent-focused description.
-- [ ] 5.11 Put prerequisites in schemas and descriptions rather than relying on
+- [x] 5.11 Put prerequisites in schemas and descriptions rather than relying on
   prompt folklore.
 - [x] 5.12 Define a hard per-surface provider tool-count budget.
 - [x] 5.13 Define a hard per-surface serialized-schema byte budget.
-- [ ] 5.14 Fail CI when either budget is exceeded.
-- [ ] 5.15 Prove each advertised tool has one implementation and each
+- [x] 5.14 Fail CI when either budget is exceeded.
+- [x] 5.15 Prove each advertised tool has one implementation and each
   implementation is advertised on at least one intended surface.
 
 ### 6. Implement host-owned state and operation memory
@@ -6814,7 +6983,7 @@ concisely.
 - [x] 6.19 Build the Parameters state snapshot.
 - [x] 6.20 Include only the active domain snapshot in normal provider context.
 - [x] 6.21 Include the exact current user selection as optional target context.
-- [ ] 6.22 Keep full cross-domain state available only through explicit reads.
+- [x] 6.22 Keep full cross-domain state available only through explicit reads.
 - [x] 6.23 Add a test that deletes prior tool transcript and continues from live
   state alone.
 - [x] 6.24 Add a test that manual visibility changes do not create authoring
@@ -6858,7 +7027,7 @@ concisely.
   history.
 - [x] 8.14 Classify New and Open as user-authorized document operations rather
   than ordinary modeling tools.
-- [ ] 8.15 Verify common tools appear identically on every eligible surface and
+- [x] 8.15 Verify common tools appear identically on every eligible surface and
   no mutation-only tool leaks through them.
 - [x] 8.16 Keep Inspection Annotation and Leave Info Mode context controls
   human-only while direct inspection reads remain provider-callable.
@@ -7053,6 +7222,51 @@ concisely.
   current turn.
 - [x] 10.91 Complete a constrained profile from a fresh transcript using no more
   than two mutating calls.
+- [x] 10.92 Expose exact Delete Geometry for selected internal geometry, with
+  explicit group-handle and internal-helper ownership rules.
+- [x] 10.93 Give Trim, Split, Extend, and Delete focused provider contracts whose
+  advertised fields exactly match their runtime arguments.
+- [x] 10.94 Replace the provider-facing `sketch.geometry`, `sketch.constraint`,
+  and broad `sketch.draw` mega-tools with focused Line, Arc, Three-Point Arc,
+  Circle, Ellipse, Profile, Spline, Text, Constrain, Dimension, Transform, Edit,
+  Fillet, Chamfer, and External families.
+- [x] 10.95 Publish explicit typed Sketch schemas with no nested union that a
+  provider renders as `unknown`.
+- [x] 10.96 Make the host supply the human-opened Sketch identity and exact
+  geometry, constraint, external-reference, and external-geometry counts to
+  the retained internal runtimes.
+- [x] 10.97 Bootstrap one exact Sketch revision from `sketch.inspect`, require
+  it on every subsequent Sketch operation, and return its successor after
+  every successful call that keeps Sketch open.
+- [x] 10.98 Map every provider-eligible leaf in the 105-action Sketch ribbon to
+  the focused family that implements it without exposing composite parents.
+- [x] 10.99 Return structured invalid-argument diagnostics containing the exact
+  path, failed rule, bounded received value, and valid example call.
+- [x] 10.100 Retain the exact internal Sketch operation runtimes while removing
+  their obsolete mega-tool registrations; do not change VibeScript.
+- [x] 10.101 Prove the production Sketch surface in a compiled real-GUI flow
+  covering inspect, malformed arguments, draw, constrain, stale revision,
+  atomic batch, clean capture, delete, and Leave Sketch turn invalidation.
+- [x] 10.102 Keep successful capture artifact paths and attachment transport
+  metadata private while returning only concise image, target, freshness, and
+  visual-observation facts to the provider.
+- [x] 10.103 Make active-Sketch capture align perpendicular to the edit plane,
+  frame the real non-construction curve bounds with margin, remove annotations
+  and internal helpers temporarily, and verify the resulting camera and image.
+- [x] 10.104 Publish the exact `sketch-v1` revision in turn-start Sketch edit
+  context and prove it equals the first `sketch.inspect` revision.
+- [x] 10.105 Raise the atomic batch bound to 128 constraints from one canonical
+  limit while keeping all local references scoped to that request.
+- [x] 10.106 Accept and normalize both supported Sketch-origin point-reference
+  forms with matching provider guidance and strict rejection of mixtures.
+- [x] 10.107 Persist Coincident, PointOnObject, and concentric constraints when
+  geometry already satisfies them numerically but no constraint exists.
+- [x] 10.108 Publish exact batch and inspect bounds in both JSON Schema and
+  provider-visible descriptions.
+- [x] 10.109 Return an exact revision-chained circular-arc-span repair when a
+  semicircle radius or diameter request is solver-redundant.
+- [x] 10.110 Deliver captured pixels exactly once as a typed Codex dynamic-tool
+  image item and prohibit image data URLs in text results.
 
 ### 11. Implement the Assemble surface
 
@@ -7095,361 +7309,4574 @@ concisely.
 - [x] 11.37 Implement Robot trajectory and waypoint operations.
 - [x] 11.38 Implement Robot edge, dress-up, and compound trajectories.
 - [x] 11.39 Implement Robot home, restore, and simulation.
-- [ ] 11.40 Implement component-interface publication from Assemble.
-- [ ] 11.41 Return components, exact instance IDs, grounding, joints, remaining
+- [x] 11.40 Implement component-interface publication from Assemble.
+- [x] 11.41 Return components, exact instance IDs, grounding, joints, remaining
   degrees of freedom, residuals, and conflicts concisely.
-- [ ] 11.42 Complete insert, ground, joint, solve, BOM, and simulation workflows.
-- [ ] 11.43 Implement exact-target conversion of an AssemblyLink to flexible.
-- [ ] 11.44 Implement exact-target conversion of an AssemblyLink to rigid.
-- [ ] 11.45 Keep the Assembly “Active object” context control human-only.
+- [x] 11.42 Complete insert, ground, joint, solve, BOM, and simulation workflows.
+- [x] 11.43 Implement exact-target conversion of an AssemblyLink to flexible.
+- [x] 11.44 Implement exact-target conversion of an AssemblyLink to rigid.
+- [x] 11.45 Keep the Assembly “Active object” context control human-only.
 
 ### 12. Implement the Mesh surface
 
-- [ ] 12.1 Implement mesh inventory reading.
-- [ ] 12.2 Implement mesh import with explicit file authorization.
-- [ ] 12.3 Implement mesh export with explicit file authorization.
-- [ ] 12.4 Implement regular-solid mesh creation.
-- [ ] 12.5 Implement shape-to-mesh conversion.
-- [ ] 12.6 Implement mesh-to-shape conversion.
-- [ ] 12.7 Implement curve-on-mesh.
-- [ ] 12.8 Implement normal harmonization.
-- [ ] 12.9 Implement normal flipping.
-- [ ] 12.10 Implement automatic hole filling.
-- [ ] 12.11 Implement exact-boundary interactive-hole equivalent.
-- [ ] 12.12 Implement facet addition.
-- [ ] 12.13 Implement component removal.
-- [ ] 12.14 Implement explicit component-by-hand equivalent using stable
+- The first Mesh checkpoint exposes cheap bounded Mesh/Points/Reverse state,
+  one shared cancellable background-job control, human-authorized background
+  import/export, all six retained regular solids, linked Standard
+  shape-to-Mesh tessellation (whole shape or exact faces), linked
+  Mesh-to-shape conversion, and exact ray-anchored Curve on Mesh. The tools
+  use the same current-History and source-preserving publication machinery as
+  the human commands. Their real GUI gates prove stale-state rejection,
+  one-step undo/redo, background UI dispatch, source-edit propagation, and
+  durable identities, links, settings, History, and geometry across reopen.
+- The second Mesh checkpoint exposes the ten human Modify actions as one
+  discriminated `mesh.modify` instrument. Every synchronous edit creates its
+  retained native Mesh feature, preserves an exact source dependency, and is
+  published through the shared replacement-History bridge; multi-source edits
+  own independently selectable results under one operation controller and one
+  Undo entry. Component removal accepts either the human size rule or stable
+  `component-v1` identities derived from exact shared-edge components.
+  Smoothing supports all points, explicit indices, or compact non-overlapping
+  ranges with a published expansion bound. Gmsh receives no provider-supplied
+  executable path: it uses the human Mesh preference, runs detached with
+  cancellation and timeout away from the UI thread, and revalidates the full
+  source immediately before committing its retained cache. The real GUI gate
+  exercises all ten variants, stale-state refusal, exact settings and source
+  preservation, multi-output History and undo/redo, durable indexed-edit
+  invalidation, background Gmsh, and FCStd reopen. It emits
+  `VIBECAD_NATIVE_MESH_MODIFY_GUI_OK variants=10 ...`; the existing Mesh I/O
+  and conversion lifecycle gates and the 81-test registry/action suite remain
+  green.
+- The third Mesh checkpoint exposes all three Boolean and all five Cut ribbon
+  actions as two focused instruments: `mesh.boolean` and `mesh.cut`. Boolean
+  accepts exactly two closed current-History Mesh solids, preserves source
+  order for Difference, creates the retained `MeshPart::Boolean`, and uses an
+  additive many-input/one-result History publisher so both replaced inputs
+  return together before the operation. Polygon Cut and Trim no longer expose
+  the human command's camera-relative gesture as an automation contract: the
+  new retained `Mesh::PolygonEdit` stores 3 to 256 ordered coplanar vertices in
+  document coordinates and recomputes complete-facet Cut or boundary-clipping
+  Trim from those stable parameters. Each may keep one complement or publish
+  both under one replacement controller. Datum-plane trim/split reuses
+  `Mesh::TrimByPlane`; section and parallel cross-sections reuse the retained
+  `MeshPart` wire features and remain source-preserving. Exact datum planes
+  are now included in the bounded Mesh snapshot so the provider receives the
+  required object name and state digest without a separate exploratory call.
+  The real GUI lifecycle proves all eight variants, stale boolean refusal,
+  model-space polygon persistence, exact plane context, one-step split
+  undo/redo, retained links and History, and valid FCStd recomputation after
+  reopen. It emits `VIBECAD_NATIVE_MESH_BOOLEAN_CUT_GUI_OK booleans=3 cuts=5
+  ...`; Mesh, MeshGui, and VibeCADScripts build cleanly apart from the existing
+  GCC/fmt warnings, and the 81-test registry/action suite remains green.
+- The fourth Mesh checkpoint exposes every human Segment-group action through
+  one discriminated `mesh.segment` instrument: Merge, Split Components,
+  curvature Segmentation, Segmentation Best Fit, Reverse Segmentation, Manual
+  Segmentation, Segmentation from Components, and Mesh Boundary. Every target
+  is an exact current-History mesh with a state digest. Curvature and best-fit
+  requests use typed per-surface parameters; manual selection uses bounded
+  indices or compact ranges; component results retain stable facet subsets.
+  Mesh outputs and recomputable `MeshPart::Boundary` shape outputs are owned by
+  the same operation controller when one human action creates both, preserving
+  one History entry and one Undo step without losing linked-source semantics.
+  Detection operates on private kernel copies, so smoothing used for detection
+  cannot mutate the document. The bounded Mesh snapshot now also describes
+  linked MeshPart shape topology. The real GUI lifecycle exercises all eight
+  actions, stale-state refusal, typed native algorithms, retained boundaries,
+  one-step undo/redo, FCStd reopen, and recomputation. It emits
+  `VIBECAD_NATIVE_MESH_SEGMENT_GUI_OK actions=8 ...`; all preceding Mesh I/O,
+  conversion, Modify, and Boolean/Cut lifecycle gates remain green.
+- The fifth Mesh checkpoint exposes all six human Analyze-group actions as two
+  deliberately separate instruments. `mesh.inspect` performs bounded facet,
+  retained-curvature, solid, and bounding-box reads without touching document
+  revision or Undo; its complete defect evaluation operates on a detached Mesh
+  in the background, releases the Python lock inside the native evaluators,
+  and verifies the exact live source before returning bounded counts and
+  samples. `mesh.curvature` is the sole mutation: it creates recomputable,
+  source-linked `Mesh::Curvature` results with persisted sample counts and
+  source-preserving History ownership in one atomic Undo entry. The real GUI
+  lifecycle exercises stale-state rejection, all six ribbon actions, event-loop
+  responsiveness, read stability, exact selected facet and vertex data,
+  curvature Undo/Redo, and FCStd reopen. It emits
+  `VIBECAD_NATIVE_MESH_ANALYZE_GUI_OK actions=6 ...`.
+- The sixth Mesh checkpoint exposes all six human Points-group actions through
+  one discriminated `mesh.points` mutation instrument plus the existing
+  `mesh.export` instrument. Import and export use human-authorized paths which
+  never enter provider arguments or results. Sampling, grid inference, merge,
+  polygon selection, and file I/O operate on detached point data in background
+  jobs, with native loops releasing the Python lock. Geometry conversion uses
+  independently typed `geometry_sources`; merge uses independently typed
+  `point_clouds`, preventing schema compaction from weakening either nested
+  contract. Every point target includes the published state digest and point
+  count. Merge transforms coordinates and normals into document space and
+  retains complete aligned intensity, color, and normal arrays; incomplete
+  attribute families are omitted explicitly and reported. Structure uses an
+  explicit coordinate tolerance and rejects sparse or ambiguous grids.
+  Polygon cutting uses 3 to 256 coplanar document-space vertices and never
+  depends on the camera. The shared History publisher now additively accepts
+  non-Mesh geometry replacement sources while preserving its stricter Mesh
+  validation. The real GUI lifecycle exercises all six actions, multi-source
+  geometry sampling, exact stale refusal, attributes, structure, model-space
+  split, path-redacted round-trip I/O, UI dispatch, one-step Undo/Redo, and
+  FCStd reopen. It emits `VIBECAD_NATIVE_MESH_POINTS_GUI_OK actions=6 ...`;
+  the Boolean/Cut and Segment lifecycle gates remain green.
+- The seventh Mesh checkpoint exposes every Reverse Engineering action composed
+  into the Mesh ribbon through two focused background instruments:
+  `mesh.rebuild` for Poisson reconstruction and structured-cloud triangulation,
+  and `mesh.approximate` for plane, cylinder, sphere, polynomial, B-spline
+  surface, and B-spline curve fitting. Each operation freezes an exact
+  current-History source, performs native geometry work away from the UI
+  thread, revalidates immediately before one atomic commit, preserves its
+  source, and returns bounded topology plus quantitative fit information.
+  Poisson availability follows the compiled PCL Surface feature and reports a
+  precise unavailable result when that optional dependency is absent. The real
+  GUI lifecycle exercises all eight actions, UI responsiveness, all six fitting
+  paths, structured triangulation, conditional Poisson behavior, one-step
+  Undo/Redo, and FCStd reopen. It emits
+  `VIBECAD_NATIVE_MESH_REVERSE_GUI_OK actions=8 background=true fits=6
+  triangulation=true poisson_conditional=true undo_redo=true reopen=true`;
+  the Points, Analyze, Segment, and Boolean/Cut lifecycle gates remain green.
+- The completed Mesh surface covers all 60 actions in the live VibeCAD Mesh
+  ribbon inventory. Provider context stays cheap: object state carries bounded
+  identity, topology counts, bounds, and state digests; explicit inspection
+  returns component, manifold, watertight, and bounded defect information only
+  when requested; mutations return the exact output topology and settings
+  without native arrays or raw geometry dumps. The eight real-GUI suites cover
+  I/O, conversion, repair/modify, Boolean/Cut, segmentation, Analyze, Points,
+  and Reverse Engineering as interoperable current-History workflows, including
+  stale refusal, background dispatch where required, one-step Undo/Redo, and
+  FCStd reopen. `MeshPart_CreateFlatMesh` and `MeshPart_CreateFlatFace` remain
+  conditional legacy menu-only commands: they are not present in the VibeCAD
+  Mesh ribbon action graph and therefore are deliberately not published to the
+  ribbon-scoped provider. The fail-closed manifest will require an explicit
+  implementation if either command is ever added to the VibeCAD ribbon.
+- [x] 12.1 Implement mesh inventory reading.
+- [x] 12.2 Implement mesh import with explicit file authorization.
+- [x] 12.3 Implement mesh export with explicit file authorization.
+- [x] 12.4 Implement regular-solid mesh creation.
+- [x] 12.5 Implement shape-to-mesh conversion.
+- [x] 12.6 Implement mesh-to-shape conversion.
+- [x] 12.7 Implement curve-on-mesh.
+- [x] 12.8 Implement normal harmonization.
+- [x] 12.9 Implement normal flipping.
+- [x] 12.10 Implement automatic hole filling.
+- [x] 12.11 Implement exact-boundary interactive-hole equivalent.
+- [x] 12.12 Implement facet addition.
+- [x] 12.13 Implement component removal.
+- [x] 12.14 Implement explicit component-by-hand equivalent using stable
   component IDs.
-- [ ] 12.15 Implement smoothing.
-- [ ] 12.16 Implement Gmsh remeshing in the background.
-- [ ] 12.17 Implement decimation.
-- [ ] 12.18 Implement scaling.
-- [ ] 12.19 Implement mesh union.
-- [ ] 12.20 Implement mesh intersection.
-- [ ] 12.21 Implement mesh difference.
-- [ ] 12.22 Implement polygon cut.
-- [ ] 12.23 Implement polygon trim.
-- [ ] 12.24 Implement trim by plane.
-- [ ] 12.25 Implement section by plane.
-- [ ] 12.26 Implement cross sections.
-- [ ] 12.27 Implement component merge.
-- [ ] 12.28 Implement component split.
-- [ ] 12.29 Implement segmentation.
-- [ ] 12.30 Implement best-fit segmentation.
-- [ ] 12.31 Implement mesh evaluation.
-- [ ] 12.32 Implement facet evaluation.
-- [ ] 12.33 Implement vertex-curvature calculation.
-- [ ] 12.34 Implement curvature information reading.
-- [ ] 12.35 Implement solid/watertight evaluation.
-- [ ] 12.36 Implement bounding-box reading.
-- [ ] 12.37 Implement point-cloud import.
-- [ ] 12.38 Implement point-cloud export.
-- [ ] 12.39 Implement point-cloud conversion.
-- [ ] 12.40 Implement point-cloud structure/edit operation.
-- [ ] 12.41 Implement point-cloud merge.
-- [ ] 12.42 Implement point-cloud polygon cutting.
-- [ ] 12.43 Implement Poisson reconstruction in the background.
-- [ ] 12.44 Implement triangulation viewing/reading.
-- [ ] 12.45 Implement manual segmentation with structured regions.
-- [ ] 12.46 Implement segmentation from components.
-- [ ] 12.47 Implement mesh-boundary extraction.
-- [ ] 12.48 Implement plane approximation.
-- [ ] 12.49 Implement cylinder approximation.
-- [ ] 12.50 Implement sphere approximation.
-- [ ] 12.51 Implement polynomial approximation.
-- [ ] 12.52 Implement surface approximation.
-- [ ] 12.53 Implement curve approximation.
-- [ ] 12.54 Implement optional flat-mesh and flat-face conversions when compiled.
-- [ ] 12.55 Return counts, bounds, components, manifold status, defects, and
+- [x] 12.15 Implement smoothing.
+- [x] 12.16 Implement Gmsh remeshing in the background.
+- [x] 12.17 Implement decimation.
+- [x] 12.18 Implement scaling.
+- [x] 12.19 Implement mesh union.
+- [x] 12.20 Implement mesh intersection.
+- [x] 12.21 Implement mesh difference.
+- [x] 12.22 Implement polygon cut.
+- [x] 12.23 Implement polygon trim.
+- [x] 12.24 Implement trim by plane.
+- [x] 12.25 Implement section by plane.
+- [x] 12.26 Implement cross sections.
+- [x] 12.27 Implement component merge.
+- [x] 12.28 Implement component split.
+- [x] 12.29 Implement segmentation.
+- [x] 12.30 Implement best-fit segmentation.
+- [x] 12.31 Implement mesh evaluation.
+- [x] 12.32 Implement facet evaluation.
+- [x] 12.33 Implement vertex-curvature calculation.
+- [x] 12.34 Implement curvature information reading.
+- [x] 12.35 Implement solid/watertight evaluation.
+- [x] 12.36 Implement bounding-box reading.
+- [x] 12.37 Implement point-cloud import.
+- [x] 12.38 Implement point-cloud export.
+- [x] 12.39 Implement point-cloud conversion.
+- [x] 12.40 Implement point-cloud structure/edit operation.
+- [x] 12.41 Implement point-cloud merge.
+- [x] 12.42 Implement point-cloud polygon cutting.
+- [x] 12.43 Implement Poisson reconstruction in the background.
+- [x] 12.44 Implement triangulation viewing/reading.
+- [x] 12.45 Implement manual segmentation with structured regions.
+- [x] 12.46 Implement segmentation from components.
+- [x] 12.47 Implement mesh-boundary extraction.
+- [x] 12.48 Implement plane approximation.
+- [x] 12.49 Implement cylinder approximation.
+- [x] 12.50 Implement sphere approximation.
+- [x] 12.51 Implement polynomial approximation.
+- [x] 12.52 Implement surface approximation.
+- [x] 12.53 Implement curve approximation.
+- [x] 12.54 Audit optional flat-mesh and flat-face conversions: keep the
+  compiled legacy menu-only commands outside the Native surface unless they
+  are explicitly added to the VibeCAD Mesh ribbon.
+- [x] 12.55 Return counts, bounds, components, manifold status, defects, and
   changed topology concisely.
-- [ ] 12.56 Complete repair, convert, Points, and Reverse Engineering workflows.
+- [x] 12.56 Complete repair, convert, Points, and Reverse Engineering workflows.
 
 ### 13. Implement the Analyze surface
 
-- [ ] 13.1 Implement Analysis container creation and reading.
-- [ ] 13.2 Implement solid material assignment.
-- [ ] 13.3 Implement fluid material assignment.
-- [ ] 13.4 Implement nonlinear mechanical material assignment.
-- [ ] 13.5 Implement reinforced material assignment.
-- [ ] 13.6 Implement material-property reading/editing without a modal editor.
-- [ ] 13.7 Implement 1D element geometry.
-- [ ] 13.8 Implement 1D element rotation.
-- [ ] 13.9 Implement 2D element geometry.
-- [ ] 13.10 Implement 1D fluid element setup.
-- [ ] 13.11 Implement vacuum permittivity.
-- [ ] 13.12 Implement electromagnetic constraint.
-- [ ] 13.13 Implement current-density constraint.
-- [ ] 13.14 Implement magnetization constraint.
-- [ ] 13.15 Implement electric-charge-density constraint.
-- [ ] 13.16 Implement initial-flow-velocity constraint.
-- [ ] 13.17 Implement initial-pressure constraint.
-- [ ] 13.18 Implement flow-velocity constraint.
-- [ ] 13.19 Implement plane-rotation constraint.
-- [ ] 13.20 Implement section-print constraint.
-- [ ] 13.21 Implement transform constraint.
-- [ ] 13.22 Implement fixed constraint.
-- [ ] 13.23 Implement rigid-body constraint.
-- [ ] 13.24 Implement displacement constraint.
-- [ ] 13.25 Implement contact constraint.
-- [ ] 13.26 Implement tie constraint.
-- [ ] 13.27 Implement spring constraint.
-- [ ] 13.28 Implement force constraint.
-- [ ] 13.29 Implement pressure constraint.
-- [ ] 13.30 Implement centrifugal constraint.
-- [ ] 13.31 Implement self-weight constraint.
-- [ ] 13.32 Implement initial-temperature constraint.
-- [ ] 13.33 Implement heat-flux constraint.
-- [ ] 13.34 Implement temperature constraint.
-- [ ] 13.35 Implement body-heat-source constraint.
-- [ ] 13.36 Implement Netgen mesh generation in the background.
-- [ ] 13.37 Implement Gmsh mesh generation in the background.
-- [ ] 13.38 Implement mesh region.
-- [ ] 13.39 Implement mesh group.
-- [ ] 13.40 Implement mesh-distance refinement.
-- [ ] 13.41 Implement boundary-layer refinement.
-- [ ] 13.42 Implement mesh-shape refinement.
-- [ ] 13.43 Implement mesh manipulation.
-- [ ] 13.44 Implement advanced mesh settings.
-- [ ] 13.45 Implement transfinite curve settings.
-- [ ] 13.46 Implement transfinite surface settings.
-- [ ] 13.47 Implement transfinite volume settings.
-- [ ] 13.48 Implement element-set creation.
-- [ ] 13.49 Implement FEM-mesh to Mesh conversion.
-- [ ] 13.50 Implement CalculiX solver creation.
-- [ ] 13.51 Implement Elmer solver creation.
-- [ ] 13.52 Implement Mystran solver creation.
-- [ ] 13.53 Implement Z88 solver creation.
-- [ ] 13.54 Implement elasticity equation.
-- [ ] 13.55 Implement deformation equation.
-- [ ] 13.56 Implement electrostatic equation.
-- [ ] 13.57 Implement electric-force equation.
-- [ ] 13.58 Implement magnetodynamic equation.
-- [ ] 13.59 Implement 2D magnetodynamic equation.
-- [ ] 13.60 Implement static-current equation.
-- [ ] 13.61 Implement flow equation.
-- [ ] 13.62 Implement flux equation.
-- [ ] 13.63 Implement heat equation.
-- [ ] 13.64 Implement solver-control editing.
-- [ ] 13.65 Implement background solver execution and cancellation.
-- [ ] 13.66 Implement clipping-plane add and remove as presentation state.
-- [ ] 13.67 Classify Examples as human-only instructional UI.
-- [ ] 13.68 Implement result purge.
-- [ ] 13.69 Implement result display selection.
-- [ ] 13.70 Implement post-pipeline creation.
-- [ ] 13.71 Implement branch filter.
-- [ ] 13.72 Implement warp filter.
-- [ ] 13.73 Implement scalar clip filter.
-- [ ] 13.74 Implement cut-function filter.
-- [ ] 13.75 Implement region clip filter.
-- [ ] 13.76 Implement contour filter.
-- [ ] 13.77 Implement data-along-line extraction.
-- [ ] 13.78 Implement linearized-stress reading.
-- [ ] 13.79 Implement data-at-point extraction.
-- [ ] 13.80 Implement calculator filter.
-- [ ] 13.81 Implement plane post function.
-- [ ] 13.82 Implement sphere post function.
-- [ ] 13.83 Implement cylinder post function.
-- [ ] 13.84 Implement box post function.
-- [ ] 13.85 Implement glyph filter when compiled.
-- [ ] 13.86 Implement table visualization when compiled.
-- [ ] 13.87 Implement histogram visualization when compiled.
-- [ ] 13.88 Implement line-plot visualization when compiled.
-- [ ] 13.89 Return analysis graph, readiness, mesh, solver, run status, and result
+- The first Analyze checkpoint covers all six actions in the live Model group
+  with one focused `analyze.model` mutation instrument and three explicit
+  `analyze.inspect` reads. Analysis creation can honor the same default-solver
+  preference as the human command or deliberately create no solver. Solid,
+  fluid, and reinforced materials accept installed catalog UUIDs plus bounded
+  typed physical-property overrides; overrides explicitly clear catalog
+  identity instead of retaining a false card UUID. References use exact
+  current-History object state and explicit `SolidN`, `FaceN`, or `EdgeN`
+  names, never ambient selection. The Material Editor ribbon action becomes an
+  exact in-place edit of one durable FEM material and never opens modal UI.
+  Analysis/material reads and bounded catalog search do not advance structural
+  revision or Undo. Nonlinear behavior uses native resource reconciliation:
+  the nonlinear object is a canonical resource immediately before its solid
+  material root, preserving the native `solid.Nonlinear` dependency without a
+  later-root DAG violation or a fabricated extra operation. The dispatcher
+  lifecycle gate exercises the actual Analyze ribbon mapping, all six
+  mutations, all three reads, default-solver preference, solid/fluid/reinforced
+  cards, typed overrides, nonlinear hardening data, stale refusal, canonical
+  History, one-step Undo/Redo, and exact links, proxies, maps, UUIDs, and roles
+  after FCStd reopen. It emits `VIBECAD_NATIVE_ANALYZE_MODEL_GUI_OK actions=6
+  reads=3 exact_targets=true catalog=true history=true undo_redo=true
+  reopen=true read_revision_stable=true`.
+- The second Analyze checkpoint covers all four live Geometry-group actions
+  with one strongly typed `analyze.geometry` instrument plus one exact
+  `analyze.inspect` read. Beam sections expose five discriminated shapes;
+  shell thickness accepts only positive physical thickness; beam rotations
+  use explicit degrees; and 1D liquid sections expose every CalculiX section
+  type currently offered by the human editor with only its applicable fields.
+  Edge-based definitions accept only exact current `EdgeN` references, shell
+  definitions accept only exact current `FaceN` references, and an empty list
+  deliberately means a global assignment. Every definition is a real analysis
+  member and durable root History operation. Exact in-place edit variants let
+  the assistant correct labels, assignments, or engineering values without
+  appending replacement clutter; they reject stale targets, wrong subelement
+  kinds, nonphysical pipe/box dimensions, invalid area transitions, and
+  malformed pump curves before mutation. Provider context now includes
+  bounded normalized element-definition state and opaque state hashes, while
+  create responses return only the next exact analysis target plus the created
+  definition rather than repeating the full analysis membership. The real GUI
+  lifecycle exercises the actual ribbon mappings, all four create and edit
+  paths, every beam/fluid discriminator, exact edge/face references, rejected
+  invalid input, read-only revision stability, canonical History, one-step
+  Undo/Redo, and exact values, proxies, links, and roles after FCStd reopen. It
+  emits `VIBECAD_NATIVE_ANALYZE_GEOMETRY_GUI_OK actions=4 edits=4 reads=1
+  exact_references=true typed_sections=true history=true undo_redo=true
+  reopen=true read_revision_stable=true`.
+- The third Analyze checkpoint covers all four live Electromagnetics child
+  actions with one discriminated `analyze.electromagnetic` instrument and one
+  exact `analyze.inspect` read. The composite ribbon button remains a
+  human-only parent and exposes no duplicate provider operation. Dirichlet and
+  Neumann boundaries publish only fields active for their mode; current
+  density separates enabled Cartesian components from a normal boundary
+  value; magnetization carries one or more explicitly enabled complex axes;
+  and electric charge distinguishes interface, source, total-interface, and
+  distributed or concentrated total-source modes. All quantities use named SI
+  units. References are exact current-History targets, including vertices for
+  concentrated charge, and mode-incompatible topology is rejected before a
+  transaction. Solver-supported global current-density and magnetization
+  assignments remain available, while ambiguous multiple-global states are
+  refused. Creates are real analysis members and durable History roots;
+  in-place edits do not append replacement features; reads do not advance
+  structural revision. The lifecycle gate exercises the live ribbon mapping,
+  all four creates and edits, every discriminator, mixed references, invalid
+  topology, global-assignment safety, Elmer Cartesian serialization, stale
+  refusal, canonical History, one-step Undo/Redo, and exact proxies, units,
+  values, references, and hashes after FCStd reopen. It emits
+  `VIBECAD_NATIVE_ANALYZE_ELECTROMAGNETIC_GUI_OK actions=4 edits=4 reads=1
+  exact_references=true typed_modes=true history=true undo_redo=true
+  reopen=true read_revision_stable=true`.
+- The fourth Analyze checkpoint covers the three live Fluid-group actions with
+  one `analyze.fluid` instrument and one exact `analyze.inspect` read. Initial
+  velocity and boundary velocity use a small per-axis discriminator: each
+  specified axis is either an SI value in metres per second or one bounded,
+  single-line Elmer expression; omitted axes remain genuinely unspecified.
+  Initial pressure is an explicit signed value in pascals. Solver-supported
+  global initial conditions use an intentional empty reference list and are
+  rejected whenever another constraint of the same type would make that
+  global meaning ambiguous. Boundary velocity always requires exact current
+  geometry, including mixed supported subelement kinds. Creates are real
+  analysis members and durable History roots, exact edits update in place,
+  formula/control characters and stale geometry are rejected before mutation,
+  and reads do not advance structural revision. The real GUI lifecycle covers
+  all three creates and edits, numeric and formula axes, global ambiguity,
+  mixed references, invalid multiline formula refusal, native solver-facing
+  fields, canonical History, Undo/Redo, and exact proxies, values, formulas,
+  assignments, and hashes after FCStd reopen. It emits
+  `VIBECAD_NATIVE_ANALYZE_FLUID_GUI_OK actions=3 edits=3 reads=1
+  exact_references=true typed_velocity=true history=true undo_redo=true
+  reopen=true read_revision_stable=true`.
+- The fifth Analyze checkpoint covers all three live Geometrical Analysis
+  Features with a separate `analyze.geometrical` instrument and one exact
+  `analyze.inspect` read. Plane rotation accepts exactly one current planar
+  face. Section print accepts exactly one current face and exposes the four
+  solver-backed result variables as a closed enum. Local coordinate systems
+  use a discriminated rectangular or cylindrical definition: rectangular
+  mode takes one explicit axis-angle rotation, while cylindrical mode derives
+  its origin and axis from one cylindrical support face. A transform support
+  must already be referenced by a displacement condition or force load in the
+  same analysis; rejection reports the bounded set of eligible faces instead
+  of merely saying that the target type is wrong. Creates are real analysis
+  members and durable History roots, exact edits update the same operation,
+  stale targets and invalid surface geometry are refused before mutation, and
+  reads do not advance structural revision. The checkpoint also corrected the
+  shared native FEM subshape resolver to request the named subelement rather
+  than silently returning its owning solid, made cylinder-frame extraction
+  reject invalid or degenerate surfaces without throwing, and refreshes the
+  derived frame when transform type changes. Those native fixes apply equally
+  to the human editor and Native tools. The real GUI lifecycle covers all
+  three creates and edits, transform eligibility, rectangular and cylindrical
+  frames, native fields, canonical History, Undo/Redo, and exact values,
+  references, identities, and hashes after FCStd reopen. It emits
+  `VIBECAD_NATIVE_ANALYZE_GEOMETRICAL_GUI_OK actions=3 edits=3 reads=1
+  exact_faces=true typed_frames=true eligibility=true history=true
+  undo_redo=true reopen=true read_revision_stable=true`.
+- The sixth Analyze checkpoint covers the four mechanical support actions with
+  one focused `analyze.support` instrument and one exact `analyze.inspect`
+  read. Fixed, rigid-body, displacement, and spring conditions each require
+  exact current geometry and preserve the human tool's allowed subelement
+  kinds. Rigid-body degrees of freedom are explicit per-axis discriminators:
+  translation axes are free, prescribed displacement, or applied force;
+  rotation axes are free, prescribed rotation, or applied moment. The tool
+  converts prescribed rotation components to the solver's native axis-angle
+  property without exposing its storage mechanics. Displacement axes are
+  free, numeric, or a bounded single-line formula, rotational axes are free or
+  numeric, and flow-surface-force mode is admitted only when every axis is
+  free. Surface springs expose both physical stiffnesses plus the exact Elmer
+  component and reject a non-positive selected stiffness. Every create is a
+  real analysis member and durable History root; exact edits update the same
+  object, stale targets and mixed reference kinds fail before mutation, and
+  inspection does not advance structural revision. The real GUI lifecycle
+  covers all four creates and edits, invalid mixed references and flow state,
+  numeric/formula/load modes, solver-native fields, canonical History,
+  Undo/Redo, and exact definitions, references, identities, and hashes after
+  FCStd reopen. It emits `VIBECAD_NATIVE_ANALYZE_SUPPORT_GUI_OK actions=4
+  edits=4 reads=1 exact_references=true typed_dofs=true history=true
+  undo_redo=true reopen=true read_revision_stable=true`.
+- The seventh Analyze checkpoint covers Contact and Tie with one focused
+  `analyze.connection` instrument and one exact `analyze.inspect` read. Both
+  operations name their slave and master endpoints explicitly, eliminating
+  the solver-significant but previously opaque ordering of a generic
+  references list. Each endpoint is exactly one current face, or one current
+  edge for a 2D model; both endpoints must have the same dimensional kind and
+  cannot name the same subelement. Contact exposes positive solver-backed
+  contact stiffness, non-negative clearance adjustment, and a closed
+  frictionless/Coulomb discriminator whose Coulomb branch requires positive
+  coefficient and stick stiffness. Tie exposes the human editor's tolerance
+  and node-adjustment controls. Solver properties not offered by the human
+  editors, including thermal contact and cyclic symmetry, are not invented as
+  AI-only inputs, but remain part of exact state hashing so external changes
+  cannot be silently overwritten. Creates are real analysis members and
+  durable History roots, exact edits preserve object identity and endpoint
+  roles, stale targets fail before mutation, and reads keep structural
+  revision stable. The real GUI lifecycle covers both creates and edits,
+  mixed-dimension and duplicate-endpoint refusal, face and 2D-edge pairs,
+  frictionless and Coulomb contact, native properties, canonical History,
+  Undo/Redo, and exact definitions, endpoints, identities, and hashes after
+  FCStd reopen. It emits `VIBECAD_NATIVE_ANALYZE_CONNECTION_GUI_OK actions=2
+  edits=2 reads=1 exact_roles=true typed_contact=true history=true
+  undo_redo=true reopen=true read_revision_stable=true`.
+- The eighth Analyze checkpoint covers all four Mechanics load actions with
+  one focused `analyze.load` instrument and one exact `analyze.inspect` read.
+  Each operation has a direct, tailored schema rather than a generic load
+  object. Force requires positive newtons, exact current loaded geometry of
+  one common vertex/edge/face kind, and either the geometry's natural normal
+  or one exact linear-edge, planar-face, or datum direction with explicit
+  reversal. Pressure requires positive pascals and exact face or 2D-edge
+  geometry. Centrifugal load requires positive frequency, exactly one current
+  linear edge as its axis, and a closed all-bodies or selected-geometry scope.
+  Gravity requires positive acceleration and a nonzero direction that is
+  normalized and canonically rounded before native assignment; only one
+  global gravity load may exist in an analysis. Force and pressure amplitude
+  data remains part of exact hashing without adding controls absent from the
+  human editors. Creates are real analysis members and durable History roots,
+  edits preserve identity, source hashes guard load/direction/axis geometry,
+  stale calls fail before mutation, failed postconditions name their exact
+  invariant, and reads do not advance structural revision. The real GUI
+  lifecycle covers all four creates and edits, invalid curved force direction,
+  natural and referenced directions, face and 2D-edge loads, all/selected
+  centrifugal scopes, gravity uniqueness and normalization, solver-native
+  values, canonical History, Undo/Redo, and exact values, references,
+  identities, and hashes after FCStd reopen. It emits
+  `VIBECAD_NATIVE_ANALYZE_LOAD_GUI_OK actions=4 edits=4 reads=1
+  exact_directions=true typed_scopes=true global_gravity=true history=true
+  undo_redo=true reopen=true read_revision_stable=true`.
+- The ninth Analyze checkpoint covers all four Thermal ribbon actions through
+  one focused `analyze.thermal` instrument and one exact `analyze.inspect`
+  read. The contract exposes the human editors' solver-significant modes as
+  explicit operations: analysis-global initial temperature; distributed
+  surface flux, convection, and radiation; prescribed geometry temperature
+  and concentrated nodal heat input; and body heat generation by mass rate or
+  total power. Each operation accepts only its active SI fields, so inactive
+  values from the shared native object types never become ambiguous provider
+  inputs. Surface conditions require exact current faces or 2D edges, nodal
+  conditions accept vertices, edges, or faces, body sources accept solids or
+  shell faces, and one analysis may contain only one global initial
+  temperature. Temperatures are non-negative Kelvin, transfer coefficients
+  are positive, emissivity is in `(0, 1]`, and heat inputs are explicitly
+  nonzero while retaining their physical sign. Amplitude, cavity-radiation,
+  and final-temperature fields absent from the human editors' active tasks are
+  not invented as AI-only controls, but remain in exact hashes so external
+  edits cannot be silently overwritten. Creates are real analysis members and
+  durable History roots, mode-preserving edits retain identity, stale calls
+  fail before mutation, and reads do not advance structural revision. The
+  real GUI lifecycle covers all eight modes and edits, invalid mixed geometry,
+  global-initial uniqueness, native solver values, canonical History,
+  Undo/Redo, and exact values, references, identities, and hashes after FCStd
+  reopen. It emits `VIBECAD_NATIVE_ANALYZE_THERMAL_GUI_OK actions=4 modes=8
+  edits=8 reads=1 exact_references=true typed_conditions=true
+  global_initial=true history=true undo_redo=true reopen=true
+  read_revision_stable=true`.
+- The tenth Analyze checkpoint establishes durable Gmsh and Netgen mesh
+  definitions without falsely treating expensive generation as an immediate
+  document mutation. `analyze.mesh` creates or edits exactly one mesher owned
+  by an analysis, requires one exact current shape, exposes only the settings
+  present in the corresponding human task panel, and clears generated mesh
+  data only when source or meshing settings change. Both definitions retain
+  canonical History identity, undo/redo, and save/reopen state. The real GUI
+  lifecycle emits `VIBECAD_NATIVE_ANALYZE_MESH_GUI_OK actions=2 meshers=2
+  edits=2 exact_sources=true one_mesh_per_analysis=true definitions_only=true
+  history=true undo_redo=true reopen=true read_revision_stable=true`. Actual
+  backend execution remains deliberately open in 13.36 and 13.37 so it can be
+  implemented with a frozen background plan and a main-thread commit.
+- The eleventh Analyze checkpoint covers the five primary mesh-refinement
+  resources and all three structured transfinite resources. Region, group,
+  distance, boundary-layer, and analytic-shape fields accept only their
+  solver-valid geometry kinds and settings. Transfinite curve, surface, and
+  volume definitions have their own compact tool with explicit node,
+  distribution, orientation, automation, recombination, inversion, and mixed-
+  element controls. Each resource is a canonical child in its mesh History
+  block rather than an extra root operation; semantic edits invalidate stale
+  generated mesh data and label-only edits do not. The two real GUI lifecycle
+  gates emit `VIBECAD_NATIVE_ANALYZE_MESH_REFINEMENT_GUI_OK actions=5 modes=5
+  edits=5 exact_geometry=true owned_resources=true invalidation=true
+  history=true undo_redo=true reopen=true read_revision_stable=true` and
+  `VIBECAD_NATIVE_ANALYZE_STRUCTURED_MESH_GUI_OK actions=3 modes=3 edits=3
+  typed_distribution=true mixed_surface_geometry=true owned_resources=true
+  history=true undo_redo=true reopen=true`.
+- The twelfth Analyze checkpoint covers Gmsh field composition with one
+  `analyze.mesh_field` instrument containing twenty operation-specific
+  branches and no unknown schema types. It implements restrict, threshold,
+  mean, gradient, curvature, Laplacian, anisotropic-curve, scalar-math,
+  anisotropic-math, and distance fields. Inputs are exact revision targets,
+  must be active field-producing resources owned by the same mesh, are bounded
+  to Gmsh's eight math inputs, and are traversed transitively so cycles and
+  stale descendants fail before mutation. Geometry is limited to the kinds
+  each generated Gmsh field actually consumes, equations reject unavailable
+  `F#` inputs, all resources live inside the owning mesh History block, and
+  semantic edits invalidate generated data. The 20-variant schema is 9,876
+  bytes with no `unknown` token. The real GUI lifecycle emits
+  `VIBECAD_NATIVE_ANALYZE_MESH_FIELD_GUI_OK actions=2 kinds=10 edits=10
+  exact_dependencies=true cycle_rejection=true typed_geometry=true
+  owned_resources=true history=true undo_redo=true reopen=true`. Result-backed
+  advanced fields remain open until the FEM result family can supply an exact
+  field-data target; object name alone is intentionally not accepted as proof.
+- The thirteenth Analyze checkpoint implements cancellable background Gmsh
+  and Netgen generation without allowing a worker thread to touch the live
+  document. The main thread freezes the exact mesher, source, owned refinement
+  graph, History order, configured backend, and generated input files; the
+  worker owns only the subprocess and bounded artifact bytes; and the main
+  thread imports the artifact through one reauthorized mutation transaction.
+  Changes made while a backend runs reject the stale artifact, one document
+  admits only one active Native background job, cancellation ends before
+  commit, and `native.job` returns concise progress and terminal results. This
+  checkpoint also adds an explicit detached mode to the stock FEM preparation
+  helpers so preflight does not write `Tool` or `WorkingDirectory`, and fixes
+  `PropertyFemMesh` transaction snapshots to deep-copy mutable mesh data so a
+  generated mesh is genuinely undoable. Existing interactive FEM helper
+  behavior remains the default. The real GUI lifecycle emits
+  `VIBECAD_NATIVE_ANALYZE_MESH_GENERATION_GUI_OK backends=2 background=true
+  responsive=true cancellation=true exact_commit=true refinements=true
+  undo_redo=true reopen=true`.
+- The fourteenth Analyze checkpoint covers the two mesh-output actions without
+  exposing ambient selection or dumping an entire FEM mesh into context.
+  `analyze.inspect.fem_mesh_elements` returns bounded 64-element pages with
+  exact IDs, connectivity, centroids, and bounds. `analyze.mesh_output` erases
+  either at most 256 explicit IDs or up to one million IDs expressed as 256
+  sorted inclusive ranges, rejects gaps and non-primary IDs, and always leaves
+  at least one primary element. The filtered `Fem::FemMeshObject` is a durable
+  resource owned by the human-compatible `FemSetElementNodes` History
+  operation. The conversion variant creates an ordinary `Mesh::Feature` from
+  the undeformed exterior and uses a new additive converter whose face keys do
+  not impose the legacy one-million-node-ID packing limit. Both operations
+  preserve exact input content, replacement presentation, canonical History,
+  and undo/redo. Generic baked and filtered FEM meshes now have bounded exact
+  state in Analyze context, so later turns can target them directly. The real
+  GUI lifecycle emits `VIBECAD_NATIVE_ANALYZE_MESH_OUTPUT_GUI_OK actions=2
+  variants=3 inspect=true exact_ids=true ranges=true atomic_rejection=true
+  filtered_resource=true conversion_facets=6 history=true undo_redo=true
+  reopen=true read_revision_stable=true`. Result-deformed conversion remains
+  open until the result slice supplies an exact displacement-field target.
+- The fifteenth Analyze checkpoint covers all four solver-definition actions
+  with one focused `analyze.solver` tool. Each operation accepts only an exact
+  analysis revision and a visible label, then delegates to the same
+  `createDefaultSolverFeature` factory used by the human Analyze workflow so
+  CalculiX pipeline selection and every backend preference remain authoritative
+  in one place. Solver creation is deliberately separate from job control and
+  execution. Analyze context and `analyze.inspect.solver` expose bounded exact
+  backend kind, implementation, owning analysis, suppression state, settings,
+  children, History role, and state hash without advancing structural revision.
+  The real GUI lifecycle changes backend preferences before creating CalculiX,
+  Elmer, Mystran, and Z88 solvers; proves exact analysis membership, stale-target
+  rejection, canonical History, undo/redo, and FCStd reopen; and emits
+  `VIBECAD_NATIVE_ANALYZE_SOLVER_GUI_OK actions=4 variants=4
+  human_factories=true preferences=true exact_analysis=true
+  stale_rejection=true inspect=true read_revision_stable=true history=true
+  undo_redo=true reopen=true`. The gate also corrected the human Analyze toolbar
+  to include its existing Erase Elements command, matching the already-shipped
+  command and Native action inventory rather than weakening fail-closed surface
+  validation.
+- The sixteenth Analyze checkpoint covers all ten equation actions with one
+  `analyze.equation` tool whose variants share only `solver` and `label`.
+  Creation requires an exact Elmer solver root, calls the same stock
+  `ObjectsFem.makeEquation*` factories as the human actions, preserves their
+  backend defaults and descending priorities, and publishes each equation as
+  an owned resource in the solver's canonical History block. A bounded FEM
+  property serializer retains meaningful scalar, enumeration, quantity, and
+  list settings while excluding object links and unsupported opaque values;
+  rejection diagnostics identify the exact property name and native type.
+  Analyze context and `analyze.inspect.equation` expose exact kind, solver,
+  priority, settings, History ownership, and state hash without changing
+  structural revision. The real GUI lifecycle emits
+  `VIBECAD_NATIVE_ANALYZE_EQUATION_GUI_OK actions=10 variants=10
+  exact_elmer=true defaults=true priorities=true owned_resources=true
+  stale_rejection=true inspect=true read_revision_stable=true history=true
+  undo_redo=true reopen=true`.
+- The seventeenth Analyze checkpoint separates persistent solver settings from
+  process execution. The focused `analyze.solver_control` tool has three
+  backend-specific operations and exposes all 54 writable document controls
+  actually observed by the CalculiX, Elmer, and Z88 task panels. Every field
+  is bounded and typed; model-facing units and integration orders are converted
+  to the native property representation only at the mutation boundary. The
+  preflight rejects wrong backends, stale solver hashes, exact no-ops, invalid
+  eigenmode/time/iteration relationships, unknown settings, and unsupported
+  values before opening a transaction. The mutation changes only explicitly
+  supplied properties, preserves the exact analysis membership and canonical
+  History graph, and returns the complete new solver state plus only the
+  requested semantic settings. Mystran deliberately has no settings variant:
+  its sole AnalysisType is locked to static and its useful controls belong to
+  the execution/input-artifact slice. The real GUI lifecycle emits
+  `VIBECAD_NATIVE_ANALYZE_SOLVER_CONTROL_GUI_OK actions=1 variants=3
+  typed_settings=54 exact_backend=true cross_field_validation=true
+  wrong_backend_rejection=true no_op_rejection=true stale_rejection=true
+  history_stable=true inspect=true read_revision_stable=true undo_redo=true
+  reopen=true`.
+- The eighteenth Analyze checkpoint exposes one focused
+  `analyze.solver_execution` `run` operation for every shipped solver kind and
+  both CalculiX implementations. The main-thread boundary freezes the exact
+  solver, History, retention preference, input artifacts, executable sequence,
+  environment, timeout, and input digest before a shell-free worker runs the
+  configured external processes. Every run uses an isolated temporary
+  directory, a 4 GiB/4,096-file input ceiling, a 16 MiB diagnostic ceiling,
+  cooperative process-tree cancellation, bounded status/error results, and
+  cleanup on success, refusal, cancellation, stale commit, and import failure.
+  CalculiX pipeline, CalculiX standard, Elmer, Mystran, and Z88 now have
+  detached preparation/import adapters; missing backend executables or
+  optional Mystran writer/reader modules fail with exact dependency guidance
+  before a job is launched.
+  Solver results no longer form independent later History operations or carry
+  a reverse producer link. The solver is the single semantic operation and
+  generated result roots/outputs are canonical nested resources immediately
+  before it, so the real document graph remains a DAG. The shared reconciler
+  preserves equations and unrelated solver resources, validates every exact
+  identity, supports stable-root updates, safely replaces Mystran-style result
+  graphs only when downstream consumers can be mapped exactly, and otherwise
+  refuses instead of leaving stale or dangling objects. The real GUI lifecycle
+  runs both CalculiX implementations through actual input writers and fake
+  external executables, proves event-loop progress, typed job polling, nested
+  result ownership, exact graph replacement, one-step undo/redo, and FCStd
+  reopen. It emits `VIBECAD_NATIVE_ANALYZE_SOLVER_EXECUTION_GUI_OK action=1
+  implementations=2 background=true ui_responsive=true exact_input=true
+  job_status=true exact_commit=true history=true undo_redo=true reopen=true`.
+  The focused execution, background, adoption, manifest, context, registry,
+  and capability suite is 99/99 green; touched production and gate Python
+  passes Ruff, the FEM/VibeCAD script targets rebuild, and `git diff --check`
+  is clean. Row 18.24 remains open for a deliberately large solver-input and
+  cancellation acceptance case rather than treating the representative
+  cantilever lifecycle as a stress test.
+- The nineteenth Analyze checkpoint establishes one exact, bounded result-data
+  boundary and one shared result-graph purge engine. `analyze.inspect.result`
+  reads legacy mechanical results and VTK post objects by opaque state hash,
+  returning only identity, ownership, point/cell counts, field metadata, and
+  scalar or vector-magnitude ranges; native result arrays never enter provider
+  context. Rolling Analyze context is smaller still: it carries at most 16
+  result references and 16 bounded field names per result. Read calls leave
+  structural revision and History unchanged and survive FCStd reopen.
+  `analyze.results.purge` requires the exact analysis revision, graph digest,
+  and object count. The shared FEM planner distinguishes direct solver result
+  roots, nested generated outputs, independent post operations/resources, and
+  untracked legacy artifacts; rejects downstream consumers outside the purge
+  graph; and rewrites solver History while retaining the solver, equations,
+  model, and meshes. The human `FEM_ResultsPurge` ribbon action now uses that
+  same FEM-owned engine instead of a separate selection-driven generic delete.
+  The real dispatcher lifecycle proves nested `solver.Results`, post-pipeline
+  dependencies, concurrent-result stale refusal, exact receipts, one
+  transaction, one-step Undo/Redo, canonical History, retained inputs, and
+  FCStd reopen. The two gates emit
+  `VIBECAD_NATIVE_ANALYZE_RESULT_INSPECT_GUI_OK variants=1 exact_targets=true
+  legacy_ranges=true vtk_ranges=true ownership=true bounded_context=true
+  read_revision_stable=true reopen=true` and
+  `VIBECAD_NATIVE_ANALYZE_RESULT_PURGE_GUI_OK action=1 exact_graph=true
+  nested_solver_results=true post_processing=true stale_rejection=true
+  retained_inputs=true history=true one_transaction=true undo_redo=true
+  reopen=true`. The focused manifest, registry, and capability inventory is
+  75/75 green, the existing human purge GUI test passes through the shared
+  engine, touched Python passes Ruff, both script targets rebuild, and
+  `git diff --check` is clean.
+- The twentieth Analyze checkpoint implements `FEM_ResultShow` as one sharp
+  `analyze.presentation` `show_result` operation. One exact legacy mechanical
+  result target selects its semantic scalar field, deformation scale, and
+  visibility atomically; the response contains the displayed range,
+  available semantic fields, and the next exact result target, but never node
+  identities, displacement vectors, scalar arrays, or renderer color data.
+  Unsupported result fields return the exact currently available fields and
+  deformation bounds. Presentation is applied directly through the FEM mesh
+  view provider without opening the task panel, a document transaction, or an
+  Undo entry, while the human result dialog receives compatible current state.
+  Manual entry into that dialog clears Native semantic presentation metadata
+  so later inspection cannot claim a stale field selected by the assistant.
+  Timeline end visibility is now correctly classified as presentation state,
+  transient group-touch notifications no longer advance Native structural
+  revision, and timeline visibility capture no longer emits an unchanged
+  suppression property. The real dispatcher gate proves field availability
+  repair, scalar-field switching, displacement application/reset, visibility,
+  exact-target chaining, stale refusal without side effects, bounded output,
+  stable History/revision/Undo, and an honest unmanaged state after FCStd
+  reopen. It emits
+  `VIBECAD_NATIVE_ANALYZE_RESULT_PRESENTATION_GUI_OK action=1 fields=true
+  field_repair=true exact_target=true no_arrays=true stale_rejection=true
+  no_transaction=true revision_stable=true reset=true reopen=true`. The
+  focused state, manifest, registry, and capability suite is 97/97 green; the
+  App, FEM-script, and VibeCAD-script targets rebuild, and touched Python
+  passes Ruff.
+- The twenty-first Analyze checkpoint folds both shipped FEM clipping commands
+  into the same focused `analyze.presentation` capability. The provider adds a
+  plane only from an exact live `FaceN` plus shape-and-global-placement digest,
+  and removes planes only from an exact active-view clipping graph digest and
+  count. It supports explicit normal reversal, caps and summarizes the Coin
+  scene graph without exposing scene nodes, rolls the next exact clipping
+  target forward, rejects stale graph or face state before changing the view,
+  restores presentation on guarded failure, and reports an empty removal as a
+  no-op. The human ribbon actions and Native calls now share the small FEM
+  clipping engine; its bounded-box calculation also removes the legacy debug
+  console spam. Analyze context contains the concise clipping graph and an
+  exact face-target token beside each bounded geometry source. The real GUI
+  gate emits `VIBECAD_NATIVE_ANALYZE_CLIPPING_GUI_OK actions=2 exact_face=true
+  exact_graph=true reverse=true stale_rejection=true no_op=true
+  no_transaction=true revision_stable=true camera_stable=true reopen=true`.
+  The existing human flat/empty-document clipping GUI test also passes, the
+  result-presentation lifecycle remains green, and the focused state,
+  manifest, context, registry, and capability suite is 108/108 green.
+- The twenty-second Analyze checkpoint implements
+  `FEM_PostPipelineFromResult` as the first exact `analyze.post` operation.
+  One exact legacy result and one exact owning analysis create and load a real
+  `Fem::FemPostPipeline` without task-panel automation. The source result is
+  retained, the pipeline is enrolled as the final History root, visible-source
+  replacement metadata is exact, and the concise response reports native VTK
+  point/cell counts and field summaries without returning result arrays. The
+  real GUI gate proves canonical field loading, exact ownership, bounded
+  output, one transaction, visibility restoration through undo, redo identity,
+  and FCStd reopen persistence. It emits
+  `VIBECAD_NATIVE_ANALYZE_POST_PIPELINE_GUI_OK action=1 exact_result=true
+  exact_analysis=true data=true no_arrays=true history=true
+  one_transaction=true undo_redo=true reopen=true`.
+- The twenty-third Analyze checkpoint adds `FEM_PostBranchFilter` to the same
+  concise `analyze.post` capability. An exact pipeline, branch, or ordinary
+  filter target deterministically resolves its direct destination group and
+  one owning pipeline; ambiguous, detached, or cyclic graphs fail before a
+  transaction with repair context. The provider explicitly chooses serial or
+  parallel child input and passthrough or appended output, while the mutation
+  creates one real `Fem::FemPostBranchFilter`, copies the source result color,
+  preserves the source object, records replacement only when the source was
+  visible, and returns the next exact graph targets without VTK arrays. The
+  extended real GUI gate emits
+  `VIBECAD_NATIVE_ANALYZE_POST_PIPELINE_GUI_OK actions=2 exact_result=true
+  exact_analysis=true exact_post_source=true data=true no_arrays=true
+  history=true one_transaction_each=true undo_redo=true reopen=true`.
+- The twenty-fourth Analyze checkpoint adds `FEM_PostFilterWarp` as an exact
+  `create_warp` variant. It accepts only a named three-component point field
+  that exists on the exact source and a bounded finite factor, returns the
+  available vector fields when repair is needed, joins the deterministic post
+  group, and uses FreeCAD's real dynamic field enumeration rather than task-
+  panel emulation. The filter is published before the in-transaction discovery
+  recompute, then configured and verified as one History/Undo operation. The
+  real GUI gate confirms the selected displacement field, native millimetre/
+  metre factor conversion through actual warped coordinates, source retention,
+  exact replacement, undo/redo identity, bounded output, and reopen persistence;
+  it emits `VIBECAD_NATIVE_ANALYZE_POST_PIPELINE_GUI_OK actions=3
+  exact_result=true exact_analysis=true exact_post_source=true data=true
+  vector_field=true warp_geometry=true no_arrays=true history=true
+  one_transaction_each=true undo_redo=true reopen=true`.
+- The twenty-fifth Analyze checkpoint adds `FEM_PostFilterClipScalar` as a
+  typed `create_scalar_clip` operation in the separate post-filter module. It
+  accepts only a scalar point field that exists on the exact source and a
+  finite threshold inside that field's current native range; unavailable
+  fields and out-of-range values return bounded field/range repair data before
+  mutation. Known VTK result fields now carry canonical units in inspection
+  and repair summaries, making the verified 10–80 MPa test data explicit as
+  10–80 million Pa. The real GUI gate proves the selected field, SI threshold,
+  actual clipped VTK range, deterministic serial placement after the warp,
+  source retention/replacement, one transaction, complete multi-step undo/
+  redo, bounded no-array output, and reopen persistence. It emits
+  `VIBECAD_NATIVE_ANALYZE_POST_PIPELINE_GUI_OK actions=4 ...
+  scalar_field=true range=true no_arrays=true history=true
+  one_transaction_each=true undo_redo=true reopen=true`.
+- The twenty-sixth Analyze checkpoint adds a separate sharp
+  `analyze.post_function` capability for the shipped plane, sphere, cylinder,
+  and box actions (including the parent dropdown's default plane action).
+  Every operation requires an exact pipeline plus fully typed millimetre
+  geometry; nonzero directions are normalized and all sizes are positive and
+  bounded. The first function atomically adds one shared function provider as
+  a History resource owned by the pipeline, and later functions reuse that
+  provider while remaining independent root operations. Pipeline digests now
+  include the bounded nested post graph, and result summaries identify exact
+  owning pipelines, so adding a provider child always rolls exact targets
+  forward. The eight-action real GUI lifecycle emits
+  `VIBECAD_NATIVE_ANALYZE_POST_PIPELINE_GUI_OK actions=8 ...
+  post_functions=4 normalized_directions=true provider_resource=true
+  no_arrays=true history=true one_transaction_each=true undo_redo=true
+  reopen=true` and proves one-transaction provider creation, stable identities,
+  complete reverse/forward undo order, and FCStd ownership persistence.
+- The twenty-seventh Analyze checkpoint connects those reusable functions to
+  `FEM_PostFilterCutFunction` and `FEM_PostFilterClipRegion`. Both typed
+  `analyze.post` variants require exact source and function hashes, resolve one
+  deterministic source pipeline, and reject functions owned by any other
+  pipeline before mutation. Region clipping additionally requires explicit
+  inside/out and whole-cell-versus-interpolated behavior. Each real filter
+  retains both dependencies, publishes one replacement History root, and
+  returns exact next targets without result arrays. The ten-action GUI gate
+  proves nonempty native cut and clipped datasets, exact same-pipeline links,
+  serial placement, source visibility replacement, full ten-step undo/redo,
+  stable identity, and reopen persistence; it emits
+  `VIBECAD_NATIVE_ANALYZE_POST_PIPELINE_GUI_OK actions=10 ...
+  implicit_cut=true region_clip=true same_pipeline_functions=true ...`.
+- The twenty-eighth Analyze checkpoint adds `FEM_PostFilterContours` as a
+  fully typed contour operation. It validates an exact varying point field,
+  enforces scalar versus vector-component choices, bounds the requested
+  visible contour count to FreeCAD's native 1–1000 contract, and makes field
+  coloring, smoothing, and relaxation explicit. After exact History
+  publication, one discovery recompute obtains the native dynamic field and
+  component enumerations; the final mutation configures both VTK output and
+  view-provider coloring in the same transaction. The eleven-action GUI gate
+  emits `VIBECAD_NATIVE_ANALYZE_POST_PIPELINE_GUI_OK actions=11 ...
+  contours=true contour_presentation=true ...` and proves a nonempty contour
+  dataset, deterministic serial placement, replacement visibility, complete
+  undo/redo identity, bounded output, and reopen persistence.
+- The twenty-ninth Analyze checkpoint implements the two source-preserving
+  probe operations and the read-only stress-linearization action. Exact line
+  probes require an available point field, a component valid for that field,
+  a nonzero millimetre line, and a bounded 1–100000 interval count. Exact point
+  probes require one available field and one finite millimetre point; scalar
+  fields return the scalar and multicomponent fields return the magnitude.
+  Both create durable native post-filter History roots, preserve the source's
+  current visibility, and return only validity counts, ranges, endpoint
+  samples, or one point value—never `XAxisData`, `YAxisData`, `PointData`, or
+  VTK arrays. Two narrow typed FEM Python bridges configure the otherwise
+  read-only native field selectors without weakening those properties. The
+  native filters now refresh sampled outputs after every recompute, and the
+  point filter creates one VTK point instead of the upstream default of ten
+  coincident points. Stress linearization is correctly classified as a read,
+  leaves structural revision and Undo unchanged, and exactly integrates the
+  piecewise-linear stress field to report membrane, bending, total, and peak
+  residual summaries in the field's canonical SI unit. The fourteen-action
+  lifecycle emits `VIBECAD_NATIVE_ANALYZE_POST_PIPELINE_GUI_OK actions=14 ...
+  source_preserving_samples=true stress_linearization=true
+  compact_sample_results=true ...` and proves real sampled values, exact
+  graph ownership, History, full undo/redo identity, bounded output, and FCStd
+  reopen persistence.
+- The thirtieth Analyze checkpoint implements `FEM_PostFilterCalculator` as a
+  typed `create_calculated_field` operation. The provider supplies bounded
+  reverse-Polish tokens for numbers, exact point fields/components,
+  coordinates, basis vectors, and a closed operator set; the runtime validates
+  stack arity and scalar/vector types before compiling the expression to the
+  native VTK calculator. Arbitrary native expressions are never accepted or
+  returned. Result names are collision-checked, invalid-value behavior is
+  explicit, and one engineering unit is validated and persisted on the real
+  native calculator object. Line samples now persist their selected field unit
+  as well, so calculated fields retain truthful units through downstream
+  probes, dimensional stress-linearization checks, undo/redo, and FCStd
+  reopen. The fifteen-action real GUI lifecycle emits
+  `VIBECAD_NATIVE_ANALYZE_POST_PIPELINE_GUI_OK actions=15 ...
+  typed_calculator=true durable_units=true stress_linearization=true ...` and
+  proves real 10–80 MPa VTK output, downstream 10–15 MPa sampling, exact graph
+  ownership, bounded no-array responses, one transaction, stable redo
+  identity, and reopen persistence. The affected native FEM target compiles
+  cleanly and the focused manifest, registry, context, and schema suite is
+  75/75 green.
+- The thirty-first Analyze checkpoint implements `FEM_PostFilterGlyph` as an
+  exact `create_glyphs` operation over the compiled Python/VTK glyph filter.
+  Glyph shape, optional three-component orientation field, scalar or vector
+  scaling semantics, positive scale factor, and all/every-Nth/uniform sampling
+  are separate typed choices rather than task-panel state. Preflight resolves
+  fields against the exact source and caps every request at 25,000 glyph
+  locations; an oversized request fails before mutation with an immediately
+  usable uniform-sampling repair. The shared human filter now also reapplies
+  VTK scaling when `VectorScaleMode` changes, fixing a missing native property
+  callback instead of compensating in the AI layer. The sixteen-action real
+  GUI lifecycle emits `VIBECAD_NATIVE_ANALYZE_POST_PIPELINE_GUI_OK actions=16
+  ... glyphs=true bounded_glyphs=true ...` and proves real oriented/scaled
+  arrow output, exact serial graph placement, source replacement, bounded
+  no-array output, one transaction, undo/redo identity, Python-proxy restore,
+  and FCStd reopen persistence. The focused surface suite remains 75/75 green.
+- The thirty-second Analyze checkpoint implements the three compiled
+  visualization children—`FEM_PostVisualizationTable`,
+  `FEM_PostVisualizationHistogram`, and
+  `FEM_PostVisualizationLineplot`—through one concise
+  `analyze.visualization` family with three exact operation branches. Each
+  mutation atomically creates the real FEM visualization root and its typed
+  field-data or point-over-frames extractor, publishes the extractor as the
+  root's durable History resource, and retains exact analysis, pipeline, and
+  source ownership. Field, position, point-index, component, frame, and plot
+  settings are strongly typed; table extraction is capped at 500,000 scalar
+  cells, histogram bins are bounded by both 10,000 and the extracted row
+  count, logarithmic axes reject nonpositive data, and responses contain only
+  column names, finite ranges, and endpoint values rather than native arrays.
+  The nineteen-action compiled GUI lifecycle opens and renders the actual
+  table, histogram, and line-plot widgets, then proves one-transaction
+  creation, exact History ordering, resource ownership, full undo/redo object
+  identity, and FCStd reopen persistence. It emits
+  `VIBECAD_NATIVE_ANALYZE_POST_PIPELINE_GUI_OK actions=19 ... table=true
+  histogram=true line_plot=true rendered_visualizations=true ...`. The
+  broader registry, manifest, context, session, and dispatch suite is 97/97
+  green.
+- The thirty-third Analyze checkpoint completes the human Advanced Mesh
+  panel's Result-backed Gmsh `PostView` field as explicit `create_result` and
+  `update_result` variants of `analyze.mesh_field`. The provider supplies one
+  exact post-pipeline/filter target plus one named scalar point field; Native
+  validates every value as finite and strictly positive, retains the live
+  result object and field on the real `Fem::MeshAdvanced` resource, includes
+  the result object's durable identity and state in the refinement hash, and
+  invalidates generated mesh data after a semantic edit. Normal responses
+  expose only the source name, field, value count, finite range, and unit—not
+  native arrays. The compiled eleven-kind lifecycle rejects a zero-valued
+  field before mutation, changes both source and field, and proves exact
+  History ownership, transaction rollback, undo/redo identity, and FCStd
+  reopen persistence. It emits `VIBECAD_NATIVE_ANALYZE_MESH_FIELD_GUI_OK ...
+  result_source_identity=true positive_scalar_field=true
+  nonpositive_field_rejection=true ...`; the focused registry, action, context,
+  and capability suite remains 75/75 green.
+- The thirty-fourth Analyze checkpoint completes the human FEM Mesh-to-Mesh
+  action's result-deformed branch as a separate
+  `convert_deformed_surface` variant rather than an ambiguous optional mode.
+  It requires one exact active FEM mesh and one exact legacy mechanical result
+  linked to that same mesh, resolves deterministic exterior-node identities,
+  rejects inconsistent, incomplete, duplicate, or non-finite displacement
+  data before mutation, and fingerprints the relevant displacement values.
+  The conversion bakes the scale-1 deformed exterior into a standard
+  `Mesh::Feature`, verifies its full geometry fingerprint and exact facet
+  count, and stores read-only FEM mesh/result provenance plus conversion mode
+  on the durable result. Responses contain only mode, exterior/facet counts,
+  source identities, surface-node count, and displacement-magnitude range.
+  The compiled four-variant lifecycle rejects a mismatched result atomically,
+  confirms deformed bounds, and proves History replacement, undo/redo
+  identity, and FCStd reopen provenance. It emits
+  `VIBECAD_NATIVE_ANALYZE_MESH_OUTPUT_GUI_OK ... result_deformed=true
+  result_mesh_match=true displacement_range=true provenance=true ...`.
+- The thirty-fifth Analyze checkpoint makes the turn-start state explicitly
+  usable as an analysis workflow map. Each bounded analysis summary now joins
+  its exact member graph to compact generated-mesh, runnable-solver, result,
+  and graph-readiness summaries with explicit truncation metadata. The
+  host-owned background manager additively exposes only its newest matching
+  document job to the snapshot builder, which publishes phase, bounded
+  progress, cancellation, terminal error, and final solver/result identities
+  without copying execution stages, files, or result arrays into context.
+  When no solver job exists the status is explicitly idle. The compiled dual-
+  implementation solver lifecycle observes both active and completed job
+  state, a ready graph, generated mesh, two solver definitions, and published
+  result identity while asserting that `NodeNumbers` and
+  `DisplacementVectors` never enter provider context. It emits
+  `VIBECAD_NATIVE_ANALYZE_SOLVER_EXECUTION_GUI_OK ... job_status=true
+  workflow_readiness=true concise_snapshot=true ...` and remains responsive.
+- The thirty-sixth Analyze checkpoint closes the complete shipped surface
+  rather than inferring completion from its individual families. The live
+  production ribbon resolves all 104 current human actions plus 92 provider-
+  eligible context actions to 30 capability families; every semantic action,
+  exact-target type, transaction class, background requirement, definition,
+  implementation, and runtime binding is checked before advertisement. Update
+  variants now publish the exact target and editable fields directly instead
+  of repeating those fields inside a generic `changes` object; exact variant
+  validation and the runtime both reject target-only edits, unknown fields,
+  stale state, and operation-specific mismatches before mutation. The complete
+  schemas serialize to 117,148 bytes, below a guarded 120-KiB Analyze ceiling
+  and nearly 14 KiB below the unchanged 128-KiB session transport ceiling;
+  all other ribbons retain the 28-tool and 64-KiB defaults while Analyze has
+  an explicit 32-tool bound. The compiled production gate emits
+  `VIBECAD_NATIVE_ANALYZE_PROVIDER_SURFACE_GUI_OK actions=104 contexts=92
+  tools=30 schemas=117148B exact_targets=true runtimes=true
+  full_surface_call=true`. Current compiled lifecycle gates are green for
+  analysis/materials; structural loads/supports/connections and background
+  CalculiX execution; all thermal, fluid, and electromagnetic families;
+  Gmsh/Netgen definitions, refinements, fields, transfinite controls, and
+  responsive background generation/cancellation; equations and solver
+  control; result display/inspection/purge; clipping; all nineteen post and
+  visualization operations; and FEM-to-Mesh conversion including exact
+  result-deformed output. Each applicable gate proves stale refusal,
+  transaction ownership, undo/redo, bounded responses, and FCStd reopen
+  persistence.
+- [x] 13.1 Implement Analysis container creation and reading.
+- [x] 13.2 Implement solid material assignment.
+- [x] 13.3 Implement fluid material assignment.
+- [x] 13.4 Implement nonlinear mechanical material assignment.
+- [x] 13.5 Implement reinforced material assignment.
+- [x] 13.6 Implement material-property reading/editing without a modal editor.
+- [x] 13.7 Implement 1D element geometry.
+- [x] 13.8 Implement 1D element rotation.
+- [x] 13.9 Implement 2D element geometry.
+- [x] 13.10 Implement 1D fluid element setup.
+- [x] 13.11 Audit vacuum permittivity: keep the compiled upstream command out
+  of Native because it is deliberately absent from the shipped VibeCAD Analyze
+  ribbon; do not invent an AI-only human action.
+- [x] 13.12 Implement electromagnetic constraint.
+- [x] 13.13 Implement current-density constraint.
+- [x] 13.14 Implement magnetization constraint.
+- [x] 13.15 Implement electric-charge-density constraint.
+- [x] 13.16 Implement initial-flow-velocity constraint.
+- [x] 13.17 Implement initial-pressure constraint.
+- [x] 13.18 Implement flow-velocity constraint.
+- [x] 13.19 Implement plane-rotation constraint.
+- [x] 13.20 Implement section-print constraint.
+- [x] 13.21 Implement transform constraint.
+- [x] 13.22 Implement fixed constraint.
+- [x] 13.23 Implement rigid-body constraint.
+- [x] 13.24 Implement displacement constraint.
+- [x] 13.25 Implement contact constraint.
+- [x] 13.26 Implement tie constraint.
+- [x] 13.27 Implement spring constraint.
+- [x] 13.28 Implement force constraint.
+- [x] 13.29 Implement pressure constraint.
+- [x] 13.30 Implement centrifugal constraint.
+- [x] 13.31 Implement self-weight constraint.
+- [x] 13.32 Implement initial-temperature constraint.
+- [x] 13.33 Implement heat-flux constraint.
+- [x] 13.34 Implement temperature constraint.
+- [x] 13.35 Implement body-heat-source constraint.
+- [x] 13.36 Implement Netgen mesh generation in the background.
+- [x] 13.37 Implement Gmsh mesh generation in the background.
+- [x] 13.38 Implement mesh region.
+- [x] 13.39 Implement mesh group.
+- [x] 13.40 Implement mesh-distance refinement.
+- [x] 13.41 Implement boundary-layer refinement.
+- [x] 13.42 Implement mesh-shape refinement.
+- [x] 13.43 Implement mesh manipulation.
+- [x] 13.44 Complete advanced mesh settings.
+  - [x] 13.44a Implement anisotropic-curve field.
+  - [x] 13.44b Implement scalar math-evaluation field.
+  - [x] 13.44c Implement anisotropic math-evaluation field.
+  - [x] 13.44d Implement sampled-distance field.
+  - [x] 13.44e Implement result-backed field after exact FEM result-data
+    targeting exists.
+- [x] 13.45 Implement transfinite curve settings.
+- [x] 13.46 Implement transfinite surface settings.
+- [x] 13.47 Implement transfinite volume settings.
+- [x] 13.48 Implement element-set creation.
+- [x] 13.49 Complete FEM-mesh to Mesh conversion.
+  - [x] 13.49a Implement exact undeformed exterior conversion.
+  - [x] 13.49b Implement result-deformed conversion after exact displacement-
+    field targeting exists.
+- [x] 13.50 Implement CalculiX solver creation.
+- [x] 13.51 Implement Elmer solver creation.
+- [x] 13.52 Implement Mystran solver creation.
+- [x] 13.53 Implement Z88 solver creation.
+- [x] 13.54 Implement elasticity equation.
+- [x] 13.55 Implement deformation equation.
+- [x] 13.56 Implement electrostatic equation.
+- [x] 13.57 Implement electric-force equation.
+- [x] 13.58 Implement magnetodynamic equation.
+- [x] 13.59 Implement 2D magnetodynamic equation.
+- [x] 13.60 Implement static-current equation.
+- [x] 13.61 Implement flow equation.
+- [x] 13.62 Implement flux equation.
+- [x] 13.63 Implement heat equation.
+- [x] 13.64 Implement solver-control editing.
+- [x] 13.65 Implement background solver execution and cancellation.
+- [x] 13.66 Implement clipping-plane add and remove as presentation state.
+- [x] 13.67 Classify Examples as human-only instructional UI. The live
+  `FEM_Examples` action remains explicitly interactive/human-only, has no
+  operation variant or transaction, and contributes no provider capability;
+  a focused action-plan invariant proves that contract.
+- [x] 13.68 Implement result purge.
+- [x] 13.69 Implement result display selection.
+- [x] 13.70 Implement post-pipeline creation.
+- [x] 13.71 Implement branch filter.
+- [x] 13.72 Implement warp filter.
+- [x] 13.73 Implement scalar clip filter.
+- [x] 13.74 Implement cut-function filter.
+- [x] 13.75 Implement region clip filter.
+- [x] 13.76 Implement contour filter.
+- [x] 13.77 Implement data-along-line extraction.
+- [x] 13.78 Implement linearized-stress reading.
+- [x] 13.79 Implement data-at-point extraction.
+- [x] 13.80 Implement calculator filter.
+- [x] 13.81 Implement plane post function.
+- [x] 13.82 Implement sphere post function.
+- [x] 13.83 Implement cylinder post function.
+- [x] 13.84 Implement box post function.
+- [x] 13.85 Implement glyph filter when compiled.
+- [x] 13.86 Implement table visualization when compiled.
+- [x] 13.87 Implement histogram visualization when compiled.
+- [x] 13.88 Implement line-plot visualization when compiled.
+- [x] 13.89 Return analysis graph, readiness, mesh, solver, run status, and result
   summaries without dumping native result arrays.
-- [ ] 13.90 Complete structural, thermal, fluid, electromagnetic, and
+- [x] 13.90 Complete structural, thermal, fluid, electromagnetic, and
   post-processing workflows.
 
 ### 14. Implement the Manufacture surface
 
-- [ ] 14.1 Implement Job creation and replacement.
-- [ ] 14.2 Implement Job sanity checking.
-- [ ] 14.3 Implement tool-controller creation.
-- [ ] 14.4 Implement tool-bit selection and properties.
-- [ ] 14.5 Implement tool-bit save/export with explicit path authorization.
-- [ ] 14.6 Implement Profile operation.
-- [ ] 14.7 Implement Pocket Shape operation.
-- [ ] 14.8 Implement Mill Facing operation.
-- [ ] 14.9 Implement Helix operation.
-- [ ] 14.10 Implement Adaptive operation.
-- [ ] 14.11 Implement Slot operation.
-- [ ] 14.12 Implement Drilling operation.
-- [ ] 14.13 Implement Thread Milling operation.
-- [ ] 14.14 Implement Engrave operation.
-- [ ] 14.15 Implement Deburr operation.
-- [ ] 14.16 Implement V-carve operation.
-- [ ] 14.17 Implement Pocket 3D operation.
-- [ ] 14.18 Implement optional Surface operation.
-- [ ] 14.19 Implement optional Waterline operation.
-- [ ] 14.20 Implement optional Rotary Surface operation.
-- [ ] 14.21 Implement operation active/inactive toggle.
-- [ ] 14.22 Implement loop-selection reading.
-- [ ] 14.23 Implement toolpath inspection.
-- [ ] 14.24 Implement operation copy.
-- [ ] 14.25 Implement operation array.
-- [ ] 14.26 Implement simple copy.
-- [ ] 14.27 Implement Array dress-up.
-- [ ] 14.28 Implement Axis Map dress-up.
-- [ ] 14.29 Implement Path Boundary dress-up.
-- [ ] 14.30 Implement Dogbone dress-up.
-- [ ] 14.31 Implement Drag Knife dress-up.
-- [ ] 14.32 Implement Lead In/Out dress-up.
-- [ ] 14.33 Implement Mirror dress-up.
-- [ ] 14.34 Implement Ramp Entry dress-up.
-- [ ] 14.35 Implement Tag dress-up.
-- [ ] 14.36 Implement Z Correct dress-up.
-- [ ] 14.37 Implement Comment operation.
-- [ ] 14.38 Implement Stop operation.
-- [ ] 14.39 Implement Custom operation.
-- [ ] 14.40 Implement Probe operation.
-- [ ] 14.41 Implement Property Bag operation.
-- [ ] 14.42 Implement Area and Area Workplane helpers when enabled.
-- [ ] 14.43 Implement Start Point editing.
-- [ ] 14.44 Implement GL simulation in the background.
-- [ ] 14.45 Implement native simulation in the background.
-- [ ] 14.46 Implement CAMotics launch/result reading when available.
-- [ ] 14.47 Implement postprocessing of the complete job.
-- [ ] 14.48 Implement postprocessing of selected operations.
-- [ ] 14.49 Implement template export.
-- [ ] 14.50 Implement Manufacture-ribbon Robot trajectory operations.
-- [ ] 14.51 Implement KUKA compact export.
-- [ ] 14.52 Implement KUKA full export.
-- [ ] 14.53 Return active job, stock, machine, tools, ordered operations,
+- The first Manufacture checkpoint establishes the bounded read foundation
+  before any CAM mutation families are replicated. The live `CAM_Sanity`,
+  `CAM_Inspect`, and `CAM_SelectLoop` actions now resolve to exact
+  `validate_job`, `inspect_toolpath`, and `detect_loop` variants, while the
+  task context adds an explicit paged `read_job` operation. Turn-start state
+  exposes only public current model candidates and excludes the Job's model
+  clones, stock, tools, tool-body features, origins, and other CAM-owned
+  resources. Job hashes cover the complete ordered model/tool/operation graph
+  and normalized durable settings without materializing every toolpath;
+  explicit operation inspection fingerprints the complete placed command
+  stream on demand and returns only a requested 1–128 command page. Sanity
+  validation uses the native non-exporting validator, and loop inference
+  returns typed exact face or edge names without changing GUI selection.
+  Normalized fingerprints exclude transient recompute state and remain stable
+  through FCStd reopen. The compiled lifecycle gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_INSPECT_GUI_OK job_state=true sanity=true
+  toolpath_paging=true loop=true stale_rejection=true read_only=true
+  reopen=true`; it also proves exact manifest/context wiring, a clean model
+  candidate set, bounded schemas, no document objects, undo entries, or
+  structural revisions from reads, and full stale-target refusal.
+- The first Manufacture mutation checkpoint maps the shipped `CAM_Job` action
+  to one exact `manufacture.job/create_job` operation. Its turn-start contract
+  publishes exact model fingerprints, explicit current-visibility replacement
+  decisions, and a path-free catalog of the same Job templates available to
+  the human command. The request freezes the complete Job-creation environment,
+  including every core factory preference and the selected template's opaque
+  identity and content hash. Runtime creation calls the authoritative Path Job
+  factory inside one VibeCAD-owned transaction, attaches the shipped Job view
+  provider, and applies the same accepted replacement transition as the human
+  dialog. Postconditions verify the exact model-clone mapping, stock, default
+  tool, selection, public source states, replacement metadata, complete
+  resource-owner graph, implicit Origin children, and one contiguous
+  resource-first History block. The concise receipt returns the new Job state,
+  template fingerprint, public replacements, and semantic resource count. The
+  compiled lifecycle gate emits `VIBECAD_NATIVE_MANUFACTURE_JOB_GUI_OK
+  exact_targets=true replacement=true resource_graph=true rollback=true
+  undo=true redo=true reopen=true`; it proves catalog-template application,
+  stale environment and visibility refusal, duplicate-input refusal, no
+  mutation on failure, no task-panel launch, one-step undo/redo, and stable
+  FCStd reopen. The focused Native suite passes 109 tests, Ruff and the compiled
+  read gate remain green, and both protected Sketcher and PartDesign VibeScript
+  integration gates pass unchanged.
+- The tool/controller Manufacture checkpoint adds a path-free, content-addressed
+  catalog with exact controller and ToolBit reads, typed editable ToolBit shape
+  properties, and complete durable controller settings. The mutation surface
+  creates controllers through the native CAM factory and updates controllers or
+  their selected ToolBits only from frozen exact targets. ToolBit parameter
+  changes update the existing imported parametric Body graph in place instead
+  of replacing hidden resources, preserving every object identity, History
+  enrollment, Job ownership, and downstream link while changing the actual
+  cutter solid. Postconditions cover exact catalog hashes, target hashes,
+  selection, document graph, visual-resource identity, shape validity, and
+  semantic Job state. The compiled lifecycle gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_TOOL_GUI_OK catalog=true exact_targets=true
+  controller_create=true controller_update=true tool_properties=true
+  stable_resource_graph=true rollback=true undo=true redo=true reopen=true`.
+  The inspect and Job gates remain green, the focused ribbon/registry suite is
+  104/104 green, and the protected CAM VibeScript lifecycle passes on the real
+  GUI thread. That protected gate also freezes source-replacement intent before
+  native Job construction can change presentation, while preserving a human's
+  decision to keep an already-hidden source hidden.
+- The ToolBit output checkpoint maps `CAM_ToolBitSave` and
+  `CAM_ToolBitSaveAs` to distinct `save` and `save_as` export variants. The
+  provider selects only the bounded `fctb` or `yaml` format; a human-authorized
+  output request owns the exact path, and no path is exposed in the schema or
+  receipt. Preflight freezes the exact ToolBit target, native serialized bytes,
+  definition hash, document graph, selection, undo count, transaction state,
+  GUI modified state, and structural revision before authorization. Publication
+  writes atomically through a private temporary file, verifies exact bytes and
+  an isolated native ToolBit round trip, then returns only the file name, size,
+  and hashes. The shared CAM serializer and Native summary readers now preserve
+  legitimate pre-existing object state while removing only read-induced
+  FeaturePython touches; the public controller reader freezes the linked ToolBit
+  before the controller so an already-touched controller cannot contaminate the
+  reported ToolBit state. The compiled lifecycle gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_TOOL_GUI_OK catalog=true exact_targets=true
+  controller_create=true controller_update=true tool_properties=true
+  stable_resource_graph=true save=true save_as=true path_private=true
+  output_read_only=true rollback=true undo=true redo=true reopen=true`. The CAM
+  inspect and Job gates, protected CAM VibeScript worker integration, 94 focused
+  manifest/registry/snapshot tests, Ruff, byte compilation, staged-module build,
+  and whitespace validation all remain green.
+- The Profile checkpoint maps the shipped `CAM_Profile` action to the exact
+  `manufacture.operation/profile` mutation. Its closed schema names the current
+  Job, one Job-owned tool controller, either the complete Job model or exact
+  public `FaceN`/`EdgeN` geometry, and every Profile, depth, height, and coolant
+  value applied by this operation boundary. Preflight freezes the Job graph,
+  controller, public-source geometry, subelement topology, History, selection,
+  and document graph. Runtime uses the native Profile factory and authoritative
+  `addBase` mapping, explicitly detaches SetupSheet expressions before applying
+  requested depth and height values, attaches the shipped view provider without
+  opening its task panel, and publishes one Job-owned History operation.
+  Postconditions verify exact Job/controller/base ownership, every requested
+  parameter, unchanged public sources and selection, complete native generation
+  diagnostics, and at least one cutting command. Operation exact-state hashes
+  retain the command-stream fingerprint while excluding redundant derived path
+  measurements whose sub-tolerance values can change during FCStd serialization;
+  those measurements remain available in the concise result. The compiled gate
+  emits `VIBECAD_NATIVE_MANUFACTURE_PROFILE_GUI_OK exact_targets=true
+  geometry=true parameters=true toolpath=true history=true rollback=true
+  undo=true redo=true reopen=true`. The Job, ToolBit, and CAM inspection gates
+  remain green, the protected CAM VibeScript API/worker lifecycle passes
+  unchanged, and 144 focused registry, manifest, dispatch, snapshot, and state
+  tests pass with Ruff, byte compilation, staged-module build, and whitespace
+  validation green.
+- The Pocket Shape checkpoint maps shipped `CAM_Pocket_Shape` to the exact
+  `manufacture.operation/pocket_shape` mutation. The provider contract mirrors
+  the real task page: one exact Job-owned controller, exact public Face or
+  closed horizontal Edge geometry, a discriminated clearing pattern, cut mode,
+  stepover, material allowance, outline/hole handling, rest-machining intent,
+  depths, finish step, heights, coolant, and either no extensions or explicitly
+  targeted face-edge extensions. It deliberately does not advertise
+  `entire_job`: the shipped Pocket Shape proxy requires Base geometry and would
+  otherwise return without generating a path. Preflight freezes the Job,
+  controller, public model topology, selected elements, History, selection, and
+  document graph; it rejects unsupported faces, open/non-horizontal edge sets,
+  meaningless minimum-travel requests without a start point, invalid rest
+  machining prerequisites, and extension edges that do not belong to the exact
+  selected face. Runtime uses the shipped Pocket Shape and feature-extension
+  factories, maps public model targets through authoritative Job resources,
+  removes SetupSheet expressions before applying exact values, retains native
+  extension encoding, attaches the shipped view provider without a task panel,
+  and publishes exactly one History operation. Postconditions verify exact
+  ownership, Base geometry, all process/depth/height values, extension links,
+  generation diagnostics, cutting commands, unchanged sources and selection,
+  and a stable durable operation fingerprint. The compiled lifecycle gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_POCKET_SHAPE_GUI_OK exact_targets=true
+  geometry=true extensions=true parameters=true toolpath=true history=true
+  rollback=true undo=true redo=true reopen=true`. Profile, Job, ToolBit, and CAM
+  inspection compiled gates remain green; the protected CAM VibeScript
+  API/worker lifecycle passes unchanged; and 127 focused registry, manifest,
+  capability, context, dispatch, and state tests pass with Ruff, byte
+  compilation, staged-module build, and whitespace validation green.
+- The Mill Facing checkpoint maps shipped `CAM_MillFacing` to the exact
+  `manufacture.operation/mill_facing` mutation. Its closed provider contract
+  names one exact Job and Job-owned controller, then exposes only the controls
+  on the current Mill Facing and shared depth, height, coolant, and linking
+  task pages: cut mode, clearing pattern, angle, reversal, stepover, axial
+  stock allowance, pass and stock extensions, depths, heights, collision
+  strategy, and collision clearance. The provider does not request artificial
+  Base geometry because the shipped operation always machines the Job stock's
+  highest upward face. Preflight freezes the complete Job model graph,
+  controller, stock solid, selected stock top face, History, selection, and
+  document graph; it proves the extended stock boundary, positive tool
+  diameter, effective final depth, and any strategy-specific tool resource
+  before mutation. Runtime uses the shipped Mill Facing factory and view
+  provider without opening a task panel, removes SetupSheet expressions before
+  applying exact values, and publishes exactly one Job-owned History operation.
+  Postconditions verify every requested control, exact stock and model hashes,
+  ownership, empty Base, successful native generation diagnostics, cutting
+  commands, unchanged sources and selection, and a concise durable operation
+  state. The compiled lifecycle gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_MILL_FACING_GUI_OK exact_targets=true stock=true
+  parameters=true linking=true toolpath=true history=true rollback=true
+  undo=true redo=true reopen=true`. Profile, Pocket Shape, Job, ToolBit, and CAM
+  inspection compiled gates remain green; the protected CAM VibeScript
+  API/worker lifecycle passes unchanged; and 144 focused registry, manifest,
+  capability, context, dispatch, snapshot, and state tests pass. Ruff, Python
+  compilation, staged-module build, source/build parity, and whitespace
+  validation are green.
+- The Helix checkpoint maps shipped `CAM_Helix` to the exact
+  `manufacture.operation/helix` mutation. Its closed schema accepts an exact
+  Job-owned controller and ordered circular Face/Edge features, then exposes
+  only the controls on the current hole-geometry, Helix, depth, height,
+  linking, and coolant task pages: automatic or manual feature ordering,
+  inside/outside start, cut mode, pitch and ramp limits, stepover, outer radial
+  stock allowance, depths, heights, collision strategy, and coolant. Hidden
+  legacy/expert Helix properties are fixed to the same deterministic behavior
+  as a freshly accepted human operation instead of being leaked into the
+  provider contract. Preflight freezes the Job, controller, public-source
+  topology, every selected feature, History, selection, and document graph; it
+  calls the shipped drillable-feature predicate, derives exact centers and
+  diameters, rejects duplicate hole centers and cutter/allowance combinations
+  that the native generator would silently skip, and validates linking
+  resources before mutation. Runtime uses the shipped Helix factory,
+  authoritative public-to-Job Base mapping, and shipped view provider without
+  opening a task panel; it removes SetupSheet expressions before applying
+  exact values and publishes one Job-owned History operation. Postconditions
+  verify Base order, every visible value, deterministic hidden state, derived
+  spindle direction, successful native diagnostics, cutting commands,
+  unchanged sources and selection, and stable operation state. The compiled
+  lifecycle gate emits `VIBECAD_NATIVE_MANUFACTURE_HELIX_GUI_OK
+  exact_targets=true features=true order=true parameters=true linking=true
+  toolpath=true history=true rollback=true undo=true redo=true reopen=true`.
+  All six earlier Manufacture compiled gates remain green; the protected CAM
+  VibeScript API/worker lifecycle passes unchanged; and 144 focused registry,
+  manifest, capability, context, dispatch, snapshot, and state tests pass.
+  Ruff, Python compilation, staged-module build, source/build parity, and
+  whitespace validation are green.
+- The Adaptive checkpoint maps shipped `CAM_Adaptive` to the exact
+  `manufacture.operation/adaptive` mutation. Its closed schema accepts an
+  exact Job-owned controller and exact Face/Edge regions, then exposes the
+  current human task-panel surface as distinct process, helix-entry, depth,
+  height, face-extension, and coolant groups. That includes inside/outside
+  region choice, clearing/profiling, the human accuracy range, fractional
+  stepover, cleared-link lift and keep-down ratio, XY stock allowance,
+  inside-out clearing, finishing, outline and rest-machining controls, every
+  helix-entry limit, finish step, and explicit extensions. The hidden
+  model-aware experiment, Z allowance, region ordering, stop/cache state,
+  workplane, and locations are fixed to deterministic fresh-operation state
+  rather than leaked into the provider contract. Preflight requires the
+  shipped libarea `Adaptive2d` engine before mutation; freezes the Job, stock,
+  cutter, public-source topology, selected elements, extension geometry,
+  History, selection, and document graph; validates a positive cutter and
+  solid stock; proves each face has a usable XY projection; requires Edge
+  selections to form closed horizontal wires; validates extension membership;
+  and rejects rest machining without an earlier active cutting path. Runtime
+  uses the shipped Adaptive factory, authoritative public-to-Job Base mapping,
+  shared exact extension boundary, and shipped view provider without opening
+  a task panel; removes SetupSheet expressions, publishes one Job-owned History
+  operation, and leaves the human selection unchanged. Postconditions verify
+  every requested value, deterministic hidden state, exact Base and extension
+  links, libarea input/output caches, native generation diagnostics, cutting
+  commands, source preservation, and stable operation state. Pocket Shape now
+  uses the same reusable extension boundary and remains lifecycle-green. The
+  compiled gate emits `VIBECAD_NATIVE_MANUFACTURE_ADAPTIVE_GUI_OK
+  exact_targets=true regions=true parameters=true helix_entry=true
+  extensions=true toolpath=true history=true rollback=true undo=true redo=true
+  reopen=true`. All seven earlier Manufacture compiled gates remain green; the
+  protected CAM VibeScript API/worker lifecycle passes unchanged; and 144
+  focused registry, manifest, capability, context, dispatch, snapshot, and
+  state tests pass. Ruff, Python compilation, staged-module build,
+  source/build parity, and whitespace validation are green.
+- The Slot checkpoint maps shipped `CAM_Slot` to the exact
+  `manufacture.operation/slot` mutation. Its closed path contract separates
+  custom points, one Edge, one horizontal Face, one vertical Face, two
+  vertices, two Edges, and two vertical Faces so each mode advertises only its
+  valid exact targets and reference controls. It also exposes the current Slot,
+  depth, height, and coolant task-page values: start/end path extensions,
+  start-to-end or perpendicular orientation, directional or bidirectional
+  layers, direction reversal, depths, safe and clearance heights, and coolant.
+  Hidden radius-extension, temporary-object, and custom-start-point state is
+  fixed to deterministic fresh-operation values rather than added to the
+  provider contract. Preflight freezes the Job, controller, complete Job model,
+  exact selected topology, solid stock, History, selection, and document graph;
+  validates a positive cutter; proves the geometric requirements of every path
+  mode; and rejects stale targets, vertical single Edges, degenerate reference
+  points, invalid face orientation, and unsupported feature combinations before
+  mutation. Runtime uses the shipped Slot factory, authoritative public-to-Job
+  Base mapping, and shipped view provider without opening a task panel; clears
+  SetupSheet expressions, supports both feature-derived and explicit paths, and
+  publishes exactly one Job-owned History operation. Postconditions verify the
+  exact Base resource, every visible setting, deterministic hidden state,
+  resolved endpoints, native generation diagnostics, cutting commands,
+  unchanged sources and selection, and stable operation state. The compiled
+  lifecycle gate uses separate solid stock and reusable guide geometry and
+  emits `VIBECAD_NATIVE_MANUFACTURE_SLOT_GUI_OK exact_targets=true
+  feature_path=true custom_points=true parameters=true toolpath=true
+  history=true rollback=true undo=true redo=true reopen=true`. All eight earlier
+  Manufacture gates remain green; the protected CAM VibeScript API/worker
+  lifecycle passes unchanged; and 144 focused registry, manifest, capability,
+  context, dispatch, snapshot, and state tests pass. Ruff, Python compilation,
+  staged-module build, source/build parity, and whitespace validation are green.
+- The Drilling checkpoint maps shipped `CAM_Drilling` to the exact
+  `manufacture.operation/drilling` mutation. Its closed target union accepts
+  ordered exact circular Face/Edge features with an explicit enabled state,
+  explicit XY hole locations, or both, while automatic/manual ordering remains
+  explicit. A discriminated process contract separates drilling from tapping,
+  and a second closed union exposes only the controls belonging to standard,
+  peck/chip-break, dwell, and feed-retract cycles. Drill-tip depth extension,
+  G98/G99 retraction, depths, heights, linking, and coolant match the shipped
+  task pages; later start/end sorting controls remain fixed to deterministic
+  fresh-operation state. Preflight freezes the Job, exact controller, complete
+  Job model, every public feature and selected subelement, History, selection,
+  and the document graph. It uses the shipped drillable-feature predicate,
+  preserves disabled feature identity, rejects duplicate models, subelements,
+  and enabled hole centers, and proves drill-tip and tapping tool requirements
+  before mutation. CAM's shared operation constructor now accepts an optional
+  exact controller, validates it as an eligible resource of the parent Job,
+  and installs it before default generation; every already-exposed Native CAM
+  factory uses this path, so multi-controller Jobs never invoke an interactive
+  chooser or temporarily bind an unrelated controller. Existing callers retain
+  their original fallback behavior when no exact controller is supplied.
+  Runtime uses the shipped unified Drilling/Tapping factory and view provider
+  without opening a task panel, maps exact public resources into Base and
+  Locations, clears SetupSheet expressions, and publishes one Job-owned History
+  operation. Postconditions verify exact controller, Base order and enablement,
+  locations, sorting, process and cycle settings, deterministic hidden state,
+  native generation diagnostics, one expected canned cycle per enabled hole,
+  unchanged sources and selection, and stable operation state. The compiled
+  lifecycle gate uses real shipped Drill and Tap tool bits and emits
+  `VIBECAD_NATIVE_MANUFACTURE_DRILLING_GUI_OK exact_targets=true
+  feature_enablement=true locations=true drilling=true tapping=true cycles=true
+  parameters=true linking=true coolant=true toolpath=true history=true
+  rollback=true undo=true redo=true reopen=true`. All nine earlier Manufacture
+  gates remain green; the protected CAM VibeScript API/worker lifecycle passes
+  unchanged; and 144 focused registry, manifest, capability, context, dispatch,
+  snapshot, and state tests pass. New Native sources pass Ruff and Python
+  compilation, staged modules match source, and whitespace validation is green.
+- The Thread Milling checkpoint maps shipped `CAM_ThreadMilling` to the exact
+  `manufacture.operation/thread_milling` mutation. Its closed target contract
+  accepts ordered exact circular Face/Edge features with explicit enablement
+  and automatic/manual sorting. A discriminated thread definition accepts
+  either a custom internal/external thread with explicit major/minor diameter
+  and metric pitch or integer TPI, or one exact designation and fit percentage
+  from the seven shipped imperial and metric thread series. The existing
+  `manufacture.inspect` read surface now provides bounded, filtered paging over
+  those authoritative catalogs, including diameter ranges and pitch/TPI, so the
+  provider never has to guess one of roughly six hundred designations.
+  Orientation, climb/conventional direction, pass count, lead-in/out, depths,
+  heights, linking, and coolant match the human geometry, operation, depth, and
+  height pages. Preflight freezes the Job, exact thread-mill controller,
+  complete Job model, every selected feature, History, selection, and document
+  graph; resolves standard dimensions from the shipped CSV row and fit; proves
+  circular target identity and distinct enabled centers; validates cutter
+  diameter, Crest, cutting angle, and linking resources; computes every radial
+  pass; and rejects impossible modeled stock before mutation. Runtime uses the
+  shipped Thread Milling factory and view provider without opening a task panel,
+  enters the exact controller through the constructor, preserves disabled
+  features, clears SetupSheet expressions, fixes unused sorting endpoints and
+  clearance-operation state deterministically, and publishes one Job-owned
+  History operation. Postconditions verify the controller, Base order and
+  enablement, resolved thread values, all visible settings, hidden state,
+  generated entry locations and helical command direction for every enabled
+  target and pass, native generation diagnostics, unchanged sources and
+  selection, and stable operation state. The compiled lifecycle gate uses the
+  shipped 5 mm thread mill, a real bored plate and boss, a catalog-backed M10 x
+  1.5 internal thread, and a custom 20-TPI external thread. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_THREAD_MILLING_GUI_OK catalog=true
+  exact_targets=true feature_enablement=true standard=true custom=true
+  parameters=true linking=true coolant=true toolpath=true history=true
+  rollback=true undo=true redo=true reopen=true`. All ten earlier Manufacture
+  gates remain green; the protected CAM VibeScript API/worker lifecycle passes
+  unchanged; and 144 focused registry, manifest, capability, context, dispatch,
+  snapshot, and state tests pass. New Native sources pass Ruff and Python
+  compilation, staged modules match source, and whitespace validation is green.
+- The Engrave checkpoint maps shipped `CAM_Engrave` to the exact
+  `manufacture.operation/engrave` mutation. Its closed geometry contract
+  separates the complete Job, ordered exact zero-volume wire models, and
+  ordered exact Edges, while the operation contract exposes the human-visible
+  start vertex, depths, heights, linking strategy, collision clearance, and
+  coolant. Reverse, cut pattern, approximation, sorting, and sorting endpoints
+  are fixed to deterministic fresh-operation values instead of leaking hidden
+  state into the provider surface. Preflight freezes the Job, exact controller,
+  public source geometry, History, selection, and document graph; proves whole
+  models are usable zero-volume wires; assembles exact selected Edges into
+  wires; and rejects a start vertex outside any selected closed wire before
+  mutation rather than accepting the shipped generator's silent clamp. Runtime
+  uses the shipped Engrave factory and view provider without opening a task
+  panel, installs the exact controller through the constructor, maps selected
+  public geometry to the authoritative Job resource, and publishes one
+  Job-owned History operation. CAM's shared engraving generator now copies
+  every borrowed input wire, Job collision shape, and tool shape before OCC
+  sorting, orientation, or collision work, preventing Engrave, Deburr, and
+  V-carve path generation from mutating linked public topology. Postconditions
+  verify exact Base or BaseShapes representation, every visible setting,
+  deterministic hidden state, expressions, processed wire count, native
+  generation diagnostics, cutting commands, unchanged source fingerprints and
+  selection, and stable operation state. Source-preservation failures identify
+  the exact model plus expected and observed shape hashes. The compiled
+  lifecycle gate emits `VIBECAD_NATIVE_MANUFACTURE_ENGRAVE_GUI_OK
+  exact_targets=true edges=true whole_models=true entire_job=true
+  parameters=true linking=true coolant=true toolpath=true history=true
+  rollback=true sources_preserved=true undo=true redo=true reopen=true`. All
+  eleven earlier Manufacture gates remain green; the protected CAM VibeScript
+  API/worker publication lifecycle passes unchanged; 144 focused registry,
+  manifest, capability, context, dispatch, snapshot, and state tests pass; and
+  the shared CAM linking generator and Deburr suites pass 19 tests with two
+  intentional linking skips. New Native sources pass Ruff and Python
+  compilation, staged modules match source, and whitespace validation is green.
+- The Deburr checkpoint maps shipped `CAM_Deburr` to the exact
+  `manufacture.operation/deburr` mutation. Its closed geometry contract accepts
+  ordered exact Edge/Face features from distinct Job-owned public models. The
+  process contract exposes chamfer width, extra tool immersion, clockwise or
+  counterclockwise direction, optional step-down, safe and clearance heights,
+  linking strategy, collision clearance, and coolant, matching the human Base,
+  Depths, Heights, and Deburr pages. Hidden Join and EntryPoint state is fixed
+  to Round and zero; Side remains an inspected derived result. Preflight freezes
+  the Job, exact controller, public feature topology, History, selection, and
+  document graph; requires direct Edges to lie in one horizontal XY plane;
+  accepts upward planar Faces and side/chamfer Faces with a supported lower
+  horizontal boundary; rejects downward planar Faces; proves safe height above
+  the selected geometry; validates linking resources; and checks cutter
+  diameter, cutting angle, tip radius, cutting-edge height, and the radial/depth
+  capacity needed for the requested chamfer before mutation. Runtime uses the
+  shipped Deburr factory and view provider without opening a task panel,
+  installs the exact controller through the constructor, maps public features
+  to authoritative Job resources, clears SetupSheet expressions, and publishes
+  one Job-owned History operation. The shipped Deburr generator now extracts
+  and offsets geometry from an owned shape copy, complementing the shared
+  engraving generator's owned wire/collision copies so no linked public source
+  topology is translated or reversed. Postconditions verify exact Base state,
+  every visible value, deterministic hidden state, derived Side, generated base
+  and offset wires, native generation diagnostics, depth-bearing cutting moves,
+  source preservation, unchanged selection, and stable operation state. The
+  compiled lifecycle gate emits `VIBECAD_NATIVE_MANUFACTURE_DEBURR_GUI_OK
+  exact_targets=true edges=true faces=true cutter_capacity=true parameters=true
+  linking=true coolant=true toolpath=true history=true rollback=true
+  sources_preserved=true undo=true redo=true reopen=true`. All twelve earlier
+  Manufacture gates remain green; the protected CAM VibeScript API/worker
+  publication lifecycle passes unchanged; 144 focused registry, manifest,
+  capability, context, dispatch, snapshot, and state tests pass; and the shared
+  CAM linking generator and Deburr suites pass 19 tests with two intentional
+  linking skips. New Native sources pass Ruff and Python compilation, staged
+  modules match source, and whitespace validation is green.
+- The V-carve checkpoint maps shipped `CAM_Vcarve` to the exact
+  `manufacture.operation/v_carve` mutation. Its closed geometry contract
+  separates ordered exact horizontal Faces from ordered exact zero-volume
+  face-bearing Job models and requires one exact V-bit controller. The process
+  contract exposes discretization deflection, colinear filtering, movement
+  optimization, discriminated finishing-pass state and offset, final depth,
+  step-down, safe and clearance heights, and coolant. Start depth is derived
+  from the frozen Face plane because the shipped generator derives and uses
+  that value rather than consuming the generic task-page field; Workplane and
+  geometry tolerance are captured as deterministic hidden state. Preflight
+  freezes the Job, controller, public geometry, History, selection, and graph;
+  constructs a real Voronoi diagram for every copied Face; requires valid,
+  closed, nondegenerate, coplanar XY regions; rejects volumetric whole models;
+  proves safe-height and final-depth relationships; and validates V-bit
+  diameter, tip diameter, cutting-edge angle, maximum radial carve depth, and
+  finishing placement before mutation. Runtime uses the shipped V-carve
+  factory and view provider without opening a task panel, installs the exact
+  controller through the constructor, publishes either exact Base Faces or
+  exact Job-resource BaseShapes, clears SetupSheet expressions, and creates one
+  Job-owned History operation. The shipped generator now copies every borrowed
+  Face before Voronoi processing so linked public topology cannot be changed.
+  Postconditions verify the exact geometry representation, every visible and
+  hidden value, expressions, one medial result per frozen Face, raw Voronoi
+  results, depth-bearing cutting moves, exact Job/controller/source state,
+  unchanged selection, and stable operation identity. The compiled lifecycle
+  gate emits `VIBECAD_NATIVE_MANUFACTURE_V_CARVE_GUI_OK exact_targets=true
+  faces=true whole_models=true v_bit=true parameters=true toolpath=true
+  history=true rollback=true sources_preserved=true undo=true redo=true
+  reopen=true`. All thirteen earlier Manufacture gates pass sequentially; the
+  protected CAM VibeScript API/worker lifecycle passes unchanged; the shipped
+  V-carve suite passes 15 tests; and 144 focused registry, manifest,
+  capability, context, dispatch, snapshot, and state tests pass. New Native
+  sources pass Ruff and Python compilation, staged modules match source, and
+  whitespace validation is green.
+- The Pocket 3D checkpoint maps shipped `CAM_Pocket3D` to the exact
+  `manufacture.operation/pocket_3d` mutation. Its closed contract accepts one
+  exact CAM Job, its exact controller, and ordered exact Faces or complete
+  horizontal Edge loops. It exposes only the human Pocket controls: cut mode;
+  Offset, ZigZag, ZigZagOffset, Line, or Grid pattern with an angle only when
+  applicable; stepover; pass extension; rest machining; automatic or exact
+  picked start point with optional minimum-travel routing; explicit start
+  depth, step-down, finish step, safe and clearance heights; and coolant. The
+  final depth remains correctly absent from the provider schema because the
+  shipped operation derives that read-only value from its selected features.
+  Preflight freezes the Job, controller, public source topology, History,
+  selection, and document graph; mirrors the shipped feature-depth algorithm;
+  requires the explicit start plane at or above the derived source top and
+  above the derived floor; validates a positive cutter and effective stepover;
+  and rejects stale targets, unsupported Faces, open Edge chains, mixed
+  Face/Edge items, and rest machining without an earlier active cutting path
+  before mutation. A shared Pocket geometry validator now gives Pocket Shape
+  and Pocket 3D the same exact supported-face and closed-loop boundary. Runtime
+  uses the shipped Pocket factory and view provider without opening a task
+  panel, installs the exact controller through the additive factory argument,
+  clears SetupSheet expressions, fixes hidden fresh-operation state, and
+  publishes one Job-owned History operation. The shipped Pocket engine now
+  performs OCC work on owned source/stock copies and sorts arbitrary selected
+  Edges into connected closed wires before making faces, fixing manual and
+  Native Edge-loop pockets without adding a file-specific path. Postconditions
+  verify exact Base resources, every visible and hidden setting, expressions,
+  derived depths, effective modal cutting depth within the engine's one-micron
+  floor epsilon, valid removal volume, generation diagnostics, Job ownership,
+  unchanged source topology and selection, and History identity. Lifecycle
+  checks preserve exact persistent settings and machining invariants while
+  correctly allowing the shipped greedy minimum-travel sorter to choose an
+  equivalent route ordering after recomputation. The compiled gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_POCKET_3D_GUI_OK exact_targets=true faces=true
+  edge_loops=true parameters=true derived_depth=true rest_machining=true
+  toolpath=true history=true rollback=true sources_preserved=true undo=true
+  redo=true reopen=true`. All fifteen Manufacture gates pass sequentially; the
+  protected CAM VibeScript API/worker lifecycle passes unchanged; the shipped
+  Pocket suite passes 4 tests; and 152 focused registry, manifest, capability,
+  context, dispatch, snapshot, and state tests pass. New Native sources pass
+  Ruff and Python compilation, staged modules match source, both touched build
+  targets are green, and whitespace validation is clean.
+- The optional Surface checkpoint maps shipped `CAM_Surface` to the exact
+  `manufacture.operation/surface` mutation only when the human action is
+  genuinely available through the advanced OCL preference and runtime. Its
+  closed contract accepts either the complete Job or ordered exact public
+  Faces, including an explicit count of trailing avoidance Faces. Discriminated
+  contracts cover Line/ZigZag angles, Offset, Circular/Circular ZigZag, and
+  Spiral centers; single- or multi-pass layers; Job-model or stock bounds;
+  conventional/climb direction; stepover, sampling, profile-edge behavior,
+  boundary adjustment/enforcement, internal-feature handling, collective or
+  individual features, reversal, optimization, automatic or exact starts,
+  mesh deflection, depths, heights, and coolant. It deliberately remains a
+  planar operation: the separately shipped Rotary Surface action retains its
+  own row and contract. Preflight freezes the Job, exact controller, public
+  source topology, ordered Faces, stock, History, selection, and document
+  graph; validates OCL availability and cutter translation; derives source top
+  and operation floor; rejects unsafe depths and invalid Face/avoidance
+  combinations; and estimates drop-cutter sampling before mutation. Requests
+  above the explicit 250,000-sample synchronous ceiling fail with a corrective
+  workload error, preventing this task-free path from entering an unbounded UI
+  operation. Runtime uses the shipped Surface factory and view provider without
+  opening a task panel, installs the exact controller during construction,
+  clears SetupSheet expressions, fixes planar/hidden rotary state, and
+  publishes one Job-owned History operation. The shared Surface engine now
+  copies every borrowed Job model, stock, selected Face, shell, and
+  tessellation input before projection, Boolean, translation, and mesh work,
+  preventing both human and automated Surface generation from mutating linked
+  public topology. Postconditions verify every exposed and fixed setting,
+  exact ownership and Base order, native generation diagnostics, cutting
+  commands and Z range, unchanged sources and selection, and durable operation
+  state. The compiled lifecycle gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_SURFACE_GUI_OK exact_targets=true faces=true
+  avoidance=true entire_job=true patterns=true layers=true quality=true
+  bounded_work=true toolpath=true history=true rollback=true
+  sources_preserved=true undo=true redo=true reopen=true`. All sixteen Native
+  Manufacture lifecycle gates pass sequentially; the protected CAM VibeScript
+  API/worker publication lifecycle passes unchanged; the 15-test shipped Rotary
+  Surface suite and 152 focused registry, manifest, capability, context,
+  dispatch, snapshot, and state tests pass. New Native sources pass Ruff and
+  Python compilation, touched modules are staged by their build targets, and
+  whitespace validation is clean.
+- The optional Waterline checkpoint maps shipped `CAM_Waterline` to the exact
+  `manufacture.operation/waterline` mutation only while the human action is
+  genuinely available through the advanced OCL preference and runtime. Its
+  closed provider contract exposes three explicit algorithm branches: OCL
+  drop-cutter with exact bounds, sampling, and mesh deflection; OCL adaptive
+  with sampling, minimum sampling, linear optimization, and mesh deflection;
+  and Experimental with exact bounds, boundary adjustment, ignore-above
+  height, and discriminated waterline-only, every-layer, or final-layer
+  clearing. Every clearing pattern is independently discriminated, and the
+  remaining exact controls cover cut direction, single- or multi-pass layers,
+  depth offset, boundary enforcement, internal-feature behavior, collective or
+  individual feature handling, pass reversal, transition/gap optimization,
+  automatic or exact starts, depths, heights, and coolant. The contract and
+  runtime state the shipped engine's real geometry rule instead of hiding it:
+  exact selected Faces and trailing avoidance Faces are accepted only by OCL
+  Adaptive; Dropcutter and Experimental require the entire exact Job because
+  the underlying engine otherwise silently ignores selected Faces. Impossible
+  combinations now fail before transaction start with a corrective
+  `geometry.kind=entire_job` instruction.
+- Waterline preflight freezes the Job, controller, public source topology,
+  ordered Faces, stock, History, selection, and document graph; validates OCL
+  availability and exact cutter translation; derives the source top and
+  operation floor; rejects stale targets, invalid Face/avoidance combinations,
+  adaptive minimum-sample inversions, out-of-range Experimental ignore heights,
+  and depths below stock; and estimates algorithm-specific processing work.
+  Requests above the explicit 250,000-cell synchronous ceiling fail with a
+  corrective workload error before document or UI mutation. Runtime uses the
+  shipped Waterline factory and view provider without a task panel, installs
+  the exact controller during construction, clears SetupSheet expressions, and
+  publishes one Job-owned History operation. The shared OCL preparation layer
+  copies borrowed model, stock, selected-Face, envelope, shell, region, and
+  tessellation inputs before geometric work. The shipped Waterline factory now
+  accepts an additive controller argument, envelope generation no longer owns
+  its caller's shape, and final-layer clearing no longer overwrites the durable
+  requested `CutPattern` while generating.
+- Postconditions verify the full retained parameter set, exact controller and
+  ordered Base ownership, native generation diagnostics, nonempty cutting
+  motion, cutting Z range, unchanged public sources and selection, and durable
+  Job/History enrollment. Adaptive regeneration is checked by exact settings,
+  populated command structure, and spatial bounds while permitting equivalent
+  closed-contour routing to change rapid-link distance; deterministic
+  Dropcutter and Experimental paths retain the stricter length comparison. The
+  compiled lifecycle gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_WATERLINE_GUI_OK exact_targets=true faces=true
+  avoidance=true entire_job=true algorithms=true clearing=true parameters=true
+  bounded_work=true toolpath=true history=true rollback=true
+  sources_preserved=true undo=true redo=true reopen=true` and passes repeatedly.
+  All seventeen Native Manufacture lifecycle gates are green; the protected CAM
+  VibeScript API/worker publication lifecycle passes unchanged; the shipped
+  Rotary Surface suite passes 15 tests; and 153 focused registry, manifest,
+  capability, common-read, context, dispatch, snapshot, and state tests pass.
+  New Native sources pass Ruff and Python compilation, touched modules are
+  staged by their build targets, and whitespace validation is clean.
+- The optional Rotary Surface checkpoint maps shipped `CAM_RotarySurface` to
+  the exact `manufacture.operation/rotary_surface` mutation only while the
+  human action is genuinely present through the advanced and experimental OCL
+  preferences. Its closed contract requires one exact Job and controller, the
+  complete configured machine definition, one exact cylindrical stock, the
+  Job's sole exact model, and either the entire Job or ordered exact Faces.
+  Spiral, Parallel, and Rings are separate discriminated pattern schemas so
+  pitch, surface stepover, and ring spacing cannot be confused. The remaining
+  explicit settings cover climb or conventional cutting, stock-derived or
+  exact axial bounds, sampling resolution, radial allowance, single or
+  multi-pass depth, surface-speed or axial-only feed, a nonzero effective-feed
+  ceiling, mesh quality, safe and clearance heights, and coolant.
+- Rotary preflight binds the external machine configuration into the Job's
+  exact state hash and rejects same-name machine-file drift, missing or
+  unsupported rotary axes, misaligned/non-cylinder stock, multiple Job models,
+  off-axis geometry, stale Faces or controller, unsafe clearance, invalid
+  modulo ranges, and generated unwound travel outside machine limits. Face
+  bounds reject Spiral and the shipped conventional-direction case where the
+  native generator cannot honor the requested angular sector. Algorithmic work
+  is bounded before mutation by explicit OCL-cell and generated-command
+  ceilings. Runtime uses the shipped factory with an additive exact-controller
+  argument, opens no task panel, publishes one Job-owned History operation,
+  and verifies every retained setting plus fully qualified XYZA/B cutting
+  motion and the machine wrap strategy. Selected-Face tessellation now works
+  on owned OCC copies, preventing Rotary generation from attaching mesh data
+  to a public model source.
+- The compiled lifecycle gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_ROTARY_SURFACE_GUI_OK exact_targets=true
+  exact_machine=true cylinder_stock=true faces=true spiral=true parallel=true
+  rings=true climb=true conventional=true feed_modes=true bounded_work=true
+  toolpath=true history=true rollback=true sources_preserved=true undo=true
+  redo=true reopen=true` and passes repeatedly. CAM state fingerprints now
+  distinguish authored settings from expression-evaluated and read-only
+  recompute caches, remaining stable when an FCStd reload canonicalizes stock
+  bounds. All eighteen Manufacture lifecycle gates pass; Pocket 3D's gate
+  validates exact feed count, cutting envelope, and per-depth coverage while
+  permitting only the shipped Area engine's harmless greedy link rerouting.
+  The protected CAM VibeScript API/worker lifecycle passes unchanged, the
+  shipped Rotary Surface suite passes all 15 tests, and 165 focused registry,
+  manifest, capability, common-read, context, dispatch, snapshot, and state
+  tests pass. New and touched Python sources pass Ruff and compilation, build
+  staging is current, and whitespace validation is clean.
+- The Active/Inactive checkpoint maps shipped `CAM_OpActiveToggle` to the
+  dedicated `manufacture.modify` `set_active` variant. Its closed contract
+  takes one exact Job hash and one through 64 distinct operation-group entries,
+  each with an observed and explicit desired boolean state. It never exposes a
+  retry-unsafe blind toggle. Preflight rejects stale or wrong-Job operations,
+  redundant requests, future or suppressed History inputs, malformed CAM
+  graphs, and incomplete groups of aliases sharing one underlying dress-up
+  base. Mutation changes each unique base once, performs an exact dependency
+  recompute, and proves that object membership, ordered Job operations,
+  History position/visibility/suppression, human selection, view visibility,
+  authored operation configuration, and unrelated Job resources did not
+  change. Success returns only changed operation names, prior/current states,
+  command counts, the refreshed exact Job hash, and bounded counts plus the
+  normal transaction receipt.
+- Effective CAM state now follows dress-up bases, and the shipped human helper
+  identifies dress-ups from their proxy type instead of requiring `Dressup` in
+  an editable object name. The compiled gate therefore covers both a regular
+  operation and a renamed Array dress-up, including the exact underlying base,
+  batched deactivation, selective reactivation, stale/no-change rejection,
+  forced postcondition rollback, selection and visibility preservation,
+  unchanged History, undo, redo, and FCStd reopen. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_OPERATION_ACTIVE_GUI_OK exact_job=true
+  explicit_states=true batch=true dressup=true rollback=true selection=true
+  visibility=true history=true undo=true redo=true reopen=true`. The shipped
+  human toggle test and Manufacture inspection lifecycle pass, 153 focused
+  registry/manifest/capability/context/dispatch/snapshot/state tests pass, and
+  the protected GUI CAM VibeScript API/worker lifecycle emits
+  `CAM VibeScript native API/worker integration passed`. Touched sources pass
+  Ruff, Python compilation, build staging, and whitespace validation.
+- The Operation Copy checkpoint maps shipped `CAM_OperationCopy` to the
+  dedicated `manufacture.modify` `copy_operations` variant. Its closed contract
+  accepts one through eight exact Job targets and one through 64 distinct
+  operation names in total; every Job carries its observed state hash, and the
+  model cannot invent output names or address objects through GUI selection.
+  Preflight rejects stale Jobs, wrong-Job operations, duplicates, inactive or
+  future History inputs, malformed or incomplete dress-up graphs, and semantic
+  source closures larger than the bounded copy budget before mutation starts.
+- Human and Native copy now share one GUI-independent CAM graph primitive. It
+  copies the complete semantic operation closure, preserves public sources,
+  removes copied replacement metadata, assigns copied resources to exactly one
+  copied operation, and adopts the new graph at the current History marker.
+  Multiple copied operations receive one hidden ownership controller so the
+  human-visible operations remain distinct while undo, redo, suppression, and
+  save/reopen retain one stable action identity. The existing three-argument
+  `Document.copyObject` ABI and default timeline adoption remain unchanged; an
+  additive four-argument overload permits this domain to defer adoption until
+  copied metadata has been made valid.
+- Native postconditions prove exact Job parenting, closure ownership, durable
+  configuration equivalence through the source-to-copy object map, identical
+  generated toolpath semantics apart from graph-authored label comments,
+  unchanged source graphs, unchanged existing History and Job resources,
+  preserved selection and visibility, valid recomputation, and precise marker
+  insertion. The compiled lifecycle gate covers single and batched copies, an
+  Array dress-up with its base, stale rejection, forced rollback, assistant
+  undo, redo, and FCStd reopen. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_OPERATION_COPY_GUI_OK exact_jobs=true stale=true
+  rollback=true single=true dressup=true batch=true source_preserved=true
+  history=true receipt=true selection=true visibility=true undo=true redo=true
+  reopen=true`. The shipped human copy, dress-up ownership, multi-copy,
+  rollback, marker insertion, and owned-resource regressions pass; Manufacture
+  inspection emits `VIBECAD_NATIVE_MANUFACTURE_INSPECT_GUI_OK` with read-only
+  revision preservation; 153 focused contract tests pass; and the unchanged
+  protected GUI CAM VibeScript lifecycle emits
+  `CAM VibeScript native API/worker integration passed`.
+- The Operation Array checkpoint maps shipped `CAM_Array` to the dedicated
+  `manufacture.operation/array` mutation. Its closed contract takes one exact
+  Job hash and one through 64 ordered exact operation-state targets, then one
+  discriminated Linear-1D, Linear-2D, Polar, or Points pattern. The model must
+  explicitly provide reverse ordering and either disabled jitter or a complete
+  seeded jitter definition; it cannot infer bases, point geometry, controller,
+  or pattern settings from GUI selection. Points patterns use exact current
+  shape hashes, explicit Vertex/Edge/Face subelements, an explicit global,
+  whole-source, or subelement origin, and bounded automatic or manual sorting.
+- Preflight requires every base to be one active, valid, current operation in
+  the exact Job, with a nonempty cutting path, one shared current controller,
+  and coolant disabled as required by the shipped generator. It rejects stale
+  Job, base, point-source, and subelement state; duplicate or wrong-Job bases;
+  ineffective patterns; and any request whose conservative output exceeds 256
+  point placements or 500,000 commands. Human and Native creation share one
+  task-free `Path.Op.Gui.Array.Create` factory while retaining the existing
+  command and defaults. Jitter now uses an operation-local seeded generator via
+  an additive constructor parameter, preserving deterministic output without
+  changing Python's process-global random state.
+- Postconditions prove the exact ordered bases, controller, pattern, point
+  links, jitter values, output repeat and cutting-command counts, source graph,
+  Job resources, selection, visibility, and marker-aware History insertion.
+  The compiled lifecycle gate exercises stale and workload rejection, forced
+  rollback, Linear-1D, reversed Linear-2D, Polar, Points, repeated seeded
+  jitter, assistant undo, redo, insertion before future History, and FCStd
+  reopen. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_OPERATION_ARRAY_GUI_OK exact_job=true
+  exact_bases=true stale=true bounded_work=true rollback=true linear_1d=true
+  linear_2d=true polar=true points=true seeded_jitter=true
+  source_preserved=true history=true receipt=true marker=true selection=true
+  visibility=true undo=true redo=true reopen=true`. The shipped human Array
+  atomicity and forced-failure rollback regressions pass, Manufacture inspection
+  remains read-only, all 153 focused contract tests pass, and the final-code
+  protected GUI CAM VibeScript lifecycle emits
+  `CAM VibeScript native API/worker integration passed`.
+- The Simple Copy checkpoint maps shipped `CAM_SimpleCopy` to the dedicated
+  `manufacture.operation/simple_copy` mutation with exact target type
+  `ExactCamJobPlacedToolpathFlatteningSet`. Its closed contract accepts one
+  exact Job state and one through 64 ordered, distinct, exact source-operation
+  states. Preflight requires every source to be one active, valid, current,
+  nonempty operation-group entry in that Job; requires one shared current tool
+  controller and coolant mode; freezes each source's fully placed command
+  stream; and rejects stale targets or streams exceeding 500,000 commands,
+  16 MiB in aggregate, or 4,096 bytes for one command before mutation starts.
+- Human and Native Simple Copy now share one task-free
+  `Path.Op.Gui.SimpleCopy.Create` factory. The exact frozen stream is stored in
+  a source-preserving, non-parametric Custom operation with no source links.
+  An additive `ObjectEmbeddedPath` proxy and default-false CAM operation hook
+  identify command streams that already own their coolant state, preventing
+  the generic Custom generator from duplicating source `M8`/`M9` commands;
+  ordinary Custom operations retain their existing coolant generation. Native
+  postconditions prove the precise proxy, Job, controller, coolant, label,
+  durable G-code hash, entire executable command sequence including wrappers,
+  source state, Job resources, selection, visibility, and marker-aware History
+  insertion.
+- The compiled lifecycle gate covers stale and incompatible-source rejection,
+  forced postcondition rollback, single and multiple placed-source flattening,
+  absence of source links, exact source preservation, assistant receipt,
+  selection and visibility preservation, undo, redo, insertion before future
+  History, and FCStd reopen. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_SIMPLE_COPY_GUI_OK exact_job=true
+  exact_sources=true stale=true compatibility=true rollback=true single=true
+  multi=true placements=true flattened=true no_source_links=true
+  source_preserved=true history=true marker=true receipt=true selection=true
+  visibility=true undo=true redo=true reopen=true`. The shipped human CAM
+  atomicity and forced-failure rollback regressions pass, 177 focused
+  registry/manifest/capability/context/dispatch/snapshot/state tests pass,
+  Manufacture inspection remains read-only across reopen, and the final-code
+  protected GUI CAM VibeScript lifecycle emits
+  `CAM VibeScript native API/worker integration passed`. New Native and shared
+  Simple Copy sources pass Ruff, all touched Python sources compile, build
+  staging is current, and whitespace validation is clean.
+- The Array dress-up checkpoint maps shipped `CAM_DressupArray` to the dedicated
+  `manufacture.modify/array_dressup` replacement mutation with exact target type
+  `ExactCamJobOperationAndArrayDressupPattern`. Its closed contract accepts one
+  exact Job and one exact current base operation plus one discriminated
+  Linear-1D, Linear-2D, or Polar pattern. Optional Linear jitter is explicit,
+  bounded, and seeded; Polar rejects jitter because the shipped generator does
+  not implement it. Preflight requires an active, valid, nonempty base at the
+  exact Job-group position, freezes its controller, coolant, configuration, and
+  path, computes the complete expected result without mutation, and rejects
+  more than 256 placements or 500,000 output commands.
+- Human and Native Array dress-up creation now share one caller-transaction
+  factory while retaining the existing command and public `Create` entry point.
+  The generator uses an operation-local random source, preserving repeatable
+  seeded output without mutating Python's process-global random state. Native
+  publication retains the exact hidden base, replaces it in the Job group,
+  inserts the dress-up at the active History marker, and publishes exact
+  replacement metadata. The shared timeline publisher now derives the hidden
+  end state of typed replacement inputs from that metadata after all graph and
+  identity validation; this gives every replacement domain one atomic,
+  marker-safe publication rule instead of Python-side History patching.
+- Postconditions prove the exact proxy, base link, Job, controller, coolant,
+  authored pattern and jitter values, output path and count, source
+  configuration and toolpath, Job resources, exact group replacement,
+  selection, visibility, and marker-aware History state. The compiled lifecycle
+  gate exercises stale and bounded-work rejection, forced rollback, Linear-1D,
+  Linear-2D, Polar, repeated seeded jitter, process-global random preservation,
+  assistant undo, redo, insertion before future History, and FCStd reopen. It
+  emits
+  `VIBECAD_NATIVE_MANUFACTURE_ARRAY_DRESSUP_GUI_OK exact_job=true
+  exact_base=true stale=true bounded_work=true rollback=true linear_1d=true
+  linear_2d=true polar=true seeded_jitter=true global_random_preserved=true
+  source_preserved=true replacement=true history=true marker=true receipt=true
+  selection=true visibility=true undo=true redo=true reopen=true`. The shipped
+  human CAM atomicity, forced-failure rollback, and three CAM History replacement
+  regressions pass; 177 focused provider contract tests pass; Manufacture
+  inspection remains read-only across reopen; and the final-code protected GUI
+  CAM VibeScript lifecycle emits
+  `CAM VibeScript native API/worker integration passed`. Touched Python sources
+  compile and pass Ruff, build staging is current, `FreeCADApp` builds, and
+  whitespace validation is clean.
+- The Axis Map checkpoint maps shipped `CAM_DressupAxisMap` to the dedicated
+  `manufacture.modify/axis_map_dressup` replacement mutation with exact target
+  type `ExactCamJobOperationAndAxisMapParameters`. Its closed contract accepts
+  one exact Job and current base operation, one of the six shipped X/Y-to-A/B/C
+  mappings, one positive bounded wrap radius in millimetres, and one explicit
+  reverse-direction boolean. Preflight freezes the exact base, controller,
+  coolant, path, Job group, History, selection, visibility, and every existing
+  CAM path center; prepares the fully placed and arc-linearized path without
+  mutation; rejects missing input-axis coordinates and output beyond 500,000
+  commands; and refuses conflicting Axis Map radii because one Job owns one
+  rotary center, returning the existing radius as repair data.
+- Human and Native creation now share one caller-transaction factory, while the
+  existing task command and edit workflow remain intact. A shared Native
+  replacement lifecycle module centralizes exact target, source preservation,
+  Job resource, History marker, presentation, and path postconditions for the
+  remaining one-output CAM dress-ups instead of duplicating hundreds of lines
+  per operation. The shipped remapping algorithm is now a task-free pure path
+  function used by both human recompute and Native preflight.
+- The live gate exposed and corrected the underlying rotary-center lifecycle:
+  `ObjectJob.setCenterOfRotation` now writes Path values back rather than
+  mutating discarded copies; standard operation generation and Array dress-up
+  generation inherit the Job center in their own output paths; Axis Map and
+  Array preserve it for suppressed/invalid paths; and a new human Axis Map in
+  an existing consistent Job inherits its established radius. No Job execute
+  pass mutates already-recomputed children, so operations do not remain touched.
+  Axis Map still emits its own exact `Z=-radius` center, and paths outside the
+  target Job remain unchanged.
+- The compiled lifecycle gate exercises stale and zero-radius rejection,
+  missing-axis refusal, conflicting-radius repair, forced rollback, all six
+  mappings, reverse conversion, arc linearization, exact degree/feed
+  conversion, Job-wide rotary-center propagation, outside-Job preservation,
+  assistant undo, redo, insertion before future History, and FCStd reopen. It
+  emits
+  `VIBECAD_NATIVE_MANUFACTURE_AXIS_MAP_DRESSUP_GUI_OK exact_job=true
+  exact_base=true stale=true invalid_radius=true missing_axis=true
+  radius_conflict=true rollback=true six_mappings=true reverse=true
+  arc_linearization=true rotary_center=true outside_job_preserved=true
+  source_preserved=true replacement=true history=true marker=true receipt=true
+  selection=true visibility=true undo=true redo=true reopen=true`. The human
+  Axis Map cancel/accept/default-center/one-undo lifecycle passes without
+  touched operations; Array and Simple Copy lifecycles, CAM atomicity and
+  rollback, three CAM History regressions, 177 focused provider contracts, and
+  read-only Manufacture inspection all pass. The final-code protected GUI CAM
+  VibeScript lifecycle emits `CAM VibeScript native API/worker integration
+  passed`. Touched sources compile and pass Ruff, staging is current, and
+  whitespace validation is clean.
+- The Path Boundary checkpoint maps shipped `CAM_DressupPathBoundary` to the
+  dedicated `manufacture.modify/path_boundary_dressup` replacement mutation
+  with exact target type `ExactCamJobOperationAndPathBoundaryDefinition`. Its
+  closed contract accepts one exact Job and exact current base operation plus
+  one discriminated clipping solid: Job-model bounds with six explicit
+  extensions, an explicit placed box, an explicit placed cylinder, or an exact
+  current public solid. Inside/outside retention, boundary offset, retract
+  threshold, and Rest Machining intent are all explicit; no selection or task
+  dialog state is inferred.
+- Preflight freezes the base, controller, coolant, Job group, model resources,
+  reusable-solid source, History, selection, visibility, and full placed path.
+  It builds the exact stock and clipped path without mutating the document,
+  rejects empty cutting output, and bounds the work at 500,000 commands, 10,000
+  boundary edges, 10,000 faces, 16 MiB of boundary BRep, and 5,000,000
+  move-edge intersection units. Durable Stock and command streams retain exact
+  fingerprints; transient OpenCASCADE offset/clone results use canonical
+  topology, bounds, and geometric measurements because equivalent results can
+  serialize with different internal BRep ordering.
+- Human and Native creation share a task-free caller-owned factory while the
+  existing interactive editor and public command remain intact. Every accepted
+  result owns one real `Boundary` Stock resource immediately before the
+  operation in History. Model-bound, box, and cylinder resources remain
+  parametric; existing solids are preserved through a durable resource clone.
+  The common dress-up lifecycle now handles optional owned-resource blocks and
+  proves exact ownership, ordering, visibility, Job replacement, source
+  preservation, and marker-aware History without changing the no-resource
+  Array or Axis Map contract. Boundary output paths also inherit the Job rotary
+  center at their own generation boundary.
+- The compiled lifecycle gate exercises stale and invalid-definition rejection,
+  empty-clip refusal, forced rollback, all four boundary definitions,
+  inside/outside clipping, offset, retract threshold, Rest Machining state,
+  owned Stock ordering, exact source preservation, assistant undo, redo, and
+  FCStd reopen. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_PATH_BOUNDARY_DRESSUP_GUI_OK exact_job=true
+  exact_base=true stale=true invalid_definition=true empty_clip=true
+  rollback=true model_bounds=true box=true cylinder=true existing_solid=true
+  inside_outside=true offset=true retract=true rest=true owned_stock=true
+  source_preserved=true replacement=true history=true receipt=true
+  selection=true visibility=true undo=true redo=true reopen=true`. The shipped
+  human Path Boundary cancel/accept/one-undo and owned-resource copy lifecycle
+  pass. Array and Axis Map compiled lifecycles remain green; 144 focused
+  provider/manifest/context/dispatch/state contracts pass; Manufacture
+  inspection remains read-only across reopen; and the final-code protected GUI
+  CAM VibeScript lifecycle emits `CAM VibeScript native API/worker integration
+  passed`. Touched Python passes Ruff and compilation, release staging is
+  current, and whitespace validation is clean.
+- The Dogbone checkpoint maps shipped `CAM_DressupDogbone` to the dedicated
+  `manufacture.modify/dogbone_dressup` replacement mutation with exact target
+  type `ExactCamJobOperationAndDogboneReliefDefinition`. Its closed contract
+  accepts one exact Job and one exact current base operation; all five shipped
+  Dogbone/T-bone styles; explicit left/right path side; discriminated adaptive,
+  fixed-cutter-radius, or positive custom incision length; explicit outer
+  closed-profile filtering; and zero through 256 exact placed-path XY corner
+  groups to disable. A disabled location maps to every cutting-depth candidate
+  at that XY position, matching the human checklist without exposing brittle
+  raw candidate indices.
+- Human recompute and Native preflight now share one task-free pure Dogbone
+  generator, and human and Native creation share one caller-owned transaction
+  factory while preserving the existing public `Create` function and task
+  command. Preflight freezes the Job, exact base, controller, coolant, source
+  path, History, selection, and visibility; derives the complete candidate
+  catalog and final output before mutation; returns bounded actionable corner
+  locations for an invalid disable target; and rejects empty reliefs, invalid
+  tool diameter, more than 10,000 candidates, more than 2,048 XY groups,
+  more than 500,000 result commands, pathological closed-profile searches, and
+  excessive nested Dogbone duplicate work. Generated, inactive, and reopened
+  paths retain the owning Job's rotary center.
+- Postconditions prove the exact Dogbone proxy and view provider, base and Job,
+  inherited controller and coolant, all authored relief settings, candidate
+  grouping, blacklist, command stream, cutting count, rotary center, retained
+  source, exact Job replacement, selection, visibility, and marker-aware
+  History. The compiled gate exercises stale and invalid-custom rejection,
+  wrong-side refusal, the bounded-work guard on a 2,000-command open profile,
+  actionable corner repair, forced rollback, all five styles, both sides, all
+  three incision modes, one XY disable across two cutting depths, outer-closed
+  filtering, assistant undo, redo, insertion before future History, and FCStd
+  reopen. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_DOGBONE_DRESSUP_GUI_OK exact_job=true
+  exact_base=true stale=true invalid_custom=true wrong_side=true
+  workload_guard=true actionable_locations=true rollback=true five_styles=true
+  both_sides=true three_incisions=true grouped_disable=true closed_only=true
+  source_preserved=true replacement=true history=true marker=true receipt=true
+  selection=true visibility=true undo=true redo=true reopen=true`.
+- The shipped human Dogbone cancel/accept/one-undo lifecycle and all 23 existing
+  Dogbone algorithm/generator tests pass. Array, Axis Map, and Path Boundary
+  compiled lifecycles remain green; 169 focused provider, manifest, context,
+  dispatch, snapshot, state, undo, and dress-up factory contracts pass;
+  Manufacture inspection remains read-only across reopen; and the final-code
+  protected GUI CAM VibeScript lifecycle emits `CAM VibeScript native
+  API/worker integration passed`. Touched sources compile and pass Ruff,
+  release staging is current, and whitespace validation is clean.
+- The Ramp Entry checkpoint maps shipped `CAM_DressupRampEntry` to dedicated
+  `manufacture.modify/ramp_entry_dressup` replacement mutation with exact
+  target type `ExactCamJobOperationAndRampEntryDefinition`. Its closed contract
+  uses four physically named strategies—forward then return, reverse into the
+  cut, zigzag descent, and closed-contour helix—rather than GUI enumeration
+  indices. The ramp angle is explicitly measured from vertical, and activation
+  is either every eligible plunge or one absolute Job-coordinate Z threshold.
+- The former 981-line GUI/algorithm mixture is split into a 311-line GUI
+  factory/view/command boundary and a bounded headless generator shared by
+  human recompute and Native preflight. Existing human-side proxy helper
+  methods remain callable as delegates to the new core. The generator copies
+  command parameter maps before feed assignment, owns all modal state per
+  call, preserves Job rotary center, refuses zero-radius arcs and zero-length
+  ramp loops, and no longer silently rewrites authored angle properties during
+  recompute.
+- Input, final output, intermediate generation, and candidate search are
+  independently bounded at 50,000 commands, 500,000 commands, 1,000,000 work
+  units, and 5,000,000 scan units. Tiny projections retain their plunge rather
+  than deleting it, helix repetition is checked before allocation, and every
+  generated motion is assigned an exact inherited horizontal, vertical, ramp,
+  or rapid feed. Native creation refuses controllers with nonpositive required
+  rates and returns the exact deficient property names.
+- As with Mirror, Ramp Entry no longer edits the Job group from tree
+  `claimChildren()`. Human and Native creation share one explicit
+  `removeBefore=True` caller-owned replacement factory; the human command
+  validates exact document name/ID, proxy/view provider, base and Job,
+  provisional History enrollment, replacement metadata, group state,
+  visibility, and output path before committing one undo step. Deletion from a
+  different active document restores the exact retained base.
+- The compiled Ramp Entry gate exercises stale and invalid-angle rejection,
+  no-eligible-plunge refusal, exact missing-rate diagnostics, bounded-work
+  refusal, forced rollback, all four shipped methods, real diagonal ramp
+  motion, exact absolute-Z plunge splitting, source immutability, assistant
+  undo/redo, and FCStd reopen. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_RAMP_ENTRY_DRESSUP_GUI_OK exact_job=true
+  exact_base=true stale=true closed_schema=true invalid_angle=true
+  no_effect=true machine_rates=true workload_guard=true rollback=true
+  four_methods=true start_depth=true ramp_motion=true rotary_center=true
+  source_preserved=true replacement=true history=true receipt=true
+  selection=true visibility=true undo=true redo=true reopen=true`. The shipped
+  human creation, forced-validation rollback, and cross-tab deletion lifecycles
+  pass; the preceding Mirror lifecycle remains green; 169 focused provider,
+  manifest, registry, dispatch, snapshot, state, target, undo, and factory
+  contracts pass; Manufacture inspection remains read-only across reopen; and
+  the protected GUI CAM VibeScript lifecycle emits `CAM VibeScript native
+  API/worker integration passed`. Touched sources compile and pass Ruff,
+  release staging is current, and whitespace validation is clean.
+- The Drag Knife checkpoint maps shipped `CAM_DressupDragKnife` to the
+  dedicated `manufacture.modify/drag_knife_dressup` replacement mutation with
+  exact target type `ExactCamJobOperationAndDragKnifeCompensation`. Its closed
+  contract accepts one exact Job and exact current base operation, a 0–180°
+  corner filter, a positive physical blade-tip trailing offset up to 100 mm,
+  and an explicit absolute pivot Z height up to 100 mm. The schema explains
+  the physical meaning and limits of every field rather than exposing the
+  historical property names.
+- The old geometry engine has moved out of the GUI task module into a headless
+  CAM core shared by human recompute and Native preflight. Generation now owns
+  per-call modal position and result counters instead of the former
+  process-global `currLocation`, while the long-standing GUI proxy class and
+  direct-import module names remain available to human-side callers. The GUI
+  module is now a thin restorable task/view layer, and both human and Native
+  creation use one validated caller-owned transaction factory. The shared core
+  also accepts valid arcs whose zero `I` or `J` component was omitted and
+  rejects a truly zero-radius arc deterministically.
+- Preflight freezes the Job, base, controller, coolant, placed path, History,
+  selection, and visibility; computes the exact compensated stream before
+  mutation; verifies the pivot height is above every compensated cutting
+  depth; and rejects zero offset, no usable compensation, malformed arcs,
+  more than 50,000 input commands, or more than 500,000 output commands.
+  Postconditions prove the exact proxy/view provider, authored settings,
+  candidate/action/depth counts, line and arc extension/twist counts, complete
+  output path, Job rotary center, retained source, Job replacement, selection,
+  visibility, and marker-aware History.
+- The compiled lifecycle gate exercises stale and zero-offset rejection, the
+  workload guard, unsafe pivot refusal with repair data, malformed zero-radius
+  arc rejection, no-op refusal, forced rollback, line compensation, real arc
+  extension and twist, corner filtering, assistant undo, redo, insertion
+  before future History, and FCStd reopen. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_DRAG_KNIFE_DRESSUP_GUI_OK exact_job=true
+  exact_base=true stale=true invalid_offset=true workload_guard=true
+  unsafe_pivot=true malformed_arc=true no_op=true rollback=true line=true
+  arc=true filter=true rotary_center=true source_preserved=true
+  replacement=true history=true marker=true receipt=true selection=true
+  visibility=true undo=true redo=true reopen=true`.
+- The shipped human Drag Knife cancel/accept/one-undo lifecycle passes. The
+  preceding Dogbone compiled lifecycle remains green; 169 focused provider,
+  manifest, context, dispatch, snapshot, state, undo, and dress-up factory
+  contracts pass; Manufacture inspection remains read-only across reopen; and
+  the final-code protected GUI CAM VibeScript lifecycle emits `CAM VibeScript
+  native API/worker integration passed`. Touched sources compile and pass
+  Ruff, release staging is current, and whitespace validation is clean.
+- The Lead In/Out checkpoint maps shipped `CAM_DressupLeadInOut` to dedicated
+  `manufacture.modify/lead_in_out_dressup` replacement mutation with exact
+  target type `ExactCamJobOperationAndLeadInOutMotionDefinition`. Each side is
+  one closed discriminated request: disabled or one of all 13 shipped Arc,
+  Line, Perpendicular, Tangent, 3D, Z, follow-profile, Helix, No Retract, and
+  Vertical styles. Only parameters meaningful to that style are published,
+  and every angle, radius/length, offset, extension, retract threshold, and
+  rapid-plunge limit is visible in the provider schema.
+- The 1,890-line GUI/algorithm mixture is split into a headless CAM generator
+  and a thin serialized GUI proxy/task/view/command layer. Human recompute and
+  Native preflight now share immutable `LeadDefinition` inputs and one bounded
+  generator. Human recompute no longer silently rewrites authored radii or
+  angles, disabling both leads returns the placed source immediately, and the
+  human command refuses bases from which positive feeds and safe/clearance
+  heights cannot be resolved. Its exact factory return is validated by
+  document name/ID, proxy/view provider, base, Job, provisional History
+  enrollment, replacement marker, and visibility before task ownership is
+  accepted.
+- Preflight freezes the exact Job, current operation, controller, coolant,
+  source configuration/path, History, selection, and visibility; generates the
+  complete output before mutation; rejects both sides disabled, invalid style
+  payloads, unsafe feeds/heights, missing cutting profiles, no-effect output,
+  more than 50,000 input commands, or more than 500,000 output commands; and
+  returns concise profile/lead counts and path hashes. Closed-profile repeat
+  work and follow-profile discretization are guarded before large allocation.
+  Postconditions prove every authored setting, exact output, counts, Job rotary
+  center, retained source, replacement, selection, visibility, and History.
+- The audit also found that four dress-up helpers assigned Job center metadata
+  through a live base `Path` alias during read-only preflight. Lead In/Out,
+  Path Boundary, Dogbone, and Drag Knife now clone the path before changing
+  center metadata. The Lead gate explicitly proves structural revision is
+  unchanged for every one of its 26 style/side preflights, while all four
+  compiled replacement lifecycles remain green.
+- The compiled Lead In/Out gate exercises stale-target, closed-schema,
+  invalid-angle, no-effect, workload, and forced-postcondition rollback paths;
+  all 13 styles on both entry and exit; exact replacement; one-step assistant
+  undo/redo; FCStd reopen; source preservation; selection/visibility stability;
+  and rotary-center preservation. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_LEAD_IN_OUT_DRESSUP_GUI_OK exact_job=true
+  exact_base=true stale=true closed_schema=true invalid_angle=true
+  no_effect=true workload_guard=true rollback=true thirteen_styles=true
+  both_sides=true rotary_center=true source_preserved=true replacement=true
+  history=true receipt=true selection=true visibility=true undo=true redo=true
+  reopen=true`. The shipped human cancel/accept/one-undo lifecycle passes; 169
+  focused provider/manifest/registry/dispatch/state/factory contracts pass;
+  Manufacture inspection remains read-only across reopen; and the protected
+  GUI CAM VibeScript lifecycle emits `CAM VibeScript native API/worker
+  integration passed`. Touched sources compile and pass Ruff, release staging
+  is current, and whitespace validation is clean.
+- The Mirror checkpoint maps shipped `CAM_DressupMirror` to dedicated
+  `manufacture.modify/mirror_dressup` replacement mutation with exact target
+  type `ExactCamJobOperationAndMirrorPlacementDefinition`. Its closed contract
+  exposes only three meaningful placements: a selected global axis at the
+  origin, that axis through the global-bounds center of one exact current Job
+  model, or one exact axis-aligned `EdgeN`/`FaceN` reference. All three offset
+  coordinates and retention of the unchanged placed base path are explicit;
+  the historical `None` no-op is not published.
+- Human recompute and Native preflight share one detached, bounded Mirror
+  generator. It copies every command before transformation, preserves the Job
+  rotary center, mirrors `I`/`J` arc centers and handedness correctly for X,
+  Y, and XY, resolves model and reference geometry through transformed global
+  shapes, and computes a true bounds-center reflection rather than combining
+  local maxima with Placement translation. A hidden durable model link keeps
+  Native center-based intent exact across recompute and FCStd reopen while old
+  human documents retain their implicit Job-model behavior.
+- The audit removed Mirror's reliance on the tree view provider to edit the
+  CAM Job group from `claimChildren()`. Creation now performs an explicit
+  caller-owned `removeBefore=True` Job replacement, while the view callback is
+  read-only. The human command validates exact document name/ID, proxy/view
+  provider, base and Job identity, provisional History enrollment,
+  replacement metadata, group state, visibility, and generated path before
+  committing its single undo step. Shared replacement errors now include the
+  exact expected and actual Job operation names instead of only reporting a
+  generic group mismatch.
+- The compiled Mirror gate exercises stale auxiliary targets, closed schemas,
+  diagonal-reference refusal, no-effect refusal, bounded-work rejection,
+  forced rollback, all three axes, model-center and transformed-reference
+  placement in global coordinates, XYZ offsets, retained base paths, arc
+  handedness, source immutability, assistant undo/redo, and FCStd reopen. It
+  emits `VIBECAD_NATIVE_MANUFACTURE_MIRROR_DRESSUP_GUI_OK exact_job=true
+  exact_base=true stale=true closed_schema=true invalid_reference=true
+  no_effect=true workload_guard=true rollback=true three_axes=true
+  model_center=true reference=true global_geometry=true offset=true
+  keep_base=true arc_direction=true rotary_center=true source_preserved=true
+  replacement=true history=true receipt=true selection=true visibility=true
+  undo=true redo=true reopen=true`. The shipped human creation, forced
+  validation rollback, and cross-tab deletion-restoration lifecycles pass;
+  the preceding Lead In/Out lifecycle remains green; 169 focused provider,
+  manifest, registry, dispatch, snapshot, state, target, undo, and factory
+  contracts pass; Manufacture inspection remains read-only across reopen; and
+  the protected GUI CAM VibeScript lifecycle emits `CAM VibeScript native
+  API/worker integration passed`. Touched sources compile and pass Ruff,
+  release staging is current, and whitespace validation is clean.
+- The Tag checkpoint maps shipped `CAM_DressupTag` to dedicated
+  `manufacture.modify/tag_dressup` replacement mutation with exact target type
+  `ExactCamJobOperationAndHoldingTagDefinition`. Its closed contract contains
+  only three complete physical placement requests: ordered explicit XY
+  locations with durable enablement, deterministic minimum/maximum distribution
+  over every bottom cutting wire, or exact copying of the shape and enabled
+  locations from one frozen Tag dress-up. Material width, material height,
+  side angle measured from horizontal, and top fillet radius are explicitly
+  named, unit-bearing, and bounded; copy mode inherits those four authored
+  values instead of accepting contradictory duplicates.
+- A new 447-line task-free CAM generator now owns detached location safety
+  evaluation and path construction while the existing public `Tag`,
+  `PathData`, `ObjectTagDressup`, and human `Create` surfaces remain available.
+  Human recompute and Native preflight share this generator. The CAM core no
+  longer imports GUI preferences during ordinary generation, preserves the Job
+  rotary center, samples trimmed curve parameters from their actual first
+  parameter, and preserves a user's explicit disabled state instead of
+  accidentally re-enabling every on-path disabled tag during recompute. The
+  GUI adds one caller-owned `CreateInTransaction` boundary without opening the
+  editor; the shipped task editor retains automatic generation, copy, manual
+  add/edit/remove/clear, enable/disable, and atomic accept/cancel behavior.
+- Native preflight freezes the exact Job, current base, controller, source Tag
+  dress-up when copying, History, selection, visibility, source configuration,
+  and command stream. It prepares the complete output before mutation; rejects
+  nonpositive machine rates or tool diameter, malformed inherited disabled
+  indices, empty/no-effect placements, enabled off-path/overlapping/start-point
+  tags with indexed reason and XY repair data, more than 256 tags, more than
+  5,000,000 edge/tag scans, or more than 500,000 output commands. Postconditions
+  prove the exact shape, normalized positions, disabled indices, automatic
+  counts, effective clipped heights/radii, mapped segments, path, rotary
+  center, retained copy source, replacement, selection, visibility, and
+  History state.
+- The compiled Tag gate exercises stale and invalid-shape rejection, precise
+  off-path diagnostics, bounded-work refusal, forced rollback, all three
+  placement modes, durable disabled positions, source immutability, assistant
+  undo/redo, and FCStd reopen. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_TAG_DRESSUP_GUI_OK exact_job=true
+  exact_base=true stale=true closed_schema=true invalid_shape=true
+  off_path=true workload_guard=true rollback=true automatic=true explicit=true
+  copy=true durable_disabled=true source_preserved=true rotary_center=true
+  replacement=true history=true receipt=true selection=true visibility=true
+  undo=true redo=true reopen=true`. The shipped human atomic editor,
+  cross-document deletion restoration, and every-shipped-dress-up History
+  lifecycle pass; the preceding Ramp Entry lifecycle remains green; 169 focused
+  provider/manifest/registry/dispatch/snapshot/state/target/undo/factory
+  contracts pass; Manufacture inspection remains read-only across reopen; and
+  the protected GUI CAM VibeScript lifecycle emits `CAM VibeScript native
+  API/worker integration passed`. Touched sources compile and pass Ruff,
+  release staging is current, and whitespace validation is clean.
+- The Z Correct checkpoint maps shipped `CAM_DressupZCorrect` to dedicated
+  background `manufacture.modify/z_correct_dressup` replacement mutation with
+  exact target type `ExactCamJobOperationAndHumanAuthorizedProbeMap`. Its
+  closed provider contract contains only the exact Job, current operation,
+  label, maximum circular chord deflection, and maximum generated line-segment
+  length. It accepts no path or file identity from the model: the host opens
+  one human-controlled chooser for `.txt`, `.log`, `.probe`, or `.dat` input,
+  grants one one-shot file authorization, and returns only a bounded basename,
+  size, and SHA-256 summary.
+- A new 458-line task-free CAM core now owns bounded UTF-8 probe parsing,
+  complete rectangular-grid validation, detached B-spline construction,
+  command freezing, and Z-corrected path generation. Human recompute and
+  Native preparation use this same implementation. It preserves full-precision
+  probe coordinates and the rotary center; uses ceiling-based line subdivision
+  and chord-deflection-based circular subdivision; preserves detached non-cutting
+  commands and feed values; and rejects duplicate/incomplete grids, nonfinite or
+  oversized data, relative G91 paths, rotary cutting moves, unresolved motion,
+  out-of-probe-area points, and bounded command overflows instead of silently
+  returning or dropping motion.
+- Native freezes the exact Job, base, controller, path, History, selection, and
+  visibility before asking the human for input. File verification, strict parse,
+  surface construction, and complete path generation run off the document
+  thread with cooperative progress and cancellation. The document-thread
+  commit uses the original frozen call ticket, performs one caller-owned exact
+  Job replacement, and embeds the surface, content hash, grid dimensions,
+  point count, and external basename. Native recompute is hash-pinned to that
+  embedded surface and remains deterministic if the original file is later
+  changed or removed; a human selecting a new file explicitly clears that
+  pin. The view provider no longer mutates Job groups from `attach()`, and
+  deletion restores the base through the dress-up's own document rather than
+  whichever tab happens to be active.
+- The compiled Z Correct gate exercises stale-target and closed-schema
+  rejection before file selection, absence of any provider path field, human
+  authorization, malformed and incomplete grids, out-of-bounds cutting paths,
+  no-effect maps, bounded-work refusal, authorization-time file drift, real
+  background execution, forced postcondition rollback, embedded/hash-pinned
+  recompute after the source file is corrupted, source preservation, circular
+  linearization, rotary-center preservation, exact replacement and History,
+  receipt, selection, visibility, assistant undo/redo, and FCStd reopen. It
+  emits `VIBECAD_NATIVE_MANUFACTURE_Z_CORRECT_DRESSUP_GUI_OK exact_job=true
+  exact_base=true stale=true closed_schema=true human_authorization=true
+  no_provider_path=true malformed_grid=true out_of_bounds=true no_effect=true
+  workload_guard=true file_drift=true background=true rollback=true
+  embedded=true hash_pinned=true source_preserved=true arc_linearization=true
+  rotary_center=true replacement=true history=true receipt=true selection=true
+  visibility=true undo=true redo=true reopen=true`. Shipped human creation,
+  History editing, undo, and cross-tab deletion restoration pass; the preceding
+  Tag lifecycle remains green; 170 focused provider, manifest, registry,
+  dispatch, snapshot, state, target, undo, background, and exact-factory
+  contracts plus nine common-read contracts pass; Manufacture inspection
+  remains read-only across reopen; and the protected GUI CAM VibeScript
+  lifecycle emits `CAM VibeScript native API/worker integration passed`.
+  Touched sources compile and pass Ruff, release staging is current, and
+  whitespace validation is clean.
+- The Comment checkpoint adds a real `Program` group to the human Manufacture
+  ribbon and exposes only shipped `CAM_Comment` there while the remaining
+  supplemental commands stay menu-only until their own rows are complete. The
+  live action maps to dedicated `manufacture.program/comment` with exact target
+  type `ExactCamJobAndProgramComment`. Its closed schema contains only a label,
+  one exact Job `{object_name, expected_state_sha256}`, and one 1–1024 character
+  comment; no generic G-code, command list, filesystem path, selection guess,
+  or unrelated optional field is present. The concise success returns identity,
+  bounded counts, path and state fingerprints, Job fingerprint, and the normal
+  receipt without echoing the comment text.
+- The human command and Native mutation now share one caller-transaction-owned
+  `CreateInTransaction` factory that creates the exact `Path::FeaturePython`,
+  Comment proxy, view provider, and Job membership. The existing human command
+  still owns its transaction, recompute, validation, and History publication.
+  Native strips surrounding whitespace and accepts printable ASCII only,
+  excluding parentheses and every control/line-break character, so provider
+  text cannot terminate the parenthetical comment or inject executable G-code.
+  The original human API and behavior remain additive and intact.
+- Native preflight freezes the exact Job hash, ordered operation group, complete
+  document object identity, History identity/operations/visibility/suppression/
+  marker, human selection, and existing visibility. It rejects stale Jobs,
+  recompute or transaction overlap, unsafe text, and the bounded Job-operation
+  limit before mutation. The owned transaction appends exactly one Job operation
+  and inserts it at the exact History marker; postconditions prove the one-command
+  path, proxy and Job ownership, source-preserving History state, unchanged prior
+  History entries, unchanged selection/visibility, unrelated Job-resource
+  invariants, and exact created/changed receipt identities.
+- The compiled Comment gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_COMMENT_GUI_OK ribbon=true exact_job=true
+  closed_schema=true stale=true injection_guard=true ascii_guard=true
+  transaction_guard=true rollback=true text=true source_preserved=true job=true
+  history=true receipt=true selection=true visibility=true undo=true redo=true
+  reopen=true`. The shipped human Comment/Stop atomic lifecycle and exact CAM
+  menu/toolbar/composite graph pass; 196 focused provider, surface, manifest,
+  registry, context, dispatch, snapshot, state, target, undo, background,
+  session, common-read, and factory contracts pass; default and maximum live
+  ribbon gates report Manufacture 56 and 62 respectively; Manufacture
+  inspection remains read-only across reopen; and the protected GUI CAM
+  VibeScript lifecycle emits `CAM VibeScript native API/worker integration
+  passed`. New modules pass Ruff, touched Python compiles, release staging is
+  current, and whitespace validation is clean.
+- The Stop checkpoint extends the real Manufacture `Program` group with shipped
+  `CAM_Stop` and maps it to the second sharp `manufacture.program/stop` variant
+  with exact target type `ExactCamJobAndProgramStop`. The closed variant accepts
+  exactly a label, exact Job, and `stop_mode: optional | mandatory`; the schema
+  states the machine semantics explicitly (`optional` emits M1 and depends on
+  the optional-stop control, while `mandatory` emits M0). The full two-variant
+  Program schema remains one closed discriminated object whose operation field
+  publishes the exact per-variant field map; its shared label no longer expands
+  into a redundant `anyOf`, and runtime rejects every cross-variant or extra
+  field through exact argument sets.
+- The proven Program Job/History boundary is now factored once in the 474-line
+  `VibeCADNativeManufactureProgram.py`; Stop-specific mode mapping, creation,
+  and command proof remain in a separate 158-line module. The human Stop command
+  uses a new caller-owned `CreateInTransaction` factory while preserving its
+  default Optional behavior and existing public command. Native maps only the
+  two exact lower-case modes to the human enumeration and proves the durable
+  property plus the single parameter-free M1 or M0 command; normal success
+  returns the requested semantic mode, identities, bounded count, state/path
+  fingerprints, Job fingerprint, and receipt without generic G-code payloads.
+- The compiled Stop gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_STOP_GUI_OK ribbon=true exact_job=true
+  closed_schema=true stale=true invalid_mode=true transaction_guard=true
+  rollback=true optional=true mandatory=true source_preserved=true job=true
+  history=true receipt=true selection=true visibility=true undo=true redo=true
+  reopen=true`. It creates both modes in revision-chained calls, proves two exact
+  Job/History outputs, undoes only the second, redoes it, and reconstructs both
+  proxies and commands after FCStd reopen. The refactored Comment lifecycle,
+  shipped human Comment/Stop atomic lifecycle, and exact live CAM graph pass;
+  196 focused provider/surface/manifest/registry/context/dispatch/snapshot/
+  state/target/undo/background/session/common-read/factory contracts pass;
+  default and maximum live ribbon gates report Manufacture 56 and 62 with 530
+  and 541 unique visible IDs; Manufacture inspection remains read-only across
+  reopen; and the protected GUI CAM VibeScript lifecycle emits `CAM VibeScript
+  native API/worker integration passed`. New modules pass Ruff, touched Python
+  compiles, release staging is current, and whitespace validation is clean.
+- The Custom checkpoint adds shipped `CAM_Custom` to the real Manufacture
+  `Program` group and maps it to `manufacture.program/custom` with exact target
+  type `ExactCamJobControllerAndStructuredCustomProgram`. Its closed contract
+  requires a requested safe label, one exact Job, one exact Job-owned tool
+  controller, explicit `none | flood | mist` coolant, and 1–64 ordered blocks.
+  Each block is either a 1–256-character non-executable printable-ASCII comment
+  or one uppercase G/M code with 0–16 distinct, enumerated parameter words and
+  finite numeric values. It exposes no raw G-code line, parser text, macro,
+  variable, line number, source selector, or provider filesystem path.
+- Native builds every command through `Path.Command(code, parameters)` instead
+  of reparsing provider strings, freezes both Job and controller fingerprints,
+  and uses the shared exact Program graph/History/selection/visibility boundary.
+  Creation uses the human `PathCustom.ObjectCustom` and generic CAM task-editor
+  view-provider types through a new caller-transaction factory; the existing
+  human task panel still accepts raw text or a human-selected file. The
+  operation retains source `Text`, an empty file field, exact structured stored
+  lines, exact controller/coolant, and generated command order. Generic CAM's
+  durable numeric label-uniqueness suffix is accepted only when it exactly
+  extends the requested label; the actual emitted label is verified and
+  returned.
+- The compiled Custom gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_CUSTOM_GUI_OK ribbon=true exact_job=true
+  exact_controller=true closed_schema=true no_raw_gcode=true
+  no_provider_path=true stale=true injection_guard=true duplicate_guard=true
+  transaction_guard=true rollback=true structured=true coolant=true
+  source_preserved=true job=true history=true receipt=true low_noise=true
+  selection=true visibility=true undo=true redo=true reopen=true`. Comment and
+  Stop remain green; the human menu/ribbon graph, human Custom/Probe task-panel
+  lifecycle, and Comment/Stop transactions pass; 189 focused provider,
+  manifest, registry, context, dispatch, state, target, undo, background,
+  session, common-read, and factory contracts pass. Manufacture inspection is
+  read-only across reopen, and the protected GUI CAM VibeScript lifecycle emits
+  `CAM VibeScript native API/worker integration passed`.
+- Default and maximum compiled surfaces now report Manufacture 57 and 63 with
+  531 and 542 unique visible IDs; the classified union is Manufacture 64 and
+  544 unique IDs. New modules and the lifecycle gate compile and pass Ruff,
+  release staging is current, and full whitespace validation is clean.
+- The Probe checkpoint adds shipped `CAM_Probe` to the real Manufacture
+  `Program` group and maps it to the dedicated `manufacture.probe/create_grid`
+  capability with exact target type
+  `ExactCamJobProbeControllerAndBoundedStockGrid`. Its closed contract requires
+  a G-code-safe label, exact Job, exact Job-owned probe Tool Controller, explicit
+  X/Y point counts and calibration offsets, and absolute probe/safe/clearance Z
+  values. Each axis is published as 3–64 points, the combined grid is explicitly
+  documented and enforced at no more than 1024 points, probe depth must stay
+  within the exact stock Z extent, safe height must be above the stock, and
+  clearance must be at or above safe height. No provider file or output path is
+  exposed; the durable operation stores an empty output name so the selected
+  postprocessor performs its existing automatic probe-output naming.
+- Native Probe uses the real `PathProbe.ObjectProbing` and generic CAM view
+  provider, selects the exact controller through the shared caller-transaction
+  factory, freezes the exact Job/controller/stock identities, and verifies every
+  generated grid position, G38.2 feed move, retract, open/close annotation, and
+  final clearance move. Probe commands are now recognized as valid cutting
+  commands by the shared CAM generation diagnostics. The human Probe operation's
+  X/Y calibration properties are corrected from unsigned `PropertyLength` to
+  signed `PropertyDistance`, so negative physical offsets work in both the real
+  task editor and Native creation. The shared Native CAM path-label contract now
+  publishes and enforces printable ASCII without parentheses or control
+  characters for machining, program, and dress-up operations that emit labels
+  as G-code comments; ordinary Job and Tool labels remain unchanged. Command
+  annotations need no parallel hash layer because CAM's canonical `toGCode()`
+  already serializes them, and the compiled identity check proves that differing
+  probe-open annotations produce differing path hashes.
+- The compiled Probe gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_PROBE_GUI_OK ribbon=true exact_job=true
+  exact_controller=true probe_tool=true closed_schema=true
+  documented_limits=true no_provider_path=true stale=true
+  injection_guard=true workload_guard=true motion_guard=true
+  transaction_guard=true rollback=true automatic_output=true grid=true
+  annotations=true annotation_identity=true diagnostics=true job=true
+  history=true receipt=true human_editor=true signed_offsets=true
+  low_noise=true selection=true visibility=true undo=true redo=true
+  reopen=true`. Comment, Stop, Custom, Mill Facing, and read-only Manufacture
+  inspection remain green; 209 focused provider/input/output/surface/manifest/
+  registry/context/dispatch/snapshot/state/target/undo/background/session/
+  common-read/factory contracts pass; and the protected GUI CAM VibeScript
+  lifecycle emits `CAM VibeScript native API/worker integration passed`.
+  Default and maximum compiled surfaces report Manufacture 58 and 64 with 532
+  and 543 unique visible IDs; the classified source union is Manufacture 65 and
+  545 unique IDs. Touched Python compiles and passes Ruff, release staging is
+  current, and whitespace validation is clean.
+- The Property Bag checkpoint promotes shipped `CAM_PropertyBag` from its
+  previous menu-only location into the real Manufacture `Project Setup` group
+  and maps it to the dedicated `manufacture.property_bag/create` capability
+  with exact target type `ExactOptionalPartDesignBodyAndTypedPropertySet`.
+  Native may create a root bag or attach it to the exact current
+  `PartDesign::Body`; it accepts a bounded, closed, discriminated set of nine
+  safe property kinds and canonicalizes their durable property order. The
+  existing human task panel and shared `PathPropertyBagGui.CreateInTransaction`
+  factory retain the real proxy/view-provider behavior and human-only
+  `App::PropertyFile`, while no provider schema or result exposes a file/path
+  field. Snapshot state includes bag identity, destination Body, property
+  names, groups, and kinds but never property values, descriptions, file paths,
+  or internal path hashes.
+- The compiled Property Bag gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_PROPERTY_BAG_GUI_OK ribbon=true
+  exact_body=true root=true closed_schema=true typed_values=true
+  schema_budget=true no_provider_path=true human_file=true snapshot=true
+  stale=true duplicate_guard=true reserved_guard=true transaction_guard=true
+  rollback=true history=true receipt=true low_noise=true selection=true
+  visibility=true undo=true redo=true reopen=true`. The real CAM human task
+  panel, exact live menu/toolbar/composite graph, exhaustive shipped-command
+  timeline, and caller-transaction refusal tests pass in the compiled GUI. All
+  169 focused manifest/registry/surface/context/dispatch/snapshot/state/target/
+  undo contracts pass; touched Python compiles and passes Ruff; release staging
+  and whitespace validation are clean. Probe remains green, and the protected
+  GUI CAM VibeScript lifecycle emits
+  `CAM VibeScript native API/worker integration passed`. Default and maximum
+  compiled surfaces report Manufacture 59 and 65 with 533 and 544 unique
+  visible IDs; the classified source union is Manufacture 66 and 546 unique
+  IDs.
+- The Area checkpoint maps the two experimental human actions `CAM_Area` and
+  `CAM_Area_Workplane` to one focused `manufacture.area` capability with the
+  explicit `create`, `create_view`, and `set_workplane` variants. Area creation
+  accepts one through 64 exact whole-shape, Face, or Edge targets, creates the
+  real parametric CAM subshape resources for subelements, and publishes one
+  canonical resource-first History block. Area View targets one exact current
+  `Path::FeatureArea`; Workplane targets one exact Area plus a whole 2D shape,
+  Face, or containing wire selected by Edge. Preflight freezes the complete
+  document/History/selection/visibility boundary and exact BRep identities;
+  results remain bounded to identities, topology counts, workplane linkage,
+  History position, and receipts rather than returning geometry payloads.
+- Area View is now an explicit replacement operation in both the human C++
+  command and Native execution. The implementation preserves the captured
+  source presentation until strict semantic publication validates the complete
+  dependency graph, then lets the declared replacement transition hide only
+  the source Area. Workplane assignment similarly proves that only the target
+  Area's authored workplane properties and accepted History visibility change.
+  The compiled lifecycle gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_AREA_GUI_OK ribbon=true closed_schema=true
+  create=true subshape_resource=true view=true workplane=true
+  exact_targets=true stale=true duplicate_guard=true transaction_guard=true
+  rollback=true history=true receipt=true low_noise=true snapshot=true
+  selection=true visibility=true undo=true redo=true reopen=true`.
+- The real human `CAM_Area` Area View replacement and existing Area/Workplane
+  History tests pass in the compiled GUI, including exact undo/redo restoration.
+  A broader 181-test Native manifest/registry/surface/context/dispatch/snapshot/
+  state/target/undo suite passes; touched Python compiles and passes Ruff, and
+  full whitespace validation is clean. Probe remains green and the protected
+  GUI CAM VibeScript lifecycle emits
+  `CAM VibeScript native API/worker integration passed`. Default and maximum
+  compiled surfaces remain Manufacture 59 and 65 with 533 and 544 unique IDs;
+  the classified source union remains Manufacture 66 and 546 unique IDs.
+- The Start Point checkpoint maps human-selected context action
+  `CAM_SetStartPoint` to the focused `manufacture.operation/set_start_point`
+  variant with exact target type `ExactCamJobOperationAndPlanarStartPoint`.
+  Its closed provider request contains only the exact Job, exact current
+  operation, and planar `x_mm`/`y_mm`; provider-controlled Z is impossible and
+  the implementation derives Z from the operation's frozen Clearance Height,
+  exactly matching the human Snapper command. Operation state and Manufacture
+  snapshots now publish the enabled flag, exact three-dimensional point, and
+  clearance height as bounded semantic state. Preflight freezes Job ownership,
+  the exact `App::PropertyVectorDistance`/boolean/distance property contract,
+  complete document graph, History, selection, visibility, operation group,
+  and unrelated-operation states. Mutation is one in-place transaction with
+  exact-target recompute, no-change refusal, fail-closed rollback, and a
+  canonical Job-plus-operation receipt.
+- The Start Point verifier distinguishes authored configuration from legitimate
+  regenerated CAM output: hidden `AreaParams`, `PathParams`, and
+  `removalshape` are classified as derived generation state while every other
+  non-target authored property remains exact. Postcondition failures name the
+  precise configuration properties that drifted. The compiled gate uses a real
+  generated Profile rather than a synthetic path object, proves that its
+  toolpath hash changes after applying the new start point, and emits
+  `VIBECAD_NATIVE_MANUFACTURE_START_POINT_GUI_OK context=true
+  closed_schema=true planar_input=true derived_z=true snapshot=true
+  real_profile=true property_contract=true regenerated_path=true
+  exact_job=true exact_operation=true stale=true transaction_guard=true
+  rollback=true duplicate_guard=true no_change=true receipt=true
+  low_noise=true history=true selection=true visibility=true undo=true
+  redo=true reopen=true`.
+- Both real human Start Point lifecycle tests pass with the true distance-vector
+  contract, including callback document binding, one undo entry, cancellation,
+  rollback, undo/redo, and FCStd restoration. Profile, Area/Workplane, and
+  operation-active compiled neighbor gates remain green; 193 focused Native
+  manifest/background/capability/common-read/context/dispatch/registry/session/
+  snapshot/state/surface/target/undo contracts pass. Touched Python compiles
+  and passes Ruff, release staging and whitespace validation are clean, and the
+  protected GUI CAM VibeScript lifecycle emits
+  `CAM VibeScript native API/worker integration passed`. Default and maximum
+  compiled surfaces remain Manufacture 59 and 65 with 533 and 544 unique IDs.
+- The GL simulation checkpoint maps human action `CAM_SimulatorGL` to the focused
+  `manufacture.simulation/gl` view capability. Its closed request contains one
+  exact current Job, one through 64 distinct exact active operations in their
+  current Job order, and quality 1 through 10. It is classified as background
+  presentation, never as a document mutation; the retired native simulator is
+  intentionally reserved for the separate result-producing checkpoint.
+  Main-thread preflight validates the Job graph, generated paths, Job-owned tool
+  controllers, ToolBit shapes, stock, model resources, complete exact-target
+  hashes, command bounds, and the frozen structural revision. The detached
+  worker copies placement and shape inputs, applies operation placement to each
+  path, builds tool profiles through the same geometry helper as the human
+  simulator, serializes bounded G-code, and hashes the exact prepared program.
+- The compiled CAM simulator now has an additive prepared-mesh boundary:
+  `PrepareShapeMesh` releases the Python GIL while OCC tessellates detached
+  shapes, while `BeginPreparedSimulation`, `SetPreparedBaseShape`, and
+  `AddGCode` reject non-GUI-thread presentation. The opaque internal mesh format
+  validates its magic, version, exact byte count, finite vertices, index range,
+  triangle count, 65,536-vertex ceiling, and four-million-index ceiling before
+  OpenGL receives it. Existing human simulator entry points remain unchanged.
+  Closing the Native task releases its retained simulation and removes only its
+  Native-owned MDI view, restoring the exact prior window set and active view.
+- A real generated Profile Job passes the compiled lifecycle gate and emits
+  `VIBECAD_NATIVE_MANUFACTURE_GL_SIMULATION_GUI_OK context=true
+  closed_schema=true exact_job=true ordered_operations=true active_path=true
+  quality=true background=true gui_responsive=true compiled_mesh=true
+  detached_tools=true placed_gcode=true cancel=true stale=true
+  document_close=true ribbon_switch=true duplicate_guard=true task_owned=true
+  status_during_task=true low_noise=true history=true undo_neutral=true
+  selection=true visibility=true revision_neutral=true view_teardown=true`.
+  The gate proves immediate return, a responsive Qt heartbeat during held worker
+  preparation, worker/main-thread separation, cooperative cancellation before
+  presentation, revision-stale rejection, document-close rejection, frozen
+  ribbon invalidation, duplicate-call replay, status polling during the owned
+  task, exact task teardown, and no object, History, undo, selection, visibility,
+  or structural-revision change. The human simulator shape-copy regression and
+  the neighboring Profile, operation-active, and Start Point compiled gates pass.
+  Two hundred thirteen focused Native manifest/background/capability/common-read/
+  context/dispatch/registry/session/snapshot/state/surface/target/undo contracts
+  pass; default and maximum compiled surfaces remain Manufacture 59 and 65 with
+  533 and 544 unique IDs. The protected GUI CAM VibeScript lifecycle passes
+  unchanged, touched Python compiles and passes Ruff, release targets build, and
+  whitespace validation is clean.
+- The retained material-result checkpoint maps human action `CAM_Simulator` to
+  the separate `manufacture.simulation_result/native` mutation capability; it is
+  not an alias or variant of the read-only GL presenter. Its closed request
+  contains one exact current Job, one through 64 distinct exact active generated
+  operations in current Job order, and the same quality 1-through-10 scale as
+  the human simulator. Main-thread preflight rejects open transactions and
+  recompute, validates current-History usability, Job-owned controllers and
+  ToolBit shapes, stock solidity, exact Job/operation hashes, command support,
+  command/grid bounds, and the exact object graph and History marker. Only
+  copied shapes, placements, and immutable command values cross to the worker.
+- The native `PathSimulator.PathSim` boundary now releases the Python GIL around
+  stock initialization, ToolBit sampling, every voxel command, tessellation,
+  mesh merging, and height-field statistics. The additive
+  `GetCombinedResultMesh` entry point returns the same complete outer-plus-inner
+  material mesh retained by the human simulator without merging it on the GUI
+  thread. Cancellation and bounded progress are checked between commands and
+  operations. Commit revalidates the frozen structural revision, exact sources,
+  graph, and History, then creates one visible `Mesh::FeaturePython`
+  `CutMaterial` in one Native-owned transaction. Durable read-only provenance
+  records the exact Job name, ordered operation names, quality, derived
+  resolution, and placed-program SHA-256 without adding dependency links or
+  changing the Job operation group.
+- A real generated eight-pass Profile Job passes the compiled lifecycle gate and
+  emits `VIBECAD_NATIVE_MANUFACTURE_SIMULATION_RESULT_GUI_OK context=true
+  closed_schema=true exact_job=true ordered_operations=true quality=true
+  background=true gui_responsive=true native_gil_release=true cancel=true
+  stale=true document_close=true ribbon_switch=true duplicate_guard=true
+  durable_mesh=true provenance=true history=true receipt=true undo=true redo=true
+  reopen=true selection=true visibility=true low_noise=true`. The gate proves
+  immediate scheduling, actual Qt heartbeat progress during native voxel work,
+  worker/main-thread separation, cooperative cancellation before commit,
+  revision-stale rejection, document-close rejection, frozen-ribbon rejection,
+  duplicate-call replay, a concise status/result contract, one exact History
+  insertion and undo entry, exact undo/redo, and FCStd restoration. Human
+  simulator cancel, accept/retain, validation rollback, and ToolBit shape-copy
+  regressions pass; the GL lifecycle gate remains green; 193 focused Native
+  contracts pass; default and maximum compiled surfaces remain Manufacture 59
+  and 65 with 533 and 544 unique command IDs; and the protected CAM VibeScript
+  API/worker integration passes unchanged. Touched Python compiles and passes
+  Ruff, `PathSimulator` and `VibeCADScripts` build, and whitespace validation is
+  clean.
+- The optional CAMotics checkpoint maps human action `CAM_Camotics` to the
+  focused `manufacture.camotics/camotics` presentation capability only when the
+  live Manufacture ribbon contains that action. Its closed request contains one
+  exact current Job, one through 64 distinct exact active operations in their
+  direct current Job order, and a fully discriminated `read_result` or `launch`
+  request with explicit low, medium, or high resolution. No provider path,
+  executable, process command, output filename, or selection fallback exists.
+  Main-thread preflight validates the optional Python API, fixed installed
+  executable identity for launch, Job/operation/controller/tool/stock graph,
+  generated commands, current-History usability, complete object and
+  presentation state, and the frozen structural revision before any detached
+  work starts.
+- Only bounded immutable commands, placements, tool facts, stock bounds, and
+  exact-state evidence cross to the CAMotics worker. The worker produces a
+  metric absolute program with explicit tool changes under a one-million-command
+  and 128-MiB incremental bound, runs the published asynchronous CAMotics API,
+  supports cooperative cancellation, and validates at most two million path
+  steps plus an exact finite binary STL of at most 256 MiB and five million
+  facets. `read_result` returns only duration, step/facet counts, bounds, and
+  program/surface digests. `launch` writes a private host-owned G-code/project
+  pair, invokes only the revalidated frozen installed executable without a
+  shell, reaps it, and deletes the private workspace after exit. Neither branch
+  mutates the document, History, undo/redo state, structural revision,
+  selection, visibility, or GUI modified state.
+- A real generated Profile Job and a faithful implementation of the published
+  optional Python API pass the compiled lifecycle gate, which also launches an
+  actual fixed audit executable. It emits
+  `VIBECAD_NATIVE_MANUFACTURE_CAMOTICS_GUI_OK optional_unavailable=true
+  optional_available=true closed_schema=true no_provider_path=true
+  exact_job=true ordered_operations=true resolution=true background=true
+  gui_responsive=true cancel=true selection_stale=true revision_stale=true
+  document_close=true ribbon_switch=true duplicate_guard=true
+  bounded_result=true fixed_executable=true private_project=true
+  process_reaped=true workspace_cleanup=true document_unchanged=true
+  history=true undo=true redo=true selection=true visibility=true
+  low_noise=true`. One hundred nineteen focused CAMotics/manifest/registry/
+  surface/dispatch/background contracts pass. Default and maximum compiled
+  surfaces remain Manufacture 59 and 65 with 533 and 544 unique visible IDs,
+  while the optional compiled gate proves the 66-action CAMotics surface. The
+  protected GUI CAM VibeScript lifecycle passes unchanged, `VibeCADScripts`
+  builds, source and release staging match, touched Python compiles and passes
+  Ruff, and whitespace validation is clean.
+- The complete-job postprocessing checkpoint maps human action `CAM_Post` to
+  the single `manufacture.post/complete_job` variant. Its closed request accepts
+  only an exact current Job name and state hash; the provider cannot choose the
+  processor, processor source, executable, command line, machine file, output
+  path, filename, or post options. Main-thread preflight validates the current
+  History and complete direct Job operation set, bounds active generated input
+  to 64 operations and one million commands, freezes the human-configured
+  machine and processor identities, saves a private document snapshot, and
+  proves that snapshotting did not change the live document.
+- A fixed authenticated child opens only that private snapshot under
+  `FreeCADCmd`, restores the exact Job, executes the authenticated bytes of the
+  configured modern processor, disables remote posting, and rejects legacy
+  wrapper processors before launch. The worker is cancellable and bounded to
+  ten minutes, 2 GiB of memory, 64 output files, 256 MiB per file, and 1 GiB in
+  total. Main-thread finalization revalidates the exact ribbon, document,
+  structural revision, Job, History, processor, child, executable, selection,
+  visibility, transaction, undo, and redo state. Every proposed output requires
+  a separate one-shot human destination grant, and the additive output-bundle
+  publisher commits split files as one all-or-rollback set while preserving all
+  prior destination contents on cancellation, collision, or failure.
+- A real Job using the installed LinuxCNC modern processor passes the compiled
+  lifecycle gate and emits `VIBECAD_NATIVE_MANUFACTURE_POST_GUI_OK
+  closed_schema=true no_provider_processor=true exact_job=true
+  configured_machine=true isolated_freecadcmd=true background=true
+  gui_responsive=true cancel=true human_authorized=true output_cancel=true
+  atomic_output=true split_output=true duplicate_destination=true
+  selection_stale=true revision_stale=true processor_stale=true
+  document_close=true ribbon_switch=true legacy_rejected=true
+  remote_disabled=true duplicate_guard=true workspace_cleanup=true
+  bounded_result=true document_unchanged=true history=true undo=true redo=true
+  selection=true visibility=true low_noise=true`. One hundred forty-eight
+  focused Native post/output/manifest/background/registry/surface contracts
+  pass. Default and maximum compiled surfaces remain Manufacture 59 and 65 with
+  533 and 544 unique visible IDs. The protected CAM VibeScript API/worker gate
+  passes unchanged; source and release staging match; touched Python compiles
+  and passes Ruff; release targets build; and whitespace validation is clean.
+- The selected-operation checkpoint adds the second and final
+  `manufacture.post/selected_operations` variant for human action
+  `CAM_PostSelected`; `manufacture.post` is consequently no longer an
+  incomplete provider family. Its closed operation contract requires the same
+  exact Job plus one through 64 distinct exact active direct operations in
+  current Job order. The provider still cannot supply processor, source,
+  executable, command, options, filename, or destination. Host preflight
+  resolves every exact operation against its bounded turn-start state, rejects
+  duplicates, inactive or non-Job entries, reordered targets, unavailable
+  History inputs, empty paths, and programs above one million commands.
+- The shared authenticated snapshot/worker/publication pipeline now carries an
+  explicit complete-Job or selected-operations mode. The fixed child restores
+  and revalidates every selected name and state in current Job order, initializes
+  the postprocessor against the real Job and then installs only the authenticated
+  operation subset, and returns the exact variant and selected count for host
+  authentication. Machine discovery therefore remains correct, while the
+  output contains only the requested subset. Final results return the ordered
+  posted operation names and hashes without paths or command payloads; all
+  cancellation, stale-state, processor-identity, human-authorization, atomic
+  multi-output, and document/UI invariants from complete-Job posting remain
+  shared rather than duplicated.
+- The compiled lifecycle gate posts a real two-operation Profile Job both ways
+  and proves that the exact one-operation program is materially smaller than
+  and byte-distinct from the complete program. It rejects reversed target order
+  before launch and emits `VIBECAD_NATIVE_MANUFACTURE_POST_GUI_OK
+  closed_schema=true no_provider_processor=true exact_job=true
+  selected_operations=true exact_operation_order=true configured_machine=true
+  isolated_freecadcmd=true background=true gui_responsive=true cancel=true
+  human_authorized=true output_cancel=true atomic_output=true split_output=true
+  duplicate_destination=true selection_stale=true revision_stale=true
+  processor_stale=true document_close=true ribbon_switch=true
+  legacy_rejected=true remote_disabled=true duplicate_guard=true
+  workspace_cleanup=true bounded_result=true document_unchanged=true
+  history=true undo=true redo=true selection=true visibility=true
+  low_noise=true`. One hundred forty-nine focused Native contracts pass;
+  default and maximum compiled surfaces remain Manufacture 59 and 65 with 533
+  and 544 unique IDs; the protected CAM VibeScript API/worker lifecycle passes;
+  source and release staging match; touched code compiles and passes Ruff; and
+  whitespace validation is clean.
+- The template-export checkpoint maps human action `CAM_ExportTemplate` to the
+  single `manufacture.template/export_template` variant with an exact current
+  Job target and every content choice from the human dialog: explicit bounded
+  description, optional configured postprocessing, zero through 32 exact direct
+  tool controllers, discriminated stock exclusion or exact extent/placement,
+  rapid/coolant/height/depth SetupSheet groups, and zero through 64 exact
+  currently supported per-operation setting names. The closed request contains
+  no path, destination, filename, processor, or arbitrary property payload.
+  Runtime resolves all exact identities against the frozen turn-start state,
+  validates current SetupSheet support, serializes canonical version-1 JSON
+  under a 16-MiB bound, and publishes it only through one human-authorized
+  atomic `.json` output grant. Results contain only content counts and hashes,
+  the authorized artifact basename/size/hash, and explicit unchanged-state
+  evidence.
+- Human and Native export now share the additive authoritative
+  `ObjectJob.exportTemplateAttributes` serializer rather than maintaining
+  parallel encoders. The existing human command retains its public entry point
+  and dialog behavior and delegates its accepted choices to that serializer.
+  Real round-trip testing also exposed and corrected the shared importer's
+  processor-enumeration check: a processor is now restored only when it is an
+  exact offered enumeration, instead of incorrectly testing substring
+  membership in the current processor string. The compiled gate invokes the
+  actual human command and requires its bytes to equal Native output, imports
+  those bytes into a second real CAM Job, and proves restoration of description,
+  processor, tools, stock, and SetupSheet content.
+- The lifecycle gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_TEMPLATE_GUI_OK context=true
+  complete_family=true closed_schema=true no_provider_path=true exact_job=true
+  exact_controllers=true human_authorized=true canonical_human_format=true
+  round_trip=true cancel=true stale=true duplicate_guard=true
+  document_unchanged=true history=true undo=true redo=true selection=true
+  visibility=true low_noise=true`. It additionally proves human cancellation
+  preserves prior output, selection drift rejects before overwrite, duplicate
+  replay is refused, authorization runs on the main thread, paths never enter
+  provider results, invalid SetupSheet names return bounded repair values, and
+  source document, History, undo/redo, selection, visibility, revision, and GUI
+  modified state remain unchanged. One hundred forty-one focused contracts
+  pass; default and maximum compiled surfaces remain Manufacture 59 and 65 with
+  533 and 544 unique IDs; the protected CAM VibeScript API/worker lifecycle
+  passes unchanged; source and release staging match; touched Python compiles
+  and passes Ruff; and whitespace validation is clean.
+- The Manufacture Robot checkpoint reuses the exact shared Robot capability
+  implementations intentionally established by rows 11.38 and 11.39 instead
+  of duplicating CAM-specific mutation code. Human actions `Robot_Edge2Trac`,
+  `Robot_TrajectoryDressUp`, and `Robot_TrajectoryCompound` resolve on the
+  Manufacture ribbon to the closed `robot.trajectory` variants `edge2_trac`,
+  `trajectory_dress_up`, and `trajectory_compound`; `Robot_Simulate` resolves
+  to the closed preview-only `robot.motion/simulate` variant. The live
+  Manufacture snapshot supplies the same bounded exact Robot, tool-shape, and
+  trajectory identities and digests used by Assemble. No variant exposes GUI
+  selection or preselection, workbench switching, command dispatch, paths, or
+  document lifecycle authority.
+- Current compiled lifecycle gates now resolve both capability families against
+  the actual Manufacture provider surface and prove that neither is missing,
+  unimplemented, nor incomplete there. All three trajectory variants dispatch
+  under a frozen human-selected Manufacture ribbon with exact current targets
+  and verified transaction-free no-op results; their real mutations retain the
+  existing human-command parity, exact History, stale/cycle rejection,
+  rollback, idempotency, undo/redo, reopen, and selection guarantees. The
+  simulation variant also dispatches under the frozen Manufacture ribbon and
+  must return byte-for-byte-equivalent bounded samples to the shared human-
+  equivalent preview while leaving document revision, undo, and durable Robot
+  state unchanged. The gates emit
+  `VIBECAD_NATIVE_ROBOT_TRAJECTORY_FEATURES_GUI_OK human_edge_parity=true
+  human_dress_up_parity=true human_compound_parity=true exact_history=true
+  exact_targets=true manufacture_surface=true stale_noop=true cycle_noop=true
+  bounded=true rollback=true verified_noop=true idempotent=true undo_redo=true
+  reopen=true selection_preserved=true` and
+  `VIBECAD_NATIVE_ROBOT_MOTION_GUI_OK human_set_home_parity=true
+  human_restore_home_parity=true human_simulation_parity=true
+  exact_targets=true stale_noop=true rollback=true verified_noop=true
+  idempotent=true undo_redo=true preview_only=true manufacture_surface=true
+  reopen=true selection_preserved=true`.
+- Seventy-three focused Robot/manifest/context/registry contracts pass. The
+  protected Robot VibeScript lifecycle also now has the same ordinary GUI
+  scheduling boundary as the CAM gate; this corrects a test-harness defect in
+  which FreeCAD loaded the script under a host-specific module name and silently
+  left an empty GUI open without ever calling `main()`. Its full real lifecycle
+  completes with `"integration": "robot_vibescript_api", "ok": true` and all
+  canonical API, stable output, worker validation, rollback, save/reopen,
+  reference-guard, and isolated-context flags true. No VibeScript production
+  API changed. Test staging matches the release tree, touched Python compiles
+  and passes Ruff, and whitespace validation is clean.
+- The KUKA compact checkpoint maps human action `Robot_ExportKukaCompact` to
+  the focused `robot.export/export_kuka_compact` variant on Manufacture. Its
+  closed request accepts only one exact Robot, one exact non-empty trajectory,
+  and the frozen global/per-object Robot and trajectory digests already present
+  in Manufacture state. There is no provider path, filename, destination,
+  selection, preselection, command, workbench, timestamp, or arbitrary KRL
+  payload. Preflight rejects open transactions, recompute, stale or absent
+  identities, invalid/suppressed targets, a trajectory unavailable at the
+  current History position, zero waypoints, and any trajectory above the
+  existing 4,096-waypoint bound.
+- `KukaExporter` now exposes additive in-memory `ProgramName`,
+  `RenderCompactSub`, and `RenderFullSub` boundaries. The existing public human
+  `ExportCompactSub` and `ExportFullSub` entry points, file-dialog commands, and
+  output formats remain present and delegate to those shared renderers. This
+  eliminates separate human/Native KRL encoders while preserving the public
+  API and existing path behavior. Native freezes the host-generated timestamp,
+  renders and re-renders exact bytes under an 8-MiB bound, and guards the full
+  Robot/trajectory state, document objects and object states, optional History,
+  selection, visibility, undo/redo, transaction, GUI-modified state, ribbon,
+  document, and structural revision before atomically replacing one separately
+  human-authorized `.src` destination. The result returns only exact target
+  hashes, waypoint count, KRL program name/format/hash, artifact basename,
+  size/hash/replacement state, and unchanged flags; it never returns a path or
+  KRL body.
+- A real two-waypoint Robot trajectory passes the compiled gate, whose Native
+  output must be byte-for-byte equal to the actual shipped human command under
+  the same frozen timestamp. It emits
+  `VIBECAD_NATIVE_ROBOT_KUKA_EXPORT_GUI_OK compact=true human_parity=true
+  closed_schema=true no_provider_path=true exact_robot=true
+  exact_trajectory=true nonempty=true bounded=true human_authorized=true
+  atomic=true cancel=true stale_target=true selection_stale=true
+  duplicate_guard=true main_thread=true document_unchanged=true history=true
+  undo=true redo=true selection=true visibility=true low_noise=true`. The gate
+  additionally proves provider-path rejection before authorization, stale
+  target rejection before the file dialog, one-shot main-thread authorization,
+  cancellation and post-authorization selection drift preserving the existing
+  destination, and call-ID replay without a second prompt. One hundred focused
+  export/registry/manifest/context/dispatch/surface contracts pass. The shipped
+  Robot human compact/full export lifecycle remains green. The protected Robot
+  VibeScript lifecycle completes with `"ok": true` and every detailed flag
+  true; no VibeScript production source changed. RobotScripts and
+  VibeCADScripts build, source/release staging matches, touched Python compiles
+  and passes Ruff, whitespace validation is clean, and the split production
+  modules remain below 1,000 lines.
+- The KUKA full checkpoint adds the second and final closed `robot.export`
+  variant, `export_kuka_full`, for human action `Robot_ExportKukaFull`. It uses
+  the same exact Robot, exact non-empty trajectory, and frozen global/per-object
+  state digests as compact export. The provider still cannot supply either
+  destination, filename, timestamp, selection, command, or KRL content. Host
+  preflight renders the authoritative source/data pair through the shared
+  additive `KukaExporter.RenderFullSub` boundary, freezes the generated
+  timestamp, enforces the existing 4,096-waypoint and 8-MiB-per-file bounds,
+  and verifies the pair a second time against unchanged Robot, trajectory,
+  document, History, selection, visibility, undo/redo, transaction, GUI, ribbon,
+  active-document, and structural-revision state.
+- Full export requests two separate main-thread human grants, one `.src` and
+  one `.dat`, and publishes the already validated pair through the general
+  Native output-bundle boundary. The bundle consumes every grant before
+  generation, refuses duplicate destinations, stages every file privately,
+  preserves prior destinations as private siblings during replacement, and
+  restores the complete prior set if any publication step fails. No partial
+  new KUKA program is intentionally retained. The bounded result contains only
+  exact target hashes, waypoint count, program name/format, source/data hashes,
+  authorized artifact basenames/sizes/hashes/replacement flags, and explicit
+  unchanged-state flags; it contains neither filesystem paths nor generated
+  KRL bodies.
+- The compiled lifecycle gate invokes both actual shipped human export commands
+  and requires Native compact and full bytes to match them exactly under the
+  same timestamp. It emits
+  `VIBECAD_NATIVE_ROBOT_KUKA_EXPORT_GUI_OK compact=true full=true
+  complete_family=true human_parity=true closed_schema=true
+  no_provider_path=true exact_robot=true exact_trajectory=true nonempty=true
+  bounded=true human_authorized=true atomic=true atomic_bundle=true
+  rollback=true cancel=true stale_target=true selection_stale=true
+  duplicate_guard=true main_thread=true document_unchanged=true history=true
+  undo=true redo=true selection=true visibility=true low_noise=true`. The gate
+  also proves second-grant cancellation preserves prior output, an injected
+  second-publication failure restores both original files, and duplicate call
+  replay cannot reopen authorization. One hundred twelve focused
+  export/output/registry/manifest/context/dispatch/surface contracts pass. The
+  shipped human compact/full test remains green; the protected Robot VibeScript
+  lifecycle completes with `"ok": true` and every detailed flag true; default
+  and maximum compiled surfaces remain Manufacture 59 and 65 with 533 and 544
+  unique visible IDs; source/release staging matches; touched Python compiles
+  and passes Ruff; the legacy exporter's CRLF convention is preserved; and
+  CRLF-aware whitespace validation is clean.
+- The Manufacture readiness checkpoint now carries the already-frozen
+  turn-start human selection into the Manufacture domain snapshot. A directly
+  selected Job, one of its owned Job/tool/operation/stock resources, or a
+  public model uniquely used by that Job selects it; otherwise only a sole
+  current Job is unambiguous. Multiple Jobs without a distinguishing human
+  selection return `active_job: null` with `choose_job`, while a cross-Job
+  selection returns `ambiguous_selection`. Native assistance therefore cannot
+  choose the manufacturing context on the human's behalf. Direct headless
+  snapshot callers with no Jobs remain GUI-independent.
+- The new bounded `active_job` block returns the exact Job identity/hash,
+  stock presence/solid validity/bounds, configured machine state, up to 32
+  compact ordered controller/ToolBit identities, and up to 64 compact ordered
+  operation identities. Every operation includes its zero-based Job position,
+  active state, command count, exact state hash when readable, controller, and
+  explicit `toolpath_valid`/issue state. Aggregate validity reports the complete
+  active-operation and command counts, invalid and uninspected counts, and
+  whether all active paths are usable. Existing full/paged Job and tool readers
+  remain present for detailed edits; the turn-start block does not duplicate
+  editable property payloads or command bodies.
+- Simulation readiness checks the bounded active-operation set, current History
+  usability, nonempty valid toolpaths, one-million-command limit, solid stock,
+  valid model resources, and each active operation's exact Job-owned controller
+  and ToolBit shape/number/diameter. Post readiness shares the same operation
+  facts and resolves the configured machine, processor, and output convention
+  through the exact production post configuration boundary; it additionally
+  verifies that the processor exists and is a supported modern class-based
+  processor. Both return bounded repair issues and
+  `exact_preflight_required: true`: readiness is useful routing evidence, not a
+  false claim that workflow-specific freezing has already executed. No path,
+  processor source, output pattern, command stream, or mutable host object is
+  exposed.
+- The compiled read/context lifecycle gate emits
+  `VIBECAD_NATIVE_MANUFACTURE_INSPECT_GUI_OK job_state=true sanity=true
+  toolpath_paging=true loop=true active_job=true human_selection=true stock=true
+  machine=true tools=true ordered_operations=true toolpath_validity=true
+  simulation_readiness=true post_readiness=true low_noise=true
+  invalid_toolpath_reason=true stale_rejection=true read_only=true reopen=true`.
+  It proves the complete top-level turn-start snapshot stays below its existing
+  bound, positive readiness for a real generated Job, exact failure after the
+  active path is emptied, and no document, History, selection, undo, or revision
+  changes from reads. Focused selection tests prove sole, selected, ambiguous,
+  and choose-Job resolution. One hundred thirty-two focused Native contracts
+  plus the targeted headless Robot/snapshot regression pass. The existing real
+  isolated post gate remains green after extracting its shared configuration
+  reader; the protected CAM VibeScript API/worker lifecycle passes unchanged;
+  default and maximum compiled surfaces remain Manufacture 59 and 65 with 533
+  and 544 unique visible IDs; source/release staging matches; touched modules
+  remain below 1,000 lines; and Ruff, Python compilation, and whitespace
+  validation are clean.
+- The final Manufacture responsiveness audit preserves the intended lifecycle
+  split instead of moving document objects onto worker threads. Job creation,
+  tool creation/editing, and representative toolpath creation remain bounded,
+  task-panel-free document-thread commits under the common atomic transaction
+  runner. Their compiled Job, Tool, and Profile gates prove exact targets,
+  rollback, one-step undo/redo, and save/reopen. Work that can be long-running
+  is detached before its document or presentation commit: Z Correct probe-map
+  preparation, GL simulation, durable native simulation, CAMotics, complete-Job
+  postprocessing, and selected-operation postprocessing all require the shared
+  background lifecycle. An explicit manifest invariant now prevents any of
+  those six actions from silently losing `background_required`; it also keeps
+  document-neutral CAMotics/GL work classified as background presentation,
+  durable simulation and Z Correct as background mutation, and postprocessing
+  as background output.
+- The compiled Z Correct, GL simulation, durable simulation, CAMotics, and post
+  gates all report `background=true`. The GL, durable simulation, CAMotics, and
+  post gates run real 10-ms Qt heartbeat timers across controlled worker work
+  and report `gui_responsive=true`; durable native evaluation additionally
+  proves `native_gil_release=true`. They exercise cooperative cancellation,
+  duplicate rejection, stale-target/revision rejection, document close and
+  ribbon-switch teardown where applicable, bounded status/results, exact
+  commit ownership, and document-neutral presentation/output behavior. The
+  post gate covers both complete-Job and selected-operation variants and also
+  proves human-authorized atomic output. The focused action-manifest contract
+  has 48 passing tests and its touched source passes Ruff and whitespace
+  validation. This is the direct UI-responsiveness evidence for CAM simulation
+  and postprocessing rather than an inference from successful output alone.
+- [x] 14.1 Implement Job creation and replacement.
+- [x] 14.2 Implement Job sanity checking.
+- [x] 14.3 Implement tool-controller creation.
+- [x] 14.4 Implement tool-bit selection and properties.
+- [x] 14.5 Implement tool-bit save/export with explicit path authorization.
+- [x] 14.6 Implement Profile operation.
+- [x] 14.7 Implement Pocket Shape operation.
+- [x] 14.8 Implement Mill Facing operation.
+- [x] 14.9 Implement Helix operation.
+- [x] 14.10 Implement Adaptive operation.
+- [x] 14.11 Implement Slot operation.
+- [x] 14.12 Implement Drilling operation.
+- [x] 14.13 Implement Thread Milling operation.
+- [x] 14.14 Implement Engrave operation.
+- [x] 14.15 Implement Deburr operation.
+- [x] 14.16 Implement V-carve operation.
+- [x] 14.17 Implement Pocket 3D operation.
+- [x] 14.18 Implement optional Surface operation.
+- [x] 14.19 Implement optional Waterline operation.
+- [x] 14.20 Implement optional Rotary Surface operation.
+- [x] 14.21 Implement operation active/inactive toggle.
+- [x] 14.22 Implement loop-selection reading.
+- [x] 14.23 Implement toolpath inspection.
+- [x] 14.24 Implement operation copy.
+- [x] 14.25 Implement operation array.
+- [x] 14.26 Implement simple copy.
+- [x] 14.27 Implement Array dress-up.
+- [x] 14.28 Implement Axis Map dress-up.
+- [x] 14.29 Implement Path Boundary dress-up.
+- [x] 14.30 Implement Dogbone dress-up.
+- [x] 14.31 Implement Drag Knife dress-up.
+- [x] 14.32 Implement Lead In/Out dress-up.
+- [x] 14.33 Implement Mirror dress-up.
+- [x] 14.34 Implement Ramp Entry dress-up.
+- [x] 14.35 Implement Tag dress-up.
+- [x] 14.36 Implement Z Correct dress-up.
+- [x] 14.37 Implement Comment operation.
+- [x] 14.38 Implement Stop operation.
+- [x] 14.39 Implement Custom operation.
+- [x] 14.40 Implement Probe operation.
+- [x] 14.41 Implement Property Bag operation.
+- [x] 14.42 Implement Area and Area Workplane helpers when enabled.
+- [x] 14.43 Implement Start Point editing.
+- [x] 14.44 Implement GL simulation in the background.
+- [x] 14.45 Implement native simulation in the background.
+- [x] 14.46 Implement CAMotics launch/result reading when available.
+- [x] 14.47 Implement postprocessing of the complete job.
+- [x] 14.48 Implement postprocessing of selected operations.
+- [x] 14.49 Implement template export.
+- [x] 14.50 Implement Manufacture-ribbon Robot trajectory operations.
+- [x] 14.51 Implement KUKA compact export.
+- [x] 14.52 Implement KUKA full export.
+- [x] 14.53 Return active job, stock, machine, tools, ordered operations,
   toolpath validity, and simulation/post readiness concisely.
-- [ ] 14.54 Complete job, tool, operation, dress-up, simulation, and post
+- [x] 14.54 Complete job, tool, operation, dress-up, simulation, and post
   workflows without blocking the UI.
-- [ ] 14.55 Implement distinct tool-bit Save and Save As output variants with
+- [x] 14.55 Implement distinct tool-bit Save and Save As output variants with
   explicit path authorization.
 
 ### 15. Implement the Drawing surface
 
-- [ ] 15.1 Implement default page creation.
-- [ ] 15.2 Implement template-based page creation.
-- [ ] 15.3 Implement template-field editing.
-- [ ] 15.4 Implement page redraw.
-- [ ] 15.5 Implement standard projected view.
-- [ ] 15.6 Implement broken view.
-- [ ] 15.7 Implement active view.
-- [ ] 15.8 Implement section view.
-- [ ] 15.9 Implement complex section view.
-- [ ] 15.10 Implement detail view.
-- [ ] 15.11 Implement Draft-source view.
-- [ ] 15.12 Implement clipping view/group behavior.
-- [ ] 15.13 Implement stack top.
-- [ ] 15.14 Implement stack bottom.
-- [ ] 15.15 Implement stack up.
-- [ ] 15.16 Implement stack down.
-- [ ] 15.17 Implement general Dimension inference with ambiguity refusal.
-- [ ] 15.18 Implement Length dimension.
-- [ ] 15.19 Implement Horizontal dimension.
-- [ ] 15.20 Implement Vertical dimension.
-- [ ] 15.21 Implement Radius dimension.
-- [ ] 15.22 Implement Diameter dimension.
-- [ ] 15.23 Implement Angle dimension.
-- [ ] 15.24 Implement three-point Angle dimension.
-- [ ] 15.25 Implement Area dimension.
-- [ ] 15.26 Implement horizontal Extent dimension.
-- [ ] 15.27 Implement vertical Extent dimension.
-- [ ] 15.28 Implement Axonometric Length dimension.
-- [ ] 15.29 Implement horizontal Chain dimensions.
-- [ ] 15.30 Implement vertical Chain dimensions.
-- [ ] 15.31 Implement oblique Chain dimensions.
-- [ ] 15.32 Implement horizontal Coordinate dimensions.
-- [ ] 15.33 Implement vertical Coordinate dimensions.
-- [ ] 15.34 Implement oblique Coordinate dimensions.
-- [ ] 15.35 Implement horizontal Chamfer dimension.
-- [ ] 15.36 Implement vertical Chamfer dimension.
-- [ ] 15.37 Implement Arc Length dimension.
-- [ ] 15.38 Implement Balloon creation.
-- [ ] 15.39 Implement Balloon editing.
-- [ ] 15.40 Implement Dimension repair.
-- [ ] 15.41 Implement line-attribute selection/readback.
-- [ ] 15.42 Implement line-attribute change.
-- [ ] 15.43 Implement line extension.
-- [ ] 15.44 Implement line shortening.
-- [ ] 15.45 Implement view lock/unlock.
-- [ ] 15.46 Implement section-view positioning.
-- [ ] 15.47 Implement area annotation.
-- [ ] 15.48 Implement arc-length annotation.
-- [ ] 15.49 Implement format customization.
-- [ ] 15.50 Implement circle center lines.
-- [ ] 15.51 Implement hole-circle centers.
-- [ ] 15.52 Implement thread-hole side representation.
-- [ ] 15.53 Implement thread-hole bottom representation.
-- [ ] 15.54 Implement thread-bolt side representation.
-- [ ] 15.55 Implement thread-bolt bottom representation.
-- [ ] 15.56 Implement vertex at intersection.
-- [ ] 15.57 Implement offset vertex.
-- [ ] 15.58 Implement cosmetic circle.
-- [ ] 15.59 Implement center-radius cosmetic circle.
-- [ ] 15.60 Implement three-point cosmetic circle.
-- [ ] 15.61 Implement cosmetic arc.
-- [ ] 15.62 Implement parallel cosmetic line.
-- [ ] 15.63 Implement perpendicular cosmetic line.
-- [ ] 15.64 Implement diameter-prefix insertion.
-- [ ] 15.65 Implement square-prefix insertion.
-- [ ] 15.66 Implement repetition-prefix insertion.
-- [ ] 15.67 Implement prefix removal.
-- [ ] 15.68 Implement decimal increase.
-- [ ] 15.69 Implement decimal decrease.
-- [ ] 15.70 Implement frame visibility.
-- [ ] 15.71 Implement standard hatch.
-- [ ] 15.72 Implement geometric hatch.
-- [ ] 15.73 Implement rich-text annotation.
-- [ ] 15.74 Implement leader line.
-- [ ] 15.75 Implement cosmetic vertex.
-- [ ] 15.76 Implement midpoint vertices.
-- [ ] 15.77 Implement quadrant vertices.
-- [ ] 15.78 Implement face centerline.
-- [ ] 15.79 Implement two-line centerline.
-- [ ] 15.80 Implement two-point centerline.
-- [ ] 15.81 Implement two-point cosmetic line.
-- [ ] 15.82 Implement line decoration.
-- [ ] 15.83 Implement Show All presentation action.
-- [ ] 15.84 Implement weld symbol.
-- [ ] 15.85 Implement surface-finish symbol.
-- [ ] 15.86 Implement hole/shaft fit.
-- [ ] 15.87 Implement Keep Updated editing.
-- [ ] 15.88 Implement Drawing grid and frame context actions as presentation.
-- [ ] 15.89 Implement SVG export.
-- [ ] 15.90 Implement DXF export.
-- [ ] 15.91 Implement PDF export.
-- [ ] 15.92 Implement Print All as explicit user-authorized output.
-- [ ] 15.93 Resolve source geometry by stable semantic reference, never screenshot
+- The first Drawing checkpoint registers one sharp `drawing.page` family with
+  only the three live Page actions. Default creation uses TechDraw's configured
+  template with the shipped default as fallback. Custom creation is a one-shot
+  human-authorized SVG input: the provider supplies and receives no filesystem
+  location, the bounded content is validated before mutation, and a changed
+  file is refused before publication. Template-field edits target one exact
+  page state and require every field's observed value, rejecting stale pages,
+  stale values, duplicates, unknown fields, no-ops, and unsupported content.
+- Page and template publication is one resource-first History block under the
+  common atomic mutation runner. Exact postconditions cover embedded-template
+  content, fields, graph ownership, and created-object boundaries while
+  preserving selection and visibility. The compiled lifecycle gate reports
+  `VIBECAD_NATIVE_DRAWING_PAGE_GUI_OK default=true human_parity=true
+  custom=true human_authorized=true path_private=true exact_fields=true
+  active_page=true closed_schema=true cancel=true file_drift=true stale=true
+  rollback=true selection=true visibility=true history=true undo=true
+  redo=true reopen=true low_noise=true`. It compares Native default creation
+  with the actual shipped human command, exercises custom creation and exact
+  editing through the frozen Drawing turn, and proves rollback, one-step
+  undo/redo, save/reopen, and concise selected-page context.
+- One hundred ninety-three focused registry, manifest, schema, dispatch,
+  snapshot, state, output, undo, and surface contracts pass. Default and
+  maximum compiled ribbon gates remain green with Drawing 107 and 112 actions
+  and 533 and 544 unique visible IDs. The complete protected TechDraw
+  VibeScript API/worker publication, reconfiguration, rollback, deletion, and
+  save/reopen lifecycle passes against its current shared VibeScript surface;
+  no VibeScript production module was changed. Source/release staging matches,
+  every new Drawing module remains below 1,000 lines, and Python compilation,
+  Ruff, and whitespace validation are clean.
+- Standard projected-view creation now freezes one exact page, an ordered set
+  of exact whole-object sources, a deterministic standard orientation,
+  placement, scale policy, and line policy. High-quality TechDraw HLR runs in
+  a bounded cancellable FreeCADCmd worker with a private configuration and
+  authenticated B-rep protocol; the document thread reauthorizes the frozen
+  turn and exact revision/page/source states, then adopts TechDraw's persistent
+  precomputed projection in one atomic History operation. The provider receives
+  only a concise job receipt followed by bounded `native.job` progress or the
+  verified page/view result, and no filesystem location or camera ambiguity.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_STANDARD_VIEW_GUI_OK exact_page=true
+  exact_sources=true selected_sources=true closed_schema=true
+  deterministic_orientation=true placement=true scale=true line_style=true
+  projected_geometry=true no_task=true stale_page=true stale_source=true
+  duplicate_guard=true rollback=true cancel=true selection=true visibility=true
+  history=true undo=true redo=true reopen=true responsive=true path_private=true
+  low_noise=true`. It exercises the real worker, main-thread adoption, injected
+  postcondition rollback, cancellation, a live Qt heartbeat, one-step undo/redo,
+  and save/reopen. Cache adoption clears the exact view's touched state so the
+  GUI does not launch a redundant asynchronous HLR job afterward. Focused
+  Drawing, background, registry, action-manifest, and default/maximum surface
+  contracts pass, source/release staging is exact, and the protected TechDraw
+  VibeScript API/worker lifecycle remains green without a production VibeScript
+  change.
+- Page redraw is now the closed `drawing.page/redraw_page` operation for the
+  real `TechDraw_RedrawPage` action. It targets one exact page and its complete
+  active view graph, freezes source shapes and authored view state on the
+  document thread, then redraws projections, dimensions, and dependent views
+  in dependency order inside a private authenticated FreeCADCmd snapshot.
+  TechDraw page-view proxies are canonicalized through stable document object
+  identity before subtype APIs are used. The worker evaluates the exact frozen
+  dimension references without silently applying interactive reference repair;
+  valid descriptive geometry remains transferable even when TechDraw retains a
+  reference-continuity warning, and a later native recompute invalidates stale
+  persisted dimension cache state.
+- Redraw commits only derived display caches and therefore preserves the human
+  undo stack instead of manufacturing a misleading model-edit transaction. The
+  cache savepoint restores projections, dimensions, selection, visibility,
+  History, and `KeepUpdated` after cancellation, stale state, or failed
+  postconditions. The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_REDRAW_GUI_OK exact_page=true exact_graph=true
+  exact_sources=true closed_schema=true background=true detached=true
+  authenticated=true projection=true dimension=true rollback=true cancel=true
+  stale_preflight=true stale_commit=true selection=true visibility=true
+  history=true keep_updated=true undo_stack_preserved=true reopen=true
+  responsive=true path_private=true low_noise=true`. The gate changes both a
+  projected edge and a real linked dimension, proves rollback and save/reopen,
+  and verifies that the provider receives no snapshot or filesystem path.
+  One hundred five focused Drawing, mutation, background, registry, manifest,
+  and context contracts pass; the pre-existing page and standard-view compiled
+  gates remain green; `TechDraw VibeScript native API/worker integration
+  passed`; source/release staging is exact; all redraw modules remain below
+  1,000 lines; the touched TechDraw/VibeCAD boundary compiles and is clean under
+  Python compilation, Ruff, and scoped whitespace validation. No VibeScript
+  production module changed.
+- Broken-view creation is now the second closed `drawing.view` variant. It
+  freezes one exact page, an ordered set of exact whole-object sources, one to
+  sixteen exact break definitions, deterministic orientation, placement,
+  scale, line policy, and break gap. A break is either one straight edge or one
+  two-line parallel Sketcher object; source and break identities must be
+  disjoint and remain exact through commit. The authenticated background
+  worker opens a private full-document snapshot, preserves Sketcher identity,
+  creates a real `TechDraw::DrawBrokenView`, compares it with a same-setting
+  control projection, and returns only the verified projection cache and
+  bounded semantic break summaries. The document thread reauthorizes every
+  frozen state before adopting that cache into one atomic History operation.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_BROKEN_VIEW_GUI_OK exact_page=true
+  exact_sources=true exact_breaks=true sketch_identity=true single_edge=true
+  context_hash=true closed_schema=true background=true authenticated=true
+  native_type=true orientation=true placement=true scale=true line_style=true
+  gap=true broken_geometry=true no_task=true stale_page=true stale_break=true
+  duplicate_guard=true disjoint_guard=true orientation_guard=true
+  rollback=true cancel=true stale_commit=true selection=true visibility=true
+  history=true undo=true redo=true reopen=true responsive=true
+  path_private=true low_noise=true`. The gate uses both supported break forms
+  simultaneously and proves the real undo/redo/save/reopen lifecycle. It also
+  exposed and corrected an OCC boundary defect where a valid projected edge
+  wrapped in a wire or compound was cast directly to `TopoDS_Edge`; the native
+  projection path now extracts exactly one edge and rejects zero or multiple
+  edges explicitly, eliminating the GUI exception and restored-document
+  invalid geometry.
+- One hundred twenty-one focused Drawing, registry, manifest, dispatch, and
+  context contracts pass. Page, standard-view, and redraw compiled regressions
+  remain green, as does the complete protected TechDraw VibeScript API/worker
+  lifecycle. Source/release staging is exact, all new broken-view modules are
+  below 1,000 lines, and the touched boundary is clean under native build,
+  Python compilation, Ruff, and scoped whitespace validation.
+- Active View is a separate single-operation `drawing.active_view` capability,
+  keeping raster viewport capture out of the vector-projection schema. It
+  freezes one exact page and the human's exact turn-start 3D viewport state,
+  including camera, visual object presentation, selection, TechDraw raster
+  resolution, and visible geometry. The closed request supplies placement,
+  scale, either the human command's fixed full frame or one bounded physical
+  crop, and a transparent, current-viewport, or solid RGB background. Capture
+  runs on the GUI thread required by Coin, embeds the bounded PNG through
+  `TechDraw::DrawViewImage`, records durable content and viewport hashes, and
+  returns only concise image metadata—never the internal image location or
+  encoded pixels. When a Drawing page is active it resolves the sole open 3D
+  viewport like the shipped human command; multiple non-active 3D viewports are
+  refused as ambiguous instead of silently choosing one.
+- The compiled lifecycle first exercises `TechDraw_ActiveView` itself as the
+  parity oracle for provisional task rollback, image type, embedding, and its
+  1280 by 1024 full frame. It then reports
+  `VIBECAD_NATIVE_DRAWING_ACTIVE_VIEW_GUI_OK human_parity=true
+  exact_page=true exact_viewport=true context_hash=true closed_schema=true
+  main_thread=true native_type=true png=true embedded=true placement=true
+  scale=true crop=true background=true size_bound=true stale_viewport=true
+  stale_page=true rollback=true selection=true visibility=true history=true
+  undo=true redo=true reopen=true path_private=true low_noise=true
+  no_task=true`. The test changes the real camera to prove stale-state refusal,
+  injects a failed verifier to prove atomic cleanup, inspects the embedded PNG
+  pixels and dimensions, and proves one-step undo/redo plus save/reopen.
+- One hundred twenty-four focused Drawing/registry/manifest contracts and
+  twenty-nine provider/session/surface contracts pass. Page, standard-view,
+  broken-view, and redraw compiled gates remain green, as does the protected
+  TechDraw VibeScript API/worker lifecycle. Source/release staging is exact,
+  every active-view module remains below 1,000 lines, and Python compilation,
+  Ruff, and scoped whitespace validation are clean.
+- Section View is a separate single-operation `drawing.section_view`
+  capability for one exact Drawing page, one exact base view, the base view's
+  exact active sources, one section origin, one in-plane viewing direction,
+  and one explicit scale policy. The host derives the section plane,
+  projection frame, rotation, placement, and line presentation instead of
+  asking the provider to reproduce TechDraw internals. Source extraction and
+  OCC section/projection work run in an isolated worker; the document thread
+  adopts bounded, validated projection and cut-surface caches in one
+  transaction. Section-derived views defer painting their projection cache
+  until the cut-surface cache is also current, so Qt never observes a
+  half-initialized section. Persisted source-state signatures cover only the
+  relevant History prefix, allowing a downstream section operation without
+  falsely invalidating its upstream base view while still detecting marker,
+  suppression, or ordering changes at and before that base.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_SECTION_VIEW_GUI_OK exact_page=true
+  exact_base=true exact_sources=true context_hash=true closed_schema=true
+  derived_plane=true deterministic_placement=true custom_scale=true
+  line_style=true native_type=true cut_geometry=true no_task=true
+  stale_page=true stale_base=true stale_source=true zero_direction_guard=true
+  rollback=true cancel=true stale_commit=true selection=true visibility=true
+  history=true undo=true redo=true reopen=true responsive=true
+  path_private=true low_noise=true`. It exercises the shipped default SVG
+  hatch path, an injected verifier failure, cancellation, mid-flight source
+  drift, UI heartbeat responsiveness, one-step undo/redo, and FCStd reopen.
+  The 78 focused Drawing/registry/manifest contracts pass; page, redraw,
+  standard-view, broken-view, and active-view compiled lifecycles remain green;
+  the protected TechDraw VibeScript API/worker lifecycle passes against the
+  rebuilt binaries; and the touched boundary is clean under native build,
+  Python compilation, Ruff, and scoped whitespace validation.
+- Complex Section View is a separate single-operation
+  `drawing.complex_section` capability for one exact Drawing page, one exact
+  base view, the base view's exact active sources, and one exact complete Edge
+  or Wire profile. Its closed request exposes only the human command's three
+  real projection strategies (`offset`, `aligned`, and `no_parallel`), one
+  placement point, and one explicit scale policy. The host derives section
+  planes and projection frames; the isolated worker authenticates the
+  projection, raw cut pieces, section faces, and prepared aligned-section
+  shape independently before the document thread adopts all bounded caches in
+  one transaction. Closed profiles are accepted only by the offset strategy,
+  matching the native geometry that can represent them honestly.
+- The TechDraw implementation now performs aligned-piece construction inside
+  the existing section background job instead of starting a nested future over
+  mutable view state. This preserves the public alignment-waiting contract,
+  eliminates the headless completion race, and keeps the GUI responsive. Its
+  restored presentation derives segment directions from a bounded profile
+  prism instead of transient recompute-only shape size, so cached aligned and
+  offset views paint correctly after adoption, undo/redo, and document reopen.
+- The rebuilt compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_COMPLEX_SECTION_GUI_OK exact_page=true
+  exact_base=true exact_profile=true exact_sources=true context_hash=true
+  closed_schema=true derived_plane=true strategies=3
+  deterministic_placement=true custom_scale=true native_type=true
+  cut_geometry=true prepared_geometry=true no_task=true stale_page=true
+  stale_profile=true rollback=true cancel=true stale_commit=true
+  selection=true visibility=true history=true undo=true redo=true reopen=true
+  responsive=true path_private=true low_noise=true`. All 183 focused Drawing,
+  registry, manifest, background, dispatch, session, state, snapshot, and
+  output contracts pass. The protected TechDraw VibeScript API/worker gate
+  exits successfully against the rebuilt binaries, and the touched boundary is
+  clean under Python compilation, Ruff, scoped whitespace validation, and the
+  native `TechDraw`, `TechDrawGui`, and `VibeCADScripts` build targets.
+- Detail View is a separate single-operation `drawing.detail_view` capability
+  for one exact page, one exact projected base view and its active sources,
+  one base-local anchor and radius, one page placement, and one explicit scale
+  policy. The closed schema does not expose projection axes, source copying,
+  clipping solids, or the global matting preference; the host freezes and
+  revalidates those human-owned values. It also does not invent an independent
+  label field: TechDraw durably derives `Detail <reference>` from the human
+  command's reference field, which keeps undo/redo semantics exact.
+- Detail clipping and HLR execute in an isolated `FreeCADCmd --safe-mode`
+  process. The result protocol authenticates the exact FCStd snapshot,
+  projected edges/faces and clipped detail shape independently, bounds their
+  bytes and topology, and adopts both durable caches in one document-thread
+  transaction. TechDraw now exposes an additive typed detail-cache API,
+  restores that cache lazily and after undo/redo or FCStd reopen, and no longer
+  launches a second asynchronous detail cut after completing the synchronous
+  headless path.
+- The compiled lifecycle first exercises `TechDraw_DetailView` itself as the
+  parity oracle, including its provisional object graph and task rollback. It
+  then reports `VIBECAD_NATIVE_DRAWING_DETAIL_VIEW_GUI_OK human_parity=true
+  exact_page=true exact_base=true exact_sources=true context_hash=true
+  closed_schema=true anchor=true radius=true deterministic_placement=true
+  custom_scale=true native_type=true clipped_geometry=true no_task=true
+  stale_page=true stale_base=true stale_source=true radius_guard=true
+  rollback=true cancel=true stale_commit=true selection=true visibility=true
+  history=true undo=true redo=true reopen=true responsive=true
+  path_private=true low_noise=true`. All 183 focused Drawing, registry,
+  manifest, background, dispatch, session, state, snapshot, and output
+  contracts pass; the protected TechDraw VibeScript API/worker gate exits
+  successfully against the rebuilt binaries; every new module remains below
+  1,000 lines; and native build, Python compilation, Ruff, and scoped
+  whitespace validation are clean.
+- Draft-source View is a separate single-operation
+  `drawing.draft_source_view` capability for one exact Drawing page, one exact
+  same-document Draft source graph, one deterministic orientation, one page
+  placement, one page/custom scale policy, and either source-owned styling or
+  one complete style override. The closed provider schema exposes no SVG,
+  filesystem path, Python proxy, or mutable document object. Its concise
+  result reports only stable identities, exact source state, placement,
+  scale/style, and bounded SVG byte/hash metadata.
+- The host fingerprints every persistent application and presentation
+  property on the source and its bounded outward dependency graph. Part shape
+  properties use their canonical persisted BREP instead of FreeCAD's
+  restore-rebuilt element-name map, so an unchanged source retains the same
+  semantic state across FCStd reopen without weakening stale-source detection.
+  Rendering runs in a private authenticated snapshot through an isolated
+  offscreen `FreeCADCmd --safe-mode` child; both child and host reject
+  declarations, active content, external resources, oversized artifacts, and
+  SVG without drawable geometry before the document thread can publish it.
+- TechDraw now exposes an additive typed Draft-cache API. The native runtime
+  adopts the authenticated SVG and exact source-state token rather than
+  regenerating Draft geometry on the UI thread. The hidden cache survives
+  transaction rollback, one-step undo/redo, and FCStd reopen, remains active
+  through the complete restore recompute boundary, and invalidates after a
+  real source/dependency or render-setting edit. The existing human
+  `TechDraw_DraftView` command and ordinary uncached Draft behavior remain
+  unchanged.
+- The rebuilt compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_DRAFT_VIEW_GUI_OK human_parity=true exact_page=true
+  exact_source=true source_presentation=true context_hash=true
+  closed_schema=true orientation=true placement=true custom_scale=true
+  style=true native_type=true svg_geometry=true no_task=true stale_page=true
+  stale_source=true rollback=true cancel=true stale_commit=true
+  selection=true visibility=true history=true undo=true redo=true reopen=true
+  responsive=true authenticated=true offscreen=true path_private=true
+  low_noise=true cache_invalidation=true`. All 199 focused Drawing, registry,
+  manifest, background, dispatch, session, state, snapshot, output, and
+  surface contracts pass. The protected TechDraw VibeScript API/worker
+  lifecycle passes against the rebuilt binaries; every new module remains
+  below 1,000 lines; and the `TechDraw`, `TechDrawGui`, and `VibeCADScripts`
+  build targets, Python compilation, Ruff, and scoped whitespace validation
+  are clean.
+- Clipping is now one closed `drawing.clip_group` family. The real ribbon
+  action creates one useful nonempty group from an exact page, complete frame
+  state, deterministic page placement, and one to forty-eight exact existing
+  views with explicit clip-local placement. Three explicitly declared
+  supplemental operations add exact ungrouped views, remove exact members
+  with mandatory page-exit placement, or configure the complete label,
+  position, frame visibility, and child-clipping state. Supplemental variants
+  are a first-class registry contract rather than fabricated ribbon/context
+  inventory, so the provider receives the sharp supporting operations without
+  falsely claiming that VibeCAD ships extra human commands.
+- Clip state hashes the exact page, frame, ordered membership, each member's
+  local coordinates, exclusive group ownership, validity, and current History
+  usability. The runtime refuses stale pages/groups/members, duplicates,
+  nested clips, projection-group items, cross-page membership, multiple clip
+  ownership, inactive History targets, and selections too large to preserve
+  exactly. Entry and exit coordinates are required because TechDraw converts
+  a member to clip-local coordinates on add and does not restore page
+  coordinates on remove. The transaction runner now has additive post-
+  recompute and post-abort presentation stabilizers: deferred tree reparenting
+  can preserve the human selection on success and after rollback without
+  weakening postconditions or recomputing the whole document.
+- `TechDraw::DrawViewClip` now identifies its `Views` as structural History
+  children, matching `DrawPage` semantics. A later view can therefore join an
+  earlier clip group without manufacturing a reverse design dependency,
+  reordering semantic History, or creating a DAG cycle. The existing human
+  create/add/remove commands and `ViewProviderViewClip::claimChildren()` tree
+  behavior remain unchanged. The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_CLIP_GROUP_GUI_OK human_create=true human_add=true
+  human_remove=true exact_page=true closed_schema=true exact_group=true
+  exact_members=true local_entry=true page_exit=true complete_frame=true
+  clip_children=true nested_guard=true projection_group_guard=true
+  duplicate_guard=true exclusive_membership=true stale_page=true
+  stale_member=true structural_history=true tree_children=true rollback=true
+  selection=true visibility=true history=true undo=true redo=true reopen=true
+  path_private=true low_noise=true no_task=true`. It exercises the actual
+  human commands, injected Native create/configure rollback, a member created
+  later in History, exact tree children, one-step undo/redo, concise selected
+  context, and FCStd reopen. Two hundred fifty-seven focused Drawing,
+  registry, mutation, dispatch, state, session, snapshot, output, undo, and
+  surface contracts pass. The protected TechDraw VibeScript API/worker gate
+  reports success against the rebuilt binaries; all new modules remain below
+  1,000 lines; and native build, source/release staging, Python compilation,
+  Ruff, and scoped whitespace validation are clean.
+- Drawing stacking is one closed `drawing.stack` family covering the four
+  shipped human actions: top, bottom, up, and down. Every request names one
+  exact page and one to thirty-two unique, ordered exact views. Targets must
+  remain valid and History-usable on that page, retain their inspected stack
+  hashes, and be available in an open page scene. Multiple targets are applied
+  sequentially in request order, matching the human command semantics; later
+  top or bottom targets therefore finish beyond earlier targets. Cross-page,
+  duplicate, stale, unavailable, invalid, and signed stack-order exhaustion
+  cases are refused before a retained mutation.
+- TechDrawGui now exposes additive typed access to the existing
+  `ViewProviderDrawingView` stacking primitives and their real graphical
+  sibling scope. That scope is the page for ordinary views and the graphical
+  owner for clip-owned views, so Native neither simulates selection nor
+  invents a second stacking model. The shared host implementation now also
+  refuses signed integer overflow and safely ignores non-Drawing page children
+  instead of casting them unsafely. Native freezes every Drawing stack order,
+  persistent view placement/style field, page membership, History, selection,
+  and visibility; postconditions prove that only the requested `StackOrder`
+  values changed, and rollback restores the complete savepoint.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_STACK_GUI_OK human_top=true human_bottom=true
+  human_up=true human_down=true shared_host_primitive=true exact_page=true
+  ordered_targets=true page_scope=true owner_scope=true stale_target=true
+  stale_page=true cross_page_guard=true rollback=true selection=true
+  visibility=true history=true undo=true redo=true reopen=true
+  closed_schema=true path_private=true low_noise=true no_task=true`. It runs
+  all four real human commands, page and clip-owner scopes, ordered multi-view
+  calls, injected verifier failure, one-step undo/redo, selected-stack context,
+  and FCStd save/reopen. The existing clip-group GUI regression remains green;
+  183 broader action, registry, context, dispatch, output, session, state,
+  snapshot, and undo contracts pass; and the protected TechDraw VibeScript
+  API/worker lifecycle reports success against the rebuilt binaries. Source
+  and release staging is byte-identical, all six new files remain below 1,000
+  lines, and native build, Python compilation, Ruff, and scoped whitespace
+  validation are clean.
+- Explicit projected dimensions are one closed `drawing.dimension` family
+  with eight discriminated operation branches: aligned Length, Horizontal,
+  Vertical, Radius, Diameter, two-edge Angle, ordered three-point Angle, and
+  Area. Every request freezes one exact page, view, projection hash, and each
+  zero-based `EdgeN`, `VertexN`, or `FaceN` element hash; label position uses
+  conventional +Y-up view coordinates. Radius and Diameter refuse elliptical
+  or circle-like approximate geometry unless the request explicitly accepts
+  it, while unsupported radial and angular selections return bounded repair
+  guidance from TechDraw's real validators.
+- Human and Native dimension creation now share one compiled
+  `DimensionBuilder`; the existing human commands retain their own selection,
+  transaction, and presentation wrappers. The projected-geometry boundary is
+  additive: the existing `getProjectedElementDescriptors()` shape and +Y-down
+  convention remain unchanged for VibeScript, while Native uses the new exact
+  Edge/Vertex/Face descriptor API in +Y-up coordinates. Hidden read-only
+  `PrecomputedDimension*` cache refreshes no longer advance authored structural
+  revision, and transient `DocumentObject.State` remains visible diagnostically
+  without destabilizing exact hashes across undo/redo or reopen.
+- The rebuilt compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_DIMENSION_GUI_OK
+  operations=create_length,create_horizontal,create_vertical,create_radius,
+  create_diameter,create_angle,create_three_point_angle,create_area
+  human_oracle=true shared_host_builder=true projected_zero_based=true
+  closed_discriminated_schema=true exact_page=true exact_view=true
+  projection_hash=true element_hash=true approximate_refusal=true
+  approximate_acceptance=true invalid_geometry_repair=true selection=true
+  visibility=true tree_parent=true history=true rollback=true revision=true
+  undo=true redo=true snapshot=true reopen=true low_noise=true no_task=true`.
+  The projected-geometry lifecycle separately proves conventional +Y-up
+  coordinates and legacy API compatibility. One hundred sixty-nine focused
+  registry, manifest, schema, state, dispatch, output, session, and Drawing
+  contracts pass. The protected gate reports `TechDraw VibeScript native
+  API/worker integration passed`; no VibeScript production module changed.
+  All new modules remain below 1,000 lines, source/release staging is exact,
+  and native build, Python compilation, Ruff, and scoped whitespace validation
+  are clean.
+- Horizontal and Vertical Extent are now explicit branches of the same closed
+  `drawing.dimension` family. Each request chooses a discriminated
+  `{scope: "whole_view"}` target or a bounded one-to-sixty-four exact EdgeN
+  target with frozen projection and element hashes; an empty edge array is
+  never overloaded to mean the whole view. Both operations use the real
+  `DrawDimHelper::makeExtentDim` path shared by the human commands and create
+  `TechDraw::DrawViewDimExtent`, not simulated endpoint dimensions or
+  persistent cosmetic geometry. State reports direction, exact target scope,
+  measured result, page/view ownership, History usability, and durable hash.
+- The Drawing snapshot now recognizes extent `Source` as a LinkSubList target
+  descriptor instead of treating it as an ordinary projected-view source
+  list. Selected/page context therefore reports exact extent state without
+  trying to serialize the descriptor as a document object. The rebuilt live
+  gate reports `operations=create_length,create_horizontal,create_vertical,
+  create_radius,create_diameter,create_angle,create_three_point_angle,
+  create_area,create_horizontal_extent,create_vertical_extent`, together with
+  `human_extent_oracle=true whole_view_extent=true edge_subset_extent=true
+  invalid_extent_repair=true`. It proves both real human commands, both Native
+  target scopes, mixed-edge refusal with repair guidance, exact rollback and
+  revision behavior, one-step undo/redo, context snapshot, and FCStd reopen.
+  One hundred eighty-five broader registry, manifest, dispatch, state,
+  snapshot, output, session, target, and undo contracts pass; the protected
+  TechDraw VibeScript API/worker gate remains green; the compiled targets,
+  Ruff, Python compilation, and scoped whitespace validation are clean.
+- Axonometric Length is the eleventh closed `drawing.dimension` branch. Its
+  measurement is explicitly either one exact projected edge or an ordered
+  exact vertex pair with a separate direction edge; a second exact edge
+  defines extension orientation. Every referenced element is projection- and
+  hash-pinned, the two directions must be distinct and nonparallel, label
+  placement remains conventional +Y-up, and the caller must echo the observed
+  `projected`, `x_axis_true_length`, `y_axis_true_length`, or
+  `z_axis_true_length` mode. Stale classification is refused before mutation.
+- The human and Native paths now share a 280-line TechDraw axonometric helper
+  over the compiled `DimensionBuilder`. It replaces the old temporary-wire
+  coordinate-vector calculation—which collapsed and raised `IndexError` for
+  orthographic projection directions—with direct orthonormal projection math,
+  without changing the legacy utility API. The human command retains its
+  transaction, selection, automatic midpoint, Dimension3D label, and parallel-
+  direction no-op. Native adds explicit placement, inference refusal, exact
+  angles, projected/displayed values, persisted arbitrary-format state, and
+  History verification. Straight projected edges now report their observable
+  `axonometric_value_mode`, so the model does not reverse-engineer it.
+- The rebuilt lifecycle reports `human_axonometric_oracle=true
+  axonometric_value_mode=true axonometric_edge=true
+  axonometric_vertex_pair=true` alongside all ten prior dimension/extent
+  markers. It proves the real human command, both Native measurement forms,
+  stale-mode refusal, exact selection/visibility/History and revision
+  preservation, rollback, one-step undo/redo, snapshot, and FCStd reopen.
+  One hundred eighty-five broader contracts and the protected TechDraw
+  VibeScript API/worker lifecycle pass. All touched/new modules remain below
+  1,000 lines, source/release staging is byte-exact, and build, Ruff, Python
+  compilation, and scoped whitespace validation are clean.
+- Horizontal and Vertical Chamfer are two closed branches of the focused
+  `drawing.special_dimension` family rather than additions to the already
+  bounded general-dimension module. Each request names one exact page and
+  view, freezes the view and projection hashes, supplies two distinct ordered
+  `VertexN` references with their element hashes, and gives an explicit +Y-up
+  label position. The result reports the exact direction, size, order-sensitive
+  angle, formatted size-and-angle text, page/view ownership, History usability,
+  and durable state hash without returning the projected geometry inventory.
+- Both shipped human Chamfer commands and Native use the same compiled
+  `DimensionBuilder` validation and constructor. The human commands retain
+  selection-driven placement, their transaction and warning behavior, ordered
+  angle semantics, selection clearing, and repaint. Native adds stale-target
+  refusal, bounded repair data, transaction enrollment, exact postconditions,
+  selection and visibility preservation, rollback, and one-step undo/redo.
+  The Drawing snapshot recognizes the durable chamfer format and returns the
+  same exact state in selected and page context after save/reopen.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_SPECIAL_DIMENSION_GUI_OK
+  operations=create_horizontal_chamfer,create_vertical_chamfer
+  human_oracle=true shared_host_builder=true exact_page=true exact_view=true
+  projection_hash=true element_hash=true ordered_vertices=true
+  angle_format=true selection=true visibility=true tree_parent=true
+  history=true rollback=true revision=true undo=true redo=true snapshot=true
+  reopen=true low_noise=true no_task=true`. The complete neighboring Drawing
+  dimension lifecycle remains green, 165 broader manifest, registry, schema,
+  state, dispatch, and snapshot contracts pass, and the protected TechDraw
+  VibeScript API/worker gate reports success. Source/release staging is
+  byte-identical, all new modules remain below 1,000 lines, and compiled build,
+  Python compilation, Ruff, and scoped whitespace validation are clean.
+- Arc Length is the third closed `drawing.special_dimension` branch. Each
+  request freezes one exact page, view, projection hash, open circular
+  `ArcOfCircle EdgeN`, element hash, label, and explicit +Y-up label position.
+  Host validation reports the real unscaled arc length before mutation; the
+  durable result retains that source edge and length, concise format state,
+  page/view ownership, History usability, and a stable state hash without
+  returning the projected geometry inventory.
+- The shipped human Arc Length command and Native now use the same compiled
+  `DimensionBuilder` constructor. That constructor replaces the legacy pair of
+  cosmetic endpoint vertices—which survived human undo because TechDraw
+  cosmetic output properties are not transaction-restored—with one direct
+  projected-edge reference. `DrawViewDimension` derives the extension points
+  from the open circular arc while hidden output properties retain its source
+  and true length. The source projection is therefore unchanged by creation,
+  human undo/redo, Native verifier rollback, and save/reopen.
+- The rebuilt lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_SPECIAL_DIMENSION_GUI_OK
+  operations=create_horizontal_chamfer,create_vertical_chamfer,create_arc_length
+  human_oracle=true shared_host_builder=true arc_source=true arc_value=true
+  direct_arc_reference=true projection_unchanged=true selection=true
+  visibility=true tree_parent=true history=true rollback=true revision=true
+  undo=true redo=true snapshot=true reopen=true low_noise=true no_task=true`.
+  The complete neighboring Drawing-dimension lifecycle remains green, 143
+  broader manifest, registry, schema, state, dispatch, and snapshot contracts
+  pass, and the protected TechDraw VibeScript API/worker lifecycle reports
+  success. Source/release staging is byte-identical, all focused modules remain
+  below 1,000 lines, and compiled build, Python compilation, Ruff, and scoped
+  whitespace validation are clean.
+- Balloon creation is one closed `drawing.balloon` operation. A request freezes
+  one exact page, projected view, projection hash, and hash-pinned `EdgeN` or
+  `VertexN`; supplies explicit Unicode text and label; and places the bubble by
+  a bounded +Y-up offset in the same scaled view coordinates reported by
+  projected-geometry inspection. The concise result returns the durable anchor,
+  element hash, view-space placement, text, human-default style, page/view
+  ownership, History usability, validity, and stable state hash without
+  returning the projection inventory. Explicit Native text does not consume the
+  page's human auto-number sequence.
+- The shipped human command and Native use one compiled `BalloonBuilder`.
+  Selected human edges resolve to their midpoint and selected vertices to their
+  point through the same host validator as Native, including rotated/scaled
+  views; interactive human placement remains available. `DrawViewBalloon`
+  persists its exact `AnchorSource`, so identity survives undo/redo and FCStd
+  reopen. The view tree now deduplicates children reached through multiple link
+  properties, preventing the persisted source and anchor links from producing
+  duplicate Balloon nodes.
+- Balloon editing adds three supplemental closed branches to the existing
+  `drawing.balloon` family rather than overloading creation: `set_text` accepts
+  only an exact Balloon and replacement text; `set_style` accepts only an exact
+  Balloon and all nine human-editable style fields; and `move_bubble` accepts
+  only an exact Balloon and a view-space offset. Each target pins the current
+  durable Balloon state hash. The published style enumerates every host bubble
+  and leader-end value and closes RGB, scale, kink, font-size, line-width, and
+  line-visibility structures, so the provider sees no optional-field bag or
+  unknown type.
+- `VibeCADNativeDrawingBalloonEdit.py` keeps the edit path separate from the
+  compiled creation builder. It refuses stale, invalid, unavailable, malformed,
+  and no-op requests before opening a transaction. Its verifier proves exact
+  requested text/style/placement, unchanged identity, anchor, page membership,
+  History, source projection, auto-number sequence, human selection, and object
+  visibility. Host `Touched`/`Up-to-date` messages remain diagnostic rather than
+  durable identity, while validity and timeline usability remain mandatory.
+  Native editing never opens the human task dialog; the existing double-click
+  TaskBalloon editor remains human-controlled and retains its command-owned
+  transaction behavior.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_BALLOON_GUI_OK operations=4 create=true set_text=true
+  set_style=true move_bubble=true human_oracle=true human_edit_oracle=true
+  shared_host_builder=true exact_page=true exact_view=true projection_hash=true
+  element_hash=true edge_midpoint=true vertex=true anchor_persisted=true
+  unicode_text=true scaled_view_offset=true auto_index=true selection=true
+  visibility=true tree_parent=true history=true rollback=true
+  edit_rollback=true stale_edit=true no_op=true complete_style=true revision=true
+  undo=true redo=true snapshot=true reopen=true low_noise=true
+  native_no_task=true`. The full neighboring general-dimension and
+  specialized-dimension GUI lifecycles remain green, 33 focused Drawing and
+  registry contracts pass, and the protected TechDraw VibeScript API/worker
+  lifecycle reports success. Source/release staging is byte-identical, every
+  new file remains below 1,000 lines, and compiled build, Python compilation,
+  Ruff, and scoped whitespace validation are clean.
+- Dimension Repair is a dedicated `drawing.dimension_repair` capability with
+  one `repair_references` operation rather than an edit bag on dimension
+  creation. Its replacement is a closed discriminated union for all fourteen
+  shipped semantic kinds: Length, Horizontal, Vertical, Radius, Diameter,
+  Angle, three-point Angle, Area, horizontal/vertical Extent,
+  horizontal/vertical Chamfer, Arc Length, and Axonometric Length. Every call
+  freezes the exact existing dimension repair-state hash, page, projected view,
+  projection hash, and replacement-element hashes. Repair preserves the
+  dimension's identity, semantic kind, label position, formatting/style,
+  tolerance configuration, page membership, History position, selection, and
+  visibility; a no-op or stale target is refused before mutation.
+- Human `TaskDimRepair` and Native now share compiled `DimensionBuilder` repair
+  entry points for ordinary, Extent, Chamfer, and Arc Length dimensions;
+  Axonometric Length layers its existing shared direction/value analysis over
+  the same compiled reference replacement. Broken references remain visible in
+  the Drawing snapshot with raw targets, bounded issues, `host_valid`, and
+  independently verified `references_valid`; valid dimensions include the same
+  exact repair target beside their established state. One snapshot caches each
+  projected view's element inventory, so many dimensions on one view do not
+  repeatedly rebuild identical geometry state.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_DIMENSION_REPAIR_GUI_OK
+  kinds=length,horizontal,vertical,radius,diameter,angle,three_point_angle,area,
+  horizontal_extent,vertical_extent,horizontal_chamfer,vertical_chamfer,
+  arc_length,axonometric_length human_oracle=true shared_host_builder=true
+  broken_target=true dedicated_tool=true closed_discriminated_schema=true
+  exact_dimension=true exact_page=true exact_view=true projection_hash=true
+  element_hash=true kind_preserved=true identity_preserved=true
+  placement_preserved=true style_preserved=true selection=true visibility=true
+  history=true stale=true no_op=true rollback=true revision=true undo=true
+  redo=true snapshot=true reopen=true low_noise=true no_task=true`. The complete
+  neighboring general- and specialized-dimension GUI lifecycles remain green,
+  59 focused schema, registry, and action-manifest contracts pass, and the
+  protected TechDraw VibeScript API/worker lifecycle reports success.
+  TechDrawGui and staged VibeCAD scripts build cleanly; source/release staging
+  is byte-identical, every focused module remains below 1,000 lines, and Ruff,
+  Python compilation, and scoped whitespace validation are clean.
+- Select Line Attributes is represented by the dedicated read-only
+  `drawing.line_defaults` capability with one argument-free `read_current`
+  operation. This reflects the shipped command's real semantics: the dialog
+  selects application-session defaults rather than document geometry. The
+  exact result reports the active line standard and standards body, selected
+  line number, host style code and name, exact width and human thin/middle/thick
+  choice, all three current width values, RGB color, visibility, cascade
+  spacing, delta distance, and the bounded ordered style catalog. The concise
+  Drawing snapshot includes the current selection, choices, catalog count,
+  validity, issues, and stable state hash while omitting the full catalog.
+- Human and Native read the same compiled TechDraw state through
+  `TechDrawGui.currentLineDefaults()`. The human dialog remains the sole owner
+  of interactive session-default mutation; the Native read path opens no task,
+  transaction, or document mutation and does not advance structural revision.
+  The lifecycle proves the human dialog can select style, thick width, spacing,
+  and delta distance and Native returns the identical state while preserving
+  document objects, page ownership, History, selection, visibility, and
+  revision across duplicate reads and same-process save/reopen.
+- The live gate reports
+  `VIBECAD_NATIVE_DRAWING_LINE_DEFAULTS_GUI_OK operation=read_current
+  human_oracle=true shared_host_state=true session_scope=true standard=true
+  style_catalog=true line_number=true style_code=true exact_width=true
+  width_choices=true color=true cascade_spacing=true delta_distance=true
+  argument_free=true read_only=true revision_unchanged=true
+  objects_unchanged=true selection=true visibility=true history=true
+  snapshot=true reopen=true low_noise=true no_task=true`. General dimensions,
+  specialized dimensions, Balloon, and Drawing page lifecycle gates remain
+  green, 63 focused schema, registry, action-manifest, and neighboring Drawing
+  contracts pass, and the protected TechDraw VibeScript API/worker lifecycle
+  reports success. TechDrawGui and staged VibeCAD scripts build cleanly;
+  source/release staging is byte-identical, focused modules remain bounded, and
+  Ruff, Python compilation, and scoped whitespace validation are clean.
+- Change Line Attributes is one closed `drawing.line_attributes` capability.
+  Its supplemental `read_view` operation returns a bounded, paginated inventory
+  of persistent cosmetic edges and centerlines. Its primary `set` operation
+  freezes the exact page, view, projected geometry, complete line inventory,
+  current line-default catalog, and every target line through stable hashes.
+  Each target is a kind-qualified UUID, and each mutation supplies the complete
+  resulting line number, pinned thin/middle/thick width choice, RGB color, and
+  visibility. The schema publishes its 32-target, 48-item page, and 512-line
+  inventory bounds and contains no open object bags or unknown provider types.
+- The shipped human command and Native use one compiled `LineAttributeBuilder`
+  for target resolution, validation, and mutation. It validates the complete
+  batch before touching either persistent property, refreshes only affected
+  cosmetic/centerline geometry, and preserves page/view ownership, projected
+  geometry, History, selection, visibility, and unrelated line state. The host
+  now serializes the inherited UUIDs of `CosmeticEdge` and `CenterLine`; this
+  corrects their pre-existing save/reopen identity loss while retaining the
+  optional-element fallback for older FCStd documents, which acquire durable
+  identities the next time they are saved.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_LINE_ATTRIBUTES_GUI_OK operations=2 read_view=true
+  set=true human_oracle=true shared_host_builder=true cosmetic_edge=true
+  centerline=true stable_tags=true exact_page=true exact_view=true
+  projection_hash=true inventory_hash=true line_hash=true complete_format=true
+  explicit_defaults_hash=true paginated=true limits_published=true
+  selection=true visibility=true history=true stale=true no_op=true
+  rollback=true revision=true undo=true redo=true snapshot=true reopen=true
+  low_noise=true no_task=true`. The line-default, general-dimension,
+  specialized-dimension, Balloon, and Drawing-page GUI lifecycles remain green,
+  71 focused Drawing, registry, and action-manifest contracts pass, and the
+  protected TechDraw VibeScript API/worker lifecycle reports success. TechDraw,
+  TechDrawGui, and staged VibeCAD scripts build cleanly; source/release staging
+  is byte-identical, every focused file remains below 1,000 lines, and Ruff,
+  Python compilation, and scoped whitespace validation are clean.
+- Extend Line and Shorten Line are one closed `drawing.line_length`
+  capability with `extend`, `shorten`, and supplemental `read_view`
+  operations. Both mutations require one exact kind-qualified persistent-line
+  UUID and an explicit positive per-end delta in canonical unscaled view
+  millimetres. The target is limited to straight cosmetic edges and
+  centerlines, and shortening must leave a positive line length. Every call
+  freezes the exact page, view definition, projected geometry, complete line
+  inventory, and target line through stable hashes. The schema publishes its
+  48-item page and 512-line inventory bounds and contains no open provider
+  object bags or unknown types.
+- The shipped human commands and Native use one compiled `LineLengthBuilder`
+  for exact target resolution, validation, and symmetric endpoint mutation.
+  The host refreshes cosmetic edges and centerlines together in canonical
+  order, preventing an edit in either persistent list from renumbering the
+  other list's projected `EdgeN` identity. Transaction cloning now carries
+  cosmetic-edge permanent endpoints and radius, Undo/Redo synchronizes the
+  cached projected geometry with restored persistent properties, and
+  centerline restore preserves its serialized `Flip` value instead of
+  inverting it. Together these host corrections make the same human and Native
+  operations durable through exact Undo/Redo and FCStd save/reopen while
+  preserving page ownership, History, selection, visibility, formatting, and
+  every non-target line.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_LINE_LENGTH_GUI_OK operations=3 read_view=true
+  extend=true shorten=true human_oracle=true shared_host_builder=true
+  cosmetic_edge=true centerline=true explicit_delta=true symmetric=true
+  stable_tags=true exact_page=true exact_view=true projection_hash=true
+  inventory_hash=true line_hash=true paginated=true limits_published=true
+  selection=true visibility=true history=true stale=true
+  invalid_shorten=true rollback=true revision=true undo=true redo=true
+  snapshot=true reopen=true low_noise=true no_task=true`. The line-default,
+  line-attribute, general-dimension, specialized-dimension, Balloon, and
+  Drawing-page real-GUI lifecycles all remain green, and the protected
+  TechDraw VibeScript API/worker lifecycle reports success. All 63 focused
+  line-length, neighboring Drawing, registry, and action-manifest contracts
+  pass. TechDraw, TechDrawGui, and staged VibeCAD scripts build cleanly;
+  source/release staging is byte-identical, every focused file remains below
+  1,000 lines, and Ruff, Python compilation, and scoped whitespace validation
+  are clean.
+- Lock/Unlock View is one closed `drawing.view_lock` capability with a primary
+  `set` operation and supplemental `read_page`. Native does not inherit the
+  human command's state-dependent toggle semantics: every 1-through-32-view
+  mutation supplies an explicit final `locked` boolean for each exact target,
+  so mixed lock and unlock requests remain deterministic and atomic. The page,
+  complete lockable-view inventory, and each view are independently
+  hash-pinned. The low-cost state includes stable identity, page ownership,
+  exact position, lock state, timeline usability, and validity; the schema
+  publishes its 512-view inventory, 48-item page, and 32-change limits and
+  contains no open provider object bags or unknown types.
+- The shipped human command and Native now share compiled `ViewLockBuilder`
+  validation and mutation. It validates the complete batch before touching a
+  property, rejects duplicate, cross-page, and already-satisfied requests,
+  then sets `DrawViewPart::LockPosition` without changing positions, view
+  definitions, page membership, History, selection, visibility, or unrelated
+  lock state. Drawing context publishes a concise page-level inventory hash
+  and exact per-view lock target while the supplemental read returns bounded
+  pages only when needed.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_VIEW_LOCK_GUI_OK operations=2 read_page=true set=true
+  human_oracle=true shared_host_builder=true explicit_final_state=true
+  mixed_batch=true exact_page=true inventory_hash=true target_hash=true
+  paginated=true limits_published=true selection=true visibility=true
+  history=true stale_inventory=true stale_target=true no_op=true duplicate=true
+  cross_page=true rollback=true revision=true undo=true redo=true snapshot=true
+  reopen=true low_noise=true no_task=true`. The neighboring stack,
+  line-length, standard-view, and Drawing-page real-GUI lifecycles remain
+  green, and the protected TechDraw VibeScript API/worker lifecycle reports
+  success. All 66 focused view-lock, neighboring Drawing, registry, and action-
+  manifest contracts pass. TechDrawGui and staged VibeCAD scripts build
+  cleanly; source/release staging is byte-identical, every focused file remains
+  below 1,000 lines, and Ruff, Python compilation, and scoped whitespace
+  validation are clean.
+- Drawing section-view positioning is implemented as the two closed branches
+  `drawing.section_position.align_axis` and `align_edge_to_vertex`, both mapped
+  to the shipped `TechDraw_ExtensionPositionSectionView` action. The human
+  command and Native share `SectionViewPosition` for standard-section
+  validation, projection-group base resolution, orthogonal geometry, and the
+  final mutation. The human command retains its nearest-axis behavior while
+  Native requires an explicit horizontal or vertical axis; geometry alignment
+  requires hash-pinned section projection, straight edge, base projection,
+  alignment owner, and vertex targets.
+- The exact section-position target hashes durable view definition and page
+  placement separately from transient TechDraw projection-cache counters.
+  Mutation is immediate, atomic, undoable, and refuses no-ops, stale section or
+  projection state, stale elements, cross-page targets, invalid standard
+  sections, and verifier failures. Postconditions preserve the section
+  definition, projected geometry, base view, page membership, History,
+  selection, visibility, and all unrelated objects while returning only the
+  old/new placement and chosen alignment targets.
+- The real compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_SECTION_POSITION_GUI_OK operations=2 human_axis=true
+  human_edge_vertex=true shared_host_primitive=true explicit_axis=true
+  exact_page=true exact_section=true exact_projection=true exact_elements=true
+  exact_base=true closed_schema=true stale_target=true stale_projection=true
+  stale_element=true no_op=true cross_page=true rollback=true selection=true
+  visibility=true history=true revision=true undo=true redo=true snapshot=true
+  reopen=true low_noise=true no_task=true`. The standard-view, section-view,
+  complex-section, view-lock, line-length, and page compiled lifecycles remain
+  green, and the protected TechDraw VibeScript API/worker integration passes.
+  All 68 focused section-position, neighboring Drawing, registry, and action-
+  manifest contracts pass. TechDrawGui and staged VibeCAD scripts build
+  cleanly; source/release staging is byte-identical, every focused file remains
+  below 1,000 lines, and Ruff, Python compilation, and scoped whitespace
+  validation are clean.
+- Area and arc-length annotations are the two closed branches of one
+  `drawing.measurement_annotation` family. Each request freezes one exact page,
+  projected view, complete projection hash, 1-through-64 ordered unique FaceN
+  or EdgeN targets, every element hash, and an explicit label. Value, units,
+  Unicode text, anchor, default placement, and style are derived by TechDraw;
+  the provider cannot supply or override measured data. The concise result
+  returns the durable ordered sources, stored and current source values,
+  currentness, placement, style, page/view ownership, History usability,
+  validity, and a stable measurement hash without returning the projection
+  inventory.
+- The shipped human Area Annotation and Arc Length Annotation commands and
+  Native use the same compiled `BalloonBuilder` validators and constructor.
+  `DrawViewBalloon` now has typed output properties for measurement kind,
+  ordered projected source, and internal mm or mm² value; those references
+  survive undo/redo and FCStd reopen. Human movement and restyling remain
+  valid and visible in Native context: state reports current placement and
+  whether the stored value still matches its sources instead of inferring
+  identity from text or silently dropping a manually edited annotation.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_MEASUREMENT_ANNOTATION_GUI_OK operations=2
+  area=true arc_length=true human_oracle=true shared_host_builder=true
+  host_measured=true exact_page=true exact_view=true projection_hash=true
+  element_hash=true ordered_elements=true multi_element=true
+  typed_persistence=true human_edit=true currentness=true
+  unit_aware_text=true selection=true visibility=true tree_parent=true
+  history=true stale_target=true rollback=true revision=true undo=true
+  redo=true snapshot=true reopen=true low_noise=true no_task=true`. The
+  neighboring Balloon, specialized-dimension, and section-position compiled
+  lifecycles remain green, 97 focused Drawing, registry, manifest, and surface
+  contracts pass, and the protected TechDraw VibeScript API/worker lifecycle
+  reports success. TechDrawGui and staged VibeCAD scripts build cleanly;
+  source/release staging is byte-identical, every focused file remains below
+  1,000 lines, and Python compilation, Ruff, and scoped whitespace validation
+  are clean.
+- Format customization is one closed `drawing.format` family with explicit
+  `set_dimension_format` and `set_balloon_text` branches. Each request names
+  one selected page child and its exact format-state hash, then supplies only
+  a complete replacement `FormatSpec` or literal Balloon text. The schema has
+  no generic property selector, inferred target kind, provider preview,
+  optional-field bag, or hidden non-empty requirement; the selected Drawing
+  context publishes the current value, actual host preview, page and type,
+  validity, History usability, and the exact target hash directly.
+- The shipped Customize Format dialog and Native use the same compiled
+  `FormatBuilder` validation and mutation. TechDraw owns numeric-placeholder
+  validation and the displayed dimension preview; Balloon text remains
+  literal, including the human command's valid empty value. The Native path
+  is immediate and atomic, refuses stale hashes, no-ops, invalid formats, and
+  wrong target types with exact repair data, preserves page membership,
+  History, selection, visibility, and unrelated objects, and supports both
+  ordinary and typed measurement Balloons without opening a task dialog.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_FORMAT_GUI_OK operations=2 dimension=true
+  balloon=true measured_balloon=true human_oracle=true
+  shared_host_builder=true host_validation=true exact_target=true
+  closed_schema=true empty_human_text=true stale_target=true selection=true
+  visibility=true page_boundary=true history=true rollback=true revision=true
+  undo=true redo=true snapshot=true reopen=true low_noise=true no_task=true`.
+  All 101 focused Drawing, registry, action-manifest, and surface contracts
+  pass; the neighboring Dimension, Balloon, and measurement-annotation
+  compiled lifecycles remain green; and the protected TechDraw VibeScript
+  API/worker integration passes. TechDrawGui and staged VibeCAD scripts build
+  cleanly, production source/release staging is byte-identical, every focused
+  file remains below 1,000 lines, and Python compilation, Ruff, and scoped
+  whitespace validation are clean.
+- Circle Center Lines is one closed `drawing.circle_center_lines.create`
+  operation mapped only to `TechDraw_ExtensionCircleCenterLines`. It consumes
+  the existing selected-projection state directly: one exact page, one exact
+  view and projection hash, and 1-through-32 ordered unique circular `EdgeN`
+  targets with individual element hashes. The provider cannot supply
+  positions, radii, extensions, styles, or generic geometry; TechDraw derives
+  the complete horizontal and vertical cross for each selected full circle or
+  circular arc.
+- The shipped human command and Native use the same compiled
+  `CircleCenterLineBuilder`. It validates every source before mutation, uses
+  the current host line defaults with the configured centerline style, creates
+  exactly two persistent cosmetic edges per source, rebuilds the shared
+  cosmetic/centerline projection order, and returns the durable tags. Native
+  resolves those tags back through the existing exact line-format and
+  line-length inventories, preserves prior persistent lines by stable tag,
+  and returns concise source, tag, current `EdgeN`, endpoint, length, and hash
+  state without copying the full projection inventory.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_CIRCLE_CENTER_LINES_GUI_OK operations=1 circle=true
+  arc=true multi_target=true human_oracle=true shared_host_builder=true
+  exact_page=true exact_view=true projection_hash=true element_hash=true
+  persistent_tags=true host_style=true selection=true visibility=true
+  history=true wrong_type=true stale=true rollback=true revision=true
+  undo=true redo=true snapshot=true reopen=true low_noise=true no_task=true`.
+  The neighboring line-attribute and line-length compiled lifecycles remain
+  green, 57 focused circle-centerline, registry, and action-manifest contracts
+  pass, and the protected TechDraw VibeScript API/worker lifecycle reports
+  success. TechDrawGui and staged VibeCAD scripts build cleanly;
+  source/release staging is byte-identical, every focused file remains below
+  1,000 lines, and Python compilation, Ruff, and scoped whitespace validation
+  are clean.
+- Bolt Circle Centerlines is one closed
+  `drawing.bolt_circle_center_lines.create` operation mapped only to
+  `TechDraw_ExtensionHoleCircle`. It consumes one exact page, one exact view
+  and projection hash, and 3-through-32 ordered unique projected circle or
+  circular-arc `EdgeN` targets with individual element hashes. The provider
+  cannot supply the pattern center, pattern radius, mark endpoints, extension,
+  or line style. The first three ordered hole centers define the pattern
+  circle, matching the shipped human command exactly.
+- The human command and Native share the compiled
+  `CircleCenterLineBuilder` validation and mutation. It validates the complete
+  source set before mutation, derives one canonical persistent cosmetic circle,
+  adds one radial center mark extending 1.1 hole radii through each source,
+  applies the active host line defaults, refreshes shared projected cosmetic
+  state, and returns one stable circle tag plus one stable line tag per hole.
+  Native resolves the pattern circle and every radial line back to current
+  `EdgeN`, geometry, format, and state hashes. Additional holes that do not lie
+  on the first-three pattern remain accepted exactly as they are by the human
+  command; the concise result explicitly reports the maximum radial deviation,
+  tolerance, and `all_centers_on_pattern` instead of concealing the condition
+  or introducing a Native-only rejection.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_BOLT_CIRCLE_CENTER_LINES_GUI_OK operations=1
+  three_point_definition=true five_holes=true circle=true arc=true
+  human_oracle=true shared_host_builder=true exact_page=true exact_view=true
+  projection_hash=true element_hash=true pattern_tag=true radial_tags=true
+  host_style=true off_pattern_report=true human_acceptance_preserved=true
+  selection=true visibility=true history=true wrong_type=true stale=true
+  rollback=true revision=true undo=true redo=true snapshot=true reopen=true
+  low_noise=true no_task=true`. The neighboring circle-centerline,
+  line-attribute, and line-length compiled lifecycles remain green, all 78
+  focused bolt/circle/line, registry, and action-manifest contracts pass, and
+  the protected TechDraw VibeScript API/worker lifecycle reports success.
+  TechDrawGui and staged VibeCAD scripts build cleanly; source/release staging
+  is byte-identical, all focused files remain below 1,000 lines, and Python
+  compilation, Ruff, scoped whitespace validation, undo/redo, forced rollback,
+  and FCStd save/reopen gates are clean.
+- The four shipped cosmetic-thread actions are one closed
+  `drawing.thread_representation` family with the explicit operations
+  `create_hole_side`, `create_hole_bottom`, `create_bolt_side`, and
+  `create_bolt_bottom`. Each operation maps to exactly its human action and a
+  distinct exact-target contract. Side requests contain one hash-pinned page,
+  one hash- and projection-pinned view, and exactly two ordered, unique
+  projected `EdgeN` boundary targets with individual element hashes. Bottom
+  requests contain the same page/view authority and 1-through-32 ordered,
+  unique, individually hash-pinned full-circle `EdgeN` targets. The provider
+  cannot supply thread factors, derived lines, arc radii or spans, line
+  weights, colors, visibility, or persistent tags.
+- Human commands and Native share the compiled `ThreadRepresentationBuilder`.
+  It validates canonical unscaled projected geometry before mutation, rejects
+  zero-length or nonparallel side boundaries and non-circle bottom targets,
+  derives the existing 1.176 hole and 0.85 bolt conventions, creates the
+  existing two thin solid side boundaries plus the hole-only graphic-weight
+  end line, and creates bottom arcs from 15 through 285 degrees. Every result
+  uses current host color and visibility, the host Thin/Graphic weights, and a
+  durable cosmetic tag. The human side commands retain their existing
+  first-two-selected-edge behavior, and the human bottom commands retain their
+  existing per-selection acceptance behavior; Native preflights its complete
+  exact target set atomically. Native resolves every created tag back to
+  current `EdgeN`, exact geometry, format, and state hashes while proving prior
+  persistent lines, page membership, History, selection, and visibility did
+  not change.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_THREAD_REPRESENTATION_GUI_OK operations=4
+  hole_side=true hole_bottom=true bolt_side=true bolt_bottom=true
+  human_oracle=true shared_host_builder=true exact_page=true exact_view=true
+  projection_hash=true element_hash=true parallel_validation=true
+  full_circle_validation=true factors=true arc_span=true persistent_tags=true
+  host_style=true selection=true visibility=true history=true wrong_type=true
+  nonparallel=true stale=true rollback=true revision=true undo=true redo=true
+  snapshot=true reopen=true low_noise=true no_task=true`. It executes every
+  shipped human command as the geometry/style oracle, then proves all four
+  Native operations, idempotent receipts, refusal without revision or undo
+  movement, forced rollback, FCStd save/reopen, and durable tags. All 111
+  focused registry, surface, action-manifest, circle/line/thread contracts and
+  all 47 Drawing contracts pass. The neighboring line-attribute, line-length,
+  circle-centerline, and bolt-circle compiled lifecycles remain green, and the
+  protected TechDraw VibeScript API/worker integration reports success.
+  TechDrawGui and staged VibeCAD scripts build cleanly; production source and
+  release staging are byte-identical; every newly added implementation and
+  gate file remains below 700 lines; and Python compilation, Ruff lint and
+  formatting, and scoped whitespace validation are clean.
+- Drawing vertex-at-intersection and offset-vertex now share one exact
+  `drawing.cosmetic_vertex` family with the action-specific operations
+  `create_intersections` and `create_offset`. Intersection requests contain one
+  hash-pinned page, one hash- and projection-pinned view, and exactly two
+  distinct, individually hash-pinned projected `EdgeN` targets. Offset requests
+  contain the same exact page/view boundary, one individually hash-pinned
+  projected `VertexN`, and one closed explicit unscaled X/Y millimetre offset;
+  zero offset remains valid. The provider cannot supply derived intersections,
+  the final offset point, style, visibility, or persistent tags.
+- Both shipped human paths and Native use the compiled
+  `CosmeticVertexBuilder`. The intersection command creates every point
+  returned by TechDraw's geometry intersection in host order. The offset task
+  retains its task-owned live-preview transaction, including replacement of a
+  prior preview, accept retention, and reject rollback; its existing two-arg
+  external construction path remains available while the shipped command uses
+  the exact selected `VertexN` boundary. The builder converts projected points
+  to conventional unscaled view coordinates, applies the host persistent
+  cosmetic-vertex format, refreshes geometry and paint once, and returns
+  durable tags. Native resolves those tags to current `VertexN`, exact point,
+  format, per-vertex digest, and inventory digest while proving prior vertices,
+  objects, page membership, History, projected sources, selection, and
+  visibility did not change.
+- Intersection and offset remain covered by the current four-operation
+  compiled cosmetic-vertex lifecycle documented with rows 15.75 and 15.76
+  below. That expanded gate retains both human oracles, offset-task preview,
+  cancellation and acceptance, zero-offset behavior, all host-derived
+  intersections, exact refusal, rollback, replay, undo/redo, snapshot, and
+  durable save/reopen coverage without carrying a stale two-operation result.
+- The four shipped cosmetic-circle and arc actions are one closed
+  `drawing.cosmetic_curve` family with the exact operations
+  `create_one_point_circle`, `create_two_point_circle`,
+  `create_three_point_circle`, and `create_center_start_end_arc`. Every request
+  pins one page, one view definition, the complete projection, and each ordered
+  projected `VertexN` source independently. The one-point operation accepts
+  only an explicit positive unscaled radius; the other operations use named
+  center, radius, perimeter, start, and end roles. The provider cannot supply a
+  derived center, derived radius, arc angle, direction, line format, current
+  `EdgeN`, or durable tag.
+- Every shipped human path and Native use the compiled
+  `CosmeticCurveBuilder`. It preserves the existing one-point task's circle and
+  arc creation branches, including reject-without-mutation, and delegates the
+  two-point, three-point, and counter-clockwise arc commands without duplicating
+  geometry math. The builder converts projected vertices into conventional
+  unscaled Drawing coordinates, derives the unique circle or ordered arc in
+  host code, applies the active complete line format, and returns a UUID tag.
+  Durable readback resolves the tag to the current `EdgeN` and derives
+  canonical arc angles and direction from the actual center/start/mid/end
+  geometry rather than TechDraw's unreliable mirrored-arc direction flag.
+  Native proves that prior curves, objects, page membership, History, projected
+  sources, selection, and visibility remain unchanged, and returns only exact
+  sources, the created curve, and the resulting inventory digest.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_COSMETIC_CURVE_GUI_OK operations=4 one_point=true
+  two_point=true three_point=true arc=true human_oracle=true
+  shared_host_builder=true task_accept=true task_reject=true task_arc=true
+  exact_page=true exact_view=true projection_hash=true element_hash=true
+  named_roles=true explicit_radius=true derived_center=true
+  derived_radius=true derived_angles=true host_style=true persistent_tags=true
+  selection=true visibility=true history=true duplicate=true wrong_type=true
+  stale=true rollback=true revision=true idempotency=true undo=true redo=true
+  snapshot=true reopen=true low_noise=true native_no_task=true`. It executes all
+  four human actions as the geometry/style oracle, proves the task's circle and
+  arc branches, all four Native operations, same-call replay, invalid-target
+  refusal without revision or undo movement, forced rollback, one-step
+  undo/redo, snapshot targeting, and FCStd save/reopen with stable UUID tags.
+  All 57 focused cosmetic-curve, registry, and action-manifest contracts pass.
+  The cosmetic-vertex, circle-centerline, bolt-circle-centerline, all four
+  thread-representation, line-attribute, and line-length compiled lifecycle
+  gates remain green, and the protected TechDraw VibeScript API/worker
+  integration reports success. TechDrawGui and staged VibeCAD scripts build
+  cleanly; production source and release staging are byte-identical; the shared
+  builder is 519 lines, the five implementation modules are 394, 49, 70, 179,
+  and 458 lines, and the compiled gate is 687 lines. Python compilation, Ruff
+  lint and formatting, and scoped whitespace validation are clean.
+- The two shipped parallel/perpendicular cosmetic-line actions are one closed
+  `drawing.cosmetic_line` family with separate `create_parallel` and
+  `create_perpendicular` branches. Each request pins one page, one part-view
+  definition, the complete projection, one exact projected straight `EdgeN`,
+  and one exact projected `VertexN` through point with independent element
+  hashes. The provider cannot supply endpoints, direction vectors, length,
+  coordinate-system conversions, line format, current cosmetic `EdgeN`, or a
+  durable tag. The role-specific schemas reject an edge in the vertex role or
+  a vertex in the edge role before provider execution, while a schema-valid
+  curved edge receives a precise host refusal naming the accepted projected
+  straight-edge and vertex roles.
+- Both human commands and Native delegate to the compiled
+  `CosmeticLineBuilder`; there is no duplicate Python geometry path. The
+  builder accepts either human selection order, resolves the exact projected
+  straight edge and vertex, converts rotated/scaled projected geometry into
+  conventional unscaled Drawing-view millimetres, creates a same-length line
+  centered on the selected vertex, derives the parallel or perpendicular
+  direction in host code, applies the complete current `LineFormat`, and
+  returns a durable UUID. Readback resolves that UUID to the current `EdgeN`,
+  canonicalizes the unoriented endpoints, and publishes the complete
+  persistent line inventory. Native proves prior lines, source element hashes,
+  objects, page membership, History, selection, visibility, page state, and
+  view definition remain unchanged and returns only the named sources, exact
+  derived line, persistent format/tag, and resulting inventory digest.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_COSMETIC_LINE_GUI_OK operations=2 parallel=true
+  perpendicular=true human_oracle=true shared_host_builder=true
+  selection_order=true exact_page=true exact_view=true projection_hash=true
+  element_hash=true named_roles=true derived_geometry=true same_length=true
+  centered=true host_style=true persistent_tags=true selection=true
+  visibility=true history=true curved_refusal=true wrong_type=true stale=true
+  rollback=true revision=true idempotency=true undo=true redo=true
+  snapshot=true reopen=true low_noise=true native_no_task=true`. It executes
+  both actual human actions as the geometry/style oracle with opposite
+  selection orders, both Native branches, same-call replay, curved and
+  wrong-role refusals without revision or undo movement, forced rollback,
+  one-step undo/redo, selection-backed snapshot targeting, and FCStd
+  save/reopen with stable UUID tags. All 58 focused cosmetic-line, registry,
+  and action-manifest contracts pass. The cosmetic-curve, cosmetic-vertex,
+  line-attribute, line-length, circle-centerline, bolt-circle-centerline, and
+  all four thread-representation compiled lifecycle gates remain green, and
+  the protected TechDraw VibeScript API/worker lifecycle reports success.
+  TechDrawGui and staged VibeCAD scripts build cleanly; production source and
+  release staging are byte-identical; the shared builder is 283 lines, the
+  five implementation modules are 371, 49, 59, 137, and 401 lines, and the
+  compiled gate is 586 lines. Ruff lint and formatting, Python compilation,
+  and scoped whitespace validation are clean.
+- Diameter, square, and repetition prefix insertion, prefix removal, and
+  decimal-precision increase/decrease now resolve to the closed
+  `drawing.dimension_text` capability. Every branch accepts one exact Drawing
+  page plus an ordered, unique batch of 1 to 64 hash-pinned dimensions;
+  repetition alone accepts a bounded integer count from 1 through 9999. The
+  provider never accepts raw format strings, GUI selection, or ambiguous
+  targets. A batch is all-or-nothing: any stale, wrong-page, duplicate,
+  malformed, or inapplicable dimension refuses before opening a transaction
+  and reports the exact target and reason.
+- The actual human commands and Native use the same compiled
+  `DimensionTextBuilder`. It preserves the established human transformations,
+  arbitrary repetition-dialog text, mixed non-dimension selection behavior,
+  no-op behavior, one-document transaction boundary, and multi-page selection
+  support. Native adds exact one-page authority, strict integer repetition,
+  preflight/application plan equality, and postconditions proving objects,
+  page membership, History, selection, visibility, page definition, projected
+  geometry, and every non-format dimension property remain unchanged.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_DIMENSION_TEXT_GUI_OK operations=6 diameter=true
+  square=true repetition=true remove=true increase=true decrease=true
+  human_oracle=true shared_host_builder=true dialog_cancel=true exact_page=true
+  exact_targets=true batch=true atomic_refusal=true precise_repair=true
+  closed_schema=true wrong_type=true stale=true selection=true visibility=true
+  history=true page_boundary=true projection=true rollback=true revision=true
+  idempotency=true undo=true redo=true snapshot=true reopen=true low_noise=true
+  native_no_task=true`. It executes all six actual human commands as the exact
+  result oracle, cancels the repetition dialog without mutation, applies all
+  six Native branches to two dimensions atomically, proves exact inapplicable
+  repairs and mixed-batch refusal, stale/wrong-type refusal, same-call replay,
+  forced rollback, one-step undo/redo, selection-backed snapshot targeting,
+  and FCStd save/reopen. All 66 focused dimension-text, registry, and
+  action-manifest contracts pass. The general dimension, complete-format, and
+  parallel/perpendicular cosmetic-line compiled lifecycles remain green, and
+  the protected TechDraw VibeScript API/worker lifecycle reports success.
+  TechDrawGui and staged VibeCAD scripts build cleanly; production source and
+  release staging are byte-identical; the shared builder is 184 lines, its
+  header is 64 lines, the five implementation modules are 418, 49, 69, 167,
+  and 181 lines, and the compiled gate is 633 lines. Ruff lint, Python
+  compilation, and scoped whitespace validation are clean.
+- Drawing presentation now resolves to the closed `drawing.presentation`
+  capability with three explicit operations: `set_frame_visibility`,
+  `set_grid_visibility`, and `set_hidden_edges_visible`. Each accepts the exact
+  human-active Drawing page or view, its persistent definition hash, the exact
+  presentation-state hash, and the desired boolean state; it never exposes a
+  toggle, GUI selection, raw scene internals, or an ambiguous target. Results
+  report only identity, prior and resulting states, whether anything changed,
+  and the new exact presentation hash.
+- The toolbar and Drawing-page context commands, passive Python inspection,
+  Native preflight, and Native application share the compiled
+  `FrameVisibilityBuilder` presentation implementation. Passive frame
+  inspection is separate from the
+  human-active-page mutation guard, and a compiled availability read prevents
+  unavailable Manual-mode state from generating console noise. The existing
+  TechDraw SVG-template refresh now avoids redundant `Width`, `Height`, and
+  `Orientation` writes, so rebuilding editable markers cannot manufacture
+  structural revisions for unchanged template metadata. Frame presentation
+  therefore remains outside document transactions, undo, History, and Native
+  structural revision without weakening the dispatcher's read-side-effect
+  guard. Grid and hidden-edge ViewProvider properties survive FCStd reopen.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_PRESENTATION_GUI_OK operations=3
+  frame_visibility=true grid_visibility=true hidden_edges=true
+  explicit_state=true transient=true human_oracle=true
+  context_oracle=true shared_host_builder=true visual_hash=true
+  manual_mode=true exact_active_page=true page_hash=true frame_hash=true
+  closed_schema=true stale=true wrong_type=true preference_refusal=true
+  rollback=true no_undo=true no_transaction=true no_revision=true
+  selection=true visibility=true history=true page_boundary=true
+  snapshot=true reopen=true idempotent=true low_noise=true
+  native_no_task=true`. It proves actual toolbar and context commands against
+  exact live state, frame page-image hashes, same-state idempotency,
+  stale/wrong-type/preference refusal, forced rollback, unchanged document and
+  human UI boundaries, active-page snapshot state, and transient reset after
+  FCStd save/reopen. All 78 focused presentation, registry, action-manifest,
+  and complete-registry contracts pass; the neighboring six-operation
+  dimension-text lifecycle and protected TechDraw VibeScript API/worker
+  lifecycle remain green. TechDrawGui and staged VibeCAD scripts build cleanly;
+  production source and release staging are byte-identical; the shared builder
+  is 79 lines, its header is 44 lines, the five implementation modules are 273,
+  49, 31, 97, and 101 lines, and the compiled gate is 420 lines. Ruff lint,
+  Python compilation, and scoped whitespace validation are clean.
+- Standard image hatch and geometric PAT hatch now resolve to one closed
+  `drawing.hatch` capability with separate default-pattern and human-authorized
+  file branches plus one path-free defaults/catalog read. Every mutation pins
+  one page, one projected view definition, the complete projection, and 1 to
+  64 unique `FaceN` states independently; it accepts the complete explicit
+  image or geometric style, an exact PAT catalog name where applicable, and a
+  preferred label whose exact FreeCAD-assigned form is reported. Provider
+  schemas never expose file paths: configured defaults are claimed and hashed
+  by the host, while custom SVG/bitmap/PAT inputs require a one-shot human file
+  authorization whose exact request identity is preserved through preflight.
+- Both existing human task paths and Native use the compiled `HatchBuilder`.
+  It validates the live page/view/faces, file type or bounded PAT catalog,
+  complete finite style, and duplicate image-hatch conflicts; creates the
+  canonical TechDraw hatch object; embeds the pattern content for portable
+  FCStd save/reopen; recomputes only that hatch; and requests the source-view
+  repaint. Native does not recursively recompute the unchanged source view or
+  page: doing so started TechDraw's asynchronous face extraction and exposed a
+  transient face-less projection to the synchronous postcondition. The final
+  transaction boundary therefore verifies the already recomputed shared-host
+  result without launching unrelated HLR work, while still proving exact
+  objects, page membership, source view definition and geometry, History,
+  selection, visibility, durable pattern hash, style, validity, rollback, and
+  one-step undo/redo.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_HATCH_GUI_OK operations=5 image=true
+  geometric=true human_oracle=true shared_host_builder=true exact_faces=true
+  explicit_style=true defaults=true catalog=true human_authorized_files=true
+  path_free=true artifact_hash=true embedded_reopen=true visual_hash=true
+  tree=true history=true snapshot=true stale=true wrong_type=true
+  duplicate_refusal=true invalid_pattern=true cancellation=true rollback=true
+  undo=true redo=true selection=true visibility=true closed_schema=true
+  low_noise=true native_no_task=true`. It executes both actual human hatch
+  commands as the host/style/rendering oracle, proves that the Native image and
+  geometric operations each change the rendered page, exercises all five
+  provider branches, cancellation, stale/wrong-type/duplicate/invalid-pattern
+  refusal, injected post-create rollback, exact tree children and History,
+  concise snapshot state, one-step undo/redo, and portable save/reopen after
+  both custom source files are deleted. All 87 focused hatch, presentation,
+  capability-registry, action-manifest, and complete-registry contracts pass;
+  the neighboring frame-presentation and six-operation dimension-text compiled
+  lifecycles remain green, and the protected TechDraw VibeScript API/worker
+  integration reports success. TechDrawGui and staged VibeCAD scripts build
+  cleanly; production source and release staging are byte-identical; the
+  provider schema is 10,412 bytes; the shared builder is 361 lines, its header
+  is 113 lines, the five hatch implementation modules are 753, 42, 93, 252,
+  and 394 lines, the shared label contract is 15 lines, the compiled gate is
+  579 lines, and the focused contract is 147 lines. Ruff lint, Python
+  compilation, and scoped whitespace validation are clean.
+- Rich annotation now resolves to one closed `drawing.rich_annotation`
+  capability with three deliberately separate operations: escaped plain-text
+  creation, bounded resource-free rich-HTML creation, and a transaction-free
+  defaults read. Both mutations freeze one exact page hash and either the page
+  owner or one exact view-owner hash; require explicit page placement,
+  automatic-or-fixed wrapping, a preferred label, and the complete frame
+  visibility/width/style/RGB state; and return only bounded plain-text preview,
+  counts, hashes, exact persisted state, and the next useful inspection action.
+  Provider content is capped at 4,096 characters and never returns the stored
+  HTML blob.
+- The shipped human task and Native preflight/application share the compiled
+  `RichAnnotationBuilder`. It validates live page/owner identity, finite style,
+  UTF-8, canonical Qt rich text, visible content, blocks, fragments, links, and
+  labels; rejects images, external resources, active elements, event handlers,
+  media, forms, SVG, stylesheets, CSS URLs, and unsafe link schemes; creates the
+  canonical `TechDraw::DrawRichAnno`; assigns the exact page/view ownership;
+  enrolls the fully configured object in History before repaint; recomputes the
+  feature; and requests its immediate page repaint inside the caller-owned
+  transaction. Malformed compiled-host maps and nested values produce one
+  stable runtime-unavailable failure instead of Python lookup or coercion
+  exceptions. Human-editor HTML remains on its broader existing policy.
+- The lifecycle work exposed and corrected two real TechDraw scene defects.
+  `QGSPage::addRichAnno` no longer reparents the same annotation twice through
+  incompatible coordinate conversions. `QGIView` now maps page-positioned,
+  owner-linked items back into the graphical owner's local coordinates, while
+  preserving the intentional owner-local semantics of Dimensions and Balloons.
+  The tree consequently has one coherent hierarchy: page-owned annotations are
+  direct page children, while view-owned annotations are children of the exact
+  view, without duplicate tree entries. The actual human command and Native
+  plain/rich operations all change the rendered page immediately.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_RICH_ANNOTATION_GUI_OK operations=3
+  plain_text=true rich_text=true human_oracle=true shared_host_builder=true
+  safe_html=true active_content_rejected=true resources_rejected=true
+  malformed_host_rejected=true exact_page=true exact_owner=true
+  explicit_placement=true semantic_width=true explicit_frame=true
+  defaults=true content_hash=true bounded_preview=true visual_hash=true
+  tree=true history=true snapshot=true stale=true rollback=true undo=true
+  redo=true reopen=true selection=true visibility=true closed_schema=true
+  low_noise=true native_no_task=true`. It proves page- and view-owned creation,
+  exact preflight/application parity, stable stale refusal, injected rollback,
+  one-step undo/redo, save/reopen, tree and History placement, snapshot state,
+  preserved human selection/visibility, and no Native task dialog. All 96
+  focused rich-annotation, hatch, presentation, registry, action-manifest, and
+  capability-registry contracts pass. Neighboring hatch, presentation,
+  Balloon, and general Dimension compiled lifecycles remain green, including
+  their coordinate, tree, undo, and reopen gates, and the protected TechDraw
+  VibeScript API/worker integration reports success. TechDrawGui and staged
+  VibeCAD scripts build cleanly; seven declared production/source files are
+  byte-identical to release staging; Ruff, Python compilation, and scoped
+  whitespace validation are clean. The shared builder and header are 515 and
+  107 lines; the five focused Native modules are 796, 49, 60, 235, and 258
+  lines; the compiled gate is 589 lines; and the focused contract is 206 lines.
+- Leader Line now resolves through the closed `drawing.annotation` capability
+  with only `leader_line` and `read_leader_defaults` branches. Creation freezes
+  one exact page hash and one exact page-member owner hash, accepts 2 through
+  64 finite page-coordinate points, an explicit preferred label, begin/end
+  symbols, continuous/polyline behavior, auto-horizontal completion, and the
+  complete visible line format. It returns the exact durable leader state and
+  mutation receipt without echoing page inventories or graphical payloads.
+  The bounded Drawing snapshot exposes exact selected leader owners, including
+  owners nested in a projection group, so the assistant never has to infer the
+  owner's placement, scale, rotation, or projection state from prior calls.
+- The human task and Native mutation share the compiled `LeaderLineBuilder`.
+  It validates the live page and owner relationship, including a view nested
+  under one projection group; converts page points through the owner's real
+  placement, rotation, and scale; creates the canonical
+  `TechDraw::DrawLeaderLine`; applies the complete symbol, behavior, and line
+  state; enrolls the configured object in History; recomputes it; and requests
+  repaint inside the caller-owned transaction. The graphical-item coordinate
+  policy now treats Leaders, Dimensions, and Balloons as owner-local while
+  retaining page coordinates for page-owned annotations, which removes the
+  prior tree/render mismatch without a file-specific exception.
+- Drawing remains inside the unchanged 32-tool provider limit for all four
+  dimension-preference variants. Leader uses the planned annotation family,
+  while all 16 general, chamfer, arc-length, area-annotation, and
+  arc-annotation mutations use one strongly discriminated `drawing.dimension`
+  family. The obsolete standalone special-dimension and
+  measurement-annotation registrations and runtimes are removed; action
+  planning now uses unambiguous `create_arc_length_dimension`,
+  `create_area_annotation`, and `create_arc_length_annotation` branches. Read
+  and mutation classifications remain separate. Every 86-, 107-, 111-, and
+  112-action Drawing graph resolves to exactly 32 families with one Dimension
+  and one Annotation tool.
+- The consolidation gate also exposed and corrected arc-length dimensions that
+  stored a literal display string as an arbitrary value. The shared host model
+  now returns the persisted `ArcLengthValue` as the dimension's real measured
+  value and uses a valid numeric format specification prefixed by the arc
+  symbol. Human creation, Native creation, repair, rendering, state hashing,
+  undo/redo, and save/reopen consequently share one unit-aware representation
+  without formatter warnings.
+- The compiled Leader lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_LEADER_GUI_OK operations=2 human_oracle=true
+  shared_host_builder=true projected_owner=true rotated_owner=true
+  scaled_owner=true exact_page=true exact_owner=true absolute_points=true
+  rendered_points=true auto_horizontal=true symbols=true behavior=true
+  line_style=true defaults=true visual_hash=true tree=true history=true
+  snapshot=true stale_page=true stale_owner=true invalid_geometry=true
+  rollback=true undo=true redo=true reopen=true selection=true visibility=true
+  closed_schema=true low_noise=true native_no_task=true`. The unified general,
+  special, and measurement Dimension GUI lifecycles pass all 16 branches,
+  including human-command parity, stale and invalid targets, rollback,
+  one-step undo/redo, snapshot, tree and History placement, and save/reopen.
+  The neighboring line-default and line-attribute GUI lifecycles remain green.
+  Ruff and the 87 focused Leader, Dimension, line, manifest, registry, and
+  surface-variant contracts pass; TechDrawGui and staged VibeCAD scripts build
+  cleanly; and the protected TechDraw VibeScript native API/worker integration
+  reports success.
+- Standalone Cosmetic Vertex now resolves as the third closed branch of the
+  existing `drawing.cosmetic_vertex` capability, alongside intersection and
+  offset creation; it does not add another provider tool. The branch freezes
+  one exact page, Drawing view, view-definition hash, and projection hash, then
+  accepts one finite point in explicit `drawing_view_unscaled_mm`,
+  `x_right_y_up` coordinates. Its concise result resolves the created durable
+  tag to the exact current `VertexN`, canonical point, complete host-default
+  format, vertex-state hash, and resulting bounded inventory hash.
+- The human `TechDraw_CosmeticVertex` task and Native preflight/application now
+  share `CosmeticVertexBuilder`. The compiled builder validates the live page
+  and view, coordinate bounds, and canonical two-dimensional point; creates
+  the persistent cosmetic vertex; applies the same complete default format as
+  the intersection and offset branches; refreshes projected vertex geometry;
+  requests repaint; and proves that the durable tag survived. The human task
+  retains its existing tracker and explicit X/Y UI, accept/reject behavior,
+  and owned transaction while no longer calling `addCosmeticVertex` directly.
+- The compiled lifecycle reports
+  `VIBECAD_NATIVE_DRAWING_COSMETIC_VERTEX_GUI_OK operations=4
+  intersection=true offset=true point=true canonical_coordinates=true
+  midpoints=true ordered_sources=true
+  human_oracle=true shared_host_builder=true task_accept=true
+  task_reject=true task_transaction=true exact_page=true exact_view=true
+  projection_hash=true element_hash=true all_intersections=true
+  explicit_offset=true zero_offset=true explicit_point_range=true
+  host_style=true persistent_tags=true selection=true visibility=true
+  history=true no_intersection=true wrong_type=true stale=true rollback=true
+  revision=true idempotency=true undo=true redo=true snapshot=true reopen=true
+  low_noise=true native_no_task=true`. It exercises the real human task and
+  Native dispatcher on a rotated, scaled Drawing view, proves identical
+  canonical point creation, rejects an out-of-range point before mutation,
+  and covers cancellation, exact hashes, rollback, one-step undo/redo,
+  save/reopen, low-noise results, and unchanged selection, visibility, object,
+  page-membership, and History boundaries. All 226 focused Drawing, manifest,
+  registry, surface-authority, surface-variant, and guardrail contracts pass;
+  TechDrawGui and staged VibeCAD scripts build successfully; Ruff, Python
+  compilation, and scoped whitespace validation are clean; and the protected
+  TechDraw VibeScript API/worker lifecycle remains green.
+- Midpoint Vertices is the fourth branch of that same
+  `drawing.cosmetic_vertex` family, not another provider tool. It accepts 1 to
+  64 unique exact projected `EdgeN` targets with independent element-state
+  hashes. The compiled host resolves each live edge, obtains its projected
+  midpoint, removes the view's scale and rotation with TechDraw's canonical
+  transform, and preserves the provider's source order through preflight,
+  creation, concise source-to-vertex results, persistent inventory, undo/redo,
+  and save/reopen. No provider-supplied midpoint coordinate is accepted.
+- The shipped `TechDraw_Midpoints` command now preflights and creates through
+  `CosmeticVertexBuilder`; its former inline geometry lookup, coordinate math,
+  and direct `addCosmeticVertex` loop are gone. Human and Native creation on a
+  rotated, scaled view produce identical ordered midpoint signatures. Duplicate
+  source edges fail before mutation, all selected midpoints share one atomic
+  transaction, one undo removes the complete batch, and the existing object,
+  page-membership, History, selection, visibility, stale-target, rollback,
+  idempotency, low-noise, and VibeScript protections remain green.
+- Quadrant Vertices is the fifth branch of `drawing.cosmetic_vertex`. It maps
+  only `TechDraw_Quadrants`, accepts 1 to 64 unique hash-pinned projected
+  `EdgeN` sources, and asks the compiled TechDraw host to derive exactly three
+  ordered quarter-parameter points per source. The provider cannot supply or
+  alter point coordinates. The shipped human command and Native path share
+  `CosmeticVertexBuilder`, persistent vertex tags, source associations, and
+  one transaction for the complete batch. A rotated/scaled full-circle gate
+  proves identical human and Native results, duplicate/stale refusal,
+  postcondition rollback, one-step undo/redo, save/reopen, unchanged selection,
+  page membership, visibility, objects, and History.
+- Face, two-line, and two-point centerlines are three explicit variants of the
+  focused `drawing.centerline` family, mapped respectively to
+  `TechDraw_FaceCenterLine`, `TechDraw_2LineCenterLine`, and
+  `TechDraw_2PointCenterLine`. Their schemas accept only exact hash-pinned
+  projected faces, edge pairs, or vertex pairs. The focused compiled
+  `GeneralCenterLineBuilder` owns selection-kind validation, host defaults,
+  orientation repair, unscaled Drawing-view endpoint derivation, line format,
+  durable centerline identity, and inventory readback. `TaskCenterLine` uses
+  the same builder for human acceptance; Native opens no task dialog. One real
+  dispatcher lifecycle creates all three forms and proves concise results,
+  source hashes, persistent tags, duplicate refusal, rollback, revision
+  chaining, independent undo/redo, and exact save/reopen reconstruction.
+- Two-point Cosmetic Line is the third `drawing.cosmetic_line` variant and maps
+  only `TechDraw_2PointCosmeticLine`. It accepts exactly two distinct
+  hash-pinned projected vertices in endpoint order. TechDraw derives both
+  canonical endpoints and the current line format; the provider supplies no
+  coordinates or style. `TaskCosmeticLine` and Native persist through the same
+  `CosmeticLineBuilder` segment primitive. The combined real-GUI gate proves
+  the existing parallel/perpendicular paths plus two-point creation, exact
+  sources, human/host parity, durable tags, low-noise results, rollback,
+  one-step undo/redo, and save/reopen.
+- The complete five-row Drawing block builds and links `TechDrawGui` and staged
+  VibeCAD scripts, passes 66 focused schema/manifest/registry contracts, and
+  passes all three compiled GUI lifecycle gates. The protected TechDraw
+  VibeScript API/worker lifecycle also passes unchanged.
+- ISO 286 fit, ISO/ASME surface-finish symbols, and weld symbols now use exact
+  shared host boundaries instead of Native-only document synthesis. The
+  shipped Hole/Shaft Fit task calls the packaged `FitBuilder`; the human and
+  Native surface-finish paths share `SurfaceFinishSymbolBuilder`; and human
+  weld creation/editing plus Native preflight/application share
+  `WeldSymbolBuilder`, including a bounded 26-item catalog, embedded SVG
+  resources, exactly two owned History tiles, exact page/leader ownership, and
+  caller-owned transactions. `drawing.symbol` publishes five closed branches
+  for ISO and ASME surface finish, weld create/edit, and a non-mutating catalog
+  read; ISO 286 is a focused `drawing.format` branch. State hashing now
+  canonicalizes signed zero and durable eight-bit leader colors, so semantic
+  identity survives undo and FCStd persistence without false stale refusals.
+  The focused compiled lifecycle emits
+  `VIBECAD_NATIVE_DRAWING_ENGINEERING_SYMBOLS_GUI_OK operations=6
+  iso286_fit=true surface_finish=true weld_create=true weld_edit=true
+  weld_catalog=true human_oracles=3 shared_builders=true embedded_svg=true
+  exact_targets=true stale_refusal=true history_resources=true visual=true
+  undo=true redo=true snapshot=true reopen=true low_noise=true`. The live gate
+  also exposed and corrected the missing FitBuilder runtime packaging entry,
+  a null weld-root dereference in human creation, and Python-side reliance on
+  an unexposed `getTiles()` method. TechDrawGui builds and links successfully,
+  staged scripts are current, and the complete human/Native lifecycle is green.
+- Drawing output is one closed, branch-preserving `drawing.export` family:
+  SVG, DXF, and PDF each accept one hash-pinned current-History page, ask the
+  human for a destination without exposing its path to the provider, render
+  through the shipped `PagePrinter` boundary in a managed job, validate the
+  bounded artifact, and atomically publish it. Print All accepts no noisy
+  provider parameters because its exact meaning is every current-History page;
+  it runs the real platform print dialog, revalidates the frozen page set
+  immediately before submission, and reports only authorization, submission,
+  output mode, and page count—never a printer identity or path. Existing human
+  APIs and commands remain intact; an additive TechDrawGui result boundary lets
+  Native distinguish cancellation from submission. File and input authorization
+  dialogs are now explicitly dispatched to Qt's document thread, closing the
+  off-thread GUI failure path. The focused compiled lifecycle emits
+  `VIBECAD_NATIVE_DRAWING_OUTPUT_GUI_OK operations=4 svg=true dxf=true pdf=true
+  print_all_dialog=true cancellation=true background=true
+  atomic_publication=true bounded_validation=true paths_hidden=true
+  exact_target=true stale_refusal=true revision_stable=true undo_stable=true
+  low_noise=true`; it proves three real artifacts, the real Print All dialog and
+  cancellation path, exact stale refusal before authorization, stable undo and
+  structural revision, closed schemas, and path-free results.
+- Drawing targeting and direct editing now close the remaining semantic/UI
+  boundary. Projected `EdgeN`, `VertexN`, and `FaceN` names are never accepted
+  alone: every source is resolved against the exact view-definition hash, the
+  complete projected-geometry hash, and its own semantic element hash. The
+  concise page snapshot now reports view placement, dimensions, bounded
+  unresolved-reference diagnostics, Keep Updated/current status, and explicit
+  export readiness; selected dimensions include one complete edit-state hash.
+  `drawing.dimension.edit` atomically replaces the exact display, tolerance,
+  label/angle layout, and appearance state without opening the human task
+  dialog, while the Edit Dimension and Edit Balloon context entries remain
+  human-only. `drawing.presentation.show` uses the same ViewProvider page path
+  as Show Drawing to open and activate an exact current-History page without a
+  document transaction, undo entry, or structural revision. The compiled gates
+  emit `VIBECAD_NATIVE_DRAWING_DIMENSION_GUI_OK ... exact_edit=true
+  complete_edit_state=true human_edit_remains_human=true ... undo=true
+  redo=true snapshot=true reopen=true low_noise=true no_task=true` and
+  `VIBECAD_NATIVE_DRAWING_PRESENTATION_GUI_OK operations=4 show=true ...
+  stale=true no_undo=true no_transaction=true no_revision=true snapshot=true
+  reopen=true low_noise=true native_no_task=true`. TechDrawGui and staged
+  VibeCAD scripts build cleanly.
+- Drawing dimension inference and grouped series now complete the authoring
+  workflow. General Dimension creates only a uniquely implied semantic result
+  and otherwise returns the exact explicit-operation candidates; it never
+  guesses radius versus diameter, directional versus aligned distance,
+  three-point ordering, or chain versus coordinate intent. The six chain and
+  coordinate commands share one compiled validator/creator with their human
+  ribbon actions, accept 3 to 64 exact hash-pinned projected vertices, and
+  publish each result as one contiguous History block with resource-owned
+  dimensions. Oblique carrier geometry is bounded and an aborted call removes
+  only its exact carrier tags through a cache-refreshing host boundary. The
+  underlying face finder now excludes cosmetic presentation edges, preventing
+  dimension carriers from splitting physical projected faces during recompute.
+  The compiled lifecycle emits
+  `VIBECAD_NATIVE_DRAWING_DIMENSION_SERIES_GUI_OK operations=...6
+  human_oracle=true shared_builder=true exact_targets=true history_group=true
+  owned_dimensions=true carrier_geometry=true inference=true
+  ambiguity_refusal=true candidate_guidance=true selection=true visibility=true
+  rollback=true undo=true redo=true reopen=true low_noise=true no_task=true`;
+  `TechDrawGui` and staged VibeCAD scripts build and link cleanly.
+- [x] 15.1 Implement default page creation.
+- [x] 15.2 Implement template-based page creation.
+- [x] 15.3 Implement template-field editing.
+- [x] 15.4 Implement page redraw.
+- [x] 15.5 Implement standard projected view.
+- [x] 15.6 Implement broken view.
+- [x] 15.7 Implement active view.
+- [x] 15.8 Implement section view.
+- [x] 15.9 Implement complex section view.
+- [x] 15.10 Implement detail view.
+- [x] 15.11 Implement Draft-source view.
+- [x] 15.12 Implement clipping view/group behavior.
+- [x] 15.13 Implement stack top.
+- [x] 15.14 Implement stack bottom.
+- [x] 15.15 Implement stack up.
+- [x] 15.16 Implement stack down.
+- [x] 15.17 Implement general Dimension inference with ambiguity refusal.
+- [x] 15.18 Implement Length dimension.
+- [x] 15.19 Implement Horizontal dimension.
+- [x] 15.20 Implement Vertical dimension.
+- [x] 15.21 Implement Radius dimension.
+- [x] 15.22 Implement Diameter dimension.
+- [x] 15.23 Implement Angle dimension.
+- [x] 15.24 Implement three-point Angle dimension.
+- [x] 15.25 Implement Area dimension.
+- [x] 15.26 Implement horizontal Extent dimension.
+- [x] 15.27 Implement vertical Extent dimension.
+- [x] 15.28 Implement Axonometric Length dimension.
+- [x] 15.29 Implement horizontal Chain dimensions.
+- [x] 15.30 Implement vertical Chain dimensions.
+- [x] 15.31 Implement oblique Chain dimensions.
+- [x] 15.32 Implement horizontal Coordinate dimensions.
+- [x] 15.33 Implement vertical Coordinate dimensions.
+- [x] 15.34 Implement oblique Coordinate dimensions.
+- [x] 15.35 Implement horizontal Chamfer dimension.
+- [x] 15.36 Implement vertical Chamfer dimension.
+- [x] 15.37 Implement Arc Length dimension.
+- [x] 15.38 Implement Balloon creation.
+- [x] 15.39 Implement Balloon editing.
+- [x] 15.40 Implement Dimension repair.
+- [x] 15.41 Implement line-attribute selection/readback.
+- [x] 15.42 Implement line-attribute change.
+- [x] 15.43 Implement line extension.
+- [x] 15.44 Implement line shortening.
+- [x] 15.45 Implement view lock/unlock.
+- [x] 15.46 Implement section-view positioning.
+- [x] 15.47 Implement area annotation.
+- [x] 15.48 Implement arc-length annotation.
+- [x] 15.49 Implement format customization.
+- [x] 15.50 Implement circle center lines.
+- [x] 15.51 Implement hole-circle centers.
+- [x] 15.52 Implement thread-hole side representation.
+- [x] 15.53 Implement thread-hole bottom representation.
+- [x] 15.54 Implement thread-bolt side representation.
+- [x] 15.55 Implement thread-bolt bottom representation.
+- [x] 15.56 Implement vertex at intersection.
+- [x] 15.57 Implement offset vertex.
+- [x] 15.58 Implement cosmetic circle.
+- [x] 15.59 Implement center-radius cosmetic circle.
+- [x] 15.60 Implement three-point cosmetic circle.
+- [x] 15.61 Implement cosmetic arc.
+- [x] 15.62 Implement parallel cosmetic line.
+- [x] 15.63 Implement perpendicular cosmetic line.
+- [x] 15.64 Implement diameter-prefix insertion.
+- [x] 15.65 Implement square-prefix insertion.
+- [x] 15.66 Implement repetition-prefix insertion.
+- [x] 15.67 Implement prefix removal.
+- [x] 15.68 Implement decimal increase.
+- [x] 15.69 Implement decimal decrease.
+- [x] 15.70 Implement frame visibility.
+- [x] 15.71 Implement standard hatch.
+- [x] 15.72 Implement geometric hatch.
+- [x] 15.73 Implement rich-text annotation.
+- [x] 15.74 Implement leader line.
+- [x] 15.75 Implement cosmetic vertex.
+- [x] 15.76 Implement midpoint vertices.
+- [x] 15.77 Implement quadrant vertices.
+- [x] 15.78 Implement face centerline.
+- [x] 15.79 Implement two-line centerline.
+- [x] 15.80 Implement two-point centerline.
+- [x] 15.81 Implement two-point cosmetic line.
+- [x] 15.82 Implement line decoration.
+- [x] 15.83 Implement Show All presentation action.
+- [x] 15.84 Implement weld symbol.
+- [x] 15.85 Implement surface-finish symbol.
+- [x] 15.86 Implement hole/shaft fit.
+- [x] 15.87 Implement Keep Updated editing.
+- [x] 15.88 Implement Drawing grid and frame context actions as presentation.
+- [x] 15.89 Implement SVG export.
+- [x] 15.90 Implement DXF export.
+- [x] 15.91 Implement PDF export.
+- [x] 15.92 Implement Print All as explicit user-authorized output.
+- [x] 15.93 Resolve source geometry by stable semantic reference, never screenshot
   position or unverified edge number.
-- [ ] 15.94 Return pages, views, placement, dimensions, unresolved references,
+- [x] 15.94 Return pages, views, placement, dimensions, unresolved references,
   update status, and export readiness concisely.
-- [ ] 15.95 Complete page, orthographic/section/detail, dimension, annotation,
+- [x] 15.95 Complete page, orthographic/section/detail, dimension, annotation,
   and export workflows.
-- [ ] 15.96 Implement exact-target Dimension editing without opening the human
+- [x] 15.96 Implement exact-target Dimension editing without opening the human
   task dialog.
-- [ ] 15.97 Implement Show Drawing as a presentation action.
-- [ ] 15.98 Keep Edit Balloon and Edit Dimension context entry points
+- [x] 15.97 Implement Show Drawing as a presentation action.
+- [x] 15.98 Keep Edit Balloon and Edit Dimension context entry points
   human-controlled while provider operations use exact targets directly.
 
 ### 16. Implement the Parameters surface
 
-- [ ] 16.1 Implement Sheet creation.
-- [ ] 16.2 Implement Spreadsheet import with explicit file authorization.
-- [ ] 16.3 Implement Spreadsheet export with explicit file authorization.
-- [ ] 16.4 Implement bounded sheet/range reading.
-- [ ] 16.5 Implement bounded batch value writing.
-- [ ] 16.6 Implement formula writing and dependency reporting.
-- [ ] 16.7 Implement alias creation and validation.
-- [ ] 16.8 Implement cell merge.
-- [ ] 16.9 Implement cell split.
-- [ ] 16.10 Implement cell-property editing.
-- [ ] 16.11 Implement left alignment.
-- [ ] 16.12 Implement center alignment.
-- [ ] 16.13 Implement right alignment.
-- [ ] 16.14 Implement top alignment.
-- [ ] 16.15 Implement vertical-center alignment.
-- [ ] 16.16 Implement bottom alignment.
-- [ ] 16.17 Implement bold style.
-- [ ] 16.18 Implement italic style.
-- [ ] 16.19 Implement underline style.
-- [ ] 16.20 Return changed ranges, aliases, formula errors, and recompute effects
+- [x] 16.1 Implement Sheet creation.
+- [x] 16.2 Implement Spreadsheet import with explicit file authorization.
+- [x] 16.3 Implement Spreadsheet export with explicit file authorization.
+- [x] 16.4 Implement bounded sheet/range reading.
+- [x] 16.5 Implement bounded batch value writing.
+- [x] 16.6 Implement formula writing and dependency reporting.
+- [x] 16.7 Implement alias creation and validation.
+- [x] 16.8 Implement cell merge.
+- [x] 16.9 Implement cell split.
+- [x] 16.10 Implement cell-property editing.
+- [x] 16.11 Implement left alignment.
+- [x] 16.12 Implement center alignment.
+- [x] 16.13 Implement right alignment.
+- [x] 16.14 Implement top alignment.
+- [x] 16.15 Implement vertical-center alignment.
+- [x] 16.16 Implement bottom alignment.
+- [x] 16.17 Implement bold style.
+- [x] 16.18 Implement italic style.
+- [x] 16.19 Implement underline style.
+- [x] 16.20 Return changed ranges, aliases, formula errors, and recompute effects
   concisely.
-- [ ] 16.21 Complete parameter-table, alias, formula, formatting, and model-link
+- [x] 16.21 Complete parameter-table, alias, formula, formatting, and model-link
   workflows.
 
 ### 17. Integrate the provider without noisy context or results
@@ -7465,25 +11892,25 @@ concisely.
   concise active-domain state contract.
 - [x] 17.8 Remove empty and duplicated fields from normal successes.
 - [x] 17.9 Remove full structured diagnostics from normal failures.
-- [ ] 17.10 Preserve full diagnostics in opt-in debug capture.
+- [x] 17.10 Preserve full diagnostics in opt-in debug capture.
 - [x] 17.11 Enforce result byte budgets.
 - [x] 17.12 Add explicit bounded reads instead of truncating semantic values.
-- [ ] 17.13 Test tool choice with near-neighbor variants on every surface.
-- [ ] 17.14 Test that losing earlier receipts does not cause duplicate or stale
+- [x] 17.13 Test tool choice with near-neighbor variants on every surface.
+- [x] 17.14 Test that losing earlier receipts does not cause duplicate or stale
   mutations.
 - [x] 17.15 Test provider refusal after a human surface switch.
 
 ### 18. Replace the old tests with exact new contracts
 
-- [ ] 18.1 Add manifest parity tests for every surface.
-- [ ] 18.2 Add provider schema snapshot tests for Model.
-- [ ] 18.3 Add provider schema snapshot tests for Sketch.
-- [ ] 18.4 Add provider schema snapshot tests for Assemble.
-- [ ] 18.5 Add provider schema snapshot tests for Mesh.
-- [ ] 18.6 Add provider schema snapshot tests for Analyze.
-- [ ] 18.7 Add provider schema snapshot tests for Manufacture.
-- [ ] 18.8 Add provider schema snapshot tests for Drawing.
-- [ ] 18.9 Add provider schema snapshot tests for Parameters.
+- [x] 18.1 Add manifest parity tests for every surface.
+- [x] 18.2 Add provider schema snapshot tests for Model.
+- [x] 18.3 Add provider schema snapshot tests for Sketch.
+- [x] 18.4 Add provider schema snapshot tests for Assemble.
+- [x] 18.5 Add provider schema snapshot tests for Mesh.
+- [x] 18.6 Add provider schema snapshot tests for Analyze.
+- [x] 18.7 Add provider schema snapshot tests for Manufacture.
+- [x] 18.8 Add provider schema snapshot tests for Drawing.
+- [x] 18.9 Add provider schema snapshot tests for Parameters.
 - [x] 18.10 Add concise-success contract tests.
 - [x] 18.11 Add concise-read contract tests.
 - [x] 18.12 Add concise-failure contract tests.
@@ -7497,39 +11924,47 @@ concisely.
 - [x] 18.20 Add human-selection and ambiguity tests.
 - [x] 18.21 Add human ribbon-switch invalidation tests.
 - [x] 18.22 Add explicit tests proving no AI workbench-switch capability exists.
-- [ ] 18.23 Add UI responsiveness tests for long Mesh operations.
-- [ ] 18.24 Add UI responsiveness tests for FEM mesh and solver operations.
-- [ ] 18.25 Add UI responsiveness tests for CAM simulation/postprocessing.
-- [ ] 18.26 Add UI responsiveness tests for expensive Drawing updates/exports.
-- [ ] 18.27 Add clean-profile end-to-end workflow tests for all eight surfaces.
-- [ ] 18.28 Run focused native tests after every capability group.
-- [ ] 18.29 Run the cross-ribbon GUI regression after every surface is completed.
-- [ ] 18.30 Run a clean release build before enabling the selector by default.
+- [x] 18.23 Add UI responsiveness tests for long Mesh operations.
+- [x] 18.24 Add UI responsiveness tests for FEM mesh and solver operations.
+- [x] 18.25 Add UI responsiveness tests for CAM simulation/postprocessing.
+- [x] 18.26 Add UI responsiveness tests for expensive Drawing updates/exports.
+- [x] 18.27 Add clean-profile end-to-end workflow tests for all eight surfaces.
+- [x] 18.28 Run focused native tests after every capability group.
+- [x] 18.29 Run the cross-ribbon GUI regression after every surface is completed.
+- [x] 18.30 Run a clean release build before enabling the selector by default.
 
 ### 19. Roll out without presenting a partial system as complete
 
-- [ ] 19.1 Land the manifest and removal inventory first with Native still
+- [x] 19.1 Land the manifest and removal inventory first with Native still
   disabled.
-- [ ] 19.2 Land the new registry, state, result, transaction, and background
+- [x] 19.2 Land the new registry, state, result, transaction, and background
   foundations with Native still disabled.
-- [ ] 19.3 Complete and verify Model.
-- [ ] 19.4 Complete and verify Sketch.
-- [ ] 19.5 Complete and verify Assemble.
-- [ ] 19.6 Complete and verify Mesh.
-- [ ] 19.7 Complete and verify Analyze.
-- [ ] 19.8 Complete and verify Manufacture.
-- [ ] 19.9 Complete and verify Drawing.
-- [ ] 19.10 Complete and verify Parameters.
-- [ ] 19.11 Run the full inventory, provider, lifecycle, and release-build gates.
-- [ ] 19.12 Enable Native mode behind a developer preference for live acceptance.
-- [ ] 19.13 Exercise human-driven ribbon changes and real assistant use in every
-  surface.
-- [ ] 19.14 Remove the developer gate only after all blockers are empty.
-- [ ] 19.15 Update user documentation with the Native/VibeScript authority
+- [x] 19.3 Complete and verify Model.
+- [x] 19.4 Complete and verify Sketch.
+- [x] 19.5 Complete and verify Assemble.
+- [x] 19.6 Complete and verify Mesh.
+- [x] 19.7 Complete and verify Analyze.
+- [x] 19.8 Complete and verify Manufacture.
+- [x] 19.9 Complete and verify Drawing.
+- [x] 19.10 Complete and verify Parameters.
+- [x] 19.11 Run the full inventory, provider, lifecycle, and release-build gates.
+- [x] 19.12 Gate Native live acceptance behind the complete fail-closed
+  production-surface resolver. A temporary preference was deliberately not
+  introduced because the resolver already withholds Native whenever any
+  active-ribbon definition, implementation, target contract, or schema budget
+  is incomplete.
+- [x] 19.13 Exercise human-driven ribbon changes and real assistant use in every
+  resolved surface. One live Codex conversation passed all nine states through
+  the production adapter and document-thread tool runner without mutation.
+- [x] 19.14 Confirm no temporary developer gate remains after all acceptance
+  blockers are empty. The normal human selector remains guarded by document,
+  control-mode, transaction, task/edit, recompute, editor-work, authority, and
+  complete-surface policy.
+- [x] 19.15 Update user documentation with the Native/VibeScript authority
   boundary and human-controlled ribbon behavior.
-- [ ] 19.16 Update MCP documentation to state that external AI clients cannot
+- [x] 19.16 Update MCP documentation to state that external AI clients cannot
   switch workbenches through the authoring surface.
-- [ ] 19.17 Publish the complete breaking-change list and replacement workflow.
+- [x] 19.17 Publish the complete breaking-change list and replacement workflow.
 
 ## Objective `DONE` gate
 

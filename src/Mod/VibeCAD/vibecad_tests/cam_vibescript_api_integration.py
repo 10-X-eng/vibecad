@@ -12,6 +12,7 @@ import json
 from pathlib import Path as FilesystemPath
 import sys
 import tempfile
+import traceback
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -269,13 +270,18 @@ def _exercise_native_worker() -> None:
         "core.capture_view_screenshot",
         "core.set_view",
         "vibescript.read_source",
+        "vibescript.read_operation",
         "vibescript.read_api",
+        "vibescript.read_geometry",
+        "vibescript.read_placement",
+        "vibescript.create_program",
         "vibescript.build_program",
         "vibescript.edit_source",
-        "vibescript.cam.create_program",
-        "vibescript.cam.set_inputs",
-        "vibescript.cam.reconfigure_program",
-        "vibescript.cam.delete_program",
+        "vibescript.set_inputs",
+        "vibescript.reconfigure_program",
+        "vibescript.delete_output",
+        "vibescript.delete_program",
+        "vibescript.delete_object",
         "cam.list_jobs",
     )
     assert not any(name.startswith("native.") for name in surface.tool_names)
@@ -1196,6 +1202,9 @@ def _exercise_isolated_lifecycle() -> None:
             source = document.addObject("Part::Feature", "SourceSolid")
             source.Label = "Human source solid"
             source.Shape = Part.makeBox(20, 16, 10)
+            source_view = getattr(source, "ViewObject", None)
+            if source_view is not None:
+                source_view.Visibility = True
             source_name = str(source.Name)
             document.commitTransaction()
             service = _Service(root)
@@ -1691,5 +1700,23 @@ def main() -> None:
     print("CAM VibeScript native API/worker integration passed")
 
 
-if __name__ == "__main__":
+def _run_gui() -> None:
+    from PySide import QtWidgets
+
+    application = QtWidgets.QApplication.instance()
+    exit_code = 1
+    try:
+        main()
+        exit_code = 0
+    except Exception:
+        traceback.print_exc(file=sys.__stderr__)
+    finally:
+        application.exit(exit_code)
+
+
+if bool(getattr(App, "GuiUp", False)):
+    from PySide import QtCore
+
+    QtCore.QTimer.singleShot(1000, _run_gui)
+elif __name__ == "__main__":
     main()

@@ -304,7 +304,7 @@ def _cases() -> tuple[dict[str, object], ...]:
             "label": "Gate XZ Mirror",
             "definition": _definition(
                 ("XZSolid",),
-                _axis_plane("xz", (0.0, 2.0, 0.0)),
+                {"kind": "xz"},
             ),
             "reference_kind": None,
         },
@@ -628,11 +628,15 @@ def _run() -> None:
                     assert result.VibeCADTimelineOwner is root
                 assert result.Shape.isValid() and not result.Shape.isNull()
                 if plane["kind"] != "reference":
+                    expected_base = plane.get(
+                        "base_mm",
+                        {"x": 0.0, "y": 0.0, "z": 0.0},
+                    )
                     assert all(
                         _close(actual, expected)
                         for actual, expected in zip(
                             tuple(result.Base),
-                            tuple(plane["base_mm"][axis] for axis in "xyz"),
+                            tuple(expected_base[axis] for axis in "xyz"),
                             strict=True,
                         )
                     )

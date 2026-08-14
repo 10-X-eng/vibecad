@@ -58,10 +58,26 @@ public:
     DrawComplexSection();
     ~DrawComplexSection() override = default;
 
+    struct PrecomputedComplexSectionState
+    {
+        TopoDS_Shape cutPieces;
+        TopoDS_Compound sectionFaces;
+        TopoDS_Shape preparedShape;
+        Base::Vector3d centroid;
+    };
+
 //NOLINTBEGIN
     App::PropertyLink CuttingToolWireObject;
     App::PropertyEnumeration ProjectionStrategy;//Offset or Aligned
+    Part::PropertyPartShape PrecomputedComplexPreparedShape;
 //NOLINTEND
+
+    PrecomputedComplexSectionState getPrecomputedComplexSection() const;
+    void setPrecomputedComplexSection(const TopoDS_Shape& cutPieces,
+                                      const TopoDS_Shape& sectionFaces,
+                                      const TopoDS_Shape& preparedShape,
+                                      const Base::Vector3d& centroid);
+    PyObject* getPyObject() override;
 
     TopoDS_Shape makeCuttingTool(double dMax) override;
     void makeSectionCut(const TopoDS_Shape& baseShape) override;
@@ -117,7 +133,7 @@ public:
 
     bool showSegment(gp_Dir segmentNormal) const;
     bool showSegment(const Base::Vector3d& segmentNormal) const;
-    void waitingForAlign(bool s) { m_waitingForAlign = s; }
+    void waitingForAlign(bool state) { m_waitingForAlign = state; }
     bool waitingForAlign() const { return m_waitingForAlign; }
 
     TopoDS_Shape getShapeForDetail() const override;
@@ -136,10 +152,15 @@ public:
 public Q_SLOTS:
     void onSectionCutFinished() override;
 
+protected:
+    void postHlrTasks() override;
+    void onDocumentRestored() override;
+
 private:
     bool timelineDependenciesActive(
         TimelineDependencyStack& stack) const override;
     std::string geometrySourceStateSignature() const override;
+    bool restorePrecomputedComplexSection();
 
     bool validateOffsetProfile(const TopoDS_Wire& profile,
                                Base::Vector3d direction,
@@ -147,6 +168,8 @@ private:
     TopoDS_Wire closeProfile(const TopoDS_Wire& profileWire,
                              double dMax) const;
     TopoDS_Shape profileToSolid(const TopoDS_Wire& closedProfileWire, double dMax) const;
+    TopoDS_Shape makeProfileFaceShape(const TopoDS_Wire& profileWire,
+                                      double dMax) const;
 
 
     Base::Vector3d getReferenceAxis() const;
@@ -191,10 +214,6 @@ private:
     TopoDS_Shape m_toolFaceShape;
     TopoDS_Shape m_alignResult;
     TopoDS_Shape m_preparedShape;//saved for detail views
-
-    QMetaObject::Connection connectAlignWatcher;
-    QFutureWatcher<void> m_alignWatcher;
-    QFuture<void> m_alignFuture;
     bool m_waitingForAlign;
 
     static const char* ProjectionStrategyEnums[];       //NOLINT

@@ -201,16 +201,28 @@ def test_failed_undo_postcondition_is_redone_without_revision_change() -> None:
     assert ledger.available(document, state)["available"] is True
 
 
-def test_new_run_and_end_run_discard_local_undo_ownership() -> None:
+def test_new_run_preserves_safe_document_undo_ownership_across_turns() -> None:
     state, document, ledger = _host()
     _record_create(state, document, ledger, "NativeBox")
 
+    ledger.end_run("run-a")
     ledger.begin_run("run-b")
-    assert ledger.available(document, state) == {"available": False}
+    assert ledger.available(document, state)["available"] is True
+    _ticket, execution = _undo(state, document, ledger)
+    assert execution.result["undone"]["capability"] == "model.feature"
+    assert document.getObject("NativeBox") is None
     ledger.end_run("run-b")
 
     with pytest.raises(NativeUndoError, match="No assistant run"):
         ledger.checkpoint(document)
+
+
+def test_closing_document_discards_undo_ownership() -> None:
+    state, document, ledger = _host()
+    _record_create(state, document, ledger, "NativeBox")
+
+    ledger.close_document(document.Uid)
+    assert ledger.available(document, state) == {"available": False}
 
 
 def test_record_refuses_a_commit_that_is_not_the_exact_top_history_entry() -> None:

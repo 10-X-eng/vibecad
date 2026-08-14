@@ -1062,6 +1062,8 @@ SET(Viewprovider_SRCS
     ViewProviderOriginGroupExtension.h
     ViewProviderAnnotation.h
     ViewProviderDocumentObject.h
+    TreeViewDetail.cpp
+    TreeViewDetail.h
     ViewProviderDocumentObjectGroup.h
     ViewProviderDragger.h
     ViewProviderExtern.h

@@ -146,6 +146,23 @@ def test_surface_or_document_validation_failure_prevents_commit() -> None:
     assert commits == []
 
 
+def test_cleanup_receives_prepared_value_even_when_commit_validation_fails() -> None:
+    manager = NativeBackgroundManager()
+    cleaned = []
+
+    submitted = manager.submit(
+        **_callbacks(
+            prepare=lambda _cancelled, _progress: {"artifact": "detached"},
+            validate=lambda: (_ for _ in ()).throw(RuntimeError("stale")),
+        ),
+        cleanup=cleaned.append,
+    )
+    failed = manager.wait(submitted.job_id, 2.0)
+
+    assert failed.phase == "failed"
+    assert cleaned == [{"artifact": "detached"}]
+
+
 def test_frozen_turn_change_during_preparation_prevents_commit(monkeypatch) -> None:
     import VibeCADNativeActionManifest as action_manifest_module
     from VibeCADNativeSurface import SURFACE_CHANGED

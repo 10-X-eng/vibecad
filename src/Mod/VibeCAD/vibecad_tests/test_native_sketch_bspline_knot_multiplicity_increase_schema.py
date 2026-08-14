@@ -64,7 +64,7 @@ def test_knot_multiplicity_increase_schema_is_closed_bounded_and_exact() -> None
         }
     )
     all_encoded = _encoded(definition.provider_schema(all_operations))
-    assert len(all_encoded) == 20_495
+    assert len(all_encoded) == 19_465
     assert len(all_encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 

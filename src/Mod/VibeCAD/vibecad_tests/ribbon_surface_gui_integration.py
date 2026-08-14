@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -14,15 +15,22 @@ import FreeCAD as App
 import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
 
+import VibeCADProvider as ProviderModule
 from VibeCADNativeActionManifest import (
     ALLOWED_ACTION_IDS_BY_SURFACE,
     KNOWN_ACTIONS_BY_SURFACE,
     classify_native_surface,
 )
+from VibeCADNativeContextManifest import provider_context_actions_for_surface
 from VibeCADNativeCapabilityRegistry import resolve_native_provider_surface
 from VibeCADNativeRegistry import build_native_capability_registry
+from VibeCADModelingSurface import modeling_surface_from_native_provider
 from VibeCADRibbonSurface import read_active_ribbon_surface
 from VibeCADRibbonSurface import BUILD_FEATURE_KEYS
+from VibeCADSession import _turn_start_tool_surface
+from vibecad_tests.native_provider_contracts import (
+    EXPECTED_NATIVE_PROVIDER_CONTRACTS,
+)
 
 
 _PERMANENT_SURFACES = {
@@ -272,8 +280,7 @@ def _assert_maximum_variant_inventory_is_live(surface) -> None:
     }
 
 
-def _model_provider_surface(surface):
-    registry = build_native_capability_registry()
+def _production_provider_surface(surface, registry):
     provider = resolve_native_provider_surface(
         surface,
         registry,
@@ -308,6 +315,174 @@ def _model_provider_surface(surface):
             for name in provider.incomplete_definition_names
         },
     }
+    assert tuple(schema["name"] for schema in provider.schemas) == provider.tool_names
+    serialized = json.dumps(
+        provider.schemas,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert "unknown" not in serialized.casefold()
+
+    workbench = (
+        "SketcherWorkbench"
+        if surface.surface_id in {"sketch.setup", "sketch.edit"}
+        else next(
+            name
+            for name, surface_id in _PERMANENT_SURFACES.items()
+            if surface_id == surface.surface_id
+        )
+    )
+    modeling_surface = modeling_surface_from_native_provider(
+        workbench,
+        provider,
+    )
+    schemas = list(provider.schemas)
+    frozen = _turn_start_tool_surface(
+        workbench,
+        schemas,
+        resolution=modeling_surface,
+    )
+    dynamic_tools, dynamic_names = ProviderModule._codex_dynamic_tool_surface(
+        {
+            "provider_tool_schemas": schemas,
+            "provider_tool_surface": frozen,
+            "modeling_surface": {
+                key: frozen[key]
+                for key in (
+                    "workbench",
+                    "engine",
+                    "domain",
+                    "surface_id",
+                    "available",
+                    "unavailable_reason",
+                )
+            },
+        }
+    )
+    assert dynamic_tools
+    assert tuple(dynamic_names.values()) == provider.tool_names
+    return provider
+
+
+def _canonical_json_bytes(value) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _schema_operations(schema) -> tuple[str, ...]:
+    parameters = schema["parameters"]
+    branches = parameters.get("oneOf")
+    if branches is not None:
+        assert len(branches) == 1
+        operation = branches[0]["properties"]["operation"]
+    else:
+        operation = parameters["properties"]["operation"]
+    if "const" in operation:
+        return (str(operation["const"]),)
+    values = tuple(str(value) for value in operation["enum"])
+    assert values and len(values) == len(set(values))
+    return values
+
+
+def _provider_contract(surface, provider) -> dict[str, object]:
+    schemas = tuple(provider.schemas)
+    schema_payload = _canonical_json_bytes(schemas)
+    routes = [
+        (plan.command_id, plan.capability_family, plan.operation_variant)
+        for plan in classify_native_surface(surface)
+        if plan.operation_variant is not None
+        and not plan.classification.parent_only
+        and not plan.classification.human_only
+    ]
+    routes.extend(
+        (plan.action_id, plan.capability_family, plan.operation_variant)
+        for plan in provider_context_actions_for_surface(surface.surface_id)
+    )
+    assert all(operation is not None for _action, _family, operation in routes)
+    assert len(routes) == len({action for action, _family, _operation in routes})
+    route_payload = _canonical_json_bytes(routes)
+    return {
+        "surface_id": surface.surface_id,
+        "tool_count": len(schemas),
+        "schema_bytes": len(schema_payload),
+        "schema_sha256": hashlib.sha256(schema_payload).hexdigest(),
+        "route_count": len(routes),
+        "routes_sha256": hashlib.sha256(route_payload).hexdigest(),
+        "tools": [
+            {
+                "name": schema["name"],
+                "operations": list(_schema_operations(schema)),
+                "schema_bytes": len(payload),
+                "schema_sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            for schema in schemas
+            for payload in (_canonical_json_bytes(schema),)
+        ],
+    }
+
+
+def _assert_default_provider_contracts(contracts) -> None:
+    snapshot_fields = (
+        "tool_count",
+        "schema_bytes",
+        "schema_sha256",
+        "route_count",
+        "routes_sha256",
+    )
+    observed = {
+        surface_id: {
+            name: contract[name]
+            for name in snapshot_fields
+        }
+        for surface_id, contract in contracts.items()
+    }
+    assert observed == EXPECTED_NATIVE_PROVIDER_CONTRACTS
+
+    tools = {
+        surface_id: {
+            tool["name"]: tool
+            for tool in contract["tools"]
+        }
+        for surface_id, contract in contracts.items()
+    }
+    surface_ids = set(contracts)
+    for common_name in ("state.read", "view.control", "document.undo"):
+        values = {
+            (
+                tools[surface_id][common_name]["schema_sha256"],
+                tuple(tools[surface_id][common_name]["operations"]),
+            )
+            for surface_id in surface_ids
+        }
+        assert len(values) == 1, (common_name, values)
+
+    save_surfaces = surface_ids - {"sketch.edit"}
+    assert "document.save" not in tools["sketch.edit"]
+    save_values = {
+        tools[surface_id]["document.save"]["schema_sha256"]
+        for surface_id in save_surfaces
+    }
+    assert len(save_values) == 1
+
+    base_inspect = {
+        tuple(tools[surface_id]["inspect.query"]["operations"])
+        for surface_id in surface_ids - {"drawing"}
+    }
+    assert len(base_inspect) == 1
+    base_operations = next(iter(base_inspect))
+    assert tuple(tools["drawing"]["inspect.query"]["operations"]) == (
+        *base_operations[:-1],
+        "drawing_projected_geometry",
+        base_operations[-1],
+    )
+
+
+def _assert_model_provider_scope(provider):
     assert {
         name for name in provider.tool_names if name.startswith("sketch.")
     } == {"sketch.validate"}
@@ -321,8 +496,6 @@ def _model_provider_surface(surface):
         "sketch.inspect",
         "sketch.setup",
     } & set(provider.tool_names)
-    assert tuple(schema["name"] for schema in provider.schemas) == provider.tool_names
-    return provider
 
 
 def _assert_model_composites(surface):
@@ -370,8 +543,11 @@ def _run() -> None:
         assert tabs.count() == len(_PERMANENT_SURFACES)
 
         counts = {}
+        provider_counts = {}
+        provider_contracts = {}
         manifests = {}
         unique_commands = set()
+        registry = build_native_capability_registry()
         preceding_revision = 0
         for index in range(tabs.count()):
             workbench = str(tabs.tabData(index))
@@ -387,6 +563,12 @@ def _run() -> None:
             assert surface.revision > preceding_revision
             preceding_revision = surface.revision
             counts[surface.surface_id] = len(surface.command_ids)
+            provider = _production_provider_surface(surface, registry)
+            provider_counts[surface.surface_id] = len(provider.tool_names)
+            provider_contracts[surface.surface_id] = _provider_contract(
+                surface,
+                provider,
+            )
             if not variant:
                 _assert_default_inventory_is_live(surface)
             elif variant == "maximum":
@@ -465,6 +647,12 @@ def _run() -> None:
         setup = _assert_surface(main_window, controller, "sketch.setup")
         assert setup.revision > preceding_revision
         counts[setup.surface_id] = len(setup.command_ids)
+        setup_provider = _production_provider_surface(setup, registry)
+        provider_counts[setup.surface_id] = len(setup_provider.tool_names)
+        provider_contracts[setup.surface_id] = _provider_contract(
+            setup,
+            setup_provider,
+        )
         if not variant:
             _assert_default_inventory_is_live(setup)
         manifests[setup.surface_id] = setup.to_manifest()
@@ -475,7 +663,11 @@ def _run() -> None:
         assert Gui.activeWorkbench().name() == "PartDesignWorkbench"
         model_before_edit = _assert_surface(main_window, controller, "model")
         model_composites_before_edit = _assert_model_composites(model_before_edit)
-        model_provider_before_edit = _model_provider_surface(model_before_edit)
+        model_provider_before_edit = _production_provider_surface(
+            model_before_edit,
+            registry,
+        )
+        _assert_model_provider_scope(model_provider_before_edit)
 
         document = App.newDocument("VibeCADNativeRibbonSurface")
         sketch = document.addObject("Sketcher::SketchObject", "SurfaceContractSketch")
@@ -495,16 +687,13 @@ def _run() -> None:
             "Std_ViewIsometric",
             "VibeCAD_ToggleGrid",
         }
-        edit_provider = resolve_native_provider_surface(
-            edit,
-            build_native_capability_registry(),
-        )
-        assert edit_provider.available is True
-        assert edit_provider.tool_names
-        assert tuple(
-            schema["name"] for schema in edit_provider.schemas
-        ) == edit_provider.tool_names
+        edit_provider = _production_provider_surface(edit, registry)
         counts[edit.surface_id] = len(edit.command_ids)
+        provider_counts[edit.surface_id] = len(edit_provider.tool_names)
+        provider_contracts[edit.surface_id] = _provider_contract(
+            edit,
+            edit_provider,
+        )
         if not variant:
             _assert_default_inventory_is_live(edit)
         manifests[edit.surface_id] = edit.to_manifest()
@@ -515,9 +704,30 @@ def _run() -> None:
         returned = _assert_surface(main_window, controller, "model")
         assert returned.revision > edit.revision
         assert _assert_model_composites(returned) == model_composites_before_edit
-        returned_provider = _model_provider_surface(returned)
+        returned_provider = _production_provider_surface(returned, registry)
+        _assert_model_provider_scope(returned_provider)
         assert returned_provider.tool_names == model_provider_before_edit.tool_names
         assert returned_provider.schemas == model_provider_before_edit.schemas
+
+        provider_contract_output = str(
+            os.environ.get("VIBECAD_PROVIDER_CONTRACT_OUTPUT") or ""
+        ).strip()
+        if provider_contract_output:
+            Path(provider_contract_output).write_text(
+                json.dumps(
+                    {
+                        "schema": "vibecad-native-provider-contract-v1",
+                        "surfaces": provider_contracts,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+        if not variant:
+            _assert_default_provider_contracts(provider_contracts)
 
         manifest_output = str(
             os.environ.get("VIBECAD_RIBBON_MANIFEST_OUTPUT") or ""
@@ -530,7 +740,8 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_RIBBON_SURFACE_GUI_OK "
-            f"counts={counts} unique={len(unique_commands)}",
+            f"counts={counts} provider_tools={provider_counts} "
+            f"unique={len(unique_commands)}",
             flush=True,
         )
         exit_code = 0

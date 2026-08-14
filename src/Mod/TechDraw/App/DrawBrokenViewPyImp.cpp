@@ -25,6 +25,9 @@
 #include <Base/Vector3D.h>
 #include <Base/VectorPy.h>
 
+#include <App/DocumentObject.h>
+#include <App/DocumentObjectPy.h>
+
 #include "DrawBrokenView.h"
 #include "DrawViewPart.h"
 // inclusion of the generated files
@@ -78,6 +81,51 @@ PyObject* DrawBrokenViewPy::getCompressedCenter(PyObject *args)
     DrawBrokenView* dvp = getDrawBrokenViewPtr();
     Base::Vector3d pointOut = dvp->getCompressedCentroid();
     return new Base::VectorPy(new Base::Vector3d(pointOut));
+}
+
+PyObject* DrawBrokenViewPy::getBreakDefinition(PyObject* args)
+{
+    PyObject* object = nullptr;
+    if (!PyArg_ParseTuple(args, "O!", &App::DocumentObjectPy::Type, &object)) {
+        return nullptr;
+    }
+
+    DrawBrokenView* view = getDrawBrokenViewPtr();
+    auto* breakObject =
+        static_cast<App::DocumentObjectPy*>(object)->getDocumentObjectPtr();
+    const bool sameDocument = breakObject
+        && breakObject->getDocument() == view->getDocument();
+    const bool accepted = sameDocument
+        && DrawBrokenView::isBreakObject(*breakObject);
+
+    Py::Dict result;
+    result.setItem("valid", Py::Boolean(accepted));
+    if (!accepted) {
+        return Py::new_reference_to(result);
+    }
+
+    const auto points = view->breakPointsFromObj(*breakObject);
+    const Base::Vector3d displacement = points.second - points.first;
+    if (displacement.Length() <= 1.0e-9) {
+        result.setItem("valid", Py::Boolean(false));
+        return Py::new_reference_to(result);
+    }
+    Base::Vector3d direction = displacement;
+    direction.Normalize();
+    result.setItem(
+        "first",
+        Py::asObject(new Base::VectorPy(new Base::Vector3d(points.first)))
+    );
+    result.setItem(
+        "second",
+        Py::asObject(new Base::VectorPy(new Base::Vector3d(points.second)))
+    );
+    result.setItem(
+        "direction",
+        Py::asObject(new Base::VectorPy(new Base::Vector3d(direction)))
+    );
+    result.setItem("removed_length_mm", Py::Float(displacement.Length()));
+    return Py::new_reference_to(result);
 }
 
 

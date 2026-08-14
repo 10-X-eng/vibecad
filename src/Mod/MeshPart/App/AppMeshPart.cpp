@@ -54,6 +54,7 @@ PyMOD_INIT_FUNC(MeshPart)
     MeshPart::ShapeFromMesh::init();
     MeshPart::SectionByPlane::init();
     MeshPart::CrossSections::init();
+    MeshPart::Boundary::init();
     MeshPart::CurveOnMesh::init();
     Base::Console().log("Loading MeshPart module… done\n");
     PyMOD_Return(mod);

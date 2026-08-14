@@ -28,7 +28,6 @@ import Path
 import Path.Base.Util as PathUtil
 import math
 from PySide.QtCore import QT_TRANSLATE_NOOP
-from PySide import QtCore
 
 # lazily loaded modules
 from lazy_loader.lazy_loader import LazyLoader
@@ -384,6 +383,45 @@ def _getDocument(job, base):
     if document is None:
         raise RuntimeError("CAM stock requires a document")
     return document
+
+
+def existingSolidCandidates(owner):
+    """Return the exact solids accepted by the existing-stock editor."""
+
+    import Path.Main.Job as PathJob
+    import PathScripts.PathUtils as PathUtils
+
+    job = owner if hasattr(owner, "Model") else PathUtils.findParentJob(owner)
+    document = getattr(owner, "Document", None)
+    if job is None or document is None or getattr(job, "Document", None) is not document:
+        return ()
+
+    solids = [obj for obj in document.Objects if PathUtil.isSolid(obj)]
+    for base in tuple(job.Model.Group or ()):
+        if base in solids and PathJob.isResourceClone(job, base, "Model"):
+            solids.remove(base)
+    stock = getattr(job, "Stock", None)
+    if stock in solids:
+        solids.remove(stock)
+
+    result = []
+    for model in solids:
+        in_list = tuple(getattr(model, "InList", ()) or ())
+        view = getattr(model, "ViewObject", None)
+        if (
+            any("Tools" in str(obj.Name) for obj in model.InListRecursive)
+            or hasattr(model, "PathResource")
+            or (in_list and hasattr(in_list[0], "ToolBitID"))
+            or hasattr(model, "ToolBitID")
+            or model.TypeId == "App::DocumentObjectGroup"
+            or hasattr(model, "StockType")
+            or view is None
+            or not view.ShowInTree
+            or model.isDerivedFrom("PartDesign::Feature")
+        ):
+            continue
+        result.append(model)
+    return tuple(sorted(result, key=lambda candidate: candidate.Label))
 
 
 def CreateFromBase(job, neg=None, pos=None, placement=None):

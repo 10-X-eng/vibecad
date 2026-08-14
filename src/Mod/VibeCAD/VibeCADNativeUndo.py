@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Session-only undo ownership for operations created in one assistant run."""
+"""Host-owned undo provenance for verified assistant operations."""
 
 from __future__ import annotations
 
@@ -117,7 +117,12 @@ def _undo_postcondition(document: Any, entry: NativeAssistantUndoEntry) -> bool:
 
 
 class NativeAssistantUndoLedger:
-    """Track only the exact history entries produced by the current assistant run."""
+    """Track exact assistant history while the owning document remains open.
+
+    A provider run is only a transport lifetime. Ending a turn or branching a
+    conversation must not erase otherwise-safe undo provenance from the CAD
+    document's still-current history stack.
+    """
 
     def __init__(self) -> None:
         self._run_id: str | None = None
@@ -125,15 +130,16 @@ class NativeAssistantUndoLedger:
 
     def begin_run(self, run_id: str) -> None:
         clean = _required_text(run_id, "run_id")
-        if clean != self._run_id:
-            self._run_id = clean
-            self._documents.clear()
+        self._run_id = clean
 
     def end_run(self, run_id: str) -> None:
         clean = _required_text(run_id, "run_id")
         if clean == self._run_id:
             self._run_id = None
-            self._documents.clear()
+
+    def close_document(self, document_uid: str) -> None:
+        uid = _required_text(document_uid, "document UID")
+        self._documents.pop(uid, None)
 
     def checkpoint(self, document: Any) -> NativeUndoCheckpoint:
         if self._run_id is None:
@@ -270,7 +276,7 @@ class NativeAssistantUndoLedger:
             state.cancel_mutation(ticket)
             raise NativeUndoError(
                 NATIVE_UNDO_UNAVAILABLE,
-                "There is no operation from this assistant run to undo.",
+                "There is no safe assistant-owned operation to undo.",
             )
         guarded = entries[-1]
         count, names = _history(document)

@@ -394,9 +394,17 @@ FemPostDataAlongLineFilter::FemPostDataAlongLineFilter()
         App::Prop_None,
         "Field component used for plotting"
     );
+    ADD_PROPERTY_TYPE(
+        Unit,
+        (""),
+        "DataAlongLine",
+        App::Prop_None,
+        "Engineering unit of the sampled field"
+    );
 
     PlotData.setStatus(App::Property::ReadOnly, true);
     PlotDataComponent.setStatus(App::Property::ReadOnly, true);
+    Unit.setStatus(App::Property::ReadOnly, true);
     XAxisData.setStatus(App::Property::Output, true);
     YAxisData.setStatus(App::Property::Output, true);
 
@@ -434,8 +442,9 @@ FemPostDataAlongLineFilter::~FemPostDataAlongLineFilter() = default;
 
 DocumentObjectExecReturn* FemPostDataAlongLineFilter::execute()
 {
-    // recalculate the filter
-    return Fem::FemPostFilter::execute();
+    auto* result = Fem::FemPostFilter::execute();
+    GetAxisData();
+    return result;
 }
 
 void FemPostDataAlongLineFilter::handleChangedPropertyType(
@@ -584,6 +593,7 @@ FemPostDataAtPointFilter::FemPostDataAtPointFilter()
     const Base::Vector3d& vec = Center.getValue();
     m_point->SetCenter(vec.x, vec.y, vec.z);
     m_point->SetRadius(0);
+    m_point->SetNumberOfPoints(1);
 
     auto passthrough = vtkSmartPointer<vtkPassThrough>::New();
     m_probe = vtkSmartPointer<vtkProbeFilter>::New();
@@ -606,8 +616,9 @@ FemPostDataAtPointFilter::~FemPostDataAtPointFilter() = default;
 
 DocumentObjectExecReturn* FemPostDataAtPointFilter::execute()
 {
-    // recalculate the filter
-    return Fem::FemPostFilter::execute();
+    auto* result = Fem::FemPostFilter::execute();
+    GetPointData();
+    return result;
 }
 
 void FemPostDataAtPointFilter::onChanged(const Property* prop)
@@ -1435,7 +1446,20 @@ FemPostCalculatorFilter::FemPostCalculatorFilter()
         App::Prop_None,
         "Name of the calculated field"
     );
-    ADD_PROPERTY_TYPE(Function, (""), "Calculator", App::Prop_None, "Expression of the unction to evaluate");
+    ADD_PROPERTY_TYPE(
+        Function,
+        (""),
+        "Calculator",
+        App::Prop_None,
+        "Expression of the function to evaluate"
+    );
+    ADD_PROPERTY_TYPE(
+        ResultUnit,
+        (""),
+        "Calculator",
+        App::Prop_None,
+        "Engineering unit of the calculated field"
+    );
     ADD_PROPERTY_TYPE(
         ReplacementValue,
         (0.0f),
@@ -1485,7 +1509,8 @@ void FemPostCalculatorFilter::onChanged(const Property* prop)
 
 short int FemPostCalculatorFilter::mustExecute() const
 {
-    if (Function.isTouched() || FieldName.isTouched()) {
+    if (Function.isTouched() || FieldName.isTouched() || ReplaceInvalid.isTouched()
+        || ReplacementValue.isTouched()) {
         return 1;
     }
     else {

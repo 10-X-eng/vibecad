@@ -232,13 +232,32 @@ class ObjectCustom(PathOp.ObjectOp):
         self.commandlist.append(Path.Command("(End Custom)"))
 
 
+class ObjectEmbeddedPath(ObjectCustom):
+    """Custom operation containing a complete executable command stream."""
+
+    def opOwnsCoolantCommands(self, obj):
+        return True
+
+
 def SetupProperties():
     setup = []
     return setup
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns a Custom operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectCustom(obj, name, parentJob)
+    obj.Proxy = ObjectCustom(
+        obj,
+        name,
+        parentJob,
+        toolController=toolController,
+    )
+    return obj
+
+
+def CreateEmbeddedPath(name, obj=None, parentJob=None):
+    """Create a Custom operation whose embedded path owns machine-state commands."""
+    obj = PathOp.createOperationObject(name, obj, parentJob)
+    obj.Proxy = ObjectEmbeddedPath(obj, name, parentJob)
     return obj

@@ -2,7 +2,6 @@
 
 import FreeCAD
 import FreeCADGui
-import Path
 import Path.Base.Util as PathUtil
 import Path.Dressup.Array as DressupArray
 import Path.Dressup.Utils as PathDressup
@@ -131,33 +130,44 @@ class CommandPathDressupArray:
         )
 
 
+def CreateInTransaction(base, name="DressupPathArray", hide_base=True):
+    """Create one Array dress-up inside its caller-owned transaction."""
+
+    document = getattr(base, "Document", None)
+    if document is None:
+        raise RuntimeError("A CAM array dress-up requires one live base operation")
+    job = _validated_base(base, document)
+    if job is None:
+        raise RuntimeError("The selected CAM operation cannot be arrayed")
+
+    base_was_visible = bool(base.ViewObject and base.ViewObject.Visibility)
+    obj = DressupArray.Create(base, name)
+    if obj is None:
+        raise RuntimeError("Could not create the CAM array dress-up")
+    obj.ViewObject.Proxy = DressupArrayViewProvider(obj.ViewObject)
+    PathUtil.markTimelineReplacedInputs(
+        obj,
+        [base] if base_was_visible else [],
+    )
+    if hide_base:
+        obj.Base.ViewObject.Visibility = False
+    return obj
+
+
 def Create(base, name="DressupPathArray"):
     document = FreeCAD.ActiveDocument
     if document is None or not can_start_document_command(document):
         raise RuntimeError("A CAM array dress-up requires an idle active document")
+    if getattr(base, "Document", None) is not document:
+        raise RuntimeError("The CAM array dress-up base is not in the active document")
 
     job = _validated_base(base, document)
     if job is None:
         raise RuntimeError("The selected CAM operation cannot be arrayed")
 
-    transaction = _OwnedDocumentTransaction(
-        document,
-        "Create CAM array dress-up",
-    )
+    transaction = _OwnedDocumentTransaction(document, "Create CAM array dress-up")
     try:
-        base_was_visible = bool(
-            base.ViewObject
-            and base.ViewObject.Visibility
-        )
-        obj = DressupArray.Create(base, name)
-        if obj is None:
-            raise RuntimeError("Could not create the CAM array dress-up")
-        obj.ViewObject.Proxy = DressupArrayViewProvider(obj.ViewObject)
-        PathUtil.markTimelineReplacedInputs(
-            obj,
-            [base] if base_was_visible else [],
-        )
-        obj.Base.ViewObject.Visibility = False
+        obj = CreateInTransaction(base, name)
         document.recompute()
         _validate_result(document, obj, base, job)
     except Exception:

@@ -831,16 +831,27 @@ class CodexProvider(BaseProvider):
                     ),
                 }
             ]
-            if (
-                tool_name == "core.capture_view_screenshot"
-                and result.get("captured")
-                and result.get("new_observation", True)
-            ):
-                content_items.extend(_codex_tool_image_content_items(updated_context))
             inspected_image_context = _tool_result_image_context(result)
             if inspected_image_context is not None:
                 content_items.extend(
                     _codex_tool_image_content_items(inspected_image_context)
+                )
+            elif (
+                tool_name == "core.capture_view_screenshot"
+                and result.get("captured")
+                and result.get("new_observation", True)
+            ):
+                # Older capture implementations may not return the private exact
+                # attachment. Fall back to the newly refreshed context only in
+                # that case so one capture never reaches the model twice.
+                content_items.extend(_codex_tool_image_content_items(updated_context))
+            if any(
+                item.get("type") == "inputText"
+                and "data:image/" in str(item.get("text") or "")
+                for item in content_items
+            ):
+                raise CodexAppServerError(
+                    "VibeCAD refused to place image bytes in dynamic-tool text."
                 )
             _emit_provider_progress(
                 progress_callback,

@@ -183,17 +183,25 @@ void DrawSVGTemplate::extractTemplateAttributes(QDomDocument& templateDocument)
     quantity = Base::Quantity::parse(str.toStdString());
     quantity.setUnit(Base::Unit::Length);
 
-    Width.setValue(quantity.getValue());
+    const double width = quantity.getValue();
+    if (Width.getValue() != width) {
+        Width.setValue(width);
+    }
 
     str = docElement.attribute(QStringLiteral("height"));
     quantity = Base::Quantity::parse(str.toStdString());
     quantity.setUnit(Base::Unit::Length);
 
-    Height.setValue(quantity.getValue());
+    const double height = quantity.getValue();
+    if (Height.getValue() != height) {
+        Height.setValue(height);
+    }
 
-    bool isLandscape = getWidth() / getHeight() >= 1.;
-
-    Orientation.setValue(isLandscape ? 1 : 0);
+    const bool isLandscape = width / height >= 1.;
+    const int orientation = isLandscape ? 1 : 0;
+    if (Orientation.getValue() != orientation) {
+        Orientation.setValue(orientation);
+    }
 }
 
 // load the included template file as a QDomDocument

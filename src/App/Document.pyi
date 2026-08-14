@@ -297,6 +297,7 @@ class Document(PropertyContainer):
         object: Sequence[DocumentObject],
         recursive: bool = False,
         return_all: bool = False,
+        adopt_timeline: bool = True,
     ) -> tuple[DocumentObject, ...]: ...
 
     @overload
@@ -305,6 +306,7 @@ class Document(PropertyContainer):
         object: DocumentObject,
         recursive: bool = False,
         return_all: Literal[False] = False,
+        adopt_timeline: bool = True,
     ) -> DocumentObject: ...
 
     @overload
@@ -313,6 +315,7 @@ class Document(PropertyContainer):
         object: DocumentObject,
         recursive: bool = False,
         return_all: Literal[True] = True,
+        adopt_timeline: bool = True,
     ) -> DocumentObject | tuple[DocumentObject, ...]: ...
 
     def copyObject(
@@ -320,6 +323,7 @@ class Document(PropertyContainer):
         object: DocumentObject | Sequence[DocumentObject],
         recursive: bool = False,
         return_all: bool = False,
+        adopt_timeline: bool = True,
     ) -> DocumentObject | tuple[DocumentObject, ...]:
         """
         Copy an object or objects from another document to this document.
@@ -328,7 +332,9 @@ class Document(PropertyContainer):
             object: can either be a single object or sequence of objects
             recursive: if True, also recursively copies internal objects
             return_all: if True, returns all copied objects, or else return only the copied
-                        object corresponding to the input objects.
+                object corresponding to the input objects.
+            adopt_timeline: if False, leaves copied History objects provisional so a
+                caller-owned transaction can apply an exact custom adoption contract
         """
         ...
 

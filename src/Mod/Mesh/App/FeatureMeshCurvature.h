@@ -26,6 +26,7 @@
 
 #include <App/DocumentObject.h>
 #include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
 
 #include "MeshProperties.h"
 
@@ -46,6 +47,7 @@ public:
 
     App::PropertyLink Source;
     PropertyCurvatureList CurvInfo;
+    App::PropertyInteger SampleCount;
 
     /** @name methods override Feature */
     //@{

@@ -84,6 +84,13 @@ public:
     DrawViewSection();
     ~DrawViewSection() override;
 
+    struct PrecomputedSectionState
+    {
+        TopoDS_Shape cutPieces;
+        TopoDS_Compound sectionFaces;
+        Base::Vector3d centroid;
+    };
+
 //NOLINTBEGIN
     App::PropertyLink BaseView;
     App::PropertyVector SectionNormal;
@@ -107,7 +114,19 @@ public:
     App::PropertyBool UsePreviousCut;   // new v022
 
     App::PropertyFloatConstraint SectionLineStretch;  // new v022
+
+    Part::PropertyPartShape PrecomputedSectionCutPieces;
+    Part::PropertyPartShape PrecomputedSectionFaces;
+    App::PropertyVector PrecomputedSectionCentroid;
+    App::PropertyString PrecomputedSectionSourceState;
 //NOLINTEND
+
+    PrecomputedSectionState getPrecomputedSection() const;
+    void setPrecomputedSection(const TopoDS_Shape& cutPieces,
+                               const TopoDS_Shape& sectionFaces,
+                               const Base::Vector3d& centroid);
+    void requestPrecomputedSectionPaint();
+    PyObject* getPyObject() override;
 
     bool isReallyInBox(const Base::Vector3d& vec, const Base::BoundBox3d& bb) const;
     bool isReallyInBox(const gp_Pnt& point, const Bnd_Box& bb) const;
@@ -190,10 +209,16 @@ public Q_SLOTS:
     virtual void onSectionCutFinished();
 
 protected:
+    PrecomputedSectionState getPrecomputedSectionState() const;
+    void setPrecomputedSectionState(const TopoDS_Shape& cutPieces,
+                                    const TopoDS_Shape& sectionFaces,
+                                    const Base::Vector3d& centroid);
     bool timelineDependenciesActive(
         TimelineDependencyStack& stack) const override;
     std::string geometrySourceStateSignature() const override;
     bool sectionIntermediateStateIsCurrent() const;
+    bool deferPrecomputedProjectionPaint() const override { return true; }
+    bool restorePrecomputedSection();
 
     TopoDS_Compound m_sectionTopoDSFaces;//needed for hatching
     std::vector<LineSet> m_lineSets;

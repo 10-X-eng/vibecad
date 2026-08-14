@@ -78,6 +78,7 @@ KNOWN_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "FEM_MeshTransfiniteCurve",
         "FEM_MeshTransfiniteSurface",
         "FEM_MeshTransfiniteVolume",
+        "FEM_CreateElementsSet",
         "FEM_FEMMesh2Mesh",
         "FEM_CompSolvers",
         "FEM_SolverCalculiX",
@@ -300,6 +301,7 @@ KNOWN_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "Std_ViewIsometric",
         "VibeCAD_ToggleGrid",
         "CAM_Job",
+        "CAM_PropertyBag",
         "CAM_Sanity",
         "CAM_PostTools",
         "CAM_Post",
@@ -311,6 +313,10 @@ KNOWN_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "CAM_SelectLoop",
         "CAM_OpActiveToggle",
         "CAM_ToolBitDock",
+        "CAM_Comment",
+        "CAM_Stop",
+        "CAM_Custom",
+        "CAM_Probe",
         "CAM_Profile",
         "CAM_Pocket_Shape",
         "CAM_MillFacing",
@@ -781,7 +787,6 @@ DEFAULT_UNIQUE_ACTION_COUNT = len(
 _HUMAN_ONLY_COMMAND_IDS = frozenset(
     {
         "Assembly_ActivateAssembly",
-        "CAM_ToolBitDock",
         "FEM_Examples",
         "Sketcher_EditSketch",
         "Sketcher_CancelSketch",
@@ -804,6 +809,9 @@ _VIEW_COMMAND_IDS = frozenset(
         "FEM_ClippingPlaneAdd",
         "FEM_ClippingPlaneRemoveAll",
         "FEM_ResultShow",
+        "FEM_PostApplyChanges",
+        "CAM_Camotics",
+        "CAM_SimulatorGL",
         "TechDraw_ToggleFrame",
         "TechDraw_ShowAll",
     }
@@ -829,10 +837,10 @@ _READ_COMMAND_IDS = frozenset(
         "CAM_SelectLoop",
         "Mesh_Evaluation",
         "Mesh_EvaluateFacet",
-        "Mesh_VertexCurvature",
         "Mesh_CurvatureInfo",
         "Mesh_EvaluateSolid",
         "Mesh_BoundingBox",
+        "FEM_PostFilterLinearizedStresses",
         "TechDraw_ExtensionSelectLineAttributes",
     }
 )
@@ -854,16 +862,40 @@ _EXPORT_COMMAND_IDS = frozenset(
 
 _BACKGROUND_COMMAND_IDS = frozenset(
     {
+        "Spreadsheet_Import",
+        "Spreadsheet_Export",
+        "Mesh_Import",
+        "Mesh_Export",
         "Mesh_RemeshGmsh",
+        "Mesh_Evaluation",
+        "Points_Import",
+        "Points_Export",
+        "Points_Convert",
+        "Points_Structure",
+        "Points_Merge",
+        "Points_PolyCut",
         "Reen_PoissonReconstruction",
-        "FEM_MeshNetgenFromShape",
-        "FEM_MeshGmshFromShape",
+        "Reen_ViewTriangulation",
+        "Reen_ApproxPlane",
+        "Reen_ApproxCylinder",
+        "Reen_ApproxSphere",
+        "Reen_ApproxPolynomial",
+        "Reen_ApproxSurface",
+        "Reen_ApproxCurve",
         "FEM_SolverRun",
+        "CAM_Camotics",
         "CAM_SimulatorGL",
         "CAM_Simulator",
+        "CAM_DressupZCorrect",
         "CAM_Post",
         "CAM_PostSelected",
         "TechDraw_RedrawPage",
+        "TechDraw_View",
+        "TechDraw_BrokenView",
+        "TechDraw_SectionView",
+        "TechDraw_ComplexSection",
+        "TechDraw_DetailView",
+        "TechDraw_DraftView",
         "TechDraw_PrintAll",
         "TechDraw_ExportPageSVG",
         "TechDraw_ExportPageDXF",
@@ -881,8 +913,7 @@ _SESSION_COMMAND_IDS = frozenset(
 _INTERACTIVE_COMMAND_IDS = (
     frozenset(
         {
-            "FEM_MaterialEditor",
-            "CAM_ToolBitDock",
+            "CAM_Camotics",
             "CAM_SimulatorGL",
             "CAM_Simulator",
         }
@@ -924,18 +955,154 @@ _CAPABILITY_OVERRIDES = {
     "Part_JoinCutout": "model.join",
     "PartDesign_Split": "model.boolean",
     "PartDesign_Separate": "model.structure",
+    "FEM_Analysis": "analyze.model",
+    "FEM_MaterialSolid": "analyze.model",
+    "FEM_MaterialFluid": "analyze.model",
+    "FEM_MaterialMechanicalNonlinear": "analyze.model",
+    "FEM_MaterialReinforced": "analyze.model",
+    "FEM_MaterialEditor": "analyze.model",
+    "FEM_ElementGeometry1D": "analyze.geometry",
+    "FEM_ElementRotation1D": "analyze.geometry",
+    "FEM_ElementGeometry2D": "analyze.geometry",
+    "FEM_ElementFluid1D": "analyze.geometry",
+    "FEM_ConstraintElectromagnetic": "analyze.electromagnetic",
+    "FEM_ConstraintCurrentDensity": "analyze.electromagnetic",
+    "FEM_ConstraintMagnetization": "analyze.electromagnetic",
+    "FEM_ConstraintElectricChargeDensity": "analyze.electromagnetic",
+    "FEM_ConstraintInitialFlowVelocity": "analyze.fluid",
+    "FEM_ConstraintInitialPressure": "analyze.fluid",
+    "FEM_ConstraintFlowVelocity": "analyze.fluid",
+    "FEM_ConstraintPlaneRotation": "analyze.geometrical",
+    "FEM_ConstraintSectionPrint": "analyze.geometrical",
+    "FEM_ConstraintTransform": "analyze.geometrical",
+    "FEM_ConstraintFixed": "analyze.support",
+    "FEM_ConstraintRigidBody": "analyze.support",
+    "FEM_ConstraintDisplacement": "analyze.support",
+    "FEM_ConstraintSpring": "analyze.support",
+    "FEM_ConstraintContact": "analyze.connection",
+    "FEM_ConstraintTie": "analyze.connection",
+    "FEM_ConstraintForce": "analyze.load",
+    "FEM_ConstraintPressure": "analyze.load",
+    "FEM_ConstraintCentrif": "analyze.load",
+    "FEM_ConstraintSelfWeight": "analyze.load",
+    "FEM_ConstraintInitialTemperature": "analyze.thermal",
+    "FEM_ConstraintHeatflux": "analyze.thermal",
+    "FEM_ConstraintTemperature": "analyze.thermal",
+    "FEM_ConstraintBodyHeatSource": "analyze.thermal",
+    "FEM_MeshNetgenFromShape": "analyze.mesh",
+    "FEM_MeshGmshFromShape": "analyze.mesh",
+    "FEM_MeshRegion": "analyze.mesh_refinement",
+    "FEM_MeshGroup": "analyze.mesh_refinement",
+    "FEM_MeshDistance": "analyze.mesh_refinement",
+    "FEM_MeshBoundaryLayer": "analyze.mesh_refinement",
+    "FEM_MeshShape": "analyze.mesh_refinement",
+    "FEM_MeshManipulate": "analyze.mesh_field",
+    "FEM_MeshAdvanced": "analyze.mesh_field",
+    "FEM_CreateElementsSet": "analyze.mesh_output",
+    "FEM_FEMMesh2Mesh": "analyze.mesh_output",
+    "FEM_MeshTransfiniteCurve": "analyze.structured_mesh",
+    "FEM_MeshTransfiniteSurface": "analyze.structured_mesh",
+    "FEM_MeshTransfiniteVolume": "analyze.structured_mesh",
+    "FEM_SolverCalculiX": "analyze.solver",
+    "FEM_SolverElmer": "analyze.solver",
+    "FEM_SolverMystran": "analyze.solver",
+    "FEM_SolverZ88": "analyze.solver",
+    "FEM_SolverControl": "analyze.solver_control",
+    "FEM_SolverRun": "analyze.solver_execution",
+    "FEM_EquationElasticity": "analyze.equation",
+    "FEM_EquationDeformation": "analyze.equation",
+    "FEM_EquationElectrostatic": "analyze.equation",
+    "FEM_EquationElectricforce": "analyze.equation",
+    "FEM_EquationMagnetodynamic": "analyze.equation",
+    "FEM_EquationMagnetodynamic2D": "analyze.equation",
+    "FEM_EquationStaticCurrent": "analyze.equation",
+    "FEM_EquationFlow": "analyze.equation",
+    "FEM_EquationFlux": "analyze.equation",
+    "FEM_EquationHeat": "analyze.equation",
     "FEM_ResultShow": "analyze.presentation",
+    "FEM_PostApplyChanges": "analyze.presentation",
+    "FEM_ClippingPlaneAdd": "analyze.presentation",
+    "FEM_ClippingPlaneRemoveAll": "analyze.presentation",
+    "FEM_PostPipelineFromResult": "analyze.post",
+    "FEM_PostBranchFilter": "analyze.post",
+    "FEM_PostFilterWarp": "analyze.post",
+    "FEM_PostFilterClipScalar": "analyze.post",
+    "FEM_PostFilterCutFunction": "analyze.post",
+    "FEM_PostFilterClipRegion": "analyze.post",
+    "FEM_PostFilterContours": "analyze.post",
+    "FEM_PostFilterGlyph": "analyze.post",
+    "FEM_PostFilterDataAlongLine": "analyze.post",
+    "FEM_PostFilterLinearizedStresses": "analyze.inspect",
+    "FEM_PostFilterDataAtPoint": "analyze.post",
+    "FEM_PostFilterCalculator": "analyze.post",
+    "FEM_PostCreateFunctions": "analyze.post_function",
+    "FEM_PostCreateFunctionPlane": "analyze.post_function",
+    "FEM_PostCreateFunctionSphere": "analyze.post_function",
+    "FEM_PostCreateFunctionCylinder": "analyze.post_function",
+    "FEM_PostCreateFunctionBox": "analyze.post_function",
+    "FEM_PostVisualizationLineplot": "analyze.visualization",
+    "FEM_PostVisualizationHistogram": "analyze.visualization",
+    "FEM_PostVisualizationTable": "analyze.visualization",
     "CAM_Sanity": "manufacture.inspect",
     "CAM_Inspect": "manufacture.inspect",
     "CAM_SelectLoop": "manufacture.inspect",
+    "CAM_Area": "manufacture.area",
+    "CAM_Area_Workplane": "manufacture.area",
+    "CAM_Job": "manufacture.job",
+    "CAM_PropertyBag": "manufacture.property_bag",
+    "CAM_ToolBitDock": "manufacture.tool",
+    "CAM_Comment": "manufacture.program",
+    "CAM_Stop": "manufacture.program",
+    "CAM_Custom": "manufacture.program",
+    "CAM_Probe": "manufacture.probe",
     "CAM_OpActiveToggle": "manufacture.modify",
+    "CAM_OperationCopy": "manufacture.modify",
+    "CAM_Array": "manufacture.operation",
+    "CAM_SimpleCopy": "manufacture.operation",
+    "CAM_DressupArray": "manufacture.modify",
+    "CAM_DressupAxisMap": "manufacture.modify",
+    "CAM_DressupPathBoundary": "manufacture.modify",
+    "CAM_DressupDogbone": "manufacture.modify",
+    "CAM_DressupDragKnife": "manufacture.modify",
+    "CAM_DressupLeadInOut": "manufacture.modify",
+    "CAM_DressupMirror": "manufacture.modify",
+    "CAM_DressupRampEntry": "manufacture.modify",
+    "CAM_DressupTag": "manufacture.modify",
+    "CAM_DressupZCorrect": "manufacture.modify",
+    "CAM_Camotics": "manufacture.camotics",
     "CAM_SimulatorGL": "manufacture.simulation",
-    "CAM_Simulator": "manufacture.simulation",
+    "CAM_Simulator": "manufacture.simulation_result",
     "CAM_Post": "manufacture.post",
     "CAM_PostSelected": "manufacture.post",
     "Mesh_Export": "mesh.export",
     "Points_Export": "mesh.export",
+    "Mesh_HarmonizeNormals": "mesh.modify",
+    "Mesh_FlipNormals": "mesh.modify",
+    "Mesh_FillupHoles": "mesh.modify",
+    "Mesh_FillInteractiveHole": "mesh.modify",
+    "Mesh_AddFacet": "mesh.modify",
+    "Mesh_RemoveComponents": "mesh.modify",
+    "Mesh_Smoothing": "mesh.modify",
+    "Mesh_RemeshGmsh": "mesh.modify",
+    "Mesh_Decimating": "mesh.modify",
+    "Mesh_Scale": "mesh.modify",
+    "Mesh_VertexCurvature": "mesh.curvature",
     "Spreadsheet_Export": "parameters.export",
+    "Spreadsheet_CreateSheet": "parameters.sheet",
+    "Spreadsheet_Import": "parameters.sheet",
+    "Spreadsheet_MergeCells": "parameters.cell",
+    "Spreadsheet_SplitCell": "parameters.cell",
+    "Spreadsheet_CellProperties": "parameters.cell",
+    "Spreadsheet_SetAlias": "parameters.cell",
+    "Spreadsheet_AlignLeft": "parameters.format",
+    "Spreadsheet_AlignCenter": "parameters.format",
+    "Spreadsheet_AlignRight": "parameters.format",
+    "Spreadsheet_AlignTop": "parameters.format",
+    "Spreadsheet_AlignVCenter": "parameters.format",
+    "Spreadsheet_AlignBottom": "parameters.format",
+    "Spreadsheet_StyleBold": "parameters.format",
+    "Spreadsheet_StyleItalic": "parameters.format",
+    "Spreadsheet_StyleUnderline": "parameters.format",
     "Sketcher_NewSketch": "model.sketch",
     "Sketcher_EditSketch": "sketch.control",
     "Sketcher_ValidateSketch": "sketch.validate",
@@ -945,19 +1112,292 @@ _CAPABILITY_OVERRIDES = {
     "Sketcher_SelectElementsAssociatedWithConstraints": "sketch.inspect",
     "Sketcher_ViewSketch": "sketch.presentation",
     "Sketcher_ViewSection": "sketch.presentation",
-    "Sketcher_RestoreInternalAlignmentGeometry": "sketch.geometry",
-    "Sketcher_SwitchVirtualSpace": "sketch.constraint",
-    "TechDraw_ExtensionSelectLineAttributes": "drawing.inspect",
+    "Sketcher_RestoreInternalAlignmentGeometry": "sketch.edit",
+    "Sketcher_Trimming": "sketch.trim",
+    "Sketcher_Split": "sketch.split",
+    "Sketcher_Extend": "sketch.extend",
+    "Sketcher_SwitchVirtualSpace": "sketch.edit",
+    "TechDraw_ExtensionSelectLineAttributes": "drawing.line_defaults",
+    "TechDraw_ExtensionChangeLineAttributes": "drawing.line_attributes",
+    "TechDraw_DecorateLine": "drawing.line_attributes",
+    "TechDraw_ExtensionExtendLine": "drawing.line_length",
+    "TechDraw_ExtensionShortenLine": "drawing.line_length",
+    "TechDraw_ExtensionLockUnlockView": "drawing.view_lock",
+    "TechDraw_ExtensionPositionSectionView": "drawing.section_position",
+    "TechDraw_Dimension": "drawing.dimension_infer",
+    "TechDraw_ExtensionCreateHorizChainDimension": "drawing.dimension_series",
+    "TechDraw_ExtensionCreateVertChainDimension": "drawing.dimension_series",
+    "TechDraw_ExtensionCreateObliqueChainDimension": "drawing.dimension_series",
+    "TechDraw_ExtensionCreateHorizCoordDimension": "drawing.dimension_series",
+    "TechDraw_ExtensionCreateVertCoordDimension": "drawing.dimension_series",
+    "TechDraw_ExtensionCreateObliqueCoordDimension": "drawing.dimension_series",
+    "TechDraw_ExtensionAreaAnnotation": "drawing.dimension",
+    "TechDraw_ExtensionArcLengthAnnotation": "drawing.dimension",
+    "TechDraw_ExtensionCustomizeFormat": "drawing.format",
+    "TechDraw_HoleShaftFit": "drawing.format",
+    "TechDraw_WeldSymbol": "drawing.symbol",
+    "TechDraw_SurfaceFinishSymbols": "drawing.symbol",
+    "TechDraw_ExtensionInsertDiameter": "drawing.dimension_text",
+    "TechDraw_ExtensionInsertSquare": "drawing.dimension_text",
+    "TechDraw_ExtensionInsertRepetition": "drawing.dimension_text",
+    "TechDraw_ExtensionRemovePrefixChar": "drawing.dimension_text",
+    "TechDraw_ExtensionIncreaseDecimal": "drawing.dimension_text",
+    "TechDraw_ExtensionDecreaseDecimal": "drawing.dimension_text",
+    "TechDraw_ExtensionCircleCenterLines": "drawing.circle_center_lines",
+    "TechDraw_ExtensionHoleCircle": "drawing.bolt_circle_center_lines",
+    "TechDraw_ExtensionThreadHoleSide": "drawing.thread_representation",
+    "TechDraw_ExtensionThreadHoleBottom": "drawing.thread_representation",
+    "TechDraw_ExtensionThreadBoltSide": "drawing.thread_representation",
+    "TechDraw_ExtensionThreadBoltBottom": "drawing.thread_representation",
+    "TechDraw_ExtensionVertexAtIntersection": "drawing.cosmetic_vertex",
+    "TechDraw_CommandAddOffsetVertex": "drawing.cosmetic_vertex",
+    "TechDraw_CosmeticVertex": "drawing.cosmetic_vertex",
+    "TechDraw_Midpoints": "drawing.cosmetic_vertex",
+    "TechDraw_Quadrants": "drawing.cosmetic_vertex",
+    "TechDraw_FaceCenterLine": "drawing.centerline",
+    "TechDraw_2LineCenterLine": "drawing.centerline",
+    "TechDraw_2PointCenterLine": "drawing.centerline",
+    "TechDraw_2PointCosmeticLine": "drawing.cosmetic_line",
+    "TechDraw_CosmeticCircle": "drawing.cosmetic_curve",
+    "TechDraw_ExtensionDrawCosmCircle": "drawing.cosmetic_curve",
+    "TechDraw_ExtensionDrawCosmCircle3Points": "drawing.cosmetic_curve",
+    "TechDraw_ExtensionDrawCosmArc": "drawing.cosmetic_curve",
+    "TechDraw_ExtensionLineParallel": "drawing.cosmetic_line",
+    "TechDraw_ExtensionLinePerpendicular": "drawing.cosmetic_line",
+    "TechDraw_PageDefault": "drawing.page",
+    "TechDraw_PageTemplate": "drawing.page",
+    "TechDraw_FillTemplateFields": "drawing.page",
+    "TechDraw_RedrawPage": "drawing.page",
+    "TechDraw_BrokenView": "drawing.view",
+    "TechDraw_SectionView": "drawing.section_view",
+    "TechDraw_ComplexSection": "drawing.complex_section",
+    "TechDraw_DetailView": "drawing.detail_view",
+    "TechDraw_DraftView": "drawing.draft_source_view",
+    "TechDraw_ClipGroup": "drawing.clip_group",
+    "TechDraw_StackTop": "drawing.stack",
+    "TechDraw_StackBottom": "drawing.stack",
+    "TechDraw_StackUp": "drawing.stack",
+    "TechDraw_StackDown": "drawing.stack",
+    "TechDraw_ActiveView": "drawing.active_view",
+    "TechDraw_ExtensionCreateHorizChamferDimension": "drawing.dimension",
+    "TechDraw_ExtensionCreateVertChamferDimension": "drawing.dimension",
+    "TechDraw_ExtensionCreateLengthArc": "drawing.dimension",
+    "TechDraw_Balloon": "drawing.balloon",
     "TechDraw_PrintAll": "drawing.export",
     "TechDraw_ToggleFrame": "drawing.presentation",
     "TechDraw_Hatch": "drawing.hatch",
     "TechDraw_GeometricHatch": "drawing.hatch",
+    "TechDraw_RichTextAnnotation": "drawing.rich_annotation",
+    "TechDraw_LeaderLine": "drawing.annotation",
     "TechDraw_ShowAll": "drawing.presentation",
     "VibeCAD_PublishInterface": "component.interface",
     "Robot_Simulate": "robot.motion",
 }
 
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.draw_line"
+        for command_id in (
+            "Sketcher_CreatePoint",
+            "Sketcher_CreatePolyline",
+            "Sketcher_CreateLine",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES["TechDraw_DimensionRepair"] = "drawing.dimension_repair"
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.draw_arc"
+        for command_id in (
+            "Sketcher_CreateArc",
+            "Sketcher_CreateArcOfEllipse",
+            "Sketcher_CreateArcOfHyperbola",
+            "Sketcher_CreateArcOfParabola",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES["Sketcher_Create3PointArc"] = "sketch.draw_three_point_arc"
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.draw_circle"
+        for command_id in (
+            "Sketcher_CreateCircle",
+            "Sketcher_Create3PointCircle",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.draw_ellipse"
+        for command_id in (
+            "Sketcher_CreateEllipseByCenter",
+            "Sketcher_CreateEllipseBy3Points",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.draw_profile"
+        for command_id in (
+            "Sketcher_CreateRectangle",
+            "Sketcher_CreateRectangle_Center",
+            "Sketcher_CreateOblong",
+            "Sketcher_CreateTriangle",
+            "Sketcher_CreateSquare",
+            "Sketcher_CreatePentagon",
+            "Sketcher_CreateHexagon",
+            "Sketcher_CreateHeptagon",
+            "Sketcher_CreateOctagon",
+            "Sketcher_CreateRegularPolygon",
+            "Sketcher_CreateSlot",
+            "Sketcher_CreateArcSlot",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.draw_spline"
+        for command_id in (
+            "Sketcher_CreateBSpline",
+            "Sketcher_CreatePeriodicBSpline",
+            "Sketcher_CreateBSplineByInterpolation",
+            "Sketcher_CreatePeriodicBSplineByInterpolation",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES["Sketcher_CreateText"] = "sketch.draw_text"
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.dimension"
+        for command_id in (
+            "Sketcher_Dimension",
+            "Sketcher_ConstrainDistanceX",
+            "Sketcher_ConstrainDistanceY",
+            "Sketcher_ConstrainDistance",
+            "Sketcher_ConstrainRadiam",
+            "Sketcher_ConstrainRadius",
+            "Sketcher_ConstrainDiameter",
+            "Sketcher_ConstrainAngle",
+            "Sketcher_ConstrainLock",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.constrain"
+        for command_id in (
+            "Sketcher_ConstrainCoincidentUnified",
+            "Sketcher_ConstrainHorVer",
+            "Sketcher_ConstrainHorizontal",
+            "Sketcher_ConstrainVertical",
+            "Sketcher_ConstrainParallel",
+            "Sketcher_ConstrainPerpendicular",
+            "Sketcher_ConstrainTangent",
+            "Sketcher_ConstrainEqual",
+            "Sketcher_ConstrainSymmetric",
+            "Sketcher_ConstrainBlock",
+            "Sketcher_ConstrainGroup",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.transform"
+        for command_id in (
+            "Sketcher_Translate",
+            "Sketcher_Rotate",
+            "Sketcher_Scale",
+            "Sketcher_Offset",
+            "Sketcher_Symmetry",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.edit"
+        for command_id in (
+            "Sketcher_ToggleConstruction",
+            "Sketcher_ToggleDrivingConstraint",
+            "Sketcher_ToggleActiveConstraint",
+            "Sketcher_RemoveAxesAlignment",
+            "Sketcher_BSplineConvertToNURBS",
+            "Sketcher_BSplineIncreaseDegree",
+            "Sketcher_BSplineDecreaseDegree",
+            "Sketcher_BSplineIncreaseKnotMultiplicity",
+            "Sketcher_BSplineDecreaseKnotMultiplicity",
+            "Sketcher_BSplineInsertKnot",
+            "Sketcher_JoinCurves",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES.update(
+    {
+        "Sketcher_CreateFillet": "sketch.fillet",
+        "Sketcher_CreateChamfer": "sketch.chamfer",
+        "Sketcher_Projection": "sketch.external",
+        "Sketcher_Intersection": "sketch.external",
+        "Sketcher_CarbonCopy": "sketch.external",
+    }
+)
+
 _OPERATION_VARIANT_OVERRIDES = {
+    "Spreadsheet_CreateSheet": "create",
+    "Spreadsheet_Import": "import_csv",
+    "Spreadsheet_Export": "export_csv",
+    "Spreadsheet_MergeCells": "merge",
+    "Spreadsheet_SplitCell": "split",
+    "Spreadsheet_CellProperties": "set_properties",
+    "Spreadsheet_SetAlias": "set_alias",
+    "Spreadsheet_AlignLeft": "align_left",
+    "Spreadsheet_AlignCenter": "align_center",
+    "Spreadsheet_AlignRight": "align_right",
+    "Spreadsheet_AlignTop": "align_top",
+    "Spreadsheet_AlignVCenter": "align_vertical_center",
+    "Spreadsheet_AlignBottom": "align_bottom",
+    "Spreadsheet_StyleBold": "set_bold",
+    "Spreadsheet_StyleItalic": "set_italic",
+    "Spreadsheet_StyleUnderline": "set_underline",
+    "FEM_ResultsPurge": "purge",
+    "FEM_ResultShow": "show_result",
+    "FEM_PostApplyChanges": "set_post_auto_recompute",
+    "FEM_CreateElementsSet": "erase_elements",
+    "FEM_FEMMesh2Mesh": "convert_surface",
+    "FEM_ClippingPlaneAdd": "add_clipping_plane",
+    "FEM_ClippingPlaneRemoveAll": "remove_all_clipping_planes",
+    "FEM_PostPipelineFromResult": "create_pipeline",
+    "FEM_PostBranchFilter": "create_branch",
+    "FEM_PostFilterWarp": "create_warp",
+    "FEM_PostFilterClipScalar": "create_scalar_clip",
+    "FEM_PostFilterCutFunction": "create_cut",
+    "FEM_PostFilterClipRegion": "create_region_clip",
+    "FEM_PostFilterContours": "create_contours",
+    "FEM_PostFilterGlyph": "create_glyphs",
+    "FEM_PostFilterDataAlongLine": "create_line_sample",
+    "FEM_PostFilterLinearizedStresses": "linearized_stress",
+    "FEM_PostFilterDataAtPoint": "create_point_sample",
+    "FEM_PostFilterCalculator": "create_calculated_field",
+    "FEM_PostCreateFunctions": "create_plane",
+    "FEM_PostCreateFunctionPlane": "create_plane",
+    "FEM_PostCreateFunctionSphere": "create_sphere",
+    "FEM_PostCreateFunctionCylinder": "create_cylinder",
+    "FEM_PostCreateFunctionBox": "create_box",
+    "FEM_PostVisualizationLineplot": "create_line_plot",
+    "FEM_PostVisualizationHistogram": "create_histogram",
+    "FEM_PostVisualizationTable": "create_table",
+    "CAM_Sanity": "validate_job",
+    "CAM_Inspect": "inspect_toolpath",
+    "CAM_SelectLoop": "detect_loop",
+    "CAM_Area": "create",
+    "CAM_Area_Workplane": "set_workplane",
+    "CAM_Job": "create_job",
+    "CAM_PropertyBag": "create",
+    "CAM_Comment": "comment",
+    "CAM_Stop": "stop",
+    "CAM_Custom": "custom",
+    "CAM_Probe": "create_grid",
+    "CAM_ToolBitDock": "create_controller",
+    "Assembly_InsertLink": "insert_component",
+    "Assembly_InsertNewPart": "create_part",
     "Assembly_CreateJointBall": "create_ball",
     "Assembly_CreateJointBelt": "create_belt",
     "Assembly_CreateJointCylindrical": "create_cylindrical",
@@ -972,6 +1412,68 @@ _OPERATION_VARIANT_OVERRIDES = {
     "Assembly_CreateJointScrew": "create_screw",
     "Assembly_CreateJointSlider": "create_slider",
     "Assembly_ToggleGrounded": "set_grounded",
+    "FEM_Analysis": "create_analysis",
+    "FEM_MaterialSolid": "create_solid_material",
+    "FEM_MaterialFluid": "create_fluid_material",
+    "FEM_MaterialMechanicalNonlinear": "create_nonlinear_material",
+    "FEM_MaterialReinforced": "create_reinforced_material",
+    "FEM_MaterialEditor": "update_material",
+    "FEM_ElementGeometry1D": "create_beam_section",
+    "FEM_ElementRotation1D": "create_beam_rotation",
+    "FEM_ElementGeometry2D": "create_shell_thickness",
+    "FEM_ElementFluid1D": "create_fluid_section",
+    "FEM_ConstraintElectromagnetic": "constraint_electromagnetic",
+    "FEM_ConstraintCurrentDensity": "constraint_current_density",
+    "FEM_ConstraintMagnetization": "constraint_magnetization",
+    "FEM_ConstraintElectricChargeDensity": "constraint_electric_charge_density",
+    "FEM_ConstraintInitialFlowVelocity": "create_initial_flow_velocity",
+    "FEM_ConstraintInitialPressure": "create_initial_pressure",
+    "FEM_ConstraintFlowVelocity": "create_flow_velocity",
+    "FEM_ConstraintPlaneRotation": "create_plane_rotation",
+    "FEM_ConstraintSectionPrint": "create_section_print",
+    "FEM_ConstraintTransform": "create_transform",
+    "FEM_ConstraintFixed": "create_fixed",
+    "FEM_ConstraintRigidBody": "create_rigid_body",
+    "FEM_ConstraintDisplacement": "create_displacement",
+    "FEM_ConstraintSpring": "create_spring",
+    "FEM_ConstraintContact": "create_contact",
+    "FEM_ConstraintTie": "create_tie",
+    "FEM_ConstraintForce": "create_force",
+    "FEM_ConstraintPressure": "create_pressure",
+    "FEM_ConstraintCentrif": "create_centrifugal",
+    "FEM_ConstraintSelfWeight": "create_gravity",
+    "FEM_ConstraintInitialTemperature": "create_initial_temperature",
+    "FEM_ConstraintHeatflux": "create_surface_heat_flux",
+    "FEM_ConstraintTemperature": "create_boundary_temperature",
+    "FEM_ConstraintBodyHeatSource": "create_mass_heat_generation",
+    "FEM_MeshNetgenFromShape": "create_netgen",
+    "FEM_MeshGmshFromShape": "create_gmsh",
+    "FEM_MeshRegion": "create_region",
+    "FEM_MeshGroup": "create_group",
+    "FEM_MeshDistance": "create_distance",
+    "FEM_MeshBoundaryLayer": "create_boundary_layer",
+    "FEM_MeshShape": "create_shape",
+    "FEM_SolverCalculiX": "create_calculix",
+    "FEM_SolverElmer": "create_elmer",
+    "FEM_SolverMystran": "create_mystran",
+    "FEM_SolverZ88": "create_z88",
+    "FEM_SolverControl": "update_calculix",
+    "FEM_SolverRun": "run",
+    "FEM_EquationElasticity": "create_elasticity",
+    "FEM_EquationDeformation": "create_deformation",
+    "FEM_EquationElectrostatic": "create_electrostatic",
+    "FEM_EquationElectricforce": "create_electric_force",
+    "FEM_EquationMagnetodynamic": "create_magnetodynamic",
+    "FEM_EquationMagnetodynamic2D": "create_magnetodynamic_2d",
+    "FEM_EquationStaticCurrent": "create_static_current",
+    "FEM_EquationFlow": "create_flow",
+    "FEM_EquationFlux": "create_flux",
+    "FEM_EquationHeat": "create_heat",
+    "FEM_MeshManipulate": "create_restrict",
+    "FEM_MeshAdvanced": "create_attractor_aniso_curve",
+    "FEM_MeshTransfiniteCurve": "create_transfinite_curve",
+    "FEM_MeshTransfiniteSurface": "create_transfinite_surface",
+    "FEM_MeshTransfiniteVolume": "create_transfinite_volume",
     "PartDesign::DesignBox": "primitive",
     "PartDesign::DesignCylinder": "primitive",
     "PartDesign::DesignSphere": "primitive",
@@ -1021,11 +1523,55 @@ _OPERATION_VARIANT_OVERRIDES = {
     "Inspection_InspectElement": "element",
     "Part_CheckGeometry": "validity",
     "CAM_Pocket3D": "pocket_3d",
+    "CAM_Surface": "surface",
+    "CAM_Waterline": "waterline",
+    "CAM_RotarySurface": "rotary_surface",
+    "CAM_OpActiveToggle": "set_active",
+    "CAM_OperationCopy": "copy_operations",
+    "CAM_Array": "array",
+    "CAM_SimpleCopy": "simple_copy",
+    "CAM_DressupArray": "array_dressup",
+    "CAM_DressupAxisMap": "axis_map_dressup",
+    "CAM_DressupPathBoundary": "path_boundary_dressup",
+    "CAM_DressupDogbone": "dogbone_dressup",
+    "CAM_DressupDragKnife": "drag_knife_dressup",
+    "CAM_DressupLeadInOut": "lead_in_out_dressup",
+    "CAM_DressupMirror": "mirror_dressup",
+    "CAM_DressupRampEntry": "ramp_entry_dressup",
+    "CAM_DressupTag": "tag_dressup",
+    "CAM_DressupZCorrect": "z_correct_dressup",
+    "CAM_Pocket_Shape": "pocket_shape",
+    "CAM_MillFacing": "mill_facing",
+    "CAM_Helix": "helix",
+    "CAM_Adaptive": "adaptive",
+    "CAM_Slot": "slot",
+    "CAM_Drilling": "drilling",
+    "CAM_ThreadMilling": "thread_milling",
+    "CAM_Engrave": "engrave",
+    "CAM_Deburr": "deburr",
+    "CAM_Vcarve": "v_carve",
+    "CAM_Camotics": "camotics",
     "CAM_SimulatorGL": "gl",
     "CAM_Simulator": "native",
+    "CAM_Post": "complete_job",
+    "CAM_PostSelected": "selected_operations",
     "Mesh_Export": "export_mesh",
+    "Mesh_Import": "import_mesh",
+    "Mesh_BuildRegularSolid": "regular_solid",
+    "Mesh_FromPartShape": "shape_to_mesh",
+    "MeshPart_ShapeFromMesh": "mesh_to_shape",
+    "MeshPart_CurveOnMesh": "curve_on_mesh",
+    "Mesh_FillupHoles": "fill_holes",
+    "Mesh_FillInteractiveHole": "fill_boundary",
+    "Mesh_AddFacet": "add_triangle",
+    "Mesh_Smoothing": "smooth",
+    "Mesh_RemeshGmsh": "gmsh_remesh",
+    "Mesh_Decimating": "decimate",
     "Mesh_Segmentation": "mesh_segmentation",
     "Points_Export": "export_point_cloud",
+    "Points_Import": "import_point_cloud",
+    "Points_Convert": "convert_to_points",
+    "Points_PolyCut": "polygon_cut",
     "Reen_Segmentation": "reverse_segmentation",
     "Sketcher_CreateBSpline": "create_b_spline",
     "Sketcher_CreateBSplineByInterpolation": "create_b_spline_by_interpolation",
@@ -1066,10 +1612,380 @@ _OPERATION_VARIANT_OVERRIDES = {
     "Sketcher_BSplineKnotMultiplicity": "bspline_knot_multiplicity",
     "Sketcher_BSplinePoleWeight": "bspline_pole_weight",
     "Sketcher_SwitchVirtualSpace": "set_virtual_space",
+    "TechDraw_View": "create_standard_view",
+    "TechDraw_BrokenView": "create_broken_view",
+    "TechDraw_SectionView": "create_section_view",
+    "TechDraw_ComplexSection": "create_complex_section_view",
+    "TechDraw_DetailView": "create_detail_view",
+    "TechDraw_DraftView": "create_draft_source_view",
+    "TechDraw_ClipGroup": "create_clip_group",
+    "TechDraw_StackTop": "stack_top",
+    "TechDraw_StackBottom": "stack_bottom",
+    "TechDraw_StackUp": "stack_up",
+    "TechDraw_StackDown": "stack_down",
+    "TechDraw_ActiveView": "create_active_view",
+    "TechDraw_Dimension": "infer",
+    "TechDraw_LengthDimension": "create_length",
+    "TechDraw_HorizontalDimension": "create_horizontal",
+    "TechDraw_VerticalDimension": "create_vertical",
+    "TechDraw_RadiusDimension": "create_radius",
+    "TechDraw_DiameterDimension": "create_diameter",
+    "TechDraw_AngleDimension": "create_angle",
+    "TechDraw_3PtAngleDimension": "create_three_point_angle",
+    "TechDraw_AreaDimension": "create_area",
+    "TechDraw_HorizontalExtentDimension": "create_horizontal_extent",
+    "TechDraw_VerticalExtentDimension": "create_vertical_extent",
+    "TechDraw_AxoLengthDimension": "create_axonometric_length",
+    "TechDraw_ExtensionCreateHorizChainDimension": "create_horizontal_chain",
+    "TechDraw_ExtensionCreateVertChainDimension": "create_vertical_chain",
+    "TechDraw_ExtensionCreateObliqueChainDimension": "create_oblique_chain",
+    "TechDraw_ExtensionCreateHorizCoordDimension": "create_horizontal_coordinate",
+    "TechDraw_ExtensionCreateVertCoordDimension": "create_vertical_coordinate",
+    "TechDraw_ExtensionCreateObliqueCoordDimension": "create_oblique_coordinate",
+    "TechDraw_DimensionRepair": "repair_references",
+    "TechDraw_ExtensionSelectLineAttributes": "read_current",
+    "TechDraw_ExtensionChangeLineAttributes": "set",
+    "TechDraw_ExtensionExtendLine": "extend",
+    "TechDraw_ExtensionShortenLine": "shorten",
+    "TechDraw_ExtensionLockUnlockView": "set",
+    "TechDraw_ExtensionPositionSectionView": "align_axis",
+    "TechDraw_ExtensionAreaAnnotation": "create_area_annotation",
+    "TechDraw_ExtensionArcLengthAnnotation": "create_arc_length_annotation",
+    "TechDraw_ExtensionCustomizeFormat": "set_dimension_format",
+    "TechDraw_ExtensionInsertDiameter": "insert_diameter_prefix",
+    "TechDraw_ExtensionInsertSquare": "insert_square_prefix",
+    "TechDraw_ExtensionInsertRepetition": "insert_repetition_prefix",
+    "TechDraw_ExtensionRemovePrefixChar": "remove_prefix",
+    "TechDraw_ExtensionIncreaseDecimal": "increase_decimals",
+    "TechDraw_ExtensionDecreaseDecimal": "decrease_decimals",
+    "TechDraw_ToggleFrame": "set_frame_visibility",
+    "TechDraw_ShowAll": "set_hidden_edges_visible",
+    "TechDraw_Hatch": "create_image_default",
+    "TechDraw_GeometricHatch": "create_geometric_default",
+    "TechDraw_RichTextAnnotation": "create_plain_text",
+    "TechDraw_LeaderLine": "leader_line",
+    "TechDraw_ExtensionCircleCenterLines": "create",
+    "TechDraw_ExtensionHoleCircle": "create",
+    "TechDraw_ExtensionThreadHoleSide": "create_hole_side",
+    "TechDraw_ExtensionThreadHoleBottom": "create_hole_bottom",
+    "TechDraw_ExtensionThreadBoltSide": "create_bolt_side",
+    "TechDraw_ExtensionThreadBoltBottom": "create_bolt_bottom",
+    "TechDraw_ExtensionVertexAtIntersection": "create_intersections",
+    "TechDraw_CommandAddOffsetVertex": "create_offset",
+    "TechDraw_CosmeticVertex": "create_point",
+    "TechDraw_Midpoints": "create_midpoints",
+    "TechDraw_Quadrants": "create_quadrants",
+    "TechDraw_FaceCenterLine": "create_face",
+    "TechDraw_2LineCenterLine": "create_between_edges",
+    "TechDraw_2PointCenterLine": "create_between_vertices",
+    "TechDraw_2PointCosmeticLine": "create_between_vertices",
+    "TechDraw_CosmeticCircle": "create_one_point_circle",
+    "TechDraw_ExtensionDrawCosmCircle": "create_two_point_circle",
+    "TechDraw_ExtensionDrawCosmCircle3Points": "create_three_point_circle",
+    "TechDraw_ExtensionDrawCosmArc": "create_center_start_end_arc",
+    "TechDraw_ExtensionLineParallel": "create_parallel",
+    "TechDraw_ExtensionLinePerpendicular": "create_perpendicular",
+    "TechDraw_ExtensionCreateHorizChamferDimension": "create_horizontal_chamfer",
+    "TechDraw_ExtensionCreateVertChamferDimension": "create_vertical_chamfer",
+    "TechDraw_ExtensionCreateLengthArc": "create_arc_length_dimension",
+    "TechDraw_Balloon": "create",
+    "TechDraw_DecorateLine": "set",
+    "TechDraw_HoleShaftFit": "apply_iso_286_fit",
+    "TechDraw_WeldSymbol": "create_weld",
+    "TechDraw_SurfaceFinishSymbols": "create_iso_surface_finish",
+    "TechDraw_RedrawPage": "redraw_page",
     "Robot_InsertWaypoint": "insert_robot_waypoint",
     "Robot_InsertWaypointPreselect": "insert_position_waypoint",
     "TechDraw_ExportPageDXF": "dxf",
     "TechDraw_ExportPageSVG": "svg",
+}
+
+_EXACT_TARGET_TYPE_OVERRIDES = {
+    "Spreadsheet_CreateSheet": "NewParametersSheet",
+    "Spreadsheet_Import": "HumanAuthorizedParametersCsv",
+    "Spreadsheet_Export": "ExactParametersSheetAndHumanAuthorizedOutput",
+    "Spreadsheet_MergeCells": "ExactParametersRange",
+    "Spreadsheet_SplitCell": "ExactParametersMergedCell",
+    "Spreadsheet_CellProperties": "ExactParametersRange",
+    "Spreadsheet_SetAlias": "ExactParametersCell",
+    "Spreadsheet_AlignLeft": "ExactParametersRange",
+    "Spreadsheet_AlignCenter": "ExactParametersRange",
+    "Spreadsheet_AlignRight": "ExactParametersRange",
+    "Spreadsheet_AlignTop": "ExactParametersRange",
+    "Spreadsheet_AlignVCenter": "ExactParametersRange",
+    "Spreadsheet_AlignBottom": "ExactParametersRange",
+    "Spreadsheet_StyleBold": "ExactParametersRange",
+    "Spreadsheet_StyleItalic": "ExactParametersRange",
+    "Spreadsheet_StyleUnderline": "ExactParametersRange",
+    "CAM_Job": "ExactCurrentCamModelsAndCreationEnvironment",
+    "CAM_Profile": "ExactCamJobProfileGeometryControllerAndParameters",
+    "CAM_Pocket_Shape": (
+        "ExactCamJobPocketGeometryControllerExtensionsAndParameters"
+    ),
+    "CAM_MillFacing": "ExactCamJobStockControllerAndFacingParameters",
+    "CAM_Helix": "ExactCamJobHoleFeaturesControllerAndHelixParameters",
+    "CAM_Adaptive": "ExactCamJobAdaptiveRegionsControllerExtensionsAndParameters",
+    "CAM_Slot": "ExactCamJobSlotPathControllerAndParameters",
+    "CAM_Drilling": "ExactCamJobHoleTargetsControllerAndDrillingParameters",
+    "CAM_ThreadMilling": "ExactCamJobHoleFeaturesControllerAndThreadDefinition",
+    "CAM_Engrave": "ExactCamJobEngraveGeometryControllerAndParameters",
+    "CAM_Deburr": "ExactCamJobDeburrFeaturesControllerAndParameters",
+    "CAM_Vcarve": "ExactCamJobVCarveFacesControllerAndParameters",
+    "CAM_Pocket3D": "ExactCamJobPocket3DFeaturesControllerAndParameters",
+    "CAM_Surface": "ExactCamJobSurfaceFacesControllerAndParameters",
+    "CAM_Waterline": (
+        "ExactCamJobWaterlineFacesControllerAlgorithmAndParameters"
+    ),
+    "CAM_RotarySurface": (
+        "ExactCamJobMachineCylinderRotaryFacesControllerAndParameters"
+    ),
+    "CAM_OpActiveToggle": "ExactCamJobAndOperationActiveStates",
+    "CAM_OperationCopy": "ExactCamOperationCopySet",
+    "CAM_Array": "ExactCamJobBaseToolpathsArrayPatternAndPointSources",
+    "CAM_SimpleCopy": "ExactCamJobPlacedToolpathFlatteningSet",
+    "CAM_DressupArray": "ExactCamJobOperationAndArrayDressupPattern",
+    "CAM_DressupAxisMap": "ExactCamJobOperationAndAxisMapParameters",
+    "CAM_DressupPathBoundary": (
+        "ExactCamJobOperationAndPathBoundaryDefinition"
+    ),
+    "CAM_DressupDogbone": (
+        "ExactCamJobOperationAndDogboneReliefDefinition"
+    ),
+    "CAM_DressupDragKnife": (
+        "ExactCamJobOperationAndDragKnifeCompensation"
+    ),
+    "CAM_DressupLeadInOut": (
+        "ExactCamJobOperationAndLeadInOutMotionDefinition"
+    ),
+    "CAM_DressupMirror": (
+        "ExactCamJobOperationAndMirrorPlacementDefinition"
+    ),
+    "CAM_DressupRampEntry": (
+        "ExactCamJobOperationAndRampEntryDefinition"
+    ),
+    "CAM_DressupTag": (
+        "ExactCamJobOperationAndHoldingTagDefinition"
+    ),
+    "CAM_DressupZCorrect": (
+        "ExactCamJobOperationAndHumanAuthorizedProbeMap"
+    ),
+    "CAM_Comment": "ExactCamJobAndProgramComment",
+    "CAM_Stop": "ExactCamJobAndProgramStop",
+    "CAM_Custom": "ExactCamJobControllerAndStructuredCustomProgram",
+    "CAM_Probe": "ExactCamJobProbeControllerAndBoundedStockGrid",
+    "CAM_PropertyBag": "ExactOptionalPartDesignBodyAndTypedPropertySet",
+    "CAM_ToolBitDock": "ExactCamJobAndCatalogTool",
+    "CAM_Sanity": "ExactCamJobGraphAndState",
+    "CAM_Inspect": "ExactCamOperationToolpathAndState",
+    "CAM_SelectLoop": "ExactCurrentCamModelShapeAndLoopSeed",
+    "CAM_Area": "ExactCurrentPartGeometrySet",
+    "CAM_Area_Workplane": "ExactCurrentFeatureAreaAndPartWorkplane",
+    "CAM_Camotics": "ExactCamJobOrderedActiveOperationsCamoticsRequest",
+    "CAM_SimulatorGL": "ExactCamJobOrderedActiveOperationsAndGlQuality",
+    "CAM_Simulator": "ExactCamJobOrderedActiveOperationsAndNativeQuality",
+    "CAM_Post": "ExactCamJobAndHumanAuthorizedPostOutputs",
+    "CAM_PostSelected": (
+        "ExactCamJobOrderedOperationsAndHumanAuthorizedPostOutputs"
+    ),
+    "TechDraw_PageDefault": "NewDrawingPageWithConfiguredTemplate",
+    "TechDraw_PageTemplate": "HumanAuthorizedSvgTemplateForNewDrawingPage",
+    "TechDraw_FillTemplateFields": (
+        "ExactDrawingPageAndEditableTemplateFields"
+    ),
+    "TechDraw_View": "ExactDrawingPageSourcesAndProjectionSettings",
+    "TechDraw_BrokenView": (
+        "ExactDrawingPageSourcesBreakDefinitionsAndProjectionSettings"
+    ),
+    "TechDraw_SectionView": "ExactDrawingPageBaseViewSectionPlaneAndScale",
+    "TechDraw_ComplexSection": (
+        "ExactDrawingPageBaseViewWholeProfileStrategyAndScale"
+    ),
+    "TechDraw_DetailView": (
+        "ExactDrawingPageBaseViewAnchorRadiusPlacementAndScale"
+    ),
+    "TechDraw_DraftView": (
+        "ExactDrawingPageDraftSourceOrientationPlacementScaleAndStyle"
+    ),
+    "TechDraw_ClipGroup": "ExactDrawingPageClipFrameMembersAndPlacements",
+    "TechDraw_StackTop": "ExactDrawingPageAndOrderedGraphicalStackViews",
+    "TechDraw_StackBottom": "ExactDrawingPageAndOrderedGraphicalStackViews",
+    "TechDraw_StackUp": "ExactDrawingPageAndOrderedGraphicalStackViews",
+    "TechDraw_StackDown": "ExactDrawingPageAndOrderedGraphicalStackViews",
+    "TechDraw_ActiveView": (
+        "ExactDrawingPageActive3DViewportAndCaptureSettings"
+    ),
+    "TechDraw_Dimension": "ExactDrawingElementsWithUnambiguousDimensionSemantics",
+    "TechDraw_LengthDimension": "ExactDrawingAlignedDimensionReferences",
+    "TechDraw_HorizontalDimension": "ExactDrawingHorizontalDimensionReferences",
+    "TechDraw_VerticalDimension": "ExactDrawingVerticalDimensionReferences",
+    "TechDraw_RadiusDimension": "ExactDrawingRadialEdge",
+    "TechDraw_DiameterDimension": "ExactDrawingRadialEdge",
+    "TechDraw_AngleDimension": "ExactDrawingTwoEdgeAngle",
+    "TechDraw_3PtAngleDimension": "ExactDrawingOrderedThreePointAngle",
+    "TechDraw_AreaDimension": "ExactDrawingProjectedFace",
+    "TechDraw_HorizontalExtentDimension": "ExactDrawingHorizontalExtentTarget",
+    "TechDraw_VerticalExtentDimension": "ExactDrawingVerticalExtentTarget",
+    "TechDraw_AxoLengthDimension": (
+        "ExactDrawingAxonometricMeasurementDirectionsAndValueMode"
+    ),
+    "TechDraw_ExtensionCreateHorizChainDimension": (
+        "ExactDrawingHorizontalChainDimensionSeries"
+    ),
+    "TechDraw_ExtensionCreateVertChainDimension": (
+        "ExactDrawingVerticalChainDimensionSeries"
+    ),
+    "TechDraw_ExtensionCreateObliqueChainDimension": (
+        "ExactDrawingObliqueChainDimensionSeries"
+    ),
+    "TechDraw_ExtensionCreateHorizCoordDimension": (
+        "ExactDrawingHorizontalCoordinateDimensionSeries"
+    ),
+    "TechDraw_ExtensionCreateVertCoordDimension": (
+        "ExactDrawingVerticalCoordinateDimensionSeries"
+    ),
+    "TechDraw_ExtensionCreateObliqueCoordDimension": (
+        "ExactDrawingObliqueCoordinateDimensionSeries"
+    ),
+    "TechDraw_DimensionRepair": "ExactDrawingDimensionAndReplacementReferences",
+    "TechDraw_ExtensionSelectLineAttributes": (
+        "CurrentTechDrawLineAndPlacementDefaults"
+    ),
+    "TechDraw_ExtensionChangeLineAttributes": (
+        "ExactDrawingLinesAndCompleteFormat"
+    ),
+    "TechDraw_DecorateLine": "ExactDrawingLinesAndCompleteFormat",
+    "TechDraw_ExtensionExtendLine": (
+        "ExactDrawingStraightPersistentLineAndSymmetricDelta"
+    ),
+    "TechDraw_ExtensionShortenLine": (
+        "ExactDrawingStraightPersistentLineAndSymmetricDelta"
+    ),
+    "TechDraw_ExtensionLockUnlockView": (
+        "ExactDrawingPageAndExplicitViewLockStates"
+    ),
+    "TechDraw_ExtensionPositionSectionView": (
+        "ExactDrawingSectionViewAndExplicitBaseAxis"
+    ),
+    "TechDraw_ExtensionAreaAnnotation": (
+        "ExactDrawingProjectedFacesAndAreaAnnotation"
+    ),
+    "TechDraw_ExtensionArcLengthAnnotation": (
+        "ExactDrawingOrderedProjectedEdgesAndArcLengthAnnotation"
+    ),
+    "TechDraw_ExtensionCustomizeFormat": (
+        "ExactDrawingDimensionAndCompleteFormat"
+    ),
+    "TechDraw_HoleShaftFit": (
+        "ExactDrawingDimensionAndIso286ToleranceClass"
+    ),
+    "TechDraw_WeldSymbol": (
+        "ExactDrawingLeaderAndCompleteWeldSymbolSpec"
+    ),
+    "TechDraw_SurfaceFinishSymbols": (
+        "ExactDrawingPageOwnerIsoSurfaceFinishSpec"
+    ),
+    "TechDraw_ExtensionInsertDiameter": (
+        "ExactDrawingDimensionsAndDiameterPrefix"
+    ),
+    "TechDraw_ExtensionInsertSquare": (
+        "ExactDrawingDimensionsAndSquarePrefix"
+    ),
+    "TechDraw_ExtensionInsertRepetition": (
+        "ExactDrawingDimensionsAndRepetitionCount"
+    ),
+    "TechDraw_ExtensionRemovePrefixChar": (
+        "ExactDrawingDimensionsAndPrefixRemoval"
+    ),
+    "TechDraw_ExtensionIncreaseDecimal": (
+        "ExactDrawingDimensionsAndPrecisionIncrease"
+    ),
+    "TechDraw_ExtensionDecreaseDecimal": (
+        "ExactDrawingDimensionsAndPrecisionDecrease"
+    ),
+    "TechDraw_ToggleFrame": (
+        "HumanActiveDrawingPageAndExactFrameVisibilityState"
+    ),
+    "TechDraw_ShowAll": (
+        "HumanActiveDrawingViewAndExactHiddenEdgeVisibilityState"
+    ),
+    "TechDraw_Hatch": "ExactDrawingProjectedFacesAndImageHatchStyle",
+    "TechDraw_GeometricHatch": (
+        "ExactDrawingProjectedFacesAndGeometricHatchStyle"
+    ),
+    "TechDraw_RichTextAnnotation": (
+        "ExactDrawingPageOwnerPlainTextPlacementWidthAndFrame"
+    ),
+    "TechDraw_LeaderLine": (
+        "ExactDrawingPageOwnerPointsSymbolsBehaviorAndLineStyle"
+    ),
+    "TechDraw_ExtensionCircleCenterLines": (
+        "ExactDrawingCircularEdgesAndPersistentCrossCenterlines"
+    ),
+    "TechDraw_ExtensionHoleCircle": (
+        "ExactOrderedDrawingHoleCirclesAndDerivedBoltCircle"
+    ),
+    "TechDraw_ExtensionThreadHoleSide": (
+        "ExactDrawingParallelHoleBoundariesAndSideThreadLines"
+    ),
+    "TechDraw_ExtensionThreadHoleBottom": (
+        "ExactDrawingFullHoleCirclesAndBottomThreadArcs"
+    ),
+    "TechDraw_ExtensionThreadBoltSide": (
+        "ExactDrawingParallelBoltBoundariesAndSideThreadLines"
+    ),
+    "TechDraw_ExtensionThreadBoltBottom": (
+        "ExactDrawingFullBoltCirclesAndBottomThreadArcs"
+    ),
+    "TechDraw_ExtensionVertexAtIntersection": (
+        "ExactDrawingIntersectingEdgesAndDerivedCosmeticVertices"
+    ),
+    "TechDraw_CommandAddOffsetVertex": (
+        "ExactDrawingProjectedVertexAndExplicitOffset"
+    ),
+    "TechDraw_CosmeticVertex": (
+        "ExactDrawingViewAndExplicitCosmeticVertexPoint"
+    ),
+    "TechDraw_Midpoints": "ExactDrawingEdgesAndDerivedMidpointVertices",
+    "TechDraw_Quadrants": "ExactDrawingEdgesAndDerivedQuadrantVertices",
+    "TechDraw_FaceCenterLine": "ExactDrawingFacesAndDerivedCenterLine",
+    "TechDraw_2LineCenterLine": "ExactDrawingEdgePairAndDerivedCenterLine",
+    "TechDraw_2PointCenterLine": "ExactDrawingVertexPairAndDerivedCenterLine",
+    "TechDraw_2PointCosmeticLine": "ExactDrawingVertexPairAndCosmeticLine",
+    "TechDraw_CosmeticCircle": "ExactDrawingCenterVertexAndExplicitRadius",
+    "TechDraw_ExtensionDrawCosmCircle": (
+        "ExactDrawingCenterAndRadiusVertices"
+    ),
+    "TechDraw_ExtensionDrawCosmCircle3Points": (
+        "ExactDrawingThreePerimeterVertices"
+    ),
+    "TechDraw_ExtensionDrawCosmArc": (
+        "ExactDrawingCenterStartAndEndAngleVertices"
+    ),
+    "TechDraw_ExtensionLineParallel": (
+        "ExactDrawingStraightEdgeAndThroughVertexParallelLine"
+    ),
+    "TechDraw_ExtensionLinePerpendicular": (
+        "ExactDrawingStraightEdgeAndThroughVertexPerpendicularLine"
+    ),
+    "TechDraw_ExtensionCreateHorizChamferDimension": (
+        "ExactDrawingHorizontalChamferVertices"
+    ),
+    "TechDraw_ExtensionCreateVertChamferDimension": (
+        "ExactDrawingVerticalChamferVertices"
+    ),
+    "TechDraw_ExtensionCreateLengthArc": "ExactDrawingCircularArcLength",
+    "TechDraw_Balloon": "ExactDrawingProjectedBalloonAnchorAndPlacement",
+    "TechDraw_RedrawPage": "ExactDrawingPageAndActiveViewGraph",
+    "Robot_ExportKukaCompact": (
+        "ExactRobotAndNonEmptyTrajectoryWithHumanAuthorizedOutput"
+    ),
+    "Robot_ExportKukaFull": (
+        "ExactRobotAndNonEmptyTrajectoryWithHumanAuthorizedOutputs"
+    ),
+    "Sketcher_MapSketch": "ExactReusableSketchAndSupport",
+    "Sketcher_ReorientSketch": "ExactReusableSketchAndBasePlane",
+    "Sketcher_MergeSketches": "ExactReusableSketchSet",
+    "Sketcher_MirrorSketch": "ExactReusableSketchSetAndMirrorReference",
 }
 
 _GROUP_CAPABILITY_FAMILIES = {
@@ -1084,10 +2000,10 @@ _GROUP_CAPABILITY_FAMILIES = {
     ("model", "Connect"): "component.interface",
     ("sketch.setup", "Sketch"): "sketch.setup",
     ("sketch.edit", "Finish"): "sketch.control",
-    ("sketch.edit", "Geometry"): "sketch.geometry",
-    ("sketch.edit", "Constraints"): "sketch.constraint",
-    ("sketch.edit", "Modify"): "sketch.geometry",
-    ("sketch.edit", "B-Spline"): "sketch.geometry",
+    ("sketch.edit", "Geometry"): "sketch.draw_line",
+    ("sketch.edit", "Constraints"): "sketch.constrain",
+    ("sketch.edit", "Modify"): "sketch.edit",
+    ("sketch.edit", "B-Spline"): "sketch.edit",
     ("sketch.edit", "Visual"): "sketch.presentation",
     ("assemble", "Assembly"): "assembly.structure",
     ("assemble", "Joints"): "assembly.joint",
@@ -1110,7 +2026,7 @@ _GROUP_CAPABILITY_FAMILIES = {
     ("analyze", "Model"): "analyze.model",
     ("analyze", "Electromagnetics"): "analyze.electromagnetic",
     ("analyze", "Fluids"): "analyze.fluid",
-    ("analyze", "Geometry"): "analyze.geometry",
+    ("analyze", "Geometry"): "analyze.geometrical",
     ("analyze", "Mechanics"): "analyze.mechanics",
     ("analyze", "Thermal"): "analyze.thermal",
     ("analyze", "Mesh"): "analyze.mesh",
@@ -1119,6 +2035,7 @@ _GROUP_CAPABILITY_FAMILIES = {
     ("analyze", "Utilities"): "analyze.utility",
     ("manufacture", "Setup"): "manufacture.setup",
     ("manufacture", "Tools"): "manufacture.tool",
+    ("manufacture", "Program"): "manufacture.program",
     ("manufacture", "Operations"): "manufacture.operation",
     ("manufacture", "Modify"): "manufacture.modify",
     ("manufacture", "Area"): "manufacture.area",
@@ -1323,7 +2240,7 @@ def _plan(
             else _operation_variant(action.command_id)
         ),
         prerequisites=(),
-        exact_target_type=None,
+        exact_target_type=_EXACT_TARGET_TYPE_OVERRIDES.get(action.command_id),
         transaction_behavior=transaction_behavior,
         postcondition_checker=None,
         background_required=action.command_id in _BACKGROUND_COMMAND_IDS,

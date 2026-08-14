@@ -24,6 +24,12 @@ def _contract():
 
 
 def _kind_values(schema):
+    if "oneOf" in schema:
+        return [
+            value
+            for branch in schema["oneOf"]
+            for value in _kind_values(branch)
+        ]
     kind = schema["properties"]["kind"]
     return [kind["const"]] if "const" in kind else kind["enum"]
 
@@ -51,6 +57,11 @@ def test_extrude_exposes_current_direction_side_and_termination_controls() -> No
         "reference_axis",
         "custom_vector",
     ]
+    assert [branch["required"] for branch in direction["oneOf"]] == [
+        ["kind"],
+        ["kind", "target", "along_sketch_normal"],
+        ["kind", "vector", "along_sketch_normal"],
+    ]
     assert _kind_values(extent) == ["one_side", "symmetric", "two_sides"]
     assert extent["required"] == ["kind", "sides", "reversed"]
     assert extent["additionalProperties"] is False
@@ -69,15 +80,14 @@ def test_extrude_exposes_current_direction_side_and_termination_controls() -> No
         "up_to_face",
         "up_to_shape",
     ]
-    assert side["required"] == ["kind"]
-    assert side["additionalProperties"] is False
-    assert set(side["properties"]) == {
-        "kind",
-        "length_mm",
-        "taper_degrees",
-        "target",
-        "offset_mm",
-    }
+    assert [branch["required"] for branch in side["oneOf"]] == [
+        ["kind", "length_mm", "taper_degrees"],
+        ["kind", "offset_mm"],
+        ["kind", "offset_mm"],
+        ["kind", "target", "offset_mm"],
+        ["kind", "target", "offset_mm"],
+    ]
+    assert all(branch["additionalProperties"] is False for branch in side["oneOf"])
 
 
 def test_revolve_up_to_last_does_not_invent_disabled_direction_controls() -> None:

@@ -28,6 +28,12 @@ _SUBELEMENT_NAME = {
     "pattern": r"^(?:Face|Edge|Vertex)[1-9][0-9]*$",
     "maxLength": 32,
 }
+_SHA256 = {
+    "type": "string",
+    "pattern": r"^[0-9a-f]{64}$",
+    "minLength": 64,
+    "maxLength": 64,
+}
 
 
 def _parameters(
@@ -63,6 +69,18 @@ def _element_ref() -> dict[str, Any]:
     }
 
 
+def _drawing_projected_view_ref() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "object_name": deepcopy(_OBJECT_NAME),
+            "expected_state_sha256": deepcopy(_SHA256),
+        },
+        "required": ["object_name", "expected_state_sha256"],
+        "additionalProperties": False,
+    }
+
+
 def _variant(
     operation: str,
     description: str,
@@ -72,6 +90,7 @@ def _variant(
     exact_target_type: str | None = None,
     transaction_behavior: str = "none",
     surface_ids: frozenset[str] = COMMON_NATIVE_SURFACES,
+    provider_supplemental: bool = False,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
@@ -82,6 +101,7 @@ def _variant(
         transaction_behavior=transaction_behavior,
         background_required=False,
         parameters=parameters or _parameters(),
+        provider_supplemental=provider_supplemental,
     )
 
 
@@ -129,6 +149,30 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                     ("visible",),
                 ),
                 transaction_behavior="presentation",
+            ),
+            _variant(
+                "set_object_visibility",
+                (
+                    "Show or hide exact scene-bearing model objects. Use state.read first; "
+                    "this does not alter geometry or History ownership."
+                ),
+                ("VibeCAD_NativeSetObjectVisibility",),
+                parameters=_parameters(
+                    {
+                        "targets": {
+                            "type": "array",
+                            "items": _object_ref(),
+                            "minItems": 1,
+                            "maxItems": 16,
+                            "uniqueItems": True,
+                        },
+                        "visible": {"type": "boolean"},
+                    },
+                    ("targets", "visible"),
+                ),
+                exact_target_type="ModelPresentationObject[]",
+                transaction_behavior="presentation",
+                surface_ids=frozenset({"model"}),
             ),
             _variant(
                 "capture_all",
@@ -228,6 +272,44 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                 ("Inspection_InspectElement",),
                 parameters=_parameters({"target": _element_ref()}, ("target",)),
                 exact_target_type="Subelement",
+            ),
+            _variant(
+                "drawing_projected_geometry",
+                (
+                    "Read up to 48 exact Edge0, Vertex0, or Face0 elements from one "
+                    "Drawing view. Use an empty prior hash only at offset zero."
+                ),
+                ("VibeCAD_DrawingInspectProjectedGeometry",),
+                parameters=_parameters(
+                    {
+                        "view": _drawing_projected_view_ref(),
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4096,
+                        },
+                        "page_size": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 48,
+                        },
+                        "expected_projection_state_sha256": {
+                            "anyOf": [
+                                {"type": "string", "const": ""},
+                                deepcopy(_SHA256),
+                            ]
+                        },
+                    },
+                    (
+                        "view",
+                        "offset",
+                        "page_size",
+                        "expected_projection_state_sha256",
+                    ),
+                ),
+                exact_target_type="ExactDrawingProjectedGeometryPage",
+                surface_ids=frozenset({"drawing"}),
+                provider_supplemental=True,
             ),
             _variant(
                 "validity",

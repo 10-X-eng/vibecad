@@ -44,6 +44,40 @@ def _vstr(v):
     return "-"
 
 
+def _pathWithJobCenter(base, path=None):
+    """Return a path carrying the owning Job's rotary center metadata."""
+
+    if isinstance(path, Path.Path):
+        result = Path.Path(list(path.Commands or ()))
+        result.Center = path.Center
+    else:
+        result = Path.Path(path) if path else Path.Path()
+    job = PathUtils.findParentJob(base) or PathUtil.timelineParentJob(base)
+    if job is not None:
+        result.Center = job.Path.Center
+    return result
+
+
+def offsetBoundaryShape(shape, inside=True, offset=0.0):
+    """Return the exact boundary shape used by the dress-up operation."""
+
+    if shape is None or shape.isNull() or not offset:
+        return shape
+    signed_offset = -float(offset) if inside else float(offset)
+    shapes = list(shape.SubShapes) if isinstance(shape, Part.Compound) else [shape]
+    return [
+        item.makeOffsetShape(signed_offset, tolerance=0.1, join=2)
+        for item in shapes
+    ]
+
+
+def createBoundaryPath(base, shape, inside=True, retractThreshold=0.0):
+    """Clip one exact base path without creating or mutating document objects."""
+
+    result = PathBoundary(base, shape, inside, retractThreshold).execute()
+    return _pathWithJobCenter(base, result)
+
+
 class DressupPathBoundary(object):
     def promoteStockToBoundary(self, stock):
         """Ensure stock object has boundary properties set."""
@@ -195,31 +229,27 @@ class DressupPathBoundary(object):
 
     def execute(self, obj):
         if not PathUtil.activeForOp(obj):
-            obj.Path = Path.Path()
+            obj.Path = _pathWithJobCenter(obj)
             return
         if not hasattr(obj, "Stock") or obj.Stock is None:
             Path.Log.error("BoundaryStock (Stock) missing; cannot execute dressup.")
-            obj.Path = Path.Path()
+            obj.Path = _pathWithJobCenter(obj)
             return
         if not hasattr(obj.Stock, "Shape") or obj.Stock.Shape is None:
             Path.Log.error("Boundary stock has no Shape; cannot execute dressup.")
-            obj.Path = Path.Path()
+            obj.Path = _pathWithJobCenter(obj)
             return
-        if obj.Offset and obj.Stock and not obj.Stock.Shape.isNull():
-            offset = obj.Offset
-            if obj.Inside:
-                offset = -offset
-            stock = obj.Stock.Shape
-            if isinstance(stock, Part.Compound):
-                shapes = [sh for sh in stock.SubShapes]
-            else:
-                shapes = [stock]
-            shape = [sh.makeOffsetShape(offset, tolerance=0.1, join=2) for sh in shapes]
-        else:
-            shape = obj.Stock.Shape
-
-        pb = PathBoundary(obj.Base, shape, obj.Inside, obj.RetractThreshold)
-        obj.Path = pb.execute()
+        shape = offsetBoundaryShape(
+            obj.Stock.Shape,
+            obj.Inside,
+            obj.Offset.Value,
+        )
+        obj.Path = createBoundaryPath(
+            obj.Base,
+            shape,
+            obj.Inside,
+            obj.RetractThreshold.Value,
+        )
 
 
 class PathBoundary:

@@ -24,7 +24,7 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
-from VibeCADNativeSketchGeometryBindings import SKETCH_GEOMETRY_CAPABILITY_NAME
+from VibeCADNativeSketchCleanupSchema import SKETCH_CUT_CAPABILITY_NAME
 from VibeCADNativeSketchState import (
     serialize_sketch_constraint,
     serialize_sketch_geometry,
@@ -210,15 +210,14 @@ def _run() -> None:
                 live_surface,
                 build_native_capability_registry(),
             )
-            assert production.available is False
-            assert "Sketcher_Split" not in production.missing_action_ids
-            assert SKETCH_GEOMETRY_CAPABILITY_NAME in (
-                production.incomplete_definition_names
-            )
+            assert production.available is True
+            assert production.missing_action_ids == ()
+            assert production.incomplete_definition_names == ()
+            assert SKETCH_CUT_CAPABILITY_NAME in production.tool_names
 
             def native_call(arguments, *, succeeds=True, suffix="call"):
                 response = dispatcher.call(
-                    SKETCH_GEOMETRY_CAPABILITY_NAME,
+                    SKETCH_CUT_CAPABILITY_NAME,
                     json.dumps(arguments, separators=(",", ":")),
                     f"split-{case_number}-{suffix}",
                 )

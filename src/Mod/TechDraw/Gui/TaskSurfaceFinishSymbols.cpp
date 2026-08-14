@@ -38,6 +38,7 @@
 #include <Mod/TechDraw/App/DrawViewSymbol.h>
 
 #include "QGIView.h"
+#include "SurfaceFinishSymbolBuilder.h"
 #include "ui_TaskSurfaceFinishSymbols.h"
 #include "TaskSurfaceFinishSymbols.h"
 #include "ViewProviderSymbol.h"
@@ -536,35 +537,44 @@ bool TaskSurfaceFinishSymbols::accept()
             doc,
             QT_TRANSLATE_NOOP("Command", "Surface Finish Symbols")
         );
-        auto* surfaceSymbol =
-            doc->addObject<TechDraw::DrawViewSymbol>("SurfaceSymbol");
-        if (!surfaceSymbol) {
-            throw Base::RuntimeError(
-                "Could not create the surface-finish symbol"
-            );
-        }
-        surfaceSymbol->Symbol.setValue(completeSymbol());
-        surfaceSymbol->Rotation.setValue(angle);
-
         auto* view = dynamic_cast<TechDraw::DrawView*>(owner);
-        surfaceSymbol->Owner.setValue(view);
-        surfaceSymbol->X.setValue(placement.x);
-        surfaceSymbol->Y.setValue(placement.y);
-        page->addView(surfaceSymbol);
-
-        auto* viewProvider = dynamic_cast<ViewProviderSymbol*>(
-            QGIView::getViewProvider(surfaceSymbol)
-        );
-        if (viewProvider) {
-            viewProvider->StackOrder.setValue(ZVALUE::DIMENSION);
+        DrawingSurfaceFinishType type = DrawingSurfaceFinishType::AnyMethod;
+        switch (activeIcon) {
+        case SymbolType::AnyMethod:
+            type = DrawingSurfaceFinishType::AnyMethod;
+            break;
+        case SymbolType::RemoveProhibit:
+            type = DrawingSurfaceFinishType::RemovalProhibited;
+            break;
+        case SymbolType::RemoveRequired:
+            type = DrawingSurfaceFinishType::RemovalRequired;
+            break;
+        case SymbolType::AnyMethodAll:
+            type = DrawingSurfaceFinishType::AnyMethodAllAround;
+            break;
+        case SymbolType::RemoveProhibitAll:
+            type = DrawingSurfaceFinishType::RemovalProhibitedAllAround;
+            break;
+        case SymbolType::RemoveRequiredAll:
+            type = DrawingSurfaceFinishType::RemovalRequiredAllAround;
+            break;
         }
-
-        surfaceSymbol->recomputeFeature();
-        if (surfaceSymbol->isError()) {
-            throw Base::RuntimeError(
-                "The surface-finish symbol could not be generated"
-            );
-        }
+        const DrawingSurfaceFinishSpec spec {
+            isISO ? DrawingSurfaceFinishStandard::ISO
+                  : DrawingSurfaceFinishStandard::ASME,
+            type,
+            leMethod->text().toStdString(),
+            leAddition->text().toStdString(),
+            cbLay->currentText().toStdString(),
+            cbRA->currentText().toStdString(),
+            leSamLength->text().toStdString(),
+            cbMinRought->currentText().toStdString(),
+            cbMaxRought->currentText().toStdString(),
+            angle,
+            "SurfaceSymbol",
+        };
+        createDrawingSurfaceFinishSymbol(
+            page, view, placement.x, placement.y, spec);
         TaskInternal::updateExactDocument(doc);
         transaction.commit();
         return true;

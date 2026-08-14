@@ -165,6 +165,7 @@ public:
     App::PropertyFloatList YAxisData;
     App::PropertyString PlotData;
     App::PropertyEnumeration PlotDataComponent;
+    App::PropertyString Unit;
 
     const char* getViewProviderName() const override
     {
@@ -402,6 +403,7 @@ public:
 
     App::PropertyString FieldName;
     App::PropertyString Function;
+    App::PropertyString ResultUnit;
     App::PropertyFloat ReplacementValue;
     App::PropertyBool ReplaceInvalid;
 

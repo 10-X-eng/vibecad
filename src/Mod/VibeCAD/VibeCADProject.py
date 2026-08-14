@@ -4,8 +4,8 @@
 
 Stores a small durable manifest per CAD project (title, summary, document
 scope) plus a sqlite index of known projects. Deliberately contains no
-workflow state: tool availability is driven by the active workbench pack,
-not by project lifecycle gates.
+workflow state: Native tool availability is resolved from the frozen,
+human-selected ribbon surface, not from project lifecycle gates.
 """
 
 from __future__ import annotations

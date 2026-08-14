@@ -10583,6 +10583,26 @@ def _publish_cam_candidate(
 
     owned_by_key = _cam_auxiliary_objects(doc, prepared)
     job = existing.get(job_name)
+    previously_replaced_sources = tuple(
+        getattr(job, "VibeCADTimelineReplacedInputs", ()) or ()
+    ) if job is not None else ()
+    replace_source_keys: set[tuple[str, str]] = set()
+    for reference_key in reference_by_key:
+        source = doc.getObject(reference_key[1])
+        if (
+            source is None
+            or getattr(source, "Document", None) is not doc
+            or str(getattr(doc, "Uid", "") or "") != reference_key[0]
+        ):
+            raise RuntimeError(
+                f"CAM source object {reference_key[1]!r} disappeared before publication."
+            )
+        view = getattr(source, "ViewObject", None)
+        if (
+            bool(getattr(view, "Visibility", False))
+            or any(source is previous for previous in previously_replaced_sources)
+        ):
+            replace_source_keys.add(reference_key)
     job_reconciliation = (
         _capture_timeline_resource_reconciliation(
             doc,
@@ -11061,13 +11081,9 @@ def _publish_cam_candidate(
         for resource in job_resources:
             path_timeline.markTimelineResource(resource, job)
 
-        previously_replaced = list(
-            getattr(job, "VibeCADTimelineReplacedInputs", ()) or ()
-        )
         replaced_sources: list[Any] = []
         for clone in model_objects.values():
             source = getattr(clone, "VibeCADCAMOriginal", None)
-            view = getattr(source, "ViewObject", None)
             if (
                 source is None
                 or getattr(source, "Document", None) is not doc
@@ -11076,10 +11092,14 @@ def _publish_cam_candidate(
                 raise RuntimeError(
                     f"CAM model clone {clone.Name!r} lost its exact public source."
                 )
+            source_key = (str(getattr(doc, "Uid", "") or ""), str(source.Name))
             if (
-                bool(getattr(view, "Visibility", False))
-                or any(source is previous for previous in previously_replaced)
-            ) and all(source is not existing_source for existing_source in replaced_sources):
+                source_key in replace_source_keys
+                and all(
+                    source is not existing_source
+                    for existing_source in replaced_sources
+                )
+            ):
                 replaced_sources.append(source)
         path_timeline.markTimelineReplacedInputs(job, replaced_sources)
 

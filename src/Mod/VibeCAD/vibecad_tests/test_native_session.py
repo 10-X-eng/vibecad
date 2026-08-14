@@ -20,6 +20,7 @@ from VibeCADNativeSessionFactory import (
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeSurface import NativeSurfaceSnapshot
 from VibeCADNativeTurn import NativeTurnSnapshot
+from VibeCADNativeUndo import NativeAssistantUndoLedger
 
 
 class _Document:
@@ -84,6 +85,7 @@ class _Service:
         self.document = _Document()
         self.state = NativeDocumentStateStore()
         self.state.begin_native_authority(self.document.Uid)
+        self.undo = NativeAssistantUndoLedger()
         self.mode = "native"
 
     def modeling_engine(self):
@@ -94,6 +96,9 @@ class _Service:
 
     def native_document_state_store(self):
         return self.state
+
+    def native_assistant_undo_ledger(self):
+        return self.undo
 
     def task_panel_summary(self):
         return {"active_dialog": False, "edit_mode": False}
@@ -119,7 +124,18 @@ def test_session_factory_binds_only_the_exact_frozen_common_surface(monkeypatch)
     assert execution.turn == turn
     assert execution.dispatcher.call_count == 0
     assert len(execution.run_id) == 32
+    assert execution.undo_ledger is service.undo
     execution.close()
+
+    next_execution = create_native_session_execution(
+        service=service,
+        expected_surface=frozen,
+        expected_schemas=schemas,
+        registry=build_native_capability_registry(),
+    )
+    assert next_execution.undo_ledger is execution.undo_ledger
+    assert next_execution.run_id != execution.run_id
+    next_execution.close()
 
 
 def test_session_factory_refuses_schema_or_authority_drift(monkeypatch) -> None:

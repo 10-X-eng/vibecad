@@ -296,7 +296,9 @@ void DrawViewPart::setPrecomputedProjection(
     waitingForHlr(false);
     waitingForFaces(false);
     overrideKeepUpdated(false);
-    requestPaint();
+    if (!deferPrecomputedProjectionPaint()) {
+        requestPaint();
+    }
 }
 
 bool DrawViewPart::restorePrecomputedProjection()
@@ -407,13 +409,36 @@ std::string DrawViewPart::sourceStateSignature(
     const std::vector<App::DocumentObject*>& sources) const
 {
     std::ostringstream state;
-    state << "v2;";
+    state << "v3;";
     std::vector<const App::Document*> documents;
+    std::vector<std::pair<const App::Document*, std::vector<const App::DocumentObject*>>>
+        relevantObjects;
     auto addDocument = [&documents](const App::Document* document) {
         if (document
             && std::find(documents.begin(), documents.end(), document)
                 == documents.end()) {
             documents.push_back(document);
+        }
+    };
+    auto addRelevant = [&addDocument, &relevantObjects](
+                           const App::DocumentObject* object) {
+        if (!object || !object->getDocument()) {
+            return;
+        }
+        const auto* document = object->getDocument();
+        addDocument(document);
+        auto entry = std::find_if(
+            relevantObjects.begin(),
+            relevantObjects.end(),
+            [document](const auto& candidate) {
+                return candidate.first == document;
+            });
+        if (entry == relevantObjects.end()) {
+            relevantObjects.push_back({document, {object}});
+        }
+        else if (std::find(entry->second.begin(), entry->second.end(), object)
+                 == entry->second.end()) {
+            entry->second.push_back(object);
         }
     };
     auto appendText = [&state](const std::string& text) {
@@ -440,12 +465,12 @@ std::string DrawViewPart::sourceStateSignature(
     state << "sources=" << sources.size() << ';';
     for (const auto* source : sources) {
         appendObject(source);
-        addDocument(source ? source->getDocument() : nullptr);
+        addRelevant(source);
 
         const auto* linked = source ? source->getLinkedObject(true) : nullptr;
         state << "linked=";
         appendObject(linked);
-        addDocument(linked ? linked->getDocument() : nullptr);
+        addRelevant(linked);
     }
 
     std::sort(
@@ -469,12 +494,46 @@ std::string DrawViewPart::sourceStateSignature(
             continue;
         }
 
+        const auto& operations = timeline->Operations.getValues();
+        std::size_t relevantEnd = 0;
+        const auto relevant = std::find_if(
+            relevantObjects.begin(),
+            relevantObjects.end(),
+            [document](const auto& candidate) {
+                return candidate.first == document;
+            });
+        if (relevant != relevantObjects.end()) {
+            for (const auto* object : relevant->second) {
+                const App::DocumentObject* root = object;
+                for (std::size_t depth = 0; root && depth < 256; ++depth) {
+                    const auto* owner = App::DocumentTimeline::timelineOwner(root);
+                    if (!owner || owner == root || owner->getDocument() != document) {
+                        break;
+                    }
+                    root = owner;
+                }
+                const auto position = std::find(operations.begin(), operations.end(), root);
+                if (position != operations.end()) {
+                    relevantEnd = std::max(
+                        relevantEnd,
+                        static_cast<std::size_t>(
+                            std::distance(operations.begin(), position))
+                            + 1);
+                }
+            }
+        }
+
         state << ":timeline=";
         appendText(timeline->getNameInDocument());
+        const long boundary = std::clamp(
+            timeline->Position.getValue(),
+            0L,
+            static_cast<long>(relevantEnd));
         state << ":schema=" << timeline->SchemaVersion.getValue()
-              << ":position=" << timeline->Position.getValue()
-              << ":operations=" << timeline->Operations.getSize() << ':';
-        for (const auto* operation : timeline->Operations.getValues()) {
+              << ":relevant-position=" << boundary
+              << ":relevant-operations=" << relevantEnd << ':';
+        for (std::size_t index = 0; index < relevantEnd; ++index) {
+            const auto* operation = operations[index];
             appendText(
                 operation && operation->getNameInDocument()
                     ? std::string(operation->getNameInDocument())
@@ -483,9 +542,13 @@ std::string DrawViewPart::sourceStateSignature(
             state << ',';
         }
         const auto& suppression = timeline->SuppressionAtEnd.getValues();
-        state << ":suppression=" << suppression.size() << ':';
-        for (std::size_t index = 0; index < suppression.size(); ++index) {
-            state << (suppression.test(index) ? '1' : '0');
+        state << ":relevant-suppression-valid="
+              << (suppression.size() >= relevantEnd ? '1' : '0')
+              << ":relevant-suppression=" << relevantEnd << ':';
+        for (std::size_t index = 0; index < relevantEnd; ++index) {
+            state << (index < suppression.size()
+                          ? (suppression.test(index) ? '1' : '0')
+                          : 'x');
         }
         state << ';';
     }
@@ -607,7 +670,25 @@ void DrawViewPart::onChanged(const App::Property* prop)
         XDirection.setValue(Base::Vector3d(1.0, 0.0, 0.0));
     }
 
+    if (!isRestoring() && getDocument()
+        && getDocument()->isPerformingTransaction()
+        && geometryObject && geometryMatchesActiveSources()) {
+        if (prop == &CosmeticEdges || prop == &CenterLines) {
+            // Rebuild both lists in their canonical order.  Refreshing only
+            // one list can renumber the other list's projected EdgeN entries.
+            refreshCEGeoms();
+            refreshCLGeoms();
+        }
+    }
+
     DrawView::onChanged(prop);
+}
+
+void DrawViewPart::onUndoRedoFinished()
+{
+    DrawView::onUndoRedoFinished();
+    refreshAllCosmetic();
+    requestPaint();
 }
 
 void DrawViewPart::partExec(TopoDS_Shape& shape)
@@ -1465,8 +1546,28 @@ BaseGeomPtr DrawViewPart::projectEdge(const TopoDS_Edge& e) const
     BRepAlgo_NormalProjection projector(paper);
     projector.Add(e);
     projector.Build();
-    TopoDS_Shape s = projector.Projection();
-    return BaseGeom::baseFactory(TopoDS::Edge(s));
+    const TopoDS_Shape projectedShape = projector.Projection();
+    if (projectedShape.IsNull()) {
+        throw Base::ValueError("TechDraw edge projection produced no geometry");
+    }
+    if (projectedShape.ShapeType() == TopAbs_EDGE) {
+        return BaseGeom::baseFactory(TopoDS::Edge(projectedShape));
+    }
+
+    // OCC commonly wraps the projection of one edge in a compound or wire.
+    // Casting that wrapper directly to TopoDS_Edge raises Standard_TypeMismatch
+    // in the GUI when broken-view decoration is painted.  Preserve the method's
+    // one-edge contract by extracting and validating its single edge.
+    TopExp_Explorer edges(projectedShape, TopAbs_EDGE);
+    if (!edges.More()) {
+        throw Base::ValueError("TechDraw edge projection contains no edge");
+    }
+    const TopoDS_Edge projectedEdge = TopoDS::Edge(edges.Current());
+    edges.Next();
+    if (edges.More()) {
+        throw Base::ValueError("TechDraw edge projection contains multiple edges");
+    }
+    return BaseGeom::baseFactory(projectedEdge);
 }
 
 bool DrawViewPart::waitingForResult() const

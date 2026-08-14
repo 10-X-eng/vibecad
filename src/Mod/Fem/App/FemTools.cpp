@@ -24,14 +24,14 @@
 #include <QStandardPaths>
 #include <QStringList>
 
+#include <cmath>
+
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
-#include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_BezierCurve.hxx>
 #include <Geom_BezierSurface.hxx>
-#include <Geom_Line.hxx>
 #include <Precision.hxx>
 #include <Standard_Failure.hxx>
 #include <TColgp_Array2OfPnt.hxx>
@@ -366,7 +366,8 @@ TopoDS_Shape Fem::Tools::getFeatureSubShape(
     try {
         return Part::Feature::getShape(
             object,
-            Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform,
+            Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform
+                | Part::ShapeOption::NeedSubElement,
             subName
         );
     }
@@ -391,6 +392,9 @@ bool Fem::Tools::getCylinderParams(
     double& radius
 )
 {
+    if (sh.IsNull() || sh.ShapeType() != TopAbs_FACE) {
+        return false;
+    }
     TopoDS_Face face = TopoDS::Face(sh);
     BRepAdaptor_Surface surface(face);
     if (!(surface.GetType() == GeomAbs_Cylinder)) {
@@ -398,20 +402,18 @@ bool Fem::Tools::getCylinderParams(
     }
 
     gp_Cylinder cyl = surface.Cylinder();
-    gp_Pnt start = surface.Value(surface.FirstUParameter(), surface.FirstVParameter());
-    gp_Pnt end = surface.Value(surface.FirstUParameter(), surface.LastVParameter());
+    const double firstV = surface.FirstVParameter();
+    const double lastV = surface.LastVParameter();
+    if (!std::isfinite(firstV) || !std::isfinite(lastV)
+        || std::abs(lastV - firstV) <= Precision::Confusion()) {
+        return false;
+    }
 
-    Handle(Geom_Curve) handle = new Geom_Line(cyl.Axis());
-    GeomAPI_ProjectPointOnCurve proj(start, handle);
-    gp_XYZ startProj = proj.NearestPoint().XYZ();
-    proj.Perform(end);
-    gp_XYZ endProj = proj.NearestPoint().XYZ();
+    const gp_Dir dir = cyl.Axis().Direction();
+    gp_Pnt center = cyl.Axis().Location();
+    center.Translate(gp_Vec(dir) * ((firstV + lastV) / 2.0));
 
-    gp_XYZ ax(endProj - startProj);
-    gp_XYZ center = (startProj + endProj) / 2.0;
-    gp_Dir dir(ax);
-
-    height = ax.Modulus();
+    height = std::abs(lastV - firstV);
     radius = cyl.Radius();
     base = Base::Vector3d(center.X(), center.Y(), center.Z());
     axis = Base::Vector3d(dir.X(), dir.Y(), dir.Z());

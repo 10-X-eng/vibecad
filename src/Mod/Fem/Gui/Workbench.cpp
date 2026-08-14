@@ -160,6 +160,7 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
           << "FEM_MeshGroup"
           << "FEM_MeshGMSHRefinement"
           << "Separator"
+          << "FEM_CreateElementsSet"
           << "FEM_FEMMesh2Mesh";
 
     Gui::ToolBarItem* solve = new Gui::ToolBarItem(root);

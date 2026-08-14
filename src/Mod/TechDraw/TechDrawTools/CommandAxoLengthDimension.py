@@ -36,26 +36,11 @@ import FreeCAD as App
 import FreeCADGui as Gui
 
 import TechDrawTools.TDToolsUtil as Utils
+from TechDrawTools.AxoLengthDimension import (
+    ParallelAxonometricDirectionsError,
+    create_axonometric_length,
+)
 from VibeCADNativeTransaction import _OwnedDocumentTransaction
-
-import TechDraw
-import math
-
-# A hack to deal with garbage in the low bits causing wrong decisions. dimensionLineAngle is in radians.  If 
-# dimensionLineAngle is 90deg +/- AngularTolerance, we treat it as a vertical dimension line.  This affects which
-# side of the dimension line is used for the dimension text.
-def makePlumb(dimensionLineAngle):
-    HalfPi = math.pi / 2.0
-    
-    AngularTolerance = 0.01   # This value is a guess.  It works for the file in issue #16172, but
-                              # seems small (~0.5deg).  
-
-    if math.isclose(dimensionLineAngle, HalfPi, abs_tol=AngularTolerance):
-        return HalfPi
-    elif math.isclose(dimensionLineAngle, -HalfPi, abs_tol=AngularTolerance):
-        return -HalfPi
- 
-    return dimensionLineAngle
     
 
 class CommandAxoLengthDimension:
@@ -100,82 +85,34 @@ class CommandAxoLengthDimension:
         if page is None:
             return
 
-        StartPt, EndPt = edges[1].Vertexes[0].Point, edges[1].Vertexes[1].Point
-        extLineVec = EndPt.sub(StartPt)
-        StartPt, EndPt = edges[0].Vertexes[0].Point, edges[0].Vertexes[1].Point
-        dimLineVec = EndPt.sub(StartPt)
-
-        xAxis = App.Vector(1,0,0)
-        extAngle = math.degrees(extLineVec.getAngle(xAxis))
-        lineAngle = math.degrees(makePlumb(dimLineVec.getAngle(xAxis)))
-
-        if extLineVec.y < 0.0:
-            extAngle = 180-extAngle
-        if dimLineVec.y < 0.0:
-            lineAngle = 180-lineAngle
-
-        if abs(extAngle-lineAngle)>0.1:
-            transaction = _OwnedDocumentTransaction(
-                document,
-                "Create axonometric length dimension",
+        measurement_names = vertNames if vertNames else edgeNames[:1]
+        direction_names = Utils.getSelEdgeNames(2)
+        transaction = _OwnedDocumentTransaction(
+            document,
+            "Create axonometric length dimension",
+        )
+        try:
+            result = create_axonometric_length(
+                view,
+                measurement_names,
+                direction_names[0],
+                direction_names[1],
+                label_position_in_view_mm=None,
             )
-            # re issue: https://github.com/FreeCAD/FreeCAD/issues/13677
-            # Instead of using makeDistanceDim (which is meant for extent dimensions), we use the 
-            # same steps as in CommandCreateDims.cpp to create a regular length dimension.  This avoids
-            # the creation of CosmeticVertex objects to serve as dimension points.  These CosmeticVertex
-            # objects are never deleted, but are no longer used once their dimension is deleted. 
-            # distanceDim=TechDraw.makeDistanceDim(view,'Distance',vertexes[0].Point*scale,vertexes[1].Point*scale)
-            try:
-                distanceDim = document.addObject(
-                    "TechDraw::DrawViewDimension",
+            if result.analysis.value_mode != "projected":
+                result.dimension.Label = result.dimension.Label.replace(
                     "Dimension",
+                    "Dimension3D",
                 )
-                distanceDim.Type = "Distance"
-                distanceDim.MeasureType = "Projected"
-                self.setReferences(distanceDim, view, edgeNames, vertNames)
-                page.addView(distanceDim)
-
-                distanceDim.AngleOverride = True
-                distanceDim.LineAngle = lineAngle
-                distanceDim.ExtensionAngle = extAngle
-
-                distanceDim.recompute()
-
-                # as in CmdCreateDims::positionDimText:
-                linearPoints = distanceDim.getLinearPoints()
-                mid = (linearPoints[0] + linearPoints[1]) / 2
-                distanceDim.X = mid.x
-                distanceDim.Y = -mid.y
-
-                (px,py,pz) = Utils.getCoordinateVectors(view)
-                arrowTips = distanceDim.getArrowPositions()
-                value2D = (arrowTips[1].sub(arrowTips[0])).Length
-                value3D = 1.0
-                if px.isParallel(dimLineVec,0.1):
-                    value3D = value2D/px.Length
-                elif py.isParallel(dimLineVec,0.1):
-                    value3D = value2D/py.Length
-                elif pz.isParallel(dimLineVec,0.1):
-                    value3D = value2D/pz.Length
-                if value3D != 1.0:
-                    formatted3DValue = self._formatValueToSpec(
-                        value3D,
-                        distanceDim.FormatSpec,
-                    )
-                    distanceDim.Arbitrary = True
-                    distanceDim.Label = distanceDim.Label.replace(
-                        "Dimension",
-                        "Dimension3D",
-                    )
-                    distanceDim.FormatSpec = formatted3DValue
-
-                distanceDim.recompute()
-                view.touch()
-            except Exception:
-                transaction.abort()
-                raise
-            transaction.commit()
-            view.requestPaint()
+        except ParallelAxonometricDirectionsError:
+            transaction.abort()
+            Gui.Selection.clearSelection()
+            return
+        except Exception:
+            transaction.abort()
+            raise
+        transaction.commit()
+        view.requestPaint()
 
         Gui.Selection.clearSelection()
 
@@ -206,38 +143,6 @@ class CommandAxoLengthDimension:
             )
             >= 2
         )
-
-    def _formatValueToSpec(self, value, formatSpec):
-        '''Calculate value using "%.nf" or "%.nw" formatSpec'''
-        formatSpec = '{'+formatSpec+'}'
-        formatSpec = formatSpec.replace('%',':')
-        if formatSpec.find('w') > 0:
-            formatSpec = formatSpec.replace('w','f')
-            numDig = formatSpec.find(":.")
-            if numDig != -1:
-                numDig = numDig+2
-                charList = list(formatSpec)
-                digits = int(charList[numDig])
-                value = round(value,digits)
-                strValue = formatSpec.format(value)
-                strValueList = list(strValue)
-                while strValueList[-1] == '0':
-                    strValueList.pop()
-                if strValueList[-1] == '.':
-                    strValueList.pop()
-                return ''.join(strValueList)
-        else:
-            return formatSpec.format(value)
-
-    def setReferences(self, dimension, view, edgeNameList, vertexNameList):
-        references = list()
-        if vertexNameList:
-            for vert in vertexNameList:
-                references.append((view, vert))
-        else:
-            references.append((view, edgeNameList[0]))
-
-        dimension.References2D = references
 
 #
 # The command must be "registered" with a unique name by calling its class.

@@ -63,6 +63,7 @@
 
 #include "CommandExtensionDims.h"
 #include "CommandHelpers.h"
+#include "DimensionBuilder.h"
 #include "DimensionValidators.h"
 #include "DrawGuiUtil.h"
 #include "QGIDatumLabel.h"
@@ -2622,88 +2623,8 @@ DrawViewDimension* dimensionMaker(TechDraw::DrawViewPart* dvp, std::string dimTy
 DrawViewDimension* dimMaker(TechDraw::DrawViewPart* dvp, std::string dimType,
                             ReferenceVector references2d, ReferenceVector references3d)
 {
-    if (!dvp || !dvp->getDocument()) {
-        throw Base::ValueError(
-            "A dimension requires a live drawing view"
-        );
-    }
-    TechDraw::DrawPage* page = dvp->findParentPage();
-    App::Document* document = dvp->getDocument();
-    if (!page || page->getDocument() != document) {
-        throw Base::ValueError(
-            "The dimension view is not attached to a drawing page"
-        );
-    }
-
-    std::string dimName =
-        document->getUniqueObjectName("Dimension");
-    const std::string documentName =
-        Base::InterpreterSingleton::strToPython(
-            document->getName()
-        );
-
-    const QString dimensionFactory =
-        QStringLiteral(
-            "App.getDocument('%1').addObject"
-            "('TechDraw::DrawViewDimension', '%2')"
-        )
-            .arg(
-                QString::fromStdString(documentName),
-                QString::fromStdString(dimName)
-            );
-    auto* dim = dynamic_cast<TechDraw::DrawViewDimension*>(
-        Gui::Command::runDocumentObjectCommand(
-            Gui::Command::Doc,
-            *document,
-            dimensionFactory.toUtf8(),
-            TechDraw::DrawViewDimension::getClassTypeId()
-        )
-    );
-    if (!dim) {
-        throw Base::TypeError(
-            "The dimension object could not be created"
-        );
-    }
-    dim->translateLabel(
-        "DrawViewDimension",
-        "Dimension",
-        dim->getNameInDocument()
-    );
-    const std::string dimensionCommand =
-        Gui::Command::getObjectCmd(dim);
-    const std::string pageCommand =
-        Gui::Command::getObjectCmd(page);
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "%s.Type = '%s'",
-        dimensionCommand.c_str(),
-        dimType.c_str()
-    );
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "%s.MeasureType = 'Projected'",
-        dimensionCommand.c_str()
-    );
-
-    //always have References2D, even if only for the parent DVP
-    dim->setReferences2d(references2d);
-    dim->setReferences3d(references3d);
-
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "%s.addView(%s)",
-        pageCommand.c_str(),
-        dimensionCommand.c_str()
-    );
-
-    dim->recomputeFeature();
-    if (dim->isError()) {
-        throw Base::RuntimeError(
-            "The dimension could not be generated"
-        );
-    }
-
-    return dim;
+    return TechDrawGui::createDimensionFeature(
+        dvp, dimType, references2d, references3d);
 }
 
 //position the Dimension text on the view

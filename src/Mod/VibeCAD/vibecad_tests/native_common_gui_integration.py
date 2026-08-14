@@ -30,7 +30,7 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeObjectIdentity
 from VibeCADNativeSurface import NativeSurfaceSnapshot
 from VibeCADNativeTurn import NativeTurnSnapshot
-from VibeCADNativeUndo import NativeAssistantUndoLedger, NativeUndoError
+from VibeCADNativeUndo import NativeUndoError
 from VibeCADNativeView import set_grid_visible
 
 
@@ -91,7 +91,7 @@ def _run() -> None:
         document.recompute()
         _process_events()
 
-        ledger = NativeAssistantUndoLedger()
+        ledger = service.native_assistant_undo_ledger()
         ledger.begin_run("native-common-gui-run")
         context = NativeRuntimeContext(
             service=service,
@@ -154,6 +154,7 @@ def _run() -> None:
             assert result.pop("ok") is True, result
             return result
 
+        read_revision = state.current_revision(uid)
         active_state = native_call("state.read", {"operation": "active"})
         assert active_state["surface_id"] == "model"
         assert native_call("state.read", {"operation": "selection"})[
@@ -206,6 +207,8 @@ def _run() -> None:
         )
         assert properties["volume_mm3"] > 1000.0
         assert properties["mass_kg"] > 0.001
+        _process_events()
+        assert state.current_revision(uid) == read_revision
 
         presentation_revision = state.current_revision(uid)
         assert native_call("view.control", {"operation": "fit_all"}) == {"fit_all": True}
@@ -231,9 +234,10 @@ def _run() -> None:
                 ],
             }
         )
-        assert screenshot["artifact"]["size_bytes"] > 0
-        assert Path(screenshot["artifact"]["path"]).is_file()
-        assert screenshot["_vibecad_image_attachment"]["path"] == screenshot["artifact"]["path"]
+        assert screenshot["image"]["mime_type"] == "image/png"
+        assert screenshot["image"]["size_bytes"] > 0
+        attachment_path = screenshot["_vibecad_image_attachment"]["path"]
+        assert Path(attachment_path).is_file()
         _process_events()
         assert state.current_revision(uid) == presentation_revision
 
@@ -271,6 +275,8 @@ def _run() -> None:
             checkpoint,
             execution.receipt,
         )
+        ledger.end_run("native-common-gui-run")
+        ledger.begin_run("native-common-gui-next-turn")
         undo_execution = native_call(
             "document.undo",
             {"operation": "assistant_local"},

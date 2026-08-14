@@ -8,6 +8,7 @@ endif(BUILD_GUI)
 
 set(TechDraw_Scripts
     Init.py
+    SectionViewPosition.py
     TestTechDrawApp.py
     TestTechDrawGui.py
 )
@@ -21,10 +22,12 @@ set(TechDraw_ToolsScripts
     TechDrawTools/CommandMoveView.py
     TechDrawTools/CommandShareView.py
     TechDrawTools/CommandAxoLengthDimension.py
+    TechDrawTools/AxoLengthDimension.py
     TechDrawTools/CommandPositionSectionView.py
     TechDrawTools/CommandFillTemplateFields.py
     TechDrawTools/CommandVertexCreations.py
     TechDrawTools/CommandHoleShaftFit.py
+    TechDrawTools/FitBuilder.py
     TechDrawTools/TaskMoveView.py
     TechDrawTools/TaskShareView.py
     TechDrawTools/TaskFillTemplateFields.py

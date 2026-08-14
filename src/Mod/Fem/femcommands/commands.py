@@ -520,29 +520,8 @@ class _ClippingPlaneAdd(CommandManager):
         if gui_document is None:
             return
 
-        from pivy import coin
-        from femtools.femutils import getBoundBoxOfAllDocumentShapes
+        from .clipping import add_clipping_plane
         from femtools.femutils import getSelectedFace
-
-        overallboundbox = getBoundBoxOfAllDocumentShapes(document)
-        if not overallboundbox:
-            return
-
-        positive_lengths = [
-            length
-            for length in (
-                abs(overallboundbox.XLength),
-                abs(overallboundbox.YLength),
-                abs(overallboundbox.ZLength),
-            )
-            if math.isfinite(length) and length > 0.0
-        ]
-        if not positive_lengths:
-            return
-
-        # Flat geometry has one zero-sized axis.  Size the manipulator from
-        # the smallest real extent instead of collapsing its box to zero.
-        dbox = min(positive_lengths) * 0.2
 
         aFace = getSelectedFace(
             FreeCADGui.Selection.getSelectionEx(document.Name)
@@ -554,19 +533,10 @@ class _ClippingPlaneAdd(CommandManager):
         else:
             f_CoM = FreeCAD.Vector(0, 0, 0)
             f_normal = FreeCAD.Vector(0, 0, 1)
-
-        coin_normal_vector = coin.SbVec3f(-f_normal.x, -f_normal.y, -f_normal.z)
-        coin_bound_box = coin.SbBox3f(
-            f_CoM.x - dbox,
-            f_CoM.y - dbox,
-            f_CoM.z - dbox * 0.15,
-            f_CoM.x + dbox,
-            f_CoM.y + dbox,
-            f_CoM.z + dbox * 0.15,
-        )
-        clip_plane = coin.SoClipPlaneManip()
-        clip_plane.setValue(coin_bound_box, coin_normal_vector, 1)
-        gui_document.ActiveView.getSceneGraph().insertChild(clip_plane, 1)
+        try:
+            add_clipping_plane(gui_document, document, f_CoM, f_normal)
+        except RuntimeError:
+            return
 
 
 class _ClippingPlaneRemoveAll(CommandManager):
@@ -595,12 +565,9 @@ class _ClippingPlaneRemoveAll(CommandManager):
         gui_document = FreeCADGui.getDocument(document.Name)
         if gui_document is None:
             return
-        from pivy import coin
+        from .clipping import remove_all_clipping_planes
 
-        scene_graph = gui_document.ActiveView.getSceneGraph()
-        for node in list(scene_graph.getChildren()):
-            if isinstance(node, coin.SoClipPlane):
-                scene_graph.removeChild(node)
+        remove_all_clipping_planes(gui_document)
 
 
 class _ConstantVacuumPermittivity(CommandManager):
@@ -1647,42 +1614,45 @@ class _ResultsPurge(CommandManager):
 
         document = _active_document()
         analysis = self.active_analysis
-        targets = resulttools.purge_result_targets(analysis)
-        if not targets:
+        plan = resulttools.plan_result_graph_purge(analysis)
+        if plan.blockers:
+            raise RuntimeError(plan.blockers[0])
+        if not plan.targets:
             return
 
         target_identities = [
             (str(target.Name), int(target.ID))
-            for target in targets
+            for target in plan.targets
         ]
-        FreeCADGui.Selection.clearSelection()
-        for target in targets:
-            FreeCADGui.Selection.addSelection(target)
-        if not FreeCADGui.isCommandActive("Std_Delete"):
-            FreeCADGui.Selection.clearSelection()
-            raise RuntimeError(
-                "The native delete command cannot purge the selected FEM "
-                "result graph"
-            )
-
-        # Std_Delete owns the one exact transaction and consumes persisted
-        # timeline replacement/resource contracts before it removes the
-        # selected result graph. Do not wrap it in a second transaction.
-        FreeCADGui.runCommand("Std_Delete", 0)
-        survivors = [
-            name
-            for name, object_id in target_identities
-            if (
-                (candidate := document.getObject(name)) is not None
-                and int(candidate.ID) == object_id
-            )
-        ]
-        if survivors:
-            raise RuntimeError(
-                "The native delete command did not purge FEM results: "
-                + ", ".join(sorted(survivors))
-            )
-        document.recompute()
+        transaction_id = _open_exact_transaction(
+            document,
+            "Purge FEM Results",
+        )
+        try:
+            resulttools.apply_result_graph_purge(plan)
+            recompute_targets = [
+                analysis,
+                *(solver for solver, _roots in plan.solver_roots),
+            ]
+            if document.recompute(recompute_targets, True, True) is False:
+                raise RuntimeError("The retained FEM analysis failed to recompute")
+            survivors = [
+                name
+                for name, object_id in target_identities
+                if (
+                    (candidate := document.getObject(name)) is not None
+                    and int(candidate.ID) == object_id
+                )
+            ]
+            if survivors:
+                raise RuntimeError(
+                    "The FEM result graph was not purged: "
+                    + ", ".join(sorted(survivors))
+                )
+            _close_exact_transaction(document, transaction_id, False)
+        except Exception:
+            _close_exact_transaction(document, transaction_id, True)
+            raise
 
 
 class _SolverCalculixContextManager:

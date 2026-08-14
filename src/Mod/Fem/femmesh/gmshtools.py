@@ -56,8 +56,8 @@ class GmshTools(ObjectTools):
 
     name = "Gmsh"
 
-    def __init__(self, obj):
-        super().__init__(obj)
+    def __init__(self, obj, *, detached=False):
+        super().__init__(obj, detached=detached)
         self.analysis = obj.getParentGroup()
         self.load_properties()
         self.error = False
@@ -223,12 +223,14 @@ class GmshTools(ObjectTools):
         self.write_part_file()
         self.write_geo()
 
-    def convert(self):
+    def convert(self, working_directory=None):
         # converts all available vtk/eement files into msh files, and add element definition
         # to it. Workaround to use adaptive meshing
 
+        directory = working_directory or self.obj.WorkingDirectory
+
         vtk_files = [
-            file for file in os.listdir(self.obj.WorkingDirectory) if file.endswith(".vtk")
+            file for file in os.listdir(directory) if file.endswith(".vtk")
         ]
 
         process = QProcess()
@@ -238,37 +240,37 @@ class GmshTools(ObjectTools):
             element_file_name = file_name + ".elementdata"
 
             # check if there is a element file for this, otherwise this is not a mesh file ocnvertion
-            if not element_file_name in os.listdir(self.obj.WorkingDirectory):
+            if not element_file_name in os.listdir(directory):
                 continue
 
             Console.PrintLog(f"Convert VTK file {vtk_file} \n")
 
             command_list = [
-                os.path.join(self.obj.WorkingDirectory, vtk_file),
+                os.path.join(directory, vtk_file),
                 "-save",
-                os.path.join(self.obj.WorkingDirectory, file_name + ".msh"),
+                os.path.join(directory, file_name + ".msh"),
             ]
 
             process.start(self.gmsh_bin, command_list)
             process.waitForFinished()
 
             # append element data onto mesh file
-            with open(os.path.join(self.obj.WorkingDirectory, element_file_name), "r") as element_f:
+            with open(os.path.join(directory, element_file_name), "r") as element_f:
                 with open(
-                    os.path.join(self.obj.WorkingDirectory, file_name + ".msh"), "a+"
+                    os.path.join(directory, file_name + ".msh"), "a+"
                 ) as msh_f:
                     msh_f.write(element_f.read())
                     msh_f.flush()
 
             process.close()
 
-    def prepare(self):
+    def prepare(self, working_directory=None):
         self.load_properties()
         self.update_mesh_data()
-        self.get_tmp_file_paths()
+        self.get_tmp_file_paths(working_directory)
         self.get_gmsh_command()
         self.write_gmsh_input_files()
-        self.convert()
+        self.convert(working_directory)
 
     def compute(self):
         log_level = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Gmsh").GetString(
@@ -349,22 +351,23 @@ class GmshTools(ObjectTools):
             Console.PrintError("Error in dimension\n")
         Console.PrintMessage("  ElementDimension: " + self.dimension + "\n")
 
-    def get_tmp_file_paths(self):
+    def get_tmp_file_paths(self, working_directory=None):
         # file paths
+        directory = working_directory or self.obj.WorkingDirectory
         _geometry_name = self.part_obj.Name + "_Geometry"
         self.mesh_name = self.part_obj.Name + "_Mesh"
         # geometry file
-        self.temp_file_geometry = os.path.join(self.obj.WorkingDirectory, _geometry_name + ".brep")
+        self.temp_file_geometry = os.path.join(directory, _geometry_name + ".brep")
         # mesh file
         mesh_file_type = ".unv"
         if "BUILD_FEM_VTK" in FreeCAD.__cmake__:
             # when available use vtk, as UNV is lossy (e.g. no pyramid elements)
             mesh_file_type = ".vtk"
         self.temp_file_mesh = os.path.join(
-            self.obj.WorkingDirectory, self.mesh_name + mesh_file_type
+            directory, self.mesh_name + mesh_file_type
         )
         # Gmsh input file
-        self.model_file = os.path.join(self.obj.WorkingDirectory, "shape2mesh.geo")
+        self.model_file = os.path.join(directory, "shape2mesh.geo")
         Console.PrintMessage("  " + self.temp_file_geometry + "\n")
         Console.PrintMessage("  " + self.temp_file_mesh + "\n")
         Console.PrintMessage("  " + self.model_file + "\n")
@@ -1268,7 +1271,7 @@ class GmshTools(ObjectTools):
             background_fields = []
             for obj in size_field_list:
                 id = self._get_recursive_size_field_data(obj)
-                if id > 0:
+                if id is not None and id > 0:
                     background_fields.append(id)
 
             self._background_fields = background_fields

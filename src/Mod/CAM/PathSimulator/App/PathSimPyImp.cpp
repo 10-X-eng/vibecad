@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 
+#include <Base/Interpreter.h>
 #include <Base/PlacementPy.h>
 #include <Base/PyWrapParseTupleAndKeywords.h>
 
@@ -74,8 +75,12 @@ PyObject* PathSimPy::BeginSimulation(PyObject* args, PyObject* kwds)
         return nullptr;
     }
     PathSim* sim = getPathSimPtr();
-    Part::TopoShape* stock = static_cast<Part::TopoShapePy*>(pObjStock)->getTopoShapePtr();
-    sim->BeginSimulation(stock, resolution);
+    Part::TopoShape stock
+        = *static_cast<Part::TopoShapePy*>(pObjStock)->getTopoShapePtr();
+    {
+        Base::PyGILStateRelease release;
+        sim->BeginSimulation(&stock, resolution);
+    }
     Py_IncRef(Py_None);
     return Py_None;
 }
@@ -88,9 +93,12 @@ PyObject* PathSimPy::SetToolShape(PyObject* args)
         return nullptr;
     }
     PathSim* sim = getPathSimPtr();
-    const TopoDS_Shape& toolShape
+    const TopoDS_Shape toolShape
         = static_cast<Part::TopoShapePy*>(pObjToolShape)->getTopoShapePtr()->getShape();
-    sim->SetToolShape(toolShape, resolution);
+    {
+        Base::PyGILStateRelease release;
+        sim->SetToolShape(toolShape, resolution);
+    }
     Py_IncRef(Py_None);
     return Py_None;
 }
@@ -102,19 +110,43 @@ PyObject* PathSimPy::GetResultMesh(PyObject* args)
     }
     cStock* stock = getPathSimPtr()->m_stock.get();
     if (!stock) {
-        PyErr_SetString(PyExc_RuntimeError, "Simulation has stock object");
+        PyErr_SetString(PyExc_RuntimeError, "Simulation has no stock object");
         return nullptr;
     }
 
-    Mesh::MeshObject* meshOuter = new Mesh::MeshObject();
-    Mesh::MeshPy* meshOuterpy = new Mesh::MeshPy(meshOuter);
-    Mesh::MeshObject* meshInner = new Mesh::MeshObject();
-    Mesh::MeshPy* meshInnerpy = new Mesh::MeshPy(meshInner);
-    stock->Tessellate(*meshOuter, *meshInner);
+    auto meshOuter = std::make_unique<Mesh::MeshObject>();
+    auto meshInner = std::make_unique<Mesh::MeshObject>();
+    {
+        Base::PyGILStateRelease release;
+        stock->Tessellate(*meshOuter, *meshInner);
+    }
+    Mesh::MeshPy* meshOuterpy = new Mesh::MeshPy(meshOuter.release());
+    Mesh::MeshPy* meshInnerpy = new Mesh::MeshPy(meshInner.release());
     PyObject* tuple = PyTuple_New(2);
     PyTuple_SetItem(tuple, 0, meshOuterpy);
     PyTuple_SetItem(tuple, 1, meshInnerpy);
     return tuple;
+}
+
+PyObject* PathSimPy::GetCombinedResultMesh(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    cStock* stock = getPathSimPtr()->m_stock.get();
+    if (!stock) {
+        PyErr_SetString(PyExc_RuntimeError, "Simulation has no stock object");
+        return nullptr;
+    }
+
+    auto meshOuter = std::make_unique<Mesh::MeshObject>();
+    auto meshInner = std::make_unique<Mesh::MeshObject>();
+    {
+        Base::PyGILStateRelease release;
+        stock->Tessellate(*meshOuter, *meshInner);
+        meshOuter->addMesh(*meshInner);
+    }
+    return new Mesh::MeshPy(meshOuter.release());
 }
 
 PyObject* PathSimPy::GetSimulationStats(PyObject* args)
@@ -124,7 +156,11 @@ PyObject* PathSimPy::GetSimulationStats(PyObject* args)
     }
     PathSim* sim = getPathSimPtr();
     try {
-        const cStock::Statistics stats = sim->GetSimulationStats();
+        cStock::Statistics stats;
+        {
+            Base::PyGILStateRelease release;
+            stats = sim->GetSimulationStats();
+        }
         PyObject* result = PyDict_New();
         const auto setOwned = [result](const char* name, PyObject* value) {
             PyDict_SetItemString(result, name, value);
@@ -184,12 +220,18 @@ PyObject* PathSimPy::ApplyCommand(PyObject* args, PyObject* kwds)
         return nullptr;
     }
     PathSim* sim = getPathSimPtr();
-    Base::Placement* pos = static_cast<Base::PlacementPy*>(pObjPlace)->getPlacementPtr();
-    Path::Command* cmd = static_cast<Path::CommandPy*>(pObjCmd)->getCommandPtr();
-    Base::Placement* newpos = sim->ApplyCommand(pos, cmd);
+    Base::Placement pos
+        = *static_cast<Base::PlacementPy*>(pObjPlace)->getPlacementPtr();
+    Path::Command cmd
+        = *static_cast<Path::CommandPy*>(pObjCmd)->getCommandPtr();
+    std::unique_ptr<Base::Placement> newpos;
+    {
+        Base::PyGILStateRelease release;
+        newpos.reset(sim->ApplyCommand(&pos, &cmd));
+    }
     // Base::Console().log("Done...\n");
     // Base::Console().Refresh();
-    Base::PlacementPy* newposPy = new Base::PlacementPy(newpos);
+    Base::PlacementPy* newposPy = new Base::PlacementPy(newpos.release());
     return newposPy;
 }
 

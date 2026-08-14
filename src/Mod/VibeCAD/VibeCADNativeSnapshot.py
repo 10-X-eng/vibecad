@@ -20,14 +20,41 @@ class NativeSnapshotError(RuntimeError):
 
 
 def concise_object(obj: Any) -> dict[str, Any]:
-    result: dict[str, Any] = object_reference(obj)
-    label = str(getattr(obj, "Label", "") or "").strip()
-    if label and label != result["object_name"]:
-        result["label"] = label[:160]
-    state = sorted(str(value) for value in list(getattr(obj, "State", []) or []))
-    if state:
-        result["state"] = state[:8]
-    return result
+    """Read one object summary without publishing or retaining read-side state."""
+
+    state_before = tuple(
+        sorted(str(value) for value in list(getattr(obj, "State", []) or []))
+    )
+    try:
+        result: dict[str, Any] = object_reference(obj)
+        label = str(getattr(obj, "Label", "") or "").strip()
+        if label and label != result["object_name"]:
+            result["label"] = label[:160]
+        if state_before:
+            result["state"] = list(state_before[:8])
+        return result
+    finally:
+        state_after = tuple(
+            sorted(str(value) for value in list(getattr(obj, "State", []) or []))
+        )
+        if (
+            state_after != state_before
+            and "Touched" not in state_before
+            and "Touched" in state_after
+        ):
+            try:
+                obj.purgeTouched()
+            except (AttributeError, ReferenceError, RuntimeError) as exc:
+                raise NativeSnapshotError(
+                    "Reading an object summary changed its transient document state."
+                ) from exc
+            state_after = tuple(
+                sorted(str(value) for value in list(getattr(obj, "State", []) or []))
+            )
+        if state_after != state_before:
+            raise NativeSnapshotError(
+                "Reading an object summary changed its transient document state."
+            )
 
 
 def objects_of_type(document: Any, *type_ids: str) -> list[Any]:
@@ -108,7 +135,11 @@ def live_working_set(
     return result
 
 
-def _domain_builder(surface_id: str) -> Callable[[Any], Mapping[str, Any]]:
+def _domain_builder(
+    surface_id: str,
+    background_job: Any | None = None,
+    selection: Mapping[str, Any] | None = None,
+) -> Callable[[Any], Mapping[str, Any]]:
     if surface_id == "model":
         from VibeCADNativeModelSnapshot import build_model_snapshot
 
@@ -128,15 +159,24 @@ def _domain_builder(surface_id: str) -> Callable[[Any], Mapping[str, Any]]:
     if surface_id == "analyze":
         from VibeCADNativeAnalyzeSnapshot import build_analyze_snapshot
 
-        return build_analyze_snapshot
+        return lambda document: build_analyze_snapshot(
+            document,
+            background_job=background_job,
+        )
     if surface_id == "manufacture":
         from VibeCADNativeManufactureSnapshot import build_manufacture_snapshot
 
-        return build_manufacture_snapshot
+        return lambda document: build_manufacture_snapshot(
+            document,
+            selection=selection,
+        )
     if surface_id == "drawing":
         from VibeCADNativeDrawingSnapshot import build_drawing_snapshot
 
-        return build_drawing_snapshot
+        return lambda document: build_drawing_snapshot(
+            document,
+            selection=selection,
+        )
     if surface_id == "parameters":
         from VibeCADNativeParametersSnapshot import build_parameters_snapshot
 
@@ -150,6 +190,7 @@ def build_active_snapshot(
     native_state: Mapping[str, Any],
     *,
     selection: Mapping[str, Any] | None = None,
+    background_job: Any | None = None,
 ) -> dict[str, Any]:
     if surface_id not in SURFACE_IDS or surface_id == "unavailable":
         raise NativeSnapshotError(f"Invalid active Native surface {surface_id!r}.")
@@ -161,6 +202,13 @@ def build_active_snapshot(
     selected = dict(selection) if selection is not None else read_current_selection(document)
     if str(selected.get("document_uid") or "") != uid:
         raise NativeSnapshotError("Native selection belongs to another document.")
+    domain = dict(
+        _domain_builder(
+            surface_id,
+            background_job,
+            selected,
+        )(document)
+    )
     result: dict[str, Any] = {
         "surface_id": surface_id,
         "document": {
@@ -168,9 +216,16 @@ def build_active_snapshot(
             "document_name": str(getattr(document, "Name", "") or ""),
         },
         "structural_revision": int(native_state.get("structural_revision") or 0),
-        "domain": dict(_domain_builder(surface_id)(document)),
+        "domain": domain,
         "working_set": live_working_set(document, selected, native_state),
     }
+    if surface_id == "sketch.edit":
+        revision = domain.pop("revision", None)
+        if not isinstance(revision, str) or not revision.startswith("sketch-v1:"):
+            raise NativeSnapshotError(
+                "The active Sketch did not provide an exact provider revision."
+            )
+        result["revision"] = revision
     if selected.get("items"):
         result["selection"] = selected
     encoded = json.dumps(

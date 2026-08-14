@@ -56,7 +56,7 @@ class NativeInputRequest:
         suffixes = tuple(self.allowed_suffixes)
         if (
             not suffixes
-            or len(suffixes) > 8
+            or len(suffixes) > 16
             or len(set(suffixes)) != len(suffixes)
             or any(
                 not isinstance(value, str)
@@ -216,6 +216,23 @@ class NativeInputArtifact:
 
     def host_path(self) -> Path:
         self.verify_unchanged()
+        return self._path
+
+    def host_path_after_content_verification(self) -> Path:
+        """Return the path after a completed claim without hashing it twice.
+
+        This is for a trusted loader invoked immediately after ``claim``. The
+        stable file identity is checked again, so replacement between the
+        content hash and loader launch is rejected. The path is never part of
+        a provider-visible result.
+        """
+
+        identity = _path_identity(self._path, code=NATIVE_INPUT_FAILED)
+        if identity != self._identity:
+            raise NativeInputError(
+                NATIVE_INPUT_FAILED,
+                "The selected input file changed after content verification.",
+            )
         return self._path
 
     def read_bytes(self, *, maximum_bytes: int | None = None) -> bytes:

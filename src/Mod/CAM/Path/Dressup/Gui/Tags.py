@@ -726,6 +726,30 @@ class PathDressupTagViewProvider:
             return ":/icons/CAM_OpActive.svg"
 
 
+def CreateInTransaction(baseObject, name="DressupTag", hide_base=True):
+    """Create one holding-tag replacement inside its caller-owned transaction."""
+
+    document = getattr(baseObject, "Document", None)
+    job = _validated_base(baseObject, document)
+    if job is None:
+        raise RuntimeError("The selected CAM operation cannot receive holding tags")
+    base_was_visible = bool(
+        baseObject.ViewObject and baseObject.ViewObject.Visibility
+    )
+    obj = PathDressupTag.Create(baseObject, name, generate=False)
+    if obj is None:
+        raise RuntimeError("Could not create the holding-tag dress-up")
+    view_provider = PathDressupTagViewProvider(obj.ViewObject)
+    obj.ViewObject.Proxy = view_provider
+    PathUtil.markTimelineReplacedInputs(
+        obj,
+        [baseObject] if base_was_visible else [],
+    )
+    if hide_base:
+        baseObject.ViewObject.Visibility = False
+    return obj
+
+
 def Create(baseObject, name="DressupTag"):
     """
     Create(basePath, name = 'DressupTag') ... create tag dressup object for the given base path.
