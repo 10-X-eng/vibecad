@@ -82,7 +82,7 @@ protected:
     void removeTracker();
     void abandonEditSession();
 
-    void createLeaderFeature(std::vector<Base::Vector3d> sceneDeltas);
+    void createLeaderFeature(const std::vector<Base::Vector3d>& pagePoints);
     void updateLeaderFeature();
     void commonFeatureUpdate();
     void removeFeature();
@@ -126,10 +126,10 @@ private:
 
     ViewProviderPage* m_vpp;
     std::string m_leaderName;
-    std::string m_leaderType;
     std::string m_qgParentName;
 
     std::vector<Base::Vector3d> m_sceneDeltas;
+    std::vector<Base::Vector3d> m_pagePoints;
 
     Base::Vector3d m_attachPoint;
 

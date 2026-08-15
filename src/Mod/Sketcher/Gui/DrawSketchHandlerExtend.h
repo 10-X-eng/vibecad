@@ -112,53 +112,38 @@ public:
     {
         Base::Vector2d onSketchPos = snapHandle.compute();
 
-        using std::numbers::pi;
-
         if (Mode == STATUS_SEEK_Second) {
-            const Part::Geometry* geom = sketchgui->getSketchObject()->getGeometry(BaseGeoId);
+            Sketcher::SketchObject* sketch = sketchgui->getSketchObject();
+            const Part::Geometry* geom = sketch->getGeometry(BaseGeoId);
+            const Base::Vector3d targetPoint(onSketchPos.x, onSketchPos.y, 0.0);
             if (geom->is<Part::GeomLineSegment>()) {
                 const Part::GeomLineSegment* lineSeg = static_cast<const Part::GeomLineSegment*>(geom);
-                // project point to the existing curve
                 Base::Vector3d start3d = lineSeg->getStartPoint();
                 Base::Vector3d end3d = lineSeg->getEndPoint();
-
                 Base::Vector2d startPoint = Base::Vector2d(start3d.x, start3d.y);
                 Base::Vector2d endPoint = Base::Vector2d(end3d.x, end3d.y);
-                Base::Vector2d recenteredLine = endPoint - startPoint;
-                Base::Vector2d recenteredPoint = onSketchPos - startPoint;
-                Base::Vector2d projection;
-                projection.ProjectToLine(recenteredPoint, recenteredLine);
-                if (recenteredPoint.Length() < recenteredPoint.Distance(recenteredLine)) {
-                    EditCurve[0] = startPoint + projection;
+                Sketcher::PointPos effectiveEndpoint = SavedExtendFromStart
+                    ? Sketcher::PointPos::start
+                    : Sketcher::PointPos::end;
+                if (!sketch->calculateExtensionParameters(
+                        BaseGeoId,
+                        targetPoint,
+                        effectiveEndpoint,
+                        Increment,
+                        effectiveEndpoint
+                    )) {
+                    return;
+                }
+                ExtendFromStart = effectiveEndpoint == Sketcher::PointPos::start;
+                Base::Vector2d direction = endPoint - startPoint;
+                direction.Normalize();
+                if (ExtendFromStart) {
+                    EditCurve[0] = startPoint - direction * Increment;
                     EditCurve[1] = endPoint;
                 }
                 else {
                     EditCurve[0] = startPoint;
-                    EditCurve[1] = startPoint + projection;
-                }
-                /**
-                 * If in-curve, the intuitive behavior is for the line to shrink an amount from
-                 * the original click-point.
-                 *
-                 * If out-of-curve, the intuitive behavior is for the closest line endpoint to
-                 * expand.
-                 */
-                bool inCurve
-                    = (projection.Length() < recenteredLine.Length()
-                       && projection.GetAngle(recenteredLine) < 0.1);  // Two possible values here,
-                                                                       // pi and 0, but 0.1 is to
-                                                                       // avoid floating point
-                                                                       // problems.
-                if (inCurve) {
-                    Increment = SavedExtendFromStart ? -1 * projection.Length()
-                                                     : projection.Length() - recenteredLine.Length();
-                    ExtendFromStart = SavedExtendFromStart;
-                }
-                else {
-                    ExtendFromStart = onSketchPos.Distance(startPoint)
-                        < onSketchPos.Distance(endPoint);
-                    Increment = ExtendFromStart ? projection.Length()
-                                                : projection.Length() - recenteredLine.Length();
+                    EditCurve[1] = endPoint + direction * Increment;
                 }
                 drawEdit(EditCurve);
             }
@@ -166,68 +151,23 @@ public:
                 const Part::GeomArcOfCircle* arc = static_cast<const Part::GeomArcOfCircle*>(geom);
                 Base::Vector3d center = arc->getCenter();
                 double radius = arc->getRadius();
-
                 double start, end;
                 arc->getRange(start, end, true);
-                double arcAngle = end - start;
-
-                Base::Vector2d angle
-                    = Base::Vector2d(onSketchPos.x - center.x, onSketchPos.y - center.y);
-                Base::Vector2d startAngle = Base::Vector2d(cos(start), sin(start));
-                Base::Vector2d endAngle = Base::Vector2d(cos(end), sin(end));
-
-                Base::Vector2d arcHalf
-                    = Base::Vector2d(cos(start + arcAngle / 2.0), sin(start + arcAngle / 2.0));
-                double angleToEndAngle = angle.GetAngle(endAngle);
-                double angleToStartAngle = angle.GetAngle(startAngle);
-
-
-                double modStartAngle = start;
-                double modArcAngle = end - start;
-                bool outOfArc = arcHalf.GetAngle(angle) * 2.0 > arcAngle;
-                if (ExtendFromStart) {
-                    bool isCCWFromStart = crossProduct(angle, startAngle) < 0;
-                    if (outOfArc) {
-                        if (isCCWFromStart) {
-                            modStartAngle -= 2 * pi - angleToStartAngle;
-                            modArcAngle += 2 * pi - angleToStartAngle;
-                        }
-                        else {
-                            modStartAngle -= angleToStartAngle;
-                            modArcAngle += angleToStartAngle;
-                        }
-                    }
-                    else {
-                        if (isCCWFromStart) {
-                            modStartAngle += angleToStartAngle;
-                            modArcAngle -= angleToStartAngle;
-                        }
-                        else {
-                            modStartAngle += 2 * pi - angleToStartAngle;
-                            modArcAngle -= 2 * pi - angleToStartAngle;
-                        }
-                    }
+                Sketcher::PointPos effectiveEndpoint = ExtendFromStart
+                    ? Sketcher::PointPos::start
+                    : Sketcher::PointPos::end;
+                if (!sketch->calculateExtensionParameters(
+                        BaseGeoId,
+                        targetPoint,
+                        effectiveEndpoint,
+                        Increment,
+                        effectiveEndpoint
+                    )) {
+                    return;
                 }
-                else {
-                    bool isCWFromEnd = crossProduct(angle, endAngle) >= 0;
-                    if (outOfArc) {
-                        if (isCWFromEnd) {
-                            modArcAngle += 2 * pi - angleToEndAngle;
-                        }
-                        else {
-                            modArcAngle += angleToEndAngle;
-                        }
-                    }
-                    else {
-                        if (isCWFromEnd) {
-                            modArcAngle -= angleToEndAngle;
-                        }
-                        else {
-                            modArcAngle -= 2 * pi - angleToEndAngle;
-                        }
-                    }
-                }
-                Increment = modArcAngle - (end - start);
+                ExtendFromStart = effectiveEndpoint == Sketcher::PointPos::start;
+                const double modStartAngle = ExtendFromStart ? start - Increment : start;
+                const double modArcAngle = end - start + Increment;
                 for (int i = 0; i < 31; i++) {
                     double angle = modStartAngle + i * modArcAngle / 30.0;
                     EditCurve[i] = Base::Vector2d(
@@ -279,6 +219,7 @@ public:
                     double angleToEnd = angle.GetAngle(Base::Vector2d(cos(end), sin(end)));
                     ExtendFromStart = (angleToStart < angleToEnd);  // move start point if closer to
                                                                     // angle than end point
+                    SavedExtendFromStart = ExtendFromStart;
                     EditCurve.resize(31);
                     Mode = STATUS_SEEK_Second;
                 }
@@ -398,11 +339,6 @@ public:
             });
     }
 
-private:
-    int crossProduct(Base::Vector2d& vec1, Base::Vector2d& vec2)
-    {
-        return vec1.x * vec2.y - vec1.y * vec2.x;
-    }
 };
 
 }  // namespace SketcherGui

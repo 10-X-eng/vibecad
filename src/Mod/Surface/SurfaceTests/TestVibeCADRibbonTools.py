@@ -297,6 +297,7 @@ class TestVibeCADSurfaceRibbonTools(unittest.TestCase):
             "Surface::GeomFillSurface",
         )
         self.assertEqual(result.BoundaryList[0][0], square)
+        self.assertEqual(tuple(result.ReversedList), (False, False, False, False))
         self.assertTrue(square.Visibility)
         result = self._assert_command_undo_redo(result)
         self.assertEqual(result.BoundaryList[0][0], square)
@@ -440,7 +441,9 @@ class TestVibeCADSurfaceRibbonTools(unittest.TestCase):
         ]
         extend = persistence.addObject("Surface::Extend", "SavedExtend")
         extend.Face = (plane, ["Face1"])
-        extend.ExtendUPos = 2.0
+        extend.ExtendUSymetric = False
+        extend.ExtendUNeg = -0.1
+        extend.ExtendUPos = 0.2
         blend = persistence.addObject(
             "Surface::FeatureBlendCurve",
             "SavedBlend",
@@ -491,6 +494,14 @@ class TestVibeCADSurfaceRibbonTools(unittest.TestCase):
             self.assertIs(
                 reopened.getObject("SavedExtend").Face[0],
                 reopened.getObject("PlaneSource"),
+            )
+            self.assertEqual(
+                (
+                    bool(reopened.getObject("SavedExtend").ExtendUSymetric),
+                    float(reopened.getObject("SavedExtend").ExtendUNeg),
+                    float(reopened.getObject("SavedExtend").ExtendUPos),
+                ),
+                (False, -0.1, 0.2),
             )
             self.assertIs(
                 reopened.getObject("SavedBlend").StartEdge[0],

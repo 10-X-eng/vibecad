@@ -1,16 +1,25 @@
 # VibeCAD Runtime Verification
 
-The VibeCAD assistant authors through VibeScript only. Native FreeCAD commands
-remain human ribbon actions.
+The VibeCAD assistant has two explicit, human-selected authoring modes:
+
+- **VibeScript** owns source-backed programs and publishes validated outputs.
+- **Native** edits ordinary CAD state through the exact complete tool families
+  on the current human-selected VibeCAD ribbon.
+
+Neither the built-in provider nor an external MCP client can switch the active
+workbench, ribbon, or authoring mode. A human change invalidates the frozen
+turn and the next turn receives the newly resolved surface.
 
 ## Provider surface
 
-- Every supported workbench exposes `vibescript.read_source`,
+- In VibeScript mode every supported workbench exposes `vibescript.read_source`,
   `vibescript.read_api`, and
   `vibescript.edit_source` as the normal existing-source path, plus the active
   domain's explicit create, input-only, reconfigure, and delete operations.
-- The surface may include only the focused read tools owned by the active
-  workbench; human ribbon mutation commands are never provider-callable.
+- In Native mode the surface contains only fully implemented capability
+  families required by the current ribbon. Any missing definition,
+  implementation, exact target, or schema budget fails the whole surface
+  closed before provider launch.
 - The turn packet lists the editable VibeScript programs owned by the active
   workbench. Each entry includes its stable source ID, current revision, label,
   and the exact read/edit tool names.
@@ -20,6 +29,31 @@ remain human ribbon actions.
 - `read_api` returns only the active workbench's VibeScript API.
 - Provider dispatch rejects undeclared tools and stale workbench or surface
   snapshots.
+
+The cross-ribbon Codex acceptance gate retains one saved document and one
+conversation while the human UI selects each permanent ribbon plus Sketch
+setup and Sketch edit. On every turn it traverses the production Codex adapter
+and document-thread bridge, invokes the declared `state.read` tool from a
+nested app-server callback, and verifies that the returned domain matches the
+newly selected surface. This is the executable inter-turn tool-swap contract;
+tools never change during a turn. Its opt-in live mode applies the same checks
+to the configured ChatGPT Codex provider and additionally requires exactly one
+read-only state call with no mutation calls on every surface.
+
+## Native execution
+
+Native freezes the human-selected ribbon, ordered provider schemas, document
+identity, and structural revision at turn start. Every call is validated first
+against its compact provider contract and then against the selected operation's
+original closed schema. Exact target hashes and the live ribbon are rechecked
+before a transaction or background job starts. Immediate mutations create one
+verified transaction receipt; expensive preparation runs detached from the UI
+thread and commits only after document-thread reauthorization. Results are
+concise, while opt-in debug capture retains full bounded diagnostics.
+
+Native never backpropagates direct edits into VibeScript source. A document
+with active VibeScript authority must be deliberately transferred to manual
+Native control by the human.
 
 ## VibeScript execution
 

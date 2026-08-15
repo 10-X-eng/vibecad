@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 MODULE_ROOT = Path(__file__).resolve().parent.parent
@@ -3792,12 +3793,14 @@ def _exercise_provider_failed_source_lifecycle(root: Path, pack) -> dict:
     """A failed create remains readable, editable, buildable, and deletable."""
 
     import FreeCAD as App
+    import queue
+    import threading
+    import time
 
     import VibeCADVibeScriptDomains as domains
     from VibeCADSession import make_provider_tool_runner
     from VibeCADTools import ToolRegistry
     from tool_impl import service as service_tools
-    from tool_impl import sketcher as sketcher_tools
 
     document = App.newDocument("PartDesignProviderSourceLifecycle")
 
@@ -3806,7 +3809,6 @@ def _exercise_provider_failed_source_lifecycle(root: Path, pack) -> dict:
             super().__init__(active_document, project_root)
             self.registry = ToolRegistry()
             service_tools.register_tools(self.registry, self)
-            sketcher_tools.register_tools(self.registry, self)
             domains.register_domain_tools(self.registry, self)
 
         @staticmethod
@@ -3821,7 +3823,41 @@ def _exercise_provider_failed_source_lifecycle(root: Path, pack) -> dict:
         def note_provider_tool_targets(_arguments, _payload) -> None:
             return None
 
+    class TestDocumentThreadDispatcher:
+        def __init__(self) -> None:
+            self.main_thread = threading.get_ident()
+            self.requests = queue.Queue()
+
+        def __call__(self, operation):
+            if threading.get_ident() == self.main_thread:
+                return operation()
+            request = {
+                "operation": operation,
+                "completed": threading.Event(),
+                "result": None,
+                "error": None,
+            }
+            self.requests.put(request)
+            request["completed"].wait()
+            if request["error"] is not None:
+                raise request["error"]
+            return request["result"]
+
+        def pump(self) -> None:
+            while True:
+                try:
+                    request = self.requests.get_nowait()
+                except queue.Empty:
+                    return
+                try:
+                    request["result"] = request["operation"]()
+                except BaseException as exc:
+                    request["error"] = exc
+                finally:
+                    request["completed"].set()
+
     service = RunnerService(document, root / "provider-source-lifecycle")
+    document_dispatcher = TestDocumentThreadDispatcher()
     failed_source = "\n".join(
         (
             "base = api.extrude(api.sketch([api.circle([0, 0], 5)]), 8, operation='add_material')",
@@ -3844,7 +3880,7 @@ def _exercise_provider_failed_source_lifecycle(root: Path, pack) -> dict:
         cancellation_check=None,
         steering_check=None,
         question_callback=None,
-        document_thread_dispatch=lambda operation: operation(),
+        document_thread_dispatch=document_dispatcher,
         turn_editable_sources={
             "schema": "vibecad-editable-sources-v1",
             "domain": "partdesign",
@@ -3857,17 +3893,26 @@ def _exercise_provider_failed_source_lifecycle(root: Path, pack) -> dict:
         started = runner(tool_name, json.dumps(arguments))
         assert started["ok"] is True, started
         operation_id = started["operation"]["operation_id"]
+        deadline = time.monotonic() + 180.0
         while True:
+            document_dispatcher.pump()
             status = runner(
                 "vibescript.read_operation",
                 json.dumps(
                     {
                         "operation_id": operation_id,
-                        "wait_seconds": 60,
+                        "wait_seconds": 0,
                     }
                 ),
             )
+            document_dispatcher.pump()
             if status["operation"]["status"] == "running":
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        f"VibeScript operation {operation_id} did not finish in 180 seconds: "
+                        f"{status['operation']}"
+                    )
+                time.sleep(0.005)
                 continue
             return status["result"]
 
@@ -4017,38 +4062,91 @@ def main() -> int:
     assert external.operation == "external_geometry"
 
     root = Path(tempfile.mkdtemp(prefix="vibecad-partdesign-v2-integration-"))
+
+    def phase(name, callback):
+        started = time.monotonic()
+        print(
+            f"VIBECAD_VIBESCRIPT_PHASE_START {name}",
+            file=sys.__stderr__,
+            flush=True,
+        )
+        value = callback()
+        print(
+            f"VIBECAD_VIBESCRIPT_PHASE_OK {name} "
+            f"{time.monotonic() - started:.3f}s",
+            file=sys.__stderr__,
+            flush=True,
+        )
+        return value
+
     try:
-        feature_families = _exercise_feature_families(root, pack)
-        unified_surface = _exercise_unified_standalone_surface(root, pack)
-        material_guardrails = _exercise_material_guardrails(root, pack)
-        placement_and_hole_direction = _exercise_placement_and_hole_direction(
-            root,
-            pack,
+        feature_families = phase(
+            "feature_families",
+            lambda: _exercise_feature_families(root, pack),
         )
-        geometry_verification = _exercise_geometry_verification(root, pack)
-        attached_sketch_history = _exercise_attached_sketch_history(root, pack)
-        native_sketch_history = _exercise_native_sketch_history(root, pack)
-        topology_publication = _exercise_topology_publication(root, pack)
-        local_interfaces = _exercise_output_local_interfaces_and_ownership_repair(
-            root,
-            pack,
+        unified_surface = phase(
+            "unified_surface",
+            lambda: _exercise_unified_standalone_surface(root, pack),
         )
-        physical_material = _exercise_physical_material_publication(root, pack)
-        direct_solid_label = _exercise_direct_solid_adoption_label(root, pack)
-        saved_source_compatibility = _exercise_saved_source_compatibility(
-            root,
-            pack,
+        material_guardrails = phase(
+            "material_guardrails",
+            lambda: _exercise_material_guardrails(root, pack),
         )
-        component_occurrence = _exercise_component_occurrence(root, pack)
-        external_component_occurrence = _exercise_external_component_occurrence(
-            root,
-            pack,
+        placement_and_hole_direction = phase(
+            "placement_and_hole_direction",
+            lambda: _exercise_placement_and_hole_direction(root, pack),
         )
-        component_shape_migration = _exercise_component_shape_migration(root, pack)
-        lifecycle = _exercise_lifecycle(root, pack)
-        provider_source_lifecycle = _exercise_provider_failed_source_lifecycle(
-            root,
-            pack,
+        geometry_verification = phase(
+            "geometry_verification",
+            lambda: _exercise_geometry_verification(root, pack),
+        )
+        attached_sketch_history = phase(
+            "attached_sketch_history",
+            lambda: _exercise_attached_sketch_history(root, pack),
+        )
+        native_sketch_history = phase(
+            "native_sketch_history",
+            lambda: _exercise_native_sketch_history(root, pack),
+        )
+        topology_publication = phase(
+            "topology_publication",
+            lambda: _exercise_topology_publication(root, pack),
+        )
+        local_interfaces = phase(
+            "output_local_interfaces",
+            lambda: _exercise_output_local_interfaces_and_ownership_repair(root, pack),
+        )
+        physical_material = phase(
+            "physical_material",
+            lambda: _exercise_physical_material_publication(root, pack),
+        )
+        direct_solid_label = phase(
+            "direct_solid_label",
+            lambda: _exercise_direct_solid_adoption_label(root, pack),
+        )
+        saved_source_compatibility = phase(
+            "saved_source_compatibility",
+            lambda: _exercise_saved_source_compatibility(root, pack),
+        )
+        component_occurrence = phase(
+            "component_occurrence",
+            lambda: _exercise_component_occurrence(root, pack),
+        )
+        external_component_occurrence = phase(
+            "external_component_occurrence",
+            lambda: _exercise_external_component_occurrence(root, pack),
+        )
+        component_shape_migration = phase(
+            "component_shape_migration",
+            lambda: _exercise_component_shape_migration(root, pack),
+        )
+        lifecycle = phase(
+            "lifecycle",
+            lambda: _exercise_lifecycle(root, pack),
+        )
+        provider_source_lifecycle = phase(
+            "provider_source_lifecycle",
+            lambda: _exercise_provider_failed_source_lifecycle(root, pack),
         )
         print(
             dump_json(

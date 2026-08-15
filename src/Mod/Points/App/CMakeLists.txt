@@ -43,6 +43,8 @@ generate_from_py(Points)
 SET(Points_SRCS
     AppPoints.cpp
     AppPointsPy.cpp
+    NativePointOperations.cpp
+    NativePointOperations.h
     Points.cpp
     Points.h
     Points.pyi

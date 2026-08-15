@@ -109,6 +109,10 @@ public:
 
     void addBalloonToParent(QGIViewBalloon* balloon, QGIView* parent);
     void createBalloon(QPointF origin, TechDraw::DrawView* parent);
+    void createBalloon(
+        QPointF origin,
+        TechDraw::DrawView* parent,
+        const std::string& anchorElement);
 
     void addDimToParent(QGIViewDimension* dim, QGIView* parent);
     void addLeaderToParent(QGILeaderLine* leader, QGIView* parent);

@@ -81,9 +81,11 @@ protected:
      */
     App::DocumentObjectExecReturn* executeRevolved(Part::RevolMode revolMode);
 
+    /** See FeatureExtrude::getExtrusionContextBaseShape(). */
+    virtual TopoShape getRevolutionContextBaseShape() const;
+
 private:
     App::DocumentObjectExecReturn* tryExecuteRevolved(Part::RevolMode revolMode);
-    TopoShape tryGetBaseShape() const;
     TopoShape tryGetSupportShape() const;
     TopoShape tryToRevolveToFace(
         const TopoShape& upToFace,

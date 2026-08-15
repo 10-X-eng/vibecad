@@ -1,3 +1,5 @@
+# Generated AppImage staging tree, including bundled resources
+linux/AppDir/
 linux/AppDir/usr
 linux/AppDir/*.desktop
 linux/AppDir/*.svg
@@ -16,6 +18,9 @@ linux/appimagetool-*.AppImage
 linux/VibeCAD-*.AppImage
 linux/VibeCAD-*.AppImage.zsync
 linux/VibeCAD-*.AppImage*-SHA256.txt
+linux/VibeCAD_*.AppImage
+linux/VibeCAD_*.AppImage.zsync
+linux/VibeCAD_*.AppImage*-SHA256.txt
 linux/VibeCAD-*.deb
 linux/VibeCAD-*.deb-SHA256.txt
 osx/build/

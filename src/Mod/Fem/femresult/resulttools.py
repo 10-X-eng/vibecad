@@ -27,11 +27,380 @@ __url__ = "https://www.freecad.org"
 #  @{
 
 import numpy as np
+from dataclasses import dataclass
 from math import isnan
 
 import FreeCAD
 
 from femtools.femutils import is_of_type
+
+
+@dataclass(frozen=True)
+class ResultPurgePlan:
+    """Exact FEM result graph selected for one atomic purge."""
+
+    analysis: object
+    targets: tuple
+    solver_roots: tuple
+    ordinary_operations: tuple
+    operation_resources: tuple
+    untracked: tuple
+    blockers: tuple
+
+
+def _is_live(document, obj):
+    if document is None or obj is None:
+        return False
+    try:
+        return (
+            obj.Document is document
+            and document.getObject(str(obj.Name)) is obj
+            and document.getObject(int(obj.ID)) is obj
+        )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _is_derived(obj, type_name):
+    try:
+        return bool(obj.isDerivedFrom(type_name))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        return False
+
+
+def _proxy_type(obj):
+    return str(getattr(getattr(obj, "Proxy", None), "Type", "") or "")
+
+
+def _is_solver(obj):
+    return _proxy_type(obj).startswith("Fem::Solver") and "Results" in tuple(
+        getattr(obj, "PropertiesList", ()) or ()
+    )
+
+
+def _is_result_artifact(obj):
+    return (
+        _is_derived(obj, "Fem::FemResultObject")
+        or _is_derived(obj, "Fem::FemPostPipeline")
+        or _is_derived(obj, "Fem::FemPostBranchFilter")
+        or _is_derived(obj, "Fem::FemPostFilter")
+        or _is_derived(obj, "Fem::FemPostFunctionProvider")
+        or _is_derived(obj, "Fem::FemPostFunction")
+        or _proxy_type(obj) in {"Fem::MeshResult", "Fem::FemPostVisualization"}
+        or str(getattr(obj, "TypeId", "") or "") == "App::TextDocument"
+    )
+
+
+def _timeline_role(obj):
+    return str(getattr(obj, "VibeCADTimelineRole", "") or "")
+
+
+def _timeline_owner(obj):
+    return getattr(obj, "VibeCADTimelineOwner", None)
+
+
+def _timeline_root(obj, document):
+    current = obj
+    visited = set()
+    while _is_live(document, current) and _timeline_role(current) == "resource":
+        identity = int(current.ID)
+        if identity in visited:
+            return None
+        visited.add(identity)
+        current = _timeline_owner(current)
+    return current if _is_live(document, current) else None
+
+
+def _append_live(document, values, obj):
+    if _is_live(document, obj) and obj not in values:
+        values.append(obj)
+
+
+def _append_group_graph(document, values, root):
+    pending = [root]
+    visited = set()
+    while pending:
+        current = pending.pop()
+        if not _is_live(document, current):
+            continue
+        identity = int(current.ID)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        _append_live(document, values, current)
+        pending.extend(tuple(getattr(current, "Group", ()) or ()))
+
+
+def _label(obj):
+    return str(getattr(obj, "Label", getattr(obj, "Name", "FEM object")))
+
+
+def _solver_result_graph(document, solver, blockers):
+    linked_results = tuple(getattr(solver, "Results", ()) or ())
+    if not linked_results:
+        return (), ()
+
+    from femcommands import manager
+
+    try:
+        _document, resources, _direct_roots = manager._timeline_owned_resource_graph(
+            solver
+        )
+    except Exception as exc:
+        blockers.append(f"{_label(solver)}: {exc}")
+        return (), ()
+    if len(linked_results) != len(set(linked_results)):
+        blockers.append(
+            f"{_label(solver)}: solver.Results contains duplicate identities"
+        )
+        return (), ()
+    if any(
+        not _is_live(document, result)
+        or result not in resources
+        or _timeline_root(result, document) is not solver
+        for result in linked_results
+    ):
+        blockers.append(
+            f"{_label(solver)}: solver.Results contains an identity outside its "
+            "canonical History resource graph"
+        )
+        return (), ()
+    roots = tuple(
+        result for result in linked_results if _timeline_owner(result) is solver
+    )
+    if not roots:
+        blockers.append(
+            f"{_label(solver)}: solver.Results has no direct result root owned by the solver"
+        )
+        return (), ()
+    if any(
+        not any(
+            manager._timeline_owner_chain_contains(result, root, document)
+            for root in roots
+        )
+        for result in linked_results
+    ):
+        blockers.append(
+            f"{_label(solver)}: solver.Results does not form complete rooted result graphs"
+        )
+        return (), ()
+
+    selected = []
+    for root in roots:
+        _append_live(document, selected, root)
+        for resource in resources:
+            try:
+                if manager._timeline_owner_chain_contains(resource, root, document):
+                    _append_live(document, selected, resource)
+            except Exception as exc:
+                blockers.append(f"{_label(root)}: {exc}")
+                break
+    return roots, tuple(selected)
+
+
+def plan_result_graph_purge(analysis):
+    """Plan the complete exact result/post graph of one FEM analysis.
+
+    Planning is read-only.  Canonical solver-owned results, independent
+    post-processing operations, nested resources, and legacy untracked result
+    artifacts are distinguished so a caller can either report blockers or
+    execute one dependency-safe transaction.
+    """
+
+    document = getattr(analysis, "Document", None)
+    if not _is_live(document, analysis) or not _is_derived(
+        analysis, "Fem::FemAnalysis"
+    ):
+        raise ValueError("A result purge requires one exact live FEM analysis")
+    timeline = getattr(document, "VibeCADTimeline", None)
+    operations = tuple(getattr(timeline, "Operations", ()) or ())
+    blockers = []
+    targets = []
+    solver_roots = []
+    solver_resources = set()
+    solvers = set()
+    members = tuple(getattr(analysis, "Group", ()) or ())
+
+    for member in members:
+        if not _is_solver(member):
+            continue
+        solvers.add(member)
+        roots, resources = _solver_result_graph(document, member, blockers)
+        if roots:
+            solver_roots.append((member, roots))
+        for resource in resources:
+            solver_resources.add(resource)
+            _append_live(document, targets, resource)
+
+    for member in members:
+        if not _is_result_artifact(member):
+            continue
+        _append_group_graph(document, targets, member)
+        if _is_derived(member, "Fem::FemResultObject"):
+            mesh = getattr(member, "Mesh", None)
+            if _proxy_type(mesh) == "Fem::MeshResult":
+                _append_live(document, targets, mesh)
+
+    ordinary_operations = [
+        candidate
+        for candidate in targets
+        if candidate not in solver_resources
+        and _timeline_role(candidate) == "operation"
+        and candidate in operations
+    ]
+    ordinary_operations.sort(key=operations.index, reverse=True)
+    operation_resources = []
+    ordinary_resource_set = set()
+    for operation in ordinary_operations:
+        resources = tuple(
+            candidate
+            for candidate in operations
+            if candidate is not operation
+            and _timeline_role(candidate) == "resource"
+            and _timeline_root(candidate, document) is operation
+        )
+        for resource in resources:
+            _append_live(document, targets, resource)
+        operation_resources.append((operation, resources))
+        ordinary_resource_set.update(resources)
+
+    untracked = tuple(
+        candidate
+        for candidate in targets
+        if candidate not in solver_resources
+        and candidate not in ordinary_operations
+        and candidate not in ordinary_resource_set
+    )
+    allowed = {analysis, timeline, *targets, *solvers}
+    for target in targets:
+        unexpected = [
+            consumer
+            for consumer in tuple(getattr(target, "InList", ()) or ())
+            if consumer not in allowed
+        ]
+        if unexpected:
+            labels = ", ".join(_label(value) for value in unexpected[:4])
+            blockers.append(
+                f"{_label(target)} has downstream consumers outside the purge graph: "
+                f"{labels}"
+            )
+    return ResultPurgePlan(
+        analysis,
+        tuple(targets),
+        tuple(solver_roots),
+        tuple(ordinary_operations),
+        tuple(operation_resources),
+        untracked,
+        tuple(dict.fromkeys(blockers)),
+    )
+
+
+def _object_identity(obj):
+    return str(obj.Name), int(obj.ID)
+
+
+def _plan_signature(plan):
+    return (
+        _object_identity(plan.analysis),
+        tuple(_object_identity(value) for value in plan.targets),
+        tuple(
+            (_object_identity(solver), tuple(_object_identity(root) for root in roots))
+            for solver, roots in plan.solver_roots
+        ),
+        tuple(_object_identity(value) for value in plan.ordinary_operations),
+        tuple(
+            (
+                _object_identity(operation),
+                tuple(_object_identity(resource) for resource in resources),
+            )
+            for operation, resources in plan.operation_resources
+        ),
+        tuple(_object_identity(value) for value in plan.untracked),
+        plan.blockers,
+    )
+
+
+def _remove_exact(document, obj):
+    name, identity = _object_identity(obj)
+    if not _is_live(document, obj):
+        raise RuntimeError(f"Result object {name!r} changed before purge")
+    document.removeObject(name)
+    survivor = document.getObject(name)
+    if survivor is not None and int(survivor.ID) == identity:
+        raise RuntimeError(f"Result object {name!r} refused deletion")
+
+
+def _remove_dependency_graph(document, objects):
+    remaining = list(objects)
+    while remaining:
+        remaining = [value for value in remaining if _is_live(document, value)]
+        if not remaining:
+            break
+        removable = next(
+            (
+                candidate
+                for candidate in remaining
+                if not any(
+                    consumer in remaining
+                    for consumer in tuple(getattr(candidate, "InList", ()) or ())
+                )
+            ),
+            None,
+        )
+        if removable is None:
+            names = ", ".join(_label(value) for value in remaining[:6])
+            raise RuntimeError(
+                f"The FEM result graph contains a dependency cycle: {names}"
+            )
+        _remove_exact(document, removable)
+        remaining.remove(removable)
+
+
+def apply_result_graph_purge(plan):
+    """Apply one previously planned purge inside the caller's transaction."""
+
+    if not isinstance(plan, ResultPurgePlan):
+        raise TypeError("plan must be a ResultPurgePlan")
+    if plan.blockers:
+        raise RuntimeError(plan.blockers[0])
+    if not plan.targets:
+        return ()
+    current = plan_result_graph_purge(plan.analysis)
+    if _plan_signature(current) != _plan_signature(plan):
+        raise RuntimeError("The exact FEM result graph changed after purge planning")
+
+    document = plan.analysis.Document
+    target_identities = tuple(_object_identity(value) for value in plan.targets)
+    resources_by_operation = dict(plan.operation_resources)
+    for operation in plan.ordinary_operations:
+        for resource in resources_by_operation.get(operation, ()):
+            if _is_live(document, resource):
+                _remove_exact(document, resource)
+        if _is_live(document, operation):
+            _remove_exact(document, operation)
+    _remove_dependency_graph(
+        document,
+        tuple(value for value in plan.untracked if _is_live(document, value)),
+    )
+
+    from femcommands import manager
+
+    for solver, roots in plan.solver_roots:
+        manager._purge_timeline_result_roots(solver, roots)
+    survivors = [
+        name
+        for name, object_id in target_identities
+        if (
+            (candidate := document.getObject(name)) is not None
+            and int(candidate.ID) == object_id
+        )
+    ]
+    if survivors:
+        raise RuntimeError(
+            "The exact FEM result graph was not fully purged: "
+            + ", ".join(survivors[:8])
+        )
+    return target_identities
 
 
 def purge_result_targets(analysis):

@@ -94,6 +94,11 @@ const BaseGeomPtrVector GeometryObject::getVisibleFaceEdges(const bool smooth,
     bool seamOK = seam;
 
     for (auto& e : edgeGeom) {
+        // Cosmetic edges, center lines, and other presentation-only geometry
+        // must never partition the physical projected faces.
+        if (e->getCosmetic()) {
+            continue;
+        }
         if (e->getHlrVisible()) {
             switch (e->getClassOfEdge()) {
                 case EdgeClass::HARD:

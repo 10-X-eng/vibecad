@@ -23,8 +23,8 @@
 
 import FreeCAD
 import FreeCADGui
-import Path.Base.Util as PathUtil
 import Path.Main.Job as PathJob
+import Path.Op.Custom as PathCustom
 import PathScripts.PathUtils as PathUtils
 from Path.CommandBoundary import (
     ExactDocumentObjectIdentity,
@@ -67,6 +67,65 @@ class ViewProvider:
             return ":/icons/CAM_SimpleCopy.svg"
         else:
             return ":/icons/CAM_OpActive.svg"
+
+
+def Create(name="Simple Copy", bases=None, parentJob=None, gcode=None):
+    """Create one flattened, source-preserving CAM toolpath copy.
+
+    Transaction and History publication remain caller-owned. Supplying
+    ``gcode`` lets a guarded caller publish the exact stream frozen during
+    preflight; human callers omit it and use the live placed base paths.
+    """
+
+    label = str(name or "").strip()
+    operations = tuple(bases or ())
+    document = getattr(parentJob, "Document", None)
+    if not label:
+        raise ValueError("A CAM Simple Copy label must not be empty")
+    if document is None or not operations:
+        raise ValueError("A CAM Simple Copy requires one Job and at least one source")
+    if any(getattr(operation, "Document", None) is not document for operation in operations):
+        raise ValueError("Every CAM Simple Copy source must belong to the Job document")
+    if not isinstance(getattr(parentJob, "Proxy", None), PathJob.ObjectJob):
+        raise ValueError("A CAM Simple Copy requires a native CAM Job")
+
+    controller = toolControllerForOp(operations[0])
+    coolant = coolantModeForOp(operations[0])
+    if controller is None or any(
+        toolControllerForOp(operation) is not controller
+        or coolantModeForOp(operation) != coolant
+        for operation in operations
+    ):
+        raise ValueError("CAM Simple Copy sources must share one controller and coolant mode")
+    lines = (
+        tuple(str(value) for value in gcode)
+        if gcode is not None
+        else tuple(
+            command.toGCode()
+            for operation in operations
+            for command in PathUtils.getPathWithPlacement(operation).Commands
+        )
+    )
+    if not lines:
+        raise ValueError("CAM Simple Copy sources contain no toolpath commands")
+
+    internal_name = (
+        f"{operations[0].Name}_SimpleCopy"
+        if len(operations) == 1
+        else "SimpleCopy"
+    )
+    result = PathCustom.CreateEmbeddedPath(
+        internal_name,
+        obj=document.addObject("Path::FeaturePython", internal_name),
+        parentJob=parentJob,
+    )
+    result.Label = label
+    result.ToolController = controller
+    result.CoolantMode = coolant
+    if FreeCAD.GuiUp and getattr(result, "ViewObject", None) is not None:
+        result.ViewObject.Proxy = ViewProvider(result.ViewObject)
+    result.Gcode = list(lines)
+    return result
 
 
 def _selected_copy_operations():
@@ -204,38 +263,14 @@ class CommandPathSimpleCopy:
             )
             FreeCADGui.addModule("PathScripts.PathUtils")
             FreeCADGui.doCommand("job = PathScripts.PathUtils.findParentJob(selection[0])")
-            FreeCADGui.doCommand(
-                "paths = [PathScripts.PathUtils.getPathWithPlacement(sel) for sel in selection]"
-            )
-            FreeCADGui.addModule("Path.Op.Custom")
+            FreeCADGui.addModule("Path.Op.Gui.SimpleCopy")
             result = FreeCADGui.runDocumentObjectCommand(
                 document,
-                "Path.Op.Custom.Create("
-                "name, "
-                'obj=document.addObject("Path::FeaturePython", name), '
-                "parentJob=job)",
+                "Path.Op.Gui.SimpleCopy.Create(name, selection, job)",
                 "Path::FeaturePython",
             )
             result_name = result.Name
             result_id = int(result.ID)
-            result_expression = "document.getObject(%r)" % result_name
-            FreeCADGui.doCommand(
-                f"{result_expression}.ToolController = "
-                "Path.Base.Util.toolControllerForOp(selection[0])"
-            )
-            FreeCADGui.doCommand(
-                f"{result_expression}.CoolantMode = "
-                "Path.Base.Util.coolantModeForOp(selection[0])"
-            )
-            FreeCADGui.doCommand(
-                f"{result_expression}.ViewObject.Proxy = "
-                "Path.Op.Gui.SimpleCopy.ViewProvider("
-                f"{result_expression}.ViewObject)"
-            )
-            FreeCADGui.doCommand(
-                f"{result_expression}.Gcode = "
-                "[c.toGCode() for path in paths for c in path.Commands]"
-            )
 
             selection = tuple(
                 identity.resolve(require_timeline=True)

@@ -39,6 +39,7 @@
 
 #include "TaskHatch.h"
 #include "ui_TaskHatch.h"
+#include "HatchBuilder.h"
 #include "ViewProviderHatch.h"
 
 
@@ -246,78 +247,30 @@ void TaskHatch::apply(bool forceUpdate)
 void TaskHatch::createHatch()
 {
     App::Document* doc = m_dvp->getDocument();
-
-    // TODO: the structured label for Hatch (and GeomHatch) should be retired.
-    const std::string objectName("Hatch");
-    std::string FeatName = doc->getUniqueObjectName(objectName.c_str());
-
-    const std::string documentName =
-        Base::InterpreterSingleton::strToPython(doc->getName());
-    const QString hatchFactory =
-        QStringLiteral(
-            "App.getDocument('%1').addObject('TechDraw::DrawHatch', '%2')"
-        )
-            .arg(
-                QString::fromStdString(documentName),
-                QString::fromStdString(FeatName)
-            );
-    m_hatch = dynamic_cast<TechDraw::DrawHatch*>(
-        Gui::Command::runDocumentObjectCommand(
-            Command::Doc,
-            *doc,
-            hatchFactory.toUtf8(),
-            TechDraw::DrawHatch::getClassTypeId()
-        )
-    );
-    if (!m_hatch) {
-        throw Base::RuntimeError(
-            "The image hatch factory returned an incompatible object"
-        );
-    }
-    FeatName = m_hatch->getNameInDocument();
-    Command::doCommand(
-        Command::Doc,
-        "App.getDocument('%s').getObject('%s').translateLabel"
-        "('DrawHatch', 'Hatch', '%s')",
-        documentName.c_str(),
-        FeatName.c_str(),
-        FeatName.c_str()
-    );
-
-    m_hatch->Source.setValue(m_dvp, m_subs);
+    auto filespec = ui->fcFile->fileName().toStdString();
+    filespec = DU::cleanFilespecBackslash(filespec);
+    Base::Color ac;
+    ac.setValue<QColor>(ui->ccColor->color());
+    const DrawingImageHatchStyle style {
+        ui->sbScale->value().getValue(),
+        ui->dsbRotation->value(),
+        Base::Vector3d(
+            ui->dsbOffsetX->value(),
+            ui->dsbOffsetY->value(),
+            0.0),
+        ac};
+    m_hatch = createDrawingImageHatch(m_dvp, m_subs, filespec, style);
+    doc->publishProvisionalTimelineOperationBlock(m_hatch, {}, {});
     m_hatchIdentity =
         TaskInternal::ObjectIdentity<TechDraw::DrawHatch>(m_hatch);
 
-    auto filespec = ui->fcFile->fileName().toStdString();
-    filespec = DU::cleanFilespecBackslash(filespec);
-    const std::string pythonFilespec =
-        Base::InterpreterSingleton::strToPython(filespec.c_str());
-    const std::string hatchCommand =
-        Gui::Command::getObjectCmd(m_hatch);
-    Command::doCommand(
-        Command::Doc,
-        "%s.HatchPattern = '%s'",
-        hatchCommand.c_str(),
-        pythonFilespec.c_str()
-    );
-
-    //view provider properties
     auto* guiDocument = Gui::Application::Instance->getDocument(doc);
-    Gui::ViewProvider* vp =
+    auto* provider =
         guiDocument ? guiDocument->getViewProvider(m_hatch) : nullptr;
-    m_vp = dynamic_cast<TechDrawGui::ViewProviderHatch*>(vp);
+    m_vp = dynamic_cast<TechDrawGui::ViewProviderHatch*>(provider);
     if (!m_vp) {
-        throw Base::RuntimeError(
-            "The image hatch has no compatible view provider"
-        );
+        throw Base::RuntimeError("The image hatch has no compatible view provider");
     }
-    Base::Color ac;
-    ac.setValue<QColor>(ui->ccColor->color());
-    m_vp->HatchColor.setValue(ac);
-    m_vp->HatchScale.setValue(ui->sbScale->value().getValue());
-    m_vp->HatchRotation.setValue(ui->dsbRotation->value());
-    Base::Vector3d offset(ui->dsbOffsetX->value(), ui->dsbOffsetY->value(), 0.0);
-    m_vp->HatchOffset.setValue(offset);
 }
 
 void TaskHatch::updateHatch()

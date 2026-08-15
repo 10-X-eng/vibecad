@@ -38,6 +38,7 @@
 #include <Mod/TechDraw/App/Geometry.h>
 
 #include "ui_TaskCosmeticCircle.h"
+#include "CosmeticCurveBuilder.h"
 #include "TaskCosmeticCircle.h"
 
 
@@ -249,27 +250,24 @@ void TaskCosmeticCircle::createCosmeticCircle(void)
         center = m_partFeat->projectPoint(center - centroid);
     }
 
-    TechDraw::BaseGeomPtr bg;
-    if (!ui->rbArc->isChecked()) {
-        bg = std::make_shared<TechDraw::Circle> (center, ui->qsbRadius->value().getValue());
-    } else {
-        bg = std::make_shared<TechDraw::AOC>(center, ui->qsbRadius->value().getValue(),
-                                            ui->qsbStartAngle->value().getValue(),
-                                            ui->qsbEndAngle->value().getValue());
-    }
-
-    // after all the calculations are done, we invert the geometry
-    m_tag = m_partFeat->addCosmeticEdge(bg->inverted());
+    const auto created = ui->rbArc->isChecked()
+        ? createDrawingCosmeticArcAtCenter(
+              m_partFeat,
+              center,
+              ui->qsbRadius->value().getValue(),
+              ui->qsbStartAngle->value().getValue(),
+              ui->qsbEndAngle->value().getValue())
+        : createDrawingCosmeticCircleAtCenter(
+              m_partFeat,
+              center,
+              ui->qsbRadius->value().getValue());
+    m_tag = created.curveTag;
     m_ce = m_partFeat->getCosmeticEdge(m_tag);
     if (!m_ce) {
         throw Base::RuntimeError(
             "The cosmetic circle was not added to its drawing view"
         );
     }
-    m_ce->setFormat(LineFormat::getCurrentLineFormat());
-    m_partFeat->CosmeticEdges.setValues(
-        m_partFeat->CosmeticEdges.getValues()
-    );
 }
 
 void TaskCosmeticCircle::updateCosmeticCircle(void)
@@ -321,7 +319,6 @@ bool TaskCosmeticCircle::accept()
         m_partFeat = partFeature;
         if (m_createMode) {
             createCosmeticCircle();
-            partFeature->add1CEToGE(m_tag);
         } else {
             partFeature->CosmeticEdges.setValues(
                 partFeature->CosmeticEdges.getValues()

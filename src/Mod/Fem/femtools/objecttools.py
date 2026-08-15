@@ -111,12 +111,49 @@ def _timeline_metadata_root(obj, document):
         return current
 
 
-def _ensure_exact_retained_result_graph(solver):
-    """Adopt one exact legacy solver-result block before native reconciliation.
+def _timeline_owner_chain_contains(obj, ancestor, document):
+    """Return whether one validated resource chain contains *ancestor*."""
 
-    ``solver.Results`` is the sole candidate inventory.  History is consulted
-    only to verify those exact identities and to preserve their existing
-    sibling order; no document object scan or name-based recovery is used.
+    current = obj
+    visited = set()
+    while _is_exact_live_object(current, document):
+        if current is ancestor:
+            return True
+        identity = int(current.ID)
+        if identity in visited:
+            raise RuntimeError(
+                "A retained FEM result has a cyclic History owner graph"
+            )
+        visited.add(identity)
+        role_exists, role = _timeline_property(
+            current,
+            "VibeCADTimelineRole",
+            "App::PropertyString",
+        )
+        owner_exists, owner = _timeline_property(
+            current,
+            "VibeCADTimelineOwner",
+            "App::PropertyLinkHidden",
+        )
+        if not role_exists or role != "resource":
+            return False
+        if not owner_exists or owner is None:
+            raise RuntimeError(
+                "A retained FEM result resource has incomplete "
+                "History ownership"
+            )
+        current = owner
+    return False
+
+
+def _ensure_exact_retained_result_graph(solver):
+    """Require or atomically adopt the exact solver-owned result graph.
+
+    Generated results are resources of their solver operation.  That ordering
+    is essential: ``solver.Results`` is a real dependency, so every linked
+    result must precede the solver in History.  A complete contiguous legacy
+    block can be adopted without replacing object identities; ambiguous or
+    partial graphs are rejected rather than guessed.
     """
 
     document = getattr(solver, "Document", None)
@@ -139,157 +176,158 @@ def _ensure_exact_retained_result_graph(solver):
             )
         result_ids.add(int(result.ID))
 
-    pipelines = [
-        result
-        for result in exact_results
-        if result.isDerivedFrom("Fem::FemPostPipeline")
-    ]
-    if not pipelines:
+    if not exact_results:
         return "none"
 
-    # Native solver implementations already define the last explicit pipeline
-    # link as the reusable result.  A legacy list with more than one unowned
-    # pipeline has no exact ownership data with which to distinguish result
-    # generations, so it is rejected below instead of guessed.
-    root = pipelines[-1]
     timeline = document.getObject("VibeCADTimeline")
     if timeline is None or timeline.TypeId != "App::DocumentTimeline":
         raise RuntimeError(
             "A retained FEM result has no native document History"
         )
     operations = tuple(timeline.Operations)
-    if operations.count(root) != 1:
+    if operations.count(solver) != 1 or any(
+        operations.count(result) != 1
+        for result in exact_results
+    ):
         raise RuntimeError(
-            "The retained FEM result root is absent from document History"
+            "A retained FEM solver or result is absent from document History"
         )
 
-    root_role_exists, root_role = _timeline_property(
-        root,
+    solver_role_exists, solver_role = _timeline_property(
+        solver,
         "VibeCADTimelineRole",
         "App::PropertyString",
     )
-    root_owner_exists, root_owner = _timeline_property(
-        root,
+    solver_owner_exists, solver_owner = _timeline_property(
+        solver,
         "VibeCADTimelineOwner",
         "App::PropertyLinkHidden",
     )
-    source_exists, source = _timeline_property(
-        root,
-        "VibeCADResultSolver",
-        "App::PropertyLinkHidden",
-    )
-    if root_owner_exists and root_owner is not None:
+    if solver_owner_exists and solver_owner is not None:
         raise RuntimeError(
-            "A retained FEM result root cannot have a History owner"
+            "A FEM solver operation cannot have a History owner"
         )
 
-    root_is_canonical = (
-        root_role_exists
-        and root_role == "operation"
-        and source_exists
-        and source is solver
-    )
-    if root_is_canonical:
-        candidate_resources = []
-        candidate_resource_ids = set()
+    solver_is_canonical = solver_role_exists and solver_role == "operation"
+    if solver_is_canonical:
+        canonical_results = True
         for result in exact_results:
-            semantic_root = _timeline_metadata_root(result, document)
-            result_source_exists, result_source = _timeline_property(
-                semantic_root,
-                "VibeCADResultSolver",
-                "App::PropertyLinkHidden",
-            )
-            semantic_role_exists, semantic_role = _timeline_property(
-                semantic_root,
+            role_exists, role = _timeline_property(
+                result,
                 "VibeCADTimelineRole",
                 "App::PropertyString",
             )
             if (
-                not semantic_role_exists
-                or semantic_role != "operation"
-                or not result_source_exists
-                or result_source is not solver
-                or semantic_root not in exact_results
+                not role_exists
+                or role != "resource"
+                or _timeline_metadata_root(result, document) is not solver
+            ):
+                canonical_results = False
+                break
+        if canonical_results:
+            owned_resources = [
+                operation
+                for operation in operations
+                if operation is not solver
+                and _timeline_metadata_root(operation, document) is solver
+            ]
+            direct_result_roots = tuple(
+                result
+                for result in exact_results
+                if getattr(result, "VibeCADTimelineOwner", None) is solver
+            )
+            if not direct_result_roots or any(
+                not any(
+                    _timeline_owner_chain_contains(
+                        result,
+                        root,
+                        document,
+                    )
+                    for root in direct_result_roots
+                )
+                for result in exact_results
             ):
                 raise RuntimeError(
-                    "solver.Results mixes canonical and legacy "
-                    "History metadata"
+                    "solver.Results does not identify complete direct result roots"
                 )
-            if semantic_root is root and result is not root:
-                candidate_resources.append(result)
-                candidate_resource_ids.add(int(result.ID))
-
-        owned_resources = []
-        for operation in operations:
-            role_exists, role = _timeline_property(
-                operation,
-                "VibeCADTimelineRole",
-                "App::PropertyString",
+            from femcommands.manager import (
+                _canonical_timeline_resource_order,
             )
-            if (
-                role_exists
-                and role == "resource"
-                and _timeline_metadata_root(operation, document) is root
+
+            if tuple(owned_resources) != tuple(
+                _canonical_timeline_resource_order(
+                    solver,
+                    owned_resources,
+                )
             ):
-                owned_resources.append(operation)
-        if (
-            len(candidate_resources) != len(candidate_resource_ids)
-            or {int(resource.ID) for resource in owned_resources}
-            != candidate_resource_ids
-        ):
-            raise RuntimeError(
-                "solver.Results does not exactly contain the retained "
-                "FEM result resource graph"
-            )
-        root_index = operations.index(root)
-        if root_index < len(owned_resources) or tuple(
-            operations[root_index - len(owned_resources) : root_index]
-        ) != tuple(owned_resources):
-            raise RuntimeError(
-                "The retained FEM result is not one canonical "
-                "resource-first History block"
-            )
-        return "canonical"
+                raise RuntimeError(
+                    "The FEM solver resource graph is not in canonical "
+                    "nested resource-first History order"
+                )
+            solver_index = operations.index(solver)
+            if (
+                solver_index < len(owned_resources)
+                or tuple(
+                    operations[
+                        solver_index - len(owned_resources) : solver_index
+                    ]
+                )
+                != tuple(owned_resources)
+            ):
+                raise RuntimeError(
+                    "The FEM solver does not occupy one canonical History block"
+                )
+            return "canonical"
 
-    if source_exists or root_role not in (None, "", "operation"):
-        raise RuntimeError(
-            "The retained FEM result root has partial or malformed "
-            "History metadata"
-        )
-    if len(pipelines) != 1:
+    pipelines = [
+        result
+        for result in exact_results
+        if result.isDerivedFrom("Fem::FemPostPipeline")
+    ]
+    if len(pipelines) > 1:
         raise RuntimeError(
             "Multiple legacy FEM result pipelines cannot be assigned "
             "to exact result generations"
         )
 
+    root = pipelines[0] if pipelines else None
+    legacy_roots = set()
     for result in exact_results:
-        role_exists, role = _timeline_property(
-            result,
-            "VibeCADTimelineRole",
-            "App::PropertyString",
+        semantic_root = _timeline_metadata_root(result, document)
+        allowed_roots = (
+            {result}
+            if root is None
+            else {result, root}
         )
-        owner_exists, owner = _timeline_property(
-            result,
-            "VibeCADTimelineOwner",
-            "App::PropertyLinkHidden",
+        if semantic_root not in allowed_roots:
+            raise RuntimeError(
+                "solver.Results mixes solver-owned, legacy, or partial "
+                "History graphs"
+            )
+        legacy_roots.add(semantic_root)
+    if root is not None and root not in legacy_roots:
+        raise RuntimeError(
+            "Legacy FEM result identities do not form one exact result graph"
         )
-        result_source_exists, _result_source = _timeline_property(
-            result,
-            "VibeCADResultSolver",
-            "App::PropertyLinkHidden",
-        )
+
+    for operation in operations:
         if (
-            (role_exists and role not in ("", "operation"))
-            or (owner_exists and owner is not None)
-            or result_source_exists
-            or operations.count(result) != 1
+            operation not in exact_results
+            and operation is not solver
+            and (
+                _timeline_metadata_root(operation, document) is root
+                if root is not None
+                else _timeline_metadata_root(operation, document)
+                in legacy_roots
+            )
         ):
             raise RuntimeError(
-                "solver.Results mixes legacy, owned, or partial "
-                "History metadata"
+                "solver.Results omits a resource from its retained legacy graph"
             )
 
-    indices = sorted(operations.index(result) for result in exact_results)
+    adopted_members = (solver, *exact_results)
+    adopted_ids = {int(member.ID) for member in adopted_members}
+    indices = sorted(operations.index(member) for member in adopted_members)
     if (
         not indices
         or indices[-1] - indices[0] + 1 != len(indices)
@@ -297,43 +335,76 @@ def _ensure_exact_retained_result_graph(solver):
             int(operation.ID)
             for operation in operations[indices[0] : indices[-1] + 1]
         }
-        != result_ids
+        != adopted_ids
     ):
         raise RuntimeError(
-            "Legacy FEM result identities do not occupy one exact "
-            "contiguous History segment"
+            "The legacy FEM solver and results do not occupy one exact "
+            "contiguous History segment and cannot be safely adopted"
         )
 
-    ordered_resources = tuple(
-        operation
-        for operation in operations[indices[0] : indices[-1] + 1]
-        if operation is not root
-    )
-    if not ordered_resources:
-        # Existing-block adoption intentionally requires a real resource
-        # graph.  A singleton is already one History operation; it needs only
-        # the exact operation role before the normal staging path can use it.
-        from femcommands.manager import _mark_timeline_operation
+    if root is None:
+        ordered_resources = tuple(
+            operation
+            for operation in operations[indices[0] : indices[-1] + 1]
+            if operation is not solver
+        )
+        owners = tuple(solver for _resource in ordered_resources)
+    else:
+        ordered_children = tuple(
+            operation
+            for operation in operations[indices[0] : indices[-1] + 1]
+            if operation is not solver and operation is not root
+        )
+        ordered_resources = (*ordered_children, root)
+        owners = (
+            *(root for _resource in ordered_children),
+            solver,
+        )
 
-        _mark_timeline_operation(root)
-        return "classified"
+    # The previous result contract classified the result root as an operation
+    # and its outputs as resources of that root.  Normalize only this complete
+    # exact block immediately before the atomic adoption call.
+    for result in exact_results:
+        if "VibeCADResultSolver" in result.PropertiesList:
+            result.removeProperty("VibeCADResultSolver")
+        role_exists, _role = _timeline_property(
+            result,
+            "VibeCADTimelineRole",
+            "App::PropertyString",
+        )
+        if role_exists:
+            result.VibeCADTimelineRole = "operation"
+        owner_exists, _owner = _timeline_property(
+            result,
+            "VibeCADTimelineOwner",
+            "App::PropertyLinkHidden",
+        )
+        if owner_exists:
+            result.VibeCADTimelineOwner = None
 
     document.adoptExistingTimelineOperationBlock(
-        root,
+        solver,
         ordered_resources,
-        tuple(root for _resource in ordered_resources),
+        owners,
     )
     return "adopted"
 
 
 class ObjectTools(ABC):
-    """Abstract base class for the work with solvers and meshers"""
+    """Abstract base class for the work with solvers and meshers.
 
-    def __init__(self, obj):
+    ``detached`` is intended for callers that only need to prepare or inspect
+    solver input.  A detached tool does not publish itself through the FEM
+    object's ``Tool`` property and does not initialize its persisted working
+    directory.  The default retains the established interactive FEM behavior.
+    """
+
+    def __init__(self, obj, *, detached=False, working_directory=None):
         if membertools._is_suppressed(obj):
             raise ValueError(f"Suppressed FEM object '{obj.Label}' cannot be executed")
 
-        obj.Tool = self
+        if not detached:
+            obj.Tool = self
         self.obj = obj
         self.model_file = ""
         self.process = QProcess()
@@ -350,7 +421,13 @@ class ObjectTools(ABC):
         self.property_update = {"status": "not_started"}
         self.analysis = obj.getParentGroup()
         self.fem_param = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem")
-        self._create_working_directory()
+        if not detached:
+            self._create_working_directory()
+        self.working_directory = str(
+            working_directory
+            if working_directory is not None
+            else getattr(obj, "WorkingDirectory", "")
+        )
 
         self.process.finished.connect(self._process_finished)
         self.process.started.connect(self._process_started)
@@ -442,11 +519,7 @@ class ObjectTools(ABC):
                         "Could not open the FEM result import transaction"
                     )
 
-                if not self.fem_param.GetGroup("General").GetBool(
-                    "KeepResultsOnReRun",
-                    False,
-                ):
-                    _ensure_exact_retained_result_graph(self.obj)
+                _ensure_exact_retained_result_graph(self.obj)
                 result_graph = self.update_properties()
                 if result_graph is not None:
                     if len(result_graph) == 2:

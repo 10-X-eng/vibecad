@@ -2067,6 +2067,13 @@ void startConfiguredDesignProfileOperation(
     }
 
     try {
+        // Sketch finalization is intentionally idempotent.  Complete its
+        // reusable-definition identity before constructing a consumer even
+        // when the Sketch came from an older or interrupted edit path.
+        if (auto* sketch = freecad_cast<Sketcher::SketchObject*>(selected.sketch)) {
+            sketch->finalizeDesignDefinition();
+        }
+
         auto* operation = freecad_cast<Operation*>(
             createDocumentFeatureExact(document, typeName, document->getUniqueObjectName(objectName))
         );

@@ -48,6 +48,11 @@ class VPResultMechanical(view_base_femconstraint.VPBaseFemConstraint):
         return True
 
     def setEdit(self, vobj, mode=0):
+        # The task panel owns any presentation changes made after this point.
+        # Discard Native presentation metadata so inspection never reports a
+        # stale semantic field after a human edits the result view directly.
+        if hasattr(self, "_vibecad_result_presentation"):
+            del self._vibecad_result_presentation
         # is mesh visible
         self.visibility = self.Object.Mesh.ViewObject.Visibility
         return view_base_femconstraint.VPBaseFemConstraint.setEdit(

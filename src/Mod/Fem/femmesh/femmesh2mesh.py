@@ -33,6 +33,7 @@ __url__ = "https://www.freecad.org"
 #  \ingroup FEM
 
 import time
+import math
 
 import FreeCAD
 import Fem
@@ -87,6 +88,112 @@ face_dicts = {
     15: pentaFaces,
     20: hexaFaces,
 }
+
+
+def femmesh_exterior_faces(myFemMesh):
+    """Return deterministic exterior faces as tuples of corner-node IDs."""
+    if myFemMesh is None:
+        raise ValueError("A FEM mesh is required")
+    exterior = []
+    if int(myFemMesh.VolumeCount) > 0:
+        occurrences = {}
+        oriented_faces = {}
+        for element_id in myFemMesh.Volumes:
+            element_nodes = tuple(int(value) for value in myFemMesh.getElementNodes(element_id))
+            face_definition = face_dicts.get(len(element_nodes))
+            if face_definition is None:
+                raise ValueError(
+                    f"Volume element {element_id} has unsupported node count {len(element_nodes)}"
+                )
+            for node_indices in face_definition.values():
+                face_nodes = tuple(element_nodes[index] for index in node_indices)
+                identity = tuple(sorted(face_nodes))
+                occurrences[identity] = occurrences.get(identity, 0) + 1
+                oriented_faces.setdefault(identity, face_nodes)
+        exterior = [
+            oriented_faces[identity]
+            for identity in sorted(occurrences)
+            if occurrences[identity] == 1
+        ]
+    elif int(myFemMesh.FaceCount) > 0:
+        for element_id in sorted(int(value) for value in myFemMesh.Faces):
+            element_nodes = tuple(int(value) for value in myFemMesh.getElementNodes(element_id))
+            if len(element_nodes) in (3, 6):
+                exterior.append(element_nodes[:3])
+            elif len(element_nodes) in (4, 8):
+                exterior.append(element_nodes[:4])
+            else:
+                raise ValueError(
+                    f"Face element {element_id} has unsupported node count {len(element_nodes)}"
+                )
+    else:
+        raise ValueError("The FEM mesh has no volume or face surface to convert")
+    if not exterior:
+        raise ValueError("The FEM mesh has no exterior faces")
+    return tuple(exterior)
+
+
+def femmesh_surface_triangles(myFemMesh, myResults=None, myDispScale=1):
+    """Return deterministic exterior-surface triangles for one FEM mesh.
+
+    Unlike the legacy converter below, face identity uses an unbounded tuple
+    of node IDs instead of packing IDs into fixed-width integer fields.  This
+    keeps meshes with sparse or large node IDs correct.  The function is
+    additive so established callers of :func:`femmesh_2_mesh` retain their
+    existing behavior.
+    """
+
+    exterior = femmesh_exterior_faces(myFemMesh)
+    try:
+        displacement_scale = float(myDispScale)
+    except (TypeError, ValueError) as exc:
+        raise TypeError("The displacement scale must be one finite number") from exc
+    if not math.isfinite(displacement_scale):
+        raise ValueError("The displacement scale must be finite")
+
+    displacements = None
+    if myResults is not None:
+        node_numbers = tuple(int(value) for value in myResults.NodeNumbers)
+        vectors = tuple(myResults.DisplacementVectors)
+        if len(node_numbers) != len(vectors) or len(node_numbers) != len(set(node_numbers)):
+            raise ValueError("The FEM result has inconsistent displacement node data")
+        displacements = dict(zip(node_numbers, vectors))
+
+    def point(node_id):
+        try:
+            value = myFemMesh.getNodeById(node_id)
+        except Exception as exc:
+            raise ValueError(f"FEM surface node {node_id} is unavailable") from exc
+        if not all(math.isfinite(float(getattr(value, axis))) for axis in ("x", "y", "z")):
+            raise ValueError(f"FEM surface node {node_id} has non-finite coordinates")
+        if displacements is not None:
+            if node_id not in displacements:
+                raise ValueError(f"FEM result has no displacement for surface node {node_id}")
+            displacement = displacements[node_id]
+            if not all(
+                math.isfinite(float(getattr(displacement, axis)))
+                for axis in ("x", "y", "z")
+            ):
+                raise ValueError(
+                    f"FEM result displacement for surface node {node_id} is non-finite"
+                )
+            value = value + displacement * displacement_scale
+            if not all(
+                math.isfinite(float(getattr(value, axis))) for axis in ("x", "y", "z")
+            ):
+                raise ValueError(
+                    f"Deformed FEM surface node {node_id} has non-finite coordinates"
+                )
+        return value
+
+    triangles = []
+    for face_nodes in exterior:
+        triangles.extend((point(face_nodes[0]), point(face_nodes[1]), point(face_nodes[2])))
+        if len(face_nodes) == 4:
+            triangles.extend((point(face_nodes[2]), point(face_nodes[3]), point(face_nodes[0])))
+    if not triangles:
+        raise ValueError("The FEM mesh has no exterior triangles")
+    return triangles
 
 
 def femmesh_2_mesh(myFemMesh, myResults=None, myDispScale=1):

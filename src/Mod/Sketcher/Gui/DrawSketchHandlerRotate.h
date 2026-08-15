@@ -34,8 +34,6 @@
 
 #include "DrawSketchDefaultWidgetController.h"
 #include "DrawSketchControllableHandler.h"
-#include "SketcherTransformationExpressionHelper.h"
-
 #include "Utils.h"
 
 using namespace Sketcher;
@@ -147,23 +145,23 @@ private:
         try {
             openCommand(QT_TRANSLATE_NOOP("Command", "Rotate geometries"));
 
-            expressionHelper.storeOriginalExpressions(sketchgui->getSketchObject(), listOfGeoIds);
-
-            createShape(false);
-
-            commandAddShapeGeometryAndConstraints();
-
-            expressionHelper.copyExpressionsToNewConstraints(
-                sketchgui->getSketchObject(),
-                listOfGeoIds,
-                ShapeGeometry.size(),
-                numberOfCopies,
-                1
-            );
-
-            if (deleteOriginal) {
-                deleteOriginalGeos();
+            std::stringstream geometryIds;
+            for (std::size_t index = 0; index < listOfGeoIds.size(); ++index) {
+                if (index != 0) {
+                    geometryIds << ',';
+                }
+                geometryIds << listOfGeoIds[index];
             }
+            Gui::cmdAppObjectArgs(
+                sketchgui->getObject(),
+                "rotateExact([%s],App.Vector(%.17g,%.17g,0.0),%.17g,%d,%s)",
+                geometryIds.str().c_str(),
+                centerPoint.x,
+                centerPoint.y,
+                totalAngle,
+                numberOfCopies,
+                cloneConstraints ? "True" : "False"
+            );
 
             commitCommand();
         }
@@ -255,23 +253,6 @@ private:
     bool deleteOriginal, cloneConstraints;
     double length, startAngle, endAngle, totalAngle, individualAngle;
     int numberOfCopies;
-
-    SketcherTransformationExpressionHelper expressionHelper;
-
-    void deleteOriginalGeos()
-    {
-        std::stringstream stream;
-        for (size_t j = 0; j < listOfGeoIds.size() - 1; j++) {
-            stream << listOfGeoIds[j] << ",";
-        }
-        stream << listOfGeoIds[listOfGeoIds.size() - 1];
-        try {
-            Gui::cmdAppObjectArgs(sketchgui->getObject(), "delGeometries([%s])", stream.str().c_str());
-        }
-        catch (const Base::Exception& e) {
-            Base::Console().error("%s\n", e.what());
-        }
-    }
 
     void createShape(bool onlyeditoutline) override
     {

@@ -46,8 +46,13 @@ Part = LazyLoader("Part", globals(), "Part")
 class ObjectEngrave(PathEngraveBase.ObjectOp):
     """Proxy class for Engrave operation."""
 
-    def __init__(self, obj, name, parentJob):
-        super(ObjectEngrave, self).__init__(obj, name, parentJob)
+    def __init__(self, obj, name, parentJob, toolController=None):
+        super(ObjectEngrave, self).__init__(
+            obj,
+            name,
+            parentJob,
+            toolController=toolController,
+        )
         self.wires = []
 
     def opFeatures(self, obj):
@@ -280,8 +285,13 @@ def SetupProperties():
     return setup
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns an Engrave operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectEngrave(obj, name, parentJob)
+    obj.Proxy = ObjectEngrave(
+        obj,
+        name,
+        parentJob,
+        toolController=toolController,
+    )
     return obj

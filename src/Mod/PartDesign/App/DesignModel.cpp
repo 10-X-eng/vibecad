@@ -36,8 +36,60 @@
 
 using namespace PartDesign;
 
+void DesignModel::requireBodyShape(
+    const Body& body,
+    const Part::TopoShape& shape,
+    std::string_view context
+)
+{
+    requireBodyShape(
+        shape,
+        body.AllowCompound.getValue(),
+        body.Label.getValue(),
+        context
+    );
+}
+
+void DesignModel::requireBodyShape(
+    const Part::TopoShape& shape,
+    bool allowCompound,
+    std::string_view bodyLabel,
+    std::string_view context
+)
+{
+    const std::string prefix = std::string(context) + " for Body '" + std::string(bodyLabel) + "'";
+    if (shape.isNull() || !shape.hasSubShape(TopAbs_SOLID)) {
+        throw Base::ValueError(prefix + " must contain at least one solid");
+    }
+
+    const std::size_t solidCount = shape.countSubShapes(TopAbs_SOLID);
+    if (!allowCompound && solidCount != 1) {
+        throw Base::ValueError(
+            prefix + " contains " + std::to_string(solidCount)
+            + " solids, but Allow Compound is disabled"
+        );
+    }
+}
+
 namespace
 {
+
+void requireSavedBodyShape(
+    const Body& body,
+    const Part::TopoShape& shape,
+    std::string_view context
+)
+{
+    try {
+        DesignModel::requireBodyShape(body, shape, context);
+    }
+    catch (const Base::Exception& error) {
+        // validateDesign() has always reported persisted-contract violations as
+        // RuntimeError. Keep that public diagnostic contract while sharing the
+        // same topology predicate with operation-time validation.
+        throw Base::RuntimeError(error.what());
+    }
+}
 
 App::Property* ensureTimelineProperty(
     App::DocumentObject& object,
@@ -429,6 +481,90 @@ App::DocumentObject* timelineRoot(App::Document& document, App::DocumentObject* 
         root = owner;
     }
     return nullptr;
+}
+
+void preflightReusableDefinitionDependencies(App::DocumentObject& operation)
+{
+    auto* document = operation.getDocument();
+    auto* timeline = App::DocumentTimeline::get(document);
+    if (!document || !timeline) {
+        throw Base::RuntimeError(
+            "A Design operation requires one live document with global History"
+        );
+    }
+
+    const auto& history = timeline->Operations.getValues();
+    std::unordered_map<App::DocumentObject*, std::size_t> historyPositions;
+    historyPositions.reserve(history.size());
+    for (std::size_t index = 0; index < history.size(); ++index) {
+        auto* entry = history[index];
+        if (!entry || !historyPositions.emplace(entry, index).second) {
+            throw Base::RuntimeError(
+                "Global History contains a missing or duplicate object"
+            );
+        }
+    }
+
+    const auto operationPosition = historyPositions.find(&operation);
+    if (operationPosition == historyPositions.end()) {
+        throw Base::RuntimeError(
+            std::string("Design operation '") + operation.getNameInDocument()
+            + "' is not enrolled in global History"
+        );
+    }
+
+    std::vector<App::Property*> properties;
+    operation.getPropertyList(properties);
+    for (auto* property : properties) {
+        auto* link = freecad_cast<App::PropertyLinkBase*>(property);
+        if (!link) {
+            continue;
+        }
+        std::vector<App::DocumentObject*> linked;
+        link->getLinks(linked, true);
+        for (auto* target : linked) {
+            const auto* sketchId = target
+                ? target->PropertyContainer::getPropertyByName("VibeCADSketchId")
+                : nullptr;
+            const auto* definitionId = target
+                ? target->PropertyContainer::getPropertyByName("VibeCADDefinitionId")
+                : nullptr;
+            if (!sketchId && !definitionId) {
+                continue;
+            }
+
+            const char* targetName = target && target->getNameInDocument()
+                ? target->getNameInDocument()
+                : "<missing>";
+            auto* root = timelineRoot(*document, target);
+            const auto targetPosition = root ? historyPositions.find(root)
+                                             : historyPositions.end();
+            const std::string storedPosition = targetPosition != historyPositions.end()
+                ? std::to_string(targetPosition->second)
+                : std::string("<missing>");
+            const std::string prefix = std::string("Design operation '")
+                + operation.getNameInDocument() + "' references reusable definition '"
+                + targetName + "' at History position " + storedPosition;
+
+            if (!root) {
+                throw Base::RuntimeError(prefix + ", but it has no History root");
+            }
+            if (!App::DocumentTimeline::hasTimelineOperationRole(root)) {
+                throw Base::RuntimeError(
+                    prefix + ", but its root lacks History operation classification"
+                );
+            }
+            if (targetPosition == historyPositions.end()) {
+                throw Base::RuntimeError(prefix + ", but its root is absent from global History");
+            }
+            if (targetPosition->second >= operationPosition->second) {
+                throw Base::RuntimeError(
+                    prefix + ", not before operation position "
+                    + std::to_string(operationPosition->second)
+                );
+            }
+        }
+    }
 }
 
 }  // namespace
@@ -1197,9 +1333,8 @@ void DesignModel::setScriptOutputs(
             throw Base::ValueError("Every VibeScript Body output must be declared once as a "
                                    "solid program output");
         }
-        if (shape.isNull() || !shape.hasSubShape(TopAbs_SOLID)
-            || shape.countSubShapes(TopAbs_SOLID) != 1) {
-            throw Base::ValueError("Every VibeScript Body output must contain exactly one solid");
+        if (shape.isNull() || !shape.hasSubShape(TopAbs_SOLID)) {
+            throw Base::ValueError("Every VibeScript Body output must contain at least one solid");
         }
         if (adopted
             && (adopted->getDocument() != document || !uniqueAdoptedBodies.insert(adopted).second)) {
@@ -1238,6 +1373,10 @@ void DesignModel::setScriptOutputs(
         else {
             bodyId = Base::Uuid::createUuid();
             frame = Base::Placement();
+        }
+
+        if (auto* body = bodyWithId(*document, bodyId)) {
+            requireBodyShape(*body, shape, "The VibeScript output");
         }
 
         if (bodyId.empty() || !uniqueBodyIds.insert(bodyId).second) {
@@ -1778,6 +1917,7 @@ DesignOperationEdit DesignModel::beginOperationEdit(App::DocumentObject& operati
     if (!document || !properties) {
         throw Base::TypeError("Operation editing requires one live Design operation");
     }
+    recoverInterruptedOperationPublications(*document);
     ensureDesignOperationPortSchema(operation);
 
     DesignOperationEdit edit;
@@ -1833,9 +1973,19 @@ DesignOperationEdit DesignModel::beginOperationEdit(App::DocumentObject& operati
     return edit;
 }
 
-std::vector<Body*> DesignModel::finalizeOperation(DesignOperationEdit& edit)
+std::vector<Body*> DesignModel::finalizeOperation(
+    DesignOperationEdit& edit
+)
 {
     return finalizeOperationImpl(edit, false);
+}
+
+std::vector<Body*> DesignModel::finalizeOperation(
+    DesignOperationEdit& edit,
+    bool affectedBodiesOnly
+)
+{
+    return finalizeOperationImpl(edit, affectedBodiesOnly);
 }
 
 std::vector<Body*> DesignModel::finalizeScriptOperation(DesignOperationEdit& edit)
@@ -1861,6 +2011,17 @@ std::vector<Body*> DesignModel::finalizeOperationImpl(
     }
     ensureDesignOperationPortSchema(*operation);
 
+    auto* timeline = App::DocumentTimeline::get(document);
+    if (edit.provisionalOperation
+        && (!timeline
+            || !timeline->isProvisionallyEnrolledByCurrentTransaction(operation))) {
+        throw Base::RuntimeError(
+            std::string("New Design operation '") + operation->getNameInDocument()
+            + "' is no longer enrolled by the active creation transaction; cancel "
+              "this task and start the operation again"
+        );
+    }
+
     // Recompute the edited controller and its prerequisites before changing
     // the persistent state graph. A full document recompute here would also
     // execute old state resources whose output slots are intentionally being
@@ -1881,6 +2042,11 @@ std::vector<Body*> DesignModel::finalizeOperationImpl(
         throw Base::RuntimeError("The Design operation did not produce one atomic output per "
                                  "declared output Body port");
     }
+
+    // Reusable definitions are immutable History inputs.  Reject incomplete
+    // identity or forward-ordering state before creating Bodies, publications,
+    // or BodyState resources for this operation.
+    preflightReusableDefinitionDependencies(*operation);
 
     std::vector<Body*> targets;
     if (edit.provisionalOperation) {
@@ -2076,7 +2242,7 @@ DesignBodyState* DesignModel::initializeLegacyBodyState(Body& body, Part::Featur
     const auto members = body.Group.getValues();
     if (members.size() != 1 || members.front() != &legacyTip) {
         throw Base::ValueError(
-            "Only a Body containing one standalone legacy solid can be promoted automatically"
+            "Only a Body containing one standalone legacy feature can be promoted automatically"
         );
     }
     if (body.VibeCADBodyId.getValueStr().empty() || body.DesignId.getValueStr().empty()) {
@@ -2092,10 +2258,7 @@ DesignBodyState* DesignModel::initializeLegacyBodyState(Body& body, Part::Featur
     }
 
     Part::TopoShape initialShape = legacyTip.Shape.getShape();
-    if (initialShape.isNull() || !initialShape.hasSubShape(TopAbs_SOLID)
-        || initialShape.countSubShapes(TopAbs_SOLID) != 1) {
-        throw Base::ValueError("Legacy Body promotion requires one valid solid at the selected tip");
-    }
+    requireBodyShape(body, initialShape, "The legacy Body tip");
     const Base::Placement legacyGlobal = App::GeoFeature::getGlobalPlacement(&legacyTip);
 
     const std::string stateName = document->getUniqueObjectName("InitialBodyState");
@@ -2478,6 +2641,13 @@ void DesignModel::finalizeNewOperation(DesignOperationEdit& edit, std::vector<Bo
     }
     block.push_back(operation);
     App::DocumentTimeline::ensure(document)->finalizeProvisionalOperationBlock(operation, block);
+
+    // The semantic block is now persistent.  Any later recompute or Design
+    // validation failure must retry this as an existing operation rather than
+    // publishing another set of BodyState resources.
+    edit.originalStates.assign(states.begin(), states.end());
+    edit.provisionalOperation = false;
+    edit.resourcesStaged = false;
 }
 
 void DesignModel::finalizeExistingOperation(DesignOperationEdit& edit, std::vector<Body*>& targets)
@@ -2906,6 +3076,10 @@ void DesignModel::validateDesign(App::Document& document)
 
         requireDesignIdentity(*object, designId, "History operation");
         insertUniqueIdentity(operations, properties->OperationId.getValueStr(), object, "History operation");
+        if (Body::findBodyOf(object) || App::GeoFeatureGroupExtension::getGroupOfObject(object)
+            || App::GroupExtension::getGroupOfObject(object)) {
+            throw Base::RuntimeError("A Design History operation is not at Design scope");
+        }
         if (!App::DocumentTimeline::hasTimelineOperationRole(object)) {
             throw Base::RuntimeError("A Design operation is missing from global History");
         }
@@ -3017,11 +3191,15 @@ void DesignModel::validateDesign(App::Document& document)
                 if (keys[index].empty() || labels[index].empty()
                     || !uniqueKeys.insert(keys[index]).second
                     || !publishedOutputs.contains(keys[index])
-                    || publishedOutputs[keys[index]] != "solid" || shape.isNull()
-                    || !shape.hasSubShape(TopAbs_SOLID) || shape.countSubShapes(TopAbs_SOLID) != 1) {
+                    || publishedOutputs[keys[index]] != "solid") {
                     throw Base::RuntimeError("Every VibeScript History output requires one "
-                                             "distinct key, label, and exact solid");
+                                             "distinct key, label, and solid-bearing shape");
                 }
+                const auto body = bodies.find(bodyIds[index]);
+                if (body == bodies.end()) {
+                    throw Base::RuntimeError("A VibeScript History output lost its Body");
+                }
+                requireSavedBodyShape(*body->second, shape, "The saved VibeScript output");
             }
         }
 
@@ -3059,8 +3237,7 @@ void DesignModel::validateDesign(App::Document& document)
                 || (generatorPosition != historyPositions.end() && !historyPublicationPending
                     && generatorPosition->second >= operationHistoryPosition->second)
                 || generatorConsumers.size() != 1 || generatorConsumers.front() != object
-                || generatedShape.isNull() || !generatedShape.hasSubShape(TopAbs_SOLID)
-                || generatedShape.countSubShapes(TopAbs_SOLID) != 1) {
+                || generatedShape.isNull() || !generatedShape.hasSubShape(TopAbs_SOLID)) {
                 throw Base::RuntimeError(
                     "A generated Design operation has an inconsistent internal generator, "
                     "label, or History position"
@@ -3350,18 +3527,23 @@ void DesignModel::validateDesign(App::Document& document)
                                              "saved state of its declared Body");
                 }
             }
-            for (auto* input : inputs) {
+            for (std::size_t index = 0; index < inputs.size(); ++index) {
+                auto* input = inputs[index];
                 const auto* feature = freecad_cast<const Part::Feature*>(input);
                 const auto* state = freecad_cast<const DesignBodyState*>(input);
-                if (!feature || (state && !state->Present.getValue())
-                    || feature->Shape.getShape().isNull()
-                    || !feature->Shape.getShape().hasSubShape(TopAbs_SOLID)
-                    || feature->Shape.getShape().countSubShapes(TopAbs_SOLID) != 1) {
+                const auto body = index < inputBodyIds.size()
+                    ? bodies.find(inputBodyIds[index])
+                    : bodies.end();
+                if (!feature || (state && !state->Present.getValue()) || body == bodies.end()) {
                     throw Base::RuntimeError(
-                        "A Design Combine input is not one exact present solid "
-                        "Body state"
+                        "A Design Combine input is not one exact present Body state"
                     );
                 }
+                requireSavedBodyShape(
+                    *body->second,
+                    feature->Shape.getShape(),
+                    "The Design Combine input"
+                );
             }
         }
 
@@ -3457,10 +3639,10 @@ void DesignModel::validateDesign(App::Document& document)
 
             const bool present = outputPresence[index];
             const auto& output = outputs[index];
-            if ((present
-                 && (output.isNull() || !output.hasSubShape(TopAbs_SOLID)
-                     || output.countSubShapes(TopAbs_SOLID) != 1))
-                || (!present && !output.isNull())) {
+            if (present) {
+                requireSavedBodyShape(*body->second, output, "The Design operation output");
+            }
+            if (!present && !output.isNull()) {
                 throw Base::RuntimeError("A Design operation's output presence and solid geometry "
                                          "disagree");
             }
@@ -3539,10 +3721,15 @@ void DesignModel::validateDesign(App::Document& document)
                     auto* root = timelineRoot(document, target);
                     const auto targetPosition = root ? historyPositions.find(root)
                                                      : historyPositions.end();
-                    if (!root || !App::DocumentTimeline::hasTimelineOperationRole(root)
-                        || targetPosition == historyPositions.end()
-                        || (!historyPublicationPending
-                            && targetPosition->second >= operationHistoryPosition->second)) {
+                    if (!root) {
+                        throw Base::RuntimeError(
+                            std::string("Design operation '") + object->getNameInDocument()
+                            + "' references reusable definition '"
+                            + (target ? target->getNameInDocument() : "<missing>")
+                            + "', but that definition has no History root"
+                        );
+                    }
+                    if (!App::DocumentTimeline::hasTimelineOperationRole(root)) {
                         throw Base::RuntimeError(
                             std::string("Design operation '") + object->getNameInDocument()
                             + "' references reusable definition '"
@@ -3551,7 +3738,26 @@ void DesignModel::validateDesign(App::Document& document)
                             + (targetPosition != historyPositions.end()
                                    ? std::to_string(targetPosition->second)
                                    : std::string("<missing>"))
-                            + ", not before position "
+                            + ", but its root lacks History operation classification"
+                        );
+                    }
+                    if (targetPosition == historyPositions.end()) {
+                        throw Base::RuntimeError(
+                            std::string("Design operation '") + object->getNameInDocument()
+                            + "' references reusable definition '"
+                            + (target ? target->getNameInDocument() : "<missing>")
+                            + "', but its root is absent from global History"
+                        );
+                    }
+                    if (!historyPublicationPending
+                        && targetPosition->second >= operationHistoryPosition->second) {
+                        throw Base::RuntimeError(
+                            std::string("Design operation '") + object->getNameInDocument()
+                            + "' references reusable definition '"
+                            + (target ? target->getNameInDocument() : "<missing>")
+                            + "' at History position "
+                            + std::to_string(targetPosition->second)
+                            + ", not before operation position "
                             + (operationHistoryPosition != historyPositions.end()
                                    ? std::to_string(operationHistoryPosition->second)
                                    : std::string("<pending>"))
@@ -3607,6 +3813,10 @@ void DesignModel::validateDesign(App::Document& document)
     for (auto* state : document.getObjectsOfType<DesignBodyState>()) {
         requireDesignIdentity(*state, designId, "Body state");
         insertUniqueIdentity(states, state->BodyStateId.getValueStr(), state, "Body state");
+        if (Body::findBodyOf(state) || App::GeoFeatureGroupExtension::getGroupOfObject(state)
+            || App::GroupExtension::getGroupOfObject(state)) {
+            throw Base::RuntimeError("A Design Body state is not at Design scope");
+        }
         const auto body = bodies.find(state->BodyId.getValueStr());
         if (body == bodies.end()) {
             throw Base::RuntimeError("A Body state has no persistent Body");
@@ -3616,11 +3826,11 @@ void DesignModel::validateDesign(App::Document& document)
         auto* operation = state->Operation.getValue();
         if (!operation) {
             const auto& shape = state->Shape.getShape();
-            if (state->PreviousState.getValue() || !state->Present.getValue() || shape.isNull()
-                || !shape.hasSubShape(TopAbs_SOLID) || shape.countSubShapes(TopAbs_SOLID) != 1) {
-                throw Base::RuntimeError("An initial Body state must be one present solid with no "
-                                         "previous state");
+            if (state->PreviousState.getValue() || !state->Present.getValue()) {
+                throw Base::RuntimeError("An initial Body state must be present with no previous "
+                                         "state");
             }
+            requireSavedBodyShape(*body->second, shape, "The initial Body state");
             continue;
         }
         auto* properties = dynamic_cast<DesignOperationProperties*>(operation);
@@ -3658,13 +3868,12 @@ void DesignModel::validateDesign(App::Document& document)
         }
         const bool present = outputPresence[outputIndex];
         const auto& stateShape = state->Shape.getShape();
-        if (state->Present.getValue() != present
-            || (present
-                && (stateShape.isNull() || !stateShape.hasSubShape(TopAbs_SOLID)
-                    || stateShape.countSubShapes(TopAbs_SOLID) != 1))
-            || (!present && !stateShape.isNull())) {
+        if (state->Present.getValue() != present || (!present && !stateShape.isNull())) {
             throw Base::RuntimeError("A Body state's presence and solid geometry do not match its "
                                      "operation output");
+        }
+        if (present) {
+            requireSavedBodyShape(*body->second, stateShape, "The saved Body state");
         }
         ++stateCounts[operation];
         if (auto* previous = state->PreviousState.getValue();
@@ -3695,6 +3904,14 @@ void DesignModel::validateDesign(App::Document& document)
         auto* publication = findDesignBodyPublication(body);
         if (!publication) {
             throw Base::RuntimeError("A Design Body does not have exactly one stable publication");
+        }
+        const auto bodyMembers = body->Group.getValues();
+        if (bodyMembers.size() != 1 || bodyMembers.front() != publication
+            || body->Tip.getValue() != publication || Body::findBodyOf(publication) != body
+            || publication->BaseFeature.getValue()) {
+            throw Base::RuntimeError(
+                "A Design Body does not contain exactly its stable publication as the Tip"
+            );
         }
         requireDesignIdentity(*publication, designId, "Body publication");
         auto* current = freecad_cast<Part::Feature*>(publication->CurrentState.getValue());

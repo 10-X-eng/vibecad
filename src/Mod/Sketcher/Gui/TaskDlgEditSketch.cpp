@@ -251,11 +251,7 @@ bool TaskDlgEditSketch::accept()
     auto* appDocument =
         sketch ? sketch->getDocument() : nullptr;
     if (sketch && appDocument
-        && sketch->isDesignScopeDefinition()
-        && appDocument
-               ->isProvisionallyEnrolledInTimelineByCurrentTransaction(
-                   sketch
-               )) {
+        && sketch->isDesignScopeDefinition()) {
         try {
             sketch->finalizeDesignDefinition();
         }

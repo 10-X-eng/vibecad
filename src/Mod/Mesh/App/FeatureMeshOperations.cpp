@@ -30,6 +30,7 @@
 #include <Base/Matrix.h>
 #include <Base/Stream.h>
 #include <Base/Tools.h>
+#include <Base/ViewProj.h>
 
 #include "Core/Algorithm.h"
 #include "Core/Decimation.h"
@@ -990,6 +991,120 @@ App::DocumentObjectExecReturn* TrimByPlane::execute()
     }
     Mesh.setValue(mesh);
     return App::DocumentObject::StdReturn;
+}
+
+PROPERTY_SOURCE(Mesh::PolygonEdit, Mesh::FixDefects)
+
+const char* PolygonEdit::ActionEnums[] = {"Cut Facets", "Trim Facets", nullptr};
+const char* PolygonEdit::RegionEnums[] = {"Inside", "Outside", nullptr};
+
+PolygonEdit::PolygonEdit()
+{
+    ADD_PROPERTY_TYPE(
+        Polygon,
+        (),
+        "Polygon",
+        App::Prop_None,
+        "Ordered polygon vertices in document coordinates"
+    );
+    ADD_PROPERTY_TYPE(
+        Action,
+        (0L),
+        "Polygon",
+        App::Prop_None,
+        "Remove complete facets or clip intersected facets"
+    );
+    Action.setEnums(ActionEnums);
+    ADD_PROPERTY_TYPE(
+        Region,
+        (0L),
+        "Polygon",
+        App::Prop_None,
+        "Projected polygon region to remove"
+    );
+    Region.setEnums(RegionEnums);
+}
+
+short PolygonEdit::mustExecute() const
+{
+    if (Polygon.isTouched() || Action.isTouched() || Region.isTouched()) {
+        return 1;
+    }
+    return FixDefects::mustExecute();
+}
+
+App::DocumentObjectExecReturn* PolygonEdit::execute()
+{
+    MeshObject mesh;
+    if (auto* error = loadSourceMesh(mesh)) {
+        return error;
+    }
+    if (isSuppressed()) {
+        Mesh.setValue(mesh);
+        return App::DocumentObject::StdReturn;
+    }
+
+    try {
+        const MeshObject original = mesh;
+        const auto vertices = Polygon.getValues();
+        if (vertices.size() < 3) {
+            return new App::DocumentObjectExecReturn(
+                "Polygon must contain at least three model-space vertices"
+            );
+        }
+        std::vector<Base::Vector3f> polygon;
+        polygon.reserve(vertices.size());
+        for (const auto& vertex : vertices) {
+            if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y)
+                || !std::isfinite(vertex.z)) {
+                return new App::DocumentObjectExecReturn(
+                    "Polygon vertices must contain finite coordinates"
+                );
+            }
+            polygon.push_back(Base::convertTo<Base::Vector3f>(vertex));
+        }
+
+        MeshCore::FlatTriangulator triangulator;
+        triangulator.SetPolygon(polygon);
+        Base::Matrix4D inverse = triangulator.GetTransformToFitPlane();
+        Base::Matrix4D projectionMatrix = inverse;
+        projectionMatrix.inverseOrthogonal();
+        polygon = triangulator.ProjectToFitPlane();
+
+        Base::Polygon2d polygon2d;
+        for (const auto& vertex : polygon) {
+            polygon2d.Add(Base::Vector2d(vertex.x, vertex.y));
+        }
+        const auto region = Region.getValue() == 0 ? MeshObject::INNER : MeshObject::OUTER;
+        if (Action.getValue() == 0) {
+            Base::ViewProjMatrix projection(projectionMatrix);
+            mesh.cut(polygon2d, projection, region);
+        }
+        else {
+            Base::ViewOrthoProjMatrix projection(projectionMatrix);
+            mesh.trim(polygon2d, projection, region);
+        }
+        if (mesh.countFacets() == 0) {
+            return new App::DocumentObjectExecReturn(
+                "The polygon operation would remove the entire source mesh"
+            );
+        }
+        if (sameMeshState(mesh, original)) {
+            return new App::DocumentObjectExecReturn(
+                "The polygon operation does not change the source mesh"
+            );
+        }
+        Mesh.setValue(mesh);
+        return App::DocumentObject::StdReturn;
+    }
+    catch (const Base::Exception& error) {
+        Mesh.setValue(MeshObject());
+        return new App::DocumentObjectExecReturn(error.what());
+    }
+    catch (const std::exception& error) {
+        Mesh.setValue(MeshObject());
+        return new App::DocumentObjectExecReturn(error.what());
+    }
 }
 
 PROPERTY_SOURCE(Mesh::FacetEdit, Mesh::FixDefects)

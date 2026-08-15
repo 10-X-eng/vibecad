@@ -114,7 +114,7 @@ App::DocumentObjectExecReturn* Revolved::tryExecuteRevolved(Part::RevolMode revo
     TopoShape sketchshape = getTopoShapeVerifiedFace();
 
     // if the Base property has a valid shape, fuse the AddShape into it
-    TopoShape base = tryGetBaseShape();
+    TopoShape base = getRevolutionContextBaseShape();
 
     // update Axis from ReferenceAxis
     updateAxis();
@@ -259,7 +259,7 @@ TopoShape Revolved::tryToRevolveToFace(
     }
 }
 
-TopoShape Revolved::tryGetBaseShape() const
+TopoShape Revolved::getRevolutionContextBaseShape() const
 {
     TopoShape base;
     try {

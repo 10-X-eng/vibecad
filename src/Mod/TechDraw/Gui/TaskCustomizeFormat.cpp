@@ -30,6 +30,7 @@
 #include <Mod/TechDraw/App/DrawViewBalloon.h>
 #include <Mod/TechDraw/App/DrawViewDimension.h>
 
+#include "FormatBuilder.h"
 #include "TaskCustomizeFormat.h"
 #include "ui_TaskCustomizeFormat.h"
 
@@ -45,7 +46,6 @@ using namespace TechDrawGui;
 TaskCustomizeFormat::TaskCustomizeFormat(App::DocumentObject * object) :
     selectedObject(object),
     isDimension(true),
-    dimRawValue(0.0),
     ui(new Ui_TaskCustomizeFormat)
 {
     if (!selectedObject
@@ -89,17 +89,18 @@ bool TaskCustomizeFormat::validateDimensionFormat(
         return false;
     }
     try {
-        const std::string formatted = dimension->formatValue(
-            dimRawValue,
-            format,
-            TechDraw::DimensionFormatter::Format::FORMATTED,
-            true
+        const auto validation = validateDrawingFormatCustomization(
+            dimension,
+            format.toUtf8().toStdString()
         );
-        if (formatted.empty() && !format.isEmpty()) {
+        if (validation.targetKind != "dimension") {
             return false;
         }
         if (preview) {
-            *preview = QString::fromStdString(formatted);
+            *preview = QString::fromUtf8(
+                validation.preview.data(),
+                static_cast<qsizetype>(validation.preview.size())
+            );
         }
         return true;
     }
@@ -135,7 +136,6 @@ void TaskCustomizeFormat::setUiEdit()
     {
         isDimension = true;
         std::string dimText = dim->FormatSpec.getStrValue();
-        dimRawValue = dim->getDimValue();
         ui->leFormat->setText(QString::fromStdString(dimText));
     }
     else if (auto balloon = dynamic_cast<TechDraw::DrawViewBalloon*>(selectedObject))
@@ -262,28 +262,7 @@ bool TaskCustomizeFormat::accept()
             m_documentIdentity.resolve(),
             QT_TRANSLATE_NOOP("Command", "Customize Format")
         );
-        if (isDimension) {
-            auto* dimension =
-                dynamic_cast<TechDraw::DrawViewDimension*>(
-                    selectedObject
-                );
-            if (!dimension) {
-                return false;
-            }
-            dimension->FormatSpec.setValue(formatString);
-            dimension->recomputeFeature();
-        }
-        else {
-            auto* balloon =
-                dynamic_cast<TechDraw::DrawViewBalloon*>(
-                    selectedObject
-                );
-            if (!balloon) {
-                return false;
-            }
-            balloon->Text.setValue(formatString);
-            balloon->recomputeFeature();
-        }
+        applyDrawingFormatCustomization(selectedObject, formatString);
         transaction.commit();
     }
     catch (const Base::Exception& error) {

@@ -414,7 +414,6 @@ class ObjectArray:
         # Prepare random function
         jitterAngle = jitterMagnitude = None
         if obj.UseJitter:
-            random.seed(obj.JitterSeed)
             if obj.JitterMagnitude != FreeCAD.Vector():
                 jitterMagnitude = obj.JitterMagnitude
             if obj.JitterAngle:
@@ -436,6 +435,7 @@ class ObjectArray:
             obj.PointsSource,
             obj.PointsOrigin,
             obj.PointsSorting,
+            obj.JitterSeed if obj.UseJitter else None,
         )
 
         obj.Path = pa.getPath()
@@ -495,6 +495,7 @@ class PathArray:
         pointsSource,
         pointsOrigin,
         pointsSorting,
+        jitterSeed=None,
     ):
         self.base = base
         self.arrayType = arrayType  # ['Linear1D', 'Linear2D', 'Polar']
@@ -511,6 +512,7 @@ class PathArray:
         self.pointsSource = pointsSource
         self.pointsOrigin = pointsOrigin
         self.pointsSorting = pointsSorting
+        self.random = random.Random(jitterSeed) if jitterSeed is not None else random
 
     def getPath(self):
         """getPath() ... Call this method on an instance of the class to generate and return
@@ -541,13 +543,13 @@ class PathArray:
         Returns the position argument with a random vector shift applied and random angle"""
 
         if self.jitterMagnitude:
-            pos.x += random.uniform(-self.jitterMagnitude.x, self.jitterMagnitude.x)
-            pos.y += random.uniform(-self.jitterMagnitude.y, self.jitterMagnitude.y)
-            pos.z += random.uniform(-self.jitterMagnitude.z, self.jitterMagnitude.z)
+            pos.x += self.random.uniform(-self.jitterMagnitude.x, self.jitterMagnitude.x)
+            pos.y += self.random.uniform(-self.jitterMagnitude.y, self.jitterMagnitude.y)
+            pos.z += self.random.uniform(-self.jitterMagnitude.z, self.jitterMagnitude.z)
 
         alpha = 0
         if self.jitterAngle:
-            alpha = random.uniform(-self.jitterAngle, self.jitterAngle)
+            alpha = self.random.uniform(-self.jitterAngle, self.jitterAngle)
 
         return pos, alpha
 
@@ -876,6 +878,37 @@ class ViewProviderArray:
             return ":/icons/CAM_OpActive.svg"
 
 
+def Create(name="Array", bases=None, parentJob=None):
+    """Create one parametric CAM Array without opening a task panel.
+
+    The human command and Native Manufacture surface intentionally share this
+    factory so object type, Job enrollment, and view-provider ownership cannot
+    drift between entry points. Transaction ownership remains with the caller.
+    """
+
+    label = str(name or "").strip()
+    operations = tuple(bases or ())
+    document = getattr(parentJob, "Document", None)
+    if not label:
+        raise ValueError("A CAM Array label must not be empty")
+    if document is None or not operations:
+        raise ValueError("A CAM Array requires one Job and at least one base operation")
+    if any(getattr(operation, "Document", None) is not document for operation in operations):
+        raise ValueError("Every CAM Array base must belong to the Job document")
+    proxy = getattr(parentJob, "Proxy", None)
+    if not isinstance(proxy, PathJob.ObjectJob):
+        raise ValueError("A CAM Array requires a native CAM Job")
+
+    result = document.addObject("Path::FeaturePython", "Array")
+    result.Label = label
+    ObjectArray(result)
+    result.Base = list(operations)
+    if FreeCAD.GuiUp and getattr(result, "ViewObject", None) is not None:
+        ViewProviderArray(result.ViewObject)
+    proxy.addOperation(result)
+    return result
+
+
 def _selected_array_operations():
     document = FreeCAD.ActiveDocument
     selection = FreeCADGui.Selection.getSelection()
@@ -984,18 +1017,6 @@ class CommandPathArray:
             FreeCADGui.doCommand(
                 "document = App.getDocument(%r)" % document.Name
             )
-            result = FreeCADGui.runDocumentObjectCommand(
-                document,
-                'document.addObject("Path::FeaturePython","Array")',
-                "Path::FeaturePython",
-            )
-            result_name = result.Name
-            result_id = int(result.ID)
-            result_expression = "document.getObject(%r)" % result_name
-            FreeCADGui.doCommand(
-                "Path.Op.Gui.Array.ObjectArray(%s)" % result_expression
-            )
-
             baseString = "[%s]" % ",".join(
                 [
                     "document.getObject(%r)" % operation.Name
@@ -1003,18 +1024,16 @@ class CommandPathArray:
                 ]
             )
             FreeCADGui.doCommand(
-                "%s.Base = %s" % (result_expression, baseString)
-            )
-            FreeCADGui.doCommand(
-                "Path.Op.Gui.Array.ViewProviderArray("
-                f"{result_expression}.ViewObject)"
-            )
-            FreeCADGui.doCommand(
                 "job = document.getObject(%r)" % job.Name
             )
-            FreeCADGui.doCommand(
-                f"job.Proxy.addOperation({result_expression})"
+            result = FreeCADGui.runDocumentObjectCommand(
+                document,
+                "Path.Op.Gui.Array.Create("
+                f"'Array', {baseString}, job)",
+                "Path::FeaturePython",
             )
+            result_name = result.Name
+            result_id = int(result.ID)
 
             selection = tuple(
                 identity.resolve(require_timeline=True)

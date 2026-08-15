@@ -48,6 +48,22 @@ else:
 translate = FreeCAD.Qt.translate
 
 
+def _closedEdgeLoopFaces(sourceShape, subelements):
+    """Build one planar face per connected closed edge loop."""
+
+    edges = [getattr(sourceShape, name) for name in subelements]
+    groups = tuple(Part.sortEdges(edges))
+    if not groups:
+        raise ValueError("Pocket edge selection contains no connected edge loop")
+    faces = []
+    for group in groups:
+        wire = Part.Wire(group)
+        if not wire.isClosed():
+            raise ValueError("Pocket edges must form connected closed loops")
+        faces.append(Part.makeFace(wire, "Part::FaceMakerSimple"))
+    return faces
+
+
 class ObjectPocket(PathPocketBase.ObjectPocket):
     """Proxy object for Pocket operation."""
 
@@ -163,13 +179,14 @@ class ObjectPocket(PathPocketBase.ObjectPocket):
             Path.Log.debug("base items exist.  Processing... ")
             for base in self.baseShapes(obj):
                 Path.Log.debug("baseShapes item: {}".format(base))
+                source_shape = base[0].Shape.copy()
 
                 # Check if all subs are faces
                 allSubsFaceType = True
                 Faces = []
                 for sub in base[1]:
                     if "Face" in sub:
-                        face = getattr(base[0].Shape, sub)
+                        face = getattr(source_shape, sub)
                         Faces.append(face)
                         subObjTups.append((sub, face))
                     else:
@@ -197,46 +214,56 @@ class ObjectPocket(PathPocketBase.ObjectPocket):
                     else:
                         shape = Part.makeCompound(Faces)
                         env = PathUtils.getEnvelope(
-                            base[0].Shape, subshape=shape, depthparams=self.depthparams
+                            source_shape, subshape=shape, depthparams=self.depthparams
                         )
-                        rawRemovalShape = env.cut(base[0].Shape)
+                        rawRemovalShape = env.cut(source_shape)
                         faceExtrusions = [f.extrude(FreeCAD.Vector(0.0, 0.0, 1.0)) for f in Faces]
                         obj.removalshape = _identifyRemovalSolids(rawRemovalShape, faceExtrusions)
                         removalshapes.append(
                             (obj.removalshape, False, "3DPocket")
                         )  # (shape, isHole, detail)
                 else:
-                    for sub in base[1]:
-                        if "Face" in sub:
-                            shape = Part.makeCompound([getattr(base[0].Shape, sub)])
-                        else:
-                            edges = [getattr(base[0].Shape, sub) for sub in base[1]]
-                            shape = Part.makeFace(edges, "Part::FaceMakerSimple")
-
-                        env = PathUtils.getEnvelope(
-                            base[0].Shape, subshape=shape, depthparams=self.depthparams
+                    face_names = tuple(name for name in base[1] if "Face" in name)
+                    edge_names = tuple(name for name in base[1] if "Edge" in name)
+                    if face_names and edge_names:
+                        raise ValueError(
+                            "Pocket base geometry cannot mix faces and edges"
                         )
-                        rawRemovalShape = env.cut(base[0].Shape)
+                    if face_names:
+                        shapes = [
+                            Part.makeCompound([getattr(source_shape, name)])
+                            for name in face_names
+                        ]
+                    else:
+                        shapes = _closedEdgeLoopFaces(source_shape, edge_names)
+                    for shape in shapes:
+                        env = PathUtils.getEnvelope(
+                            source_shape, subshape=shape, depthparams=self.depthparams
+                        )
+                        rawRemovalShape = env.cut(source_shape)
                         faceExtrusions = [shape.extrude(FreeCAD.Vector(0.0, 0.0, 1.0))]
-                        obj.removalshape = _identifyRemovalSolids(rawRemovalShape, faceExtrusions)
+                        obj.removalshape = _identifyRemovalSolids(
+                            rawRemovalShape, faceExtrusions
+                        )
                         removalshapes.append((obj.removalshape, False, "3DPocket"))
 
         else:  # process the job base object as a whole
             Path.Log.debug("processing the whole job base object")
             for base in self.model:
+                source_shape = base.Shape.copy()
                 if obj.ProcessStockArea is True:
                     job = PathUtils.findParentJob(obj)
 
                     stockEnvShape = PathUtils.getEnvelope(
-                        job.Stock.Shape, subshape=None, depthparams=self.depthparams
+                        job.Stock.Shape.copy(), subshape=None, depthparams=self.depthparams
                     )
 
-                    rawRemovalShape = stockEnvShape.cut(base.Shape)
+                    rawRemovalShape = stockEnvShape.cut(source_shape)
                 else:
                     env = PathUtils.getEnvelope(
-                        base.Shape, subshape=None, depthparams=self.depthparams
+                        source_shape, subshape=None, depthparams=self.depthparams
                     )
-                    rawRemovalShape = env.cut(base.Shape)
+                    rawRemovalShape = env.cut(source_shape)
 
                 # Identify target removal shapes after cutting envelope with base shape
                 removalSolids = [
@@ -890,8 +917,13 @@ def SetupProperties():
     return PathPocketBase.SetupProperties() + ["HandleMultipleFeatures"]
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns a Pocket operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectPocket(obj, name, parentJob)
+    obj.Proxy = ObjectPocket(
+        obj,
+        name,
+        parentJob,
+        toolController=toolController,
+    )
     return obj

@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Exact workbench-specific VibeScript surface resolution.
+"""Exact VibeScript or human-ribbon Native surface resolution.
 
-The assistant always authors through VibeScript. Each surface also includes
-only the focused native read tools owned by the active workbench so it can
-understand geometry created with the human ribbon.
+VibeScript remains workbench/domain scoped. Native derives its CAD authority
+from the visible VibeCAD ribbon controller and never activates a workbench.
 """
 
 from __future__ import annotations
@@ -18,9 +17,8 @@ from VibeCADVibeScriptDomains import (
     domain_availability,
     get_vibescript_pack,
 )
-from VibeCADWorkbenchTools import get_tool_pack
 
-MODELING_ENGINES = frozenset({"vibescript"})
+MODELING_ENGINES = frozenset({"native", "vibescript"})
 UNSUPPORTED_WORKBENCHES = frozenset({"NoneWorkbench", "TestWorkbench"})
 
 CORE_CONVERSATION_VIEW_TOOLS = frozenset(
@@ -33,7 +31,6 @@ CORE_CONVERSATION_VIEW_TOOLS = frozenset(
 )
 FASTENER_CATALOG_TOOL = "fastener_catalog.search"
 COMPONENT_CATALOG_TOOL = "component_catalog.search"
-COMPONENT_INTERFACE_TOOL = "component.publish_interface"
 ASSEMBLY_PLAYBACK_TOOL = "assembly.play_simulation"
 ASSEMBLY_STOP_PLAYBACK_TOOL = "assembly.stop_simulation"
 MATERIAL_CATALOG_TOOL = "material_catalog.search"
@@ -45,7 +42,6 @@ SHARED_CONTEXT_TOOLS = frozenset(
     {
         FASTENER_CATALOG_TOOL,
         COMPONENT_CATALOG_TOOL,
-        COMPONENT_INTERFACE_TOOL,
         ASSEMBLY_PLAYBACK_TOOL,
         ASSEMBLY_STOP_PLAYBACK_TOOL,
         MATERIAL_CATALOG_TOOL,
@@ -53,9 +49,6 @@ SHARED_CONTEXT_TOOLS = frozenset(
 )
 FASTENER_WORKBENCHES = frozenset({"PartDesignWorkbench", "AssemblyWorkbench"})
 COMPONENT_CATALOG_WORKBENCHES = frozenset(
-    {"PartDesignWorkbench", "AssemblyWorkbench", "RobotWorkbench"}
-)
-COMPONENT_INTERFACE_WORKBENCHES = frozenset(
     {"PartDesignWorkbench", "AssemblyWorkbench", "RobotWorkbench"}
 )
 MATERIAL_CATALOG_WORKBENCHES = frozenset({"PartDesignWorkbench", "MaterialWorkbench"})
@@ -88,8 +81,6 @@ def _core_tool_names(workbench: str | None) -> tuple[str, ...]:
         names.add(FASTENER_CATALOG_TOOL)
     if unified or workbench in COMPONENT_CATALOG_WORKBENCHES:
         names.add(COMPONENT_CATALOG_TOOL)
-    if unified or workbench in COMPONENT_INTERFACE_WORKBENCHES:
-        names.add(COMPONENT_INTERFACE_TOOL)
     if unified or workbench == "AssemblyWorkbench":
         names.add(ASSEMBLY_PLAYBACK_TOOL)
         names.add(ASSEMBLY_STOP_PLAYBACK_TOOL)
@@ -223,6 +214,29 @@ def _unavailable(
     )
 
 
+def modeling_surface_from_native_provider(
+    workbench: str,
+    provider_surface: Any,
+) -> ModelingSurface:
+    """Project one resolved live Native manifest into provider context."""
+
+    snapshot = provider_surface.snapshot
+    return ModelingSurface(
+        workbench=workbench,
+        engine="native",
+        domain=snapshot.surface_id,
+        surface_id=snapshot.modeling_surface_id,
+        # Native has one fail-closed ribbon registry. Do not leak the old
+        # global core/view surface while any ribbon family is incomplete.
+        core_tool_names=(),
+        cad_tool_names=(
+            provider_surface.tool_names if provider_surface.available else ()
+        ),
+        available=provider_surface.available,
+        unavailable_reason=provider_surface.unavailable_reason,
+    )
+
+
 def resolve_modeling_surface(
     workbench: str | None,
     engine: str,
@@ -249,21 +263,13 @@ def resolve_modeling_surface(
             clean_engine,
             f"{clean_workbench} intentionally has no CAD authoring surface.",
         )
-    native_pack = get_tool_pack(clean_workbench)
-    if native_pack is None:
-        return _unavailable(
-            clean_workbench,
-            clean_engine,
-            f"Unknown FreeCAD workbench {clean_workbench!r}; no fallback surface is permitted.",
-        )
-
     if clean_engine == "vibescript":
         vibescript_pack = get_vibescript_pack(clean_workbench)
         if vibescript_pack is None:
             return _unavailable(
                 clean_workbench,
                 clean_engine,
-                f"No VibeScript domain is registered for {clean_workbench}.",
+                f"Unknown FreeCAD workbench {clean_workbench!r}; no fallback surface is permitted.",
             )
         available, reason = domain_availability(clean_workbench)
         if not available:
@@ -310,6 +316,24 @@ def resolve_modeling_surface(
             ),
             available=True,
             unavailable_reason="",
+        )
+
+    if clean_engine == "native":
+        try:
+            from VibeCADNativeProviderContext import (
+                resolve_production_native_surface,
+            )
+
+            _registry, provider_surface = resolve_production_native_surface()
+        except Exception as exc:
+            return _unavailable(
+                clean_workbench,
+                clean_engine,
+                f"The active VibeCAD ribbon is unavailable: {exc}",
+            )
+        return modeling_surface_from_native_provider(
+            clean_workbench,
+            provider_surface,
         )
 
     raise AssertionError(f"Unhandled modeling engine: {clean_engine}")
@@ -399,6 +423,8 @@ def validate_surface_names(
             raise ValueError(
                 f"The {engine} surface declaration does not match its tool schemas."
             )
+    elif engine == "native" and scripted:
+        raise ValueError("A Native surface cannot contain VibeScript tools.")
     if engine == "vibescript" and scripted:
         allowed_reads = {
             name

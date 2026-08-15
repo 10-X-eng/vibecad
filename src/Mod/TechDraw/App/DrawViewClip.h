@@ -73,6 +73,7 @@ public:
     std::vector<std::string> getChildViewNames();
     std::vector<std::string> getActiveChildViewNames();
     bool isViewInClip(App::DocumentObject* view);
+    bool isTimelineStructuralChild(const App::DocumentObject* object) const override;
     QRectF getRect() const override { return { 0, 0, Width.getValue(), Height.getValue() };  }
 
 

@@ -22,6 +22,9 @@
 
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include <App/DocumentObject.h>
 #include <App/FeaturePython.h>
 #include <App/PropertyLinks.h>
@@ -52,6 +55,20 @@ public:
     App::PropertyFloat        LineSpacing;
     App::PropertyBool         OverrideStyle;
 
+    App::PropertyString       PrecomputedDraftSymbol;
+    App::PropertyString       PrecomputedDraftSourceState;
+
+    struct PrecomputedDraftState
+    {
+        std::string symbol;
+        std::string sourceState;
+    };
+
+    PrecomputedDraftState getPrecomputedDraft() const;
+    void setPrecomputedDraft(const std::string& symbol, const std::string& sourceState);
+
+    PyObject* getPyObject() override;
+
     /** @name methods override Feature */
     //@{
     /// recalculate the Feature
@@ -69,10 +86,23 @@ protected:
     bool timelineDependenciesActive(
         TimelineDependencyStack& stack) const override;
 
-/*    virtual void onChanged(const App::Property* prop) override;*/
+    void onChanged(const App::Property* prop) override;
+    void onDocumentRestored() override;
+    void onUndoRedoFinished() override;
+
     Base::BoundBox3d bbox;
     std::string getSVGHead();
     std::string getSVGTail();
+
+private:
+    bool restorePrecomputedDraft(bool protectRestoreRecompute);
+    void invalidatePrecomputedDraft();
+    void connectSourceChanges();
+
+    std::vector<fastsignals::scoped_connection> m_sourceConnections;
+    fastsignals::scoped_connection m_documentRecomputedConnection;
+    bool m_adoptingPrecomputedDraft {false};
+    bool m_restoreCacheActive {false};
 };
 
 using DrawViewDraftPython = App::FeaturePythonT<DrawViewDraft>;

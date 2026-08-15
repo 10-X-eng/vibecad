@@ -42,6 +42,8 @@ SET(Reen_SRCS
     ApproxSurface.h
     BSplineFitting.cpp
     BSplineFitting.h
+    NativeApproximation.cpp
+    NativeApproximation.h
     RegionGrowing.cpp
     RegionGrowing.h
     SampleConsensus.cpp

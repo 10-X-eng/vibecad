@@ -654,8 +654,10 @@ public:
     }
 
     /**
-     * Repair persisted parallel arrays and migrate legacy documents into a
-     * deterministic global sequence based on stable object IDs.
+     * Repair persisted parallel arrays, migrate legacy documents into a
+     * deterministic global sequence based on stable object IDs, and restore
+     * the accepted end-state presentation after every object callback has
+     * completed.
      */
     void normalizeAfterRestore();
 
@@ -817,6 +819,10 @@ private:
     ) const noexcept;
     void discardTransactionProvenance(int transactionId) noexcept;
     void normalizeStoredState(bool migrateLegacy);
+    // Python-backed operations can alter live presentation in their restore
+    // callbacks. Reapply the authoritative end-state arrays only after the
+    // complete object graph has been reconstructed.
+    void reconcileEndStatePresentation();
     void reconcileOperationsChange();
     void clampPosition();
     bool reorderOperationBlocks(

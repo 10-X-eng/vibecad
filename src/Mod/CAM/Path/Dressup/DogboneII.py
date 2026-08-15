@@ -30,12 +30,37 @@ import Path.Base.Language as PathLanguage
 import Path.Dressup.Utils as PathDressup
 import PathScripts.PathUtils as PathUtils
 import math
+from types import SimpleNamespace
 
 if False:
     Path.Log.setLevel(Path.Log.Level.DEBUG, Path.Log.thisModule())
     Path.Log.trackModule(Path.Log.thisModule())
 
 PI = math.pi
+
+
+def _pathWithJobCenter(owner, path=None):
+    if isinstance(path, Path.Path):
+        result = Path.Path(list(path.Commands or ()))
+        result.Center = path.Center
+    else:
+        result = Path.Path(path) if path else Path.Path()
+    job = None
+    for candidate in (owner, getattr(owner, "Base", None)):
+        if candidate is None:
+            continue
+        for finder in (PathUtils.findParentJob, PathUtil.timelineParentJob):
+            try:
+                job = finder(candidate)
+            except (AttributeError, TypeError):
+                job = None
+            if job is not None:
+                break
+        if job is not None:
+            break
+    if job is not None:
+        result.Center = job.Path.Center
+    return result
 
 
 def calc_length_adaptive(kink, angle, nominal_length, custom_length):
@@ -276,6 +301,7 @@ class Proxy(object):
                 "Create bones only for outer closed profiles\nCan be useful for multi profile operations, e.g. Pocket with ZigZagOffset pattern",
             ),
         )
+        obj.OnlyClosedProfiles = False
         self.onDocumentRestored(obj)
 
     def onDocumentRestored(self, obj):
@@ -418,14 +444,23 @@ class Proxy(object):
 
     def execute(self, obj):
         Path.Log.track(obj.Label)
+        if not PathUtil.activeForOp(obj):
+            self.maneuver = PathLanguage.Maneuver()
+            self.bones = []
+            self.boneTips = None
+            obj.Path = _pathWithJobCenter(obj)
+            return
+        maneuver, bones = self.generate(obj)
+        self.maneuver = maneuver
+        self.bones = bones
+        self.boneTips = None
+        obj.Path = _pathWithJobCenter(obj, maneuver.toPath())
+
+    def generate(self, obj):
+        """Return exact maneuver and candidate bones without assigning a Path."""
+
         maneuver = PathLanguage.Maneuver()
         bones = []
-        if not PathUtil.activeForOp(obj):
-            self.maneuver = maneuver
-            self.bones = bones
-            self.boneTips = None
-            obj.Path = Path.Path()
-            return
         lastMove = None
         moveAfterPlunge = None
         dressingUpDogbone = hasattr(obj.Base, "BoneBlacklist")
@@ -480,10 +515,7 @@ class Proxy(object):
 
         else:
             Path.Log.info(f"No Path found to dress up in op {obj.Base}")
-        self.maneuver = maneuver
-        self.bones = bones
-        self.boneTips = None
-        obj.Path = maneuver.toPath()
+        return maneuver, bones
 
     def boneStates(self, obj):
         state = {}
@@ -514,3 +546,47 @@ def Create(base, name="DressupDogbone"):
     obj.Proxy = pxy
 
     return obj
+
+
+def generatePathWithMetadata(
+    base,
+    *,
+    side,
+    style,
+    incision,
+    custom_length,
+    only_closed_profiles,
+    bone_blacklist=(),
+):
+    """Generate Dogbone output and candidate metadata without document mutation."""
+
+    if side not in Side.All:
+        raise ValueError("Dogbone side is not supported")
+    if style not in Style.All:
+        raise ValueError("Dogbone style is not supported")
+    if incision not in Incision.All:
+        raise ValueError("Dogbone incision is not supported")
+    custom = float(custom_length)
+    if not math.isfinite(custom) or custom < 0.0:
+        raise ValueError("Dogbone custom length must be finite and nonnegative")
+    if not isinstance(only_closed_profiles, bool):
+        raise TypeError("Dogbone only_closed_profiles must be a boolean")
+    blacklist = tuple(int(index) for index in bone_blacklist)
+    if any(index < 0 for index in blacklist) or len(set(blacklist)) != len(blacklist):
+        raise ValueError("Dogbone blacklist must contain distinct nonnegative indices")
+
+    settings = SimpleNamespace(
+        Base=base,
+        Label="Dogbone preflight",
+        Side=side,
+        Style=style,
+        Incision=incision,
+        Custom=SimpleNamespace(Value=custom),
+        BoneBlacklist=list(blacklist),
+        OnlyClosedProfiles=only_closed_profiles,
+    )
+    proxy = object.__new__(Proxy)
+    proxy.obj = settings
+    maneuver, bones = proxy.generate(settings)
+    path = _pathWithJobCenter(base, maneuver.toPath())
+    return path, tuple(bones)

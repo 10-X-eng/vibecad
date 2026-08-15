@@ -60,6 +60,8 @@
 #include "Body.h"
 #include "DatumLine.h"
 #include "DatumPlane.h"
+#include "DesignModel.h"
+#include "PartDesignParameter.h"
 
 using namespace PartDesign;
 
@@ -109,6 +111,38 @@ App::DocumentObjectExecReturn* outputError(const std::string& message)
 {
     return new App::DocumentObjectExecReturn(message);
 }
+
+Part::TopoShape exactSingleInputContextShape(
+    const App::DocumentObject& controller,
+    const DesignOperationProperties& operation,
+    std::string_view termination
+)
+{
+    const auto& inputs = operation.InputStates.getValues();
+    const auto& frames = operation.InputFrames.getValues();
+    if (inputs.size() != 1 || frames.size() != 1) {
+        throw Base::ValueError(
+            std::string(termination)
+            + " requires exactly one explicit target Body because its extent depends on that "
+              "Body's prior state"
+        );
+    }
+    auto* input = freecad_cast<Part::Feature*>(inputs.front());
+    if (!input || input == &controller || input->getDocument() != controller.getDocument()) {
+        throw Base::ValueError(
+            std::string(termination) + " lost its exact prior Body state"
+        );
+    }
+    Part::TopoShape shape = shapeInBodyStateCoordinates(*input);
+    if (shape.isNull() || !shape.hasSubShape(TopAbs_SOLID)) {
+        throw Base::ValueError(
+            std::string(termination) + " requires a solid prior Body state"
+        );
+    }
+    return transformedShape(shape, frames.front());
+}
+
+Part::TopoShape featureToolInDesignCoordinates(const PartDesign::FeatureAddSub& feature);
 
 void bindDesignIdentity(App::DocumentObject& object, App::PropertyUUID& designId)
 {
@@ -642,7 +676,9 @@ App::DocumentObjectExecReturn* computeOutputShapes(
     const auto& previousInputIndices = operation.OutputPreviousInputIndices.getValues();
     const auto& outputComponentIds = operation.OutputComponentIds.getValues();
     const std::string_view resultOperation = operation.ResultOperation.getValueAsString();
-    Part::TopoShape tool = shapeInDesignCoordinates(toolFeature);
+    auto* additive = freecad_cast<PartDesign::FeatureAddSub*>(&toolFeature);
+    Part::TopoShape tool = additive ? featureToolInDesignCoordinates(*additive)
+                                    : shapeInDesignCoordinates(toolFeature);
 
     // The operation is a History/controller object, never a second rendered
     // result. Body-state resources publish its outputs in their local frames.
@@ -669,9 +705,16 @@ App::DocumentObjectExecReturn* computeOutputShapes(
         if (outputBodyIds.size() != 1 || !inputs.empty() || previousInputIndices.front() != -1) {
             return outputError("New Body requires no inputs and one created output Body");
         }
-        if (!tool.hasSubShape(TopAbs_SOLID) || tool.countSubShapes(TopAbs_SOLID) != 1) {
-            return outputError("New Body requires exactly one solid result; select one "
-                               "connected profile region or use a multi-result operation");
+        try {
+            DesignModel::requireBodyShape(
+                tool,
+                PartDesignParameter::instance()->getAllowCompoundDefault(),
+                toolFeature.Label.getValue(),
+                "The New Body result"
+            );
+        }
+        catch (const Base::Exception& error) {
+            return outputError(error.what());
         }
         operation.OutputShapes.setValues({transformedShape(tool, outputFrames.front().inverse())});
         boost::dynamic_bitset<> outputPresence(1);
@@ -752,14 +795,11 @@ App::DocumentObjectExecReturn* computeOutputShapes(
 
             Part::TopoShape output;
             output.makeElementBoolean(opcode, {base, localTool}, nullptr, fuzzyTolerance);
-            if (output.isNull() || !output.hasSubShape(TopAbs_SOLID)) {
-                return outputError("The operation produced an empty or non-solid Body result");
+            try {
+                DesignModel::requireBodyShape(*body, output, "The operation result");
             }
-            if (output.countSubShapes(TopAbs_SOLID) != 1) {
-                return outputError(
-                    "The operation would split one Body into multiple solids; "
-                    "use a Split operation so every result receives a stable Body identity"
-                );
+            catch (const Base::Exception& error) {
+                return outputError(error.what());
             }
             outputs.push_back(output);
         }
@@ -842,8 +882,17 @@ App::DocumentObjectExecReturn* computeDesignBodyCopies(
 
     try {
         Part::TopoShape sourceShape = shapeInBodyStateCoordinates(*source);
-        if (sourceShape.isNull() || sourceShape.countSubShapes(TopAbs_SOLID) != 1) {
-            return outputError(std::string(operationName) + " source must be exactly one solid");
+        auto* sourceBody = controller.getDocument()
+            ? bodyWithIdentity(*controller.getDocument(), inputBodyIds.front())
+            : nullptr;
+        if (!sourceBody) {
+            return outputError(std::string(operationName) + " lost its source Body identity");
+        }
+        try {
+            DesignModel::requireBodyShape(*sourceBody, sourceShape, "The pattern source");
+        }
+        catch (const Base::Exception& error) {
+            return outputError(error.what());
         }
         sourceShape = transformedShape(sourceShape, inputFrames.front());
 
@@ -865,10 +914,24 @@ App::DocumentObjectExecReturn* computeDesignBodyCopies(
                 Data::indexSuffix(static_cast<int>(index + 1)).c_str(),
                 Part::CopyType::copy
             );
-            if (copy.isNull() || copy.countSubShapes(TopAbs_SOLID) != 1) {
-                return outputError(
-                    std::string(operationName) + " produced a copy that is not one valid solid"
-                );
+            auto* outputBody = controller.getDocument()
+                ? bodyWithIdentity(*controller.getDocument(), outputBodyIds[index])
+                : nullptr;
+            try {
+                if (outputBody) {
+                    DesignModel::requireBodyShape(*outputBody, copy, "The pattern copy");
+                }
+                else {
+                    DesignModel::requireBodyShape(
+                        copy,
+                        PartDesignParameter::instance()->getAllowCompoundDefault(),
+                        operationName,
+                        "The pattern copy"
+                    );
+                }
+            }
+            catch (const Base::Exception& error) {
+                return outputError(error.what());
             }
             preview.push_back(copy);
             outputs.push_back(transformedShape(copy, outputFrames[index].inverse()));
@@ -1004,8 +1067,11 @@ App::DocumentObjectExecReturn* computeDesignPatternOutputs(
             }
 
             Part::TopoShape base = shapeInBodyStateCoordinates(*input);
-            if (base.isNull() || base.countSubShapes(TopAbs_SOLID) != 1) {
-                return outputError("A Feature Pattern target must be exactly one solid");
+            try {
+                DesignModel::requireBodyShape(*body, base, "The Feature Pattern target");
+            }
+            catch (const Base::Exception& error) {
+                return outputError(error.what());
             }
 
             std::vector<Part::TopoShape> operands;
@@ -1018,13 +1084,11 @@ App::DocumentObjectExecReturn* computeDesignPatternOutputs(
             Part::TopoShape output;
             output.makeElementBoolean(opcode, operands, nullptr, controller.FuzzyTolerance.getValue());
             output = pattern.refineDesignPatternShape(output);
-            if (output.isNull() || output.countSubShapes(TopAbs_SOLID) != 1) {
-                return outputError(
-                    resultMode == "Cut"
-                        ? "The patterned cuts do not leave one valid target solid"
-                        : "The patterned additions are disconnected; use a Body "
-                          "Pattern when the occurrences should remain separate Bodies"
-                );
+            try {
+                DesignModel::requireBodyShape(*body, output, "The Feature Pattern result");
+            }
+            catch (const Base::Exception& error) {
+                return outputError(error.what());
             }
             outputs.push_back(output);
         }
@@ -1114,9 +1178,11 @@ App::DocumentObjectExecReturn* computeDesignCombineOutputs(
             }
 
             Part::TopoShape local = shapeInBodyStateCoordinates(*input);
-            if (local.isNull() || !local.hasSubShape(TopAbs_SOLID)
-                || local.countSubShapes(TopAbs_SOLID) != 1) {
-                return outputError("Every Combine input Body must contain exactly one solid");
+            try {
+                DesignModel::requireBodyShape(*body, local, "The Combine input");
+            }
+            catch (const Base::Exception& error) {
+                return outputError(error.what());
             }
             Part::TopoShape inDesignCoordinates = transformedShape(local, inputFrames[index]);
             shapesInResultFrame.push_back(transformedShape(inDesignCoordinates, resultFrame.inverse())
@@ -1199,12 +1265,17 @@ App::DocumentObjectExecReturn* computeDesignCombineOutputs(
         return outputError("Combine failed with an unknown geometry-kernel exception");
     }
 
-    if (result.isNull() || !result.hasSubShape(TopAbs_SOLID)) {
-        return outputError("Combine produced no solid result");
+    auto* resultBody = combine.getDocument()
+        ? bodyWithIdentity(*combine.getDocument(), resultBodyId)
+        : nullptr;
+    if (!resultBody) {
+        return outputError("Combine lost its result Body identity");
     }
-    if (result.countSubShapes(TopAbs_SOLID) != 1) {
-        return outputError("Combine produced more than one solid; use Split so every result "
-                           "receives a stable Body identity");
+    try {
+        DesignModel::requireBodyShape(*resultBody, result, "The Combine result");
+    }
+    catch (const Base::Exception& error) {
+        return outputError(error.what());
     }
     if (!result.isValid()) {
         return outputError("Combine produced invalid solid geometry");
@@ -1445,9 +1516,8 @@ EvaluatedDesignSplit evaluateDesignSplit(
     }
 
     const Part::TopoShape sourceShape = shapeInBodyStateCoordinates(*source);
-    if (sourceShape.isNull() || sourceShape.countSubShapes(TopAbs_SOLID) != 1) {
-        throw Base::ValueError("Split requires one source Body containing exactly one solid");
-    }
+    DesignModel::requireBodyShape(*sourceBody, sourceShape, "The Split source");
+    const std::size_t sourceSolidCount = sourceShape.countSubShapes(TopAbs_SOLID);
 
     std::vector<Part::TopoShape> sources {sourceShape};
     TopTools_ListOfShape arguments;
@@ -1486,9 +1556,9 @@ EvaluatedDesignSplit evaluateDesignSplit(
     Part::TopoShape mapped(0, sourceShape.Hasher);
     mapped.makeShapeWithElementMap(maker.Shape(), Part::MapperMaker(maker), sources, Part::OpCodes::Split);
     auto regions = mapped.getSubTopoShapes(TopAbs_SOLID);
-    if (regions.size() < 2) {
-        throw Base::ValueError("The selected definitions do not divide the source Body into two "
-                               "or more solids");
+    if (regions.size() <= sourceSolidCount) {
+        throw Base::ValueError("The selected definitions do not divide any solid in the source "
+                               "Body");
     }
 
     double regionVolume = 0.0;
@@ -1814,11 +1884,11 @@ App::DocumentObjectExecReturn* computeDesignDressupOutputs(
             }
 
             Part::TopoShape base = shapeInBodyStateCoordinates(*input);
-            if (base.isNull() || !base.hasSubShape(TopAbs_SOLID)
-                || base.countSubShapes(TopAbs_SOLID) != 1) {
-                return outputError(
-                    std::string(operationName) + " requires exactly one solid in every target Body"
-                );
+            try {
+                DesignModel::requireBodyShape(*body, base, std::string(operationName) + " target");
+            }
+            catch (const Base::Exception& error) {
+                return outputError(error.what());
             }
 
             const auto subelements = resolveSubelements(base, elementGroups[index]);
@@ -1830,12 +1900,15 @@ App::DocumentObjectExecReturn* computeDesignDressupOutputs(
             }
 
             Part::TopoShape output = build(base, subelements, index, outputFrames[index]);
-            if (output.isNull() || !output.hasSubShape(TopAbs_SOLID)
-                || output.countSubShapes(TopAbs_SOLID) != 1) {
-                return outputError(
-                    std::string(operationName)
-                    + " produced an empty, non-solid, or multi-solid Body result"
+            try {
+                DesignModel::requireBodyShape(
+                    *body,
+                    output,
+                    std::string(operationName) + " result"
                 );
+            }
+            catch (const Base::Exception& error) {
+                return outputError(error.what());
             }
 
             TopTools_ListOfShape arguments;
@@ -1884,14 +1957,15 @@ App::DocumentObjectExecReturn* computeDesignDressupOutputs(
     return App::DocumentObject::StdReturn;
 }
 
-void touchDesignResults(
+void touchDesignResultConsumers(
     App::DocumentObject& operation,
-    const App::Property* property,
-    const Part::PropertyTopoShapeList& outputShapes
+    bool allowDuringRestore = false
 )
 {
     auto* document = operation.getDocument();
-    if (!document || document->testStatus(App::Document::Restoring) || property == &outputShapes) {
+    if (!document
+        || (!allowDuringRestore
+            && document->testStatus(App::Document::Restoring))) {
         return;
     }
 
@@ -1909,6 +1983,18 @@ void touchDesignResults(
             body->touch();
         }
     }
+}
+
+void touchDesignResults(
+    App::DocumentObject& operation,
+    const App::Property* property,
+    const Part::PropertyTopoShapeList& outputShapes
+)
+{
+    if (property == &outputShapes) {
+        return;
+    }
+    touchDesignResultConsumers(operation);
 }
 
 }  // namespace
@@ -2546,6 +2632,19 @@ App::DocumentObjectExecReturn* DesignExtrude::recompute()
     return computeSuppressedOutputs(*this, *this);
 }
 
+TopoShape DesignExtrude::getExtrusionContextBaseShape() const
+{
+    const auto needsContext = [](const App::PropertyEnumeration& type) {
+        const std::string_view value = type.getValueAsString();
+        return value == "UpToFirst" || value == "UpToLast";
+    };
+    const bool secondSide = std::string_view(SideType.getValueAsString()) == "Two sides";
+    if (!needsContext(Type) && !(secondSide && needsContext(Type2))) {
+        return FeatureExtrude::getExtrusionContextBaseShape();
+    }
+    return exactSingleInputContextShape(*this, *this, "Up to first/last extrusion");
+}
+
 App::DocumentObjectExecReturn* DesignExtrude::execute()
 {
     App::DocumentObjectExecReturn* result = Pad::execute();
@@ -2592,6 +2691,15 @@ App::DocumentObjectExecReturn* DesignRevolve::recompute()
 
     Shape.setValue(Part::TopoShape());
     return computeSuppressedOutputs(*this, *this);
+}
+
+TopoShape DesignRevolve::getRevolutionContextBaseShape() const
+{
+    const std::string_view type = Type.getValueAsString();
+    if (type != "UpToFirst" && type != "UpToLast" && type != "UpToFace") {
+        return Revolved::getRevolutionContextBaseShape();
+    }
+    return exactSingleInputContextShape(*this, *this, "Target-dependent revolution");
 }
 
 App::DocumentObjectExecReturn* DesignRevolve::execute()
@@ -3036,8 +3144,11 @@ App::DocumentObjectExecReturn* DesignScale::execute()
             }
 
             Part::TopoShape inputShape = shapeInBodyStateCoordinates(*input);
-            if (inputShape.isNull() || inputShape.countSubShapes(TopAbs_SOLID) != 1) {
-                return outputError("Scale requires exactly one solid in every target Body");
+            try {
+                DesignModel::requireBodyShape(*body, inputShape, "The Scale target");
+            }
+            catch (const Base::Exception& error) {
+                return outputError(error.what());
             }
 
             inputShape = transformedShape(inputShape, inputFrames[index]);
@@ -3047,8 +3158,14 @@ App::DocumentObjectExecReturn* DesignScale::execute()
                 Part::CheckScale::checkScale,
                 Part::CopyType::copy
             );
-            if (scaled.isNull() || scaled.countSubShapes(TopAbs_SOLID) != 1 || !scaled.isValid()) {
-                return outputError("Scale produced an invalid or non-solid Body result");
+            try {
+                DesignModel::requireBodyShape(*body, scaled, "The Scale result");
+            }
+            catch (const Base::Exception& error) {
+                return outputError(error.what());
+            }
+            if (!scaled.isValid()) {
+                return outputError("Scale produced invalid Body geometry");
             }
 
             preview.push_back(scaled);
@@ -4529,9 +4646,25 @@ App::DocumentObjectExecReturn* DesignScriptOperation::execute()
                 "Every VibeScript output requires one distinct stable key and Body identity"
             );
         }
-        if (shape.isNull() || !shape.hasSubShape(TopAbs_SOLID)
-            || shape.countSubShapes(TopAbs_SOLID) != 1) {
-            return outputError("Every VibeScript Body output must contain exactly one solid");
+        auto* body = getDocument() ? bodyWithIdentity(*getDocument(), bodyIds[index]) : nullptr;
+        try {
+            if (body) {
+                DesignModel::requireBodyShape(*body, shape, "The VibeScript Body output");
+            }
+            else if (previousInputIndices[index] == -1) {
+                DesignModel::requireBodyShape(
+                    shape,
+                    PartDesignParameter::instance()->getAllowCompoundDefault(),
+                    labels[index],
+                    "The VibeScript Body output"
+                );
+            }
+            else {
+                return outputError("A VibeScript output lost its persistent Body identity");
+            }
+        }
+        catch (const Base::Exception& error) {
+            return outputError(error.what());
         }
     }
 
@@ -4603,7 +4736,15 @@ short DesignGeneratedOperation::mustExecute() const
 void DesignGeneratedOperation::onChanged(const App::Property* property)
 {
     Feature::onChanged(property);
-    touchDesignResults(*this, property, OutputShapes);
+    if (property == &OutputShapes) {
+        // A linked FeaturePython generator can execute during restore or a
+        // dependency recompute without changing the Generator link itself.
+        // Its newly published shape must invalidate the retained Body state.
+        touchDesignResultConsumers(*this, true);
+    }
+    else {
+        touchDesignResults(*this, property, OutputShapes);
+    }
 }
 
 App::DocumentObjectExecReturn* DesignGeneratedOperation::recompute()
@@ -4653,7 +4794,16 @@ App::DocumentObjectExecReturn* DesignGeneratedOperation::execute()
         // Keep the two ports atomic when a generated feature changes its frame;
         // validateDesign() deliberately rejects a partially updated operation.
         TargetFrames.setValues({generatedFrame});
-        generated = generator->Shape.getShape();
+        // A generator may publish a compound whose child solids have their
+        // own TopLoc_Location (modeled Fasteners do this after recompute).
+        // Bake the complete generator shape into Design coordinates and then
+        // express it in the retained Body frame. Resetting a child's placement
+        // would discard that location and make the result change across
+        // recompute/undo/abort cycles.
+        generated = transformedShape(
+            shapeInDesignCoordinates(*generator),
+            generatedFrame.inverse()
+        );
     }
     else {
         // A promoted legacy generator remains at Design scope in its exact
@@ -4665,16 +4815,39 @@ App::DocumentObjectExecReturn* DesignGeneratedOperation::execute()
         );
         TargetFrames.setValues(savedOutputFrames);
     }
-    if (generated.isNull() || !generated.hasSubShape(TopAbs_SOLID)
-        || generated.countSubShapes(TopAbs_SOLID) != 1) {
-        return outputError("A native Design generator must produce exactly one solid");
+    auto* body = getDocument() ? bodyWithIdentity(*getDocument(), bodyIds.front()) : nullptr;
+    try {
+        if (body) {
+            DesignModel::requireBodyShape(*body, generated, "The native Design generator result");
+        }
+        else if (createsBody) {
+            DesignModel::requireBodyShape(
+                generated,
+                PartDesignParameter::instance()->getAllowCompoundDefault(),
+                OutputLabel.getValue(),
+                "The native Design generator result"
+            );
+        }
+        else {
+            return outputError("A native Design generator lost its output Body identity");
+        }
     }
-    // Part::Feature keeps Shape's TopLoc_Location synchronized with its
-    // Placement. New Body takes the generator's global frame; Modify has
-    // already transformed the generated solid into the retained Body frame.
-    generated = generated.getSubTopoShape(TopAbs_SOLID, 1);
-    if (createsBody) {
+    catch (const Base::Exception& error) {
+        return outputError(error.what());
+    }
+    // Both paths above already express the complete result in the retained
+    // Body frame. Keep compound ancestry intact: Body identity belongs to the
+    // whole shape, while child locations remain part of each solid's topology.
+    if (generated.getPlacement() != Base::Placement()) {
+        // Part::Feature forces an assigned Shape's top-level transform to its
+        // Placement while recomputing. Bake the complete shape's rigid location
+        // into an unlocated copy so that synchronization cannot erase it.
+        // TopoShape::bakeInTransform() uses a general geometric transform;
+        // that needlessly converts curved BREP and can change its mass
+        // properties even for a pure placement.
+        const Base::Placement childPlacement = generated.getPlacement();
         generated.setPlacement(Base::Placement());
+        generated.transformShape(childPlacement.toMatrix(), true, true);
     }
 
     boost::dynamic_bitset<> presence(1);
@@ -4777,6 +4950,27 @@ short DesignBodyState::mustExecute() const
     if (Operation.isTouched() || OutputIndex.isTouched() || PreviousState.isTouched()) {
         return 1;
     }
+    const auto* operation = dynamic_cast<const DesignOperation*>(Operation.getValue());
+    const int index = OutputIndex.getValue();
+    if (operation && index >= 0) {
+        const auto& outputs = operation->designOutputShapes().getValues();
+        const auto& presence = operation->designOutputPresence().getValues();
+        const auto outputIndex = static_cast<std::size_t>(index);
+        if (outputIndex < outputs.size() && outputIndex < presence.size()) {
+            const bool expectedPresent = presence[outputIndex];
+            const auto& expectedShape = outputs[outputIndex];
+            const auto& currentShape = Shape.getShape();
+            if (Present.getValue() != expectedPresent
+                || (expectedPresent
+                    && (currentShape.isNull()
+                        || !currentShape.getShape().IsPartner(
+                            expectedShape.getShape()
+                        )))
+                || (!expectedPresent && !currentShape.isNull())) {
+                return 1;
+            }
+        }
+    }
     return Part::Feature::mustExecute();
 }
 
@@ -4787,15 +4981,18 @@ App::DocumentObjectExecReturn* DesignBodyState::execute()
         if (PreviousState.getValue()) {
             return outputError("An initial Body state cannot reference a previous state");
         }
-        if (BodyId.getValueStr().empty() || !getDocument()
-            || !bodyWithIdentity(*getDocument(), BodyId.getValueStr())) {
+        auto* body = getDocument() ? bodyWithIdentity(*getDocument(), BodyId.getValueStr())
+                                   : nullptr;
+        if (BodyId.getValueStr().empty() || !body) {
             return outputError("An initial Body state has no persistent target Body");
         }
         Present.setValue(true);
         const auto& initialShape = Shape.getShape();
-        if (initialShape.isNull() || !initialShape.hasSubShape(TopAbs_SOLID)
-            || initialShape.countSubShapes(TopAbs_SOLID) != 1) {
-            return outputError("An initial Body state must contain exactly one solid");
+        try {
+            DesignModel::requireBodyShape(*body, initialShape, "The initial Body state");
+        }
+        catch (const Base::Exception& error) {
+            return outputError(error.what());
         }
         return App::DocumentObject::StdReturn;
     }
@@ -4827,7 +5024,8 @@ App::DocumentObjectExecReturn* DesignBodyState::execute()
         return outputError("This Body state no longer matches its operation output identity");
     }
 
-    if (!getDocument() || !bodyWithIdentity(*getDocument(), BodyId.getValueStr())) {
+    auto* body = getDocument() ? bodyWithIdentity(*getDocument(), BodyId.getValueStr()) : nullptr;
+    if (!body) {
         return outputError("This Body state lost its persistent target Body identity");
     }
 
@@ -4860,10 +5058,13 @@ App::DocumentObjectExecReturn* DesignBodyState::execute()
 
     const bool present = outputPresence[outputIndex];
     const auto& output = outputs[outputIndex];
-    if (present
-        && (output.isNull() || !output.hasSubShape(TopAbs_SOLID)
-            || output.countSubShapes(TopAbs_SOLID) != 1)) {
-        return outputError("A present Body state must contain exactly one solid");
+    if (present) {
+        try {
+            DesignModel::requireBodyShape(*body, output, "The present Body state");
+        }
+        catch (const Base::Exception& error) {
+            return outputError(error.what());
+        }
     }
     if (!present && !output.isNull()) {
         return outputError("An absent Body state cannot contain rendered geometry");

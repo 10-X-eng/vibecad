@@ -25,16 +25,20 @@ rotates it; connected clients must then be updated.
 
 ## Tool behavior
 
-The MCP client receives the active workbench's exact VibeScript tool contracts,
-plus:
+The MCP client receives the exact frozen tool contracts for the authoring mode
+and VibeCAD ribbon already selected by the human. In VibeScript mode these are
+the active workbench's source-backed tools. In Native mode they are the complete
+capability families for the current ribbon.
 
-- `vibecad.read_workbench` lists the active and available workbenches.
-- `vibecad.switch_workbench` activates one exact listed workbench.
+`vibecad.read_workbench` reports the active human-selected ribbon/workbench.
+It is read-only. There is no MCP tool for changing the workbench, ribbon, or
+authoring mode.
 
-Changing workbenches changes the MCP tool list. CAD calls use the same schema
-validation, source revisions, transactions, cancellation, and document-thread
-execution as the built-in agent. MCP calls are serialized, so two external
-requests cannot mutate the document concurrently.
+When the human changes ribbons, the prior frozen MCP surface becomes stale and
+the client must begin its next turn from the newly listed tools. CAD calls use
+the same exact schemas, revisions, transactions, cancellation, and
+document-thread execution as the built-in agent. MCP calls are serialized, so
+two external requests cannot mutate the document concurrently.
 
 The MCP client supplies the model and reasoning. VibeCAD does not start an AI
 provider for MCP requests. Tools whose purpose is to invoke an additional

@@ -24,6 +24,7 @@
 
 
 #include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/Interpreter.h>
 #include <Base/PyObjectBase.h>
 #include <App/Document.h>
@@ -34,7 +35,10 @@
 #include <Gui/View3DInventor.h>
 #include <Gui/WidgetFactory.h>
 
+#include <exception>
+
 #include "PropertyConstraintListItem.h"
+#include "SketchEditControl.h"
 #include "SketcherSettings.h"
 #include "SoZoomTranslation.h"
 #include "ViewProviderPython.h"
@@ -79,6 +83,34 @@ public:
             "The tuple uses the same coordinate system as Gui.ActiveDocument.ActiveView"
             ".getPointOnViewport().\n"
         );
+        add_noargs_method(
+            "getActiveSketchVirtualSpace",
+            &Module::getActiveSketchVirtualSpace,
+            "getActiveSketchVirtualSpace() -> bool\n"
+            "\n"
+            "Return whether the active Sketch edit view shows virtual-space constraints.\n"
+        );
+        add_varargs_method(
+            "setActiveSketchVirtualSpace",
+            &Module::setActiveSketchVirtualSpace,
+            "setActiveSketchVirtualSpace(shown: bool) -> bool\n"
+            "\n"
+            "Set whether the active Sketch edit view shows virtual-space constraints.\n"
+        );
+        add_varargs_method(
+            "leaveActiveSketch",
+            &Module::leaveActiveSketch,
+            "leaveActiveSketch(document_name, document_uid, sketch_name) -> dictionary\n"
+            "\n"
+            "Finish the exact active Sketch edit task without dispatching a command.\n"
+        );
+        add_varargs_method(
+            "setActiveSketchSectionView",
+            &Module::setActiveSketchSectionView,
+            "setActiveSketchSectionView(document_name, document_uid, sketch_name, visible) -> bool\n"
+            "\n"
+            "Set section visibility for the exact active Sketch without dispatching a command.\n"
+        );
         initialize("This module is the SketcherGui module.");  // register with Python
     }
 
@@ -86,6 +118,126 @@ public:
     {}
 
 private:
+    Py::Object setActiveSketchSectionView(const Py::Tuple& args)
+    {
+        const char* documentName;
+        const char* documentUid;
+        const char* sketchName;
+        PyObject* visible;
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "sssO!",
+                &documentName,
+                &documentUid,
+                &sketchName,
+                &PyBool_Type,
+                &visible
+            )) {
+            throw Py::Exception();
+        }
+        try {
+            return Py::Boolean(SketcherGui::setActiveSketchSectionView(
+                documentName,
+                documentUid,
+                sketchName,
+                visible == Py_True
+            ));
+        }
+        catch (const Py::Exception&) {
+            throw;
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        catch (const std::exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        catch (...) {
+            throw Py::RuntimeError(
+                "Sketcher failed to set the exact active Sketch section view."
+            );
+        }
+    }
+
+    Py::Object leaveActiveSketch(const Py::Tuple& args)
+    {
+        const char* documentName;
+        const char* documentUid;
+        const char* sketchName;
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "sss",
+                &documentName,
+                &documentUid,
+                &sketchName
+            )) {
+            throw Py::Exception();
+        }
+        SketcherGui::LeaveSketchResult result;
+        try {
+            result = SketcherGui::leaveActiveSketch(
+                documentName,
+                documentUid,
+                sketchName,
+                false
+            );
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        catch (const std::exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        catch (...) {
+            throw Py::RuntimeError("Sketcher failed to leave the exact active Sketch.");
+        }
+        Py::Dict value;
+        value.setItem("document_name", Py::String(result.documentName));
+        value.setItem("document_uid", Py::String(result.documentUid));
+        value.setItem("sketch_name", Py::String(result.sketchName));
+        value.setItem(
+            "accepted_task_dialog",
+            Py::Boolean(result.acceptedTaskDialog)
+        );
+        value.setItem("edit_mode", Py::String("closed"));
+        return value;
+    }
+
+    ViewProviderSketch* activeSketchViewProvider() const
+    {
+        auto* editDoc = Gui::Application::Instance->editDocument();
+        auto* view = editDoc
+            ? freecad_cast<SketcherGui::ViewProviderSketch*>(editDoc->getInEdit())
+            : nullptr;
+        return view && view->isInEditMode()
+                && view->getSketchMode() == ViewProviderSketch::STATUS_NONE
+            ? view
+            : nullptr;
+    }
+
+    Py::Object getActiveSketchVirtualSpace()
+    {
+        auto* view = activeSketchViewProvider();
+        if (!view) {
+            throw Py::RuntimeError("No idle Sketch edit view is active.");
+        }
+        return Py::Boolean(view->getIsShownVirtualSpace());
+    }
+
+    Py::Object setActiveSketchVirtualSpace(const Py::Tuple& args)
+    {
+        PyObject* shown;
+        if (!PyArg_ParseTuple(args.ptr(), "O!", &PyBool_Type, &shown)) {
+            throw Py::Exception();
+        }
+        auto* view = activeSketchViewProvider();
+        if (!view) {
+            throw Py::RuntimeError("No idle Sketch edit view is active.");
+        }
+        view->setIsShownVirtualSpace(shown == Py_True);
+        return Py::Boolean(view->getIsShownVirtualSpace());
+    }
+
     Py::Object getActiveSketchPreselection(const Py::Tuple& args)
     {
         PyObject* object;

@@ -19,7 +19,6 @@
 #                                                                              #
 ################################################################################
 
-from Path.Dressup.Gui.TagPreferences import HoldingTagPreferences
 from PathScripts.PathUtils import waiting_effects
 from PySide.QtCore import QT_TRANSLATE_NOOP
 import FreeCAD
@@ -711,7 +710,7 @@ class PathData:
         return [Part.Wire(se) for se in self.bottomEdges]
 
     def supportsTagGeneration(self):
-        return self.baseWires is not None
+        return bool(self.baseWires)
 
     def findZLimits(self, edges):
         # not considering arcs and spheres in Z direction, find the highest and lowest Z values
@@ -824,7 +823,9 @@ class PathData:
                 if counter:
                     distance = (edge.LastParameter - edge.FirstParameter) / counter
                     for j in range(0, counter):
-                        tag = edge.Curve.value((j + 0.5) * distance)
+                        tag = edge.Curve.value(
+                            edge.FirstParameter + (j + 0.5) * distance
+                        )
                         tags.append(Tag(j, tag.x, tag.y, W, H, A, R, True))
 
         return tags
@@ -874,6 +875,8 @@ class PathData:
         return (currentLength, lastTagLength)
 
     def defaultTagHeight(self):
+        from Path.Dressup.Gui.TagPreferences import HoldingTagPreferences
+
         op = PathDressup.baseOp(self.obj.Base)
         if hasattr(op, "StartDepth") and hasattr(op, "FinalDepth"):
             pathHeight = (op.StartDepth - op.FinalDepth).Value
@@ -885,6 +888,8 @@ class PathData:
         return height
 
     def defaultTagWidth(self):
+        from Path.Dressup.Gui.TagPreferences import HoldingTagPreferences
+
         maxWidth = 0
         for wire in self.baseWires:
             width = self.shortestAndLongestPathEdge(wire)[1].Length / 10
@@ -892,9 +897,13 @@ class PathData:
         return HoldingTagPreferences.defaultWidth(maxWidth)
 
     def defaultTagAngle(self):
+        from Path.Dressup.Gui.TagPreferences import HoldingTagPreferences
+
         return HoldingTagPreferences.defaultAngle()
 
     def defaultTagRadius(self):
+        from Path.Dressup.Gui.TagPreferences import HoldingTagPreferences
+
         return HoldingTagPreferences.defaultRadius()
 
     def checkTag(self, tag):
@@ -1088,145 +1097,45 @@ class ObjectTagDressup:
         return True
 
     def createPath(self, obj, pathData, tags):
-        logger.track()
-        commands = []
-        lastEdge = 0
-        t = 0
-        edge = None
+        from Path.Dressup.TagGeneration import build_holding_tag_path
 
-        self.mappers = []
-        mapper = None
-
-        job = PathUtils.findParentJob(obj)
-        tol = job.GeometryTolerance.Value
-        tc = PathDressup.toolController(obj.Base)
-        horizFeed = tc.HorizFeed.Value
-        vertFeed = tc.VertFeed.Value
-        horizRapid = tc.HorizRapid.Value
-        vertRapid = tc.VertRapid.Value
-
-        while edge or lastEdge < len(pathData.edges):
-            logger.debug("------- lastEdge = {}.{}/{}", lastEdge, t, len(tags))
-            if not edge:
-                edge = pathData.edges[lastEdge]
-                debugEdge(edge, "=======  new edge: {}/{}", lastEdge, len(pathData.edges))
-                tagsSorted = sorted(
-                    tags, key=lambda t: (t.originAt(t.z) - edge.valueAt(edge.FirstParameter)).Length
-                )
-                lastEdge += 1
-
-            if mapper:
-                mapper.add(edge)
-                if mapper.mappingComplete():
-                    commands.extend(mapper.commands)
-                    edge = mapper.tail
-                    mapper = None
-                else:
-                    edge = None
-
-            if edge:
-                tIndex = t % len(tags)
-                t += 1
-                i = tagsSorted[tIndex].intersects(edge, edge.FirstParameter)
-                if i and self.isValidTagStartIntersection(edge, i):
-                    mapper = MapWireToTag(
-                        edge,
-                        tagsSorted[tIndex],
-                        i,
-                        pathData.maxZ,
-                        hSpeed=horizFeed,
-                        vSpeed=vertFeed,
-                        tolerance=tol,
-                    )
-                    self.mappers.append(mapper)
-                    edge = mapper.tail
-
-            if not mapper and t >= len(tags):
-                # gone through all sorted tags, consume edge and move on
-                if edge:
-                    debugEdge(edge, "++++++++")
-                    if pathData.rapid.isRapid(edge):
-                        v = edge.Vertexes[1]
-                        if (
-                            not commands
-                            and Path.Geom.isRoughly(0, v.X)
-                            and Path.Geom.isRoughly(0, v.Y)
-                            and not Path.Geom.isRoughly(0, v.Z)
-                        ):
-                            # The very first move is just to move to ClearanceHeight
-                            commands.append(Path.Command("G0", {"Z": v.Z, "F": horizRapid}))
-                        else:
-                            commands.append(
-                                Path.Command("G0", {"X": v.X, "Y": v.Y, "Z": v.Z, "F": vertRapid})
-                            )
-                    else:
-                        commands.extend(
-                            Path.Geom.cmdsForEdge(
-                                edge,
-                                approximation=obj.Approximation,
-                                hSpeed=horizFeed,
-                                vSpeed=vertFeed,
-                                tol=tol,
-                            )
-                        )
-                edge = None
-                t = 0
-
-        return Path.Path(commands)
+        path, mappers, _scan_units = build_holding_tag_path(
+            obj.Base,
+            pathData,
+            tags,
+            approximation=bool(obj.Approximation),
+        )
+        self.mappers = list(mappers)
+        return path
 
     def problems(self):
         return list([m for m in self.mappers if m.haveProblem])
 
     def createTagsPositionDisabled(self, obj, positionsIn, disabledIn):
-        rawTags = []
-        for i, pos in enumerate(positionsIn):
-            tag = Tag(
-                i,
-                pos.x,
-                pos.y,
+        from Path.Dressup.TagGeneration import (
+            HoldingTagShape,
+            evaluate_holding_tag_locations,
+        )
+
+        evaluated = evaluate_holding_tag_locations(
+            self.pathData,
+            self.toolRadius,
+            HoldingTagShape(
                 obj.Width.Value,
                 obj.Height.Value,
-                obj.Angle,
-                obj.Radius,
-                i not in disabledIn,
-            )
-            tag.enabled = self.pathData.checkTag(tag)
-            tag.createSolidsAt(self.pathData.minZ, self.toolRadius)
-            rawTags.append(tag)
-        # disable all tags that intersect with their previous tag
-        prev = None
-        tags = []
-        positions = []
-        disabled = []
-        for i, tag in enumerate(rawTags):
-            if tag.enabled:
-                if prev:
-                    if (
-                        prev.solid.BoundBox.intersect(tag.solid.BoundBox)
-                        and prev.solid.common(tag.solid).Faces
-                    ):
-                        logger.info("Tag #%d intersects with previous tag - disabling\n" % i)
-                        logger.debug("this tag = %d [%s]" % (i, tag.solid.BoundBox))
-                        tag.enabled = False
-                elif self.pathData.edges:
-                    e = self.pathData.edges[0]
-                    p0 = e.valueAt(e.FirstParameter)
-                    p1 = e.valueAt(e.LastParameter)
-                    if tag.solid.isInside(p0, Path.Geom.Tolerance, True) or tag.solid.isInside(
-                        p1, Path.Geom.Tolerance, True
-                    ):
-                        logger.info("Tag #{} intersects with starting point - disabling\n", i)
-                        tag.enabled = False
-
-            if tag.enabled:
-                prev = tag
-                logger.debug("previousTag = {} [{}]", i, prev)
-            else:
-                disabled.append(i)
-            tag.nr = i  # assign final nr
-            tags.append(tag)
-            positions.append(tag.originAt(self.pathData.minZ))
-        return (tags, positions, disabled)
+                float(obj.Angle),
+                obj.Radius.Value,
+            ),
+            (
+                (position.x, position.y, index not in disabledIn)
+                for index, position in enumerate(positionsIn)
+            ),
+        )
+        return (
+            list(evaluated.tags),
+            list(evaluated.positions),
+            list(evaluated.disabled),
+        )
 
     def execute(self, obj):
         # import cProfile
@@ -1261,37 +1170,44 @@ class ObjectTagDressup:
             obj.Path = Path.Path()
             return
 
-        self.tags = []
-        if hasattr(obj, "Positions"):
-            self.tags, positions, disabled = self.createTagsPositionDisabled(
-                obj, obj.Positions, obj.Disabled
-            )
-            if obj.Disabled != disabled:
-                logger.debug("Updating properties.... {} vs. {}", obj.Disabled, disabled)
-                obj.Positions = positions
-                obj.Disabled = disabled
+        from Path.Dressup.TagGeneration import HoldingTagShape, prepare_holding_tag_path
 
-        if not self.tags:
-            logger.debug("execute - no tags")
+        try:
+            prepared = prepare_holding_tag_path(
+                obj.Base,
+                HoldingTagShape(
+                    obj.Width.Value,
+                    obj.Height.Value,
+                    float(obj.Angle),
+                    obj.Radius.Value,
+                ),
+                (
+                    (position.x, position.y, index not in obj.Disabled)
+                    for index, position in enumerate(obj.Positions)
+                ),
+                approximation=bool(obj.Approximation),
+                path_data=pathData,
+                tool_radius=self.toolRadius,
+            )
+        except Exception as error:
+            logger.error("processing tags failed; retaining the base path… '{}'", error)
+            self.tags = []
+            self.solids = []
+            self.mappers = []
             obj.Path = PathUtils.getPathWithPlacement(obj.Base)
             return
 
-        try:
-            self.processTags(obj)
-        except Exception as e:
-            logger.error("processing tags failed clearing all tags… '{}'", e.args[0])
-            obj.Path = PathUtils.getPathWithPlacement(obj.Base)
-
-        # update disabled in case there are some additional ones
-        disabled = copy.copy(self.obj.Disabled)
-        solids = []
-        for tag in self.tags:
-            solids.append(tag.solid)
-            if not tag.enabled and tag.nr not in disabled:
-                disabled.append(tag.nr)
-        self.solids = solids
-        if obj.Disabled != disabled:
+        self.pathData = prepared.path_data
+        self.tags = list(prepared.tags)
+        self.solids = [tag.solid for tag in prepared.tags]
+        self.mappers = list(prepared.mappers)
+        positions = list(prepared.positions)
+        disabled = list(prepared.disabled)
+        if list(obj.Positions) != positions:
+            obj.Positions = positions
+        if list(obj.Disabled) != disabled:
             obj.Disabled = disabled
+        obj.Path = prepared.path
 
     @waiting_effects
     def processTags(self, obj):
@@ -1327,6 +1243,8 @@ class ObjectTagDressup:
         self.toolRadius = float(PathDressup.toolController(obj.Base).Tool.Diameter) / 2
         self.pathData = pathData
         if generate:
+            from Path.Dressup.Gui.TagPreferences import HoldingTagPreferences
+
             obj.Height = self.pathData.defaultTagHeight()
             obj.Width = self.pathData.defaultTagWidth()
             obj.Angle = self.pathData.defaultTagAngle()
@@ -1364,7 +1282,7 @@ class ObjectTagDressup:
         return self.pathData.pointAtBottom(point)
 
 
-def Create(baseObject, name="DressupTag"):
+def Create(baseObject, name="DressupTag", generate=True):
     """
     Create(basePath, name='DressupTag') … create tag dressup object for the given base path.
     """
@@ -1384,8 +1302,8 @@ def Create(baseObject, name="DressupTag"):
     # member transactionally; the old ViewProvider attach hook removed Base
     # from arbitrary inbound groups after the fact, which left Job membership
     # outside the creation transaction and made Undo restore a hidden source.
-    job.Proxy.addOperation(obj, baseObject, True)
-    dbo.setup(obj, True)
+    job.Proxy.addOperation(obj, baseObject, removeBefore=True)
+    dbo.setup(obj, bool(generate))
     return obj
 
 

@@ -41,6 +41,7 @@
 #include "QGIView.h"
 #include "ViewProviderViewPart.h"
 #include "DrawGuiUtil.h"
+#include "GeneralCenterLineBuilder.h"
 
 
 using namespace Gui;
@@ -441,43 +442,41 @@ void TaskCenterLine::createCenterLine()
         );
     }
 
-    // check for illogical parameters
+    DrawingGeneralCenterLineKind kind = DrawingGeneralCenterLineKind::Face;
     if (m_type == Type::EDGE) {
-        // between lines
-        m_mode = checkPathologicalEdges(m_mode);
-    } else if (m_type == Type::VERTEX) {
-        // between points
-        m_mode = checkPathologicalVertices(m_mode);
+        kind = DrawingGeneralCenterLineKind::BetweenEdges;
     }
-
-    CenterLine* cl = CenterLine::CenterLineBuilder(
-        partFeature,
-        m_subNames,
-        m_mode,
-        false
-    );
-
-    if (!cl) {
-        throw Base::RuntimeError(
-            "The selected geometry cannot produce a centerline"
-        );
+    else if (m_type == Type::VERTEX) {
+        kind = DrawingGeneralCenterLineKind::BetweenVertices;
     }
-
-    double hShift = ui->qsbHorizShift->rawValue();
-    double vShift = ui->qsbVertShift->rawValue();
-    double rotate = ui->qsbRotate->rawValue();
-    double extendBy = ui->qsbExtend->rawValue();
-    cl->setShifts(hShift, vShift);
-    cl->setExtend(extendBy);
-    cl->setRotate(rotate);
-    cl->m_flip2Line = false;
     Base::Color ac;
     ac.setValue<QColor>(ui->cpLineColor->color());
-    cl->m_format.setColor(ac);
-    cl->m_format.setWidth(ui->dsbWeight->value().getValue());
-    cl->m_format.setLineNumber(ui->cboxStyle->currentIndex() + 1);
-    cl->m_format.setVisible(true);
-    partFeature->addCenterLine(cl);
+    LineFormat format = LineFormat::getCurrentLineFormat();
+    format.setColor(ac);
+    format.setWidth(ui->dsbWeight->value().getValue());
+    format.setLineNumber(ui->cboxStyle->currentIndex() + 1);
+    format.setVisible(true);
+    const DrawingGeneralCenterLineSettings settings {
+        m_mode,
+        ui->qsbHorizShift->rawValue(),
+        ui->qsbVertShift->rawValue(),
+        ui->qsbRotate->rawValue(),
+        ui->qsbExtend->rawValue(),
+        false,
+        format};
+    const DrawingGeneralCenterLineResult created =
+        createDrawingGeneralCenterLine(
+            partFeature,
+            kind,
+            m_subNames,
+            settings);
+    m_mode = created.plan.settings.mode;
+    CenterLine* cl = partFeature->getCenterLine(created.centerLineTag);
+    if (!cl) {
+        throw Base::RuntimeError(
+            "The shared centerline builder did not retain the new centerline"
+        );
+    }
 
     partFeature->recomputeFeature();
     Gui::Command::updateDocument(partFeature->getDocument());

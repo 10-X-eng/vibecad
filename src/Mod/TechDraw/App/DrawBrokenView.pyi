@@ -32,3 +32,7 @@ class DrawBrokenView(DrawViewPart):
     def getCompressedCenter(self) -> Any:
         """point3d = getCompressedCenter() - returns the geometric center of the source shapes after break cuts and gap compression."""
         ...
+
+    def getBreakDefinition(self) -> Any:
+        """Return the validated break points and direction for one exact document object."""
+        ...

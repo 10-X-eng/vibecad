@@ -13,6 +13,8 @@ import FreeCADGui as Gui
 import Part
 from PySide import QtCore, QtGui, QtWidgets
 
+from VibeCADRibbonSurface import read_active_ribbon_surface
+
 _MODEL_COMPOSITES = {
     "PartDesign_DesignPrimitive": (
         "PartDesign::DesignBox",
@@ -214,6 +216,7 @@ _MODEL_GROUP_COMMANDS = (
     (
         "TRANSFORM",
         (
+            "PartDesign_Scale",
             "PartDesign_DesignMirror",
             "PartDesign_DesignLinearPattern",
             "PartDesign_DesignCircularPattern",
@@ -227,7 +230,6 @@ _MODEL_GROUP_COMMANDS = (
             "Part_Extrude",
             "Part_Revolve",
             "Part_Mirror",
-            "Part_Scale",
             "Part_MakeFace",
             "Part_RuledSurface",
             "Part_Loft",
@@ -241,7 +243,9 @@ _MODEL_GROUP_COMMANDS = (
     (
         "MODIFY",
         (
-            "Part_CompCompoundTools",
+            "Part_Compound",
+            "PartDesign_Separate",
+            "Part_CompoundFilter",
             "PartDesign_Combine",
             "Part_CompJoinFeatures",
             "PartDesign_Split",
@@ -277,6 +281,10 @@ _MODEL_GROUP_COMMANDS = (
             "Surface_CurveOnMesh",
             "Surface_BlendCurve",
         ),
+    ),
+    (
+        "CONNECT",
+        ("VibeCAD_PublishInterface",),
     ),
 )
 
@@ -1056,6 +1064,38 @@ def _group_commands(group):
     }
 
 
+def _page_command_ids(page):
+    command_ids = []
+
+    def append_actions(actions):
+        for action in actions:
+            if action.isSeparator():
+                continue
+            command_id = str(action.property("VibeCADCommandId") or "").strip()
+            if command_id:
+                command_ids.append(command_id)
+            if action.menu() is not None:
+                append_actions(action.menu().actions())
+
+    for group in _ordered_page_groups(page):
+        group_menu = group.findChild(
+            QtWidgets.QToolButton,
+            "VibeCADRibbonGroupMenu",
+        )
+        assert group_menu is not None and group_menu.menu() is not None
+        append_actions(group_menu.menu().actions())
+    return tuple(command_ids)
+
+
+def _assert_ribbon_surface(controller, page, expected_surface_id):
+    surface = read_active_ribbon_surface(controller)
+    assert surface.surface_id == expected_surface_id
+    assert surface.revision > 0
+    assert surface.command_ids == _page_command_ids(page)
+    assert [group.label.upper() for group in surface.groups] == _page_group_labels(page)
+    return surface
+
+
 def _page_group_labels(page):
     assert page is not None
     assert page.objectName() == "VibeCADRibbonPage"
@@ -1120,16 +1160,21 @@ def _run():
         main_window.resize(1440, 900)
         main_window.show()
         _process_events()
+        browser_host = main_window.findChild(
+            QtWidgets.QWidget,
+            "VibeCADModelBrowserHost",
+        )
+        viewport_canvas = main_window.findChild(
+            QtWidgets.QWidget,
+            "VibeCADViewportCanvas",
+        )
+        assert browser_host is not None
+        assert viewport_canvas is not None
 
         expected_browser_width = os.environ.get(
             "VIBECAD_EXPECT_MODEL_BROWSER_WIDTH"
         )
         if expected_browser_width:
-            browser_host = main_window.findChild(
-                QtWidgets.QWidget,
-                "VibeCADModelBrowserHost",
-            )
-            assert browser_host is not None
             assert browser_host.width() == int(expected_browser_width)
             print(
                 "VIBECAD_MODEL_BROWSER_WIDTH_RESTORED "
@@ -1182,6 +1227,10 @@ def _run():
         ribbon = main_window.findChild(QtWidgets.QToolBar, "VibeCADRibbonToolBar")
         root = main_window.findChild(QtWidgets.QWidget, "VibeCADRibbon")
         tabs = main_window.findChild(QtWidgets.QTabBar, "VibeCADRibbonTabs")
+        ribbon_controller = main_window.findChild(
+            QtCore.QObject,
+            "VibeCADRibbonController",
+        )
         document_tabs = main_window.findChild(QtWidgets.QTabBar, "VibeCADDocumentTabs")
         source_document_tabs = main_window.findChild(QtWidgets.QTabBar, "mdiAreaTabBar")
         feature_timeline = main_window.findChild(
@@ -1209,9 +1258,13 @@ def _run():
         settings_button = main_window.findChild(
             QtWidgets.QToolButton, "VibeCADRibbonSettings"
         )
+        full_menu_action = main_window.findChild(
+            QtGui.QAction, "VibeCADShowFullMenuBarAction"
+        )
         assert ribbon is not None and ribbon.isVisible()
         assert root is not None and root.isVisible()
         assert tabs is not None
+        assert ribbon_controller is not None
         assert document_tabs is not None and document_tabs.isVisible()
         assert source_document_tabs is not None
         assert not source_document_tabs.isVisible()
@@ -1227,6 +1280,7 @@ def _run():
         assert document_tabs.tabsClosable()
         assert document_tabs.isMovable()
         assert theme_button is not None
+        assert full_menu_action is not None
         assert search_button is not None and search_button.isVisible()
         assert new_document_button is not None and new_document_button.isVisible()
         assert search is not None and search.completer() is not None
@@ -1264,7 +1318,19 @@ def _run():
         finally:
             VibeCADUpdateGui.show_check_for_updates = original_show_check
         assert update_calls == [{}]
+        chrome_preferences = App.ParamGet(
+            "User parameter:BaseApp/Preferences/VibeCAD/Chrome"
+        )
+        assert not full_menu_action.isChecked()
+        assert not main_window.menuBar().isVisible()
+        full_menu_action.setChecked(True)
+        _process_events()
         assert main_window.menuBar().isVisible()
+        assert chrome_preferences.GetBool("ShowFullMenuBar", False)
+        full_menu_action.setChecked(False)
+        _process_events()
+        assert not main_window.menuBar().isVisible()
+        assert not chrome_preferences.GetBool("ShowFullMenuBar", True)
         assert _visible_main_window_toolbars(main_window) == [ribbon]
         _assert_application_strip_actions(main_window)
         print("VIBECAD_RIBBON_STAGE application-strip", flush=True)
@@ -1298,6 +1364,11 @@ def _run():
         }.issubset(structure_commands)
         assert "PartDesign_CompSketches" not in structure_commands
         model_page = _ribbon_page(main_window)
+        model_surface = _assert_ribbon_surface(
+            ribbon_controller,
+            model_page,
+            "model",
+        )
         _assert_model_group_graphs(model_page)
         _assert_synthetic_primitive_children(model_page)
         del (
@@ -1315,6 +1386,12 @@ def _run():
         assert tabs.tabText(tabs.currentIndex()) == "Sketch"
         assert all(tabs.isTabEnabled(index) for index in range(tabs.count()))
         sketch_setup_page = _ribbon_page(main_window)
+        sketch_setup_surface = _assert_ribbon_surface(
+            ribbon_controller,
+            sketch_setup_page,
+            "sketch.setup",
+        )
+        assert sketch_setup_surface.revision > model_surface.revision
         assert _page_group_labels(sketch_setup_page) == [
             "VIEW",
             "SKETCH",
@@ -1539,6 +1616,20 @@ def _run():
                 "Part_CheckGeometry",
             }, inspect_commands
             page = _ribbon_page(main_window)
+            expected_surface = {
+                "PartDesignWorkbench": "model",
+                "AssemblyWorkbench": "assemble",
+                "MeshWorkbench": "mesh",
+                "FemWorkbench": "analyze",
+                "CAMWorkbench": "manufacture",
+                "TechDrawWorkbench": "drawing",
+                "SpreadsheetWorkbench": "parameters",
+            }[workbench]
+            _assert_ribbon_surface(
+                ribbon_controller,
+                page,
+                expected_surface,
+            )
             _assert_page_action_integrity(page)
             _assert_composed_group_commands(page, workbench)
             if workbench == "AssemblyWorkbench":
@@ -1922,6 +2013,12 @@ def _run():
         )
         assert tabs.isTabEnabled(tabs.currentIndex())
         sketch_page = _ribbon_page(main_window)
+        sketch_edit_surface = _assert_ribbon_surface(
+            ribbon_controller,
+            sketch_page,
+            "sketch.edit",
+        )
+        assert sketch_edit_surface.revision > 0
         assert _page_group_labels(sketch_page) == [
             "VIEW",
             "FINISH",
@@ -1944,6 +2041,11 @@ def _run():
         _process_events()
         assert Gui.activeDocument().getInEdit() is None
         assert Gui.activeWorkbench().name() == "PartDesignWorkbench"
+        _assert_ribbon_surface(
+            ribbon_controller,
+            _ribbon_page(main_window),
+            "model",
+        )
         assert tabs.tabText(tabs.currentIndex()) == "Model"
         assert [tabs.tabText(index) for index in range(tabs.count())] == expected_tabs
         assert all(tabs.isTabEnabled(index) for index in range(tabs.count()))
@@ -2096,7 +2198,7 @@ def _run():
         assert_tree_rendered()
         print("VIBECAD_RIBBON_STAGE draft-compatibility", flush=True)
 
-        assert main_window.menuBar().isVisible()
+        assert not main_window.menuBar().isVisible()
         VibeCADUpdateGui.ensure_registered()
         help_menu = VibeCADUpdateGui._find_help_menu(main_window)
         assert help_menu is not None
@@ -2172,7 +2274,7 @@ def _run():
         assert preferences_check.get("ok"), preferences_check.get("error")
         _process_events()
         assert _visible_main_window_toolbars(main_window) == [ribbon]
-        assert main_window.menuBar().isVisible()
+        assert not main_window.menuBar().isVisible()
         print("VIBECAD_RIBBON_STAGE preferences", flush=True)
 
         tabs.setCurrentIndex(0)

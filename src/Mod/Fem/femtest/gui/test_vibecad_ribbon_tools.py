@@ -1657,7 +1657,10 @@ class TestVibeCADFEMRibbonTools(unittest.TestCase):
             [output, pipeline],
         )
         self.assertEqual(pipeline.VibeCADTimelineRole, "operation")
-        self.assertIs(pipeline.VibeCADResultSolver, self.solver)
+        self.assertEqual(
+            pipeline.VibeCADResultSolver,
+            f"{self.solver.Name}:{self.solver.ID}",
+        )
         self.assertEqual(output.VibeCADTimelineRole, "resource")
         self.assertIs(output.VibeCADTimelineOwner, pipeline)
 
@@ -1702,9 +1705,9 @@ class TestVibeCADFEMRibbonTools(unittest.TestCase):
                 restored_pipeline.VibeCADTimelineRole,
                 "operation",
             )
-            self.assertIs(
+            self.assertEqual(
                 restored_pipeline.VibeCADResultSolver,
-                self.solver,
+                f"{self.solver.Name}:{self.solver.ID}",
             )
             self.assertEqual(
                 restored_output.VibeCADTimelineRole,
@@ -1933,7 +1936,10 @@ class TestVibeCADFEMRibbonTools(unittest.TestCase):
             exact_graph,
         )
         self.assertEqual(root.VibeCADTimelineRole, "operation")
-        self.assertIs(root.VibeCADResultSolver, solver)
+        self.assertEqual(
+            root.VibeCADResultSolver,
+            f"{solver.Name}:{solver.ID}",
+        )
         for resource in resources:
             self.assertEqual(
                 resource.VibeCADTimelineRole,
@@ -2028,7 +2034,10 @@ class TestVibeCADFEMRibbonTools(unittest.TestCase):
             [resources[0], root],
         )
         self.assertEqual(root.VibeCADTimelineRole, "operation")
-        self.assertIs(root.VibeCADResultSolver, solver)
+        self.assertEqual(
+            root.VibeCADResultSolver,
+            f"{solver.Name}:{solver.ID}",
+        )
         self.assertEqual(
             resources[0].VibeCADTimelineRole,
             "resource",

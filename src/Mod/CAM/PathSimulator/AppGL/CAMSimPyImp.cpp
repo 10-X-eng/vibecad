@@ -23,6 +23,9 @@
  ***************************************************************************/
 
 
+#include <limits>
+
+#include <Base/Interpreter.h>
 #include <Base/PlacementPy.h>
 #include <Base/PyWrapParseTupleAndKeywords.h>
 
@@ -95,6 +98,80 @@ PyObject* CAMSimPy::BeginSimulation(PyObject* args, PyObject* kwds)
     return Py_None;
 }
 
+PyObject* CAMSimPy::PrepareShapeMesh(PyObject* args, PyObject* kwds)
+{
+    static const std::array<const char*, 3> kwlist {"shape", "resolution", nullptr};
+    PyObject* shapeObject;
+    float resolution;
+    if (!Base::Wrapped_ParseTupleAndKeywords(
+            args,
+            kwds,
+            "O!f",
+            kwlist,
+            &(Part::TopoShapePy::Type),
+            &shapeObject,
+            &resolution
+        )) {
+        return nullptr;
+    }
+
+    const Part::TopoShape& shape
+        = *static_cast<Part::TopoShapePy*>(shapeObject)->getTopoShapePtr();
+    std::string preparedMesh;
+    {
+        Base::PyGILStateRelease release;
+        preparedMesh = getCAMSimPtr()->PrepareShapeMesh(shape, resolution);
+    }
+    if (preparedMesh.size() > static_cast<std::size_t>(std::numeric_limits<Py_ssize_t>::max())) {
+        PyErr_SetString(PyExc_OverflowError, "The prepared CAM simulator mesh is too large");
+        return nullptr;
+    }
+    return PyBytes_FromStringAndSize(
+        preparedMesh.data(),
+        static_cast<Py_ssize_t>(preparedMesh.size())
+    );
+}
+
+PyObject* CAMSimPy::BeginPreparedSimulation(PyObject* args, PyObject* kwds)
+{
+    static const std::array<const char*, 4>
+        kwlist {"stock", "prepared_mesh", "quality", nullptr};
+    PyObject* stockObject;
+    PyObject* preparedMeshObject;
+    float quality;
+    if (!Base::Wrapped_ParseTupleAndKeywords(
+            args,
+            kwds,
+            "O!O!f",
+            kwlist,
+            &(Part::TopoShapePy::Type),
+            &stockObject,
+            &PyBytes_Type,
+            &preparedMeshObject,
+            &quality
+        )) {
+        return nullptr;
+    }
+
+    char* preparedMeshData = nullptr;
+    Py_ssize_t preparedMeshSize = 0;
+    if (PyBytes_AsStringAndSize(
+            preparedMeshObject,
+            &preparedMeshData,
+            &preparedMeshSize
+        ) != 0) {
+        return nullptr;
+    }
+    const Part::TopoShape& stock
+        = *static_cast<Part::TopoShapePy*>(stockObject)->getTopoShapePtr();
+    getCAMSimPtr()->BeginPreparedSimulation(
+        stock,
+        std::string_view(preparedMeshData, static_cast<std::size_t>(preparedMeshSize)),
+        quality
+    );
+    Py_RETURN_NONE;
+}
+
 PyObject* CAMSimPy::AddTool(PyObject* args, PyObject* kwds)
 {
     static const std::array<const char*, 5>
@@ -158,6 +235,42 @@ PyObject* CAMSimPy::SetBaseShape(PyObject* args, PyObject* kwds)
     return Py_None;
 }
 
+PyObject* CAMSimPy::SetPreparedBaseShape(PyObject* args, PyObject* kwds)
+{
+    static const std::array<const char*, 3> kwlist {"shape", "prepared_mesh", nullptr};
+    PyObject* shapeObject;
+    PyObject* preparedMeshObject;
+    if (!Base::Wrapped_ParseTupleAndKeywords(
+            args,
+            kwds,
+            "O!O!",
+            kwlist,
+            &(Part::TopoShapePy::Type),
+            &shapeObject,
+            &PyBytes_Type,
+            &preparedMeshObject
+        )) {
+        return nullptr;
+    }
+
+    char* preparedMeshData = nullptr;
+    Py_ssize_t preparedMeshSize = 0;
+    if (PyBytes_AsStringAndSize(
+            preparedMeshObject,
+            &preparedMeshData,
+            &preparedMeshSize
+        ) != 0) {
+        return nullptr;
+    }
+    const Part::TopoShape& shape
+        = *static_cast<Part::TopoShapePy*>(shapeObject)->getTopoShapePtr();
+    getCAMSimPtr()->SetPreparedBaseShape(
+        shape,
+        std::string_view(preparedMeshData, static_cast<std::size_t>(preparedMeshSize))
+    );
+    Py_RETURN_NONE;
+}
+
 PyObject* CAMSimPy::AddCommand(PyObject* args)
 {
     PyObject* pObjCmd;
@@ -170,6 +283,26 @@ PyObject* CAMSimPy::AddCommand(PyObject* args)
 
     Py_INCREF(Py_None);
     return Py_None;
+}
+
+PyObject* CAMSimPy::AddGCode(PyObject* args)
+{
+    PyObject* commandObject;
+    if (!PyArg_ParseTuple(args, "U", &commandObject)) {
+        return nullptr;
+    }
+    Py_ssize_t commandSize = 0;
+    const char* commandData = PyUnicode_AsUTF8AndSize(commandObject, &commandSize);
+    if (!commandData) {
+        return nullptr;
+    }
+    const std::string_view command(commandData, static_cast<std::size_t>(commandSize));
+    if (command.find('\0') != std::string_view::npos) {
+        PyErr_SetString(PyExc_ValueError, "CAM simulator G-code may not contain null bytes");
+        return nullptr;
+    }
+    getCAMSimPtr()->AddGCode(command);
+    Py_RETURN_NONE;
 }
 
 PyObject* CAMSimPy::getCustomAttributes(const char* /*attr*/) const

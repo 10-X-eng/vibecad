@@ -14,9 +14,9 @@ TOOL_SPEC = {
     "description": (
         "List every FEM analysis in the active document with its exact "
         "internal name and its members grouped by category (solver, "
-        "material, constraint, mesh, result). Use the returned internal "
-        "names to target the other fem.* tools, and check the member "
-        "categories to see what the analysis still needs before solving."
+        "material, constraint, mesh, result). Use these identities when "
+        "reading or editing the owning FEM VibeScript source, and check the "
+        "member categories before solving."
     ),
     "contextual": True,
     "safety": "READ",

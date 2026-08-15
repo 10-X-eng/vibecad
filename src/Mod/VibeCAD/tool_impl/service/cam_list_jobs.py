@@ -13,10 +13,9 @@ TOOL_SPEC = {
     "name": "cam.list_jobs",
     "description": (
         "List every CAM job in the active document with its exact internal "
-        "name and its model, stock, tool, and operation members. Use the "
-        "returned internal names to target the other cam.* tools, and check "
-        "the tools group before adding operations: a job with no tool "
-        "controller cannot machine anything."
+        "name and its model, stock, tool, and operation members. Use these "
+        "identities when reading or editing the owning CAM VibeScript source; "
+        "a job with no tool controller cannot machine anything."
     ),
     "contextual": True,
     "safety": "READ",

@@ -27,6 +27,7 @@ import FreeCAD
 import FreeCADGui
 import Path
 import Path.Base.Util as PathUtil
+import Path.Main.Job as PathJob
 import PathScripts.PathUtils as PathUtils
 from Path.CommandBoundary import (
     active_jobs,
@@ -113,6 +114,58 @@ class _ViewProviderStop:
         vobj.setEditorMode("Visibility", mode)
 
 
+def CreateInTransaction(document, job, name="Stop", mode="Optional"):
+    """Create one Job-owned CAM stop in the caller's transaction."""
+
+    if document is None or getattr(job, "Document", None) is not document:
+        raise ValueError("A CAM stop requires one Job in the target document")
+    if not isinstance(getattr(job, "Proxy", None), PathJob.ObjectJob):
+        raise ValueError("A CAM stop requires a native CAM Job")
+    internal_name = str(name or "").strip()
+    if not internal_name:
+        raise ValueError("A CAM stop requires a nonempty object name")
+    stop_mode = str(mode or "").strip().capitalize()
+    if stop_mode not in {"Optional", "Mandatory"}:
+        raise ValueError("A CAM stop mode must be Optional or Mandatory")
+
+    result = document.addObject("Path::FeaturePython", internal_name)
+    Stop(result)
+    if FreeCAD.GuiUp and getattr(result, "ViewObject", None) is not None:
+        _ViewProviderStop(result.ViewObject)
+    result.Stop = stop_mode
+    job.Proxy.addOperation(result)
+    return result
+
+
+def _validate_stop_result(document, job, result, *, require_path=True):
+    """Reject a factory result that lost its exact CAM ownership or output."""
+
+    result_name = str(getattr(result, "Name", "") or "")
+    result_id = int(getattr(result, "ID", 0) or 0)
+    view = getattr(result, "ViewObject", None)
+    if (
+        not result_name
+        or not result_id
+        or document.getObject(result_name) is not result
+        or document.getObject(result_id) is not result
+        or getattr(result, "Document", None) is not document
+        or not result.isDerivedFrom("Path::Feature")
+        or not isinstance(getattr(result, "Proxy", None), Stop)
+        or view is None
+        or not isinstance(getattr(view, "Proxy", None), _ViewProviderStop)
+        or result
+        not in tuple(getattr(getattr(job, "Operations", None), "Group", ()) or ())
+        or PathUtils.findParentJob(result) is not job
+        or PathUtil.timelineParentJob(result) is not job
+        or not document.isProvisionallyEnrolledInTimelineByCurrentTransaction(result)
+        or tuple(getattr(result, "VibeCADTimelineReplacedInputs", ()) or ())
+        or not result.isValid()
+        or (require_path and not tuple(getattr(result.Path, "Commands", ()) or ()))
+    ):
+        raise RuntimeError("The CAM stop was not created correctly")
+    return result
+
+
 class CommandPathStop:
     def GetResources(self):
         return {
@@ -139,22 +192,9 @@ class CommandPathStop:
             "Create CAM stop",
         )
         try:
-            obj = document.addObject(
-                "Path::FeaturePython",
-                "Stop",
-            )
-            Stop(obj)
-            _ViewProviderStop(obj.ViewObject)
-            job.Proxy.addOperation(obj)
+            obj = CreateInTransaction(document, job)
             document.recompute()
-            if (
-                not obj.isValid()
-                or obj not in job.Operations.Group
-                or not obj.Path.Commands
-            ):
-                raise RuntimeError(
-                    "The CAM stop was not created correctly"
-                )
+            _validate_stop_result(document, job, obj)
             document.publishProvisionalTimelineOperationBlock(
                 obj,
                 [],

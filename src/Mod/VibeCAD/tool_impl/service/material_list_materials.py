@@ -15,8 +15,8 @@ TOOL_SPEC = {
     "description": (
         "List material cards from the FreeCAD material library with their "
         "exact UUIDs. Filter by name to find a specific material (for example "
-        "'steel' or 'abs'), then pass the returned UUID to "
-        "material.apply_material. Results are capped at "
+        "'steel' or 'abs'), then use the returned UUID in the active "
+        "authoring surface's material assignment. Results are capped at "
         f"{MAX_MATERIALS_RETURNED}; narrow the filter if truncated."
     ),
     "contextual": True,

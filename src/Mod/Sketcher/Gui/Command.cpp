@@ -65,6 +65,7 @@
 
 #include "SketchMirrorDialog.h"
 #include "SketchOrientationDialog.h"
+#include "SketchEditControl.h"
 #include "TaskSketcherValidation.h"
 #include "Utils.h"
 #include "ViewProviderSketch.h"
@@ -1094,32 +1095,20 @@ void CmdSketcherLeaveSketch::activated(int iMsg)
     if (!doc) {
         return;
     }
-    const auto documentIdentity =
-        exactSketchDocumentIdentity(doc->getDocument());
-
-    // checks if a Sketch Viewprovider is in Edit and is in no special mode
-    SketcherGui::ViewProviderSketch* vp =
-        dynamic_cast<SketcherGui::ViewProviderSketch*>(doc->getInEdit());
-    if (vp && vp->getSketchMode() != ViewProviderSketch::STATUS_NONE)
-        vp->purgeHandler();
-
-    if (Gui::Control().activeDialog(doc->getDocument())) {
-        // Finish through the owning task dialog so it can make the launch
-        // transaction durable before edit teardown destroys the panel.
-        Gui::Control().accept(doc->getDocument());
+    auto* sketchView = dynamic_cast<SketcherGui::ViewProviderSketch*>(
+        doc->getInEdit()
+    );
+    auto* sketch = sketchView ? sketchView->getSketchObject() : nullptr;
+    auto* document = sketch ? sketch->getDocument() : nullptr;
+    if (!document || !sketch->getNameInDocument()) {
         return;
     }
-
-    // See also TaskDlgEditSketch::reject
-    doCommand(
-        Gui,
-        "Gui.getDocument('%s').resetEdit()",
-        documentIdentity.name.c_str()
+    SketcherGui::leaveActiveSketch(
+        document->getName(),
+        document->Uid.getValueStr(),
+        sketch->getNameInDocument(),
+        true
     );
-    if (auto* exactDocument =
-            resolveExactSketchDocument(documentIdentity)) {
-        Gui::cmdAppDocument(exactDocument, "recompute()");
-    }
 }
 
 bool CmdSketcherLeaveSketch::isActive()

@@ -24,6 +24,9 @@
 
 #pragma once
 
+#include <memory>
+#include <utility>
+
 #include <App/FeaturePython.h>
 #include <App/IndexedName.h>
 #include <App/PropertyFile.h>
@@ -64,6 +67,60 @@ namespace Sketcher
 {
 
 class SketchAnalysis;
+struct CarbonCopyDiagnostic;
+struct CarbonCopyExpressionDiagnostic
+{
+    int constraintIndex;
+    std::string path;
+    std::string expression;
+};
+struct TranslateDiagnostic;
+struct TranslateExpressionSource
+{
+    int constraintIndex;
+    int geometryId;
+    std::string expression;
+};
+struct TranslateExpressionDiagnostic
+{
+    int constraintIndex;
+    std::string path;
+    std::string expression;
+};
+using RotateExpressionSource = TranslateExpressionSource;
+using RotateExpressionDiagnostic = TranslateExpressionDiagnostic;
+struct RotateDiagnostic;
+struct ScaleDiagnostic;
+struct OffsetDiagnostic;
+struct SymmetryDiagnostic;
+struct AxisAlignmentRemovalDiagnostic;
+struct NURBSConversionDiagnostic;
+struct BSplineDegreeIncreaseDiagnostic;
+struct BSplineDegreeDecreaseDiagnostic;
+struct BSplineKnotMultiplicityDiagnostic;
+using BSplineKnotMultiplicityIncreaseDiagnostic = BSplineKnotMultiplicityDiagnostic;
+using BSplineKnotMultiplicityDecreaseDiagnostic = BSplineKnotMultiplicityDiagnostic;
+struct BSplineKnotInsertionDiagnostic;
+
+enum class OffsetJoinType
+{
+    Arc = 0,
+    Intersection = 2,
+};
+
+enum class OffsetSourceMode
+{
+    Keep = 0,
+    Delete = 1,
+    Constrain = 2,
+};
+
+enum class SymmetrySourceMode
+{
+    Keep = 0,
+    Delete = 1,
+    Constrain = 2,
+};
 
 struct ExternalToAdd
 {
@@ -79,10 +136,22 @@ enum class ExtType
     Both
 };
 
+struct ExternalGeometryDiagnostic
+{
+    std::vector<std::unique_ptr<Part::Geometry>> geometry;
+    std::string reference;
+    ExtType type;
+    int referenceIndex;
+    bool addedReference;
+    bool defining;
+};
+
 class SketcherExport SketchObject: public Part::Part2DObject
 {
     typedef Part::Part2DObject inherited;
     PROPERTY_HEADER_WITH_OVERRIDE(Sketcher::SketchObject);
+
+    friend class SketchObjectPy;
 
 public:
     SketchObject();
@@ -259,6 +328,168 @@ public:
 
     /// Carbon copy another sketch geometry and constraints
     int carbonCopy(App::DocumentObject* pObj, bool construction = true);
+    /** Carbon copy with the cross-body and alignment permissions supplied explicitly for this
+     * operation. This does not read or change the transient GUI modifier flags. */
+    int carbonCopyExact(
+        App::DocumentObject* pObj,
+        bool construction,
+        bool allowOtherBodyForOperation,
+        bool allowUnalignedForOperation
+    );
+    /** Build and solve the exact Carbon Copy result on an isolated Sketch clone. The live target,
+     * source Sketch, solver, and document are not changed. */
+    std::unique_ptr<CarbonCopyDiagnostic> diagnoseCarbonCopy(
+        App::DocumentObject* pObj,
+        bool construction,
+        bool allowOtherBodyForOperation,
+        bool allowUnalignedForOperation
+    ) const;
+    /** Apply the current ribbon Translate / rectangular-array semantics with every option supplied
+     * explicitly. A copy count of zero moves the originals; positive values retain the originals
+     * and create that many copies along the first vector. Row count includes the original row. */
+    int translateExact(
+        const std::vector<int>& geometryIds,
+        const Base::Vector3d& firstVector,
+        int copyCount,
+        const Base::Vector3d& secondVector,
+        int rowCount,
+        bool equalizeDimensionalConstraints
+    );
+    /** Build and solve the exact Translate / rectangular-array result on an isolated Sketch clone.
+     * The live Sketch, solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<TranslateDiagnostic> diagnoseTranslate(
+        const std::vector<int>& geometryIds,
+        const Base::Vector3d& firstVector,
+        int copyCount,
+        const Base::Vector3d& secondVector,
+        int rowCount,
+        bool equalizeDimensionalConstraints
+    ) const;
+    /** Apply the current ribbon Rotate / polar-transform semantics with every option supplied
+     * explicitly. A copy count of zero rotates the originals; positive values retain the
+     * originals and distribute that many copies evenly across totalAngleRadians. */
+    int rotateExact(
+        const std::vector<int>& geometryIds,
+        const Base::Vector3d& center,
+        double totalAngleRadians,
+        int copyCount,
+        bool equalizeDimensionalConstraints
+    );
+    /** Build and solve the exact Rotate / polar-transform result on an isolated Sketch clone. The
+     * live Sketch, solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<RotateDiagnostic> diagnoseRotate(
+        const std::vector<int>& geometryIds,
+        const Base::Vector3d& center,
+        double totalAngleRadians,
+        int copyCount,
+        bool equalizeDimensionalConstraints
+    ) const;
+    /** Apply the current ribbon Scale semantics with every option supplied explicitly. The
+     * selected geometry is replaced unless keepOriginals is true. allowOriginConstraints is
+     * reserved for the whole-sketch autoscale path used by constraint editing. */
+    int scaleExact(
+        const std::vector<int>& geometryIds,
+        const Base::Vector3d& center,
+        double scaleFactor,
+        bool keepOriginals,
+        bool allowOriginConstraints
+    );
+    /** Build and solve the exact Scale result on an isolated Sketch clone. The live Sketch,
+     * solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<ScaleDiagnostic> diagnoseScale(
+        const std::vector<int>& geometryIds,
+        const Base::Vector3d& center,
+        double scaleFactor,
+        bool keepOriginals,
+        bool allowOriginConstraints
+    ) const;
+    /** Apply the current ribbon Offset semantics with every option supplied explicitly. Only
+     * lines, circles, and circular arcs accepted by the human command are supported. */
+    int offsetExact(
+        const std::vector<int>& geometryIds,
+        double offsetLength,
+        OffsetJoinType joinType,
+        OffsetSourceMode sourceMode
+    );
+    /** Build and solve the exact Offset result on an isolated Sketch clone. The live Sketch,
+     * solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<OffsetDiagnostic> diagnoseOffset(
+        const std::vector<int>& geometryIds,
+        double offsetLength,
+        OffsetJoinType joinType,
+        OffsetSourceMode sourceMode
+    ) const;
+    /** Apply the current ribbon Symmetry semantics with every option supplied explicitly. The
+     * reference is a whole line when refPosId is none and an exact point otherwise. */
+    int symmetryExact(
+        const std::vector<int>& geometryIds,
+        int refGeoId,
+        PointPos refPosId,
+        SymmetrySourceMode sourceMode
+    );
+    /** Build and solve the exact Symmetry result on an isolated Sketch clone. The live Sketch,
+     * solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<SymmetryDiagnostic> diagnoseSymmetry(
+        const std::vector<int>& geometryIds,
+        int refGeoId,
+        PointPos refPosId,
+        SymmetrySourceMode sourceMode
+    ) const;
+    /** Apply the ribbon Remove Axes Alignment constraint rewrites to exact internal geometry.
+     * A positive result is the number of removed or converted constraints. */
+    int removeAxesAlignmentExact(const std::vector<int>& geometryIds);
+    /** Build and solve the exact Remove Axes Alignment result on an isolated Sketch clone. The
+     * live Sketch, solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<AxisAlignmentRemovalDiagnostic>
+    diagnoseRemoveAxesAlignment(const std::vector<int>& geometryIds) const;
+    /** Apply the human Geometry-to-B-Spline command to an exact ordered edge selection. Both
+     * internal and external geometry IDs are accepted; external edges become internal copies.
+     * The complete selection is proven on an isolated clone before the live Sketch is changed. */
+    int convertToNURBSExact(const std::vector<int>& geometryIds);
+    /** Build and solve the exact Geometry-to-B-Spline result on an isolated Sketch clone. The
+     * live Sketch, solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<NURBSConversionDiagnostic>
+    diagnoseConvertToNURBS(const std::vector<int>& geometryIds) const;
+    /** Raise each exact internal B-spline edge by one degree and expose any newly missing
+     * control-point and knot helpers. The complete ordered selection is proven on an isolated
+     * clone before the live Sketch is changed. */
+    int increaseBSplineDegreeExact(const std::vector<int>& geometryIds);
+    /** Build and solve the exact Increase B-Spline Degree result on an isolated Sketch clone. The
+     * live Sketch, solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<BSplineDegreeIncreaseDiagnostic>
+    diagnoseIncreaseBSplineDegree(const std::vector<int>& geometryIds) const;
+    /** Approximate one exact internal B-spline edge at one degree lower while preserving the root
+     * geometry identity and rebuilding its control-point and knot helpers. Detached diagnosis
+     * proves the complete result before the live Sketch is changed. */
+    int decreaseBSplineDegreeExact(int geometryId);
+    /** Build and solve the exact Decrease B-Spline Degree result on an isolated Sketch clone. The
+     * live Sketch, solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<BSplineDegreeDecreaseDiagnostic>
+    diagnoseDecreaseBSplineDegree(int geometryId) const;
+    /** Increase one exact zero-based B-spline knot multiplicity by one while preserving the root
+     * geometry identity and rebuilding its control-point and knot helpers. Detached diagnosis
+     * proves the complete result before the live Sketch is changed. */
+    int increaseBSplineKnotMultiplicityExact(int geometryId, int knotIndex);
+    /** Build and solve the exact Increase Knot Multiplicity result on an isolated Sketch clone.
+     * The live Sketch, solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<BSplineKnotMultiplicityIncreaseDiagnostic>
+    diagnoseIncreaseBSplineKnotMultiplicity(int geometryId, int knotIndex) const;
+    /** Decrease one exact zero-based B-spline knot multiplicity by one while preserving the root
+     * geometry identity and rebuilding its control-point and knot helpers. A multiplicity of one
+     * removes the selected knot, matching the human command. */
+    int decreaseBSplineKnotMultiplicityExact(int geometryId, int knotIndex);
+    /** Build and solve the exact Decrease Knot Multiplicity result on an isolated Sketch clone.
+     * The live Sketch, solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<BSplineKnotMultiplicityDecreaseDiagnostic>
+    diagnoseDecreaseBSplineKnotMultiplicity(int geometryId, int knotIndex) const;
+    /** Insert one knot at an exact B-spline parameter while preserving the root geometry identity
+     * and rebuilding its control-point and knot helpers. If the parameter already identifies a
+     * knot, its multiplicity is increased by one, matching the human command. */
+    int insertBSplineKnotExact(int geometryId, double parameter);
+    /** Build and solve the exact Insert Knot result on an isolated Sketch clone. The live Sketch,
+     * solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<BSplineKnotInsertionDiagnostic>
+    diagnoseInsertBSplineKnot(int geometryId, double parameter) const;
     /// add an external geometry reference
     int addExternal(
         App::DocumentObject* Obj,
@@ -266,6 +497,15 @@ public:
         bool defining = false,
         bool intersection = false
     );
+    /** Evaluate the exact final state produced by one direct external-geometry reference through
+     * the same projection kernel used by rebuildExternalGeometry(). The live Sketch, source object,
+     * solver, and document are not changed. A null result means the request is unavailable. */
+    std::unique_ptr<ExternalGeometryDiagnostic> diagnoseExternal(
+        App::DocumentObject* Obj,
+        const char* SubName,
+        bool defining = false,
+        bool intersection = false
+    ) const;
     /** delete external
      *  ExtGeoId >= 0 with 0 corresponding to the first user defined
      *  external geometry
@@ -355,6 +595,24 @@ public:
     /** Performs a full analysis of the addition of additional constraints without adding them to
      * the sketch object */
     int diagnoseAdditionalConstraints(std::vector<Sketcher::Constraint*> additionalconstraints);
+
+    /** Performs a full analysis of adding exact Block constraints against deep-copied geometry,
+     * without changing geometry state in the sketch object. */
+    int diagnoseBlockConstraints(std::vector<Sketcher::Constraint*> blockConstraints);
+
+    /** Performs a full analysis of replacing one exact existing constraint without mutating the
+     * sketch object. */
+    int diagnoseConstraintReplacement(
+        int replacedConstraintIndex,
+        std::vector<Sketcher::Constraint*> replacementConstraints);
+
+    /** Performs a full analysis of changing exact existing dimensional constraints between
+     * driving and reference states without mutating the sketch object. */
+    int diagnoseDrivingChanges(const std::vector<std::pair<int, bool>>& changes);
+
+    /** Performs a full analysis of changing exact existing constraints between active and
+     * inactive states without mutating the sketch object. */
+    int diagnoseActiveChanges(const std::vector<std::pair<int, bool>>& changes);
 
     /** solves the sketch and updates the geometry, but not all the dependent features (does not
        recompute) When a recompute is necessary, recompute triggers execute() which solves the
@@ -496,10 +754,60 @@ public:
         bool chamfer = false
     );
 
+    /** Build and solve the exact final state produced by the human Fillet command on an isolated
+     * Sketch clone. The live Sketch, its solver, and its document are not changed. A null result
+     * means the requested human Fillet form cannot create geometry. */
+    std::unique_ptr<SketchObject>
+    diagnoseFillet(int geoId, PointPos pos, bool preserveCorner = true) const;
+    std::unique_ptr<SketchObject> diagnoseFillet(
+        int geoId1,
+        int geoId2,
+        const Base::Vector3d& refPnt1,
+        const Base::Vector3d& refPnt2,
+        bool preserveCorner = true
+    ) const;
+    /** Build and solve the exact final state produced by the human Chamfer command on an isolated
+     * Sketch clone. The live Sketch, its solver, and its document are not changed. A null result
+     * means the requested human Chamfer form cannot create geometry. */
+    std::unique_ptr<SketchObject>
+    diagnoseChamfer(int geoId, PointPos pos, bool preserveCorner = true) const;
+    std::unique_ptr<SketchObject> diagnoseChamfer(
+        int geoId1,
+        int geoId2,
+        const Base::Vector3d& refPnt1,
+        const Base::Vector3d& refPnt2,
+        bool preserveCorner = true
+    ) const;
+
     /// trim a curve
     int trim(int geoId, const Base::Vector3d& point);
+    /** Build and solve the exact final state produced by the human Trim command on an isolated
+     * Sketch clone. The live Sketch, its solver, and its document are not changed. A null result
+     * means the requested human Trim target is unavailable. */
+    std::unique_ptr<SketchObject>
+    diagnoseTrim(int geoId, const Base::Vector3d& point) const;
     /// extend a curve
     int extend(int geoId, double increment, PointPos endPoint);
+    /** Resolve the same extension increment and effective endpoint used by the human Extend
+     * drawing handler for an exact target point. The preferred endpoint comes from the first
+     * human click; line targets outside the current segment may select the nearer endpoint, as
+     * the existing handler does. */
+    bool calculateExtensionParameters(
+        int geoId,
+        const Base::Vector3d& targetPoint,
+        PointPos preferredEndpoint,
+        double& increment,
+        PointPos& effectiveEndpoint
+    ) const;
+    /** Build and solve the exact final state produced by the human Extend command on an isolated
+     * Sketch clone. The requested endpoint must remain the human command's effective endpoint.
+     * The live Sketch, its solver, and its document are not changed. */
+    std::unique_ptr<SketchObject> diagnoseExtend(
+        int geoId,
+        const Base::Vector3d& targetPoint,
+        PointPos endpoint,
+        double& increment
+    ) const;
     /// Once smaller pieces have been created from a larger curve (by split or trim, say), derive
     /// the constraint that will replace the given one (which is to be deleted). NOTE: Currently
     /// assuming all constraints on the end points of the old curve have been transferred or
@@ -522,6 +830,11 @@ public:
 
     /// split a curve
     int split(int geoId, const Base::Vector3d& point);
+    /** Build and solve the exact final state produced by the human Split command on an isolated
+     * Sketch clone. The live Sketch, its solver, and its document are not changed. A null result
+     * means the requested human Split target is unavailable. */
+    std::unique_ptr<SketchObject>
+    diagnoseSplit(int geoId, const Base::Vector3d& point) const;
     /*!
       \brief Join one or two curves at the given end points
       \details The combined curve will be a b-spline
@@ -535,6 +848,24 @@ public:
         Sketcher::PointPos posId2,
         int continuity = 0
     );
+    /** Join two exact curve endpoints through the same primitive as the human Join Curves
+     * command. Tangent continuity is derived from the existing endpoint constraint rather than
+     * accepted as caller-controlled state. The result is preflighted on an isolated clone before
+     * the live Sketch is changed. */
+    int joinCurvesExact(
+        int geoId1,
+        Sketcher::PointPos posId1,
+        int geoId2,
+        Sketcher::PointPos posId2
+    );
+    /** Build and solve the exact Join Curves result on an isolated Sketch clone. The live Sketch,
+     * solver, expressions, external references, and document are not changed. */
+    std::unique_ptr<SketchObject> diagnoseJoinCurves(
+        int geoId1,
+        Sketcher::PointPos posId1,
+        int geoId2,
+        Sketcher::PointPos posId2
+    ) const;
 
     /// adds symmetric geometric elements with respect to the refGeoId (line or point)
     int addSymmetric(
@@ -1170,6 +1501,128 @@ public:
     void changeConstraintAfterDeletingGeo(Constraint* constr, const int deletedGeoId) const;
 
 private:
+    std::unique_ptr<SketchObject> makeGeometryMutationDiagnosticClone() const;
+    bool isCarbonCopyAllowedWithOptions(
+        App::Document* pDoc,
+        App::DocumentObject* pObj,
+        bool allowOtherBodyForOperation,
+        bool allowUnalignedForOperation,
+        bool& xinv,
+        bool& yinv,
+        eReasonList* rsn = nullptr
+    ) const;
+    int carbonCopyPrepared(
+        App::DocumentObject* pObj,
+        const std::string& targetName,
+        bool construction,
+        bool xinv,
+        bool yinv,
+        bool applyExpressions,
+        std::vector<CarbonCopyExpressionDiagnostic>* expressions
+    );
+    std::vector<TranslateExpressionSource>
+    translateSourceExpressions(const std::vector<int>& geometryIds) const;
+    int translatePrepared(
+        const std::vector<int>& geometryIds,
+        const Base::Vector3d& firstVector,
+        int copyCount,
+        const Base::Vector3d& secondVector,
+        int rowCount,
+        bool equalizeDimensionalConstraints,
+        const std::vector<TranslateExpressionSource>& sourceExpressions,
+        bool applyExpressions,
+        std::vector<TranslateExpressionDiagnostic>* expressions
+    );
+    int rotatePrepared(
+        const std::vector<int>& geometryIds,
+        const Base::Vector3d& center,
+        double totalAngleRadians,
+        int copyCount,
+        bool equalizeDimensionalConstraints,
+        const std::vector<RotateExpressionSource>& sourceExpressions,
+        bool applyExpressions,
+        std::vector<RotateExpressionDiagnostic>* expressions
+    );
+    int scalePrepared(
+        const std::vector<int>& geometryIds,
+        const Base::Vector3d& center,
+        double scaleFactor,
+        bool keepOriginals,
+        bool allowOriginConstraints
+    );
+    int offsetPrepared(
+        const std::vector<int>& geometryIds,
+        double offsetLength,
+        OffsetJoinType joinType,
+        OffsetSourceMode sourceMode
+    );
+    int symmetryPrepared(
+        const std::vector<int>& geometryIds,
+        int refGeoId,
+        PointPos refPosId,
+        SymmetrySourceMode sourceMode
+    );
+    int removeAxesAlignmentPrepared(
+        const std::vector<int>& geometryIds,
+        AxisAlignmentRemovalDiagnostic* result
+    );
+    int convertToNURBSPrepared(
+        const std::vector<int>& geometryIds,
+        NURBSConversionDiagnostic* result
+    );
+    int increaseBSplineDegreePrepared(
+        const std::vector<int>& geometryIds,
+        BSplineDegreeIncreaseDiagnostic* result
+    );
+    int decreaseBSplineDegreePrepared(
+        int geometryId,
+        BSplineDegreeDecreaseDiagnostic* result
+    );
+    int changeBSplineKnotMultiplicityPrepared(
+        int geometryId,
+        int knotIndex,
+        int multiplicityIncrement,
+        BSplineKnotMultiplicityDiagnostic* result
+    );
+    std::unique_ptr<BSplineKnotMultiplicityDiagnostic>
+    diagnoseChangeBSplineKnotMultiplicity(
+        int geometryId,
+        int knotIndex,
+        int multiplicityIncrement
+    ) const;
+    int replaceBSplineAndReconcileInternals(
+        int geometryId,
+        std::unique_ptr<Part::GeomBSplineCurve> changed,
+        int* retainedInternalGeometryCount,
+        int* deletedInternalGeometryCount,
+        int* exposedInternalGeometryCount
+    );
+    int insertBSplineKnotPrepared(
+        int geometryId,
+        double parameter,
+        BSplineKnotInsertionDiagnostic* result
+    );
+    int addExternalDirect(
+        App::DocumentObject* Obj,
+        const char* SubName,
+        bool defining,
+        bool intersection
+    );
+    std::unique_ptr<SketchObject> diagnoseFilletOrChamfer(
+        int geoId,
+        PointPos pos,
+        bool preserveCorner,
+        bool chamfer
+    ) const;
+    std::unique_ptr<SketchObject> diagnoseFilletOrChamfer(
+        int geoId1,
+        int geoId2,
+        const Base::Vector3d& refPnt1,
+        const Base::Vector3d& refPnt2,
+        bool preserveCorner,
+        bool chamfer
+    ) const;
+
     void setOrientationDistance(Constraint* constr);
     void setOrientationTangent(Constraint* constr);
 
@@ -1261,6 +1714,144 @@ private:
     std::unique_ptr<GeoHistory> geoHistory;
 
     mutable std::map<std::string, std::string> internalElementMap;
+};
+
+struct CarbonCopyDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    std::vector<CarbonCopyExpressionDiagnostic> expressions;
+    bool xInverted;
+    bool yInverted;
+    int copiedGeometryCount;
+    int copiedConstraintCount;
+    int copiedExternalReferenceCount;
+};
+
+struct TranslateDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    std::vector<TranslateExpressionDiagnostic> expressions;
+    std::vector<int> geometryIds;
+    Base::Vector3d firstVector;
+    Base::Vector3d secondVector;
+    int copyCount;
+    int rowCount;
+    bool equalizeDimensionalConstraints;
+    bool deletedOriginals;
+};
+
+struct RotateDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    std::vector<RotateExpressionDiagnostic> expressions;
+    std::vector<int> geometryIds;
+    Base::Vector3d center;
+    double totalAngleRadians;
+    int copyCount;
+    bool equalizeDimensionalConstraints;
+    bool deletedOriginals;
+};
+
+struct ScaleDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    std::vector<int> geometryIds;
+    Base::Vector3d center;
+    double scaleFactor;
+    bool keepOriginals;
+    bool allowOriginConstraints;
+    bool deletedOriginals;
+};
+
+struct OffsetDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    std::vector<int> geometryIds;
+    double offsetLength;
+    OffsetJoinType joinType;
+    OffsetSourceMode sourceMode;
+    bool deletedOriginals;
+    bool constrainedOffset;
+};
+
+struct SymmetryDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    std::vector<int> geometryIds;
+    int referenceGeometryId;
+    PointPos referencePosition;
+    SymmetrySourceMode sourceMode;
+    bool deletedOriginals;
+    bool constrainedSymmetry;
+};
+
+struct AxisAlignmentRemovalDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    std::vector<int> geometryIds;
+    int removedHorizontalConstraints {0};
+    int removedVerticalConstraints {0};
+    int createdParallelConstraints {0};
+    int removedAxisSymmetryConstraints {0};
+    int removedPointOnAxisConstraints {0};
+    int convertedDistanceConstraints {0};
+};
+
+struct NURBSConversionDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    std::vector<int> geometryIds;
+    std::vector<int> convertedGeometryIds;
+    int exposedInternalGeometryCount {0};
+};
+
+struct BSplineDegreeIncreaseDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    std::vector<int> geometryIds;
+    std::vector<int> oldDegrees;
+    std::vector<int> newDegrees;
+    int exposedInternalGeometryCount {0};
+};
+
+struct BSplineDegreeDecreaseDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    int geometryId {-1};
+    int oldDegree {0};
+    int newDegree {0};
+    int retainedInternalGeometryCount {0};
+    int deletedInternalGeometryCount {0};
+    int exposedInternalGeometryCount {0};
+};
+
+struct BSplineKnotMultiplicityDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    int geometryId {-1};
+    int knotIndex {-1};
+    double knotParameter {0.0};
+    int degree {0};
+    int oldMultiplicity {0};
+    int newMultiplicity {0};
+    int retainedInternalGeometryCount {0};
+    int deletedInternalGeometryCount {0};
+    int exposedInternalGeometryCount {0};
+};
+
+struct BSplineKnotInsertionDiagnostic
+{
+    std::unique_ptr<SketchObject> sketch;
+    int geometryId {-1};
+    double requestedParameter {0.0};
+    int knotIndex {-1};
+    double knotParameter {0.0};
+    int degree {0};
+    int oldMultiplicity {0};
+    int newMultiplicity {0};
+    int retainedInternalGeometryCount {0};
+    int deletedInternalGeometryCount {0};
+    int exposedInternalGeometryCount {0};
 };
 
 inline int SketchObject::initTemporaryMove(std::vector<GeoElementId> moved, bool fine /*=true*/)

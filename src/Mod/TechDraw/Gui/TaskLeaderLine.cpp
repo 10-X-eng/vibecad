@@ -22,31 +22,28 @@
 
 # include <QStatusBar>
 
+#include <QCoreApplication>
 #include <QMessageBox>
 
 #include <App/Document.h>
 #include <Base/Console.h>
-#include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
-#include <Gui/Command.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/ViewProvider.h>
-#include <Mod/TechDraw/App/ArrowPropEnum.h>
 #include <Mod/TechDraw/App/DrawLeaderLine.h>
 #include <Mod/TechDraw/App/DrawPage.h>
 #include <Mod/TechDraw/App/DrawView.h>
-#include <Mod/TechDraw/App/LineGroup.h>
 #include <Mod/TechDraw/App/DrawUtil.h>
 
 #include "TaskLeaderLine.h"
 #include "TaskDocumentGuard.h"
 #include "ui_TaskLeaderLine.h"
 #include "DrawGuiUtil.h"
+#include "LeaderLineBuilder.h"
 #include "MDIViewPage.h"
-#include "PreferencesGui.h"
 #include "QGILeaderLine.h"
 #include "QGIView.h"
 #include "QGSPage.h"
@@ -267,18 +264,20 @@ void TaskLeaderLine::setUiPrimary()
         ui->pbCancelEdit->setEnabled(false);
     }
 
+    const DrawingLeaderDefaults defaults = drawingLeaderDefaults();
+
     DrawGuiUtil::loadArrowBox(ui->cboxStartSym);
-    ArrowType aStyle = PreferencesGui::dimArrowStyle();
-    ui->cboxStartSym->setCurrentIndex(static_cast<int>(aStyle));
+    ui->cboxStartSym->setCurrentIndex(defaults.style.startSymbol);
 
     DrawGuiUtil::loadArrowBox(ui->cboxEndSym);
-    ui->cboxEndSym->setCurrentIndex(static_cast<int>(TechDraw::ArrowType::NONE));
+    ui->cboxEndSym->setCurrentIndex(defaults.style.endSymbol);
 
     ui->dsbWeight->setUnit(Base::Unit::Length);
     ui->dsbWeight->setMinimum(0);
-    ui->dsbWeight->setValue(TechDraw::LineGroup::getDefaultWidth("Graphic"));
+    ui->dsbWeight->setValue(defaults.style.lineWidthMm);
 
-    ui->cpLineColor->setColor(PreferencesGui::leaderColor().asValue<QColor>());
+    ui->cboxStyle->setCurrentIndex(defaults.style.lineStyle);
+    ui->cpLineColor->setColor(defaults.style.lineColor.asValue<QColor>());
 }
 
 //switch widgets related to ViewProvider on/off
@@ -368,9 +367,9 @@ void TaskLeaderLine::onLineStyleChanged()
 
 
 //******************************************************************************
-//! sceneDeltas are vector from first picked scene point (0,0) to the ith point.
-//! sceneDeltas are in Qt scene coords (Rez and inverted Y).
-void TaskLeaderLine::createLeaderFeature(std::vector<Base::Vector3d> sceneDeltas)
+//! pagePoints are absolute page positions in millimetres with conventional Y.
+void TaskLeaderLine::createLeaderFeature(
+    const std::vector<Base::Vector3d>& pagePoints)
 {
     auto* document =
         m_basePage ? m_basePage->getDocument() : nullptr;
@@ -386,121 +385,23 @@ void TaskLeaderLine::createLeaderFeature(std::vector<Base::Vector3d> sceneDeltas
         QT_TRANSLATE_NOOP("Command", "Create Leader")
     );
 
-    const std::string objectName{"LeaderLine"};
-    m_leaderName =
-        document->getUniqueObjectName(objectName.c_str());
-    m_leaderType = "TechDraw::DrawLeaderLine";
-    const std::string documentName =
-        Base::InterpreterSingleton::strToPython(
-            document->getName()
-        );
-    const QString leaderFactory =
-        QStringLiteral(
-            "App.getDocument('%1').addObject('%2', '%3')"
-        )
-            .arg(
-                QString::fromStdString(documentName),
-                QString::fromStdString(m_leaderType),
-                QString::fromStdString(m_leaderName)
-            );
-    auto* object = Gui::Command::runDocumentObjectCommand(
-        Command::Doc,
-        *document,
-        leaderFactory.toUtf8(),
-        TechDraw::DrawLeaderLine::getClassTypeId()
-    );
-    m_lineFeat =
-        dynamic_cast<TechDraw::DrawLeaderLine*>(object);
-    if (!m_lineFeat) {
-        throw Base::RuntimeError(
-            "The leader object could not be created"
-        );
-    }
-    m_leaderName = m_lineFeat->getNameInDocument();
-    m_lineFeat->translateLabel(
+    const DrawingLeaderDefaults defaults = drawingLeaderDefaults();
+    DrawingLeaderStyle style = defaults.style;
+    style.startSymbol = ui->cboxStartSym->currentIndex();
+    style.endSymbol = ui->cboxEndSym->currentIndex();
+    style.lineWidthMm = ui->dsbWeight->rawValue();
+    style.lineStyle = ui->cboxStyle->currentIndex();
+    style.lineColor.setValue<QColor>(ui->cpLineColor->color());
+    const std::string label = QCoreApplication::translate(
         "DrawLeaderLine",
-        "LeaderLine",
-        m_leaderName
-    );
-    const std::string pageCommand =
-        Gui::Command::getObjectCmd(m_basePage);
-    const std::string leaderCommand =
-        Gui::Command::getObjectCmd(m_lineFeat);
-    Command::doCommand(
-        Command::Doc,
-        "%s.addView(%s)",
-        pageCommand.c_str(),
-        leaderCommand.c_str()
-    );
-
-    double baseRotation{0};
-    if (m_baseFeat) {
-        const std::string baseCommand =
-            Gui::Command::getObjectCmd(m_baseFeat);
-        Command::doCommand(
-            Command::Doc,
-            "%s.LeaderParent = %s",
-            leaderCommand.c_str(),
-            baseCommand.c_str()
-        );
-        baseRotation = m_baseFeat->Rotation.getValue();
-    }
-    auto forMath{m_attachPoint};
-    if (baseRotation != 0) {
-        forMath = DU::invertY(forMath);
-        forMath.RotateZ(-Base::toRadians(baseRotation));
-        forMath = DU::invertY(forMath);
-    }
-    m_attachPoint = forMath;
-    m_lineFeat->setPosition(
-        Rez::appX(m_attachPoint.x),
-        Rez::appX(-m_attachPoint.y),
-        true
-    );
-    if (!sceneDeltas.empty()) {
-        std::vector<Base::Vector3d> pageDeltas;
-        for (auto& delta : sceneDeltas) {
-            pageDeltas.push_back(Rez::appX(delta));
-        }
-        const bool doScale{true};
-        const bool doRotate{false};
-        auto temp = m_lineFeat->makeCanonicalPointsInverted(
-            pageDeltas,
-            doScale,
-            doRotate
-        );
-        m_lineFeat->WayPoints.setValues(temp);
-    }
-    commonFeatureUpdate();
-
-    if (m_lineFeat) {
-        Gui::ViewProvider* vp = QGIView::getViewProvider(m_lineFeat);
-        auto leadVP = freecad_cast<ViewProviderLeader*>(vp);
-        if (leadVP) {
-            Base::Color ac;
-            ac.setValue<QColor>(ui->cpLineColor->color());
-            leadVP->Color.setValue(ac);
-            leadVP->LineWidth.setValue(ui->dsbWeight->rawValue());
-            leadVP->LineStyle.setValue(ui->cboxStyle->currentIndex());
-        }
-    }
-
-    //trigger claimChildren in tree
-    if (m_baseFeat) {
-        m_baseFeat->touch();
-    }
-
-    m_basePage->touch();
-
-    if (m_lineFeat) {
-        m_lineFeat->recomputeFeature();
-        if (m_lineFeat->isError()) {
-            throw Base::RuntimeError(
-                "The leader line could not produce a valid result"
-            );
-        }
-        m_lineFeat->requestPaint();
-    }
+        "LeaderLine").toStdString();
+    m_lineFeat = createDrawingLeaderLine(
+        m_basePage,
+        m_baseFeat,
+        pagePoints,
+        label,
+        style);
+    m_leaderName = m_lineFeat->getNameInDocument();
     TaskInternal::updateExactDocument(document);
     transaction.commit();
 }
@@ -740,7 +641,17 @@ void TaskLeaderLine::onTrackerFinished(std::vector<QPointF> trackerScenePoints, 
         return;
     }
 
-    if (m_qgParent) {
+    if (m_qgParent && getCreateMode()) {
+        m_pagePoints.clear();
+        m_pagePoints.reserve(trackerScenePoints.size());
+        for (const auto& point : trackerScenePoints) {
+            m_pagePoints.emplace_back(
+                Rez::appX(point.x()),
+                -Rez::appX(point.y()),
+                0.0);
+        }
+    }
+    else if (m_qgParent) {
         double scale = m_qgParent->getScale();
         QPointF mapped = m_qgParent->mapFromScene(trackerScenePoints.front()) / scale;
         m_attachPoint = Base::Vector3d(mapped.x(), mapped.y(), 0.0);
@@ -930,7 +841,7 @@ bool TaskLeaderLine::accept()
     if (!guiDocument) {
         return false;
     }
-    if (getCreateMode() && m_sceneDeltas.size() < 2) {
+    if (getCreateMode() && m_pagePoints.size() < 2) {
         QMessageBox::warning(
             this,
             tr("Leader Points Required"),
@@ -944,7 +855,7 @@ bool TaskLeaderLine::accept()
             updateLeaderFeature();
         }
         else {
-            createLeaderFeature(m_sceneDeltas);
+            createLeaderFeature(m_pagePoints);
         }
     }
     catch (const Base::Exception& error) {

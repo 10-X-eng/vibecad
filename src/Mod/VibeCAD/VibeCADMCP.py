@@ -38,10 +38,44 @@ MCP_KEYRING_ACCOUNT = "mcp-bearer-token-v1"
 MCP_TOKEN_BYTES = 32
 
 READ_WORKBENCH_TOOL = "vibecad.read_workbench"
-SWITCH_WORKBENCH_TOOL = "vibecad.switch_workbench"
 RECOVER_DOCUMENTS_TOOL = "vibecad.recover_documents"
 MANAGE_DOCUMENT_TOOL = "vibecad.manage_document"
 VIBESCRIPT_READ_OPERATION_TOOL = "vibescript.read_operation"
+
+
+def _ribbon_workbenches(gui: Any) -> list[dict[str, str]]:
+    """Read the exact human-selectable workbenches shown by the live ribbon."""
+
+    from PySide import QtWidgets
+
+    main_window = gui.getMainWindow()
+    tabs = (
+        main_window.findChild(QtWidgets.QTabBar, "VibeCADRibbonTabs")
+        if main_window is not None
+        else None
+    )
+    if tabs is None:
+        raise RuntimeError("VibeCAD's ribbon workspace selector is unavailable.")
+
+    available = []
+    seen = set()
+    for index in range(tabs.count()):
+        name = str(tabs.tabData(index) or "").strip()
+        if not name:
+        # Sketch is a transient edit mode, not a human-selectable workbench.
+            continue
+        if name in seen:
+            raise RuntimeError(f"VibeCAD's ribbon contains duplicate workbench {name!r}.")
+        seen.add(name)
+        available.append(
+            {
+                "name": name,
+                "label": str(tabs.tabText(index) or name).strip() or name,
+            }
+        )
+    if not available:
+        raise RuntimeError("VibeCAD's ribbon exposes no selectable workbenches.")
+    return available
 
 
 def _bind_mcp_listener(host: str, port: int) -> socket.socket:
@@ -167,34 +201,13 @@ def controller_tool_schemas() -> list[dict[str, Any]]:
         {
             "name": READ_WORKBENCH_TOOL,
             "description": (
-                "Read the active VibeCAD workbench and the exact workbenches "
-                "available for switching."
+                "Read the active VibeCAD workbench and the exact ribbon "
+                "workbenches available to the human. The client cannot switch "
+                "the active workbench."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {},
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": SWITCH_WORKBENCH_TOOL,
-            "description": (
-                "Switch VibeCAD to an exact workbench name returned by "
-                "vibecad.read_workbench. This changes the human ribbon; Model "
-                "and Assembly keep one combined MCP authoring surface."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "workbench": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": (
-                            "Exact workbench name returned by vibecad.read_workbench."
-                        ),
-                    }
-                },
-                "required": ["workbench"],
                 "additionalProperties": False,
             },
         },
@@ -304,6 +317,14 @@ class _HostToolSession:
         self._runner_signature: tuple[str, str, str, str, str, str] | None = None
         self._tool_trace: list[dict[str, Any]] = []
 
+    def close(self) -> None:
+        runner = self._runner
+        self._runner = None
+        self._runner_signature = None
+        close = getattr(runner, "close", None)
+        if callable(close):
+            close()
+
     def _get_service(self) -> Any:
         if self._service is None:
             from VibeCADCore import get_service
@@ -402,6 +423,7 @@ class _HostToolSession:
         signature = _surface_signature(snapshot)
         if self._runner is not None and signature == self._runner_signature:
             return self._runner
+        self.close()
 
         from VibeCADSession import (
             _build_context_for_provider,
@@ -423,7 +445,11 @@ class _HostToolSession:
             steering_check=None,
             question_callback=self._question_callback,
             document_thread_dispatch=self._dispatch,
-            turn_surface=None,
+            turn_surface=(
+                dict(context["provider_tool_surface"])
+                if isinstance(context.get("provider_tool_surface"), dict)
+                else None
+            ),
             turn_schemas=[
                 dict(schema)
                 for schema in list(context.get("provider_tool_schemas") or [])
@@ -455,103 +481,15 @@ class _HostToolSession:
             import FreeCADGui as Gui
 
             active = Gui.activeWorkbench()
-            workbenches = Gui.listWorkbenches()
-            available = []
-            for name, workbench in sorted(workbenches.items()):
-                available.append(
-                    {
-                        "name": str(name),
-                        "label": str(
-                            (workbench if isinstance(workbench, str) else "")
-                            or getattr(workbench, "MenuText", "")
-                            or getattr(workbench, "Label", "")
-                            or name
-                        ),
-                    }
-                )
             return {
                 "ok": True,
                 "active_workbench": (
                     str(active.name()) if active is not None else None
                 ),
-                "available_workbenches": available,
+                "available_workbenches": _ribbon_workbenches(Gui),
             }
 
         return self._dispatch(read)
-
-    def _switch_workbench(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        target = str(arguments.get("workbench") or "").strip()
-        if not target:
-            return {
-                "ok": False,
-                "failure_code": "WORKBENCH_REQUIRED",
-                "failure_stage": "schema",
-                "error": "workbench must be one exact non-empty name.",
-            }
-
-        def switch() -> dict[str, Any]:
-            import FreeCADGui as Gui
-            from VibeCADEditState import active_edit_state
-
-            edit_state = active_edit_state(getattr(Gui, "ActiveDocument", None))
-            if edit_state.active:
-                return {
-                    "ok": False,
-                    "failure_code": "NATIVE_TASK_ACTIVE",
-                    "failure_stage": "precondition",
-                    "error": (
-                        "Close or cancel the active native task before switching "
-                        "workbenches."
-                    ),
-                    "observed": {
-                        "edit_object": str(
-                            getattr(edit_state.document_object, "Name", "") or ""
-                        ),
-                        "edit_mode": edit_state.mode,
-                    },
-                }
-            available = Gui.listWorkbenches()
-            if target not in available:
-                return {
-                    "ok": False,
-                    "failure_code": "UNKNOWN_WORKBENCH",
-                    "failure_stage": "precondition",
-                    "error": f"Unknown VibeCAD workbench: {target}",
-                    "candidates": sorted(str(name) for name in available),
-                }
-            previous = Gui.activeWorkbench()
-            previous_name = str(previous.name()) if previous is not None else None
-            Gui.activateWorkbench(target)
-            active = Gui.activeWorkbench()
-            active_name = str(active.name()) if active is not None else None
-            if active_name != target:
-                return {
-                    "ok": False,
-                    "failure_code": "WORKBENCH_SWITCH_FAILED",
-                    "failure_stage": "native_call",
-                    "error": f"VibeCAD did not activate workbench {target}.",
-                    "observed": {"active_workbench": active_name},
-                }
-            from VibeCADModelingSurface import share_authoring_surface
-
-            return {
-                "ok": True,
-                "previous_workbench": previous_name,
-                "active_workbench": active_name,
-                "tool_list_changed": not share_authoring_surface(
-                    previous_name,
-                    active_name,
-                ),
-            }
-
-        result = self._dispatch(switch)
-        if result.get("ok") and result.get("tool_list_changed"):
-            self._runner = None
-            self._runner_signature = None
-            # Gui.activateWorkbench emits MainWindow.workbenchActivated. The
-            # single GUI observer owns generation changes for both human and
-            # MCP switches, avoiding duplicate list-change notifications.
-        return result
 
     def _recover_documents(self) -> dict[str, Any]:
         def recover() -> dict[str, Any]:
@@ -1019,11 +957,6 @@ class _HostToolSession:
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == READ_WORKBENCH_TOOL:
             return {"result": self._read_workbench(), "image_attachment": None}
-        if name == SWITCH_WORKBENCH_TOOL:
-            return {
-                "result": self._switch_workbench(arguments),
-                "image_attachment": None,
-            }
         if name == RECOVER_DOCUMENTS_TOOL:
             return {
                 "result": self._recover_documents(),
@@ -2026,9 +1959,12 @@ class VibeCADControlModeController:
             pass
         finally:
             try:
-                connection.close()
-            except Exception:
-                pass
+                session.close()
+            finally:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
     def _monitor_process(
         self,

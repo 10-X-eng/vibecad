@@ -22,6 +22,8 @@
  ***************************************************************************/
 
 
+#include <algorithm>
+
 #include <App/Link.h>
 
 #include "DrawViewClip.h"
@@ -216,6 +218,13 @@ bool DrawViewClip::isViewInClip(App::DocumentObject* view)
         }
     }
     return false;
+}
+
+bool DrawViewClip::isTimelineStructuralChild(const App::DocumentObject* object) const
+{
+    const auto& views = Views.getValues();
+    return std::ranges::find(views, object) != views.end()
+        || DrawView::isTimelineStructuralChild(object);
 }
 
 PyObject *DrawViewClip::getPyObject()

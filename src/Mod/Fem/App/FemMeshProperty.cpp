@@ -118,14 +118,20 @@ void PropertyFemMesh::setPyObject(PyObject* value)
 App::Property* PropertyFemMesh::Copy() const
 {
     PropertyFemMesh* prop = new PropertyFemMesh();
-    prop->_FemMesh = this->_FemMesh;
+    // FemMesh is mutable.  A transaction snapshot must own an independent
+    // copy; sharing the reference lets a later setValue() mutate both the
+    // live property and its undo snapshot.
+    *(prop->_FemMesh) = *(this->_FemMesh);
     return prop;
 }
 
 void PropertyFemMesh::Paste(const App::Property& from)
 {
     aboutToSetValue();
-    _FemMesh = dynamic_cast<const PropertyFemMesh&>(from)._FemMesh;
+    // Keep the restored property independent from the stored transaction
+    // snapshot for the same reason as Copy().
+    const auto& prop = dynamic_cast<const PropertyFemMesh&>(from);
+    *_FemMesh = *(prop._FemMesh);
     hasSetValue();
 }
 

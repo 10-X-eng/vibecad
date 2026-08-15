@@ -34,6 +34,14 @@ __doc__ = """CAM Array dressup"""
 translate = FreeCAD.Qt.translate
 
 
+def _emptyPathWithJobCenter(obj):
+    path = Path.Path()
+    job = PathUtils.findParentJob(obj) or PathUtil.timelineParentJob(obj)
+    if job is not None:
+        path.Center = job.Path.Center
+    return path
+
+
 class DressupArray:
     def __init__(self, obj, base, job):
         obj.addProperty(
@@ -223,12 +231,12 @@ class DressupArray:
 
     def execute(self, obj):
         if not PathUtil.activeForOp(obj):
-            obj.Path = Path.Path()
+            obj.Path = _emptyPathWithJobCenter(obj)
             return
 
         if not obj.Base or not obj.Base.isDerivedFrom("Path::Feature") or not obj.Base.Path:
             Path.Log.error(translate("PathArray", "Base is empty or an invalid object."))
-            obj.Path = Path.Path()
+            obj.Path = _emptyPathWithJobCenter(obj)
             return None
 
         # use seed if specified, otherwise default to object name for consistency during recomputes
@@ -249,7 +257,11 @@ class DressupArray:
             seed,
         )
 
-        obj.Path = pa.getPath()
+        path = pa.getPath()
+        job = PathUtils.findParentJob(obj)
+        if job is not None:
+            path.Center = job.Path.Center
+        obj.Path = path
 
 
 class PathArray:
@@ -284,6 +296,7 @@ class PathArray:
         self.jitterMagnitude = jitterMagnitude
         self.jitterPercent = jitterPercent
         self.seed = seed
+        self._random = random.Random(seed)
 
     # Private method
     def _calculateJitter(self, pos):
@@ -291,10 +304,19 @@ class PathArray:
         Returns the position argument with a random vector shift applied."""
         if self.jitterPercent == 0:
             pass
-        elif random.randint(0, 100) < self.jitterPercent:
-            pos.x = pos.x + random.uniform(-self.jitterMagnitude.x, self.jitterMagnitude.x)
-            pos.y = pos.y + random.uniform(-self.jitterMagnitude.y, self.jitterMagnitude.y)
-            pos.z = pos.z + random.uniform(-self.jitterMagnitude.z, self.jitterMagnitude.z)
+        elif self._random.randint(0, 100) < self.jitterPercent:
+            pos.x = pos.x + self._random.uniform(
+                -self.jitterMagnitude.x,
+                self.jitterMagnitude.x,
+            )
+            pos.y = pos.y + self._random.uniform(
+                -self.jitterMagnitude.y,
+                self.jitterMagnitude.y,
+            )
+            pos.z = pos.z + self._random.uniform(
+                -self.jitterMagnitude.z,
+                self.jitterMagnitude.z,
+            )
         return pos
 
     # Public method
@@ -311,8 +333,6 @@ class PathArray:
         # build copies
         # initially output contains original base path, copies are added on top of that
         output = PathUtils.getPathWithPlacement(base).toGCode()
-
-        random.seed(self.seed)
 
         if self.arrayType == "Linear1D":
             for i in range(self.copies):

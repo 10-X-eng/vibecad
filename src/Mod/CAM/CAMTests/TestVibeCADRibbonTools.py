@@ -14,6 +14,7 @@ from PySide import QtCore, QtGui
 SHIPPED_CAM_COMMANDS = {
     "Setup": (
         "CAM_Job",
+        "CAM_PropertyBag",
         "CAM_Sanity",
         "CAM_PostTools",
         "CAM_Post",
@@ -27,6 +28,12 @@ SHIPPED_CAM_COMMANDS = {
         "CAM_SelectLoop",
         "CAM_OpActiveToggle",
         "CAM_ToolBitDock",
+    ),
+    "Program": (
+        "CAM_Comment",
+        "CAM_Stop",
+        "CAM_Custom",
+        "CAM_Probe",
     ),
     "Operations": (
         "CAM_Profile",
@@ -65,6 +72,7 @@ SHIPPED_CAM_COMMANDS = {
 SHIPPED_CAM_TOOLBARS = {
     "Project Setup": (
         "CAM_Job",
+        "CAM_PropertyBag",
         "CAM_Sanity",
         "CAM_PostTools",
     ),
@@ -74,6 +82,12 @@ SHIPPED_CAM_TOOLBARS = {
         "CAM_SelectLoop",
         "CAM_OpActiveToggle",
         "CAM_ToolBitDock",
+    ),
+    "Program": (
+        "CAM_Comment",
+        "CAM_Stop",
+        "CAM_Custom",
+        "CAM_Probe",
     ),
     "New Operations": (
         "CAM_Profile",
@@ -384,6 +398,9 @@ class TestVibeCADCAMRibbonTools(unittest.TestCase):
         self.job = PathJobGui.Create([model], None, openTaskPanel=False)
         self.assertIsNotNone(self.job)
         self.assertTrue(self.job.Tools.Group)
+        controller = self.job.Tools.Group[0]
+        controller.HorizFeed = 120.0
+        controller.VertFeed = 80.0
         self.operation = PathCustom.Create(
             "ContractOperation",
             parentJob=self.job,
@@ -417,7 +434,7 @@ class TestVibeCADCAMRibbonTools(unittest.TestCase):
             )
         if not hasattr(self.operation, "StartPoint"):
             self.operation.addProperty(
-                "App::PropertyVector",
+                "App::PropertyVectorDistance",
                 "StartPoint",
                 "Contract",
             )
@@ -1040,7 +1057,7 @@ class TestVibeCADCAMRibbonTools(unittest.TestCase):
             EXPERIMENTAL_COMMANDS | ADVANCED_3D_COMMANDS | {"CAM_RotarySurface", "CAM_Camotics"}
         )
         context_only_surface = set(CAM_CONTEXT_ONLY_COMMANDS)
-        self.assertEqual(len(default_ribbon), 40)
+        self.assertEqual(len(default_ribbon), 45)
         self.assertEqual(len(default_menu), 42)
         self.assertEqual(len(default_surface), 47)
         self.assertEqual(len(conditional_surface), 8)
@@ -2905,6 +2922,98 @@ class TestVibeCADCAMRibbonTools(unittest.TestCase):
             before_area,
         )
 
+    def test_experimental_area_view_is_one_exact_replacement_step(self):
+        document = self.document
+        model = document.getObject("ContractModel")
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(model, "Face1")
+        self._process_events()
+        before_area = frozenset(document.Objects)
+
+        self.assertTrue(Gui.isCommandActive("CAM_Area"))
+        Gui.runCommand("CAM_Area")
+        self._process_events(100)
+
+        area_outputs = [obj for obj in document.Objects if obj not in before_area]
+        area = next(obj for obj in area_outputs if obj.TypeId == "Path::FeatureArea")
+        self.assertTrue(area.ViewObject.Visibility)
+        before_objects = tuple(document.Objects)
+        timeline = document.getObject("VibeCADTimeline")
+        before_operations = tuple(timeline.Operations)
+        before_visibility = tuple(timeline.VisibilityAtEnd)
+        before_suppression = tuple(timeline.SuppressionAtEnd)
+        before_position = int(timeline.Position)
+        before_undo = int(document.UndoCount)
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(area)
+        self._process_events()
+        self.assertTrue(Gui.isCommandActive("CAM_Area"))
+        Gui.runCommand("CAM_Area")
+        self._process_events(100)
+
+        created = [obj for obj in document.Objects if obj not in before_objects]
+        self.assertEqual(len(created), 1)
+        view = created[0]
+        view_name = str(view.Name)
+        area_name = str(area.Name)
+        self.assertEqual(view.TypeId, "Path::FeatureAreaView")
+        self.assertIs(view.Source, area)
+        self.assertTrue(view.isValid())
+        self.assertFalse(view.Shape.isNull())
+        self.assertFalse(area.ViewObject.Visibility)
+        self.assertTrue(view.ViewObject.Visibility)
+        self._assert_timeline_replaces(view, [area])
+
+        timeline = document.getObject("VibeCADTimeline")
+        expected_operations = (
+            *before_operations[:before_position],
+            view,
+            *before_operations[before_position:],
+        )
+        expected_visibility = list(before_visibility)
+        expected_visibility[before_operations.index(area)] = False
+        expected_visibility.insert(before_position, True)
+        expected_suppression = list(before_suppression)
+        expected_suppression.insert(before_position, False)
+        self.assertEqual(tuple(timeline.Operations), expected_operations)
+        self.assertEqual(tuple(timeline.VisibilityAtEnd), tuple(expected_visibility))
+        self.assertEqual(tuple(timeline.SuppressionAtEnd), tuple(expected_suppression))
+        self.assertEqual(int(timeline.Position), before_position + 1)
+        self.assertEqual(int(document.UndoCount), before_undo + 1)
+
+        document.undo()
+        self._process_events(100)
+        area = document.getObject(area_name)
+        timeline = document.getObject("VibeCADTimeline")
+        self.assertIsNone(document.getObject(view_name))
+        self.assertIsNotNone(area)
+        self.assertTrue(area.ViewObject.Visibility)
+        self.assertEqual(tuple(document.Objects), before_objects)
+        self.assertEqual(tuple(timeline.Operations), before_operations)
+        self.assertEqual(tuple(timeline.VisibilityAtEnd), before_visibility)
+        self.assertEqual(tuple(timeline.SuppressionAtEnd), before_suppression)
+        self.assertEqual(int(timeline.Position), before_position)
+
+        document.redo()
+        self._process_events(100)
+        area = document.getObject(area_name)
+        view = document.getObject(view_name)
+        timeline = document.getObject("VibeCADTimeline")
+        self.assertIsNotNone(area)
+        self.assertIsNotNone(view)
+        self.assertIs(view.Source, area)
+        self.assertFalse(area.ViewObject.Visibility)
+        self.assertTrue(view.ViewObject.Visibility)
+        self._assert_timeline_replaces(view, [area])
+        self.assertEqual(
+            tuple(obj.Name for obj in timeline.Operations),
+            tuple(obj.Name for obj in expected_operations),
+        )
+        self.assertEqual(tuple(timeline.VisibilityAtEnd), tuple(expected_visibility))
+        self.assertEqual(tuple(timeline.SuppressionAtEnd), tuple(expected_suppression))
+        self.assertEqual(int(timeline.Position), before_position + 1)
+
     def test_selected_cam_subshape_is_parametric_and_survives_reopen(self):
         import tempfile
 
@@ -3966,10 +4075,175 @@ class TestVibeCADCAMRibbonTools(unittest.TestCase):
         created = [obj for obj in self.document.Objects if obj not in before]
         self.assertEqual(len(created), 1)
         self.assertTrue(created[0].isValid())
+        expected_center = -float(created[0].Radius.Value)
+        self.assertAlmostEqual(float(self.job.Path.Center.z), expected_center)
+        for operation in self.job.Proxy.allOperations():
+            self.assertAlmostEqual(float(operation.Path.Center.z), expected_center)
+            self.assertNotIn("Touched", tuple(operation.State))
         self.assertEqual(int(self.document.UndoCount), before_undo + 1)
         self.document.undo()
         self._process_events()
         self.assertEqual(tuple(self.document.Objects), before)
+
+    def test_path_boundary_task_cancel_accept_and_one_undo(self):
+        self._select_operation()
+        before = tuple(self.document.Objects)
+        before_undo = int(self.document.UndoCount)
+
+        self.assertTrue(Gui.isCommandActive("CAM_DressupPathBoundary"))
+        Gui.runCommand("CAM_DressupPathBoundary")
+        self._process_events(100)
+        self.assertTrue(Gui.Control.activeDialog())
+        self.assertTrue(self.document.HasPendingTransaction)
+        self._dismiss_task(accept=False)
+        self.assertEqual(tuple(self.document.Objects), before)
+        self.assertEqual(int(self.document.UndoCount), before_undo)
+
+        self._select_operation()
+        Gui.runCommand("CAM_DressupPathBoundary")
+        self._process_events(100)
+        self.assertTrue(Gui.Control.activeDialog())
+        self._dismiss_task(accept=True)
+
+        created = [obj for obj in self.document.Objects if obj not in before]
+        self.assertEqual(len(created), 2)
+        dressups = [obj for obj in created if obj in self.job.Operations.Group]
+        self.assertEqual(len(dressups), 1)
+        dressup = dressups[0]
+        stock = dressup.Stock
+        self.assertIn(stock, created)
+        self.assertTrue(dressup.isValid())
+        self.assertTrue(stock.isValid())
+        self._assert_timeline_replaces(dressup, [self.operation])
+        self._assert_timeline_resource(stock, dressup)
+        timeline = self.document.getObject("VibeCADTimeline")
+        dressup_index = list(timeline.Operations).index(dressup)
+        self.assertIs(timeline.Operations[dressup_index - 1], stock)
+        self.assertFalse(stock.ViewObject.Visibility)
+        self.assertEqual(int(self.document.UndoCount), before_undo + 1)
+
+        self.document.undo()
+        self._process_events()
+        self.assertEqual(tuple(self.document.Objects), before)
+        self.assertTrue(self.operation.ViewObject.Visibility)
+
+    def test_dogbone_task_cancel_accept_and_one_undo(self):
+        self._select_operation()
+        before = tuple(self.document.Objects)
+        before_undo = int(self.document.UndoCount)
+
+        self.assertTrue(Gui.isCommandActive("CAM_DressupDogbone"))
+        Gui.runCommand("CAM_DressupDogbone")
+        self._process_events(100)
+        self.assertTrue(Gui.Control.activeDialog())
+        self.assertTrue(self.document.HasPendingTransaction)
+        self._dismiss_task(accept=False)
+        self.assertEqual(tuple(self.document.Objects), before)
+        self.assertEqual(int(self.document.UndoCount), before_undo)
+
+        self._select_operation()
+        Gui.runCommand("CAM_DressupDogbone")
+        self._process_events(100)
+        self.assertTrue(Gui.Control.activeDialog())
+        self._dismiss_task(accept=True)
+
+        created = [obj for obj in self.document.Objects if obj not in before]
+        self.assertEqual(len(created), 1)
+        dressup = created[0]
+        self.assertIn(dressup, self.job.Operations.Group)
+        self.assertTrue(dressup.isValid())
+        self.assertIs(dressup.Base, self.operation)
+        self.assertGreater(len(dressup.Path.Commands), 0)
+        self._assert_timeline_replaces(dressup, [self.operation])
+        self.assertEqual(int(self.document.UndoCount), before_undo + 1)
+
+        self.document.undo()
+        self._process_events()
+        self.assertEqual(tuple(self.document.Objects), before)
+        self.assertTrue(self.operation.ViewObject.Visibility)
+
+    def test_drag_knife_task_cancel_accept_and_one_undo(self):
+        self._select_operation()
+        before = tuple(self.document.Objects)
+        before_undo = int(self.document.UndoCount)
+
+        self.assertTrue(Gui.isCommandActive("CAM_DressupDragKnife"))
+        Gui.runCommand("CAM_DressupDragKnife")
+        self._process_events(100)
+        self.assertTrue(Gui.Control.activeDialog())
+        self.assertTrue(self.document.HasPendingTransaction)
+        self._dismiss_task(accept=False)
+        self.assertEqual(tuple(self.document.Objects), before)
+        self.assertEqual(int(self.document.UndoCount), before_undo)
+
+        self._select_operation()
+        Gui.runCommand("CAM_DressupDragKnife")
+        self._process_events(100)
+        self.assertTrue(Gui.Control.activeDialog())
+        self._dismiss_task(accept=True)
+
+        created = [obj for obj in self.document.Objects if obj not in before]
+        self.assertEqual(len(created), 1)
+        dressup = created[0]
+        self.assertIn(dressup, self.job.Operations.Group)
+        self.assertTrue(dressup.isValid())
+        self.assertIs(dressup.Base, self.operation)
+        self.assertGreater(len(dressup.Path.Commands), 0)
+        self.assertAlmostEqual(float(dressup.filterAngle.Value), 20.0)
+        self.assertAlmostEqual(float(dressup.offset), 2.0)
+        self.assertAlmostEqual(float(dressup.pivotheight), 4.0)
+        self._assert_timeline_replaces(dressup, [self.operation])
+        self.assertEqual(int(self.document.UndoCount), before_undo + 1)
+
+        self.document.undo()
+        self._process_events()
+        self.assertEqual(tuple(self.document.Objects), before)
+        self.assertTrue(self.operation.ViewObject.Visibility)
+
+    def test_lead_in_out_task_cancel_accept_and_one_undo(self):
+        controller = self.operation.ToolController
+        controller.HorizFeed = 120.0
+        controller.VertFeed = 80.0
+        self.document.recompute()
+        self._select_operation()
+        before = tuple(self.document.Objects)
+        before_undo = int(self.document.UndoCount)
+
+        self.assertTrue(Gui.isCommandActive("CAM_DressupLeadInOut"))
+        Gui.runCommand("CAM_DressupLeadInOut")
+        self._process_events(100)
+        self.assertTrue(Gui.Control.activeDialog())
+        self.assertTrue(self.document.HasPendingTransaction)
+        self._dismiss_task(accept=False)
+        self.assertEqual(tuple(self.document.Objects), before)
+        self.assertEqual(int(self.document.UndoCount), before_undo)
+
+        self._select_operation()
+        Gui.runCommand("CAM_DressupLeadInOut")
+        self._process_events(100)
+        self.assertTrue(Gui.Control.activeDialog())
+        self._dismiss_task(accept=True)
+
+        created = [obj for obj in self.document.Objects if obj not in before]
+        self.assertEqual(len(created), 1)
+        dressup = created[0]
+        self.assertIn(dressup, self.job.Operations.Group)
+        self.assertTrue(dressup.isValid())
+        self.assertIs(dressup.Base, self.operation)
+        self.assertTrue(dressup.LeadIn)
+        self.assertTrue(dressup.LeadOut)
+        self.assertEqual(dressup.StyleIn, "Arc")
+        self.assertEqual(dressup.StyleOut, "Arc")
+        self.assertGreater(len(dressup.Path.Commands), 0)
+        self._assert_timeline_replaces(dressup, [self.operation])
+        self.assertFalse(self.operation.ViewObject.Visibility)
+        self.assertTrue(dressup.ViewObject.Visibility)
+        self.assertEqual(int(self.document.UndoCount), before_undo + 1)
+
+        self.document.undo()
+        self._process_events()
+        self.assertEqual(tuple(self.document.Objects), before)
+        self.assertTrue(self.operation.ViewObject.Visibility)
 
     def test_dressup_task_stays_bound_to_its_launch_document(self):
         for accept in (False, True):
@@ -4195,6 +4469,7 @@ class TestVibeCADCAMRibbonTools(unittest.TestCase):
         for command_name in (
             "CAM_DressupMirror",
             "CAM_DressupRampEntry",
+            "CAM_DressupZCorrect",
         ):
             with self.subTest(command=command_name):
                 App.setActiveDocument(self.document.Name)
@@ -4202,6 +4477,8 @@ class TestVibeCADCAMRibbonTools(unittest.TestCase):
                 before = frozenset(self.document.Objects)
                 Gui.runCommand(command_name)
                 self._process_events(100)
+                if Gui.Control.activeDialog():
+                    self._dismiss_task(accept=True)
 
                 created = [obj for obj in self.document.Objects if obj not in before]
                 self.assertEqual(len(created), 1)

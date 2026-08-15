@@ -404,6 +404,13 @@ void CmdPathArea::activated(int iMsg)
             std::tie(result, sourceArea) = resolveObjects();
             doCommand(Doc, "PathTimeline.markTimelineOperation(%s)", resultCommand.c_str());
             std::tie(result, sourceArea) = resolveObjects();
+            doCommand(
+                Doc,
+                "PathTimeline.markTimelineReplacedInputs(%s, [%s])",
+                resultCommand.c_str(),
+                sourceCommand.c_str()
+            );
+            std::tie(result, sourceArea) = resolveObjects();
             documentIdentity.resolve().recompute();
             std::tie(result, sourceArea) = resolveObjects();
             if (!result || result->Source.getValue() != sourceArea || !result->isValid()) {

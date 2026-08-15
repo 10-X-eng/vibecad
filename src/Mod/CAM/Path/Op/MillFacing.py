@@ -698,10 +698,10 @@ class ObjectMillFacing(PathOp.ObjectOp):
 # Eclass
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns a Mill Facing operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectMillFacing(obj, name, parentJob)
+    obj.Proxy = ObjectMillFacing(obj, name, parentJob, toolController=toolController)
     return obj
 
 

@@ -24,7 +24,7 @@
 import FreeCAD
 import Part
 import Path
-import Path.Base.Util as PathUtil
+import Path.OperationCopy as PathOperationCopy
 import Path.Main.Job as PathJob
 
 import Path.Dressup.Utils as PathDressup
@@ -143,15 +143,7 @@ def _remove_copied_timeline_replacement(operation):
     operation's promise to replace or reveal an earlier object when the copy
     is moved through history or deleted.
     """
-    property_name = "VibeCADTimelineReplacedInputs"
-    if property_name not in operation.PropertiesList:
-        return
-    if operation.getTypeIdOfProperty(property_name) != "App::PropertyLinkListHidden":
-        raise RuntimeError(f"{operation.Name} has invalid CAM replacement metadata")
-
-    operation.setPropertyStatus(property_name, "-LockDynamic")
-    if not operation.removeProperty(property_name):
-        raise RuntimeError(f"{operation.Name} retained copied CAM replacement metadata")
+    PathOperationCopy.removeCopiedTimelineReplacement(operation)
 
 
 def _apply_copied_timeline_contract(
@@ -160,48 +152,12 @@ def _apply_copied_timeline_contract(
     copied_outputs,
 ):
     """Finalize one complete copied semantic closure."""
-    copied_objects = list(copied_source_order)
-    exact_outputs = list(copied_outputs)
-    copied_names = [str(copied.Name) for copied in copied_objects]
-    ordered_names = [str(copied.Name) for copied in copied_source_order]
-    output_names = [str(output.Name) for output in exact_outputs]
-    if (
-        not copied_objects
-        or not exact_outputs
-        or len(copied_names) != len(set(copied_names))
-        or len(ordered_names) != len(set(ordered_names))
-        or set(ordered_names) != set(copied_names)
-        or len(output_names) != len(set(output_names))
-        or any(not any(output is copied for copied in copied_objects) for output in exact_outputs)
-    ):
-        raise RuntimeError("The copied CAM graph has no exact source chronology")
-
-    for copied in copied_objects:
-        _remove_copied_timeline_replacement(copied)
-
-    if len(exact_outputs) == 1:
-        operation = exact_outputs[0]
-        for resource in copied_objects:
-            if resource is operation:
-                continue
-            PathUtil.markTimelineResource(resource, operation)
-            if resource.ViewObject:
-                resource.ViewObject.Visibility = False
-        PathUtil.markTimelineOperation(operation)
-        return operation, list(copied_source_order)
-
-    controller = PathUtil.createTimelineOperationController(
+    operation, adoption_order = PathOperationCopy.applyCopiedTimelineContract(
         document,
-        "CAMOperationCopy",
-        translate("CAM_OperationCopy", "Copied CAM Operations"),
-        "Copy CAM operations",
-        exact_outputs,
+        copied_source_order,
+        copied_outputs,
     )
-    for resource in copied_objects:
-        PathUtil.markTimelineResource(resource, controller)
-        if not any(resource is output for output in exact_outputs) and resource.ViewObject:
-            resource.ViewObject.Visibility = False
-    return controller, [*copied_source_order, controller]
+    return operation, list(adoption_order)
 
 
 class _CommandSelectLoop:
@@ -405,17 +361,7 @@ class _CopyOperation:
             for selected, job in selection
         ]
 
-        timeline = document.getObject("VibeCADTimeline")
-        if timeline is None:
-            raise RuntimeError("The CAM document has no operation timeline")
-        source_operations = list(timeline.Operations)
-        source_position = int(timeline.Position)
-        source_indices = {}
-        for index, operation in enumerate(source_operations):
-            name = str(operation.Name)
-            if not name or document.getObject(name) is not operation or name in source_indices:
-                raise RuntimeError("The CAM source timeline is inconsistent")
-            source_indices[name] = (operation, index)
+        copy_plan = PathOperationCopy.planOperations(document, selection)
 
         transaction = _OwnedDocumentTransaction(
             document,
@@ -429,104 +375,20 @@ class _CopyOperation:
                 )
                 for selected_identity, job_identity in selected_identities
             ]
-            selected_sources = [selected for selected, _job in selection]
-            if any(
-                selected is other
-                for index, selected in enumerate(selected_sources)
-                for other in selected_sources[index + 1 :]
-            ):
-                raise RuntimeError("A CAM operation can only be copied once per command")
-            source_closure = list(
-                document.semanticTimelineCopyClosure(
-                    selected_sources,
-                )
-            )
-            if not source_closure:
-                raise RuntimeError("The selected CAM operations have no history closure")
-            for source in source_closure:
-                source_name = str(source.Name)
-                source_entry = source_indices.get(source_name)
-                if (
-                    source_entry is None
-                    or source_entry[0] is not source
-                    or source_entry[1] >= source_position
-                ):
-                    raise RuntimeError(
-                        "The selected CAM operation has an inactive or "
-                        "incomplete source-timeline closure"
-                    )
-
-            copied_source_order = list(document.copyObject(source_closure, False))
-            for selected_identity, job_identity in selected_identities:
-                selected_identity.resolve(require_timeline=True)
-                job_identity.resolve(require_timeline=True)
-            if len(copied_source_order) != len(source_closure):
-                raise RuntimeError("Could not copy the complete CAM history closure")
-            source_copy_pairs = list(zip(source_closure, copied_source_order))
             if (
-                len(source_copy_pairs) != len(source_closure)
-                or len({str(copied.Name) for copied in copied_source_order})
-                != len(copied_source_order)
+                len(selection) != len(copy_plan.selection)
                 or any(
-                    copied.Document is not document or document.getObject(copied.Name) is not copied
-                    for copied in copied_source_order
+                    selected is not planned_selected or job is not planned_job
+                    for (selected, job), (planned_selected, planned_job) in zip(
+                        selection,
+                        copy_plan.selection,
+                        strict=True,
+                    )
                 )
             ):
-                raise RuntimeError("The copied CAM history closure is incomplete")
-
-            def copied_for(source):
-                for exact_source, copied in source_copy_pairs:
-                    if exact_source is source:
-                        return copied
-                raise RuntimeError(
-                    "The selected CAM output is absent from its copied " "history closure"
-                )
-
-            selected_entries = sorted(
-                (
-                    source_indices[str(selected.Name)][1],
-                    selected,
-                    job,
-                    copied_for(selected),
-                )
-                for selected, job in selection
-            )
-            copied_outputs = []
-            for _index, _source, job, copied_output in selected_entries:
-                if (
-                    job.Document is not document
-                    or document.getObject(job.Name) is not job
-                    or getattr(job, "Operations", None) is None
-                    or not isinstance(
-                        getattr(job, "Proxy", None),
-                        PathJob.ObjectJob,
-                    )
-                ):
-                    raise RuntimeError("The selected CAM job is no longer available")
-                job.Proxy.addOperation(copied_output)
-                if (
-                    copied_output not in job.Operations.Group
-                    or PathUtils.findParentJob(copied_output) is not job
-                ):
-                    raise RuntimeError("Could not add the copied operation to its CAM job")
-                copied_outputs.append(copied_output)
-
-            (
-                timeline_operation,
-                adoption_order,
-            ) = _apply_copied_timeline_contract(
-                document,
-                copied_source_order,
-                copied_outputs,
-            )
-            created = list(copied_source_order)
-            if timeline_operation not in created:
-                created.append(timeline_operation)
-            document.adoptImportedTimelineOperations(
-                adoption_order,
-                adoption_order,
-            )
-            _recompute_and_validate(document, created)
+                raise RuntimeError("The exact CAM copy selection changed before execution")
+            copy_result = PathOperationCopy.copyOperations(document, copy_plan)
+            PathOperationCopy.recomputeAndValidate(document, copy_result)
         except Exception:
             transaction.abort()
             raise

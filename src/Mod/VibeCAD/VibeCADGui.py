@@ -39,7 +39,6 @@ from VibeCADSession import (
     run_prompt,
     run_sketch_close_continuation,
 )
-from VibeCADWorkbenchTools import get_tool_pack
 
 
 DOCK_NAME = "VibeCADAssistantPanel"
@@ -421,6 +420,165 @@ def _is_assistant_run_active() -> bool:
 
 def _is_assistant_cancel_requested() -> bool:
     return bool(_assistant_run_controller.snapshot()["cancel_requested"])
+
+
+def _authoring_mode_selector_state():
+    from VibeCADAuthoringModePolicy import (
+        AuthoringModeEnvironment,
+        resolve_authoring_mode_selector,
+    )
+    from VibeCADModelingSurface import resolve_modeling_surface
+    from VibeCADScriptedEditor import scripted_editor_has_unresolved_work
+
+    service = get_service()
+    document = App.ActiveDocument
+    control = _control_mode_snapshot()
+    task = service.task_panel_summary() if document is not None else {}
+    native_state = service.native_document_state()
+    authority = native_state.get("native_authority")
+    if not isinstance(authority, dict):
+        authority = {}
+    current_mode = service.modeling_engine()
+    restore_error = str(native_state.get("restore_error") or "")
+    native_available = False
+    native_reason = restore_error
+    if document is not None and not restore_error:
+        native_surface = resolve_modeling_surface(
+            service.active_workbench_name(),
+            "native",
+        )
+        native_available = native_surface.available
+        native_reason = native_surface.unavailable_reason
+    booked_transaction = getattr(document, "getBookedTransactionID", None)
+    transaction_open = bool(
+        document is not None
+        and (
+            bool(getattr(document, "HasPendingTransaction", False))
+            or (
+                callable(booked_transaction)
+                and int(booked_transaction() or 0) != 0
+            )
+        )
+    )
+    recompute_active = bool(
+        document is not None
+        and (
+            bool(getattr(document, "Recomputing", False))
+            or bool(getattr(document, "RecomputePending", False))
+        )
+    )
+    return resolve_authoring_mode_selector(
+        AuthoringModeEnvironment(
+            current_mode=current_mode,
+            document_available=document is not None,
+            internal_agent_enabled=bool(control.get("internal_agent_enabled")),
+            run_active=_is_assistant_run_active(),
+            transaction_open=transaction_open,
+            task_or_edit_active=bool(
+                task.get("active_dialog") or task.get("edit_mode")
+            ),
+            recompute_active=recompute_active,
+            unresolved_editor_work=scripted_editor_has_unresolved_work(),
+            native_available=native_available,
+            native_unavailable_reason=native_reason,
+            vibescript_return_safe=bool(
+                current_mode != "native"
+                or (
+                    authority.get("active") is True
+                    and authority.get("changed") is False
+                    and not restore_error
+                )
+            ),
+        )
+    )
+
+
+def _refresh_authoring_mode_selector(dock: Any | None = None) -> None:
+    if dock is None:
+        dock = _find_dock()
+    selector = _find_child("QComboBox", "VibeAuthoringMode", dock)
+    if selector is None:
+        return
+    try:
+        state = _authoring_mode_selector_state()
+    except Exception as exc:
+        selector.setEnabled(False)
+        selector.setToolTip(f"Authoring authority is unavailable: {exc}")
+        return
+    blocked = selector.blockSignals(True)
+    try:
+        for index in range(selector.count()):
+            mode = str(selector.itemData(index) or "")
+            item = selector.model().item(index)
+            if item is not None:
+                item.setEnabled(state.target_enabled(mode))
+                item.setToolTip(state.target_reason(mode))
+            if mode == state.current_mode:
+                selector.setCurrentIndex(index)
+        selector.setEnabled(state.selector_enabled)
+        selector.setToolTip(
+            state.selector_reason
+            or "Choose whether VibeCAD authors through source or direct ribbon tools"
+        )
+        selector.setProperty("VibeAuthoringMode", state.current_mode)
+        selector.setProperty("VibeNativeAvailable", not bool(state.native_reason))
+    finally:
+        selector.blockSignals(blocked)
+
+
+def _confirm_take_manual_control() -> bool:
+    from PySide import QtWidgets
+
+    message = QtWidgets.QMessageBox(Gui.getMainWindow())
+    message.setIcon(QtWidgets.QMessageBox.Warning)
+    message.setWindowTitle("Take manual control?")
+    message.setText("Switch this document from VibeScript to Native authority?")
+    message.setInformativeText(
+        "VibeScript source will remain unchanged, but it will no longer regenerate "
+        "the document. Native changes are not backpropagated into source. Returning "
+        "to VibeScript requires discarding the Native epoch or creating a new source."
+    )
+    take_control = message.addButton(
+        "Take manual control",
+        QtWidgets.QMessageBox.AcceptRole,
+    )
+    message.addButton(QtWidgets.QMessageBox.Cancel)
+    message.exec()
+    return message.clickedButton() is take_control
+
+
+def _select_authoring_mode_from_header(index: int) -> None:
+    from VibeCADAuthoringModePolicy import (
+        requires_take_manual_control_confirmation,
+        validate_human_mode_request,
+    )
+
+    dock = _find_dock()
+    selector = _find_child("QComboBox", "VibeAuthoringMode", dock)
+    if selector is None or index < 0:
+        return
+    requested = str(selector.itemData(index) or "")
+    try:
+        state = _authoring_mode_selector_state()
+        validated = validate_human_mode_request(state, requested)
+        if validated == state.current_mode:
+            return
+        if requires_take_manual_control_confirmation(
+            state.current_mode,
+            validated,
+        ) and not _confirm_take_manual_control():
+            _refresh_authoring_mode_selector(dock)
+            return
+        result = get_service().select_modeling_engine(validated)
+    except Exception as exc:
+        _set_status_line(str(exc), dock=dock)
+        _refresh_authoring_mode_selector(dock)
+        return
+    _set_status_line(
+        f"Authoring authority changed to {result['mode']} for the next turn.",
+        dock=dock,
+    )
+    _refresh_authoring_mode_selector(dock)
 
 
 # ---------------------------------------------------------------------------
@@ -2529,6 +2687,7 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     new_conversation = _find_child("QToolButton", "VibeNewConversation", dock)
     prompt_starters = _find_child("QToolButton", "VibePromptStarters", dock)
     interaction_mode = _find_child("QComboBox", "VibeInteractionMode", dock)
+    authoring_mode = _find_child("QComboBox", "VibeAuthoringMode", dock)
     composer_buttons = _find_child("QWidget", "VibeComposerButtons", dock)
 
     if send_button is not None:
@@ -2569,6 +2728,8 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
             if supports_plan
             else "Plan mode requires an OpenAI provider running through Codex"
         )
+    if authoring_mode is not None:
+        _refresh_authoring_mode_selector(dock)
     if composer_buttons is not None:
         _update_composer_button_presentation(
             composer_buttons,
@@ -2738,6 +2899,26 @@ def _execute_assistant_run(
     def _question_callback(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return _request_user_answers(questions, _cancelled)
 
+    def _output_authorization_callback(request: Any) -> Any:
+        from VibeCADNativeOutputGui import request_native_output_authorization
+
+        return _dispatch_to_document_thread(
+            lambda: request_native_output_authorization(
+                request,
+                parent=_find_dock() or dock,
+            )
+        )
+
+    def _input_authorization_callback(request: Any) -> Any:
+        from VibeCADNativeInputGui import request_native_input_authorization
+
+        return _dispatch_to_document_thread(
+            lambda: request_native_input_authorization(
+                request,
+                parent=_find_dock() or dock,
+            )
+        )
+
     def _progress_on_document_thread(event: dict[str, Any]) -> None:
         current_dock = _find_dock() or dock
         if event.get("event") == "provider_turn_output":
@@ -2835,6 +3016,8 @@ def _execute_assistant_run(
             "cancellation_check": _cancelled,
             "steering_check": _steering_messages,
             "question_callback": _question_callback,
+            "output_authorization_callback": _output_authorization_callback,
+            "input_authorization_callback": _input_authorization_callback,
             "document_thread_dispatch": _dispatch_to_document_thread,
         }
         try:
@@ -3631,10 +3814,16 @@ def _move_saved_document_conversation(doc: Any, filepath: str) -> None:
 
 class _VibeCADDocumentObserver:
     def slotCreatedDocument(self, doc) -> None:
+        get_service().ensure_native_document_state(
+            str(getattr(doc, "Uid", "") or "")
+        )
         _schedule_document_render_after_restore(doc)
         _schedule_assistant_document_refresh()
 
     def slotActivateDocument(self, doc) -> None:
+        get_service().ensure_native_document_state(
+            str(getattr(doc, "Uid", "") or "")
+        )
         pending = _sketch_close_continuation_controller.snapshot()
         active_uid = str(getattr(doc, "Uid", "") or "")
         if pending and pending.get("document_uid") != active_uid:
@@ -3649,6 +3838,11 @@ class _VibeCADDocumentObserver:
         document = getattr(obj, "Document", None)
         if document is not None and bool(getattr(document, "Restoring", False)):
             return
+        if str(getattr(document, "Uid", "") or "").strip():
+            get_service().note_native_object_property_change(
+                obj,
+                str(property_name or ""),
+            )
         try:
             from VibeCADVibeScriptDomainPublication import (
                 source_property_affects_vibescript_snapshot,
@@ -3674,15 +3868,44 @@ class _VibeCADDocumentObserver:
         if marked:
             _schedule_assistant_document_refresh()
 
+    def slotCreatedObject(self, obj) -> None:
+        is_restoring = getattr(App, "isRestoring", None)
+        if callable(is_restoring) and bool(is_restoring()):
+            return
+        document = getattr(obj, "Document", None)
+        if document is not None and bool(getattr(document, "Restoring", False)):
+            return
+        get_service().note_native_object_created(obj)
+
+    def slotDeletedObject(self, obj) -> None:
+        is_restoring = getattr(App, "isRestoring", None)
+        if callable(is_restoring) and bool(is_restoring()):
+            return
+        document = getattr(obj, "Document", None)
+        if document is not None and bool(getattr(document, "Restoring", False)):
+            return
+        get_service().note_native_object_deleted(obj)
+
     def slotStartSaveDocument(self, doc, filepath) -> None:
         _snapshot_active_document_conversation(doc)
 
     def slotFinishSaveDocument(self, doc, filepath) -> None:
         _move_saved_document_conversation(doc, str(filepath))
+        try:
+            get_service().persist_modeling_engine_after_save(
+                str(getattr(doc, "Uid", "") or "")
+            )
+        except Exception as exc:
+            _warn(f"VibeCAD authoring mode persistence failed: {exc}")
         _schedule_assistant_document_refresh()
 
     def slotDeletedDocument(self, doc) -> None:
         document_key = _document_storage_key(doc)
+        document_uid = str(getattr(doc, "Uid", "") or "")
+        get_service().discard_session_modeling_engine(
+            document_uid
+        )
+        get_service().close_native_document_state(document_uid)
         get_service().clear_vibescript_reference_snapshots(
             str(getattr(doc, "Uid", "") or "")
         )
@@ -3805,6 +4028,20 @@ def _build_panel_widget():
         _activate_conversation_from_selector
     )
     conversation_header_layout.addWidget(conversation_selector, 1)
+
+    authoring_mode = QtWidgets.QComboBox(conversation_header)
+    authoring_mode.setObjectName("VibeAuthoringMode")
+    authoring_mode.addItem("VibeScript", "vibescript")
+    authoring_mode.addItem("Native", "native")
+    authoring_mode.setAccessibleName("Authoring authority")
+    authoring_mode.setMinimumContentsLength(10)
+    authoring_mode.setToolTip(
+        "Choose whether VibeCAD authors through source or direct ribbon tools"
+    )
+    authoring_mode.currentIndexChanged.connect(
+        _select_authoring_mode_from_header
+    )
+    conversation_header_layout.addWidget(authoring_mode)
 
     new_conversation = QtWidgets.QToolButton(conversation_header)
     new_conversation.setObjectName("VibeNewConversation")
@@ -4222,7 +4459,7 @@ class PublishComponentInterfaceCommand(_BaseCommand):
     def IsActive(self) -> bool:
         return (
             App.ActiveDocument is not None
-            and Gui.Control.activeDialog() is None
+            and not Gui.Control.activeDialog()
             and self._selection() is not None
         )
 

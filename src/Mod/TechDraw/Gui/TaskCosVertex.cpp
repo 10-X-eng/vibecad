@@ -39,6 +39,7 @@
 #include <Mod/TechDraw/App/Cosmetic.h>
 
 #include "ui_TaskCosVertex.h"
+#include "CosmeticVertexBuilder.h"
 #include "TaskCosVertex.h"
 #include "MDIViewPage.h"
 #include "QGIView.h"
@@ -147,13 +148,12 @@ void TaskCosVertex::updateUi()
     ui->dsbY->setValue(y);
 }
 
-//! create the cv as entered, addCosmeticVertex will invert it
+//! Create the vertex at the canonical X-right/Y-up point shown in the task UI.
 void TaskCosVertex::addCosVertex(QPointF qPos)
 {
-//    Base::Vector3d pos = DU::invertY(DU::toVector3d(qPos));
-//    int idx =
-    (void) m_baseFeat->addCosmeticVertex(DU::toVector3d(qPos));
-    m_baseFeat->requestPaint();
+    (void)createDrawingCosmeticVertexPoint(
+        m_baseFeat,
+        DU::toVector3d(qPos));
 }
 
 

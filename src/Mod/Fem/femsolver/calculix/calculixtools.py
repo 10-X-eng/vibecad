@@ -52,8 +52,12 @@ class CalculiXTools(ObjectTools):
 
     name = "CalculiX"
 
-    def __init__(self, obj):
-        super().__init__(obj)
+    def __init__(self, obj, *, detached=False, working_directory=None):
+        super().__init__(
+            obj,
+            detached=detached,
+            working_directory=working_directory,
+        )
         self.model_file = ""
 
     def prepare(self):
@@ -100,7 +104,7 @@ class CalculiXTools(ObjectTools):
             self.obj,
             mesh_obj,
             meshdatagetter.member,
-            self.obj.WorkingDirectory,
+            self.working_directory,
             meshdatagetter.mat_geo_sets,
         )
         self.model_file = w.write_solver_input()
@@ -118,9 +122,9 @@ class CalculiXTools(ObjectTools):
         pastix_prec = "1" if self.obj.PastixMixedPrecision else "0"
         env.insert("PASTIX_MIXED_PRECISION", pastix_prec)
         self.process.setProcessEnvironment(env)
-        self.process.setWorkingDirectory(self.obj.WorkingDirectory)
+        self.process.setWorkingDirectory(self.working_directory)
 
-        command_list = ["-i", os.path.join(self.obj.WorkingDirectory, self.input_deck)]
+        command_list = ["-i", os.path.join(self.working_directory, self.input_deck)]
         self.program = ccx_bin
         self.arguments = list(command_list)
         self.process.start(ccx_bin, command_list)
@@ -137,15 +141,12 @@ class CalculiXTools(ObjectTools):
             for result in self.obj.Results:
                 if result.isDerivedFrom("Fem::FemPostPipeline"):
                     retained_pipeline = result
-        reconciliation = None
-        if retained_pipeline is not None:
-            from femcommands.manager import (
-                _stage_timeline_result_graph,
-            )
+        from femcommands.manager import _stage_timeline_result_graph
 
-            reconciliation = _stage_timeline_result_graph(
-                retained_pipeline
-            )
+        reconciliation = _stage_timeline_result_graph(
+            self.obj,
+            retained_pipeline,
+        )
         # TODO at the moment, only one .vtm file is assumed
         pipeline, pipeline_created = self._load_vtk_results()
         dat, dat_created = self._load_dat_results()
@@ -169,9 +170,9 @@ class CalculiXTools(ObjectTools):
     def _clear_results(self):
         # result is a 'Result.vtm' file and a 'Result' directory
         # with the .vtu files
-        dir_content = os.listdir(self.obj.WorkingDirectory)
+        dir_content = os.listdir(self.working_directory)
         for f in dir_content:
-            path = os.path.join(self.obj.WorkingDirectory, f)
+            path = os.path.join(self.working_directory, f)
             base, ext = os.path.splitext(path)
             if ext == ".vtm":
                 # remove .vtm file
@@ -200,10 +201,10 @@ class CalculiXTools(ObjectTools):
             self.obj.Results = tmp
             create = True
 
-        files = os.listdir(self.obj.WorkingDirectory)
+        files = os.listdir(self.working_directory)
         for f in files:
             if f.endswith(".dat"):
-                dat_file = os.path.join(self.obj.WorkingDirectory, f)
+                dat_file = os.path.join(self.working_directory, f)
                 with open(dat_file, "r") as file:
                     dat.Text = file.read()
                 break
@@ -227,13 +228,13 @@ class CalculiXTools(ObjectTools):
             self.obj.Results = tmp
             create = True
 
-        frd_result_prefix = os.path.join(self.obj.WorkingDirectory, self.input_deck)
+        frd_result_prefix = os.path.join(self.working_directory, self.input_deck)
         binary_mode = self.fem_param.GetGroup("Ccx").GetBool("BinaryOutput", False)
         Fem.frdToVTK(frd_result_prefix + ".frd", binary_mode)
-        files = os.listdir(self.obj.WorkingDirectory)
+        files = os.listdir(self.working_directory)
         for f in files:
             if f.endswith(".vtm"):
-                vtm_file = os.path.join(self.obj.WorkingDirectory, f)
+                vtm_file = os.path.join(self.working_directory, f)
                 reader = vtkXMLMultiBlockDataReader()
                 reader.SetFileName(vtm_file)
                 reader.Update()

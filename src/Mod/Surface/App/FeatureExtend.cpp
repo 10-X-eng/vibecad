@@ -174,6 +174,11 @@ App::DocumentObjectExecReturn* Extend::execute()
 
 void Extend::onChanged(const App::Property* prop)
 {
+    if (isRestoring()) {
+        Part::Spline::onChanged(prop);
+        return;
+    }
+
     // using a mutex and lock to protect a recursive calling when setting the new values
     if (lockOnChangeMutex) {
         return;

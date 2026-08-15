@@ -106,6 +106,14 @@ def toolDepthAndOffset(width, extraDepth, tool, printInfo):
 class ObjectDeburr(PathEngraveBase.ObjectOp):
     """Proxy class for Deburr operation."""
 
+    def __init__(self, obj, name, parentJob, toolController=None):
+        super(ObjectDeburr, self).__init__(
+            obj,
+            name,
+            parentJob,
+            toolController=toolController,
+        )
+
     def opFeatures(self, obj):
         return (
             PathOp.FeatureTool
@@ -233,6 +241,10 @@ class ObjectDeburr(PathEngraveBase.ObjectOp):
         wires = []
 
         for base, subs in self.baseShapes(obj):
+            # Geometry extraction and offsetting below may reverse or translate
+            # topology.  Job resources can share topology with their public
+            # source, so all Deburr geometry work must stay on an owned copy.
+            source_shape = base.Shape.copy()
             Path.Log.debug(f"Processing base {base.Label} with {len(subs)} subs")
             # Debug: check if this is a proxy and what the shape looks like
             if hasattr(base, "_real_obj"):
@@ -255,7 +267,7 @@ class ObjectDeburr(PathEngraveBase.ObjectOp):
 
             for f in subs:
                 Path.Log.debug(f"  Sub: {f}")
-                sub = base.Shape.getElement(f)
+                sub = source_shape.getElement(f)
 
                 if type(sub) == Part.Edge:  # Edge
                     # Debug: examine the edge geometry
@@ -433,7 +445,7 @@ class ObjectDeburr(PathEngraveBase.ObjectOp):
                         if hasattr(e.Curve, "Radius"):
                             Path.Log.debug(f"    Edge {j} radius: {e.Curve.Radius}")
                 tol = self.job.GeometryTolerance.Value if getattr(self, "job", None) else 0.01
-                wire = PathOpUtil.offsetWire(w, base.Shape, offset, True, side, tol)
+                wire = PathOpUtil.offsetWire(w, source_shape, offset, True, side, tol)
                 Path.Log.debug(f"  offsetWire returned: {wire is not None}")
                 if wire:
                     wires.append(wire)
@@ -487,8 +499,13 @@ def SetupProperties():
     return setup
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns a Deburr operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectDeburr(obj, name, parentJob)
+    obj.Proxy = ObjectDeburr(
+        obj,
+        name,
+        parentJob,
+        toolController=toolController,
+    )
     return obj

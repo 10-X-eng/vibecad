@@ -472,13 +472,24 @@ class TaskPanel(object):
             self.model.removeRow(row)
 
 
-def Create(name="PropertyBag"):
-    """Create(name = 'PropertyBag') ... creates a new setup sheet"""
-    document = FreeCAD.ActiveDocument
+def CreateInTransaction(name="PropertyBag", document=None):
+    """Create one PropertyBag in the caller-owned document transaction.
+
+    Human task-panel creation and guarded automation use this same factory so
+    the durable proxy, view provider, and History enrollment cannot diverge.
+    The caller remains responsible for committing or aborting the transaction.
+    """
+    if document is None:
+        document = FreeCAD.ActiveDocument
     ensure_task_transaction("Create PropertyBag", document)
     pcont = PathPropertyBag.Create(name, document=document)
     PathIconViewProvider.Attach(pcont.ViewObject, name)
     return pcont
+
+
+def Create(name="PropertyBag"):
+    """Create(name = 'PropertyBag') ... creates a new setup sheet"""
+    return CreateInTransaction(name, FreeCAD.ActiveDocument)
 
 
 PathIconViewProvider.RegisterViewProvider("PropertyBag", ViewProvider)

@@ -30,6 +30,7 @@ SET(Features_SRCS
     DesignFeature.cpp
     DesignFeature.h
     DesignModel.cpp
+    DesignModelRecovery.cpp
     DesignModel.h
 )
 SOURCE_GROUP("Features" FILES ${Features_SRCS})

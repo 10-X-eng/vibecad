@@ -31,6 +31,8 @@
 #include <queue>
 #include <functional>
 #include <chrono>
+#include <string>
+#include <string_view>
 
 #include <QOpenGLWidget>
 #include <QPainter>
@@ -98,7 +100,14 @@ public:
 
     void setAnimating(bool animating);
     void startSimulation(const Part::TopoShape& stock, float quality);
+    void startPreparedSimulation(
+        const Part::TopoShape& stock,
+        std::string_view preparedMesh,
+        float quality
+    );
     void resetSimulation(Gui::Document* doc);
+
+    static std::string prepareShapeMesh(const Part::TopoShape& shape, float resolution);
 
     void addGcodeCommand(const char* cmd);
     void addTool(
@@ -111,6 +120,10 @@ public:
     void setStockShape(const Part::TopoShape& shape, float resolution);
     void setStockVisible(bool b);
     void setBaseShape(const Part::TopoShape& shape, float resolution);
+    void setPreparedBaseShape(
+        const Part::TopoShape& shape,
+        std::string_view preparedMesh
+    );
     void setBaseVisible(bool b);
 
     void setRotateEnabled(bool b);

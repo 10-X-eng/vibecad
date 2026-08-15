@@ -59,3 +59,11 @@ class FemPostFilter(FemPostObject):
     def getOutputAlgorithm(self) -> vtkAlgorithm:
         """Returns the filters vtk algorithm currently used as output (the one generating the Data field). Note that the output algorithm may change depending on filter settings."""
         ...
+
+    def configureDataAlongLine(self, field_name: str, component: int, unit: str = "", /) -> None:
+        """Select a point field, component, and unit on a data-along-line filter and refresh its sampled axis data."""
+        ...
+
+    def configureDataAtPoint(self, field_name: str, unit: str, /) -> None:
+        """Select a point field and unit on a data-at-point filter and refresh its sampled value."""
+        ...

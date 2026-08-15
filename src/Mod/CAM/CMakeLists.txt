@@ -30,6 +30,7 @@ INSTALL(
 SET(PathPython_SRCS
     Path/__init__.py
     Path/CommandBoundary.py
+    Path/OperationCopy.py
     Path/Log.py
     Path/Geom.py
     Path/GuiInit.py
@@ -66,8 +67,14 @@ SET(PathPythonDressup_SRCS
     Path/Dressup/Utils.py
     Path/Dressup/Array.py
     Path/Dressup/Boundary.py
+    Path/Dressup/Dragknife.py
     Path/Dressup/DogboneII.py
+    Path/Dressup/LeadInOut.py
+    Path/Dressup/Mirror.py
+    Path/Dressup/RampEntry.py
+    Path/Dressup/TagGeneration.py
     Path/Dressup/Tags.py
+    Path/Dressup/ZCorrect.py
 )
 
 SET(PathPythonDressupGui_SRCS
@@ -90,6 +97,7 @@ SET(PathPythonMain_SRCS
     Path/Main/__init__.py
     Path/Main/Job.py
     Path/Main/Simulation.py
+    Path/Main/SimulatorGLPreparation.py
     Path/Main/Stock.py
 )
 

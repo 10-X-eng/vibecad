@@ -81,6 +81,52 @@ class TestSketchFillet(unittest.TestCase):
         SketchFeature.fillet(0, 2, 0.25, True, True)
         self.assertAlmostEqual(SketchFeature.Geometry[4].Radius, 0.25)
 
+    def testDetachedCornerChamferDiagnosis(self):
+        sketch = self.Doc.addObject("Sketcher::SketchObject", "CornerChamferDiagnosis")
+        sketch.addGeometry(Part.LineSegment(App.Vector(0, 0), App.Vector(20, 0)), False)
+        sketch.addGeometry(Part.LineSegment(App.Vector(20, 0), App.Vector(20, 15)), False)
+        sketch.addConstraint(Sketcher.Constraint("Coincident", 0, 2, 1, 1))
+        self.Doc.recompute()
+        before = (sketch.GeometryCount, sketch.ConstraintCount)
+
+        diagnostic = sketch.diagnoseChamfer(0, 2, True)
+
+        self.assertTrue(diagnostic["accepted"])
+        self.assertEqual(diagnostic["form"], "corner")
+        self.assertEqual(diagnostic["input_geometry_indices"], [0, 1])
+        self.assertEqual(diagnostic["support_arc_geometry_index"], 2)
+        self.assertEqual(diagnostic["corner_geometry_index"], 3)
+        self.assertEqual(diagnostic["chamfer_geometry_index"], 4)
+        self.assertEqual(diagnostic["geometry_count"], 5)
+        self.assertEqual(diagnostic["constraint_count"], 6)
+        self.assertGreater(diagnostic["radius_mm"], 0.0)
+        self.assertEqual((sketch.GeometryCount, sketch.ConstraintCount), before)
+
+    def testDetachedConstructionCurvePairChamferDiagnosis(self):
+        sketch = self.Doc.addObject("Sketcher::SketchObject", "PairChamferDiagnosis")
+        sketch.addGeometry(Part.LineSegment(App.Vector(0, 0), App.Vector(20, 0)), True)
+        sketch.addGeometry(Part.LineSegment(App.Vector(20, 0), App.Vector(20, 15)), True)
+        self.Doc.recompute()
+        before = (sketch.GeometryCount, sketch.ConstraintCount)
+
+        diagnostic = sketch.diagnoseChamfer(
+            0,
+            1,
+            App.Vector(18, 0),
+            App.Vector(20, 2),
+            False,
+        )
+
+        self.assertTrue(diagnostic["accepted"])
+        self.assertEqual(diagnostic["form"], "curve_pair")
+        self.assertIsNone(diagnostic["corner_geometry_index"])
+        self.assertEqual(diagnostic["support_arc_geometry_index"], 2)
+        self.assertEqual(diagnostic["chamfer_geometry_index"], 3)
+        self.assertTrue(diagnostic["construction"])
+        self.assertEqual(diagnostic["geometry_count"], 4)
+        self.assertEqual(diagnostic["constraint_count"], 4)
+        self.assertEqual((sketch.GeometryCount, sketch.ConstraintCount), before)
+
     # Fillets can be made even between unconnected lines
     def testUnconnected(self):
         SketchFeature = self.Doc.addObject("Sketcher::SketchObject", "Unconnected")

@@ -125,7 +125,7 @@ class CAMWorkbench(Workbench):
         Path.GuiInit.Startup()
 
         # build commands list
-        projcmdlist = ["CAM_Job", "CAM_Sanity"]
+        projcmdlist = ["CAM_Job", "CAM_PropertyBag", "CAM_Sanity"]
         postcmdlist = ["CAM_Post", "CAM_PostSelected"]
         toolcmdlist = ["CAM_Inspect", "CAM_SelectLoop", "CAM_OpActiveToggle"]
 
@@ -141,6 +141,7 @@ class CAMWorkbench(Workbench):
             "CAM_Custom",
             "CAM_Probe",
         ]
+        programcmdlist = ["CAM_Comment", "CAM_Stop", "CAM_Custom", "CAM_Probe"]
         twodopcmdlist = [
             "CAM_Profile",
             "CAM_Pocket_Shape",
@@ -271,6 +272,10 @@ class CAMWorkbench(Workbench):
         self.appendToolbar(
             QT_TRANSLATE_NOOP("Workbench", "Tool Commands"),
             simcmdgroup + toolcmdlist,
+        )
+        self.appendToolbar(
+            QT_TRANSLATE_NOOP("Workbench", "Program"),
+            programcmdlist,
         )
         self.appendToolbar(
             QT_TRANSLATE_NOOP("Workbench", "New Operations"),

@@ -36,6 +36,19 @@ class CAMSim(BaseClass):
         """
         ...
 
+    def PrepareShapeMesh(self, shape: TopoShape, resolution: float) -> bytes:
+        """Tessellate one detached shape into an opaque in-process simulator mesh."""
+        ...
+
+    def BeginPreparedSimulation(
+        self,
+        stock: TopoShape,
+        prepared_mesh: bytes,
+        quality: float,
+    ) -> None:
+        """Start simulation using a mesh prepared away from the GUI thread."""
+        ...
+
     def ResetSimulation(self, document: Document, /) -> None:
         """
         Clear the simulation and all gcode commands
@@ -54,8 +67,16 @@ class CAMSim(BaseClass):
         """
         ...
 
+    def SetPreparedBaseShape(self, shape: TopoShape, prepared_mesh: bytes) -> None:
+        """Present a base shape using a previously prepared simulator mesh."""
+        ...
+
     def AddCommand(self, command: Command, /) -> Any:
         """
         Add a path command to the simulation.
         """
+        ...
+
+    def AddGCode(self, command: str, /) -> None:
+        """Add one already serialized G-code command to the simulation."""
         ...

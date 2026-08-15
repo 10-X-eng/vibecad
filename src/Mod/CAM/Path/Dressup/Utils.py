@@ -95,9 +95,18 @@ def isOp(obj):
 
 def baseOp(path):
     """baseOp(path) ... return the base operation underlying the given path"""
-    if hasattr(path, "Name") and "Dressup" in path.Name:
-        return baseOp(path.Base)
-    return path
+    current = path
+    visited = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        proxy_module = str(
+            getattr(getattr(current, "Proxy", None), "__module__", "") or ""
+        )
+        name = str(getattr(current, "Name", "") or "")
+        if "Path.Dressup" not in proxy_module and "Dressup" not in name:
+            return current
+        current = getattr(current, "Base", None)
+    return None
 
 
 def toolController(path):

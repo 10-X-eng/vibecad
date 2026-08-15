@@ -120,23 +120,26 @@ private:
         try {
             openCommand(QT_TRANSLATE_NOOP("Command", "Translate geometries"));
 
-            expressionHelper.storeOriginalExpressions(sketchgui->getSketchObject(), listOfGeoIds);
-
-            createShape(false);
-
-            commandAddShapeGeometryAndConstraints();
-
-            expressionHelper.copyExpressionsToNewConstraints(
-                sketchgui->getSketchObject(),
-                listOfGeoIds,
-                ShapeGeometry.size(),
-                numberOfCopies,
-                secondNumberOfCopies
-            );
-
-            if (deleteOriginal) {
-                deleteOriginalGeos();
+            std::stringstream geometryIds;
+            for (std::size_t index = 0; index < listOfGeoIds.size(); ++index) {
+                if (index != 0) {
+                    geometryIds << ',';
+                }
+                geometryIds << listOfGeoIds[index];
             }
+            Gui::cmdAppObjectArgs(
+                sketchgui->getObject(),
+                "translateExact([%s],App.Vector(%.17g,%.17g,0.0),%d,"
+                "App.Vector(%.17g,%.17g,0.0),%d,%s)",
+                geometryIds.str().c_str(),
+                firstTranslationVector.x,
+                firstTranslationVector.y,
+                numberOfCopies,
+                secondTranslationVector.x,
+                secondTranslationVector.y,
+                secondNumberOfCopies,
+                cloneConstraints ? "True" : "False"
+            );
 
             commitCommand();
         }

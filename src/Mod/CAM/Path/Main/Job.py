@@ -72,7 +72,7 @@ def isResourceClone(obj, propLink, resourceName):
     return False
 
 
-def createResourceClone(obj, orig, name, icon):
+def createResourceClone(obj, orig, name, icon, recompute=True):
     from draftobjects.clone import Clone
     from draftutils import utils as DraftUtils
 
@@ -121,7 +121,8 @@ def createResourceClone(obj, orig, name, icon):
         clone.ViewObject.Transparency = 0
         clone.ViewObject.LineColor = (0.310, 0.333, 0.357)
         clone.ViewObject.ShapeMaterial.Shininess = 0.85
-    obj.Document.recompute()  # necessary to create the clone shape
+    if recompute:
+        obj.Document.recompute()  # necessary to create the clone shape
     return clone
 
 
@@ -803,13 +804,16 @@ class ObjectJob:
                 if attrs.get(JobTemplate.PostProcessor):
                     templatePost = attrs.get(JobTemplate.PostProcessor)
                     # Validate that the template's postprocessor exists in current enumeration
-                    if templatePost in obj.PostProcessor:
+                    availablePosts = tuple(
+                        obj.getEnumerationsOfProperty("PostProcessor") or ()
+                    )
+                    if templatePost in availablePosts:
                         obj.PostProcessor = templatePost
                     else:
                         Path.Log.warning(
                             f"PostProcessor '{templatePost}' from template not found in available postprocessors. Using default."
                         )
-                        Path.Log.debug(f"Available postprocessors: {obj.PostProcessor}")
+                        Path.Log.debug(f"Available postprocessors: {availablePosts}")
                         # Keep the default postprocessor that was already set
                     if attrs.get(JobTemplate.PostProcessorArgs):
                         obj.PostProcessorArgs = attrs.get(JobTemplate.PostProcessorArgs)
@@ -891,6 +895,70 @@ class ObjectJob:
         if obj.Description:
             attrs[JobTemplate.Description] = obj.Description
         return attrs
+
+    def exportTemplateAttributes(
+        self,
+        obj,
+        *,
+        description=None,
+        includePostProcessing=True,
+        toolControllers=None,
+        includeStock=True,
+        includeStockExtent=True,
+        includeStockPlacement=True,
+        includeSettingToolRapid=True,
+        includeSettingCoolant=True,
+        includeSettingOperationHeights=True,
+        includeSettingOperationDepths=True,
+        includeSettingOperations=None,
+    ):
+        """Return the encoded version-1 template exported by the Job dialog.
+
+        ``description=None`` retains the Job description. Supplying a string,
+        including an empty string, applies the export-only dialog override.
+        The helper is side-effect free and leaves path selection and file output
+        to its caller.
+        """
+
+        attrs = self.templateAttrs(obj)
+        if description is not None:
+            value = str(description).strip()
+            if value:
+                attrs[JobTemplate.Description] = value
+            else:
+                attrs.pop(JobTemplate.Description, None)
+        if not includePostProcessing:
+            attrs.pop(JobTemplate.PostProcessor, None)
+            attrs.pop(JobTemplate.PostProcessorArgs, None)
+            attrs.pop(JobTemplate.PostProcessorOutputFile, None)
+        controllers = (
+            tuple(obj.Tools.Group or ())
+            if toolControllers is None
+            else tuple(toolControllers)
+        )
+        if controllers:
+            attrs[JobTemplate.ToolController] = [
+                controller.Proxy.templateAttrs(controller)
+                for controller in controllers
+            ]
+        if includeStock:
+            stockAttrs = PathStock.TemplateAttributes(
+                obj.Stock,
+                bool(includeStockExtent),
+                bool(includeStockPlacement),
+            )
+            if stockAttrs:
+                attrs[JobTemplate.Stock] = stockAttrs
+        setupSheetAttrs = self.setupSheet.templateAttributes(
+            bool(includeSettingToolRapid),
+            bool(includeSettingCoolant),
+            bool(includeSettingOperationHeights),
+            bool(includeSettingOperationDepths),
+            list(includeSettingOperations or ()),
+        )
+        if setupSheetAttrs:
+            attrs[JobTemplate.SetupSheet] = setupSheetAttrs
+        return self.setupSheet.encodeTemplateAttributes(attrs)
 
     def dumps(self):
         return None
@@ -1079,9 +1147,14 @@ class ObjectJob:
 
     def setCenterOfRotation(self, center):
         if center != self.obj.Path.Center:
-            self.obj.Path.Center = center
-            for op in self.allOperations():
-                op.Path.Center = center
+            job_path = self.obj.Path
+            job_path.Center = center
+            self.obj.Path = job_path
+        for op in self.allOperations():
+            if op.Path.Center != center:
+                operation_path = op.Path
+                operation_path.Center = center
+                op.Path = operation_path
 
     def integrityCheck(self, job):
         """integrityCheck(job)... Return True if job has all expected children objects.  Attempts to restore any missing children."""

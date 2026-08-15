@@ -26,6 +26,31 @@
 # Broken-out test modules
 from SketcherTests.TestSketcherSolver import TestSketcherSolver
 from SketcherTests.TestSketchFillet import TestSketchFillet
+from SketcherTests.TestSketchTrim import TestSketchTrim
+from SketcherTests.TestSketchSplit import TestSketchSplit
+from SketcherTests.TestSketchExtend import TestSketchExtend
+from SketcherTests.TestSketchProjection import TestSketchProjection
+from SketcherTests.TestSketchIntersection import TestSketchIntersection
+from SketcherTests.TestSketchCarbonCopy import TestSketchCarbonCopy
+from SketcherTests.TestSketchTranslate import TestSketchTranslate
+from SketcherTests.TestSketchRotate import TestSketchRotate
+from SketcherTests.TestSketchScale import TestSketchScale
+from SketcherTests.TestSketchOffset import TestSketchOffset
+from SketcherTests.TestSketchSymmetry import TestSketchSymmetry
+from SketcherTests.TestSketchAxisAlignment import TestSketchAxisAlignment
+from SketcherTests.TestSketchNURBSConversion import TestSketchNURBSConversion
+from SketcherTests.TestSketchBSplineDegree import TestSketchBSplineDegree
+from SketcherTests.TestSketchBSplineDegreeDecrease import TestSketchBSplineDegreeDecrease
+from SketcherTests.TestSketchBSplineKnotMultiplicityIncrease import (
+    TestSketchBSplineKnotMultiplicityIncrease,
+)
+from SketcherTests.TestSketchBSplineKnotMultiplicityDecrease import (
+    TestSketchBSplineKnotMultiplicityDecrease,
+)
+from SketcherTests.TestSketchBSplineKnotInsertion import (
+    TestSketchBSplineKnotInsertion,
+)
+from SketcherTests.TestSketchJoin import TestSketchJoin
 from SketcherTests.TestSketchExpression import TestSketchExpression
 from SketcherTests.TestSketchValidateCoincidents import TestSketchValidateCoincidents
 from SketcherTests.TestSketchCarbonCopyReverseMapping import TestSketchCarbonCopyReverseMapping

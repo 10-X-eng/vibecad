@@ -802,6 +802,141 @@ int SketchObject::diagnoseAdditionalConstraints(
     return lastDoF;
 }
 
+int SketchObject::diagnoseBlockConstraints(std::vector<Sketcher::Constraint*> blockConstraints)
+{
+    const auto geometry = getCompleteGeometry();
+    std::vector<std::unique_ptr<Part::Geometry>> copiedGeometry;
+    std::vector<Part::Geometry*> diagnosticGeometry;
+    copiedGeometry.reserve(geometry.size());
+    diagnosticGeometry.reserve(geometry.size());
+
+    for (const auto* item : geometry) {
+        if (!item) {
+            return -1;
+        }
+        copiedGeometry.emplace_back(item->clone());
+        diagnosticGeometry.push_back(copiedGeometry.back().get());
+    }
+
+    const int internalGeometryCount = Geometry.getSize();
+    for (const auto* constraint : blockConstraints) {
+        if (!constraint || constraint->Type != Block || constraint->First < 0
+            || constraint->First >= internalGeometryCount
+            || constraint->FirstPos != PointPos::none) {
+            return -1;
+        }
+        auto facade = GeometryFacade::getFacade(diagnosticGeometry[constraint->First]);
+        if (!facade) {
+            return -1;
+        }
+        facade->setBlocked(true);
+    }
+
+    const auto objectConstraints = Constraints.getValues();
+    std::vector<Sketcher::Constraint*> allConstraints;
+    allConstraints.reserve(objectConstraints.size() + blockConstraints.size());
+    std::ranges::copy(objectConstraints, back_inserter(allConstraints));
+    std::ranges::copy(blockConstraints, back_inserter(allConstraints));
+
+    lastDoF = solvedSketch.setUpSketch(
+        diagnosticGeometry, allConstraints, getExternalGeometryCount());
+    retrieveSolverDiagnostics();
+    return lastDoF;
+}
+
+int SketchObject::diagnoseConstraintReplacement(
+    int replacedConstraintIndex,
+    std::vector<Sketcher::Constraint*> replacementConstraints)
+{
+    auto objectConstraints = Constraints.getValues();
+    if (replacedConstraintIndex < 0
+        || replacedConstraintIndex >= static_cast<int>(objectConstraints.size())) {
+        return -1;
+    }
+
+    std::vector<Sketcher::Constraint*> hypotheticalConstraints;
+    hypotheticalConstraints.reserve(
+        objectConstraints.size() - 1 + replacementConstraints.size());
+    for (int index = 0; index < static_cast<int>(objectConstraints.size()); ++index) {
+        if (index != replacedConstraintIndex) {
+            hypotheticalConstraints.push_back(objectConstraints[index]);
+        }
+    }
+    std::ranges::copy(replacementConstraints, back_inserter(hypotheticalConstraints));
+
+    lastDoF = solvedSketch.setUpSketch(
+        getCompleteGeometry(), hypotheticalConstraints, getExternalGeometryCount());
+    retrieveSolverDiagnostics();
+    return lastDoF;
+}
+
+int SketchObject::diagnoseDrivingChanges(const std::vector<std::pair<int, bool>>& changes)
+{
+    const auto objectConstraints = Constraints.getValues();
+    if (changes.empty() || changes.size() > 16) {
+        return std::numeric_limits<int>::min();
+    }
+
+    std::vector<int> changedIndices;
+    changedIndices.reserve(changes.size());
+    std::vector<std::unique_ptr<Constraint>> changedConstraints;
+    changedConstraints.reserve(changes.size());
+    std::vector<Constraint*> hypotheticalConstraints(objectConstraints);
+
+    for (const auto& [constraintIndex, driving] : changes) {
+        if (std::ranges::find(changedIndices, constraintIndex) != changedIndices.end()
+            || testDrivingChange(constraintIndex, driving) < 0
+            || objectConstraints[constraintIndex]->isDriving == driving) {
+            return std::numeric_limits<int>::min();
+        }
+        changedIndices.push_back(constraintIndex);
+        changedConstraints.emplace_back(objectConstraints[constraintIndex]->clone());
+        auto* changed = changedConstraints.back().get();
+        changed->isDriving = driving;
+        setOrientation(changed, driving);
+        hypotheticalConstraints[constraintIndex] = changed;
+    }
+
+    lastDoF = solvedSketch.setUpSketch(
+        getCompleteGeometry(), hypotheticalConstraints, getExternalGeometryCount());
+    retrieveSolverDiagnostics();
+    return lastDoF;
+}
+
+int SketchObject::diagnoseActiveChanges(const std::vector<std::pair<int, bool>>& changes)
+{
+    const auto objectConstraints = Constraints.getValues();
+    if (changes.empty() || changes.size() > 16) {
+        return std::numeric_limits<int>::min();
+    }
+
+    std::vector<int> changedIndices;
+    changedIndices.reserve(changes.size());
+    std::vector<std::unique_ptr<Constraint>> changedConstraints;
+    changedConstraints.reserve(changes.size());
+    std::vector<Constraint*> hypotheticalConstraints(objectConstraints);
+
+    for (const auto& [constraintIndex, active] : changes) {
+        if (constraintIndex < 0
+            || constraintIndex >= static_cast<int>(objectConstraints.size())
+            || std::ranges::find(changedIndices, constraintIndex) != changedIndices.end()
+            || objectConstraints[constraintIndex]->isActive == active) {
+            return std::numeric_limits<int>::min();
+        }
+        changedIndices.push_back(constraintIndex);
+        changedConstraints.emplace_back(objectConstraints[constraintIndex]->clone());
+        auto* changed = changedConstraints.back().get();
+        changed->isActive = active;
+        setOrientation(changed, active);
+        hypotheticalConstraints[constraintIndex] = changed;
+    }
+
+    lastDoF = solvedSketch.setUpSketch(
+        getCompleteGeometry(), hypotheticalConstraints, getExternalGeometryCount());
+    retrieveSolverDiagnostics();
+    return lastDoF;
+}
+
 int SketchObject::deleteAllConstraints(DeleteOptions options)
 {
     // no need to check input data validity as this is an sketchobject managed operation.
@@ -1809,122 +1944,9 @@ bool SketchObject::deriveConstraintsForPieces(
 
     return true;
 }
-// clang-format off
-
 int SketchObject::removeAxesAlignment(const std::vector<int>& geoIdList)
 {
-    if (geoIdList.empty()) {
-        return 0;
-    }
-
-    Base::StateLocker lock(managedoperation, true);
-
-    const std::vector<Constraint*>& currentConstraints = this->Constraints.getValues();
-    std::vector<Constraint*> newConstraints;
-    newConstraints.reserve(currentConstraints.size());
-
-    bool changed = false;
-
-    // Track reference geometry for converting multiple H/V constraints into Parallel constraints.
-    // Maps ConstraintType (H or V) -> Geometry ID.
-    std::map<Sketcher::ConstraintType, int> referenceGeoIds = {
-        {Sketcher::Horizontal, GeoEnum::GeoUndef},
-        {Sketcher::Vertical,   GeoEnum::GeoUndef}
-    };
-
-    for (Constraint* constr : currentConstraints) {
-        bool involvesSelection = false;
-        for (const auto& geoid : geoIdList) {
-            if (constr->involvesGeoId(geoid)) {
-                involvesSelection = true;
-                break; // Found a match, no need to check other IDs for this constraint
-            }
-        }
-
-        // If the constraint is not touched by our selection, keep it as is.
-        if (!involvesSelection) {
-            newConstraints.push_back(constr);
-            continue;
-        }
-
-        // Processing the constraint based on type
-        switch (constr->Type) {
-        case Sketcher::Horizontal:
-        case Sketcher::Vertical: {
-            // Only remove alignment for Lines (PointPos::none), not individual points
-            if (constr->FirstPos == Sketcher::PointPos::none &&
-                constr->SecondPos == Sketcher::PointPos::none) {
-
-                changed = true;
-
-                // The first H/V constraint found acts as the "reference" and is effectively removed.
-                // Subsequent H/V constraints are converted to be 'Parallel' to that first reference.
-                if (referenceGeoIds[constr->Type] == GeoEnum::GeoUndef) {
-                    referenceGeoIds[constr->Type] = constr->First;
-                    // We do NOT add the constraint to newConstraints, effectively deleting it.
-                }
-                else {
-                    // Convert to Parallel
-                    Constraint* newConstr = new Constraint();
-                    newConstr->Type = Sketcher::Parallel;
-                    newConstr->First = referenceGeoIds[constr->Type];
-                    newConstr->Second = constr->First;
-                    newConstraints.push_back(newConstr);
-                }
-            }
-            else {
-                // If it's H/V on a specific point (not the whole line), keep it.
-                newConstraints.push_back(constr);
-            }
-            break;
-        }
-        case Sketcher::Symmetric: {
-            // Remove symmetry only if it is constrained relative to an Axis (H or V)
-            bool isAxisSymmetry = (constr->Third == GeoEnum::HAxis || constr->Third == GeoEnum::VAxis);
-            if (isAxisSymmetry && constr->ThirdPos == Sketcher::PointPos::none) {
-                changed = true;
-                // Delete constraint by not adding it to newConstraints
-            }
-            else {
-                newConstraints.push_back(constr);
-            }
-            break;
-        }
-        case Sketcher::PointOnObject: {
-            // Remove Point-on-Object only if constrained onto an Axis
-            bool isOnAxis = (constr->Second == GeoEnum::HAxis || constr->Second == GeoEnum::VAxis);
-            if (isOnAxis && constr->SecondPos == Sketcher::PointPos::none) {
-                changed = true;
-                // Delete constraint
-            }
-            else {
-                newConstraints.push_back(constr);
-            }
-            break;
-        }
-        case Sketcher::DistanceX:
-        case Sketcher::DistanceY: {
-            changed = true;
-            // Convert projected X/Y distance to standard Euclidean Distance
-            // This preserves the length of the line while allowing it to rotate off-axis.
-            Constraint* newConstr = constr->clone();
-            newConstr->Type = Sketcher::Distance;
-            newConstraints.push_back(newConstr);
-            break;
-        }
-        default:
-            // All other constraint types (e.g., Radius, Angle) are preserved unchanged
-            newConstraints.push_back(constr);
-            break;
-        }
-    }
-
-    // If nothing was modified, return early to avoid triggering a sketch re-solve/update
-    if (!changed) {
-        return 0;
-    }
-
-    this->Constraints.setValues(newConstraints);
+    removeAxesAlignmentPrepared(geoIdList, nullptr);
     return 0;
 }
 int SketchObject::getSingleScaleDefiningConstraint() const

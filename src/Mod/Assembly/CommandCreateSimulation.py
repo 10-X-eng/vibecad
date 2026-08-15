@@ -1027,7 +1027,11 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.document_uid = str(
             getattr(self.doc, "Uid", "") or ""
         )
-        Gui.Selection.clearSelection(self.doc.Name)
+        # Read-only playback is presentation state. Keep the human's current
+        # selection intact; editable create/edit tasks retain their historical
+        # selection-clearing behavior.
+        if not self.playback_only:
+            Gui.Selection.clearSelection(self.doc.Name)
         self.assembly_identity = (
             str(self.assembly.Name),
             int(self.assembly.ID),
@@ -1262,6 +1266,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.currentFrm = 1
         self.startFrm = 1
         self.endFrm = 100
+        self.direction = 1
         self.fps = 30
         self.deltaTime = 1.0 / self.fps
         self.startTime = time.time()
@@ -1396,6 +1401,8 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             ):
                 component.ViewObject.Visibility = visible
         self._restorePlaybackCamera()
+        if self.playback_only and UtilsAssembly._document_is_open(self.doc):
+            self.gui_doc.Modified = self.document_was_modified
 
     def _restorePlaybackCamera(self):
         try:
@@ -1524,6 +1531,10 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             self.assembly.updateForFrame(frame)
             self._applyPlaybackPresentation()
             self.form.frameSlider.setValue(frame)
+        # Saving establishes a new clean restoration baseline.  A player that
+        # opened while the GUI document was dirty must not re-dirty it when the
+        # user later closes that same, successfully saved playback task.
+        self.document_was_modified = False
         self.gui_doc.Modified = False
         if was_playing:
             if direction < 0:

@@ -19,7 +19,6 @@ from VibeCADModelingSurface import (
     ASSEMBLY_PLAYBACK_TOOL,
     ASSEMBLY_STOP_PLAYBACK_TOOL,
     COMPONENT_CATALOG_TOOL,
-    COMPONENT_INTERFACE_TOOL,
     CORE_CONVERSATION_VIEW_TOOLS,
     FASTENER_CATALOG_TOOL,
     MATERIAL_CATALOG_TOOL,
@@ -30,15 +29,11 @@ from VibeCADModelingSurface import (
 )
 from VibeCADTools import SafetyLevel, ToolSpec
 import VibeCADVibeScriptDomains as domains
-from VibeCADWorkbenchTools import WORKBENCH_TOOL_PACKS
 
-USER_WORKBENCHES = tuple(
-    workbench
-    for workbench in WORKBENCH_TOOL_PACKS
-    if workbench not in {"NoneWorkbench", "TestWorkbench"}
-)
+USER_WORKBENCHES = tuple(domains.VIBESCRIPT_WORKBENCH_PACKS)
 PRODUCTION_READY_VIBESCRIPT_WORKBENCHES = frozenset(
     {
+        "PartWorkbench",
         "PartDesignWorkbench",
         "SketcherWorkbench",
         "DraftWorkbench",
@@ -59,8 +54,29 @@ PRODUCTION_READY_VIBESCRIPT_WORKBENCHES = frozenset(
 )
 
 
+def test_vibescript_surface_resolution_has_no_retired_native_pack_dependency() -> None:
+    source = (
+        Path(__file__).resolve().parent.parent / "VibeCADModelingSurface.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported_modules = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    imported_modules.update(
+        str(node.module or "")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+    )
+
+    assert "VibeCADWorkbenchTools" not in imported_modules
+    assert "get_tool_pack" not in source
+
+
 def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
-    assert len(USER_WORKBENCHES) == 16
+    assert len(USER_WORKBENCHES) == 17
     observed_ready = set()
     for workbench in USER_WORKBENCHES:
         scripted = resolve_modeling_surface(workbench, "vibescript")
@@ -79,12 +95,6 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
         if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}:
             expected_core.add(ASSEMBLY_PLAYBACK_TOOL)
             expected_core.add(ASSEMBLY_STOP_PLAYBACK_TOOL)
-        if workbench in {
-            "PartDesignWorkbench",
-            "AssemblyWorkbench",
-            "RobotWorkbench",
-        }:
-            expected_core.add(COMPONENT_INTERFACE_TOOL)
         if workbench in {
             "PartDesignWorkbench",
             "AssemblyWorkbench",
@@ -127,10 +137,6 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             )
             assert len(scripted.tool_names) <= ceiling
             assert "core.inspect" not in scripted.tool_names
-            unrelated_human_commands = set(
-                WORKBENCH_TOOL_PACKS[workbench].tool_names
-            ) - set(focused_reads)
-            assert unrelated_human_commands.isdisjoint(scripted.cad_tool_names)
             namespaces = {
                 name.split(".")[1]
                 for name in scripted.cad_tool_names
@@ -165,7 +171,7 @@ def test_unsupported_surfaces_are_precise_and_core_only(
 
 def test_mixed_and_cross_domain_surfaces_are_rejected() -> None:
     part = resolve_modeling_surface("PartWorkbench", "vibescript")
-    foreign_workbench_tool = WORKBENCH_TOOL_PACKS["PartDesignWorkbench"].tool_names[-1]
+    foreign_workbench_tool = "mesh.list_meshes"
     with pytest.raises(ValueError, match="foreign read"):
         validate_surface_names(
             workbench="PartWorkbench",

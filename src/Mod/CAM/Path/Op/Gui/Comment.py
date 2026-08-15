@@ -27,6 +27,7 @@ import FreeCAD
 import FreeCADGui
 import Path
 import Path.Base.Util as PathUtil
+import Path.Main.Job as PathJob
 import PathScripts.PathUtils as PathUtils
 from Path.CommandBoundary import (
     active_jobs,
@@ -108,6 +109,60 @@ class _ViewProviderComment:
         vobj.setEditorMode("Visibility", mode)
 
 
+def CreateInTransaction(document, job, name="Comment", text=""):
+    """Create one Job-owned CAM comment in the caller's transaction.
+
+    Recompute, History publication, and transaction ownership deliberately stay
+    with the caller so human commands and guarded Native calls use one exact
+    object factory without nesting transactions.
+    """
+
+    if document is None or getattr(job, "Document", None) is not document:
+        raise ValueError("A CAM comment requires one Job in the target document")
+    if not isinstance(getattr(job, "Proxy", None), PathJob.ObjectJob):
+        raise ValueError("A CAM comment requires a native CAM Job")
+    internal_name = str(name or "").strip()
+    if not internal_name:
+        raise ValueError("A CAM comment requires a nonempty object name")
+
+    result = document.addObject("Path::FeaturePython", internal_name)
+    Comment(result)
+    if FreeCAD.GuiUp and getattr(result, "ViewObject", None) is not None:
+        _ViewProviderComment(result.ViewObject)
+    result.Comment = str(text)
+    job.Proxy.addOperation(result)
+    return result
+
+
+def _validate_comment_result(document, job, result, *, require_path=True):
+    """Reject a factory result that lost its exact CAM ownership or output."""
+
+    result_name = str(getattr(result, "Name", "") or "")
+    result_id = int(getattr(result, "ID", 0) or 0)
+    view = getattr(result, "ViewObject", None)
+    if (
+        not result_name
+        or not result_id
+        or document.getObject(result_name) is not result
+        or document.getObject(result_id) is not result
+        or getattr(result, "Document", None) is not document
+        or not result.isDerivedFrom("Path::Feature")
+        or not isinstance(getattr(result, "Proxy", None), Comment)
+        or view is None
+        or not isinstance(getattr(view, "Proxy", None), _ViewProviderComment)
+        or result
+        not in tuple(getattr(getattr(job, "Operations", None), "Group", ()) or ())
+        or PathUtils.findParentJob(result) is not job
+        or PathUtil.timelineParentJob(result) is not job
+        or not document.isProvisionallyEnrolledInTimelineByCurrentTransaction(result)
+        or tuple(getattr(result, "VibeCADTimelineReplacedInputs", ()) or ())
+        or not result.isValid()
+        or (require_path and not tuple(getattr(result.Path, "Commands", ()) or ()))
+    ):
+        raise RuntimeError("The CAM comment was not created correctly")
+    return result
+
+
 class CommandPathComment:
     def GetResources(self):
         return {
@@ -132,22 +187,9 @@ class CommandPathComment:
             "Create CAM comment",
         )
         try:
-            obj = document.addObject(
-                "Path::FeaturePython",
-                "Comment",
-            )
-            Comment(obj)
-            _ViewProviderComment(obj.ViewObject)
-            job.Proxy.addOperation(obj)
+            obj = CreateInTransaction(document, job)
             document.recompute()
-            if (
-                not obj.isValid()
-                or obj not in job.Operations.Group
-                or not obj.Path.Commands
-            ):
-                raise RuntimeError(
-                    "The CAM comment was not created correctly"
-                )
+            _validate_comment_result(document, job, obj)
             document.publishProvisionalTimelineOperationBlock(
                 obj,
                 [],

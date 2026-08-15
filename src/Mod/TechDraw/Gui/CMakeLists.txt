@@ -93,8 +93,48 @@ SET(TechDrawGui_SRCS
     CommandHelpers.cpp
     CommandHelpers.h
     TaskDocumentGuard.h
+    BalloonBuilder.cpp
+    BalloonBuilder.h
+    LineAttributeBuilder.cpp
+    LineAttributeBuilder.h
+    LineLengthBuilder.cpp
+    LineLengthBuilder.h
+    ViewLockBuilder.cpp
+    ViewLockBuilder.h
     DimensionValidators.cpp
     DimensionValidators.h
+    DimensionBuilder.cpp
+    DimensionBuilder.h
+    DimensionTextBuilder.cpp
+    DimensionTextBuilder.h
+    FrameVisibilityBuilder.cpp
+    FrameVisibilityBuilder.h
+    PageUpdateBuilder.cpp
+    PageUpdateBuilder.h
+    SurfaceFinishSymbolBuilder.cpp
+    SurfaceFinishSymbolBuilder.h
+    WeldSymbolBuilder.cpp
+    WeldSymbolBuilder.h
+    HatchBuilder.cpp
+    HatchBuilder.h
+    RichAnnotationBuilder.cpp
+    RichAnnotationBuilder.h
+    LeaderLineBuilder.cpp
+    LeaderLineBuilder.h
+    FormatBuilder.cpp
+    FormatBuilder.h
+    CircleCenterLineBuilder.cpp
+    CircleCenterLineBuilder.h
+    GeneralCenterLineBuilder.cpp
+    GeneralCenterLineBuilder.h
+    ThreadRepresentationBuilder.cpp
+    ThreadRepresentationBuilder.h
+    CosmeticVertexBuilder.cpp
+    CosmeticVertexBuilder.h
+    CosmeticCurveBuilder.cpp
+    CosmeticCurveBuilder.h
+    CosmeticLineBuilder.cpp
+    CosmeticLineBuilder.h
     Resources/TechDraw.qrc
     PreCompiled.h
     Workbench.cpp

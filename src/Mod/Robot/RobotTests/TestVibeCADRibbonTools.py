@@ -492,6 +492,9 @@ class TestVibeCADRobotRibbonTools(unittest.TestCase):
             )
             self.assertTrue(placed.RobotVrmlFile)
             self.assertTrue(placed.RobotKinematicFile)
+            self.assertAlmostEqual(placed.Tcp.Base.x, 3125.0, places=7)
+            self.assertAlmostEqual(placed.Tcp.Base.y, 0.0, places=7)
+            self.assertAlmostEqual(placed.Tcp.Base.z, 1100.0, places=7)
             self.assertEqual(self.document.UndoCount, undo_before + 1)
 
             placed_name = placed.Name
@@ -510,6 +513,9 @@ class TestVibeCADRobotRibbonTools(unittest.TestCase):
             self._assert_single_operation(restored)
             self.assertTrue(restored.RobotVrmlFile)
             self.assertTrue(restored.RobotKinematicFile)
+            self.assertAlmostEqual(restored.Tcp.Base.x, 3125.0, places=7)
+            self.assertAlmostEqual(restored.Tcp.Base.y, 0.0, places=7)
+            self.assertAlmostEqual(restored.Tcp.Base.z, 1100.0, places=7)
             self.assertTrue(restored.isValid())
 
     def test_trajectory_operation_history_suppression_and_reopen(self):

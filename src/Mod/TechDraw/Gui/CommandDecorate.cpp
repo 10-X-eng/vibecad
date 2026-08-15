@@ -49,6 +49,8 @@
 #include <Mod/TechDraw/App/Preferences.h>
 
 #include "DrawGuiUtil.h"
+#include "FrameVisibilityBuilder.h"
+#include "HatchBuilder.h"
 #include "TaskGeomHatch.h"
 #include "TaskHatch.h"
 #include "TaskDocumentGuard.h"
@@ -114,7 +116,7 @@ void CmdTechDrawToggleFrame::activated(int iMsg)
         return;
     }
 
-    vpp->toggleFrameState();
+    changeDrawingFrameVisibility(vpp, !vpp->getFrameState());
 
     // Gui::Action *action = this->getAction();
     // if (action) {
@@ -157,7 +159,8 @@ void CmdTechDrawToggleGrid::activated(int iMsg)
     if (!vpp) {
         return;
     }
-    vpp->ShowGrid.setValue(!vpp->ShowGrid.getValue());
+    const auto current = inspectDrawingGridVisibility(vpp);
+    changeDrawingGridVisibility(vpp, !current.visible);
 }
 
 bool CmdTechDrawToggleGrid::isActive()
@@ -309,46 +312,25 @@ void CmdTechDrawGeometricHatch::activated(int iMsg)
         return;
     }
     auto* document = objFeat->getDocument();
-    std::string FeatName = document->getUniqueObjectName("GeomHatch");
-
-    // TODO: the structured label for GeomHatch (and Hatch) should be retired.
-//    std::stringstream featLabel;
-//    featLabel << FeatName << "FX" << TechDraw::DrawUtil::getIndexFromName(subNames.at(0));
 
     openCommand(
         document,
         QT_TRANSLATE_NOOP("Command", "Create GeomHatch")
     );
-    const std::string documentName =
-        Base::InterpreterSingleton::strToPython(document->getName());
-    const QString hatchFactory =
-        QStringLiteral(
-            "App.getDocument('%1').addObject"
-            "('TechDraw::DrawGeomHatch', '%2')"
-        )
-            .arg(
-                QString::fromStdString(documentName),
-                QString::fromStdString(FeatName)
-            );
-    auto* geomhatch = dynamic_cast<TechDraw::DrawGeomHatch*>(
-        Gui::Command::runDocumentObjectCommand(
-            Doc,
-            *document,
-            hatchFactory.toUtf8(),
-            TechDraw::DrawGeomHatch::getClassTypeId()
-        )
-    );
-    if (!geomhatch) {
-        throw Base::RuntimeError(
-            "The geometric hatch object could not be created"
-        );
-    }
-    geomhatch->translateLabel(
-        "DrawGeomHatch",
-        "GeomHatch",
-        geomhatch->getNameInDocument()
-    );
-    geomhatch->Source.setValue(objFeat, subNames);
+    const auto defaults = drawingHatchDefaults();
+    const DrawingGeometricHatchStyle style {
+        1.0,
+        0.0,
+        Base::Vector3d(),
+        defaults.geometricLineWidthMm,
+        defaults.geometricColor};
+    auto* geomhatch = createDrawingGeometricHatch(
+        objFeat,
+        subNames,
+        defaults.geometricPatternFile,
+        defaults.geometricPatternName,
+        style);
+    document->publishProvisionalTimelineOperationBlock(geomhatch, {}, {});
     Gui::ViewProvider* vp =
         Gui::Application::Instance->getDocument(document)
             ->getViewProvider(geomhatch);

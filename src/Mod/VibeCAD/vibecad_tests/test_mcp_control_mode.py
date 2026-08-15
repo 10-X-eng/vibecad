@@ -303,10 +303,130 @@ def test_host_surface_is_exact_internal_schema_plus_controller_tools() -> None:
     assert listed_tools[: len(schemas)] == schemas
     assert [item["name"] for item in listed_tools[len(schemas) :]] == [
         mcp.READ_WORKBENCH_TOOL,
-        mcp.SWITCH_WORKBENCH_TOOL,
         mcp.RECOVER_DOCUMENTS_TOOL,
         mcp.MANAGE_DOCUMENT_TOOL,
     ]
+
+
+def test_host_runner_forwards_the_exact_frozen_provider_surface() -> None:
+    schemas = [
+        {
+            "name": "model.feature",
+            "description": "Create one exact feature.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        }
+    ]
+    frozen_surface = {
+        "kind": "turn_start_snapshot",
+        "frozen": True,
+        "workbench": "PartDesignWorkbench",
+        "engine": "native",
+        "domain": "model",
+        "surface_id": "native-model-surface",
+        "available": True,
+        "unavailable_reason": "",
+        "tool_names": ["model.feature"],
+        "schema_count": 1,
+        "schema_sha256": "a" * 64,
+    }
+    context = {
+        "provider_tool_surface": frozen_surface,
+        "provider_tool_schemas": schemas,
+        "modeling_surface": {
+            "workbench": "PartDesignWorkbench",
+            "engine": "native",
+            "domain": "model",
+            "surface_id": "native-model-surface",
+            "available": True,
+        },
+    }
+    snapshot = {
+        "workbench": "PartDesignWorkbench",
+        "modeling_surface": context["modeling_surface"],
+        "schemas": schemas,
+        "document_identity": "document-a",
+        "source_authority_digest": "b" * 64,
+    }
+    captured = {}
+    runner = object()
+
+    def make_runner(_service, **kwargs):
+        captured.update(kwargs)
+        return runner
+
+    session_module = SimpleNamespace(
+        _build_context_for_provider=lambda *_args, **_kwargs: context,
+        make_provider_tool_runner=make_runner,
+    )
+    host = mcp._HostToolSession(
+        lambda operation: operation(),
+        threading.Event(),
+    )
+    host._service = object()
+    with mock.patch.dict(sys.modules, {"VibeCADSession": session_module}):
+        resolved = host._runner_for(snapshot)
+
+    assert resolved is runner
+    assert captured["turn_surface"] == frozen_surface
+    assert captured["turn_schemas"] == schemas
+    assert captured["turn_modeling_surface"] == context["modeling_surface"]
+
+
+def test_read_workbench_returns_only_live_ribbon_workbenches() -> None:
+    entries = [
+        ("Model", "PartDesignWorkbench"),
+        ("Assemble", "AssemblyWorkbench"),
+        ("Mesh", "MeshWorkbench"),
+        ("Analyze", "FemWorkbench"),
+        ("Manufacture", "CAMWorkbench"),
+        ("Drawing", "TechDrawWorkbench"),
+        ("Parameters", "SpreadsheetWorkbench"),
+        ("Sketch", ""),
+    ]
+
+    class Tabs:
+        def count(self) -> int:
+            return len(entries)
+
+        def tabText(self, index: int) -> str:
+            return entries[index][0]
+
+        def tabData(self, index: int) -> str:
+            return entries[index][1]
+
+    tabs = Tabs()
+    main_window = SimpleNamespace(
+        findChild=lambda _kind, name: tabs if name == "VibeCADRibbonTabs" else None
+    )
+    gui = SimpleNamespace(
+        activeWorkbench=lambda: SimpleNamespace(name=lambda: "PartDesignWorkbench"),
+        getMainWindow=lambda: main_window,
+    )
+    with mock.patch.dict(
+        sys.modules,
+        {
+            "FreeCADGui": gui,
+            "PySide": SimpleNamespace(
+                QtWidgets=SimpleNamespace(QTabBar=object)
+            ),
+        },
+    ):
+        session = mcp._HostToolSession(lambda operation: operation(), threading.Event())
+        result = session.call_tool(mcp.READ_WORKBENCH_TOOL, {})["result"]
+
+    assert result == {
+        "ok": True,
+        "active_workbench": "PartDesignWorkbench",
+        "available_workbenches": [
+            {"name": workbench, "label": label}
+            for label, workbench in entries
+            if workbench
+        ],
+    }
 
 
 def test_manage_document_rejects_unknown_action_before_gui_dispatch() -> None:

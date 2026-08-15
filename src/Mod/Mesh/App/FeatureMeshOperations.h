@@ -187,6 +187,33 @@ private:
 };
 
 /**
+ * Replayable model-space polygon cut or trim.
+ *
+ * Polygon vertices are stored in document coordinates. Cut removes complete
+ * facets selected by the polygon projection; Trim clips intersected facets at
+ * the polygon boundary. Both operations can remove the projected inside or
+ * outside region without depending on a camera or viewport.
+ */
+class MeshExport PolygonEdit: public Mesh::FixDefects
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(Mesh::PolygonEdit);
+
+public:
+    PolygonEdit();
+
+    App::PropertyVectorList Polygon;
+    App::PropertyEnumeration Action;
+    App::PropertyEnumeration Region;
+
+    App::DocumentObjectExecReturn* execute() override;
+    short mustExecute() const override;
+
+private:
+    static const char* ActionEnums[];
+    static const char* RegionEnums[];
+};
+
+/**
  * Replayable indexed topology edit.
  *
  * AddTriangle uses three point indices, RemoveFacets uses any number of facet

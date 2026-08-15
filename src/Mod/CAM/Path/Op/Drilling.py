@@ -574,8 +574,8 @@ def SetupProperties():
     return setup
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns a Drilling operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectDrilling(obj, name, parentJob)
+    obj.Proxy = ObjectDrilling(obj, name, parentJob, toolController=toolController)
     return obj

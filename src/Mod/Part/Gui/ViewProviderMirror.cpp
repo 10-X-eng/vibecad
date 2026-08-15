@@ -25,6 +25,8 @@
 #include <QAction>
 #include <QMenu>
 
+#include <algorithm>
+
 #include <TopExp.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 
@@ -55,6 +57,26 @@
 
 
 using namespace PartGui;
+
+namespace
+{
+
+std::vector<App::DocumentObject*> uniqueChildren(
+    const std::vector<App::DocumentObject*>& candidates
+)
+{
+    std::vector<App::DocumentObject*> children;
+    children.reserve(candidates.size());
+    for (auto* candidate : candidates) {
+        if (candidate
+            && std::ranges::find(children, candidate) == children.end()) {
+            children.push_back(candidate);
+        }
+    }
+    return children;
+}
+
+}  // namespace
 
 PROPERTY_SOURCE(PartGui::ViewProviderMirror, PartGui::ViewProviderPart)
 
@@ -517,7 +539,7 @@ ViewProviderLoft::~ViewProviderLoft() = default;
 
 std::vector<App::DocumentObject*> ViewProviderLoft::claimChildren() const
 {
-    return getObject<Part::Loft>()->Sections.getValues();
+    return uniqueChildren(getObject<Part::Loft>()->Sections.getValues());
 }
 
 bool ViewProviderLoft::onDelete(const std::vector<std::string>&)
@@ -543,7 +565,7 @@ std::vector<App::DocumentObject*> ViewProviderSweep::claimChildren() const
     if (obj->Spine.getValue()) {
         children.push_back(obj->Spine.getValue());
     }
-    return children;
+    return uniqueChildren(children);
 }
 
 bool ViewProviderSweep::onDelete(const std::vector<std::string>&)

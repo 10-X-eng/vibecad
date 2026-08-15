@@ -776,8 +776,12 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
                     "Could not open the CalculiX result import transaction"
                 )
 
-            result_graph = self.load_results_ccxfrd()
-            dat = self.load_results_ccxdat()
+            from femtools.objecttools import (
+                _ensure_exact_retained_result_graph,
+            )
+
+            _ensure_exact_retained_result_graph(self.solver)
+            result_graph = self.update_properties()
             if result_graph is not None:
                 (
                     root,
@@ -785,9 +789,6 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
                     root_is_new,
                     reconciliation,
                 ) = result_graph
-                resources = list(resources)
-                if dat is not None and dat is not root:
-                    resources.append(dat)
                 from femcommands.manager import (
                     _finalize_timeline_result_graph,
                 )
@@ -799,27 +800,6 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
                     root_is_new=root_is_new,
                     reconciliation=reconciliation,
                 )
-                solver_results = list(self.solver.Results)
-                for result in (root, dat):
-                    if (
-                        result is not None
-                        and result not in solver_results
-                    ):
-                        solver_results.append(result)
-                self.solver.Results = solver_results
-            elif dat is not None:
-                from femcommands.manager import (
-                    _finalize_timeline_result_graph,
-                )
-
-                _finalize_timeline_result_graph(
-                    self.solver,
-                    dat,
-                )
-                solver_results = list(self.solver.Results)
-                if dat not in solver_results:
-                    solver_results.append(dat)
-                    self.solver.Results = solver_results
 
             document.recompute()
             FreeCAD.closeActiveTransaction(False, transaction_id)
@@ -833,7 +813,66 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
                 FreeCAD.closeActiveTransaction(True, transaction_id)
             raise
 
-    def load_results_ccxfrd(self):
+    def update_properties(self):
+        """Import exact artifacts in a caller-owned transaction."""
+
+        keep_results = FreeCAD.ParamGet(
+            "User parameter:BaseApp/Preferences/Mod/Fem/General"
+        ).GetBool("KeepResultsOnReRun", False)
+        retained_pipeline = None
+        retained_dat = None
+        if not keep_results:
+            for result in tuple(self.solver.Results or ()):
+                if result.isDerivedFrom("Fem::FemPostPipeline"):
+                    retained_pipeline = result
+                elif result.isDerivedFrom("App::TextDocument"):
+                    retained_dat = result
+        from femcommands.manager import _stage_timeline_result_graph
+
+        reconciliation = _stage_timeline_result_graph(
+            self.solver,
+            retained_pipeline,
+        )
+        result_graph = self.load_results_ccxfrd(
+            reconciliation=reconciliation,
+        )
+        dat, dat_created = self.load_results_ccxdat(
+            retained=retained_dat,
+            include_lifecycle=True,
+        )
+        if result_graph is not None:
+            root, resources, root_is_new, returned_reconciliation = result_graph
+            if returned_reconciliation is not reconciliation:
+                raise RuntimeError(
+                    "The CalculiX importer changed its staged result graph"
+                )
+            exact_resources = list(resources)
+            if dat is not None and dat is not root and dat_created:
+                exact_resources.append(dat)
+            solver_results = list(self.solver.Results or ())
+            for result in (root, dat):
+                if result is not None and result not in solver_results:
+                    solver_results.append(result)
+            self.solver.Results = solver_results
+            return (
+                root,
+                tuple(exact_resources),
+                root_is_new,
+                reconciliation,
+            )
+        if dat is not None:
+            if not dat_created:
+                raise RuntimeError(
+                    "CalculiX updated a text result without a semantic root"
+                )
+            solver_results = list(self.solver.Results or ())
+            if dat not in solver_results:
+                solver_results.append(dat)
+                self.solver.Results = solver_results
+            return dat, (), True, reconciliation
+        raise RuntimeError("CalculiX produced no importable result graph")
+
+    def load_results_ccxfrd(self, *, reconciliation=None):
         """Load results of ccx calculations from .frd file."""
         import feminout.importCcxFrdResults as importCcxFrdResults
 
@@ -851,6 +890,8 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
                 "CCX_",
                 self.solver.AnalysisType,
                 include_reconciliation=True,
+                solver=self.solver,
+                reconciliation=reconciliation,
             )
             if legacy_result is not None:
                 self.results_present = True
@@ -874,7 +915,12 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
             FreeCAD.Console.PrintError(f"FEM: No frd result file found at {frd_result_file}\n")
         return None
 
-    def load_results_ccxdat(self):
+    def load_results_ccxdat(
+        self,
+        retained=None,
+        *,
+        include_lifecycle=False,
+    ):
         """Load results of ccx calculations from .dat file."""
         import feminout.importCcxDatResults as importCcxDatResults
 
@@ -901,14 +947,25 @@ class FemToolsCcx(QtCore.QRunnable, QtCore.QObject):
 
         if dat_content:
             # print(dat_content)
-            dat_text_obj = self.analysis.Document.addObject("App::TextDocument", "ccx_dat_file")
+            dat_text_obj = retained
+            created = dat_text_obj is None
+            if created:
+                dat_text_obj = self.analysis.Document.addObject(
+                    "App::TextDocument",
+                    "ccx_dat_file",
+                )
             dat_text_obj.Text = dat_content
             dat_text_obj.setPropertyStatus("Text", "ReadOnly")  # set property editor readonly
             if FreeCAD.GuiUp:
                 dat_text_obj.ViewObject.ReadOnly = True  # set editor view readonly
-            self.analysis.addObject(dat_text_obj)
-            return dat_text_obj
-        return None
+            if created:
+                self.analysis.addObject(dat_text_obj)
+            return (
+                (dat_text_obj, created)
+                if include_lifecycle
+                else dat_text_obj
+            )
+        return (None, False) if include_lifecycle else None
 
 
 class CcxTools(FemToolsCcx):

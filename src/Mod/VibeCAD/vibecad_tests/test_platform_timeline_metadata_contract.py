@@ -131,7 +131,7 @@ def test_python_domain_helpers_apply_the_complete_history_metadata_contract():
         "src/Mod/Assembly/UtilsAssembly.py": "_ensure_timeline_property",
         "src/Mod/CAM/Path/Base/Util.py": "_ensureTimelineProperty",
         "src/Mod/MeshPart/Gui/MeshFlatteningCommand.py": "_ensure_hidden_property",
-        "src/Mod/VibeCAD/VibeCADFastenersGui.py": "_ensure_timeline_property",
+        "src/Mod/VibeCAD/VibeCADFastenerModel.py": "ensure_timeline_property",
     }
 
     for relative_path, helper_name in helpers.items():

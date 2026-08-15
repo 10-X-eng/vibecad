@@ -903,6 +903,7 @@ void CenterLine::Save(Base::Writer &writer) const
     }
 
     writer.Stream() << writer.ind() << "<LineNumber value=\"" <<  m_format.getLineNumber() << "\"/>" << std::endl;
+    Tag::Save(writer);
 
 }
 
@@ -938,7 +939,7 @@ void CenterLine::Restore(Base::XMLReader &reader)
     reader.readElement("Type");
     m_type = reader.getAttribute<Type>("value");
     reader.readElement("Flip");
-    m_flip2Line = reader.getAttribute<bool>("value") == 0;
+    m_flip2Line = reader.getAttribute<bool>("value");
 
     reader.readElement("Faces");
     int count = reader.getAttribute<long>("FaceCount");
@@ -1014,15 +1015,20 @@ void CenterLine::Restore(Base::XMLReader &reader)
     // for LineNumber.
     // test for ISOLineNumber can be removed after testing.  It is a left over for the earlier
     // ISO only line handling.
-    if (reader.readNextElement()) {
+    bool hasNextElement = reader.readNextElement();
+    if (hasNextElement) {
         if(strcmp(reader.localName(),"LineNumber") == 0 ||
            strcmp(reader.localName(),"ISOLineNumber") == 0 ) {
             // this centerline has an LineNumber attribute
             m_format.setLineNumber(reader.getAttribute<long>("value"));
+            hasNextElement = reader.readNextElement();
         } else {
             // LineNumber not found.
             m_format.setLineNumber(LineFormat::InvalidLine);
         }
+    }
+    if (hasNextElement && strcmp(reader.localName(), "Tag") == 0) {
+        setTag(Tag::fromString(reader.getAttribute<const char*>("value")));
     }
 }
 
@@ -1115,4 +1121,3 @@ bool CenterLine::getFlip() const
 {
     return m_flip2Line;
 }
-

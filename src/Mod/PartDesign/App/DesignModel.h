@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <App/PropertyLinks.h>
@@ -81,6 +82,29 @@ public:
     static Body* bodyWithId(App::Document& document, const std::string& bodyId);
     static App::Part* componentWithId(App::Document& document, const std::string& componentId);
     static std::string componentId(const App::Part& component);
+
+    /**
+     * Enforce the saved shape contract for one user-visible Body.
+     *
+     * Body identity belongs to the complete current shape. A Body with
+     * AllowCompound enabled may therefore contain any positive number of
+     * topological solids; disabling AllowCompound retains the traditional
+     * single-solid restriction. The context is included in deterministic
+     * diagnostics. This function never mutates the Body or shape.
+     */
+    static void requireBodyShape(
+        const Body& body,
+        const Part::TopoShape& shape,
+        std::string_view context
+    );
+
+    /** Apply the same contract before an operation-created Body exists. */
+    static void requireBodyShape(
+        const Part::TopoShape& shape,
+        bool allowCompound,
+        std::string_view bodyLabel,
+        std::string_view context
+    );
 
     /**
      * Resolve one user-selected modeling reference at a global definition's
@@ -279,6 +303,19 @@ public:
     );
 
     /**
+     * Repair output resources left by an interrupted new-operation publish.
+     *
+     * Recovery is deliberately narrow: one already-persisted output state
+     * must precede its operation, later duplicates must form one exact chain
+     * back to the same prior Body state, and the operation must consume that
+     * duplicate chain. No labels or geometry are used to infer identity. The
+     * caller owns the transaction. Returns the number of repaired operations.
+     */
+    static std::size_t recoverInterruptedOperationPublications(
+        App::Document& document
+    );
+
+    /**
      * Capture one operation's existing resource graph.
      *
      * Call exactly once after opening the task transaction and before changing
@@ -295,6 +332,16 @@ public:
      * retired resources are deleted only after timeline reconciliation.
      */
     static std::vector<Body*> finalizeOperation(DesignOperationEdit& edit);
+
+    /**
+     * Publish one operation while recomputing only its affected output Bodies.
+     *
+     * The one-argument overload remains the default full-document behavior.
+     */
+    static std::vector<Body*> finalizeOperation(
+        DesignOperationEdit& edit,
+        bool affectedBodiesOnly
+    );
 
     /**
      * Atomically publish a worker-validated VibeScript operation without

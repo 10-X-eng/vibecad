@@ -291,6 +291,7 @@ protected:
 
     void onChanged(const App::Property* prop) override;
     void onDocumentRestored() override;
+    void onUndoRedoFinished() override;
     void unsetupObject() override;
 
     virtual TechDraw::GeometryObjectPtr buildGeometryObject(const TopoDS_Shape& shape,
@@ -303,6 +304,7 @@ protected:
         const std::vector<App::DocumentObject*>& sources) const;
     virtual std::string geometrySourceStateSignature() const;
     bool geometryMatchesActiveSources() const;
+    virtual bool deferPrecomputedProjectionPaint() const { return false; }
     void recomputeForCurrentTimelineState();
 
     void extractFaces();

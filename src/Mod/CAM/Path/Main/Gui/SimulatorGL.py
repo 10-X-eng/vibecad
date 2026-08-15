@@ -24,16 +24,16 @@
 Command and task window handler for the OpenGL based CAM simulator
 """
 
-import math
 import os
 import FreeCAD
 import Path.Base.Util as PathUtil
 import Path.Dressup.Utils as PathDressup
+from Path.Main import SimulatorGLPreparation
 from Path.CommandBoundary import active_jobs, can_start_document_command
 from PathScripts import PathUtils
 import CAMSimulator
 
-from FreeCAD import Vector, Placement, Rotation
+from FreeCAD import Vector
 
 # lazily loaded modules
 from lazy_loader.lazy_loader import LazyLoader
@@ -47,18 +47,17 @@ if FreeCAD.GuiUp:
     from PySide.QtGui import QDialogButtonBox
 
 _filePath = os.path.dirname(os.path.abspath(__file__))
+_active_native_prepared_simulation = None
 
 
 def IsSame(x, y):
     """Check if two floats are the same within an epsilon"""
-    return abs(x - y) < 0.0001
+    return SimulatorGLPreparation.is_same(x, y)
 
 
 def RadiusAt(edge, p):
     """Find the tool radius within a point on its circumference"""
-    x = edge.valueAt(p).x
-    y = edge.valueAt(p).y
-    return math.sqrt(x * x + y * y)
+    return SimulatorGLPreparation.radius_at(edge, p)
 
 
 class CAMSimTaskUi:
@@ -108,6 +107,11 @@ class CAMSimulation:
         self.busy = False
         self.operations = []
         self.baseShape = None
+        self.nativePrepared = False
+        self._preparedStockMesh = None
+        self._preparedBaseMesh = None
+        self._preparedRuns = ()
+        self._preparedView = None
 
     def Connect(self, but, sig):
         """Connect task panel buttons"""
@@ -115,102 +119,17 @@ class CAMSimulation:
 
     def FindClosestEdge(self, edges, px, pz):
         """Convert tool shape to tool profile needed by GL simulator"""
-        for edge in edges:
-            p1 = edge.FirstParameter
-            p2 = edge.LastParameter
-            rad1 = RadiusAt(edge, p1)
-            z1 = edge.valueAt(p1).z
-            if IsSame(px, rad1) and IsSame(pz, z1):
-                return edge, p1, p2
-            rad2 = RadiusAt(edge, p2)
-            z2 = edge.valueAt(p2).z
-            if IsSame(px, rad2) and IsSame(pz, z2):
-                return edge, p2, p1
-            # sometimes a flat circle is without edge, so return edge with
-            # same height and later a connecting edge will be interpolated
-            if IsSame(pz, z1):
-                return edge, p1, p2
-            if IsSame(pz, z2):
-                return edge, p2, p1
-        return None, 0.0, 0.0
+        return SimulatorGLPreparation.find_closest_edge(edges, px, pz)
 
     def FindTopMostEdge(self, edges):
         """Examine tool solid edges and find the top most one"""
-        maxz = -99999999.0
-        topedge = None
-        top_p1 = 0.0
-        top_p2 = 0.0
-        for edge in edges:
-            p1 = edge.FirstParameter
-            p2 = edge.LastParameter
-            z = edge.valueAt(p1).z
-            if z > maxz:
-                topedge = edge
-                top_p1 = p1
-                top_p2 = p2
-                maxz = z
-            z = edge.valueAt(p2).z
-            if z > maxz:
-                topedge = edge
-                top_p1 = p2
-                top_p2 = p1
-                maxz = z
-        return topedge, top_p1, top_p2
+        return SimulatorGLPreparation.find_topmost_edge(edges)
 
     def GetToolProfile(self, tool, resolution):
         """Get the edge profile of a tool solid. Basically locating the
         side edge that OCC creates on any revolved object
         """
-        shape = tool.Shape.copy()
-        shape.Placement = Placement(
-            Vector(0, 0, 0),
-            Rotation(Vector(0, 0, 1), 0),
-            Vector(0, 0, 0),
-        )
-        sideEdgeList = []
-        for _i, edge in enumerate(shape.Edges):
-            if not edge.isClosed():
-                # v1 = edge.firstVertex()
-                # v2 = edge.lastVertex()
-                # tp = "arc" if type(edge.Curve) is Part.Circle else "line"
-                sideEdgeList.append(edge)
-
-        # sort edges as a single 3d line on the x-z plane
-
-        # first find the topmost edge
-        edge, p1, p2 = self.FindTopMostEdge(sideEdgeList)
-        profile = [RadiusAt(edge, p1), edge.valueAt(p1).z]
-        endrad = 0.0
-        # one by one find all connecting edges
-        while edge is not None:
-            sideEdgeList.remove(edge)
-            if isinstance(edge.Curve, Part.Circle):
-                # if edge is curved, approximate it with lines based on resolution
-                nsegments = int(edge.Length / resolution) + 1
-                step = (p2 - p1) / nsegments
-                location = p1 + step
-                while nsegments > 0:
-                    endrad = RadiusAt(edge, location)
-                    endz = edge.valueAt(location).z
-                    profile.append(endrad)
-                    profile.append(endz)
-                    location += step
-                    nsegments -= 1
-            else:
-                endrad = RadiusAt(edge, p2)
-                endz = edge.valueAt(p2).z
-                profile.append(endrad)
-                profile.append(endz)
-            edge, p1, p2 = self.FindClosestEdge(sideEdgeList, endrad, endz)
-            if edge is None:
-                break
-            startrad = RadiusAt(edge, p1)
-            if not IsSame(startrad, endrad):
-                profile.append(startrad)
-                startz = edge.valueAt(p1).z
-                profile.append(startz)
-
-        return profile
+        return SimulatorGLPreparation.build_tool_profile(tool.Shape, resolution)
 
     def Activate(self):
         """Invoke the simulator task panel"""
@@ -237,6 +156,95 @@ class CAMSimulation:
         self.initdone = True
         self.job = self.jobs[self.taskForm.form.comboJobs.currentIndex()]
         # self.SetupSimulation()
+
+    def ActivatePrepared(
+        self,
+        job,
+        operations,
+        quality,
+        stockShape,
+        stockMesh,
+        baseShape,
+        baseMesh,
+        runs,
+    ):
+        """Present one exact, already prepared simulation on the GUI thread."""
+
+        if not FreeCAD.GuiUp:
+            raise RuntimeError("Prepared GL simulation requires the VibeCAD GUI")
+        selected = tuple(operations)
+        if not selected:
+            raise ValueError("Prepared GL simulation requires at least one operation")
+        if not isinstance(stockMesh, bytes) or not stockMesh:
+            raise ValueError("Prepared GL simulation requires one stock mesh")
+        if baseShape is None and baseMesh is not None:
+            raise ValueError("A prepared base mesh requires one base shape")
+        if baseShape is not None and (not isinstance(baseMesh, bytes) or not baseMesh):
+            raise ValueError("A prepared base shape requires one base mesh")
+
+        self.initdone = False
+        self.nativePrepared = True
+        self.job = job
+        self.jobs = [job]
+        self.operations = list(selected)
+        self.activeOps = list(selected)
+        self.quality = int(quality)
+        self.stock = stockShape
+        self.baseShape = baseShape
+        self._preparedStockMesh = stockMesh
+        self._preparedBaseMesh = baseMesh
+        self._preparedRuns = tuple(runs)
+
+        self.taskForm = CAMSimTaskUi(self)
+        form = self.taskForm.form
+        self.Connect(form.toolButtonPlay, self.ReplayPrepared)
+        form.sliderAccuracy.setValue(self.quality)
+        self.onAccuracyBarChange()
+        form.sliderAccuracy.setEnabled(False)
+        form.followsVisibility.setEnabled(False)
+        form.comboJobs.addItem(job.ViewObject.Icon, job.Label)
+        form.comboJobs.setEnabled(False)
+        for operation in selected:
+            item = QtGui.QListWidgetItem(operation.ViewObject.Icon, operation.Label)
+            item.setCheckState(QtCore.Qt.CheckState.Checked)
+            form.listOperations.addItem(item)
+        form.listOperations.setEnabled(False)
+
+        FreeCADGui.Control.showDialog(self.taskForm)
+        try:
+            self.millSim = CAMSimulator.PathSim()
+            self.ReplayPrepared()
+        except Exception:
+            FreeCADGui.Control.closeDialog()
+            raise
+        self.disableAnim = False
+        self.firstDrill = True
+        self.initdone = True
+
+    def ReplayPrepared(self):
+        """Reload the immutable prepared program without document work."""
+
+        self.millSim.ResetSimulation(FreeCADGui.getDocument(self.job.Document))
+        for run in self._preparedRuns:
+            self.millSim.AddTool(
+                list(run["tool_profile"]),
+                int(run["tool_number"]),
+                float(run["diameter_mm"]),
+                1.0,
+            )
+            for command in run["gcode"]:
+                self.millSim.AddGCode(command)
+        self.millSim.BeginPreparedSimulation(
+            self.stock,
+            self._preparedStockMesh,
+            float(self.quality),
+        )
+        self._preparedView = FreeCADGui.getMainWindow().getActiveWindow()
+        if self.baseShape is not None:
+            self.millSim.SetPreparedBaseShape(
+                self.baseShape,
+                self._preparedBaseMesh,
+            )
 
     def _populateJobSelection(self, form):
         """Make Job selection combobox"""
@@ -357,6 +365,48 @@ class CAMSimulation:
 
     def cancel(self):
         """Cancel the simulation"""
+
+        global _active_native_prepared_simulation
+        preparedView = self._preparedView
+        self._preparedView = None
+        if preparedView is not None:
+            try:
+                FreeCADGui.getMainWindow().removeWindow(preparedView)
+            except RuntimeError:
+                pass
+        if _active_native_prepared_simulation is self:
+            _active_native_prepared_simulation = None
+
+
+def activate_prepared_simulation(**prepared):
+    """Open one Native-owned prepared GL simulation and retain task ownership."""
+
+    global _active_native_prepared_simulation
+    if _active_native_prepared_simulation is not None:
+        raise RuntimeError("A Native prepared GL simulation is already active")
+    simulation = CAMSimulation()
+    simulation.ActivatePrepared(**prepared)
+    _active_native_prepared_simulation = simulation
+    return simulation
+
+
+def owns_active_prepared_simulation(document):
+    """Return whether the active task belongs to this exact Native document."""
+
+    simulation = _active_native_prepared_simulation
+    if simulation is None or simulation.job.Document is not document:
+        return False
+    try:
+        guiDocument = FreeCADGui.getDocument(document)
+        return bool(FreeCADGui.Control.activeDialog(guiDocument))
+    except Exception:
+        return False
+
+
+def active_prepared_simulation():
+    """Return the retained prepared simulation for bounded host inspection."""
+
+    return _active_native_prepared_simulation
 
 
 class CommandCAMSimulate:

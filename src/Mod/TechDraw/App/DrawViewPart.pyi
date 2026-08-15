@@ -39,6 +39,15 @@ class DrawViewPart(DrawView):
         """
         Return structured descriptors for every projected EdgeN and VertexN in
         the view, including geometry type, visibility, 2D bounds, and exact or
+        ambiguous mappings back to source-object subelements. Coordinates use
+        the original Qt-compatible +Y-down convention.
+        """
+        ...
+
+    def getExactProjectedElementDescriptors(self) -> Any:
+        """
+        Return structured descriptors for every projected EdgeN, VertexN, and
+        FaceN in conventional +Y-up view coordinates, including exact or
         ambiguous mappings back to source-object subelements.
         """
         ...

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
@@ -22,7 +22,6 @@ from typing import Any, Callable
 from VibeCADDebug import capture_provider_request
 from VibeCADModelingSurface import (
     is_model_assembly_workbench,
-    resolve_modeling_surface,
     validate_surface_names,
 )
 from VibeCADVibeScriptDomains import get_vibescript_pack
@@ -30,6 +29,7 @@ from VibeCADVibeScriptDomains import get_vibescript_pack
 
 MAX_PROVIDER_IMAGE_BYTES = 2_000_000
 CODEX_INLINE_IMAGE_MAX_BYTES = 60_000
+CODEX_LOCAL_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 PROVIDER_IMAGE_MAX_EDGE = 1568
 PROVIDER_IMAGE_MIN_EDGE = 512
 MAX_PROVIDER_TOOL_RESULT_BYTES = 40 * 1024
@@ -225,7 +225,7 @@ class ProviderResult:
     raw: Any = None
 
 
-ToolRunner = Callable[[str, str], dict[str, Any]]
+ToolRunner = Callable[[str, str, str], dict[str, Any]]
 CancellationCheck = Callable[[], bool]
 ProgressCallback = Callable[[dict[str, Any]], None]
 
@@ -363,12 +363,19 @@ def _codex_dynamic_tool_surface(
         )
     workbench = str(surface.get("workbench") or "") or None
     engine = str(surface.get("engine") or "")
-    resolution = resolve_modeling_surface(workbench, engine)
+    modeling_surface = context.get("modeling_surface")
+    if not isinstance(modeling_surface, dict):
+        raise ProviderUnavailable(
+            "The frozen VibeCAD turn has no modeling-surface declaration."
+        )
     if (
-        surface.get("domain") != resolution.domain
-        or surface.get("surface_id") != resolution.surface_id
-        or surface.get("available") is not resolution.available
-        or str(surface.get("unavailable_reason") or "") != resolution.unavailable_reason
+        str(modeling_surface.get("workbench") or "") != str(workbench or "")
+        or surface.get("engine") != modeling_surface.get("engine")
+        or surface.get("domain") != modeling_surface.get("domain")
+        or surface.get("surface_id") != modeling_surface.get("surface_id")
+        or surface.get("available") is not modeling_surface.get("available")
+        or str(surface.get("unavailable_reason") or "")
+        != str(modeling_surface.get("unavailable_reason") or "")
     ):
         raise ProviderUnavailable(
             "The modeling-engine/domain declaration does not match the frozen "
@@ -379,7 +386,7 @@ def _codex_dynamic_tool_surface(
             workbench=workbench,
             engine=engine,
             names=schema_names,
-            allowed_names=resolution.tool_names,
+            allowed_names=declared_names,
         )
     except ValueError as exc:
         raise ProviderUnavailable(str(exc)) from exc
@@ -480,9 +487,37 @@ def _codex_turn_input(prompt: str, context: dict[str, Any]) -> list[dict[str, An
     return items
 
 
+def _codex_prompt_without_replayed_conversation(prompt: str) -> str:
+    """Remove text-history replay once the Codex thread already owns it."""
+
+    start = "RECENT_CONVERSATION_JSON\n"
+    end = "\nEND_RECENT_CONVERSATION_JSON"
+    if start not in prompt or end not in prompt:
+        return prompt
+    prefix, remainder = prompt.split(start, 1)
+    _prior, suffix = remainder.split(end, 1)
+    empty = json.dumps(
+        {
+            "turns": [],
+            "omitted_turn_count": 0,
+            "truncated_turn_count": 0,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return prefix + start + empty + end + suffix
+
+
 def _codex_tool_image_content_items(
     context: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    """Build the legacy dynamic-tool image response representation.
+
+    Codex accepts this shape for the immediate tool response, but Responses
+    history replays can reject the nested ``function_call_output`` image URL.
+    New tool captures are therefore delivered with ``turn/steer`` instead.
+    This helper remains for callers that only need protocol serialization.
+    """
     visible = _model_visible_context(context)
     image_blocks = _codex_context_image_blocks(visible)
     items = [
@@ -498,6 +533,75 @@ def _codex_tool_image_content_items(
             }
         )
     return items
+
+
+def _codex_local_image_input(
+    path_text: Any,
+    *,
+    label: str,
+) -> list[dict[str, Any]]:
+    """Return same-turn Codex user input for one verified local image."""
+
+    path = Path(str(path_text or "")).expanduser()
+    if not path.is_file():
+        raise ValueError(f"captured image file not found: {path}")
+    try:
+        size = int(path.stat().st_size)
+    except OSError as exc:
+        raise ValueError(f"captured image file could not be inspected: {path}") from exc
+    if size <= 0:
+        raise ValueError("captured image file is empty")
+    if size > CODEX_LOCAL_IMAGE_MAX_BYTES:
+        raise ValueError(
+            f"captured image is {size} bytes; maximum is "
+            f"{CODEX_LOCAL_IMAGE_MAX_BYTES} bytes"
+        )
+    if _provider_image_mime_for_suffix(path.suffix) is None:
+        raise ValueError(
+            f"captured image type is unsupported: {path.suffix or path.name}"
+        )
+    return [
+        {"type": "text", "text": str(label or "V:current")},
+        {
+            "type": "localImage",
+            "path": str(path.resolve()),
+            "detail": "original",
+        },
+    ]
+
+
+def _codex_tool_image_steer_input(
+    result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return non-replayed visual input for an image-producing CAD tool."""
+
+    attachment = result.get("_vibecad_image_attachment")
+    if not isinstance(attachment, dict) or not str(attachment.get("path") or ""):
+        return []
+    name = str(attachment.get("name") or "current viewport").strip()
+    return _codex_local_image_input(
+        attachment["path"],
+        label=f"V:current|{name}",
+    )
+
+
+def _codex_context_screenshot_steer_input(
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Support older screenshot tools that expose only refreshed context."""
+
+    screenshot = context.get("view_screenshot")
+    if (
+        not isinstance(screenshot, dict)
+        or not screenshot.get("captured")
+        or screenshot.get("pending_attachment") is not True
+        or not str(screenshot.get("path") or "")
+    ):
+        return []
+    return _codex_local_image_input(
+        screenshot["path"],
+        label="V:current|current viewport",
+    )
 
 
 class CodexProvider(BaseProvider):
@@ -553,6 +657,7 @@ class CodexProvider(BaseProvider):
             CodexAppServerError,
             codex_workspace,
             load_codex_skill_catalog,
+            managed_codex_session,
             read_codex_skill_resource,
             update_cached_account,
             vibecad_thread_config,
@@ -569,11 +674,22 @@ class CodexProvider(BaseProvider):
                 f"Unknown VibeCAD interaction mode {interaction_mode!r}."
             )
         plan_mode = interaction_mode == "plan"
-        dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(live_context)
-        if not dynamic_tools:
+        current_dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(
+            live_context
+        )
+        if not current_dynamic_tools:
             raise ProviderUnavailable(
                 "Codex mode has no declared VibeCAD tools for the current workbench."
             )
+        thread_surface = live_context.get("_vibecad_codex_thread_surface")
+        if isinstance(thread_surface, dict):
+            thread_context = dict(live_context)
+            thread_context.update(thread_surface)
+        else:
+            thread_context = live_context
+        thread_dynamic_tools, _thread_name_map = _codex_dynamic_tool_surface(
+            thread_context
+        )
 
         state_lock = threading.RLock()
         turn_completed = threading.Event()
@@ -745,11 +861,20 @@ class CodexProvider(BaseProvider):
 
             tool_name = dynamic_name_map.get((namespace, function_name))
             if tool_name is None:
+                declared_name = _thread_name_map.get((namespace, function_name))
+                if declared_name is not None:
+                    raise CodexAppServerError(
+                        f"VibeCAD tool {declared_name} is not available in this "
+                        f"{interaction_mode} turn."
+                    )
                 raise CodexAppServerError(
                     f"Unknown VibeCAD dynamic tool {namespace}.{function_name}."
                 )
             arguments_json = json.dumps(
                 _json_safe(arguments), ensure_ascii=True, separators=(",", ":")
+            )
+            provider_call_id = str(
+                params.get("callId") or params.get("call_id") or ""
             )
             _emit_provider_progress(
                 progress_callback,
@@ -760,7 +885,12 @@ class CodexProvider(BaseProvider):
                     "arguments": _tool_arguments_summary(arguments_json),
                 },
             )
-            result = _call_parent_tool(tool_runner, tool_name, arguments_json)
+            result = _call_parent_tool(
+                tool_runner,
+                tool_name,
+                arguments_json,
+                provider_call_id,
+            )
             updated_context = _tool_runner_provider_update(tool_runner)
             with state_lock:
                 live_context = updated_context
@@ -778,16 +908,50 @@ class CodexProvider(BaseProvider):
                     ),
                 }
             ]
-            if (
+            image_input = _codex_tool_image_steer_input(result)
+            if not image_input and (
                 tool_name == "core.capture_view_screenshot"
                 and result.get("captured")
                 and result.get("new_observation", True)
             ):
-                content_items.extend(_codex_tool_image_content_items(updated_context))
-            inspected_image_context = _tool_result_image_context(result)
-            if inspected_image_context is not None:
-                content_items.extend(
-                    _codex_tool_image_content_items(inspected_image_context)
+                # Older capture implementations may not return the private exact
+                # attachment. Fall back to the newly refreshed screenshot only.
+                image_input = _codex_context_screenshot_steer_input(updated_context)
+            if image_input:
+                if not thread_id or not turn_id:
+                    raise CodexAppServerError(
+                        "VibeCAD captured an image before Codex established the "
+                        "active turn required for visual delivery."
+                    )
+                steer_request = {
+                    "threadId": thread_id,
+                    "expectedTurnId": turn_id,
+                    "input": image_input,
+                }
+                _capture_outbound_request(
+                    live_context,
+                    provider=self.provider_id,
+                    sdk_call="codex-app-server.turn/steer",
+                    turn=1,
+                    request=steer_request,
+                    base_url=(
+                        self.base_url if self.auth_mode == "api_key" else None
+                    ),
+                )
+                try:
+                    client.request("turn/steer", steer_request, timeout=30.0)
+                except Exception as exc:
+                    raise CodexAppServerError(
+                        "VibeCAD captured the image but could not deliver it to "
+                        f"the active Codex turn: {exc}"
+                    ) from exc
+            if any(
+                item.get("type") == "inputText"
+                and "data:image/" in str(item.get("text") or "")
+                for item in content_items
+            ):
+                raise CodexAppServerError(
+                    "VibeCAD refused to place image bytes in dynamic-tool text."
                 )
             _emit_provider_progress(
                 progress_callback,
@@ -807,22 +971,87 @@ class CodexProvider(BaseProvider):
 
         if self.auth_mode == "api_key" and not self.api_key:
             raise ProviderUnavailable("No OpenAI API key is configured.")
-        client = CodexAppServerClient(
-            notification_handler=notification,
-            server_request_handler=server_request,
-            environment=(
-                {CODEX_OPENAI_API_KEY_ENV: self.api_key}
-                if self.auth_mode == "api_key" and self.api_key
-                else None
-            ),
+        environment = (
+            {CODEX_OPENAI_API_KEY_ENV: self.api_key}
+            if self.auth_mode == "api_key" and self.api_key
+            else None
         )
+        session_identity = live_context.get("_vibecad_codex_session")
+        thread_declaration = thread_context.get("provider_tool_surface")
+        managed = bool(
+            isinstance(session_identity, dict)
+            and str(session_identity.get("conversation_id") or "").strip()
+            and isinstance(thread_declaration, dict)
+            and thread_declaration.get("kind") == "turn_start_snapshot"
+        )
+        managed_stack = ExitStack()
+        managed_lease = None
+        if managed:
+            runtime_payload = {
+                "auth_mode": self.auth_mode,
+                "model": self.model,
+                "base_url": self.base_url or "",
+                "web_search_enabled": self.web_search_enabled,
+                "skills_enabled": self.skills_enabled,
+                "api_key_sha256": (
+                    hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()
+                    if self.api_key
+                    else ""
+                ),
+            }
+            runtime_key = hashlib.sha256(
+                json.dumps(
+                    runtime_payload,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            thread_payload = {
+                "conversation_id": str(session_identity["conversation_id"]),
+                "conversation_path": str(
+                    session_identity.get("conversation_path") or ""
+                ),
+                "workbench": str(thread_declaration.get("workbench") or ""),
+                "engine": str(thread_declaration.get("engine") or ""),
+                "surface_id": str(thread_declaration.get("surface_id") or ""),
+                "schema_sha256": str(
+                    thread_declaration.get("schema_sha256") or ""
+                ),
+            }
+            thread_key = hashlib.sha256(
+                json.dumps(
+                    thread_payload,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            managed_lease = managed_stack.enter_context(
+                managed_codex_session(
+                    runtime_key=runtime_key,
+                    thread_key=thread_key,
+                    client_factory=CodexAppServerClient,
+                    notification_handler=notification,
+                    server_request_handler=server_request,
+                    environment=environment,
+                )
+            )
+            client = managed_lease.client
+        else:
+            client = CodexAppServerClient(
+                notification_handler=notification,
+                server_request_handler=server_request,
+                environment=environment,
+            )
         deadline = (
             time.monotonic() + self.timeout_seconds
             if self.timeout_seconds is not None and self.timeout_seconds > 0
             else None
         )
         try:
-            client.start()
+            if managed_lease is None:
+                client.start()
             if self.auth_mode == "chatgpt":
                 account_result = client.request(
                     "account/read", {"refreshToken": False}, timeout=30.0
@@ -846,7 +1075,7 @@ class CodexProvider(BaseProvider):
                     cwd=codex_workspace(),
                 )
                 if skill_catalog:
-                    dynamic_tools.append(_codex_skill_read_tool())
+                    thread_dynamic_tools.append(_codex_skill_read_tool())
 
             forbidden_capabilities = [
                 "shell",
@@ -876,13 +1105,13 @@ class CodexProvider(BaseProvider):
                 "sandbox": "read-only",
                 "baseInstructions": _provider_instructions(live_context),
                 "developerInstructions": developer_instructions,
-                "ephemeral": True,
+                "ephemeral": not managed,
                 "environments": [],
-                "dynamicTools": dynamic_tools,
+                "dynamicTools": thread_dynamic_tools,
                 "config": vibecad_thread_config(
                     web_search_enabled=self.web_search_enabled,
                     skills_enabled=self.skills_enabled,
-                    collaboration_mode_enabled=plan_mode,
+                    collaboration_mode_enabled=managed or plan_mode,
                     openai_base_url=(
                         (self.base_url or "") if self.auth_mode == "api_key" else None
                     ),
@@ -893,25 +1122,59 @@ class CodexProvider(BaseProvider):
                 thread_request["modelProvider"] = CODEX_OPENAI_PROVIDER_ID
             if self.model:
                 thread_request["model"] = self.model
-            _capture_outbound_request(
-                live_context,
-                provider=self.provider_id,
-                sdk_call="codex-app-server.thread/start",
-                turn=1,
-                request=thread_request,
-                base_url=(self.base_url if self.auth_mode == "api_key" else None),
-            )
-            thread_result = client.request("thread/start", thread_request, timeout=30.0)
+            if managed_lease is not None and managed_lease.thread_id:
+                resume_request = {"threadId": managed_lease.thread_id}
+                _capture_outbound_request(
+                    live_context,
+                    provider=self.provider_id,
+                    sdk_call="codex-app-server.thread/resume",
+                    turn=1,
+                    request=resume_request,
+                    base_url=(
+                        self.base_url if self.auth_mode == "api_key" else None
+                    ),
+                )
+                thread_result = client.request(
+                    "thread/resume",
+                    resume_request,
+                    timeout=30.0,
+                )
+            else:
+                _capture_outbound_request(
+                    live_context,
+                    provider=self.provider_id,
+                    sdk_call="codex-app-server.thread/start",
+                    turn=1,
+                    request=thread_request,
+                    base_url=(
+                        self.base_url if self.auth_mode == "api_key" else None
+                    ),
+                )
+                thread_result = client.request(
+                    "thread/start", thread_request, timeout=30.0
+                )
             thread = (
                 thread_result.get("thread") if isinstance(thread_result, dict) else None
             )
             if not isinstance(thread, dict) or not thread.get("id"):
                 raise ProviderUnavailable("Codex app-server created no VibeCAD thread.")
             thread_id = str(thread["id"])
+            resumed_thread = bool(
+                managed_lease is not None and managed_lease.thread_id
+            )
+            if managed_lease is not None:
+                managed_lease.remember_thread(thread_id)
 
             turn_request: dict[str, Any] = {
                 "threadId": thread_id,
-                "input": _codex_turn_input(prompt, live_context),
+                "input": _codex_turn_input(
+                    (
+                        _codex_prompt_without_replayed_conversation(prompt)
+                        if resumed_thread
+                        else prompt
+                    ),
+                    live_context,
+                ),
                 "environments": [],
             }
             effort = _provider_reasoning_effort(self.reasoning_effort)
@@ -1004,14 +1267,17 @@ class CodexProvider(BaseProvider):
         except CodexAppServerError as exc:
             raise ProviderUnavailable(str(exc)) from exc
         finally:
-            if client.alive and thread_id:
-                try:
-                    client.request(
-                        "thread/delete", {"threadId": thread_id}, timeout=5.0
-                    )
-                except Exception:
-                    pass
-            client.close()
+            if managed_lease is not None:
+                managed_stack.close()
+            else:
+                if client.alive and thread_id:
+                    try:
+                        client.request(
+                            "thread/delete", {"threadId": thread_id}, timeout=5.0
+                        )
+                    except Exception:
+                        pass
+                client.close()
 
 
 class AnthropicProvider(BaseProvider):
@@ -1430,6 +1696,7 @@ def _run_provider_subprocess(
                         raise ProviderUnavailable("VibeCAD run stopped by user.")
                     tool_name = str(message.get("tool_name", ""))
                     arguments_json = str(message.get("arguments_json") or "{}")
+                    provider_call_id = str(message.get("provider_call_id") or "")
                     _emit_provider_progress(
                         progress_callback,
                         {
@@ -1443,6 +1710,7 @@ def _run_provider_subprocess(
                         tool_runner,
                         tool_name,
                         arguments_json,
+                        provider_call_id,
                     )
                     parent_conn.send(
                         {
@@ -1658,11 +1926,12 @@ def _call_parent_tool(
     tool_runner: ToolRunner | None,
     tool_name: str,
     arguments_json: str,
+    provider_call_id: str,
 ) -> dict[str, Any]:
     if tool_runner is None:
         return {"ok": False, "error": "No VibeCAD tool runner is available."}
     try:
-        return tool_runner(tool_name, arguments_json)
+        return tool_runner(tool_name, arguments_json, provider_call_id)
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1687,6 +1956,7 @@ def _model_visible_context(
     sections = (
         "workbench",
         "modeling_surface",
+        "native_state",
         "document",
         "selection",
         "editable_sources",
@@ -1798,6 +2068,14 @@ def _provider_function_name(tool_name: str) -> str:
 
 def _provider_tool_parameters(schema: dict[str, Any]) -> dict[str, Any]:
     parameters = schema.get("parameters")
+    if isinstance(parameters, dict) and set(parameters) == {"oneOf"}:
+        branches = parameters.get("oneOf")
+        if (
+            isinstance(branches, list)
+            and len(branches) == 1
+            and isinstance(branches[0], dict)
+        ):
+            parameters = branches[0]
     if not isinstance(parameters, dict) or parameters.get("type") != "object":
         raise ValueError(f"Provider tool {schema.get('name')!r} has no object schema.")
     if not isinstance(parameters.get("properties"), dict):
@@ -1936,13 +2214,17 @@ def _provider_state_after_tool(
         "invalidated",
         "next_turn_required",
     )
-    return {
+    result = {
         "surface": {
             key: _json_safe(surface[key])
             for key in keys
             if key in surface and surface[key] not in (None, "", [], {})
         }
     }
+    native_state = context.get("native_state")
+    if isinstance(native_state, dict):
+        result["active_domain"] = _json_safe(native_state)
+    return result
 
 
 def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -4189,6 +4471,7 @@ def _anthropic_child_main(
                             "type": "tool",
                             "tool_name": tool_name,
                             "arguments_json": arguments_json,
+                            "provider_call_id": str(block.id),
                         }
                     )
                     bridge = conn.recv()

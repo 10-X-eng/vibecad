@@ -92,7 +92,11 @@ class CommandAddOffsetVertex:
         )
         if vertex is None:
             return
-        self.ui = TechDrawTools.TaskAddOffsetVertex(view, vertex)
+        self.ui = TechDrawTools.TaskAddOffsetVertex(
+            view,
+            vertex,
+            selected.SubElementNames[0],
+        )
         dialog = Gui.Control.showDialog(
             self.ui,
             self.ui.gui_document,

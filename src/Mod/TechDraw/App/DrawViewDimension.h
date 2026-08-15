@@ -105,6 +105,9 @@ public:
 
     App::PropertyBool ShowUnits;
 
+    App::PropertyLinkSub ArcLengthSource;
+    App::PropertyLength ArcLengthValue;
+
     App::PropertyVectorList PrecomputedDimensionVectors;
     App::PropertyFloatList PrecomputedDimensionScalars;
     App::PropertyBoolList PrecomputedDimensionFlags;
@@ -217,6 +220,7 @@ public:
 
     bool showUnits() const;
     bool useDecimals() const;
+    std::string getDefaultFormatSpec(bool isToleranceFormat = false) const;
     bool isExtentDim() const;
     virtual ReferenceVector getEffectiveReferences() const;
 
@@ -251,7 +255,6 @@ protected:
     void onChanged(const App::Property* prop) override;
     void onDocumentRestored() override;
     std::string getPrefixForDimType() const;
-    std::string getDefaultFormatSpec(bool isToleranceFormat = false) const;
     virtual pointPair getPointsOneEdge(ReferenceVector references);
     virtual pointPair getPointsTwoEdges(ReferenceVector references);
     virtual pointPair getPointsTwoVerts(ReferenceVector references);

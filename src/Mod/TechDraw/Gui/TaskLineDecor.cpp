@@ -39,6 +39,7 @@
 #include "QGIView.h"
 #include "ViewProviderViewPart.h"
 #include "DrawGuiUtil.h"
+#include "LineAttributeBuilder.h"
 
 
 using namespace Gui;
@@ -110,44 +111,11 @@ void TaskLineDecor::initUi()
 
 TechDraw::LineFormat *TaskLineDecor::getFormatAccessPtr(const std::string &edgeName, std::string *newFormatTag)
 {
-    BaseGeomPtr bg = m_partFeat->getEdge(edgeName);
-    if (bg) {
-        if (bg->getCosmetic()) {
-            if (bg->source() == SourceType::COSMETICEDGE) {
-                TechDraw::CosmeticEdge *ce = m_partFeat->getCosmeticEdgeBySelection(edgeName);
-                if (ce) {
-                    return &ce->m_format;
-                }
-            }
-            else if (bg->source() == SourceType::CENTERLINE) {
-                TechDraw::CenterLine *cl = m_partFeat->getCenterLineBySelection(edgeName);
-                if (cl) {
-                    return &cl->m_format;
-                }
-            }
-        }
-        else {
-            TechDraw::GeomFormat *gf = m_partFeat->getGeomFormatBySelection(edgeName);
-            if (gf) {
-                return &gf->m_format;
-            }
-            else {
-                ViewProviderViewPart *viewPart = dynamic_cast<ViewProviderViewPart *>(QGIView::getViewProvider(m_partFeat));
-                if (viewPart) {
-                    TechDraw::LineFormat lineFormat(Qt::SolidLine, viewPart->LineWidth.getValue(), LineFormat::getDefEdgeColor(), true);
-                    TechDraw::GeomFormat geomFormat(DrawUtil::getIndexFromName(edgeName), lineFormat);
-
-                    std::string formatTag = m_partFeat->addGeomFormat(&geomFormat);
-                    if (newFormatTag) {
-                        *newFormatTag = formatTag;
-                    }
-
-                    return &m_partFeat->getGeomFormat(formatTag)->m_format;
-                }
-            }
-        }
-    }
-    return {};
+    return drawingLineFormatFromSelection(
+        m_partFeat,
+        edgeName,
+        true,
+        newFormatTag);
 }
 
 void TaskLineDecor::initializeRejectArrays()
@@ -218,22 +186,12 @@ void TaskLineDecor::onVisibleChanged(bool checked)
 
 void TaskLineDecor::applyDecorations()
 {
-//    Base::Console().message("TLD::applyDecorations()\n");
-    for (auto& e: m_edges) {
-        LineFormat *lf = getFormatAccessPtr(e);
-        if (lf) {
-            lf->setStyle(m_style);
-            lf->setColor(m_color);
-            lf->setWidth(m_weight);
-            lf->setVisible(m_visible);
-            lf->setLineNumber(m_lineNumber);
-        }
-    }
-    m_partFeat->GeomFormats.setValues(m_partFeat->GeomFormats.getValues());
-    m_partFeat->CosmeticEdges.setValues(
-        m_partFeat->CosmeticEdges.getValues()
-    );
-    m_partFeat->CenterLines.setValues(m_partFeat->CenterLines.getValues());
+    LineFormat format(m_style, m_weight, m_color, m_visible);
+    format.setLineNumber(m_lineNumber);
+    changeDrawingLineAttributes(
+        m_partFeat,
+        drawingLineTargetsFromSelection(m_partFeat, m_edges),
+        format);
 }
 
 bool TaskLineDecor::accept()

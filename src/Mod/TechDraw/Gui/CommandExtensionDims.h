@@ -22,17 +22,55 @@
 
 #pragma once
 
+#include <cstddef>
+#include <string>
+#include <vector>
+
 #include <Mod/TechDraw/TechDrawGlobal.h>
+
+namespace App
+{
+class DocumentObjectGroup;
+}
 
 namespace TechDraw
 {
     class ReferenceEntry;
     class DrawViewDimension;
+    class DrawViewPart;
 }
 
 namespace TechDrawGui {
+    struct TechDrawGuiExport DrawingDimensionSeriesPlan
+    {
+        std::string kind;
+        std::string direction;
+        std::vector<std::string> inputVertices;
+        std::vector<std::string> orderedVertices;
+        std::size_t dimensionCount {0};
+    };
+
+    struct TechDrawGuiExport DrawingDimensionSeriesResult
+    {
+        DrawingDimensionSeriesPlan plan;
+        std::vector<TechDraw::DrawViewDimension*> dimensions;
+        App::DocumentObjectGroup* operationGroup {nullptr};
+    };
+
     TechDraw::DrawViewDimension* makeArcLengthDimension(const TechDraw::ReferenceEntry& ref);
 
     std::vector<TechDraw::DrawViewDimension*> makeObliqueChainDimension(std::vector<TechDraw::ReferenceEntry> refs);
     std::vector<TechDraw::DrawViewDimension*> makeObliqueCoordDimension(std::vector<TechDraw::ReferenceEntry> refs);
+
+    TechDrawGuiExport DrawingDimensionSeriesPlan validateDrawingDimensionSeries(
+        TechDraw::DrawViewPart* view,
+        const std::string& kind,
+        const std::string& direction,
+        const std::vector<std::string>& vertices);
+
+    TechDrawGuiExport DrawingDimensionSeriesResult createDrawingDimensionSeries(
+        TechDraw::DrawViewPart* view,
+        const std::string& kind,
+        const std::string& direction,
+        const std::vector<std::string>& vertices);
 }

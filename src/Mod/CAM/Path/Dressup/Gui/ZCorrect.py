@@ -24,24 +24,21 @@ import FreeCADGui
 import Path
 import Path.Base.Util as PathUtil
 import PathScripts.PathUtils as PathUtils
+from Path.Dressup import ZCorrect as ZCorrectCore
 import Path.Dressup.Utils as PathDressup
+import Path.Main.Job as PathJob
 from Path.CommandBoundary import (
     TaskDocumentTransaction,
     begin_task_launch,
     can_start_document_command,
+    document_is_open,
     is_document_object,
+    is_timeline_input_usable,
     open_timeline_mode_zero_editor,
 )
 
 from PySide import QtGui
 from PySide.QtCore import QT_TRANSLATE_NOOP
-
-import os
-
-# lazily loaded modules
-from lazy_loader.lazy_loader import LazyLoader
-
-Part = LazyLoader("Part", globals(), "Part")
 
 """Z Depth Correction Dressup.  This dressup takes a probe file as input and does bilinear interpolation of the Zdepths to correct for a surface which is not parallel to the milling table/bed.  The probe file should conform to the format specified by the linuxcnc G38 probe logging: 9-number coordinate consisting of XYZABCUVW http://linuxcnc.org/docs/html/gcode/g-code.html#gcode:g38
 """
@@ -62,26 +59,41 @@ translate = FreeCAD.Qt.translate
 
 class ObjectDressup:
     def __init__(self, obj):
-        obj.addProperty(
+        self._ensure_properties(obj)
+        obj.Proxy = self
+        obj.ArcInterpolate = 0.1
+        obj.SegInterpolate = 1.0
+
+    @staticmethod
+    def _add_property(obj, type_name, name, group, description=""):
+        if name not in tuple(obj.PropertiesList):
+            obj.addProperty(type_name, name, group, description)
+
+    def _ensure_properties(self, obj):
+        self._add_property(
+            obj,
             "App::PropertyLink",
             "Base",
             "Path",
             QT_TRANSLATE_NOOP("App::Property", "The base toolpath to modify"),
         )
-        obj.addProperty(
+        self._add_property(
+            obj,
             "App::PropertyFile",
             "probefile",
             "ProbeData",
             QT_TRANSLATE_NOOP("App::Property", "The point file from the surface probing."),
         )
-        obj.addProperty("Part::PropertyPartShape", "interpSurface", "Path")
-        obj.addProperty(
+        self._add_property(obj, "Part::PropertyPartShape", "interpSurface", "Path")
+        self._add_property(
+            obj,
             "App::PropertyDistance",
             "ArcInterpolate",
             "Interpolate",
             QT_TRANSLATE_NOOP("App::Property", "Deflection distance for arc interpolation"),
         )
-        obj.addProperty(
+        self._add_property(
+            obj,
             "App::PropertyDistance",
             "SegInterpolate",
             "Interpolate",
@@ -90,9 +102,58 @@ class ObjectDressup:
                 "break segments into smaller segments of this length.",
             ),
         )
-        obj.Proxy = self
-        obj.ArcInterpolate = 0.1
-        obj.SegInterpolate = 1.0
+        self._add_property(
+            obj,
+            "App::PropertyString",
+            "ProbeDataSHA256",
+            "ProbeData",
+            QT_TRANSLATE_NOOP(
+                "App::Property",
+                "Content hash of the human-authorized probe map embedded in this operation.",
+            ),
+        )
+        self._add_property(
+            obj,
+            "App::PropertyInteger",
+            "ProbePointCount",
+            "ProbeData",
+            QT_TRANSLATE_NOOP("App::Property", "Validated probe-map point count."),
+        )
+        self._add_property(
+            obj,
+            "App::PropertyInteger",
+            "ProbeGridXCount",
+            "ProbeData",
+            QT_TRANSLATE_NOOP("App::Property", "Validated probe-map X count."),
+        )
+        self._add_property(
+            obj,
+            "App::PropertyInteger",
+            "ProbeGridYCount",
+            "ProbeData",
+            QT_TRANSLATE_NOOP("App::Property", "Validated probe-map Y count."),
+        )
+        self._add_property(
+            obj,
+            "App::PropertyStringList",
+            "VibeCADExternalInputs",
+            "ProbeData",
+            QT_TRANSLATE_NOOP(
+                "App::Property",
+                "Names of external files explicitly authorized for this operation.",
+            ),
+        )
+        for property_name in (
+            "ProbeDataSHA256",
+            "ProbePointCount",
+            "ProbeGridXCount",
+            "ProbeGridYCount",
+            "VibeCADExternalInputs",
+        ):
+            obj.setEditorMode(property_name, 2)
+
+    def onDocumentRestored(self, obj):
+        self._ensure_properties(obj)
 
     def dumps(self):
         return
@@ -101,85 +162,54 @@ class ObjectDressup:
         return
 
     def onChanged(self, obj, prop):
+        if prop == "probefile" and str(getattr(obj, "probefile", "") or ""):
+            obj.ProbeDataSHA256 = ""
+            obj.ProbePointCount = 0
+            obj.ProbeGridXCount = 0
+            obj.ProbeGridYCount = 0
+            obj.VibeCADExternalInputs = []
         if prop == "Path" and obj.ViewObject:
             obj.ViewObject.signalChangeIcon()
 
-    def _bilinearInterpolate(self, surface, x, y):
-        p1 = FreeCAD.Vector(x, y, 100.0)
-        p2 = FreeCAD.Vector(x, y, -100.0)
-
-        vertical_line = Part.Line(p1, p2)
-        points, _ = vertical_line.intersectCS(surface)
-        return points[0].Z
-
     def _getinterpSurface(self, obj):
-        filename = obj.probefile
+        if (
+            str(getattr(obj, "ProbeDataSHA256", "") or "")
+            and not obj.interpSurface.isNull()
+        ):
+            return True
+        filename = str(obj.probefile or "")
         if not filename:
-            return
-
-        if not os.path.isfile(filename):
-            Path.Log.warning(
-                translate("CAM_DressupZCorrect", "Probe file not found: %s") % filename
-            )
-            return
-
-        with open(filename, "r") as file:
-            lines = file.readlines()
-
-        pointlist = []
-        skipped = []
-        for i, line in enumerate(lines):
-            w = line.replace(",", ".").split()
-            if len(w) < 3:
-                skipped.append(i + 1)
-                continue
-            try:
-                xval = round(float(w[0]), 2)
-                yval = round(float(w[1]), 2)
-                zval = round(float(w[2]), 2)
-            except ValueError:
-                skipped.append(i + 1)
-                continue
-            pointlist.append((xval, yval, zval))
-
-        if skipped:
-            Path.Log.warning(
-                translate("CAM_DressupZCorrect", "Skipped non-data lines in file: %s (lines %s)")
-                % (filename, ", ".join(str(n) for n in skipped))
-            )
-
-        if len(pointlist) < 3:
-            obj.interpSurface = Part.Shape()
-            Path.Log.warning(
-                translate("CAM_DressupZCorrect", "Not enough points (%s) got from file: %s")
-                % (len(pointlist), filename)
-            )
-            return
-
-        cols = list(zip(*pointlist))
-        yindex = list(sorted(set(cols[1])))
-
-        Path.Log.debug(pointlist)
-        Path.Log.debug("cols: {}".format(cols))
-        Path.Log.debug("yindex: {}".format(yindex))
-
-        array = []
-        for y in yindex:
-            points = sorted([p for p in pointlist if p[1] == y])
-            array.append([FreeCAD.Vector(p[0], p[1], p[2]) for p in points])
-
-        intSurf = Part.BSplineSurface()
+            return False
         try:
-            intSurf.interpolate(array)
-            obj.interpSurface = intSurf.toShape()
-        except Exception:
-            obj.interpSurface = Part.Shape()
-            Path.Log.warning(
-                translate("CAM_DressupZCorrect", "Failed to create surface from probe data: %s")
-                % filename
-            )
+            grid = ZCorrectCore.read_probe_file(filename, strict=False)
+            obj.interpSurface = ZCorrectCore.build_interpolation_surface(grid)
+            obj.ProbePointCount = grid.point_count
+            obj.ProbeGridXCount = grid.x_count
+            obj.ProbeGridYCount = grid.y_count
+            if grid.skipped_line_count:
+                Path.Log.warning(
+                    translate(
+                        "CAM_DressupZCorrect",
+                        "Skipped %s malformed probe-data lines in file: %s",
+                    )
+                    % (grid.skipped_line_count, filename)
+                )
+            return True
+        except (OSError, TypeError, ValueError) as exc:
+            import Part
 
-        return
+            obj.interpSurface = Part.Shape()
+            obj.ProbePointCount = 0
+            obj.ProbeGridXCount = 0
+            obj.ProbeGridYCount = 0
+            Path.Log.warning(
+                translate(
+                    "CAM_DressupZCorrect",
+                    "Could not build a Z Correction surface from %s: %s",
+                )
+                % (filename, str(exc))
+            )
+            return False
 
     def execute(self, obj):
         if not PathUtil.activeForOp(obj):
@@ -194,68 +224,32 @@ class ObjectDressup:
             obj.Path = Path.Path()
             return
 
-        self._getinterpSurface(obj)
-        if obj.interpSurface.isNull():
-            # returns base path if no valid probe data
+        if not self._getinterpSurface(obj) or obj.interpSurface.isNull():
             obj.Path = path
             return
-
-        face = obj.interpSurface.toNurbs().Faces[0]
-        surface = face.Surface
-        bb = face.BoundBox
-        bb.ZMax = 0
-        bb.ZMin = 0
-
-        newcommandlist = []
-        currLocation = {"X": 0, "Y": 0, "Z": 0, "F": 0}
-        for cmd in path.Commands:
-            Path.Log.debug(cmd)
-            Path.Log.debug("     curLoc:{}".format(currLocation))
-            newparams = dict(cmd.Parameters)
-            zval = newparams.get("Z", currLocation["Z"])
-            if cmd.Name not in Path.Geom.CmdMoveMill:
-                # non mill command
-                newcommandlist.append(cmd)
-                currLocation.update(cmd.Parameters)
-            else:
-                curVec = FreeCAD.Vector(currLocation["X"], currLocation["Y"], currLocation["Z"])
-                edge = Path.Geom.edgeForCmd(cmd, curVec)
-                if edge is None:
-                    continue
-                if cmd.Name in Path.Geom.CmdMoveArc:
-                    pointlist = edge.discretize(Deflection=obj.ArcInterpolate.Value)
-                else:
-                    disc_number = int(edge.Length / obj.SegInterpolate.Value)
-                    if disc_number > 1:
-                        pointlist = edge.discretize(Number=disc_number)
-                    else:
-                        pointlist = [v.Point for v in edge.Vertexes]
-
-                for point in pointlist:
-                    if not bb.isInside(FreeCAD.Vector(point.x, point.y, 0)):
-                        obj.Path = path
-                        pointStr = f"({round(point.x, 3)}, {round(point.y, 3)})"
-                        bbMin = f"XMin={round(bb.XMin, 3)}, YMin={round(bb.YMin, 3)}"
-                        bbMax = f"XMax={round(bb.XMax, 3)}, YMax={round(bb.YMax, 3)}"
-                        Path.Log.warning(
-                            translate(
-                                "CAM_DressupZCorrect",
-                                "Path point %s is outside of the probe area %s, %s",
-                            )
-                            % (pointStr, bbMin, bbMax)
-                        )
-                        return
-
-                    offset = self._bilinearInterpolate(surface, point.x, point.y)
-                    commandparams = {"X": point.x, "Y": point.y, "Z": point.z + offset}
-                    if "F" in newparams.keys():
-                        commandparams["F"] = newparams["F"]
-                    newcommand = Path.Command("G1", commandparams)
-                    newcommandlist.append(newcommand)
-                    currLocation.update(newcommand.Parameters)
-                    currLocation["Z"] = zval
-
-        obj.Path = Path.Path(newcommandlist)
+        try:
+            source = ZCorrectCore.freeze_toolpath(
+                path,
+                maximum_commands=ZCorrectCore.MAX_Z_CORRECT_INPUT_COMMANDS,
+            )
+            generated = ZCorrectCore.generate_corrected_path(
+                source,
+                obj.interpSurface,
+                ZCorrectCore.ZCorrectionDefinition(
+                    arc_maximum_deflection_mm=float(obj.ArcInterpolate.Value),
+                    line_maximum_segment_length_mm=float(obj.SegInterpolate.Value),
+                ),
+            )
+            obj.Path = generated.path
+        except (TypeError, ValueError) as exc:
+            obj.Path = path
+            Path.Log.warning(
+                translate(
+                    "CAM_DressupZCorrect",
+                    "Could not apply Z Correction: %s",
+                )
+                % str(exc)
+            )
 
 
 class TaskPanel:
@@ -378,20 +372,19 @@ class TaskPanel:
 class ViewProviderDressup:
     def __init__(self, vobj):
         self.panel = None
+        self.attach(vobj)
         vobj.Proxy = self
 
     def attach(self, vobj):
         self.obj = vobj.Object
         self.panel = None
-        if self.obj and self.obj.Base:
-            for i in self.obj.Base.InList:
-                if hasattr(i, "Group"):
-                    group = i.Group
-                    for g in group:
-                        if g.Name == self.obj.Base.Name:
-                            group.remove(g)
-                    i.Group = group
-        return
+        self._job_name = ""
+        try:
+            job = PathUtils.findParentJob(self.obj)
+            if job is not None and job.Document is self.obj.Document:
+                self._job_name = str(job.Name)
+        except (ReferenceError, RuntimeError):
+            pass
 
     def claimChildren(self):
         return [self.obj.Base]
@@ -439,21 +432,50 @@ class ViewProviderDressup:
     def loads(self, state):
         return None
 
-    def onDelete(self, arg1=None, arg2=None):
-        """this makes sure that the base operation is added back to the project and visible"""
-        gui_document = FreeCADGui.getDocument(
-            arg1.Object.Document.Name
-        )
-        if PathUtil.shouldRestoreTimelineReplacedInput(
-            arg1.Object,
-            arg1.Object.Base,
+    def _restore_base_before_delete(self, view_object):
+        try:
+            dressup = view_object.Object if view_object is not None else None
+            document = getattr(dressup, "Document", None)
+            base = getattr(dressup, "Base", None)
+        except (ReferenceError, RuntimeError):
+            return
+        try:
+            callback_matches_provider = (
+                document_is_open(document)
+                and dressup is self.obj
+                and getattr(dressup, "Document", None) is document
+            )
+        except (NameError, ReferenceError, RuntimeError):
+            callback_matches_provider = False
+        if not callback_matches_provider or not is_document_object(base, document):
+            return
+        try:
+            job = document.getObject(self._job_name) if self._job_name else None
+        except (NameError, ReferenceError, RuntimeError):
+            job = None
+        if (
+            job is not None
+            and is_document_object(job, document)
+            and isinstance(getattr(job, "Proxy", None), PathJob.ObjectJob)
+            and is_document_object(getattr(job, "Operations", None), document)
         ):
-            gui_document.getObject(
-                arg1.Object.Base.Name
-            ).Visibility = True
-        job = PathUtils.findParentJob(arg1.Object)
-        job.Proxy.addOperation(arg1.Object.Base)
-        arg1.Object.Base = None
+            before = dressup if dressup in job.Operations.Group else None
+            job.Proxy.addOperation(base, before)
+        try:
+            if PathUtil.shouldRestoreTimelineReplacedInput(dressup, base):
+                base.ViewObject.Visibility = True
+        except (ReferenceError, RuntimeError):
+            pass
+        try:
+            dressup.Base = None
+        except (ReferenceError, RuntimeError):
+            pass
+
+    def beforeDelete(self, view_object):
+        self._restore_base_before_delete(view_object)
+
+    def onDelete(self, view_object=None, _arguments=None):
+        self._restore_base_before_delete(view_object)
         return True
 
     def getIcon(self):
@@ -468,14 +490,21 @@ def _validated_base(base, document):
         not is_document_object(base, document)
         or not base.isDerivedFrom("Path::Feature")
         or not PathDressup.isOp(base)
+        or not base.isValid()
+        or not getattr(base, "Path", None)
+        or not tuple(base.Path.Commands or ())
+        or not is_timeline_input_usable(base, document)
     ):
         return None
 
     job = PathUtils.findParentJob(base)
     if (
         not is_document_object(job, document)
+        or not isinstance(getattr(job, "Proxy", None), PathJob.ObjectJob)
         or getattr(job, "Operations", None) is None
+        or base not in tuple(job.Operations.Group or ())
         or not hasattr(getattr(job, "Proxy", None), "addOperation")
+        or not is_timeline_input_usable(job, document)
     ):
         return None
     return job
@@ -519,12 +548,14 @@ def _validate_result(
         or result.Base is not base
         or PathUtils.findParentJob(result) is not job
         or result not in job.Operations.Group
+        or base in job.Operations.Group
         or PathUtil.timelineParentJob(result) is not job
         or "VibeCADTimelineReplacedInputs" not in result.PropertiesList
         or list(result.VibeCADTimelineReplacedInputs) != replaced_inputs
         or str(result.VibeCADTimelineRole) != "operation"
         or not result.isValid()
         or bool(base.ViewObject.Visibility)
+        or not bool(result.ViewObject.Visibility)
         or not document.isProvisionallyEnrolledInTimelineByCurrentTransaction(
             result
         )
@@ -535,7 +566,7 @@ def _validate_result(
         )
 
 
-def createDressupFeature(document):
+def createDressupFeature(document, name="ZCorrectDressup"):
     """Create and initialize one exact Z Correction dress-up feature."""
     if document is None:
         raise RuntimeError(
@@ -543,9 +574,30 @@ def createDressupFeature(document):
         )
     result = document.addObject(
         "Path::FeaturePython",
-        "ZCorrectDressup",
+        name,
     )
     ObjectDressup(result)
+    return result
+
+
+def CreateInTransaction(base, name="ZCorrectDressup", hide_base=True):
+    """Create one Z Correction replacement inside its caller-owned transaction."""
+
+    document = getattr(base, "Document", None)
+    job = _validated_base(base, document)
+    if job is None:
+        raise RuntimeError("The selected CAM operation cannot receive Z Correction")
+    base_was_visible = bool(base.ViewObject and base.ViewObject.Visibility)
+    result = createDressupFeature(document, name)
+    result.Base = base
+    job.Proxy.addOperation(result, base, removeBefore=True)
+    result.ViewObject.Proxy = ViewProviderDressup(result.ViewObject)
+    PathUtil.markTimelineReplacedInputs(
+        result,
+        [base] if base_was_visible else [],
+    )
+    if hide_base:
+        base.ViewObject.Visibility = False
     return result
 
 
@@ -595,39 +647,19 @@ class CommandPathDressup:
                 "document = FreeCAD.getDocument(%r)"
                 % document.Name
             )
+            FreeCADGui.doCommand(
+                "base = document.getObject(%r)" % base_name
+            )
             result = FreeCADGui.runDocumentObjectCommand(
                 document,
-                "Path.Dressup.Gui.ZCorrect.createDressupFeature(document)",
+                "Path.Dressup.Gui.ZCorrect.CreateInTransaction(base)",
                 "Path::FeaturePython",
             )
             result_name = str(result.Name)
             result_id = int(result.ID)
             result_expression = "document.getObject(%r)" % result_name
             FreeCADGui.doCommand(
-                "base = document.getObject(%r)" % base_name
-            )
-            FreeCADGui.doCommand(
-                "_cam_base_was_visible = bool(base.ViewObject.Visibility)"
-            )
-            FreeCADGui.doCommand(
                 "job = PathScripts.PathUtils.findParentJob(base)"
-            )
-            FreeCADGui.doCommand(f"{result_expression}.Base = base")
-            FreeCADGui.doCommand(
-                f"job.Proxy.addOperation({result_expression}, base)"
-            )
-            FreeCADGui.doCommand(
-                "Path.Dressup.Gui.ZCorrect.ViewProviderDressup("
-                f"{result_expression}.ViewObject)"
-            )
-            FreeCADGui.doCommand(
-                "Path.Base.Util.markTimelineReplacedInputs("
-                f"{result_expression}, "
-                "[base] if _cam_base_was_visible else [])"
-            )
-            FreeCADGui.doCommand(
-                "Gui.getDocument(document.Name).getObject("
-                "base.Name).Visibility = False"
             )
             FreeCADGui.doCommand(
                 f"{result_expression}.ViewObject.Document.setEdit("

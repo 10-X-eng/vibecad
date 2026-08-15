@@ -22,18 +22,16 @@
 
 # include <QApplication>
 # include <QMessageBox>
-# include <cctype>
+# include <algorithm>
 # include <cmath>
 # include <exception>
+# include <set>
 # include <sstream>
 # include <utility>
-# include <BRepGProp.hxx>
-# include <GProp_GProps.hxx>
-
-
 # include <App/Document.h>
 # include <App/DocumentObject.h>
 # include <Base/Console.h>
+# include <Base/Exception.h>
 # include <Base/Interpreter.h>
 # include <Base/Type.h>
 # include <Base/Tools.h>
@@ -58,6 +56,8 @@
 
 #include "CommandExtensionDims.h"
 #include "CommandHelpers.h"
+#include "DimensionBuilder.h"
+#include "DimensionTextBuilder.h"
 #include "DlgTemplateField.h"
 #include "DrawGuiUtil.h"
 #include "TaskCustomizeFormat.h"
@@ -123,6 +123,20 @@ namespace TechDrawGui {
             : nullptr;
     }
 
+    std::vector<TechDraw::DrawViewDimension*> selectedDrawingDimensions(
+        const std::vector<Gui::SelectionObject>& selection)
+    {
+        std::vector<TechDraw::DrawViewDimension*> result;
+        result.reserve(selection.size());
+        for (const auto& selected : selection) {
+            if (auto* dimension =
+                    _resolveSelectedObject<TechDraw::DrawViewDimension>(selected)) {
+                result.push_back(dimension);
+            }
+        }
+        return result;
+    }
+
     template<typename Operation>
     bool _runExactDocumentCommand(
         Gui::Command* cmd,
@@ -164,48 +178,42 @@ namespace TechDrawGui {
 //===========================================================================
 // TechDraw_ExtensionInsertDiameter
 //===========================================================================
-void execInsertPrefixChar(Gui::Command* cmd, const std::string& prefixFormat) {
+void execInsertPrefixChar(
+    Gui::Command* cmd,
+    DrawingDimensionTextOperation operation)
+{
     // insert a prefix character into the format specifier
     std::vector<Gui::SelectionObject> selection;
     if (!_checkSelection(cmd, selection, QObject::tr("TechDraw Insert Prefix").toStdString())) {
         return;
     }
 
-    std::string prefixText(prefixFormat);
-    if (prefixFormat.find("%s") != std::string::npos) {
+    std::string repetitionText;
+    if (operation == DrawingDimensionTextOperation::InsertRepetition) {
         DlgTemplateField ui(Gui::getMainWindow());
         ui.setFieldName(QObject::tr("Repeat count").toStdString());
         ui.setFieldContent("1");
         if (ui.exec() != QDialog::Accepted) {
             return;
         }
-
-        QString numberFromDialog = ui.getFieldContent();
-        QString qPrefixText = QStringLiteral("%1× ").arg(numberFromDialog);
-        prefixText = qPrefixText.toStdString();
+        repetitionText = ui.getFieldContent().toStdString();
     }
-    const size_t prefixSize = prefixText.size();
+    const auto dimensions = selectedDrawingDimensions(selection);
     _runExactDocumentCommand(
         cmd,
         QObject::tr("Insert Prefix").toStdString(),
         QObject::tr("Insert Prefix"),
         [&]() {
-            bool changed = false;
-            for (const auto& selected : selection) {
-                auto* dim =
-                    _resolveSelectedObject<
-                        TechDraw::DrawViewDimension
-                    >(selected);
-                if (!dim) {
-                    continue;
-                }
-                std::string formatSpec = dim->FormatSpec.getStrValue();
-                formatSpec.reserve(formatSpec.size() + prefixSize);
-                formatSpec.insert(0, prefixText);
-                dim->FormatSpec.setValue(formatSpec);
-                changed = true;
+            if (dimensions.empty()) {
+                return false;
             }
-            return changed;
+            const auto plans = changeDrawingDimensionText(
+                dimensions,
+                operation,
+                repetitionText);
+            return std::ranges::any_of(
+                plans,
+                [](const auto& plan) { return plan.changed; });
         }
     );
 }
@@ -227,7 +235,7 @@ CmdTechDrawExtensionInsertDiameter::CmdTechDrawExtensionInsertDiameter()
 void CmdTechDrawExtensionInsertDiameter::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    execInsertPrefixChar(this, "⌀");
+    execInsertPrefixChar(this, DrawingDimensionTextOperation::InsertDiameter);
 }
 
 bool CmdTechDrawExtensionInsertDiameter::isActive()
@@ -258,7 +266,7 @@ CmdTechDrawExtensionInsertSquare::CmdTechDrawExtensionInsertSquare()
 void CmdTechDrawExtensionInsertSquare::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    execInsertPrefixChar(this, "□");    //□ white square U+25A1
+    execInsertPrefixChar(this, DrawingDimensionTextOperation::InsertSquare);
 }
 
 bool CmdTechDrawExtensionInsertSquare::isActive()
@@ -290,7 +298,7 @@ void CmdTechDrawExtensionInsertRepetition::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
 
-    execInsertPrefixChar(this, "%s× "); //× Multiplication sign U+00D7
+    execInsertPrefixChar(this, DrawingDimensionTextOperation::InsertRepetition);
 }
 
 bool CmdTechDrawExtensionInsertRepetition::isActive()
@@ -311,29 +319,21 @@ void execRemovePrefixChar(Gui::Command* cmd) {
         return;
     }
 
+    const auto dimensions = selectedDrawingDimensions(selection);
     _runExactDocumentCommand(
         cmd,
         QT_TRANSLATE_NOOP("Command", "Remove Prefix"),
         QObject::tr("Remove Prefix"),
         [&]() {
-            bool changed = false;
-            for (const auto& selected : selection) {
-                auto* dim =
-                    _resolveSelectedObject<
-                        TechDraw::DrawViewDimension
-                    >(selected);
-                if (!dim) {
-                    continue;
-                }
-                std::string formatSpec = dim->FormatSpec.getStrValue();
-                const size_t pos = formatSpec.find("%.");
-                if (pos == std::string::npos || pos == 0) {
-                    continue;
-                }
-                dim->FormatSpec.setValue(formatSpec.substr(pos));
-                changed = true;
+            if (dimensions.empty()) {
+                return false;
             }
-            return changed;
+            const auto plans = changeDrawingDimensionText(
+                dimensions,
+                DrawingDimensionTextOperation::RemovePrefix);
+            return std::ranges::any_of(
+                plans,
+                [](const auto& plan) { return plan.changed; });
         }
     );
 }
@@ -396,13 +396,13 @@ void CmdTechDrawExtensionInsertPrefixGroup::activated(int iMsg)
     pcAction->setIcon(pcAction->actions().at(iMsg)->icon());
     switch (iMsg) {
     case 0:                 //insert "⌀" as prefix
-        execInsertPrefixChar(this, "⌀");
+        execInsertPrefixChar(this, DrawingDimensionTextOperation::InsertDiameter);
         break;
     case 1:                 //insert "□" as prefix
-        execInsertPrefixChar(this, "□");
+        execInsertPrefixChar(this, DrawingDimensionTextOperation::InsertSquare);
         break;
     case 2:                 //insert "n×" as prefix
-        execInsertPrefixChar(this, "%s× ");
+        execInsertPrefixChar(this, DrawingDimensionTextOperation::InsertRepetition);
         break;
     case 3:                 //remove prefix characters
         execRemovePrefixChar(this);
@@ -494,40 +494,24 @@ void execIncreaseDecreaseDecimal(Gui::Command* cmd, int delta) {
         return;
     }
 
+    const auto dimensions = selectedDrawingDimensions(selection);
+    const auto operation = delta > 0
+        ? DrawingDimensionTextOperation::IncreaseDecimals
+        : DrawingDimensionTextOperation::DecreaseDecimals;
     _runExactDocumentCommand(
         cmd,
         QT_TRANSLATE_NOOP("Command", "Increase/Decrease Decimal"),
         QObject::tr("Increase/Decrease Decimal"),
         [&]() {
-            bool changed = false;
-            for (const auto& selected : selection) {
-                auto* dim =
-                    _resolveSelectedObject<
-                        TechDraw::DrawViewDimension
-                    >(selected);
-                if (!dim) {
-                    continue;
-                }
-                std::string formatSpec = dim->FormatSpec.getStrValue();
-                const size_t marker = formatSpec.find("%.");
-                if (marker == std::string::npos
-                    || marker + 2 >= formatSpec.size()
-                    || !std::isdigit(
-                        static_cast<unsigned char>(formatSpec[marker + 2])
-                    )) {
-                    continue;
-                }
-                const int decimalPlaces =
-                    (formatSpec[marker + 2] - '0') + delta;
-                if (decimalPlaces < 0 || decimalPlaces > 9) {
-                    continue;
-                }
-                formatSpec[marker + 2] =
-                    static_cast<char>('0' + decimalPlaces);
-                dim->FormatSpec.setValue(formatSpec);
-                changed = true;
+            if (dimensions.empty()) {
+                return false;
             }
-            return changed;
+            const auto plans = changeDrawingDimensionText(
+                dimensions,
+                operation);
+            return std::ranges::any_of(
+                plans,
+                [](const auto& plan) { return plan.changed; });
         }
     );
 }
@@ -1407,11 +1391,11 @@ void execCreateHorizChainDimension(Gui::Command* cmd) {
 
     const std::vector<std::string> subNames = selection[0].getSubNames();
     auto allVertexes = _getVertexInfo(objFeat, subNames);
-    if (allVertexes.size() < 2) {
+    if (allVertexes.size() < 3) {
         QMessageBox::warning(
             Gui::getMainWindow(),
             QObject::tr("Horizontal Chain Dimension"),
-            QObject::tr("Select at least two valid vertices")
+            QObject::tr("Select at least three valid vertices")
         );
         return;
     }
@@ -1420,35 +1404,9 @@ void execCreateHorizChainDimension(Gui::Command* cmd) {
         QT_TRANSLATE_NOOP("Command", "Create Horizontal Chain Dimension"),
         QObject::tr("Horizontal Chain Dimension"),
         [&]() {
-            std::sort(allVertexes.begin(), allVertexes.end(), sortX);
-            float yMaster = 0.0;
-            std::vector<App::DocumentObject*> dimensions;
-            dimensions.reserve(allVertexes.size() - 1);
-            for (size_t n = 0; n + 1 < allVertexes.size(); ++n) {
-                auto* dim = _createLinDimension(
-                    objFeat,
-                    allVertexes[n].name,
-                    allVertexes[n + 1].name,
-                    "DistanceX"
-                );
-                const pointPair pp = dim->getLinearPoints();
-                const Base::Vector3d mid = (pp.first() + pp.second()) / 2.0;
-                dim->X.setValue(mid.x);
-                if (n == 0) {
-                    yMaster = -mid.y;
-                }
-                dim->Y.setValue(yMaster);
-                dimensions.push_back(dim);
-            }
-            CommandHelpers::groupTimelineOutputs(
-                objFeat->getDocument(),
-                dimensions,
-                "HorizontalChainDimensions",
-                QT_TRANSLATE_NOOP("Command", "Horizontal Chain Dimensions")
-            );
-            objFeat->refreshCEGeoms();
-            objFeat->requestPaint();
-            return true;
+            return !createDrawingDimensionSeries(
+                objFeat, "chain", "horizontal", subNames
+            ).dimensions.empty();
         }
     );
     if (created) {
@@ -1499,11 +1457,11 @@ void execCreateVertChainDimension(Gui::Command* cmd) {
 
     const std::vector<std::string> subNames = selection[0].getSubNames();
     auto allVertexes = _getVertexInfo(objFeat, subNames);
-    if (allVertexes.size() < 2) {
+    if (allVertexes.size() < 3) {
         QMessageBox::warning(
             Gui::getMainWindow(),
             QObject::tr("Vertical Chain Dimension"),
-            QObject::tr("Select at least two valid vertices")
+            QObject::tr("Select at least three valid vertices")
         );
         return;
     }
@@ -1512,36 +1470,9 @@ void execCreateVertChainDimension(Gui::Command* cmd) {
         QT_TRANSLATE_NOOP("Command", "Create Vert Chain dimension"),
         QObject::tr("Vertical Chain Dimension"),
         [&]() {
-            std::sort(allVertexes.begin(), allVertexes.end(), sortY);
-            float xMaster = 0.0;
-            const double fontSize = Preferences::dimFontSizeMM();
-            std::vector<App::DocumentObject*> dimensions;
-            dimensions.reserve(allVertexes.size() - 1);
-            for (size_t n = 0; n + 1 < allVertexes.size(); ++n) {
-                auto* dim = _createLinDimension(
-                    objFeat,
-                    allVertexes[n].name,
-                    allVertexes[n + 1].name,
-                    "DistanceY"
-                );
-                const pointPair pp = dim->getLinearPoints();
-                const Base::Vector3d mid = (pp.first() + pp.second()) / 2.0;
-                if (n == 0) {
-                    xMaster = mid.x;
-                }
-                dim->X.setValue(xMaster);
-                dim->Y.setValue(-mid.y + 0.5 * fontSize);
-                dimensions.push_back(dim);
-            }
-            CommandHelpers::groupTimelineOutputs(
-                objFeat->getDocument(),
-                dimensions,
-                "VerticalChainDimensions",
-                QT_TRANSLATE_NOOP("Command", "Vertical Chain Dimensions")
-            );
-            objFeat->refreshCEGeoms();
-            objFeat->requestPaint();
-            return true;
+            return !createDrawingDimensionSeries(
+                objFeat, "chain", "vertical", subNames
+            ).dimensions.empty();
         }
     );
     if (created) {
@@ -1589,15 +1520,11 @@ void execCreateObliqueChainDimension(Gui::Command* cmd) {
         return;
     }
 
-    std::vector<TechDraw::ReferenceEntry> refs;
-    for (auto& subName : selection[0].getSubNames()) {
-        refs.push_back(ReferenceEntry(objFeat, subName));
-    }
-    if (_getVertexInfo(objFeat, selection[0].getSubNames()).size() < 2) {
+    if (_getVertexInfo(objFeat, selection[0].getSubNames()).size() < 3) {
         QMessageBox::warning(
             Gui::getMainWindow(),
             QObject::tr("Oblique Chain Dimension"),
-            QObject::tr("Select at least two valid vertices")
+            QObject::tr("Select at least three valid vertices")
         );
         return;
     }
@@ -1607,20 +1534,12 @@ void execCreateObliqueChainDimension(Gui::Command* cmd) {
         QT_TRANSLATE_NOOP("Command", "Create oblique chain dimension"),
         QObject::tr("Oblique Chain Dimension"),
         [&]() {
-            const auto dims = makeObliqueChainDimension(refs);
-            if (dims.empty()) {
-                return false;
-            }
-            const std::vector<App::DocumentObject*> dimensions(dims.begin(), dims.end());
-            CommandHelpers::groupTimelineOutputs(
-                objFeat->getDocument(),
-                dimensions,
-                "ObliqueChainDimensions",
-                QT_TRANSLATE_NOOP("Command", "Oblique Chain Dimensions")
-            );
-            objFeat->refreshCEGeoms();
-            objFeat->requestPaint();
-            return true;
+            return !createDrawingDimensionSeries(
+                objFeat,
+                "chain",
+                "oblique",
+                selection[0].getSubNames()
+            ).dimensions.empty();
         }
     );
     if (created) {
@@ -1699,7 +1618,15 @@ std::vector<DrawViewDimension*> TechDrawGui::makeObliqueChainDimension(
             else
                 carrierVertexes.push_back(oldVertex);
         }
-        std::sort(carrierVertexes.begin(), carrierVertexes.end(), sortX);
+        const bool orderByX = std::abs(dirMaster.x) >= std::abs(dirMaster.y);
+        std::sort(
+            carrierVertexes.begin(),
+            carrierVertexes.end(),
+            [orderByX](const dimVertex& left, const dimVertex& right) {
+                return orderByX ? left.point.x < right.point.x
+                                : left.point.y < right.point.y;
+            }
+        );
         double fontSize = Preferences::dimFontSizeMM();
         for (long unsigned int n = 0; n < allVertexes.size() - 1; n++) {
             TechDraw::DrawViewDimension* dim;
@@ -1864,11 +1791,11 @@ void execCreateHorizCoordDimension(Gui::Command* cmd) {
 
     const std::vector<std::string> subNames = selection[0].getSubNames();
     auto allVertexes = _getVertexInfo(objFeat, subNames);
-    if (allVertexes.size() < 2) {
+    if (allVertexes.size() < 3) {
         QMessageBox::warning(
             Gui::getMainWindow(),
             QObject::tr("Horizontal Coordinate Dimension"),
-            QObject::tr("Select at least two valid vertices")
+            QObject::tr("Select at least three valid vertices")
         );
         return;
     }
@@ -1877,41 +1804,9 @@ void execCreateHorizCoordDimension(Gui::Command* cmd) {
         QT_TRANSLATE_NOOP("Command", "Create Horizontal Coord Dimension"),
         QObject::tr("Horizontal Coordinate Dimension"),
         [&]() {
-            const dimVertex firstVertex = allVertexes[0];
-            const dimVertex secondVertex = allVertexes[1];
-            std::sort(allVertexes.begin(), allVertexes.end(), sortX);
-            if (firstVertex.point.x > secondVertex.point.x) {
-                std::reverse(allVertexes.begin(), allVertexes.end());
-            }
-            float spacing = activeDimAttributes.getCascadeSpacing();
-            const float yMaster = allVertexes[0].point.y - spacing;
-            if (std::signbit(yMaster)) {
-                spacing = -spacing;
-            }
-            std::vector<App::DocumentObject*> dimensions;
-            dimensions.reserve(allVertexes.size() - 1);
-            for (size_t n = 0; n + 1 < allVertexes.size(); ++n) {
-                auto* dim = _createLinDimension(
-                    objFeat,
-                    allVertexes[0].name,
-                    allVertexes[n + 1].name,
-                    "DistanceX"
-                );
-                const pointPair pp = dim->getLinearPoints();
-                const Base::Vector3d mid = (pp.first() + pp.second()) / 2.0;
-                dim->X.setValue(mid.x);
-                dim->Y.setValue(-yMaster - spacing * static_cast<double>(n));
-                dimensions.push_back(dim);
-            }
-            CommandHelpers::groupTimelineOutputs(
-                objFeat->getDocument(),
-                dimensions,
-                "HorizontalCoordinateDimensions",
-                QT_TRANSLATE_NOOP("Command", "Horizontal Coordinate Dimensions")
-            );
-            objFeat->refreshCEGeoms();
-            objFeat->requestPaint();
-            return true;
+            return !createDrawingDimensionSeries(
+                objFeat, "coordinate", "horizontal", subNames
+            ).dimensions.empty();
         }
     );
     if (created) {
@@ -1959,11 +1854,11 @@ void execCreateVertCoordDimension(Gui::Command* cmd) {
     }
     const std::vector<std::string> subNames = selection[0].getSubNames();
     auto allVertexes = _getVertexInfo(objFeat, subNames);
-    if (allVertexes.size() < 2) {
+    if (allVertexes.size() < 3) {
         QMessageBox::warning(
             Gui::getMainWindow(),
             QObject::tr("Vertical Coordinate Dimension"),
-            QObject::tr("Select at least two valid vertices")
+            QObject::tr("Select at least three valid vertices")
         );
         return;
     }
@@ -1972,42 +1867,9 @@ void execCreateVertCoordDimension(Gui::Command* cmd) {
         QT_TRANSLATE_NOOP("Command", "Create vert coord dimension"),
         QObject::tr("Vertical Coordinate Dimension"),
         [&]() {
-            const dimVertex firstVertex = allVertexes[0];
-            const dimVertex secondVertex = allVertexes[1];
-            std::sort(allVertexes.begin(), allVertexes.end(), sortY);
-            if (firstVertex.point.y > secondVertex.point.y) {
-                std::reverse(allVertexes.begin(), allVertexes.end());
-            }
-            float spacing = activeDimAttributes.getCascadeSpacing();
-            const float xMaster = allVertexes[0].point.x + spacing;
-            if (std::signbit(xMaster)) {
-                spacing = -spacing;
-            }
-            const double fontSize = Preferences::dimFontSizeMM();
-            std::vector<App::DocumentObject*> dimensions;
-            dimensions.reserve(allVertexes.size() - 1);
-            for (size_t n = 0; n + 1 < allVertexes.size(); ++n) {
-                auto* dim = _createLinDimension(
-                    objFeat,
-                    allVertexes[0].name,
-                    allVertexes[n + 1].name,
-                    "DistanceY"
-                );
-                const pointPair pp = dim->getLinearPoints();
-                const Base::Vector3d mid = (pp.first() + pp.second()) / 2.0;
-                dim->X.setValue(xMaster + spacing * static_cast<double>(n));
-                dim->Y.setValue(-mid.y + 0.5 * fontSize);
-                dimensions.push_back(dim);
-            }
-            CommandHelpers::groupTimelineOutputs(
-                objFeat->getDocument(),
-                dimensions,
-                "VerticalCoordinateDimensions",
-                QT_TRANSLATE_NOOP("Command", "Vertical Coordinate Dimensions")
-            );
-            objFeat->refreshCEGeoms();
-            objFeat->requestPaint();
-            return true;
+            return !createDrawingDimensionSeries(
+                objFeat, "coordinate", "vertical", subNames
+            ).dimensions.empty();
         }
     );
     if (created) {
@@ -2054,15 +1916,11 @@ void execCreateObliqueCoordDimension(Gui::Command* cmd) {
         return;
     }
 
-    std::vector<TechDraw::ReferenceEntry> refs;
-    for (auto& subName : selection[0].getSubNames()) {
-        refs.push_back(ReferenceEntry(objFeat, subName));
-    }
-    if (_getVertexInfo(objFeat, selection[0].getSubNames()).size() < 2) {
+    if (_getVertexInfo(objFeat, selection[0].getSubNames()).size() < 3) {
         QMessageBox::warning(
             Gui::getMainWindow(),
             QObject::tr("Oblique Coordinate Dimension"),
-            QObject::tr("Select at least two valid vertices")
+            QObject::tr("Select at least three valid vertices")
         );
         return;
     }
@@ -2072,20 +1930,12 @@ void execCreateObliqueCoordDimension(Gui::Command* cmd) {
         QT_TRANSLATE_NOOP("Command", "Create oblique coord dimension"),
         QObject::tr("Oblique Coordinate Dimension"),
         [&]() {
-            const auto dims = makeObliqueCoordDimension(refs);
-            if (dims.empty()) {
-                return false;
-            }
-            const std::vector<App::DocumentObject*> dimensions(dims.begin(), dims.end());
-            CommandHelpers::groupTimelineOutputs(
-                objFeat->getDocument(),
-                dimensions,
-                "ObliqueCoordinateDimensions",
-                QT_TRANSLATE_NOOP("Command", "Oblique Coordinate Dimensions")
-            );
-            objFeat->refreshCEGeoms();
-            objFeat->requestPaint();
-            return true;
+            return !createDrawingDimensionSeries(
+                objFeat,
+                "coordinate",
+                "oblique",
+                selection[0].getSubNames()
+            ).dimensions.empty();
         }
     );
     if (created) {
@@ -2163,12 +2013,13 @@ std::vector<DrawViewDimension*> TechDrawGui::makeObliqueCoordDimension(
                 carrierVertexes.push_back(oldVertex);
             }
         }
-        dimVertex firstVertex = carrierVertexes[0];
-        dimVertex secondVertex = carrierVertexes[1];
-        std::sort(carrierVertexes.begin(), carrierVertexes.end(), sortX);
-        if (firstVertex.point.x > secondVertex.point.x) {
-            std::reverse(carrierVertexes.begin(), carrierVertexes.end());
-        }
+        std::sort(
+            carrierVertexes.begin(),
+            carrierVertexes.end(),
+            [&dirMaster](const dimVertex& left, const dimVertex& right) {
+                return left.point.Dot(dirMaster) > right.point.Dot(dirMaster);
+            }
+        );
         double fontSize = Preferences::dimFontSizeMM();
         for (long unsigned int n = 0; n < allVertexes.size() - 1; n++) {
             TechDraw::DrawViewDimension* dim;
@@ -2182,6 +2033,251 @@ std::vector<DrawViewDimension*> TechDrawGui::makeObliqueCoordDimension(
     }
 
     return dims;
+}
+
+DrawingDimensionSeriesPlan TechDrawGui::validateDrawingDimensionSeries(
+    DrawViewPart* view,
+    const std::string& kind,
+    const std::string& direction,
+    const std::vector<std::string>& vertices)
+{
+    if (!view || !view->getDocument() || !view->findParentPage()) {
+        throw Base::ValueError(
+            "A live projected Drawing view is required for dimension series"
+        );
+    }
+    if (kind != "chain" && kind != "coordinate") {
+        throw Base::ValueError("Dimension series kind must be chain or coordinate");
+    }
+    if (direction != "horizontal" && direction != "vertical"
+        && direction != "oblique") {
+        throw Base::ValueError(
+            "Dimension series direction must be horizontal, vertical, or oblique"
+        );
+    }
+    if (vertices.size() < 3 || vertices.size() > 64) {
+        throw Base::ValueError(
+            "A dimension series requires 3 to 64 projected vertices"
+        );
+    }
+    const std::set<std::string> unique(vertices.begin(), vertices.end());
+    if (unique.size() != vertices.size()) {
+        throw Base::ValueError(
+            "Dimension series vertices must be unique"
+        );
+    }
+    auto resolved = _getVertexInfo(view, vertices);
+    if (resolved.size() != vertices.size()) {
+        throw Base::ValueError(
+            "Every dimension series source must be a live projected VertexN"
+        );
+    }
+    std::set<std::string> resolvedNames;
+    for (const auto& vertex : resolved) {
+        resolvedNames.insert(vertex.name);
+    }
+    if (resolvedNames != unique) {
+        throw Base::ValueError(
+            "Dimension series vertices did not resolve to the exact requested sources"
+        );
+    }
+
+    DrawingDimensionSeriesPlan plan;
+    plan.kind = kind;
+    plan.direction = direction;
+    plan.inputVertices = vertices;
+    plan.dimensionCount = vertices.size() - 1;
+    if (direction == "oblique") {
+        const Base::Vector3d masterDirection =
+            resolved[0].point - resolved[1].point;
+        if (masterDirection.Length() <= Base::Vector3d::epsilon()) {
+            throw Base::ValueError(
+                "The first two oblique series vertices must define a direction"
+            );
+        }
+        if (kind == "chain") {
+            const bool orderByX =
+                std::abs(masterDirection.x) >= std::abs(masterDirection.y);
+            std::sort(
+                resolved.begin(),
+                resolved.end(),
+                [orderByX](const dimVertex& left, const dimVertex& right) {
+                    return orderByX ? left.point.x < right.point.x
+                                    : left.point.y < right.point.y;
+                }
+            );
+        }
+        else {
+            std::sort(
+                resolved.begin(),
+                resolved.end(),
+                [&masterDirection](const dimVertex& left, const dimVertex& right) {
+                    return left.point.Dot(masterDirection)
+                        > right.point.Dot(masterDirection);
+                }
+            );
+        }
+        for (std::size_t index = 0; index + 1 < resolved.size(); ++index) {
+            const double separation =
+                std::abs((resolved[index].point - resolved[index + 1].point)
+                             .Dot(masterDirection));
+            if (separation <= Base::Vector3d::epsilon()) {
+                throw Base::ValueError(
+                    "Oblique dimension series vertices must have distinct positions "
+                    "along the baseline direction"
+                );
+            }
+        }
+        plan.orderedVertices.reserve(resolved.size());
+        for (const auto& vertex : resolved) {
+            plan.orderedVertices.push_back(vertex.name);
+        }
+        return plan;
+    }
+
+    const auto first = resolved[0];
+    const auto second = resolved[1];
+    if (direction == "horizontal") {
+        std::sort(resolved.begin(), resolved.end(), sortX);
+    }
+    else {
+        std::sort(resolved.begin(), resolved.end(), sortY);
+    }
+    if (kind == "coordinate") {
+        const bool reverse = direction == "horizontal"
+            ? first.point.x > second.point.x
+            : first.point.y > second.point.y;
+        if (reverse) {
+            std::reverse(resolved.begin(), resolved.end());
+        }
+    }
+    for (std::size_t index = 0; index + 1 < resolved.size(); ++index) {
+        const double separation = direction == "horizontal"
+            ? std::abs(resolved[index].point.x - resolved[index + 1].point.x)
+            : std::abs(resolved[index].point.y - resolved[index + 1].point.y);
+        if (separation <= Base::Vector3d::epsilon()) {
+            throw Base::ValueError(
+                direction == "horizontal"
+                    ? "Horizontal dimension series vertices must have distinct X positions"
+                    : "Vertical dimension series vertices must have distinct Y positions"
+            );
+        }
+    }
+    plan.orderedVertices.reserve(resolved.size());
+    for (const auto& vertex : resolved) {
+        plan.orderedVertices.push_back(vertex.name);
+    }
+    return plan;
+}
+
+DrawingDimensionSeriesResult TechDrawGui::createDrawingDimensionSeries(
+    DrawViewPart* view,
+    const std::string& kind,
+    const std::string& direction,
+    const std::vector<std::string>& vertices)
+{
+    DrawingDimensionSeriesResult result;
+    result.plan = validateDrawingDimensionSeries(
+        view, kind, direction, vertices
+    );
+    if (direction == "oblique") {
+        std::vector<ReferenceEntry> references;
+        references.reserve(vertices.size());
+        for (const auto& vertex : vertices) {
+            references.emplace_back(view, vertex);
+        }
+        result.dimensions = kind == "chain"
+            ? makeObliqueChainDimension(std::move(references))
+            : makeObliqueCoordDimension(std::move(references));
+        if (result.dimensions.size() != result.plan.dimensionCount) {
+            throw Base::RuntimeError(
+                "The oblique dimension series did not create every planned dimension"
+            );
+        }
+    }
+    else {
+        auto ordered = _getVertexInfo(view, result.plan.orderedVertices);
+        if (ordered.size() != result.plan.orderedVertices.size()) {
+            throw Base::RuntimeError(
+                "The dimension series sources changed after validation"
+            );
+        }
+        const std::string dimensionType = direction == "horizontal"
+            ? "DistanceX"
+            : "DistanceY";
+        const double fontSize = Preferences::dimFontSizeMM();
+        double master = 0.0;
+        double spacing = activeDimAttributes.getCascadeSpacing();
+        if (kind == "coordinate") {
+            master = direction == "horizontal"
+                ? ordered[0].point.y - spacing
+                : ordered[0].point.x + spacing;
+            if (std::signbit(master)) {
+                spacing = -spacing;
+            }
+        }
+        result.dimensions.reserve(result.plan.dimensionCount);
+        for (std::size_t index = 0; index + 1 < ordered.size(); ++index) {
+            const auto& first = kind == "chain" ? ordered[index] : ordered[0];
+            const auto& second = ordered[index + 1];
+            auto* dimension = _createLinDimension(
+                view, first.name, second.name, dimensionType
+            );
+            const pointPair points = dimension->getLinearPoints();
+            const Base::Vector3d midpoint = (points.first() + points.second()) / 2.0;
+            if (direction == "horizontal") {
+                dimension->X.setValue(midpoint.x);
+                if (kind == "chain") {
+                    if (index == 0) {
+                        master = -midpoint.y;
+                    }
+                    dimension->Y.setValue(master);
+                }
+                else {
+                    dimension->Y.setValue(
+                        -master - spacing * static_cast<double>(index)
+                    );
+                }
+            }
+            else {
+                if (kind == "chain") {
+                    if (index == 0) {
+                        master = midpoint.x;
+                    }
+                    dimension->X.setValue(master);
+                }
+                else {
+                    dimension->X.setValue(
+                        master + spacing * static_cast<double>(index)
+                    );
+                }
+                dimension->Y.setValue(-midpoint.y + 0.5 * fontSize);
+            }
+            result.dimensions.push_back(dimension);
+        }
+    }
+    std::vector<App::DocumentObject*> outputs(
+        result.dimensions.begin(), result.dimensions.end()
+    );
+    const std::string groupName = direction == "horizontal"
+        ? (kind == "chain" ? "HorizontalChainDimensions" : "HorizontalCoordinateDimensions")
+        : direction == "vertical"
+        ? (kind == "chain" ? "VerticalChainDimensions" : "VerticalCoordinateDimensions")
+        : (kind == "chain" ? "ObliqueChainDimensions" : "ObliqueCoordinateDimensions");
+    const char* groupLabel = kind == "chain"
+        ? QT_TRANSLATE_NOOP("Command", "Chain Dimensions")
+        : QT_TRANSLATE_NOOP("Command", "Coordinate Dimensions");
+    result.operationGroup = CommandHelpers::groupTimelineOutputs(
+        view->getDocument(), outputs, groupName.c_str(), groupLabel
+    );
+    if (!result.operationGroup) {
+        throw Base::RuntimeError(
+            "The dimension series history group could not be created"
+        );
+    }
+    view->refreshCEGeoms();
+    view->requestPaint();
+    return result;
 }
 
 DEF_STD_CMD_A(CmdTechDrawExtensionCreateObliqueCoordDimension)
@@ -2344,12 +2440,6 @@ void execCreateHorizChamferDimension(Gui::Command* cmd) {
         QT_TRANSLATE_NOOP("Command", "Create Horizontal Chamfer Dimension"),
         QObject::tr("Horizontal Chamfer Dimension"),
         [&]() {
-            auto* dim = _createLinDimension(
-                objFeat,
-                allVertexes[0].name,
-                allVertexes[1].name,
-                "DistanceX"
-            );
             float yMax =
                 std::max(
                     std::abs(allVertexes[0].point.y),
@@ -2359,22 +2449,14 @@ void execCreateHorizChamferDimension(Gui::Command* cmd) {
             if (std::signbit(allVertexes[0].point.y)) {
                 yMax = -yMax;
             }
-            const pointPair pp = dim->getLinearPoints();
-            const Base::Vector3d mid =
-                (pp.first() + pp.second()) / 2.0;
-            dim->X.setValue(mid.x);
-            dim->Y.setValue(-yMax);
-            const double dx =
-                allVertexes[0].point.x - allVertexes[1].point.x;
-            const double dy =
-                allVertexes[0].point.y - allVertexes[1].point.y;
-            const double alpha = std::round(
-                Base::toDegrees(std::abs(std::atan2(dy, dx)))
-            );
-            std::string formatSpec = dim->FormatSpec.getStrValue();
-            formatSpec +=
-                " x" + std::to_string(static_cast<int>(alpha)) + "°";
-            dim->FormatSpec.setValue(formatSpec);
+            const double midX =
+                (allVertexes[0].point.x + allVertexes[1].point.x) / 2.0;
+            TechDrawGui::createProjectedChamferFeature(
+                objFeat,
+                "DistanceX",
+                {ReferenceEntry(objFeat, allVertexes[0].name),
+                 ReferenceEntry(objFeat, allVertexes[1].name)},
+                Base::Vector3d(midX, -yMax, 0.0));
             objFeat->requestPaint();
             return true;
         }
@@ -2438,12 +2520,6 @@ void execCreateVertChamferDimension(Gui::Command* cmd) {
         QT_TRANSLATE_NOOP("Command", "Create Vert Chamfer Dimension"),
         QObject::tr("Vertical Chamfer Dimension"),
         [&]() {
-            auto* dim = _createLinDimension(
-                objFeat,
-                allVertexes[0].name,
-                allVertexes[1].name,
-                "DistanceY"
-            );
             float xMax =
                 std::max(
                     std::abs(allVertexes[0].point.x),
@@ -2453,22 +2529,14 @@ void execCreateVertChamferDimension(Gui::Command* cmd) {
             if (std::signbit(allVertexes[0].point.x)) {
                 xMax = -xMax;
             }
-            const pointPair pp = dim->getLinearPoints();
-            const Base::Vector3d mid =
-                (pp.first() + pp.second()) / 2.0;
-            dim->X.setValue(xMax);
-            dim->Y.setValue(-mid.y);
-            const double dx =
-                allVertexes[0].point.x - allVertexes[1].point.x;
-            const double dy =
-                allVertexes[0].point.y - allVertexes[1].point.y;
-            const double alpha = std::round(
-                Base::toDegrees(std::abs(std::atan2(dx, dy)))
-            );
-            std::string formatSpec = dim->FormatSpec.getStrValue();
-            formatSpec +=
-                " x" + std::to_string(static_cast<int>(alpha)) + "°";
-            dim->FormatSpec.setValue(formatSpec);
+            const double midY =
+                (allVertexes[0].point.y + allVertexes[1].point.y) / 2.0;
+            TechDrawGui::createProjectedChamferFeature(
+                objFeat,
+                "DistanceY",
+                {ReferenceEntry(objFeat, allVertexes[0].name),
+                 ReferenceEntry(objFeat, allVertexes[1].name)},
+                Base::Vector3d(xMax, -midY, 0.0));
             objFeat->requestPaint();
             return true;
         }
@@ -2726,58 +2794,17 @@ bool CmdTechDrawExtensionCustomizeFormat::isActive()
 
 DrawViewDimension* TechDrawGui::makeArcLengthDimension(const ReferenceEntry& ref)
 {
-    DrawViewDimension* dim = nullptr;
     auto* dvp = dynamic_cast<DrawViewPart*>(ref.getObject());
     if (!dvp || !dvp->getDocument() || !dvp->findParentPage()) {
         return nullptr;
     }
-    const int geometryIndex =
-        DrawUtil::getIndexFromName(ref.getSubName());
-    const BaseGeomPtr geometry = dvp->getGeomByIndex(geometryIndex);
-    if (!geometry
-        || geometry->getGeomType() != GeomType::ARCOFCIRCLE) {
+    try {
+        return TechDrawGui::createProjectedArcLengthFeature(
+            dvp, ref.getSubName());
+    }
+    catch (const Base::Exception&) {
         return nullptr;
     }
-
-    // Find the edge length.
-    TechDraw::BaseGeomPtr edge = dvp->getEdge(ref.getSubName());
-    if (!edge) {
-        return nullptr;
-    }
-    GProp_GProps edgeProps;
-    BRepGProp::LinearProperties(edge->getOCCEdge(), edgeProps);
-    const double scale = dvp->getScale();
-    if (std::abs(scale) <= Base::Vector3d::epsilon()) {
-        return nullptr;
-    }
-    double length = edgeProps.Mass() / scale;
-
-    Base::Vector3d startPt = edge->getStartPoint();
-    Base::Vector3d endPt = edge->getEndPoint();
-    startPt.y = -startPt.y;
-    endPt.y = -endPt.y;
-
-    std::stringstream startName, endName, formatSpec;
-    Base::Vector3d cvPoint = CosmeticVertex::makeCanonicalPoint(dvp, startPt);
-    std::string startVertTag = dvp->addCosmeticVertex(cvPoint);
-    int startVertNumber = dvp->add1CVToGV(startVertTag);
-    startName << "Vertex" << startVertNumber;
-    cvPoint = CosmeticVertex::makeCanonicalPoint(dvp, endPt);
-    std::string endVertTag = dvp->addCosmeticVertex(cvPoint);
-    int endVertNumber = dvp->add1CVToGV(endVertTag);
-    endName << "Vertex" << endVertNumber;
-
-    dim = _createLinDimension(dvp, startName.str(), endName.str(), "Distance");
-    TechDraw::pointPair pp = dim->getLinearPoints();
-    Base::Vector3d mid = (pp.first() + pp.second()) / 2.0;
-    dim->X.setValue(mid.x);
-    dim->Y.setValue(-mid.y);
-
-    dim->Arbitrary.setValue(true);
-    formatSpec << "◠ " << length;
-    dim->FormatSpec.setValue(formatSpec.str());
-
-    return dim;
 }
 
 namespace TechDrawGui {

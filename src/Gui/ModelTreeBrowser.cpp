@@ -358,17 +358,70 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
         _entries.push_back(entry);
     }
 
+    orderOperationsByTimeline(document);
     orderFeaturesByBodyHistory();
+}
+
+void ModelTreeBrowserProjection::orderOperationsByTimeline(const App::Document* document)
+{
+    const auto* timeline = App::DocumentTimeline::get(document);
+    if (!timeline) {
+        return;
+    }
+
+    std::vector<std::size_t> slots;
+    for (std::size_t index = 0; index < _entries.size(); ++index) {
+        if (_entries[index].role == Role::History) {
+            slots.push_back(index);
+        }
+    }
+    if (slots.size() < 2) {
+        return;
+    }
+
+    std::unordered_map<const App::DocumentObject*, std::size_t> rank;
+    const auto& operations = timeline->Operations.getValues();
+    rank.reserve(operations.size());
+    for (std::size_t position = 0; position < operations.size(); ++position) {
+        rank.emplace(operations[position], position);
+    }
+    constexpr std::size_t unranked = std::numeric_limits<std::size_t>::max();
+    const auto rankOf = [&](std::size_t slot) {
+        const auto item = rank.find(_entries[slot].object);
+        return item == rank.end() ? unranked : item->second;
+    };
+
+    std::vector<std::size_t> ordered = slots;
+    std::stable_sort(
+        ordered.begin(),
+        ordered.end(),
+        [&](std::size_t left, std::size_t right) { return rankOf(left) < rankOf(right); }
+    );
+    if (ordered == slots) {
+        return;
+    }
+
+    std::vector<Entry> reordered;
+    reordered.reserve(ordered.size());
+    for (const std::size_t index : ordered) {
+        reordered.push_back(_entries[index]);
+    }
+    for (std::size_t position = 0; position < slots.size(); ++position) {
+        _entries[slots[position]] = reordered[position];
+    }
+    for (std::size_t index = 0; index < _entries.size(); ++index) {
+        _index[_entries[index].object] = index;
+    }
 }
 
 void ModelTreeBrowserProjection::orderFeaturesByBodyHistory()
 {
-    // Collect each Body's feature entries in their current (creation) order.
+    // Collect each Body's user-facing operation entries in creation order.
     std::unordered_map<const App::DocumentObject*, std::vector<std::size_t>>
         featureSlots;
     for (std::size_t i = 0; i < _entries.size(); ++i) {
         const Entry& entry = _entries[i];
-        if (entry.role == Role::Feature && entry.body) {
+        if ((entry.role == Role::Feature || entry.role == Role::History) && entry.body) {
             featureSlots[entry.body].push_back(i);
         }
     }
@@ -397,8 +450,8 @@ void ModelTreeBrowserProjection::orderFeaturesByBodyHistory()
             return it == rank.end() ? unranked : it->second;
         };
 
-        // Stable: features missing from Group keep creation order, after the
-        // history-ordered ones.
+        // Stable: operations missing from Group keep creation order, after the
+        // Body-history-ordered ones.
         std::vector<std::size_t> ordered = slots;
         std::stable_sort(
             ordered.begin(),
@@ -409,8 +462,8 @@ void ModelTreeBrowserProjection::orderFeaturesByBodyHistory()
             continue;
         }
 
-        // Permute the feature entries into history order within the slots they
-        // already occupy; every non-feature entry keeps its position.
+        // Permute the operation entries into Body history order within the
+        // slots they already occupy; every other entry keeps its position.
         std::vector<Entry> reordered;
         reordered.reserve(ordered.size());
         for (const std::size_t index : ordered) {
@@ -503,6 +556,13 @@ ModelTreeBrowserProjection::Role ModelTreeBrowserProjection::classify(
     }
     if (findOriginParent(object)) {
         return Role::OriginFeature;
+    }
+    // Assembly BOMs derive from Spreadsheet::Sheet for their tabular editor,
+    // but they remain assembly results in the model browser. Classify the
+    // concrete semantic type before the generic spreadsheet parameter rule so
+    // the BOM stays beneath its Bills of Materials group.
+    if (isDerivedFrom(object, "Assembly::BomObject")) {
+        return Role::AssemblyOperation;
     }
     if (isParameterObject(object)) {
         return Role::Parameter;

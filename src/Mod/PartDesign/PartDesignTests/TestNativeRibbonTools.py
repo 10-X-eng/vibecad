@@ -2354,6 +2354,24 @@ class TestNativeRibbonTools(unittest.TestCase):
         )
         PartDesign.validateDesign(sketch)
 
+        sketch.setPropertyStatus(
+            "VibeCADTimelineRole",
+            "-LockDynamic",
+        )
+        sketch.removeProperty("VibeCADTimelineRole")
+        Gui.activeDocument().setEdit(sketch.Name)
+        self._process_events(50)
+        self.assertIsNotNone(Gui.activeDocument().getInEdit())
+        Gui.runCommand("Sketcher_LeaveSketch", 0)
+        self._process_events(50)
+        self.assertIsNone(Gui.activeDocument().getInEdit())
+        self.assertEqual(sketch.VibeCADTimelineRole, "operation")
+        self.assertEqual(
+            self.document.VibeCADTimeline.Operations.count(sketch),
+            1,
+        )
+        PartDesign.validateDesign(sketch)
+
         sketch_name = sketch.Name
         self.document.undo()
         self._process_events()

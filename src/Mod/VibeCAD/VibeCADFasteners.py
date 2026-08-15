@@ -2142,6 +2142,7 @@ def update_fastener_feature(
     left_handed: bool = False,
     options: Mapping[str, Any] | None = None,
     label: str | None = None,
+    targeted_recompute: bool = False,
 ) -> dict[str, Any]:
     """Update one native feature without replacing its document identity.
 
@@ -2151,6 +2152,8 @@ def update_fastener_feature(
     hardware.
     """
 
+    if not isinstance(targeted_recompute, bool):
+        raise FastenerCatalogError("targeted_recompute must be a boolean.")
     current = fastener_feature_identity(obj)
     previous_label = str(getattr(obj, "Label", "") or "")
     identity = resolve_fastener(
@@ -2202,7 +2205,13 @@ def update_fastener_feature(
     if hasattr(obj, "Thread"):
         obj.Thread = bool(identity["model_thread"])
     proxy.standard = str(identity["standard"])
-    obj.Document.recompute()
+    if targeted_recompute:
+        if obj.Document.recompute([obj], True, True) is False:
+            raise FastenerCatalogError(
+                "The edited standard fastener failed its targeted recompute."
+            )
+    else:
+        obj.Document.recompute()
     observed = _identity_from_object(obj)
     if observed["canonical_key"] != identity["canonical_key"]:
         raise FastenerCatalogError(
@@ -2554,9 +2563,12 @@ def create_fastener_feature(
     object_name: str = "StandardFastener",
     label: str = "",
     attach_to: Any = None,
+    targeted_recompute: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     """Create one native upstream-backed parametric feature in a document/body."""
 
+    if not isinstance(targeted_recompute, bool):
+        raise FastenerCatalogError("targeted_recompute must be a boolean.")
     identity = resolve_fastener(
         standard=standard,
         nominal_thread=nominal_thread,
@@ -2634,7 +2646,13 @@ def create_fastener_feature(
             obj.LeftHanded = True
         if hasattr(obj, "Thread"):
             obj.Thread = bool(identity["model_thread"])
-        document.recompute()
+        if targeted_recompute:
+            if document.recompute([obj], True, True) is False:
+                raise FastenerCatalogError(
+                    "The created standard fastener failed its targeted recompute."
+                )
+        else:
+            document.recompute()
         shape = getattr(obj, "Shape", None)
         if (
             shape is None

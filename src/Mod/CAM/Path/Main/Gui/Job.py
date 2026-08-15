@@ -32,7 +32,6 @@ import Path
 import Path.Base.Gui.SetupSheet as PathSetupSheetGui
 import Path.Base.Util as PathUtil
 import Path.GuiInit as PathGuiInit
-import Path.Main.Gui.JobCmd as PathJobCmd
 import Path.Main.Gui.JobDlg as PathJobDlg
 import Path.Main.Job as PathJob
 import Path.Main.Stock as PathStock
@@ -1059,40 +1058,7 @@ class StockFromExistingEdit(StockEdit):
                 self.setStock(obj, stock)
 
     def candidates(self, obj):
-        solids = [o for o in obj.Document.Objects if PathUtil.isSolid(o)]
-        if hasattr(obj, "Model"):
-            job = obj
-        else:
-            job = PathUtils.findParentJob(obj)
-        for base in job.Model.Group:
-            if base in solids and PathJob.isResourceClone(job, base, "Model"):
-                solids.remove(base)
-        if job.Stock in solids:
-            # regardless, what stock is/was, it's not a valid choice
-            solids.remove(job.Stock)
-        excludeIndexes = []
-        for index, model in enumerate(solids):
-            if [ob.Name for ob in model.InListRecursive if "Tools" in ob.Name]:
-                excludeIndexes.append(index)
-            elif hasattr(model, "PathResource"):
-                excludeIndexes.append(index)
-            elif model.InList and hasattr(model.InList[0], "ToolBitID"):
-                excludeIndexes.append(index)
-            elif hasattr(model, "ToolBitID"):
-                excludeIndexes.append(index)
-            elif model.TypeId == "App::DocumentObjectGroup":
-                excludeIndexes.append(index)
-            elif hasattr(model, "StockType"):
-                excludeIndexes.append(index)
-            elif not model.ViewObject.ShowInTree:
-                excludeIndexes.append(index)
-            elif model.isDerivedFrom("PartDesign::Feature"):
-                excludeIndexes.append(index)
-
-        for i in sorted(excludeIndexes, reverse=True):
-            del solids[i]
-
-        return sorted(solids, key=lambda c: c.Label)
+        return list(PathStock.existingSolidCandidates(obj))
 
     def setFields(self, obj):
         # Block signal propagation during stock dropdown population. This prevents

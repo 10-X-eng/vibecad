@@ -7,6 +7,8 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -38,9 +40,21 @@ def _tool_schema(name: str) -> dict:
 
 def _surface_context(*names: str, workbench: str = "PartDesignWorkbench") -> dict:
     schemas = [_tool_schema(name) for name in names]
+    surface = session._turn_start_tool_surface(workbench, schemas)
     return {
         "provider_tool_schemas": schemas,
-        "provider_tool_surface": session._turn_start_tool_surface(workbench, schemas),
+        "provider_tool_surface": surface,
+        "modeling_surface": {
+            key: surface[key]
+            for key in (
+                "workbench",
+                "engine",
+                "domain",
+                "surface_id",
+                "available",
+                "unavailable_reason",
+            )
+        },
     }
 
 
@@ -132,6 +146,42 @@ def test_codex_dynamic_tools_preserve_vibecad_namespaces_and_schema() -> None:
     )
 
 
+def test_codex_dynamic_tools_never_reresolve_the_live_modeling_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _part_vibescript_context()
+
+    def forbidden_live_resolution(*_args, **_kwargs):
+        raise AssertionError("A provider worker must use the frozen turn surface.")
+
+    import VibeCADModelingSurface as modeling_surface
+
+    monkeypatch.setattr(
+        modeling_surface,
+        "resolve_modeling_surface",
+        forbidden_live_resolution,
+    )
+
+    tools, names = provider._codex_dynamic_tool_surface(context)
+
+    assert tools
+    assert names
+
+
+def test_codex_dynamic_tools_normalize_an_exact_single_schema_branch() -> None:
+    context = _scripted_context()
+    expected = context["provider_tool_schemas"][0]["parameters"]
+    context["provider_tool_schemas"][0]["parameters"] = {"oneOf": [expected]}
+    context["provider_tool_surface"] = session._turn_start_tool_surface(
+        "PartDesignWorkbench",
+        context["provider_tool_schemas"],
+    )
+
+    tools, _names = provider._codex_dynamic_tool_surface(context)
+
+    assert tools[0]["tools"][0]["inputSchema"] == expected
+
+
 def test_codex_dynamic_tools_use_one_workbench_neutral_namespace() -> None:
     tools, names = provider._codex_dynamic_tool_surface(_part_vibescript_context())
     assert names == {
@@ -139,6 +189,233 @@ def test_codex_dynamic_tools_use_one_workbench_neutral_namespace() -> None:
         ("vibescript", "create_program"): "vibescript.create_program",
     }
     assert [namespace["name"] for namespace in tools] == ["vibescript"]
+
+
+def test_codex_forwards_its_exact_dynamic_tool_call_id(monkeypatch) -> None:
+    class _Client:
+        def __init__(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+            environment=None,
+        ) -> None:
+            self.notification_handler = notification_handler
+            self.server_request_handler = server_request_handler
+            self.environment = environment
+            self.namespace = ""
+            self.tool = ""
+            self.alive = True
+
+        @property
+        def stderr_tail(self):
+            return []
+
+        def start(self):
+            return None
+
+        def request(self, method, params, timeout):
+            if method == "thread/start":
+                namespace = params["dynamicTools"][0]
+                self.namespace = namespace["name"]
+                self.tool = namespace["tools"][0]["name"]
+                return {"thread": {"id": "thread-1"}, "model": "gpt-test"}
+            if method == "turn/start":
+                self.server_request_handler(
+                    "item/tool/call",
+                    {
+                        "callId": "codex-call-42",
+                        "namespace": self.namespace,
+                        "tool": self.tool,
+                        "arguments": {"model_id": "exact-model"},
+                    },
+                )
+                self.notification_handler(
+                    "item/completed",
+                    {
+                        "threadId": "thread-1",
+                        "item": {"type": "agentMessage", "text": "Done."},
+                    },
+                )
+                self.notification_handler(
+                    "turn/completed",
+                    {
+                        "threadId": "thread-1",
+                        "turn": {"id": "turn-1", "status": "completed"},
+                    },
+                )
+                return {"turn": {"id": "turn-1"}}
+            if method == "thread/delete":
+                return {}
+            raise AssertionError(method)
+
+        def close(self):
+            self.alive = False
+
+    monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
+    context = _surface_context("core.set_view")
+    calls = []
+
+    def runner(tool_name, arguments_json, provider_call_id):
+        calls.append((tool_name, arguments_json, provider_call_id))
+        return {"ok": True}
+
+    runner.provider_update = lambda: context
+    active_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="test-key",
+        auth_mode="api_key",
+    )
+
+    result = active_provider.run("Set the view.", context, tool_runner=runner)
+
+    assert result.final_output == "Done."
+    assert calls == [
+        ("core.set_view", '{"model_id":"exact-model"}', "codex-call-42")
+    ]
+
+
+def test_codex_steers_tool_images_outside_replayed_tool_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screenshot = tmp_path / "viewport.png"
+    screenshot.write_bytes(b"valid-local-image")
+    clients = []
+
+    class _Client:
+        def __init__(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+            environment=None,
+        ) -> None:
+            self.notification_handler = notification_handler
+            self.server_request_handler = server_request_handler
+            self.environment = environment
+            self.alive = True
+            self.steer_requests = []
+            self.tool_responses = []
+            clients.append(self)
+
+        @property
+        def stderr_tail(self):
+            return []
+
+        def start(self):
+            return None
+
+        def request(self, method, params, timeout):
+            if method == "thread/start":
+                return {"thread": {"id": "thread-visual"}, "model": "gpt-test"}
+            if method == "turn/start":
+                threading.Thread(target=self._complete_turn, daemon=True).start()
+                return {"turn": {"id": "turn-visual"}}
+            if method == "turn/steer":
+                self.steer_requests.append(params)
+                return {"turnId": "turn-visual"}
+            if method == "thread/delete":
+                return {}
+            raise AssertionError(method)
+
+        def _complete_turn(self):
+            time.sleep(0.02)
+            self.tool_responses.append(
+                self.server_request_handler(
+                    "item/tool/call",
+                    {
+                        "callId": "capture-call",
+                        "namespace": "core",
+                        "tool": "capture_view_screenshot",
+                        "arguments": {"model_id": "exact-model"},
+                    },
+                )
+            )
+            self.tool_responses.append(
+                self.server_request_handler(
+                    "item/tool/call",
+                    {
+                        "callId": "view-call",
+                        "namespace": "core",
+                        "tool": "set_view",
+                        "arguments": {"model_id": "exact-model"},
+                    },
+                )
+            )
+            self.notification_handler(
+                "item/completed",
+                {
+                    "threadId": "thread-visual",
+                    "turnId": "turn-visual",
+                    "item": {"type": "agentMessage", "text": "Done."},
+                },
+            )
+            self.notification_handler(
+                "turn/completed",
+                {
+                    "threadId": "thread-visual",
+                    "turnId": "turn-visual",
+                    "turn": {"id": "turn-visual", "status": "completed"},
+                },
+            )
+
+        def close(self):
+            self.alive = False
+
+    monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
+    context = _surface_context(
+        "core.capture_view_screenshot",
+        "core.set_view",
+    )
+    calls = []
+
+    def runner(tool_name, arguments_json, provider_call_id):
+        calls.append((tool_name, provider_call_id))
+        if tool_name == "core.capture_view_screenshot":
+            return {
+                "ok": True,
+                "captured": True,
+                "new_observation": True,
+                "_vibecad_image_attachment": {
+                    "path": str(screenshot),
+                    "name": "current viewport",
+                },
+            }
+        return {"ok": True}
+
+    runner.provider_update = lambda: context
+    active_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="test-key",
+        auth_mode="api_key",
+        timeout_seconds=2.0,
+    )
+
+    result = active_provider.run("Inspect the view.", context, tool_runner=runner)
+
+    assert result.final_output == "Done."
+    assert calls == [
+        ("core.capture_view_screenshot", "capture-call"),
+        ("core.set_view", "view-call"),
+    ]
+    assert clients[0].steer_requests == [
+        {
+            "threadId": "thread-visual",
+            "expectedTurnId": "turn-visual",
+            "input": [
+                {"type": "text", "text": "V:current|current viewport"},
+                {
+                    "type": "localImage",
+                    "path": str(screenshot.resolve()),
+                    "detail": "original",
+                },
+            ],
+        }
+    ]
+    capture_output = clients[0].tool_responses[0]["contentItems"]
+    assert [item["type"] for item in capture_output] == ["inputText"]
+    assert "imageUrl" not in str(capture_output)
 
 
 def test_turn_start_surface_rejects_human_mutation_commands() -> None:
@@ -459,6 +736,52 @@ def test_session_consumes_the_exact_view_after_copying_provider_context() -> Non
 
     assert consumed == [screenshot]
     assert context["view_screenshot"] == screenshot
+
+
+def test_session_never_consumes_durable_reference_images() -> None:
+    consumed: list[dict] = []
+    service = SimpleNamespace(
+        consume_reference_image_attachments=lambda value: consumed.append(dict(value))
+    )
+    references = {
+        "count": 1,
+        "images": [{"id": "blade", "path": "/project/references/blade.png"}],
+    }
+
+    session._consume_context_view_attachment(
+        service,
+        {"reference_images": references},
+        lambda operation: operation(),
+    )
+
+    assert consumed == []
+
+
+def test_codex_resends_the_same_reference_as_image_input_each_turn(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "blade.png"
+    reference.write_bytes(b"same-image-bytes")
+    context = {
+        "reference_images": {
+            "count": 1,
+            "images": [
+                {
+                    "id": "blade",
+                    "name": "blade.png",
+                    "path": str(reference),
+                }
+            ],
+        }
+    }
+
+    first = provider._codex_turn_input("first", context)
+    second = provider._codex_turn_input("second", context)
+    first_images = [item for item in first if item.get("type") == "image"]
+    second_images = [item for item in second if item.get("type") == "image"]
+
+    assert len(first_images) == 1
+    assert second_images == first_images
 
 
 def test_codex_thread_config_disables_non_vibecad_tool_surfaces() -> None:
@@ -890,6 +1213,142 @@ def test_openai_api_key_and_plan_mode_run_through_codex(
     }
     assert result.final_output == "Inspect, then revise."
     assert result.raw["interaction_mode"] == "plan"
+
+
+def test_codex_plan_and_build_resume_one_conversation_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Client:
+        instance = None
+
+        def __init__(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+            environment=None,
+        ) -> None:
+            del server_request_handler, environment
+            self.notification_handler = notification_handler
+            self.requests: list[tuple[str, dict]] = []
+            self.alive = True
+            self.turn_number = 0
+            _Client.instance = self
+
+        @property
+        def stderr_tail(self) -> list[str]:
+            return []
+
+        def start(self) -> None:
+            return None
+
+        def set_handlers(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+        ) -> None:
+            del server_request_handler
+            self.notification_handler = notification_handler
+
+        def request(self, method: str, params: dict, timeout: float) -> dict:
+            del timeout
+            self.requests.append((method, dict(params)))
+            if method == "thread/start":
+                return {"thread": {"id": "shared-thread"}, "model": "gpt-test"}
+            if method == "thread/resume":
+                assert params == {"threadId": "shared-thread"}
+                return {"thread": {"id": "shared-thread"}, "model": "gpt-test"}
+            if method == "turn/start":
+                self.turn_number += 1
+                turn_id = f"turn-{self.turn_number}"
+                item_type = "plan" if "collaborationMode" in params else "agentMessage"
+                self.notification_handler(
+                    "item/completed",
+                    {
+                        "threadId": "shared-thread",
+                        "turnId": turn_id,
+                        "item": {
+                            "type": item_type,
+                            "text": "Plan saved." if item_type == "plan" else "Plan used.",
+                        },
+                    },
+                )
+                self.notification_handler(
+                    "turn/completed",
+                    {
+                        "threadId": "shared-thread",
+                        "turnId": turn_id,
+                        "turn": {"id": turn_id, "status": "completed"},
+                    },
+                )
+                return {"turn": {"id": turn_id}}
+            raise AssertionError(method)
+
+        def close(self) -> None:
+            self.alive = False
+
+    codex.reset_managed_codex_sessions()
+    monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
+    context = _surface_context("core.set_view")
+    context["_vibecad_codex_thread_surface"] = {
+        "provider_tool_schemas": list(context["provider_tool_schemas"]),
+        "provider_tool_surface": dict(context["provider_tool_surface"]),
+    }
+    context["_vibecad_codex_session"] = {
+        "conversation_id": "a" * 32,
+        "conversation_path": "/project/conversations/" + "a" * 32 + ".json",
+    }
+    plan_context = dict(context)
+    plan_context["_vibecad_interaction_mode"] = "plan"
+    build_context = dict(context)
+    build_context["_vibecad_interaction_mode"] = "build"
+    first_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="test-key",
+        auth_mode="api_key",
+    )
+    second_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="test-key",
+        auth_mode="api_key",
+    )
+    first_prompt = session._provider_prompt("Make a plan.", plan_context)
+    second_prompt = session._provider_prompt(
+        "Build it.",
+        build_context,
+        recent_conversation=[
+            {"role": "user", "content": "Make a plan."},
+            {"role": "assistant", "content": "Plan saved."},
+        ],
+    )
+
+    requests_before_cleanup: list[tuple[str, dict]] = []
+    try:
+        planned = first_provider.run(first_prompt, plan_context)
+        built = second_provider.run(second_prompt, build_context)
+    finally:
+        if _Client.instance is not None:
+            requests_before_cleanup = list(_Client.instance.requests)
+        codex.reset_managed_codex_sessions()
+
+    client = _Client.instance
+    assert client is not None
+    assert planned.final_output == "Plan saved."
+    assert built.final_output == "Plan used."
+    methods = [method for method, _params in requests_before_cleanup]
+    assert methods.count("thread/start") == 1
+    assert methods.count("thread/resume") == 1
+    assert methods.count("turn/start") == 2
+    assert "thread/delete" not in methods
+    second_turn = [
+        params for method, params in requests_before_cleanup if method == "turn/start"
+    ][1]
+    text_input = next(
+        item["text"] for item in second_turn["input"] if item["type"] == "text"
+    )
+    assert '"turns":[]' in text_input
+    assert "Plan saved." not in text_input
 
 
 def test_codex_client_initializes_and_reads_account_from_json_rpc(

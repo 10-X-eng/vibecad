@@ -56,6 +56,14 @@ For example, you can re-map the Y axis to A to control a 4th axis rotary."""
 translate = FreeCAD.Qt.translate
 
 
+def _emptyPathWithJobCenter(obj):
+    path = Path.Path()
+    job = PathUtils.findParentJob(obj) or PathUtil.timelineParentJob(obj)
+    if job is not None:
+        path.Center = job.Path.Center
+    return path
+
+
 class ObjectDressup:
     def __init__(self, obj):
         obj.addProperty(
@@ -113,11 +121,8 @@ class ObjectDressup:
 
     def execute(self, obj):
         if not PathUtil.activeForOp(obj):
-            obj.Path = Path.Path()
+            obj.Path = _emptyPathWithJobCenter(obj)
             return
-
-        inAxis = obj.AxisMap[0]
-        outAxis = obj.AxisMap[3]
 
         if (
             not obj.Base
@@ -125,39 +130,15 @@ class ObjectDressup:
             or not obj.Base.Path
             or not obj.Base.Path.Commands
         ):
-            obj.Path = Path.Path()
+            obj.Path = _emptyPathWithJobCenter(obj)
             return
 
-        job = PathUtils.findParentJob(obj)
-        deflection = job.GeometryTolerance.Value
-        path = PathUtils.getPathWithPlacement(obj.Base)
-        path = PostUtils.splitArcs(path, deflection=deflection)
-
-        newcommandlist = []
-        lastPar = {"X": 0, "Y": 0, "Z": 0, "F": 0}
-
-        for cmd in path.Commands:
-            newparams = dict(cmd.Parameters)
-            remapvar = newparams.pop(inAxis, None)
-            if remapvar is not None:
-                if obj.Reverse:
-                    remapvar = -remapvar
-                newparams[outAxis] = math.degrees(remapvar / obj.Radius.Value)
-                locdiff = dict(set(newparams.items()) - set(lastPar.items()))
-                if len(locdiff) == 1 and outAxis in locdiff:
-                    # calculate rotational feed rate
-                    feed = cmd.Parameters["F"] if "F" in cmd.Parameters else lastPar["F"]
-                    newparams.update({"F": math.degrees(feed / obj.Radius.Value)})
-                newcommand = Path.Command(cmd.Name, newparams)
-                newcommandlist.append(newcommand)
-                lastPar.update(newparams)
-            else:
-                newcommandlist.append(cmd)
-                lastPar.update(cmd.Parameters)
-
-        path = Path.Path(newcommandlist)
-        path.Center = self.center(obj)
-        obj.Path = path
+        obj.Path = remapPath(
+            obj.Base,
+            str(obj.AxisMap),
+            float(obj.Radius.Value),
+            bool(obj.Reverse),
+        )
 
     def center(self, obj):
         return FreeCAD.Vector(0, 0, 0 - obj.Radius.Value)
@@ -220,6 +201,9 @@ class TaskPanel:
         self.radius.updateProperty()
         self.reverse.updateProperty()
         self.obj.AxisMap = self.form.axisMapInput.currentText()
+        job = PathUtils.findParentJob(self.obj)
+        if job:
+            job.Proxy.setCenterOfRotation(self.obj.Proxy.center(self.obj))
         self.obj.Proxy.execute(self.obj)
 
     def updateUI(self):
@@ -407,15 +391,112 @@ def _validate_result(
         )
 
 
-def createDressupFeature(document):
+def remapPathWithMetadata(base, axis_map, radius, reverse):
+    """Return the exact Axis Map output path and mapped-command count."""
+
+    mappings = ("X->A", "Y->A", "X->B", "Y->B", "X->C", "Y->C")
+    if axis_map not in mappings:
+        raise ValueError("Axis Map must be one shipped linear-to-rotary mapping")
+    radius = float(radius)
+    if not math.isfinite(radius) or radius <= 0.0:
+        raise ValueError("Axis Map radius must be a positive finite distance")
+    if not isinstance(reverse, bool):
+        raise TypeError("Axis Map reverse must be a boolean")
+
+    document = getattr(base, "Document", None)
+    job = _validated_base(base, document)
+    if job is None:
+        raise RuntimeError("Axis Map requires one valid Job operation")
+    input_axis = axis_map[0]
+    output_axis = axis_map[3]
+    path = PathUtils.getPathWithPlacement(base)
+    path = PostUtils.splitArcs(
+        path,
+        deflection=float(job.GeometryTolerance.Value),
+    )
+
+    commands = []
+    mapped_commands = 0
+    previous = {"X": 0, "Y": 0, "Z": 0, "F": 0}
+    for command in path.Commands:
+        parameters = dict(command.Parameters)
+        mapped_value = parameters.pop(input_axis, None)
+        if mapped_value is not None:
+            mapped_commands += 1
+            if reverse:
+                mapped_value = -mapped_value
+            parameters[output_axis] = math.degrees(mapped_value / radius)
+            changed = dict(set(parameters.items()) - set(previous.items()))
+            if len(changed) == 1 and output_axis in changed:
+                feed = command.Parameters.get("F", previous["F"])
+                parameters["F"] = math.degrees(feed / radius)
+            commands.append(Path.Command(command.Name, parameters))
+            previous.update(parameters)
+        else:
+            commands.append(command)
+            previous.update(command.Parameters)
+
+    result = Path.Path(commands)
+    result.Center = FreeCAD.Vector(0, 0, -radius)
+    return result, mapped_commands
+
+
+def remapPath(base, axis_map, radius, reverse):
+    """Return the exact placed and arc-linearized Axis Map output path."""
+
+    return remapPathWithMetadata(base, axis_map, radius, reverse)[0]
+
+
+def createDressupFeature(document, name="AxisMapDressup"):
     """Create and initialize one exact Axis Map dress-up feature."""
     if document is None:
         raise RuntimeError("A document is required for an Axis Map dress-up")
     result = document.addObject(
         "Path::FeaturePython",
-        "AxisMapDressup",
+        name,
     )
     ObjectDressup(result)
+    return result
+
+
+def _existingJobAxisMapRadius(job):
+    radii = {
+        round(float(operation.Radius.Value), 9)
+        for operation in job.Proxy.allOperations()
+        if isinstance(getattr(operation, "Proxy", None), ObjectDressup)
+    }
+    if len(radii) > 1:
+        raise RuntimeError(
+            "The CAM Job contains conflicting Axis Map radii; make them consistent first"
+        )
+    return next(iter(radii), None)
+
+
+def CreateInTransaction(base, name="AxisMapDressup", hide_base=True):
+    """Create one Axis Map dress-up inside its caller-owned transaction."""
+
+    document = getattr(base, "Document", None)
+    if document is None:
+        raise RuntimeError("An Axis Map dress-up requires one live base operation")
+    job = _validated_base(base, document)
+    if job is None:
+        raise RuntimeError("The selected CAM operation cannot be axis-mapped")
+
+    base_was_visible = bool(base.ViewObject and base.ViewObject.Visibility)
+    existing_radius = _existingJobAxisMapRadius(job)
+    result = createDressupFeature(document, name)
+    if existing_radius is not None:
+        result.Radius = existing_radius
+    result.Base = base
+    job.Proxy.addOperation(result, base)
+    ViewProviderDressup(result.ViewObject)
+    PathUtil.markTimelineReplacedInputs(
+        result,
+        [base] if base_was_visible else [],
+    )
+    job.Proxy.setCenterOfRotation(result.Proxy.center(result))
+    if hide_base:
+        base.ViewObject.Visibility = False
     return result
 
 
@@ -460,35 +541,17 @@ class CommandPathDressup:
                 "document = FreeCAD.getDocument(%r)"
                 % document.Name
             )
+            FreeCADGui.doCommand(
+                "base = document.getObject(%r)" % base_name
+            )
             result = FreeCADGui.runDocumentObjectCommand(
                 document,
-                "Path.Dressup.Gui.AxisMap.createDressupFeature(document)",
+                "Path.Dressup.Gui.AxisMap.CreateInTransaction(base)",
                 "Path::FeaturePython",
             )
             result_name = str(result.Name)
             result_id = int(result.ID)
             result_expression = "document.getObject(%r)" % result_name
-            FreeCADGui.doCommand(
-                "base = document.getObject(%r)" % base_name
-            )
-            FreeCADGui.doCommand(
-                "_cam_base_was_visible = bool(base.ViewObject.Visibility)"
-            )
-            FreeCADGui.doCommand("job = PathScripts.PathUtils.findParentJob(base)")
-            FreeCADGui.doCommand(f"{result_expression}.Base = base")
-            FreeCADGui.doCommand(
-                f"job.Proxy.addOperation({result_expression}, base)"
-            )
-            FreeCADGui.doCommand(
-                "Path.Dressup.Gui.AxisMap.ViewProviderDressup("
-                f"{result_expression}.ViewObject)"
-            )
-            FreeCADGui.doCommand(
-                "Path.Base.Util.markTimelineReplacedInputs("
-                f"{result_expression}, "
-                "[base] if _cam_base_was_visible else [])"
-            )
-            FreeCADGui.doCommand("base.Visibility = False")
             FreeCADGui.doCommand(
                 f"{result_expression}.ViewObject.Document.setEdit("
                 f"{result_expression}.ViewObject, 0)"

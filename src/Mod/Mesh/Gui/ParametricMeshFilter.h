@@ -133,6 +133,35 @@ MeshGuiExport Mesh::OutputGroup* createSourcePreservingOutputGroup(
 );
 
 /**
+ * Publish same-transaction linked outputs as one replacement History step.
+ *
+ * Sources and outputs are paired by index. Every output must retain a native
+ * dependency on its source. A multi-output call creates one controller and
+ * classifies each physical output as its independently selectable resource.
+ * Sources which were visible at invocation are restored when History moves
+ * before the operation; every source is hidden at the completed position.
+ */
+MeshGuiExport Mesh::OutputGroup* createReplacingOutputGroup(
+    App::Document& document,
+    const std::vector<App::DocumentObject*>& sources,
+    const std::vector<App::DocumentObject*>& outputs,
+    const char* objectName,
+    const char* label,
+    const char* operationKind
+);
+
+/**
+ * Publish one same-transaction linked operation which replaces several Mesh
+ * sources. The operation must retain a native dependency on every source.
+ * This is the many-input/one-output counterpart of createReplacingOutputGroup.
+ */
+MeshGuiExport void createReplacingOperation(
+    App::Document& document,
+    const std::vector<App::DocumentObject*>& sources,
+    App::DocumentObject& operation
+);
+
+/**
  * Publish one standalone external import as one timeline operation. A single
  * physical output is the operation itself; a controller is created only when
  * the import produces several physical outputs.

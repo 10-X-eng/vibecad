@@ -2812,6 +2812,19 @@ def refresh_scripted_model_editor() -> None:
         _controller.refresh()
 
 
+def scripted_editor_has_unresolved_work() -> bool:
+    """Return whether switching authoring authority would orphan editor work."""
+
+    return bool(
+        _controller is not None
+        and (
+            _controller.busy
+            or _controller.dirty
+            or _controller.active_vibescript_candidate is not None
+        )
+    )
+
+
 def automated_model_update_started(engine: str, document_name: str, model_id: str) -> None:
     if _controller is not None:
         _controller.automated_update_started(engine, document_name, model_id)

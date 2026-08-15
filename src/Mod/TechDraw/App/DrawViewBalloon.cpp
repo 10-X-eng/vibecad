@@ -60,11 +60,40 @@ const char* DrawViewBalloon::balloonTypeEnums[] = {"Circular",   "None",    "Tri
                                                    "Inspection", "Hexagon", "Square",
                                                    "Rectangle",  "Line",    nullptr};
 
+const char* DrawViewBalloon::measurementKindEnums[] = {
+    "None", "Area", "ArcLength", nullptr};
+
 DrawViewBalloon::DrawViewBalloon()
 {
     ADD_PROPERTY_TYPE(Text, (""), "", App::Prop_None, "The text to be displayed");
     ADD_PROPERTY_TYPE(SourceView, (nullptr), "", (App::PropertyType)(App::Prop_None),
                       "Source view for balloon");
+    ADD_PROPERTY_TYPE(AnchorSource,
+                      (nullptr),
+                      "",
+                      (App::PropertyType)(App::Prop_Output | App::Prop_ReadOnly),
+                      "Projected EdgeN or VertexN used to anchor the balloon");
+    AnchorSource.setScope(App::LinkScope::Global);
+    AnchorSource.setStatus(App::Property::Hidden, true);
+    MeasurementKind.setEnums(measurementKindEnums);
+    ADD_PROPERTY_TYPE(MeasurementKind,
+                      ("None"),
+                      "Measurement",
+                      (App::PropertyType)(App::Prop_Output | App::Prop_ReadOnly),
+                      "Kind of projected measurement represented by this annotation");
+    ADD_PROPERTY_TYPE(MeasurementSource,
+                      (nullptr),
+                      "Measurement",
+                      (App::PropertyType)(App::Prop_Output | App::Prop_ReadOnly),
+                      "Ordered projected elements measured by this annotation");
+    MeasurementSource.setScope(App::LinkScope::Global);
+    MeasurementSource.setStatus(App::Property::Hidden, true);
+    ADD_PROPERTY_TYPE(MeasurementValue,
+                      (0.0),
+                      "Measurement",
+                      (App::PropertyType)(App::Prop_Output | App::Prop_ReadOnly),
+                      "Measured area in mm^2 or arc length in mm");
+    MeasurementValue.setStatus(App::Property::Hidden, true);
     ADD_PROPERTY_TYPE(OriginX, (0), "", (App::PropertyType)(App::Prop_None), "Balloon origin x");
     ADD_PROPERTY_TYPE(OriginY, (0), "", (App::PropertyType)(App::Prop_None), "Balloon origin y");
 

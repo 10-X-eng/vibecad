@@ -401,27 +401,61 @@ class ViewProviderDressup(object):
             return ":/icons/CAM_OpActive.svg"
 
 
-def Create(base, name="DressupDogbone"):
-    """
-    Create(obj, name='DressupDogbone')… dresses the given Path.Op.Profile object with dogbones.
-    """
-    base_was_visible = bool(
-        base.ViewObject
-        and base.ViewObject.Visibility
-    )
-    obj = DogboneII.Create(base, name)
+def _validated_base(base, document):
+    if (
+        not is_document_object(base, document)
+        or not base.isDerivedFrom("Path::Feature")
+        or not PathDressup.isOp(base)
+        or not base.isValid()
+        or not getattr(base, "Path", None)
+        or not base.Path.Commands
+    ):
+        return None
     job = PathUtils.findParentJob(base)
-    job.Proxy.addOperation(obj, base)
+    controller = PathUtil.toolControllerForOp(base)
+    tool = getattr(controller, "Tool", None)
+    diameter = getattr(getattr(tool, "Diameter", None), "Value", 0.0)
+    if (
+        not is_document_object(job, document)
+        or getattr(job, "Operations", None) is None
+        or base not in tuple(job.Operations.Group or ())
+        or not hasattr(getattr(job, "Proxy", None), "addOperation")
+        or controller is None
+        or float(diameter) <= 0.0
+    ):
+        return None
+    return job
 
+
+def CreateInTransaction(base, name="DressupDogbone", hide_base=True):
+    """Create one Dogbone dress-up inside its caller-owned transaction."""
+
+    document = getattr(base, "Document", None)
+    if document is None:
+        raise RuntimeError("A CAM Dogbone dress-up requires one live base operation")
+    job = _validated_base(base, document)
+    if job is None:
+        raise RuntimeError("The selected CAM operation cannot be dogbone-dressed")
+
+    base_was_visible = bool(base.ViewObject and base.ViewObject.Visibility)
+    obj = DogboneII.Create(base, name)
+    job.Proxy.addOperation(obj, base)
     if FreeCAD.GuiUp:
         obj.ViewObject.Proxy = ViewProviderDressup(obj.ViewObject)
         PathUtil.markTimelineReplacedInputs(
             obj,
             [base] if base_was_visible else [],
         )
-        obj.Base.ViewObject.Visibility = False
-
+        if hide_base:
+            obj.Base.ViewObject.Visibility = False
     return obj
+
+
+def Create(base, name="DressupDogbone"):
+    """
+    Create(obj, name='DressupDogbone')… dresses the given Path.Op.Profile object with dogbones.
+    """
+    return CreateInTransaction(base, name)
 
 
 class CommandDressupDogboneII(object):
@@ -436,10 +470,10 @@ class CommandDressupDogboneII(object):
         }
 
     def IsActive(self):
-        return (
-            can_start_document_command()
-            and is_document_object(PathDressup.selection())
-        )
+        if not can_start_document_command():
+            return False
+        document = FreeCAD.ActiveDocument
+        return _validated_base(PathDressup.selection(), document) is not None
 
     def Activated(self):
         if not self.IsActive():

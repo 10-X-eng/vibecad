@@ -29,6 +29,7 @@
 #include <App/ObjectIdentifier.h>
 #include <Base/Console.h>
 #include <Base/Tools.h>
+#include <Base/Tools2D.h>
 #include <Base/Vector3D.h>
 
 #include <memory>
@@ -356,6 +357,420 @@ int SketchObject::fillet(int GeoId1, int GeoId2, const Base::Vector3d& refPnt1,
     return 0;
 }
 
+std::unique_ptr<SketchObject> SketchObject::makeGeometryMutationDiagnosticClone() const
+{
+    std::unique_ptr<SketchObject> diagnostic;
+    try {
+        diagnostic = std::make_unique<SketchObject>();
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to construct a detached geometry-mutation diagnostic Sketch: ")
+            + error.what()
+        );
+    }
+    // A detached diagnostic clone has no expression paths to maintain. Disconnecting these two
+    // callbacks prevents constraint-list rewrites from trying to resolve a document object while
+    // preserving every geometry, constraint, and solver operation used by the production edit.
+    diagnostic->constraintsRemovedConn.disconnect();
+    diagnostic->constraintsRenamedConn.disconnect();
+    diagnostic->Constraints.setDetachedDiagnosticMode(true);
+    try {
+        diagnostic->Geometry.setValues(Geometry.getValues());
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to clone geometry-mutation diagnostic geometry: ")
+            + error.what()
+        );
+    }
+    try {
+        diagnostic->Constraints.setValues(Constraints.getValues());
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to clone geometry-mutation diagnostic constraints: ")
+            + error.what()
+        );
+    }
+    try {
+        diagnostic->ExternalGeo.setValues(ExternalGeo.getValues());
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to clone geometry-mutation diagnostic external geometry: ")
+            + error.what()
+        );
+    }
+    diagnostic->geoLastId = geoLastId;
+    return diagnostic;
+}
+
+std::unique_ptr<SketchObject>
+SketchObject::diagnoseFillet(int GeoId, PointPos PosId, bool preserveCorner) const
+{
+    return diagnoseFilletOrChamfer(GeoId, PosId, preserveCorner, false);
+}
+
+std::unique_ptr<SketchObject>
+SketchObject::diagnoseChamfer(int GeoId, PointPos PosId, bool preserveCorner) const
+{
+    return diagnoseFilletOrChamfer(GeoId, PosId, preserveCorner, true);
+}
+
+std::unique_ptr<SketchObject> SketchObject::diagnoseFilletOrChamfer(
+    int GeoId,
+    PointPos PosId,
+    bool preserveCorner,
+    bool chamfer
+) const
+{
+    if (GeoId < 0 || GeoId > getHighestCurveIndex()
+        || (PosId != PointPos::start && PosId != PointPos::end)) {
+        return nullptr;
+    }
+
+    std::vector<int> GeoIdList;
+    std::vector<PointPos> PosIdList;
+    getDirectlyCoincidentPoints(GeoId, PosId, GeoIdList, PosIdList);
+    GeoIdList = chooseFilletsEdges(GeoIdList);
+    if (GeoIdList.size() != 2 || PosIdList.size() < 2 || GeoIdList[0] < 0
+        || GeoIdList[1] < 0) {
+        return nullptr;
+    }
+
+    const Part::Geometry* geo1 = getGeometry(GeoIdList[0]);
+    const Part::Geometry* geo2 = getGeometry(GeoIdList[1]);
+    if (!geo1->is<Part::GeomLineSegment>() || !geo2->is<Part::GeomLineSegment>()) {
+        return nullptr;
+    }
+
+    auto* line1 = static_cast<const Part::GeomLineSegment*>(geo1);
+    auto* line2 = static_cast<const Part::GeomLineSegment*>(geo2);
+    Base::Vector3d dir1 = line1->getEndPoint() - line1->getStartPoint();
+    Base::Vector3d dir2 = line2->getEndPoint() - line2->getStartPoint();
+    if (PosIdList[0] == PointPos::end) {
+        dir1 *= -1;
+    }
+    if (PosIdList[1] == PointPos::end) {
+        dir2 *= -1;
+    }
+    const double length1 = dir1.Length();
+    const double length2 = dir2.Length();
+    const double radius = std::min(length1, length2) * 0.2 * std::sin(dir1.GetAngle(dir2) / 2);
+    if (!std::isfinite(radius) || radius <= 0.0) {
+        return nullptr;
+    }
+
+    const bool construction = GeometryFacade::getConstruction(geo1)
+        && GeometryFacade::getConstruction(geo2);
+    // The drawing handler identifies the construction result before running fillet(): the Fillet
+    // arc is the first new geometry, while Chamfer targets the second new geometry. If preserving
+    // a coincident corner inserts a point before the Chamfer line, this deliberately reproduces
+    // that existing human-command outcome rather than silently correcting it in Native mode.
+    const int constructionGeometryId = Geometry.getSize() + (chamfer ? 1 : 0);
+    auto diagnostic = makeGeometryMutationDiagnosticClone();
+    try {
+        if (diagnostic->fillet(GeoId, PosId, radius, true, preserveCorner, chamfer) != 0) {
+            return nullptr;
+        }
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to create the ") + (chamfer ? "Chamfer" : "Fillet")
+            + " diagnostic state: " + error.what()
+        );
+    }
+    try {
+        if (construction && diagnostic->toggleConstruction(constructionGeometryId) != 0) {
+            return nullptr;
+        }
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to set ") + (chamfer ? "Chamfer" : "Fillet")
+            + " diagnostic construction: " + error.what()
+        );
+    }
+    try {
+        diagnostic->setUpSketch();
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to solve the ") + (chamfer ? "Chamfer" : "Fillet")
+            + " diagnostic state: " + error.what()
+        );
+    }
+    return diagnostic;
+}
+
+std::unique_ptr<SketchObject> SketchObject::diagnoseFillet(
+    int GeoId1,
+    int GeoId2,
+    const Base::Vector3d& refPnt1,
+    const Base::Vector3d& refPnt2,
+    bool preserveCorner
+) const
+{
+    return diagnoseFilletOrChamfer(
+        GeoId1, GeoId2, refPnt1, refPnt2, preserveCorner, false
+    );
+}
+
+std::unique_ptr<SketchObject> SketchObject::diagnoseChamfer(
+    int GeoId1,
+    int GeoId2,
+    const Base::Vector3d& refPnt1,
+    const Base::Vector3d& refPnt2,
+    bool preserveCorner
+) const
+{
+    return diagnoseFilletOrChamfer(
+        GeoId1, GeoId2, refPnt1, refPnt2, preserveCorner, true
+    );
+}
+
+std::unique_ptr<SketchObject> SketchObject::diagnoseFilletOrChamfer(
+    int GeoId1,
+    int GeoId2,
+    const Base::Vector3d& refPnt1,
+    const Base::Vector3d& refPnt2,
+    bool preserveCorner,
+    bool chamfer
+) const
+{
+    if (GeoId1 < 0 || GeoId1 > getHighestCurveIndex() || GeoId2 < 0
+        || GeoId2 > getHighestCurveIndex() || GeoId1 == GeoId2) {
+        return nullptr;
+    }
+
+    const Part::Geometry* geo1 = getGeometry(GeoId1);
+    const Part::Geometry* geo2 = getGeometry(GeoId2);
+    if (!geo1->isDerivedFrom<Part::GeomBoundedCurve>()
+        || !geo2->isDerivedFrom<Part::GeomBoundedCurve>()) {
+        return nullptr;
+    }
+
+    double radius = 0.0;
+    if (geo1->is<Part::GeomLineSegment>() && geo2->is<Part::GeomLineSegment>()) {
+        radius = Part::suggestFilletRadius(
+            static_cast<const Part::GeomLineSegment*>(geo1),
+            static_cast<const Part::GeomLineSegment*>(geo2),
+            refPnt1,
+            refPnt2
+        );
+        if (!std::isfinite(radius) || radius <= 0.0) {
+            return nullptr;
+        }
+    }
+
+    const bool construction = GeometryFacade::getConstruction(geo1)
+        && GeometryFacade::getConstruction(geo2);
+    const int constructionGeometryId = Geometry.getSize() + (chamfer ? 1 : 0);
+    auto diagnostic = makeGeometryMutationDiagnosticClone();
+    try {
+        if (diagnostic->fillet(
+                GeoId1,
+                GeoId2,
+                refPnt1,
+                refPnt2,
+                radius,
+                true,
+                preserveCorner,
+                chamfer
+            )
+            != 0) {
+            return nullptr;
+        }
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to create the ") + (chamfer ? "Chamfer" : "Fillet")
+            + " diagnostic state: " + error.what()
+        );
+    }
+    try {
+        if (construction && diagnostic->toggleConstruction(constructionGeometryId) != 0) {
+            return nullptr;
+        }
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to set ") + (chamfer ? "Chamfer" : "Fillet")
+            + " diagnostic construction: " + error.what()
+        );
+    }
+    try {
+        diagnostic->setUpSketch();
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to solve the ") + (chamfer ? "Chamfer" : "Fillet")
+            + " diagnostic state: " + error.what()
+        );
+    }
+    return diagnostic;
+}
+
+bool SketchObject::calculateExtensionParameters(
+    int GeoId,
+    const Base::Vector3d& targetPoint,
+    PointPos preferredEndpoint,
+    double& increment,
+    PointPos& effectiveEndpoint
+) const
+{
+    increment = 0.0;
+    effectiveEndpoint = preferredEndpoint;
+    if (GeoId < 0 || GeoId > getHighestCurveIndex()
+        || (preferredEndpoint != PointPos::start && preferredEndpoint != PointPos::end)
+        || !std::isfinite(targetPoint.x) || !std::isfinite(targetPoint.y)) {
+        return false;
+    }
+
+    const Part::Geometry* geometry = getGeometry(GeoId);
+    if (geometry->is<Part::GeomLineSegment>()) {
+        const auto* segment = static_cast<const Part::GeomLineSegment*>(geometry);
+        const Base::Vector3d start3d = segment->getStartPoint();
+        const Base::Vector3d end3d = segment->getEndPoint();
+        const Base::Vector2d start(start3d.x, start3d.y);
+        const Base::Vector2d end(end3d.x, end3d.y);
+        const Base::Vector2d target(targetPoint.x, targetPoint.y);
+        const Base::Vector2d line = end - start;
+        const double lineLength = line.Length();
+        if (!std::isfinite(lineLength) || lineLength <= Precision::Confusion()) {
+            return false;
+        }
+
+        Base::Vector2d projection;
+        projection.ProjectToLine(target - start, line);
+        const double projectionLength = projection.Length();
+        const bool inCurve = projectionLength < lineLength && projection.GetAngle(line) < 0.1;
+        if (inCurve) {
+            increment = preferredEndpoint == PointPos::start
+                ? -projectionLength
+                : projectionLength - lineLength;
+        }
+        else {
+            effectiveEndpoint = target.Distance(start) < target.Distance(end) ? PointPos::start
+                                                                              : PointPos::end;
+            increment = effectiveEndpoint == PointPos::start
+                ? projectionLength
+                : projectionLength - lineLength;
+        }
+        return std::isfinite(increment);
+    }
+
+    if (!geometry->is<Part::GeomArcOfCircle>()) {
+        return false;
+    }
+    const auto* arc = static_cast<const Part::GeomArcOfCircle*>(geometry);
+    const Base::Vector3d center3d = arc->getCenter();
+    const Base::Vector2d angle(targetPoint.x - center3d.x, targetPoint.y - center3d.y);
+    if (angle.Length() <= Precision::Confusion()) {
+        return false;
+    }
+
+    double start = 0.0;
+    double end = 0.0;
+    arc->getRange(start, end, true);
+    const double arcAngle = end - start;
+    if (!std::isfinite(start) || !std::isfinite(end) || arcAngle <= Precision::Confusion()) {
+        return false;
+    }
+    const Base::Vector2d startAngle(std::cos(start), std::sin(start));
+    const Base::Vector2d endAngle(std::cos(end), std::sin(end));
+    const Base::Vector2d arcHalf(
+        std::cos(start + arcAngle / 2.0),
+        std::sin(start + arcAngle / 2.0)
+    );
+    const double angleToEndAngle = angle.GetAngle(endAngle);
+    const double angleToStartAngle = angle.GetAngle(startAngle);
+    if (!std::isfinite(angleToEndAngle) || !std::isfinite(angleToStartAngle)) {
+        return false;
+    }
+
+    // DrawSketchHandlerExtend historically returns its cross product through int. Preserve that
+    // exact sign/near-zero behavior while sharing the calculation with the detached diagnostic.
+    const auto crossProduct = [](const Base::Vector2d& first, const Base::Vector2d& second) {
+        return static_cast<int>(first.x * second.y - first.y * second.x);
+    };
+    double modifiedStart = start;
+    double modifiedArcAngle = arcAngle;
+    const bool outOfArc = arcHalf.GetAngle(angle) * 2.0 > arcAngle;
+    if (preferredEndpoint == PointPos::start) {
+        const bool isCCWFromStart = crossProduct(angle, startAngle) < 0;
+        if (outOfArc) {
+            if (isCCWFromStart) {
+                modifiedStart -= 2 * std::numbers::pi - angleToStartAngle;
+                modifiedArcAngle += 2 * std::numbers::pi - angleToStartAngle;
+            }
+            else {
+                modifiedStart -= angleToStartAngle;
+                modifiedArcAngle += angleToStartAngle;
+            }
+        }
+        else if (isCCWFromStart) {
+            modifiedStart += angleToStartAngle;
+            modifiedArcAngle -= angleToStartAngle;
+        }
+        else {
+            modifiedStart += 2 * std::numbers::pi - angleToStartAngle;
+            modifiedArcAngle -= 2 * std::numbers::pi - angleToStartAngle;
+        }
+    }
+    else {
+        const bool isCWFromEnd = crossProduct(angle, endAngle) >= 0;
+        if (outOfArc) {
+            modifiedArcAngle += isCWFromEnd ? 2 * std::numbers::pi - angleToEndAngle
+                                            : angleToEndAngle;
+        }
+        else {
+            modifiedArcAngle -= isCWFromEnd ? angleToEndAngle
+                                            : 2 * std::numbers::pi - angleToEndAngle;
+        }
+    }
+    increment = modifiedArcAngle - arcAngle;
+    return std::isfinite(modifiedStart) && std::isfinite(modifiedArcAngle)
+        && std::isfinite(increment);
+}
+
+std::unique_ptr<SketchObject> SketchObject::diagnoseExtend(
+    int GeoId,
+    const Base::Vector3d& targetPoint,
+    PointPos endpoint,
+    double& increment
+) const
+{
+    PointPos effectiveEndpoint = endpoint;
+    if (!calculateExtensionParameters(
+            GeoId, targetPoint, endpoint, increment, effectiveEndpoint)
+        || effectiveEndpoint != endpoint || std::abs(increment) <= Precision::Confusion()) {
+        return nullptr;
+    }
+
+    auto diagnostic = makeGeometryMutationDiagnosticClone();
+    try {
+        if (diagnostic->extend(GeoId, increment, endpoint) != 0) {
+            return nullptr;
+        }
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to create the Extend diagnostic state: ") + error.what()
+        );
+    }
+    try {
+        diagnostic->solve(true);
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to solve the Extend diagnostic state: ") + error.what()
+        );
+    }
+    return diagnostic;
+}
+
 int SketchObject::extend(int GeoId, double increment, PointPos endpoint)
 {
     if (GeoId < 0 || GeoId > getHighestCurveIndex())
@@ -386,17 +801,22 @@ int SketchObject::extend(int GeoId, double increment, PointPos endpoint)
         }
     }
     else if (geom->is<Part::GeomArcOfCircle>()) {
-        auto* arc = static_cast<Part::GeomArcOfCircle*>(geom);
+        const auto* arc = static_cast<const Part::GeomArcOfCircle*>(geom);
         double startArc, endArc;
         arc->getRange(startArc, endArc, true);
+        auto modifiedArc = std::unique_ptr<Part::GeomArcOfCircle>(
+            static_cast<Part::GeomArcOfCircle*>(arc->clone()));
         if (endpoint == PointPos::start) {
-            arc->setRange(startArc - increment, endArc, true);
-            retcode = 0;
+            modifiedArc->setRange(startArc - increment, endArc, true);
         }
         else if (endpoint == PointPos::end) {
-            arc->setRange(startArc, endArc + increment, true);
-            retcode = 0;
+            modifiedArc->setRange(startArc, endArc + increment, true);
         }
+        else {
+            return -1;
+        }
+        Geometry.set1Value(GeoId, std::move(modifiedArc));
+        retcode = 0;
     }
     if (retcode == 0 && noRecomputes) {
         solve();
@@ -979,6 +1399,49 @@ int SketchObject::trim(int GeoId, const Base::Vector3d& point)
     return 0;
 }
 
+std::unique_ptr<SketchObject>
+SketchObject::diagnoseTrim(int GeoId, const Base::Vector3d& point) const
+{
+    if (!isGeoIdAllowedForTrim(this, GeoId)) {
+        return nullptr;
+    }
+    const Part::Geometry* geometry = getGeometry(GeoId);
+    if (!geometry
+        || !(geometry->isDerivedFrom<Part::GeomTrimmedCurve>()
+             || geometry->is<Part::GeomCircle>() || geometry->is<Part::GeomEllipse>()
+             || geometry->is<Part::GeomBSplineCurve>())) {
+        // Match DrawSketchHandlerTrimming's selection gate exactly. The lower-level trim()
+        // method accepts a wider curve set for programmatic callers.
+        return nullptr;
+    }
+
+    auto diagnostic = makeGeometryMutationDiagnosticClone();
+    try {
+        if (diagnostic->trim(GeoId, point) != 0) {
+            return nullptr;
+        }
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to create the Trim diagnostic state: ") + error.what()
+        );
+    }
+    try {
+        // A document recompute runs solve(true), which also replaces geometry with the
+        // solver-extracted representation. That distinction matters for split lines: the raw
+        // second segment inherits the source curve's parameter interval, while the recomputed
+        // human result is normalized to a local interval. Diagnose the exact post-recompute
+        // geometry that Native verification will observe.
+        diagnostic->solve(true);
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to solve the Trim diagnostic state: ") + error.what()
+        );
+    }
+    return diagnostic;
+}
+
 int SketchObject::split(int GeoId, const Base::Vector3d& point)
 {
     // No need to check input data validity as this is an sketchobject managed operation
@@ -1094,6 +1557,47 @@ int SketchObject::split(int GeoId, const Base::Vector3d& point)
 
     return 0;
 }
+
+std::unique_ptr<SketchObject>
+SketchObject::diagnoseSplit(int GeoId, const Base::Vector3d& point) const
+{
+    if (GeoId < 0 || GeoId > getHighestCurveIndex()) {
+        return nullptr;
+    }
+    const Part::Geometry* geometry = getGeometry(GeoId);
+    if (!geometry
+        || !(geometry->is<Part::GeomLineSegment>() || geometry->is<Part::GeomCircle>()
+             || geometry->is<Part::GeomEllipse>()
+             || geometry->isDerivedFrom<Part::GeomArcOfConic>()
+             || geometry->is<Part::GeomBSplineCurve>())) {
+        // Match DrawSketchHandlerSplitting's edge-selection gate exactly. A B-spline knot
+        // selection is resolved by that handler to its parent B-spline before split() is called.
+        return nullptr;
+    }
+
+    auto diagnostic = makeGeometryMutationDiagnosticClone();
+    try {
+        if (diagnostic->split(GeoId, point) != 0) {
+            return nullptr;
+        }
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to create the Split diagnostic state: ") + error.what()
+        );
+    }
+    try {
+        // Match the state visible after the human command's document recompute, including
+        // solver-extracted curve parameter normalization.
+        diagnostic->solve(true);
+    }
+    catch (const Base::Exception& error) {
+        throw Base::RuntimeError(
+            std::string("Unable to solve the Split diagnostic state: ") + error.what()
+        );
+    }
+    return diagnostic;
+}
 // clang-format off
 
 int SketchObject::join(
@@ -1173,6 +1677,15 @@ int SketchObject::join(
     // TODO: Check for tangent constraint here
     bool makeC1Continuous = (continuity >= 1);
 
+    // A C1 join needs an interior multiplicity of at least one. Degree-one inputs used to
+    // subtract their join multiplicity to zero and hand an invalid B-spline definition to OCC.
+    // Elevating both exact representations preserves their shapes and makes the human tangent
+    // join well-defined.
+    if (makeC1Continuous && bsp1->getDegree() < 2) {
+        bsp1->increaseDegree(2);
+        bsp2->increaseDegree(2);
+    }
+
     // TODO: Rescale one or both sections to fulfill some purpose.
     // This could include making param between [0,1], and/or making
     // C1 continuity possible.
@@ -1184,6 +1697,9 @@ int SketchObject::join(
         // TODO: slope2 can technically be a zero vector
         // But that seems not possible unless the spline is trivial.
         // Prove or account for the possibility.
+        if (slope1.Length() <= 1.0e-12 || slope2.Length() <= 1.0e-12) {
+            THROWM(ValueError, "Cannot create a C1 join from a zero endpoint derivative.");
+        }
         double scale = slope2.Length() / slope1.Length();
         bsp2->scaleKnotsToBounds(0, scale * (bsp2->getLastParameter() - bsp2->getFirstParameter()));
     }

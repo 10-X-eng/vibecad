@@ -68,11 +68,11 @@ Open **Preferences**, then select **VibeCAD > VibeCAD**.
 ChatGPT credentials are stored in a private VibeCAD Codex credential directory and refreshed by the bundled, version-pinned app-server. **Logout** asks that runtime to remove the account. VibeCAD never imports credentials from another Codex installation and never falls back to an ambient API key.
 
 ChatGPT subscription, OpenAI-compatible, Anthropic, and offline/debug turns all
-use the same active-workbench resolver. The assistant always authors through
-VibeScript and receives only the active workbench's exact VibeScript API plus
-any focused read tools owned by that workbench. Human ribbon commands remain
-available normally, but they are not exposed to the AI as an alternate
-authoring system.
+use the same frozen authoring-surface resolver. The human chooses either
+**VibeScript** or **Native** in the Assistant header. VibeScript exposes the
+active workbench's exact source-backed API. Native exposes only the complete
+tool families belonging to the human-selected VibeCAD ribbon. A provider can
+never select or switch a workbench, ribbon, or authoring mode for itself.
 
 ### Save a Key in the OS Keyring
 
@@ -133,7 +133,9 @@ When using a `.env` file for xAI, use `OPENAI_API_KEY`; VibeCAD resolves that ke
 ## Start a CAD Conversation
 
 1. Create or open a CAD document and **save it**. VibeCAD keeps the assistant disabled for unsaved documents so the conversation, design record, references, and generated source have a durable project location.
-2. Select the workbench that matches the work you are doing. VibeCAD exposes the focused tool surface for the active workbench.
+2. Select the VibeCAD ribbon that matches the work you are doing, then choose
+   **VibeScript** or **Native** in the Assistant header. Only the human can
+   change either choice.
 3. Open **View > Panels > VibeCAD Assistant** if the assistant is not visible.
 4. Describe the intended result, including the dimensions, interfaces, material, manufacturing process, and constraints that matter.
 5. Use **Attach Image** for a reference design, or paste an image into the message box with `Ctrl+V`. Use **Attach View** to include the current viewport in the next model request only; it is consumed after that delivery.
@@ -148,22 +150,35 @@ The conversation selector at the top of the assistant opens prior conversations 
 
 Saved conversations remain available to the human in this selector, but VibeCAD does not replay the project transcript or persisted tool traces into a model request. The model receives the current message exactly once. **Intent Memory** remains available as an explicit human project record, but it is not compiled after every turn or injected automatically.
 
-Turn-start CAD context is deliberately small: active workbench/domain,
-document identity and object count, edit object, exact selection, and the
-editable VibeScript source targets for that workbench. Each target represents
-one part or program and includes its exact source ID, revision, affected
-outputs, `vibescript.read_source` arguments, and `vibescript.edit_source`
-arguments. `vibescript.read_api` returns the active workbench API. Focused
-workbench read tools can describe human-created native state without exposing
-human mutation commands. Newly attached reference images and **Attach View**
-are delivered once.
+Turn-start CAD context is deliberately small: the frozen authoring surface,
+document identity, current edit object, exact selection, and one concise active
+domain state. In VibeScript mode it also includes the editable source targets
+owned by the active workbench. Each source target carries its stable ID,
+revision, affected outputs, and exact read/edit calls. In Native mode the tool
+declarations come only from the current VibeCAD ribbon and every mutation is
+revalidated against the live document and frozen ribbon before execution.
+Newly attached reference images and **Attach View** are delivered at the start
+of each later turn until the human removes or replaces them.
 
-## Workbench-shaped VibeScript authoring
+## Choose Native or VibeScript authoring
 
-There is no assistant modeling-engine selector. The active workbench selects
-one dedicated, source-backed VibeScript domain automatically. Tools from
-different workbenches are never combined, and native human mutation commands
-never enter the provider surface.
+**Native** is for direct, parametric editing with the same command families the
+current VibeCAD ribbon exposes to a human. Tool surfaces are replaced only
+between turns after the human changes ribbons. Calls use exact object and
+subelement identities, structural revisions, transactions, concise receipts,
+and domain-state refreshes. Native changes do not rewrite or regenerate a
+VibeScript program.
+
+**VibeScript** is for source-backed, fully automated designs. The active
+workbench selects one dedicated VibeScript domain. Tools from different
+workbenches are never combined, and accepted source remains the authority for
+its published outputs. Direct Native mutation is therefore unavailable for a
+VibeScript-owned document until the human explicitly takes manual control.
+
+See [VibeCAD authoring modes](docs/vibecad-authoring-modes.md) for the complete
+authority boundary and migration from the retired direct-tool surface.
+
+## Workbench-shaped VibeScript execution
 
 VibeScript keeps source, inputs, diagnostics, revisions, and accepted outputs
 with the project. It runs in an isolated windowless worker and publishes only

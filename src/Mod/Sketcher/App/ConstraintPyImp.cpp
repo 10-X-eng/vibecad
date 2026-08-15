@@ -24,6 +24,7 @@
 
 #include <sstream>
 
+#include <boost/uuid/uuid_io.hpp>
 
 #include <Base/QuantityPy.h>
 
@@ -1186,6 +1187,16 @@ void ConstraintPy::setThirdPos(Py::Long arg)
     }
 }
 
+Py::Long ConstraintPy::getInternalAlignmentIndex() const
+{
+    return Py::Long(this->getConstraintPtr()->InternalAlignmentIndex);
+}
+
+Py::String ConstraintPy::getTag() const
+{
+    return Py::String(boost::uuids::to_string(this->getConstraintPtr()->getTag()));
+}
+
 Py::String ConstraintPy::getName() const
 {
     return Py::String(this->getConstraintPtr()->Name);
@@ -1224,6 +1235,34 @@ Py::Boolean ConstraintPy::getInVirtualSpace() const
 Py::Boolean ConstraintPy::getIsActive() const
 {
     return Py::Boolean(this->getConstraintPtr()->isActive);
+}
+
+Py::Tuple ConstraintPy::getElements() const
+{
+    const auto* constraint = this->getConstraintPtr();
+    Py::Tuple result(constraint->getElementsSize());
+    for (std::size_t index = 0; index < constraint->getElementsSize(); ++index) {
+        Py::Tuple element(2);
+        element.setItem(0, Py::Long(constraint->getGeoId(static_cast<int>(index))));
+        element.setItem(1, Py::Long(constraint->getPosIdAsInt(static_cast<int>(index))));
+        result.setItem(index, element);
+    }
+    return result;
+}
+
+Py::String ConstraintPy::getText() const
+{
+    return Py::String(this->getConstraintPtr()->getText());
+}
+
+Py::String ConstraintPy::getFont() const
+{
+    return Py::String(this->getConstraintPtr()->getFont());
+}
+
+Py::Boolean ConstraintPy::getIsTextHeight() const
+{
+    return Py::Boolean(this->getConstraintPtr()->getIsTextHeight());
 }
 
 PyObject* ConstraintPy::getCustomAttributes(const char* /*attr*/) const

@@ -32,7 +32,7 @@ class _Object:
             setattr(self, property_name, value)
             self._property_types[property_name] = (
                 "App::PropertyString"
-                if property_name == "VibeCADTimelineRole"
+                if property_name in {"VibeCADTimelineRole", "VibeCADResultSolver"}
                 else "App::PropertyLinkHidden"
             )
 
@@ -41,6 +41,11 @@ class _Object:
 
     def isDerivedFrom(self, type_id: str) -> bool:
         return self.TypeId == type_id
+
+    def removeProperty(self, name: str) -> None:
+        self.PropertiesList.remove(name)
+        self._property_types.pop(name)
+        delattr(self, name)
 
 
 class _Timeline:
@@ -88,6 +93,36 @@ def objecttools(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
         _is_suppressed=lambda _obj: False,
     )
     monkeypatch.setitem(sys.modules, "femtools", femtools)
+
+    def canonical_resource_order(owner, resources):
+        children = {owner: []}
+        for resource in resources:
+            children[resource] = []
+        for resource in resources:
+            children[resource.VibeCADTimelineOwner].append(resource)
+        ordered = []
+
+        def visit(resource):
+            for child in children[resource]:
+                visit(child)
+            ordered.append(resource)
+
+        for resource in children[owner]:
+            visit(resource)
+        return ordered
+
+    femcommands = ModuleType("femcommands")
+    femcommands_manager = ModuleType("femcommands.manager")
+    femcommands_manager._canonical_timeline_resource_order = (
+        canonical_resource_order
+    )
+    femcommands.manager = femcommands_manager
+    monkeypatch.setitem(sys.modules, "femcommands", femcommands)
+    monkeypatch.setitem(
+        sys.modules,
+        "femcommands.manager",
+        femcommands_manager,
+    )
 
     module_path = (
         Path(__file__).resolve().parents[2] / "Fem" / "femtools" / "objecttools.py"
@@ -150,7 +185,7 @@ def test_wholly_legacy_solver_results_adopt_once_in_history_order(
 
     assert result == "adopted"
     assert document.adoptions == [
-        (root, (output,), (root,)),
+        (solver, (output, root), (root, solver)),
     ]
     assert all(
         isinstance(identity, int) or identity == "VibeCADTimeline"
@@ -185,9 +220,12 @@ def test_canonical_owned_solver_results_skip_adoption(
     objecttools: ModuleType,
 ) -> None:
     solver = _solver()
+    solver.PropertiesList.append("VibeCADTimelineRole")
+    solver._property_types["VibeCADTimelineRole"] = "App::PropertyString"
+    solver.VibeCADTimelineRole = "operation"
     root = _pipeline(
-        VibeCADTimelineRole="operation",
-        VibeCADResultSolver=solver,
+        VibeCADTimelineRole="resource",
+        VibeCADTimelineOwner=solver,
     )
     output = _output(
         VibeCADTimelineRole="resource",
@@ -196,7 +234,7 @@ def test_canonical_owned_solver_results_skip_adoption(
     solver.Results = [root, output]
     document = _Document(
         [solver, root, output],
-        [solver, output, root],
+        [output, root, solver],
     )
 
     result = objecttools._ensure_exact_retained_result_graph(solver)
@@ -205,13 +243,16 @@ def test_canonical_owned_solver_results_skip_adoption(
     assert document.adoptions == []
 
 
-def test_canonical_graph_rejects_an_owned_resource_omitted_from_solver_results(
+def test_canonical_graph_allows_internal_resource_omitted_from_solver_results(
     objecttools: ModuleType,
 ) -> None:
     solver = _solver()
+    solver.PropertiesList.append("VibeCADTimelineRole")
+    solver._property_types["VibeCADTimelineRole"] = "App::PropertyString"
+    solver.VibeCADTimelineRole = "operation"
     root = _pipeline(
-        VibeCADTimelineRole="operation",
-        VibeCADResultSolver=solver,
+        VibeCADTimelineRole="resource",
+        VibeCADTimelineOwner=solver,
     )
     omitted = _output(
         "OmittedOutput",
@@ -226,57 +267,54 @@ def test_canonical_graph_rejects_an_owned_resource_omitted_from_solver_results(
         VibeCADTimelineOwner=root,
     )
     solver.Results = [root, returned]
-    _Document(
+    document = _Document(
         [solver, root, omitted, returned],
-        [solver, omitted, returned, root],
+        [omitted, returned, root, solver],
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="does not exactly contain",
-    ):
-        objecttools._ensure_exact_retained_result_graph(solver)
+    assert objecttools._ensure_exact_retained_result_graph(solver) == "canonical"
+    assert document.adoptions == []
 
 
-def test_mixed_canonical_and_legacy_metadata_rejects(
+def test_previous_result_metadata_is_normalized_during_exact_adoption(
     objecttools: ModuleType,
 ) -> None:
     solver = _solver()
     root = _pipeline(
         VibeCADTimelineRole="operation",
-        VibeCADResultSolver=solver,
+        VibeCADResultSolver=f"{solver.Name}:{solver.ID}",
     )
     output = _output()
     solver.Results = [root, output]
-    _Document(
+    document = _Document(
         [solver, root, output],
         [solver, output, root],
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="mixes canonical and legacy",
-    ):
-        objecttools._ensure_exact_retained_result_graph(solver)
+    assert objecttools._ensure_exact_retained_result_graph(solver) == "adopted"
+    assert "VibeCADResultSolver" not in root.PropertiesList
+    assert document.adoptions == [
+        (solver, (output, root), (root, solver)),
+    ]
 
 
-def test_partial_legacy_root_metadata_rejects(
+def test_partial_previous_source_metadata_is_removed_during_adoption(
     objecttools: ModuleType,
 ) -> None:
     solver = _solver()
     root = _pipeline(VibeCADResultSolver=None)
     output = _output()
     solver.Results = [root, output]
-    _Document(
+    document = _Document(
         [solver, root, output],
         [solver, root, output],
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="partial or malformed",
-    ):
-        objecttools._ensure_exact_retained_result_graph(solver)
+    assert objecttools._ensure_exact_retained_result_graph(solver) == "adopted"
+    assert "VibeCADResultSolver" not in root.PropertiesList
+    assert document.adoptions == [
+        (solver, (output, root), (root, solver)),
+    ]
 
 
 def test_noncontiguous_legacy_results_reject_without_adoption(

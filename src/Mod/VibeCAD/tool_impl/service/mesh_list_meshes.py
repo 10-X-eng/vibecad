@@ -13,8 +13,8 @@ TOOL_SPEC = {
     "name": "mesh.list_meshes",
     "description": (
         "List every mesh object in the active document with its exact "
-        "internal name, label, and triangle counts. Use the returned "
-        "internal names to target mesh.analyze or mesh.repair."
+        "internal name, label, and triangle counts. Use these identities when "
+        "reading or editing the owning Mesh VibeScript source."
     ),
     "contextual": True,
     "safety": "READ",

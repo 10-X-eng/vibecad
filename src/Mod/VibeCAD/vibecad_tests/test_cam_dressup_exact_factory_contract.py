@@ -18,6 +18,10 @@ _SHIPPED_DRESSUPS = {
         "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
         "CommandDressupDragknife",
     ),
+    "CAM_DressupLeadInOut": (
+        "src/Mod/CAM/Path/Dressup/Gui/LeadInOut.py",
+        "CommandPathDressup",
+    ),
     "CAM_DressupZCorrect": (
         "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
         "CommandPathDressup",
@@ -72,7 +76,7 @@ def test_shipped_dressups_bind_and_validate_the_exact_factory_return():
             "Activated",
         )
 
-        assert "def createDressupFeature(document):" in source
+        assert "def createDressupFeature(document" in source
         assert 'document.addObject(' in source
         assert "return result" in source
         assert "FreeCADGui.runDocumentObjectCommand(" in activated
@@ -89,7 +93,7 @@ def test_shipped_dressups_bind_and_validate_the_exact_factory_return():
         assert "begin_task_launch(" in activated
         assert "launch.require_claimed()" in activated
         assert "launch.abort()" in activated
-        assert "markTimelineReplacedInputs(" in activated
+        assert "markTimelineReplacedInputs(" in source
 
         assert "_cam_doc" not in activated
         assert "doCommandEval(" not in activated

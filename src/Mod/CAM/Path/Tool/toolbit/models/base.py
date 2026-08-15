@@ -590,14 +590,20 @@ class ToolBit(Asset, ABC):
                 "A tool bit and its timeline owner must share a document"
             )
         tool_doc_obj = doc.addObject("Part::FeaturePython", label)
-        if timeline_owner is not None:
-            PathUtil.markTimelineResource(
-                tool_doc_obj,
-                timeline_owner,
-            )
         self._timeline_owner_during_attach = timeline_owner
         try:
             self.attach_to_obj(tool_doc_obj, label=label)
+            if timeline_owner is not None:
+                # copyObject() must first import the visual body as one complete
+                # provisional graph.  Declaring the ToolBit as a Job resource
+                # before that import would place the History cursor inside the
+                # retained Job block and split it during source-timeline
+                # adoption.  Enroll the completed ToolBit/display tree instead;
+                # the caller's staged Job reconciliation publishes it atomically.
+                PathUtil.markTimelineResourceTree(
+                    tool_doc_obj,
+                    timeline_owner,
+                )
         finally:
             self._timeline_owner_during_attach = None
         return tool_doc_obj
@@ -926,6 +932,34 @@ class ToolBit(Asset, ABC):
                 FreeCAD.removeDocumentObserver(self._recompute_observer)
                 del self._recompute_observer
 
+    def update_visual_representation_in_place(self) -> None:
+        """Recompute the existing parametric display body without replacing it."""
+        if isinstance(self.obj, DetachedDocumentObject):
+            return
+        body = self.obj.BitBody
+        document = self.obj.Document
+        if (
+            body is None
+            or getattr(body, "Document", None) is not document
+            or document.getObject(str(getattr(body, "Name", ""))) is not body
+        ):
+            raise ValueError("The attached ToolBit has no live display body")
+
+        # A direct property edit may already have queued the legacy replacement
+        # path.  This update satisfies that request while preserving the body
+        # and feature identities, so the queued observer must not run later.
+        self._visual_update_queued = False
+        if hasattr(self, "_recompute_observer"):
+            FreeCAD.removeDocumentObserver(self._recompute_observer)
+            del self._recompute_observer
+
+        self._tool_bit_shape.update_body(body)
+        self.obj.Shape = body.Shape
+        if hasattr(body, "ViewObject") and body.ViewObject:
+            body.ViewObject.Visibility = False
+            body.ViewObject.ShowInTree = False
+        self.obj.purgeTouched()
+
     def _update_visual_representation(self):
         """
         Updates the visual representation of the tool bit based on the current
@@ -1015,11 +1049,34 @@ class ToolBit(Asset, ABC):
 
     def to_dict(self):
         """
-        Returns a dictionary representation of the tool bit.
+        Return a dictionary representation without touching an attached object.
 
-        Returns:
-            A dictionary with tool bit properties, JSON-serializable.
+        FreeCAD quantity formatting can transiently mark an attached FeaturePython
+        object as touched while its properties are read.  Serialization is a
+        read-only operation, so restore that transient flag and verify that no
+        other object state changed before returning the definition.
         """
+        if isinstance(self.obj, DetachedDocumentObject):
+            return self._definition_dict()
+        state_before = tuple(str(value) for value in self.obj.State)
+        try:
+            return self._definition_dict()
+        finally:
+            state_after = tuple(str(value) for value in self.obj.State)
+            if (
+                state_after != state_before
+                and "Touched" not in state_before
+                and "Touched" in state_after
+            ):
+                self.obj.purgeTouched()
+                state_after = tuple(str(value) for value in self.obj.State)
+            if state_after != state_before:
+                raise RuntimeError(
+                    "ToolBit serialization changed the attached object's state"
+                )
+
+    def _definition_dict(self):
+        """Build the JSON-serializable ToolBit definition."""
         Path.Log.track(self.obj.Label)
         attrs = {}
         attrs["version"] = 2

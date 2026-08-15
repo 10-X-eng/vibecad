@@ -36,6 +36,7 @@
 
 #include "ui_TaskCosmeticLine.h"
 #include "TaskCosmeticLine.h"
+#include "CosmeticLineBuilder.h"
 
 
 using namespace Gui;
@@ -199,17 +200,20 @@ void TaskCosmeticLine::createCosmeticLine()
     } else {
         p1 = DU::invertY(p1);
     }
-    m_tag = m_partFeat->addCosmeticEdge(p0, p1);
+    LineFormat format = LineFormat::getCurrentLineFormat();
+    const DrawingCosmeticLineSegmentResult created =
+        createDrawingCosmeticLineSegment(
+            m_partFeat,
+            DU::invertY(p0),
+            DU::invertY(p1),
+            format);
+    m_tag = created.lineTag;
     m_ce = m_partFeat->getCosmeticEdge(m_tag);
     if (!m_ce) {
         throw Base::RuntimeError(
             "The cosmetic line was not added to its drawing view"
         );
     }
-    m_ce->setFormat(LineFormat::getCurrentLineFormat());
-    m_partFeat->CosmeticEdges.setValues(
-        m_partFeat->CosmeticEdges.getValues()
-    );
 }
 
 void TaskCosmeticLine::updateCosmeticLine()
@@ -265,7 +269,6 @@ bool TaskCosmeticLine::accept()
         m_partFeat = partFeature;
         if (m_createMode) {
             createCosmeticLine();
-            partFeature->add1CEToGE(m_tag);
         } else {
             // Journal the pointer-backed value before updating its nested
             // geometry so transaction abort can restore the original.

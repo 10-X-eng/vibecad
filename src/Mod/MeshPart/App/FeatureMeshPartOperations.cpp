@@ -44,6 +44,7 @@
 #include <Mod/Mesh/App/Core/Grid.h>
 #include <Mod/Mesh/App/Core/MeshIO.h>
 #include <Mod/Mesh/App/Core/Projection.h>
+#include <Mod/Part/App/FaceMakerCheese.h>
 #include <Mod/Part/App/TopoShape.h>
 
 #include "Mesher.h"
@@ -105,6 +106,30 @@ bool sourcePropertyTouched(const App::PropertyLink& link)
     auto* placement = source ? source->getPropertyByName("Placement") : nullptr;
     return (source && source->isTouched()) || (mesh && mesh->isTouched())
         || (shape && shape->isTouched()) || (placement && placement->isTouched());
+}
+
+bool sameMeshTopology(const Mesh::MeshObject& first, const Mesh::MeshObject& second)
+{
+    const auto& firstKernel = first.getKernel();
+    const auto& secondKernel = second.getKernel();
+    if (firstKernel.CountPoints() != secondKernel.CountPoints()) {
+        return false;
+    }
+    const auto& firstFacets = firstKernel.GetFacets();
+    const auto& secondFacets = secondKernel.GetFacets();
+    if (firstFacets.size() != secondFacets.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < firstFacets.size(); ++index) {
+        const auto& left = firstFacets[index];
+        const auto& right = secondFacets[index];
+        if (left._aulPoints[0] != right._aulPoints[0]
+            || left._aulPoints[1] != right._aulPoints[1]
+            || left._aulPoints[2] != right._aulPoints[2]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 Base::Vector3d transformDirection(const Base::Matrix4D& transform, const Base::Vector3d& direction)
@@ -920,6 +945,149 @@ App::DocumentObjectExecReturn* CrossSections::execute()
         );
         if (result.isNull() || !result.isValid()) {
             throw Base::RuntimeError("The configured planes do not intersect the mesh");
+        }
+        Shape.setValue(result);
+        return App::DocumentObject::StdReturn;
+    }
+    catch (const Base::Exception& error) {
+        Shape.setValue(Part::TopoShape());
+        return new App::DocumentObjectExecReturn(error.what());
+    }
+    catch (const Standard_Failure& error) {
+        Shape.setValue(Part::TopoShape());
+        return new App::DocumentObjectExecReturn(error.GetMessageString());
+    }
+}
+
+
+PROPERTY_SOURCE(MeshPart::Boundary, Part::Feature)
+
+Boundary::Boundary()
+{
+    suppressibleExt.initExtension(this);
+    ADD_PROPERTY_TYPE(Source, (nullptr), "Boundary", App::Prop_None, "Linked source mesh");
+    ADD_PROPERTY_TYPE(
+        FacetIndices,
+        (),
+        "Boundary",
+        App::Prop_None,
+        "Optional exact source facets whose boundary is extracted"
+    );
+    ADD_PROPERTY_TYPE(
+        AcceptedTopology,
+        (Mesh::MeshObject()),
+        "Internal",
+        App::Prop_Hidden,
+        "Source topology used to validate optional facet indices"
+    );
+    ADD_PROPERTY_TYPE(
+        MakeFaces,
+        (true),
+        "Boundary",
+        App::Prop_None,
+        "Create faces from closed boundaries when possible"
+    );
+    Source.setScope(App::LinkScope::Global);
+}
+
+bool Boundary::isSuppressed() const
+{
+    return operationSuppressed(suppressibleExt, *this);
+}
+
+short Boundary::mustExecute() const
+{
+    if (Source.isTouched() || FacetIndices.isTouched() || AcceptedTopology.isTouched()
+        || MakeFaces.isTouched() || suppressibleExt.Suppressed.isTouched()
+        || sourcePropertyTouched(Source)) {
+        return 1;
+    }
+    return Part::Feature::mustExecute();
+}
+
+App::DocumentObjectExecReturn* Boundary::execute()
+{
+    try {
+        if (isSuppressed()) {
+            Shape.setValue(Part::TopoShape());
+            return App::DocumentObject::StdReturn;
+        }
+        const auto* source = linkedMesh(Source, *this, "Source");
+        const Mesh::MeshObject& sourceMesh = source->Mesh.getValue();
+        const auto rawIndices = FacetIndices.getValues();
+        std::unique_ptr<Mesh::MeshObject> subset;
+        const Mesh::MeshObject* selected = &sourceMesh;
+        if (!rawIndices.empty()) {
+            if (!sameMeshTopology(sourceMesh, AcceptedTopology.getValue())) {
+                throw Base::RuntimeError(
+                    "The linked source topology changed after the boundary facets were accepted"
+                );
+            }
+            std::vector<Mesh::FacetIndex> indices;
+            indices.reserve(rawIndices.size());
+            std::vector<bool> used(sourceMesh.countFacets(), false);
+            for (const long value : rawIndices) {
+                if (value < 0 || static_cast<unsigned long>(value) >= sourceMesh.countFacets()) {
+                    throw Base::ValueError("A boundary facet index is outside the linked mesh");
+                }
+                const auto index = static_cast<Mesh::FacetIndex>(value);
+                if (used[index]) {
+                    throw Base::ValueError("Boundary facet indices must not repeat");
+                }
+                used[index] = true;
+                indices.push_back(index);
+            }
+            subset.reset(sourceMesh.meshFromSegment(indices));
+            if (!subset || subset->countFacets() == 0) {
+                throw Base::RuntimeError("The accepted boundary facet subset is empty");
+            }
+            selected = subset.get();
+        }
+
+        MeshCore::MeshKernel kernel(selected->getKernel());
+        kernel.Transform(selected->getTransform());
+        std::list<std::vector<Base::Vector3f>> borders;
+        MeshCore::MeshAlgorithm(kernel).GetMeshBorders(borders);
+
+        BRep_Builder builder;
+        TopoDS_Compound wireCompound;
+        builder.MakeCompound(wireCompound);
+        std::vector<TopoDS_Wire> wires;
+        for (const auto& border : borders) {
+            if (border.size() < 3) {
+                continue;
+            }
+            BRepBuilderAPI_MakePolygon polygon;
+            for (auto point = border.rbegin(); point != border.rend(); ++point) {
+                polygon.Add(gp_Pnt(point->x, point->y, point->z));
+            }
+            if ((border.front() - border.back()).Length() > Precision::Confusion()) {
+                polygon.Close();
+            }
+            if (polygon.IsDone()) {
+                const TopoDS_Wire wire = polygon.Wire();
+                builder.Add(wireCompound, wire);
+                wires.push_back(wire);
+            }
+        }
+        if (wires.empty()) {
+            throw Base::ValueError("The selected mesh has no open boundary");
+        }
+
+        TopoDS_Shape shape;
+        if (MakeFaces.getValue()) {
+            try {
+                shape = Part::FaceMakerCheese::makeFace(wires);
+            }
+            catch (const Standard_Failure&) {
+            }
+        }
+        if (shape.IsNull()) {
+            shape = wireCompound;
+        }
+        Part::TopoShape result(shape, 0, getDocument()->getStringHasher());
+        if (result.isNull() || !result.isValid()) {
+            throw Base::RuntimeError("The mesh boundary produced invalid geometry");
         }
         Shape.setValue(result);
         return App::DocumentObject::StdReturn;

@@ -55,6 +55,11 @@ public:
     DrawViewDetail();
     ~DrawViewDetail() override;
 
+    struct PrecomputedDetailState
+    {
+        TopoDS_Shape detailShape;
+    };
+
     App::PropertyLink   BaseView;
     App::PropertyVector AnchorPoint;
     App::PropertyFloat   Radius;
@@ -63,9 +68,18 @@ public:
     App::PropertyBool   ShowMatting;
     App::PropertyBool   ShowHighlight;
 
+    Part::PropertyPartShape PrecomputedDetailShape;
+    App::PropertyString PrecomputedDetailSourceState;
+
+    PrecomputedDetailState getPrecomputedDetail() const;
+    void setPrecomputedDetail(const TopoDS_Shape& detailShape);
+    void requestPrecomputedDetailPaint();
+    PyObject* getPyObject() override;
+
     short mustExecute() const override;
     App::DocumentObjectExecReturn *execute() override;
     void onChanged(const App::Property* prop) override;
+    void onUndoRedoFinished() override;
     const char* getViewProviderName() const override {
         return "TechDrawGui::ViewProviderViewPart";
     }
@@ -102,6 +116,10 @@ protected:
     bool timelineDependenciesActive(
         TimelineDependencyStack& stack) const override;
     std::string geometrySourceStateSignature() const override;
+    bool detailIntermediateStateIsCurrent() const;
+    void adoptPrecomputedDetail(const TopoDS_Shape& detailShape, bool persist);
+    bool restorePrecomputedDetail();
+    void onDocumentRestored() override;
 
     void getParameters(void);
     double m_fudge;

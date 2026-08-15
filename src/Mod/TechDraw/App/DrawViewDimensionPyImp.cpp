@@ -71,7 +71,7 @@ PyObject* DrawViewDimensionPy::getPrecomputedDimension(PyObject* args)
 
     DrawViewDimension* dimension = getDrawViewDimensionPtr();
     const auto flags = dimension->getPrecomputedDimensionFlags();
-    if (flags.empty() || !flags[0] || !flags[3]) {
+    if (flags.empty() || !flags[0]) {
         throw Py::RuntimeError(
             "The TechDraw dimension has no valid computed descriptive geometry.");
     }

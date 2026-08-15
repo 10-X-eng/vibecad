@@ -422,7 +422,7 @@ App::DocumentObjectExecReturn* FeatureExtrude::buildExtrusion(ExtrudeOptions opt
     }
 
     // if the Base property has a valid shape, fuse the prism into it
-    TopoShape base = getBaseTopoShape(true);
+    TopoShape base = getExtrusionContextBaseShape();
 
     // get the normal vector of the sketch
     Base::Vector3d SketchVector = getProfileNormal();
@@ -829,6 +829,11 @@ App::DocumentObjectExecReturn* FeatureExtrude::buildExtrusion(ExtrudeOptions opt
     catch (Base::Exception& e) {
         return new App::DocumentObjectExecReturn(e.what());
     }
+}
+
+TopoShape FeatureExtrude::getExtrusionContextBaseShape() const
+{
+    return getBaseTopoShape(true);
 }
 
 TopoShape FeatureExtrude::generateSingleExtrusionSide(

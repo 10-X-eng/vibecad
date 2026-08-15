@@ -30,6 +30,22 @@ import UtilsAssembly
 import JointObject
 
 
+class _ShowTimelineResourceOnRestore:
+    """Simulate a Python proxy changing presentation during reconstruction."""
+
+    def __init__(self, obj):
+        obj.Proxy = self
+
+    def onDocumentRestored(self, obj):
+        obj.Visibility = True
+
+    def dumps(self):
+        return None
+
+    def loads(self, _state):
+        return None
+
+
 def _msg(text, end="\n"):
     """Write messages to the console including the line ending."""
     App.Console.PrintMessage(text + end)
@@ -423,6 +439,45 @@ class TestCore(unittest.TestCase):
         move.Visibility = False
         exploded.Proxy.applyMoves(exploded)
         self.assertAlmostEqual(component.Placement.Base.x, 10.0)
+
+    def test_restore_reconciles_python_resource_to_accepted_visibility(self):
+        """History wins after every Python restore callback has completed."""
+        with tempfile.TemporaryDirectory(prefix="assembly-timeline-restore-") as root:
+            path = f"{root}/accepted-resource-visibility.FCStd"
+            self.doc.openTransaction("Create restore presentation graph")
+            operation = self.doc.addObject(
+                "App::FeaturePython",
+                "RestorePresentationOperation",
+            )
+            resource = self.doc.addObject(
+                "App::FeaturePython",
+                "RestorePresentationResource",
+            )
+            _ShowTimelineResourceOnRestore(resource)
+            UtilsAssembly.markTimelineOperation(operation)
+            UtilsAssembly.markTimelineResource(resource, operation)
+            resource.Visibility = False
+            self.doc.finalizeProvisionalTimelineOperationBlock(
+                operation,
+                [resource, operation],
+            )
+            self.doc.commitTransaction()
+
+            timeline = self._timeline()
+            resource_index = list(timeline.Operations).index(resource)
+            self.assertFalse(bool(timeline.VisibilityAtEnd[resource_index]))
+            self.assertFalse(bool(resource.Visibility))
+            self.doc.recompute()
+            self.doc.saveAs(path)
+
+            document_name = self.doc.Name
+            App.closeDocument(document_name)
+            self.doc = App.openDocument(path)
+            resource = self.doc.getObject("RestorePresentationResource")
+            timeline = self._timeline()
+            resource_index = list(timeline.Operations).index(resource)
+            self.assertFalse(bool(timeline.VisibilityAtEnd[resource_index]))
+            self.assertFalse(bool(resource.Visibility))
 
     def test_simulation_motions_are_one_timeline_operation_and_reopen(self):
         """Simulation parameters own their motions as one durable history step."""

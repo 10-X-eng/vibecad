@@ -4198,6 +4198,16 @@ std::vector<DocumentObject*> Document::copyObject(
     bool returnAll
 )
 {
+    return copyObject(objs, recursive, returnAll, true);
+}
+
+std::vector<DocumentObject*> Document::copyObject(
+    const std::vector<DocumentObject*>& objs,
+    bool recursive,
+    bool returnAll,
+    bool adoptTimeline
+)
+{
     const int copyTransactionId = getBookedTransactionID();
     const bool capturesTimelineCreations = !testStatus(TempDoc) && !isPerformingTransaction()
         && !d->rollback && copyTransactionId != NullTransaction
@@ -4357,7 +4367,7 @@ std::vector<DocumentObject*> Document::copyObject(
         imported = md.importObjects(istr);
     }
 
-    if (capturesTimelineCreations) {
+    if (capturesTimelineCreations && adoptTimeline) {
         std::unordered_set<DocumentObject*> importedSet(imported.begin(), imported.end());
         std::unordered_set<DocumentObject*> mappedSet;
         std::vector<DocumentObject*> mappedSourceOrder;

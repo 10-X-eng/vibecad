@@ -56,6 +56,7 @@ PropertyConstraintList::PropertyConstraintList()
     , invalidGeometry(true)
     , restoreFromTransaction(false)
     , invalidIndices(false)
+    , detachedDiagnosticMode(false)
 {}
 
 PropertyConstraintList::~PropertyConstraintList()
@@ -212,7 +213,8 @@ void PropertyConstraintList::applyValues(std::vector<Constraint*>&& lValue)
         );
 
         if (j != valueMap.end()) {
-            if (i != j->second || _lValueList[j->second]->Name != lValue[i]->Name) {
+            if (!detachedDiagnosticMode
+                && (i != j->second || _lValueList[j->second]->Name != lValue[i]->Name)) {
                 App::ObjectIdentifier old_oid(makePath(j->second, _lValueList[j->second]));
                 App::ObjectIdentifier new_oid(makePath(i, lValue[i]));
                 renamed[old_oid] = new_oid;
@@ -227,8 +229,10 @@ void PropertyConstraintList::applyValues(std::vector<Constraint*>&& lValue)
     }
 
     /* Collect info about removed elements */
-    for (auto& v : valueMap) {
-        removed.insert(makePath(v.second, _lValueList[v.second]));
+    if (!detachedDiagnosticMode) {
+        for (auto& v : valueMap) {
+            removed.insert(makePath(v.second, _lValueList[v.second]));
+        }
     }
 
     /* Update value map with new tags from new array */

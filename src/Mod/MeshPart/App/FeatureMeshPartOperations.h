@@ -149,6 +149,31 @@ private:
 };
 
 /**
+ * Recomputable wire or face generated from the open boundary of a linked
+ * mesh, optionally restricted to an exact accepted facet subset.
+ */
+class MeshPartExport Boundary: public Part::Feature
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(MeshPart::Boundary);
+
+public:
+    Boundary();
+
+    App::PropertyLink Source;
+    App::PropertyIntegerList FacetIndices;
+    Mesh::PropertyMeshKernel AcceptedTopology;
+    App::PropertyBool MakeFaces;
+
+    App::DocumentObjectExecReturn* execute() override;
+    short mustExecute() const override;
+
+private:
+    [[nodiscard]] bool isSuppressed() const;
+
+    App::SuppressibleExtension suppressibleExt;
+};
+
+/**
  * Recomputable curve projected across a linked mesh.
  *
  * Picked anchors are stored as facet indices plus barycentric weights. This

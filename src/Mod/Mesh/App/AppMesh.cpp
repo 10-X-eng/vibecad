@@ -120,6 +120,7 @@ PyMOD_INIT_FUNC(Mesh)
     Mesh::Decimation            ::init();
     Mesh::Scale                 ::init();
     Mesh::TrimByPlane           ::init();
+    Mesh::PolygonEdit           ::init();
     Mesh::FacetEdit             ::init();
     Mesh::FacetSubset           ::init();
     Mesh::StoredEdit            ::init();

@@ -66,13 +66,24 @@ class ObjectOp(PathOp.ObjectOp):
         """buildpathocc(obj, wires, zValues, relZ=False) ... internal helper function to generate engraving commands."""
         Path.Log.track(obj.Label, len(wires), zValues)
 
+        # ``Part.sortEdges()`` and the orientation helpers below may reverse
+        # topology while assembling the working wires.  Base geometry often
+        # comes from a Job resource linked to a public model, so never pass
+        # those borrowed topology handles into the path builder.  Each path
+        # generation owns an independent copy of every input wire.
+        wires = [wire.copy() for wire in wires]
+
         tol = self.job.GeometryTolerance.Value if getattr(self, "job", None) else 0.01
         biDir = getattr(obj, "CutPattern", None) == "Bidirectional"
 
         # Prepare linking arguments for wire-to-wire collision-aware transitions
         solids = []
         if getattr(self, "job", None) and hasattr(self.job, "Model"):
-            solids = [base.Shape for base in self.job.Model.Group if hasattr(base, "Shape")]
+            solids = [
+                base.Shape.copy()
+                for base in self.job.Model.Group
+                if hasattr(base, "Shape") and base.Shape
+            ]
         linking_kwargs = {
             "start_position": None,
             "target_position": None,
@@ -93,7 +104,7 @@ class ObjectOp(PathOp.ObjectOp):
             linking_kwargs["tool_diameter"] = obj.ToolController.Tool.Diameter.Value
         elif obj.CollisionAvoidanceStrategy == "Tool Shape":
             linking_kwargs["solids"] = solids
-            linking_kwargs["tool_shape"] = obj.ToolController.Tool.BitBody.Shape
+            linking_kwargs["tool_shape"] = obj.ToolController.Tool.BitBody.Shape.copy()
 
         if getattr(obj, "Approximation", False):
             wires = [PathOpUtil.approximateWire(w, tolerance=tol) for w in wires]

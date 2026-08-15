@@ -67,6 +67,7 @@
 #include <Mod/TechDraw/App/Preferences.h>
 
 #include "QGIDrawingTemplate.h"
+#include "BalloonBuilder.h"
 #include "QGILeaderLine.h"
 #include "QGIProjGroup.h"
 #include "QGIRichAnno.h"
@@ -594,6 +595,14 @@ void QGSPage::addBalloonToParent(QGIViewBalloon* balloon, QGIView* parent)
 // origin is in scene coordinates from QGVPage widget
 void QGSPage::createBalloon(QPointF origin, DrawView* parent)
 {
+    createBalloon(origin, parent, {});
+}
+
+void QGSPage::createBalloon(
+    QPointF origin,
+    DrawView* parent,
+    const std::string& anchorElement)
+{
     auto* page = getDrawPage();
     auto* document = page ? page->getDocument() : nullptr;
     if (!page || !document || !parent
@@ -613,53 +622,6 @@ void QGSPage::createBalloon(QPointF origin, DrawView* parent)
                 document,
                 QT_TRANSLATE_NOOP("Command", "Create Balloon")
             );
-        const std::string featureName =
-            document->getUniqueObjectName("Balloon");
-        const std::string documentName =
-            Base::InterpreterSingleton::strToPython(
-                document->getName()
-            );
-        const QString balloonFactory =
-            QStringLiteral(
-                "App.getDocument('%1').addObject"
-                "('TechDraw::DrawViewBalloon', '%2')"
-            )
-                .arg(
-                    QString::fromStdString(documentName),
-                    QString::fromStdString(featureName)
-                );
-        auto* balloon =
-            dynamic_cast<TechDraw::DrawViewBalloon*>(
-                Gui::Command::runDocumentObjectCommand(
-                    Command::Doc,
-                    *document,
-                    balloonFactory.toUtf8(),
-                    TechDraw::DrawViewBalloon::getClassTypeId()
-                )
-            );
-        if (!balloon) {
-            throw Base::RuntimeError(
-                "The balloon could not be created"
-            );
-        }
-        balloon->translateLabel(
-            "DrawViewBalloon",
-            "Balloon",
-            balloon->getNameInDocument()
-        );
-        const std::string balloonCommand =
-            Gui::Command::getObjectCmd(balloon);
-        const std::string parentCommand =
-            Gui::Command::getObjectCmd(parent);
-        const std::string pageCommand =
-            Gui::Command::getObjectCmd(page);
-        Command::doCommand(
-            Command::Doc,
-            "%s.SourceView = %s",
-            balloonCommand.c_str(),
-            parentCommand.c_str()
-        );
-
         QGIView* qgParent =
             getQGIVByName(parent->getNameInDocument());
         const double parentScale = parent->getScale();
@@ -670,40 +632,47 @@ void QGSPage::createBalloon(QPointF origin, DrawView* parent)
                 "The balloon parent view has no valid page geometry"
             );
         }
-        auto parentOrigin =
-            DU::toVector3d(qgParent->mapFromScene(origin));
-        parentOrigin =
-            Rez::appX(parentOrigin) / parentScale;
-        parentOrigin = DrawUtil::invertY(parentOrigin);
-        const auto parentRotationDeg =
-            parent->Rotation.getValue();
-        parentOrigin.RotateZ(
-            Base::toRadians(-parentRotationDeg)
-        );
-
-        balloon->setOrigin(parentOrigin);
-
-        const double textOffset = 20.0 / parentScale;
-        balloon->setPosition(
-            parentOrigin.x + textOffset,
-            parentOrigin.y + textOffset
-        );
-
-        const int index = page->getNextBalloonIndex();
-        balloon->Text.setValue(std::to_string(index).c_str());
-
-        Command::doCommand(
-            Command::Doc,
-            "%s.addView(%s)",
-            pageCommand.c_str(),
-            balloonCommand.c_str()
-        );
-        balloon->recomputeFeature();
-        if (balloon->isError()) {
-            throw Base::RuntimeError(
-                "The balloon could not be generated"
+        Base::Vector3d parentOrigin;
+        if (!anchorElement.empty()) {
+            auto* partView = freecad_cast<DrawViewPart*>(parent);
+            if (!partView) {
+                throw Base::TypeError(
+                    "A selected balloon anchor requires a projected part view"
+                );
+            }
+            parentOrigin =
+                TechDrawGui::validateProjectedBalloonAnchor(
+                    partView,
+                    anchorElement
+                ).pointInSourceMm;
+        }
+        else {
+            parentOrigin =
+                DU::toVector3d(qgParent->mapFromScene(origin));
+            parentOrigin =
+                Rez::appX(parentOrigin) / parentScale;
+            parentOrigin = DrawUtil::invertY(parentOrigin);
+            const auto parentRotationDeg =
+                parent->Rotation.getValue();
+            parentOrigin.RotateZ(
+                Base::toRadians(-parentRotationDeg)
             );
         }
+
+        const double textOffset = 20.0 / parentScale;
+        const Base::Vector3d bubblePosition(
+            parentOrigin.x + textOffset,
+            parentOrigin.y + textOffset,
+            0.0);
+        TechDrawGui::createBalloonFeature(
+            parent,
+            parentOrigin,
+            bubblePosition,
+            std::nullopt,
+            anchorElement.empty()
+                ? std::nullopt
+                : std::optional<std::string>(anchorElement),
+            std::nullopt);
         TechDrawGui::TaskInternal::updateExactDocument(document);
         transaction.commit();
 
@@ -769,15 +738,6 @@ QGIView* QGSPage::addRichAnno(TechDraw::DrawRichAnno* richFeat)
     auto richView = new QGIRichAnno;
     richView->setViewFeature(richFeat);
     addItemToScene(richView);
-
-    // Find if it belongs to a parent
-    QGIView* parent = nullptr;
-    parent = findParent(richView);
-
-    if (parent) {
-        addRichAnnoToParent(richView, parent);
-    }
-
     return richView;
 }
 

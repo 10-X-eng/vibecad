@@ -88,7 +88,6 @@ private:
     TaskInternal::ObjectIdentity<App::DocumentObject>
         m_objectIdentity;
     bool isDimension;
-    double dimRawValue;
     std::unique_ptr<Ui_TaskCustomizeFormat> ui;
 }; // class TaskCustomizeFormat
 

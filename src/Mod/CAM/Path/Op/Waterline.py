@@ -2396,7 +2396,6 @@ class ObjectWaterline(PathOp.ObjectOp):
             if obj.CutPattern != "None":
                 clrLyr = obj.CutPattern
         else:
-            obj.CutPattern = "None"
             if ca == lastCA:  # if current iteration is last layer
                 Path.Log.debug("... Clearing bottom layer.")
                 clrLyr = obj.ClearLastLayer
@@ -2469,8 +2468,13 @@ def SetupProperties():
     return [tup[1] for tup in ObjectWaterline.opPropertyDefinitions(False)]
 
 
-def Create(name, obj=None, parentJob=None):
+def Create(name, obj=None, parentJob=None, toolController=None):
     """Create(name) ... Creates and returns a Waterline operation."""
     obj = PathOp.createOperationObject(name, obj, parentJob)
-    obj.Proxy = ObjectWaterline(obj, name, parentJob)
+    obj.Proxy = ObjectWaterline(
+        obj,
+        name,
+        parentJob,
+        toolController=toolController,
+    )
     return obj

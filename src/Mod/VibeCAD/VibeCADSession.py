@@ -34,6 +34,7 @@ from VibeCADModelingSurface import (
     SHARED_CONTEXT_TOOLS,
     infer_engine_from_names,
     is_model_assembly_workbench,
+    modeling_surface_from_native_provider,
     resolve_service_surface,
     share_authoring_surface,
     validate_surface_names,
@@ -44,6 +45,8 @@ from VibeCADTools import (
     normalize_tool_failure,
     tool_failure,
 )
+from VibeCADNativeOutput import NativeOutputAuthorizer
+from VibeCADNativeInput import NativeInputAuthorizer
 import VibeCADVibeScriptDomains as vibescript_domains
 
 
@@ -95,7 +98,6 @@ VIBESCRIPT_PROVIDER_TOOLS = {
     ),
 }
 
-ISOLATED_GEOMETRY_TOOLS = {"partdesign.measure"}
 
 SCRIPTED_ENGINE_PROVIDER_TOOLS = {
     "vibescript": VIBESCRIPT_PROVIDER_TOOLS,
@@ -724,6 +726,27 @@ def is_provider_safe_tool(
     *,
     interaction_mode: str = "build",
 ) -> bool:
+    modeling_engine = getattr(service, "modeling_engine", None)
+    if (
+        callable(modeling_engine)
+        and str(modeling_engine() or "").strip().lower() == "native"
+    ):
+        from VibeCADNativeProviderContext import resolve_production_native_surface
+
+        try:
+            registry, surface = resolve_production_native_surface()
+        except Exception:
+            return False
+        clean_name = str(tool_name)
+        if not surface.available or clean_name not in surface.tool_names:
+            return False
+        if normalize_interaction_mode(interaction_mode) == "build":
+            return True
+        definition = registry.definition(clean_name)
+        return bool(
+            definition is not None
+            and definition.primary_classification in {"read", "view"}
+        )
     try:
         tool = service.registry.get(tool_name)
     except KeyError:
@@ -745,6 +768,14 @@ def provider_tool_schemas(
     runtime_state: dict[str, Any] | None = None,
     interaction_mode: str = "build",
 ) -> list[dict[str, Any]]:
+    modeling_engine = getattr(service, "modeling_engine", None)
+    if (
+        callable(modeling_engine)
+        and str(modeling_engine() or "").strip().lower() == "native"
+    ):
+        from VibeCADNativeProviderContext import native_provider_tool_schemas
+
+        return native_provider_tool_schemas(interaction_mode=interaction_mode)
     state = (
         runtime_state if runtime_state is not None else _minimal_runtime_state(service)
     )
@@ -1096,7 +1127,25 @@ def _capture_context_for_provider(
         key: raw_context[key] for key in allowed_turn_facts if key in raw_context
     }
     workbench = service.active_workbench_name()
-    resolution = resolve_service_surface(service, workbench)
+    native_provider_surface = None
+    native_engine = str(service.modeling_engine() or "").strip().lower() == "native"
+    if native_engine:
+        try:
+            from VibeCADNativeProviderContext import (
+                resolve_production_native_surface,
+            )
+
+            _native_registry, native_provider_surface = (
+                resolve_production_native_surface()
+            )
+            resolution = modeling_surface_from_native_provider(
+                workbench,
+                native_provider_surface,
+            )
+        except Exception:
+            resolution = resolve_service_surface(service, workbench)
+    else:
+        resolution = resolve_service_surface(service, workbench)
     context["workbench"] = workbench
     context["modeling_surface"] = {
         "workbench": str(resolution.workbench or ""),
@@ -1119,6 +1168,13 @@ def _capture_context_for_provider(
             else {}
         ),
     }
+    if resolution.engine == "native":
+        from VibeCADNativeProviderContext import native_active_state
+
+        context.pop("document", None)
+        context.pop("selection", None)
+        if resolution.available:
+            context["native_state"] = native_active_state(service)
     if resolution.engine == "vibescript" and resolution.available and resolution.domain:
         context["editable_sources"] = _capture_editable_sources_for_workbench(
             service,
@@ -1142,12 +1198,37 @@ def _capture_context_for_provider(
                         raise
     context["_vibecad_debug"] = service.provider_debug_config()
     runtime_state = _minimal_runtime_state(service)
-    schemas = provider_tool_schemas(
-        service,
-        workbench,
-        runtime_state=runtime_state,
-        interaction_mode=clean_interaction_mode,
-    )
+    if native_provider_surface is not None:
+        from VibeCADNativeProviderContext import (
+            schemas_for_native_provider_surface,
+        )
+
+        schemas = schemas_for_native_provider_surface(
+            native_provider_surface,
+            interaction_mode=clean_interaction_mode,
+            registry=_native_registry,
+        )
+        codex_thread_schemas = schemas_for_native_provider_surface(
+            native_provider_surface,
+            interaction_mode="build",
+            registry=_native_registry,
+        )
+    elif not native_engine:
+        schemas = provider_tool_schemas(
+            service,
+            workbench,
+            runtime_state=runtime_state,
+            interaction_mode=clean_interaction_mode,
+        )
+        codex_thread_schemas = provider_tool_schemas(
+            service,
+            workbench,
+            runtime_state=runtime_state,
+            interaction_mode="build",
+        )
+    else:
+        schemas = []
+        codex_thread_schemas = []
     context["provider_tool_schemas"] = schemas
     context["_vibecad_interaction_mode"] = clean_interaction_mode
     try:
@@ -1165,6 +1246,15 @@ def _capture_context_for_provider(
         }
     else:
         context["provider_tool_surface"] = turn_surface
+    if codex_thread_schemas:
+        context["_vibecad_codex_thread_surface"] = {
+            "provider_tool_schemas": codex_thread_schemas,
+            "provider_tool_surface": _turn_start_tool_surface(
+                workbench,
+                codex_thread_schemas,
+                resolution=resolution,
+            ),
+        }
     if session_trigger:
         context["session_trigger"] = dict(session_trigger)
     return context
@@ -1294,7 +1384,11 @@ def _consume_context_view_attachment(
     context: Mapping[str, Any],
     dispatch: DocumentThreadDispatch | None,
 ) -> None:
-    """Consume the exact one-shot images already copied into provider context."""
+    """Consume the exact one-shot viewport already copied into provider context.
+
+    Human reference images are durable context and deliberately remain
+    attached across turns until the human removes them.
+    """
 
     screenshot = context.get("view_screenshot")
     consume = getattr(service, "consume_view_screenshot_attachment", None)
@@ -1306,21 +1400,6 @@ def _consume_context_view_attachment(
     ):
         frozen = dict(screenshot)
         _on_document_thread(dispatch, lambda: consume(frozen))
-    references = context.get("reference_images")
-    consume_references = getattr(service, "consume_reference_image_attachments", None)
-    if (
-        isinstance(references, dict)
-        and references.get("images")
-        and callable(consume_references)
-    ):
-        frozen_references = {
-            "images": [
-                dict(item)
-                for item in list(references.get("images") or [])
-                if isinstance(item, dict)
-            ]
-        }
-        _on_document_thread(dispatch, lambda: consume_references(frozen_references))
 
 
 def _persist_session_conversation_turn(
@@ -1386,6 +1465,7 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "workbench",
         "modeling_surface",
+        "native_state",
         "document",
         "selection",
         "editable_sources",
@@ -1524,7 +1604,7 @@ def _run_provider(
     provider: BaseProvider,
     prompt: str,
     context: dict[str, Any],
-    tool_runner: Callable[[str, str], dict[str, Any]],
+    tool_runner: Callable[[str, str, str], dict[str, Any]],
     cancellation_check: CancellationCheck | None,
     progress_callback: ProgressCallback | None,
 ):
@@ -1565,9 +1645,9 @@ def _edit_mode_block(
         return None
     if edit_mode == "sketch":
         explanation = (
-            f"Sketch {_active_sketch_name(state)} is open for editing. Finish or "
-            f"verify that sketch, then call sketcher.close_sketch before running "
-            f"{tool.name}."
+            f"Sketch {_active_sketch_name(state)} is open for editing. Ask the "
+            f"user to finish or close that Sketch in the UI, then continue in a "
+            f"new turn before running {tool.name}."
         )
     else:
         explanation = (
@@ -1584,7 +1664,7 @@ def _edit_mode_block(
             "active_edit_object": _active_sketch_name(state) or None,
             "allowed_edit_modes": sorted(tool.spec.edit_modes),
             "recovery": (
-                "Finish and verify the active sketch, then call sketcher.close_sketch."
+                "Finish or close the active Sketch in the UI, then continue in a new turn."
                 if edit_mode == "sketch"
                 else "Open the exact target sketch for editing."
             ),
@@ -1593,7 +1673,7 @@ def _edit_mode_block(
         required_changes=[
             {
                 "action": (
-                    "call_sketcher.close_sketch"
+                    "human_leave_active_sketch"
                     if edit_mode == "sketch"
                     else "open_target_sketch"
                 )
@@ -3957,6 +4037,8 @@ def make_provider_tool_runner(
     cancellation_check: CancellationCheck | None,
     steering_check: SteeringCheck | None,
     question_callback: QuestionCallback | None,
+    output_authorization_callback: NativeOutputAuthorizer | None = None,
+    input_authorization_callback: NativeInputAuthorizer | None = None,
     session_trigger: dict[str, Any] | None = None,
     document_thread_dispatch: DocumentThreadDispatch | None = None,
     turn_surface: dict[str, Any] | None = None,
@@ -3968,6 +4050,59 @@ def make_provider_tool_runner(
     provider_calls_allowed: bool = True,
 ):
     clean_interaction_mode = normalize_interaction_mode(interaction_mode)
+    if (
+        isinstance(turn_surface, Mapping)
+        and str(turn_surface.get("engine") or "") == "native"
+    ):
+        from VibeCADNativeProviderRunner import NativeProviderToolRunner
+        from VibeCADNativeSessionFactory import create_native_session_execution
+
+        if clean_interaction_mode != "build":
+            raise RuntimeError(
+                "Native Plan mode is unavailable until its read-only turn contract is complete."
+            )
+        debug_config = service.provider_debug_config()
+        debug_events: list[dict[str, Any]] | None = (
+            [] if debug_config.get("enabled") else None
+        )
+        execution = _on_document_thread(
+            document_thread_dispatch,
+            lambda: create_native_session_execution(
+                service=service,
+                expected_surface=dict(turn_surface),
+                expected_schemas=[dict(value) for value in (turn_schemas or [])],
+                output_authorizer=output_authorization_callback,
+                input_authorizer=input_authorization_callback,
+                document_thread_dispatch=document_thread_dispatch,
+                debug_sink=(debug_events.append if debug_events is not None else None),
+            ),
+        )
+        return NativeProviderToolRunner(
+            execution=execution,
+            document_dispatch=lambda operation: _on_document_thread(
+                document_thread_dispatch,
+                operation,
+            ),
+            refresh_context=lambda: _build_context_for_provider(
+                service,
+                session_trigger,
+                clean_interaction_mode,
+                document_thread_dispatch,
+            ),
+            frozen_surface=dict(turn_surface),
+            frozen_schemas=[dict(value) for value in (turn_schemas or [])],
+            frozen_modeling_surface=dict(turn_modeling_surface or {}),
+            tool_trace=tool_trace,
+            debug_events=debug_events,
+            debug_capture_directory=(
+                str(debug_config.get("capture_directory") or "")
+                if debug_events is not None
+                else ""
+            ),
+            progress_callback=progress_callback,
+            cancellation_check=cancellation_check,
+            steering_check=steering_check,
+        )
     operation_manager = _vibescript_operation_manager(service)
     operation_local = threading.local()
     caller_progress_callback = progress_callback
@@ -4184,7 +4319,12 @@ def make_provider_tool_runner(
             current["all_source_count"] = len(all_sources)
         editable_sources_state["prepared"] = current
 
-    def run(tool_name: str, arguments_json: str = "{}") -> dict[str, Any]:
+    def run(
+        tool_name: str,
+        arguments_json: str = "{}",
+        provider_call_id: str = "",
+    ) -> dict[str, Any]:
+        del provider_call_id  # VibeScript does not consume Native call ownership.
         started = time.monotonic()
         tool = None
         args: dict[str, Any] = {}
@@ -4717,38 +4857,6 @@ def make_provider_tool_runner(
                     progress_callback=progress_callback,
                 )
             )
-        if tool_name in ISOLATED_GEOMETRY_TOOLS:
-            from VibeCADGeometry import execute_job
-            from tool_impl.service.partdesign_measure import (
-                cleanup_isolated_measurement,
-                finish_isolated_measurement,
-                prepare_isolated_measurement,
-            )
-
-            prepared = _on_document_thread(
-                document_thread_dispatch,
-                lambda: prepare_isolated_measurement(service, args["measurement"]),
-            )
-            if prepared.get("mode") == "immediate":
-                return finalize(dict(prepared["payload"]))
-            _emit(
-                progress_callback,
-                {
-                    "event": "geometry_worker_started",
-                    "operation": "minimum_distance",
-                    "input_complexity": prepared.get("input_complexity"),
-                },
-            )
-            try:
-                execution = execute_job(
-                    prepared["request_path"],
-                    prepared["result_path"],
-                    cancellation_check=cancellation_check,
-                )
-                payload = finish_isolated_measurement(prepared, execution)
-            finally:
-                cleanup_isolated_measurement(prepared)
-            return finalize(payload)
         _emit(
             progress_callback,
             {
@@ -4912,6 +5020,8 @@ def _run_session_turn(
     cancellation_check: CancellationCheck | None,
     steering_check: SteeringCheck | None,
     question_callback: QuestionCallback | None,
+    output_authorization_callback: NativeOutputAuthorizer | None,
+    input_authorization_callback: NativeInputAuthorizer | None,
     session_trigger: dict[str, Any] | None,
     persist_input_as_user: bool,
     prompt_section: str,
@@ -4973,6 +5083,11 @@ def _run_session_turn(
         clean_interaction_mode,
         document_thread_dispatch,
     )
+    if turn_conversation_id:
+        context["_vibecad_codex_session"] = {
+            "conversation_id": turn_conversation_id,
+            "conversation_path": str(recorded.get("path") or ""),
+        }
     _consume_context_view_attachment(active_service, context, document_thread_dispatch)
     tool_trace: list[dict[str, Any]] = []
     _emit(
@@ -5004,6 +5119,8 @@ def _run_session_turn(
         cancellation_check=cancellation_check,
         steering_check=steering_check,
         question_callback=question_callback,
+        output_authorization_callback=output_authorization_callback,
+        input_authorization_callback=input_authorization_callback,
         session_trigger=session_trigger,
         document_thread_dispatch=document_thread_dispatch,
         turn_surface=(
@@ -5133,6 +5250,10 @@ def _run_session_turn(
             tool_trace=tool_trace,
             error=str(exc),
         )
+    finally:
+        close_tool_runner = getattr(tool_runner, "close", None)
+        if callable(close_tool_runner):
+            close_tool_runner()
 
 
 def run_prompt(
@@ -5144,6 +5265,8 @@ def run_prompt(
     cancellation_check: CancellationCheck | None = None,
     steering_check: SteeringCheck | None = None,
     question_callback: QuestionCallback | None = None,
+    output_authorization_callback: NativeOutputAuthorizer | None = None,
+    input_authorization_callback: NativeInputAuthorizer | None = None,
     document_thread_dispatch: DocumentThreadDispatch | None = None,
     interaction_mode: str = "build",
 ) -> VibeCADResponse:
@@ -5156,6 +5279,8 @@ def run_prompt(
         cancellation_check=cancellation_check,
         steering_check=steering_check,
         question_callback=question_callback,
+        output_authorization_callback=output_authorization_callback,
+        input_authorization_callback=input_authorization_callback,
         session_trigger=None,
         persist_input_as_user=True,
         prompt_section="CURRENT_USER_MESSAGE",
@@ -5256,6 +5381,8 @@ def run_sketch_close_continuation(
     cancellation_check: CancellationCheck | None = None,
     steering_check: SteeringCheck | None = None,
     question_callback: QuestionCallback | None = None,
+    output_authorization_callback: NativeOutputAuthorizer | None = None,
+    input_authorization_callback: NativeInputAuthorizer | None = None,
     document_thread_dispatch: DocumentThreadDispatch | None = None,
 ) -> VibeCADResponse:
     if not isinstance(event, dict):
@@ -5313,6 +5440,8 @@ def run_sketch_close_continuation(
         cancellation_check=cancellation_check,
         steering_check=steering_check,
         question_callback=question_callback,
+        output_authorization_callback=output_authorization_callback,
+        input_authorization_callback=input_authorization_callback,
         session_trigger=clean_event,
         persist_input_as_user=False,
         prompt_section="CURRENT_SESSION_EVENT",

@@ -150,7 +150,12 @@ public:
 
     // for group type view providers
     CoinPtr<SoGroup> pcChildGroup;
-    using NodeMap = std::unordered_map<SoNode*, Pointer>;
+    struct ChildSnapshot
+    {
+        Pointer linkInfo;
+        LinkView::SnapshotType type;
+    };
+    using NodeMap = std::unordered_map<SoNode*, ChildSnapshot>;
     NodeMap nodeMap;
 
     std::map<qint64, QIcon> iconMap;
@@ -575,14 +580,13 @@ public:
             if (!info) {
                 continue;
             }
-            SoNode* node = info->getSnapshot(
-                child.overrideVisibility ? LinkView::SnapshotVisible
-                                         : LinkView::SnapshotChild
-            );
+            const auto type = child.overrideVisibility ? LinkView::SnapshotVisible
+                                                       : LinkView::SnapshotChild;
+            SoNode* node = info->getSnapshot(type);
             if (!node) {
                 continue;
             }
-            nodeMap[node] = info;
+            nodeMap[node] = {info, type};
             pcChildGroup->addChild(node);
         }
 
@@ -613,7 +617,11 @@ public:
             if (it == nodeMap.end()) {
                 return false;
             }
-            return it->second->getElementPicked(true, LinkView::SnapshotChild, pp, str);
+            // An element lookup may notify Coin sensors and rebuild nodeMap.
+            // Retain the child independently for the complete recursive call.
+            const ChildSnapshot child = it->second;
+            return child.linkInfo
+                && child.linkInfo->getElementPicked(true, child.type, pp, str);
         }
         else {
             std::string subname;
@@ -651,7 +659,8 @@ public:
 
     bool getDetail(bool checkname, int type, const char* subname, SoDetail*& det, SoFullPath* path) const
     {
-        if (!isLinked()) {
+        if (!isLinked() || type < 0 || type >= LinkView::SnapshotMax || !pcSnapshots[type]
+            || !pcSwitches[type]) {
             return false;
         }
 
@@ -691,12 +700,6 @@ public:
         }
         if (path) {
             appendPath(path, pcChildGroup);
-            if (pcLinked->getChildRoot()) {
-                type = LinkView::SnapshotChild;
-            }
-            else {
-                type = LinkView::SnapshotVisible;
-            }
         }
 
         // Special handling of nodes with childRoot, especially geo feature
@@ -760,8 +763,23 @@ public:
             dot = next;
         }
 
-        for (const auto& v : nodeMap) {
-            if (v.second->getDetail(true, type, subname, det, path)) {
+        // getDetailPath() can evaluate scene-graph fields and notify the
+        // child-root sensor. That sensor replaces nodeMap, so neither its
+        // iterators nor borrowed LinkInfo pointers may span recursion.
+        std::vector<ChildSnapshot> children;
+        children.reserve(nodeMap.size());
+        for (const auto& entry : nodeMap) {
+            children.push_back(entry.second);
+        }
+        for (const auto& child : children) {
+            if (child.linkInfo
+                && child.linkInfo->getDetail(
+                    true,
+                    child.type,
+                    subname,
+                    det,
+                    path
+                )) {
                 return true;
             }
         }

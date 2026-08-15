@@ -29,6 +29,7 @@ __date__ = "2023/12/04"
 import FreeCAD as App
 import FreeCADGui as Gui
 import TechDraw
+import TechDrawGui
 
 import os
 
@@ -38,7 +39,7 @@ translate = App.Qt.translate
 class TaskAddOffsetVertex:
     """Provides the TechDraw AddOffsetVertex Task Dialog."""
 
-    def __init__(self, view, vertex):
+    def __init__(self, view, vertex, source_name=None):
         if (
             view is None
             or vertex is None
@@ -61,6 +62,7 @@ class TaskAddOffsetVertex:
             )
         self.view_name = view.Name
         self.page_name = page.Name
+        self.source_name = str(source_name or "")
         canonical = TechDraw.makeCanonicalPoint(
             view,
             vertex.Point,
@@ -123,10 +125,20 @@ class TaskAddOffsetVertex:
         offset = App.Vector(self.form.dSpinBoxX.value(), self.form.dSpinBoxY.value(), 0)
         if self._previewTag:
             view.removeCosmeticVertex(self._previewTag)
-        self._previewTag = view.makeCosmeticVertex(
-            self.source_point + offset
-        )
+        self._previewTag = self._create_preview(view, offset)
+
+    def _create_preview(self, view, offset):
+        if self.source_name:
+            created = TechDrawGui.createDrawingOffsetVertex(
+                view,
+                self.source_name,
+                float(offset.x),
+                float(offset.y),
+            )
+            return created["vertex"]["tag"]
+        tag = view.makeCosmeticVertex(self.source_point + offset)
         view.requestPaint()
+        return tag
 
     def accept(self):
         view = self._resolve_view()
@@ -134,9 +146,7 @@ class TaskAddOffsetVertex:
             return False
         if not self._previewTag:
             offset = App.Vector(self.form.dSpinBoxX.value(), self.form.dSpinBoxY.value(), 0)
-            self._previewTag = view.makeCosmeticVertex(
-                self.source_point + offset
-            )
+            self._previewTag = self._create_preview(view, offset)
         if not self._previewTag:
             return False
         view.requestPaint()

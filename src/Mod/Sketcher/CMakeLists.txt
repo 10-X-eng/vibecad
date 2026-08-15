@@ -15,6 +15,25 @@ set(Sketcher_Scripts
 set(Sketcher_TestScripts
     SketcherTests/__init__.py
     SketcherTests/TestSketchFillet.py
+    SketcherTests/TestSketchTrim.py
+    SketcherTests/TestSketchSplit.py
+    SketcherTests/TestSketchExtend.py
+    SketcherTests/TestSketchProjection.py
+    SketcherTests/TestSketchIntersection.py
+    SketcherTests/TestSketchCarbonCopy.py
+    SketcherTests/TestSketchTranslate.py
+    SketcherTests/TestSketchRotate.py
+    SketcherTests/TestSketchScale.py
+    SketcherTests/TestSketchOffset.py
+    SketcherTests/TestSketchSymmetry.py
+    SketcherTests/TestSketchAxisAlignment.py
+    SketcherTests/TestSketchNURBSConversion.py
+    SketcherTests/TestSketchBSplineDegree.py
+    SketcherTests/TestSketchBSplineDegreeDecrease.py
+    SketcherTests/TestSketchBSplineKnotMultiplicityIncrease.py
+    SketcherTests/TestSketchBSplineKnotMultiplicityDecrease.py
+    SketcherTests/TestSketchBSplineKnotInsertion.py
+    SketcherTests/TestSketchJoin.py
     SketcherTests/TestSketcherSolver.py
     SketcherTests/TestSketchExpression.py
     SketcherTests/TestSketchValidateCoincidents.py

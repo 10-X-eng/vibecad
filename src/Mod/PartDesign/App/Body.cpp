@@ -245,6 +245,15 @@ bool Body::isSolidFeature(const App::DocumentObject* obj)
         return false;
     }
 
+    // Design History controllers and exact Body-state resources describe the
+    // global state graph.  They are PartDesign::Feature subclasses so they can
+    // reuse shape execution and ViewProvider infrastructure, but they are not
+    // sequential Body features and must never become a Body result or Tip.
+    if (dynamic_cast<const DesignOperationProperties*>(obj)
+        || freecad_cast<const DesignBodyState*>(obj)) {
+        return false;
+    }
+
     if (obj->isDerivedFrom<PartDesign::Feature>()) {
         if (PartDesign::Feature::isDatum(obj)) {
             // Datum objects are not solid
@@ -289,6 +298,11 @@ bool Body::isResultFeature(const App::DocumentObject* obj)
 bool Body::isAllowed(const App::DocumentObject* obj)
 {
     if (!obj) {
+        return false;
+    }
+
+    if (dynamic_cast<const DesignOperationProperties*>(obj)
+        || freecad_cast<const DesignBodyState*>(obj)) {
         return false;
     }
 
@@ -726,6 +740,47 @@ App::DocumentObject* Body::getSubObject(
 
 void Body::onDocumentRestored()
 {
+    // Builds predating the Design-global ownership guard could persist the
+    // final History controller as a second Body child.  That made the
+    // controller's BaseFeature point back to BodyResult and created a cycle:
+    // Body -> operation -> BodyResult -> Body.  Recover only that exact,
+    // structurally forbidden relationship; do not reinterpret ordinary
+    // legacy Body members.
+    const auto restoredMembers = Group.getValues();
+    std::vector<App::DocumentObject*> retainedMembers;
+    retainedMembers.reserve(restoredMembers.size());
+    DesignBodyPublication* publication = nullptr;
+    std::size_t publicationCount = 0;
+    bool removedGlobalDesignObject = false;
+    for (auto* obj : restoredMembers) {
+        if (auto* candidate = freecad_cast<DesignBodyPublication*>(obj)) {
+            ++publicationCount;
+            publication = candidate;
+        }
+        if (dynamic_cast<DesignOperationProperties*>(obj)
+            || freecad_cast<DesignBodyState*>(obj)) {
+            removedGlobalDesignObject = true;
+            if (auto* feature = freecad_cast<PartDesign::Feature*>(obj)) {
+                feature->_Body.setValue(nullptr);
+                feature->BaseFeature.setValue(nullptr);
+            }
+            continue;
+        }
+        retainedMembers.push_back(obj);
+    }
+    if (removedGlobalDesignObject) {
+        Group.setValues(retainedMembers);
+        if (publicationCount == 1 && publication
+            && std::ranges::find(retainedMembers, publication) != retainedMembers.end()) {
+            Tip.setValue(publication);
+        }
+        enforceRecompute();
+        Base::Console().warning(
+            "Recovered Design-global History objects incorrectly stored in Body '%s'.\n",
+            getNameInDocument() ? getNameInDocument() : "<detached>"
+        );
+    }
+
     for (auto obj : Group.getValues()) {
         if (obj->isDerivedFrom<PartDesign::Feature>()) {
             static_cast<PartDesign::Feature*>(obj)->_Body.setValue(this);

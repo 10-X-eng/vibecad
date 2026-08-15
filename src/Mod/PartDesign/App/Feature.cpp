@@ -341,9 +341,10 @@ Feature::SingleSolidRuleMode Feature::singleSolidRuleMode() const
     // A Design operation is a document-level controller whose unsigned tool
     // may contain several disconnected solids (for example, several selected
     // master-sketch areas cutting different Bodies). computeOutputShapes()
-    // enforces exactly one solid on every resulting Body after applying that
-    // tool, so applying the legacy Body-local rule here would reject valid
-    // multi-Body operations before their result semantics can run.
+    // validates every resulting Body against that Body's AllowCompound setting
+    // after applying the tool, so applying the legacy Body-local rule here
+    // would reject valid multi-Body operations before their result semantics
+    // can run.
     if (!body && dynamic_cast<const DesignOperationProperties*>(this)) {
         return SingleSolidRuleMode::Disabled;
     }

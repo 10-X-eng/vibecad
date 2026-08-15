@@ -149,6 +149,15 @@ class SketchObject(Part2DObject):
         """
         ...
 
+    @no_args
+    def captureMutationState(self) -> object:
+        """Capture an opaque savepoint inside the exact active Sketch transaction."""
+        ...
+
+    def restoreMutationState(self, state: object, /) -> None:
+        """Restore one savepoint without closing the surrounding task transaction."""
+        ...
+
     def detectDegeneratedGeometries(self, tolerance: float, /) -> int:
         """
         Detect degenerated geometries. A curve geometry is considered degenerated
@@ -258,6 +267,138 @@ class SketchObject(Part2DObject):
         """
         ...
 
+    def diagnoseBlockConstraints(
+        self, constraints: Union[Constraint, List[Constraint]], /
+    ) -> dict:
+        """Evaluate proposed Block constraints without mutating geometry state."""
+        ...
+
+    def diagnoseConstraintReplacement(
+        self,
+        constraintIndex: int,
+        constraints: Union[Constraint, List[Constraint]],
+        /,
+    ) -> dict:
+        """Evaluate replacing one exact constraint without mutating the sketch."""
+        ...
+
+    def diagnoseDrivingChanges(
+        self, changes: List[Tuple[int, bool]], /
+    ) -> dict:
+        """Evaluate exact driving/reference changes without mutating the sketch."""
+        ...
+
+    def diagnoseActiveChanges(
+        self, changes: List[Tuple[int, bool]], /
+    ) -> dict:
+        """Evaluate exact active/inactive changes without mutating the sketch."""
+        ...
+
+    @overload
+    def diagnoseFillet(
+        self,
+        geometryIndex: int,
+        pointPosition: int,
+        preserveCorner: bool,
+        /,
+    ) -> dict: ...
+    @overload
+    def diagnoseFillet(
+        self,
+        firstGeometryIndex: int,
+        secondGeometryIndex: int,
+        firstReferencePoint: Vector,
+        secondReferencePoint: Vector,
+        preserveCorner: bool,
+        /,
+    ) -> dict: ...
+    def diagnoseFillet(self, *args) -> dict:
+        """Evaluate the exact final human Fillet state without mutating the sketch."""
+        ...
+
+    @overload
+    def diagnoseChamfer(
+        self,
+        geometryIndex: int,
+        pointPosition: int,
+        preserveCorner: bool,
+        /,
+    ) -> dict: ...
+    @overload
+    def diagnoseChamfer(
+        self,
+        firstGeometryIndex: int,
+        secondGeometryIndex: int,
+        firstReferencePoint: Vector,
+        secondReferencePoint: Vector,
+        preserveCorner: bool,
+        /,
+    ) -> dict: ...
+    def diagnoseChamfer(self, *args) -> dict:
+        """Evaluate the exact final human Chamfer state without mutating the sketch."""
+        ...
+
+    def diagnoseTrim(
+        self,
+        geometryIndex: int,
+        referencePoint: Vector,
+        /,
+    ) -> dict:
+        """Evaluate the exact final human Trim state without mutating the sketch."""
+        ...
+
+    def diagnoseSplit(
+        self,
+        geometryIndex: int,
+        referencePoint: Vector,
+        /,
+    ) -> dict:
+        """Evaluate the exact final human Split state without mutating the sketch."""
+        ...
+
+    def diagnoseJoinCurves(
+        self,
+        firstGeometryIndex: int,
+        firstEndpoint: int,
+        secondGeometryIndex: int,
+        secondEndpoint: int,
+        /,
+    ) -> dict:
+        """Evaluate the exact final human Join Curves state without mutating the sketch."""
+        ...
+
+    def joinCurvesExact(
+        self,
+        firstGeometryIndex: int,
+        firstEndpoint: int,
+        secondGeometryIndex: int,
+        secondEndpoint: int,
+        /,
+    ) -> dict:
+        """Join the exact curve endpoints after detached human-command preflight."""
+        ...
+
+    def diagnoseExtend(
+        self,
+        geometryIndex: int,
+        targetPoint: Vector,
+        endpoint: int,
+        /,
+    ) -> dict:
+        """Evaluate the exact final human Extend state without mutating the sketch."""
+        ...
+
+    def diagnoseExternal(
+        self,
+        objName: str,
+        subName: str,
+        defining: bool = False,
+        intersection: bool = False,
+        /,
+    ) -> dict:
+        """Evaluate adding one exact external-geometry link without mutating the sketch."""
+        ...
+
     def delConstraint(self, constraintIndex: int, noSolve: bool, /) -> dict:
         """
         Delete a constraint from the sketch.
@@ -331,6 +472,214 @@ class SketchObject(Part2DObject):
                 ObjName: The name of the sketch object to copy from.
                 asConstruction: Whether to copy the geometry as "construction geometry".
         """
+        ...
+
+    def diagnoseCarbonCopy(
+        self,
+        objName: str,
+        asConstruction: bool,
+        allowOtherBody: bool,
+        allowUnaligned: bool,
+        /,
+    ) -> dict:
+        """Evaluate the exact Carbon Copy result without mutating either sketch."""
+        ...
+
+    def carbonCopyExact(
+        self,
+        objName: str,
+        asConstruction: bool,
+        allowOtherBody: bool,
+        allowUnaligned: bool,
+        /,
+    ) -> dict:
+        """Carbon copy with explicit per-operation body and alignment permissions."""
+        ...
+
+    def diagnoseTranslate(
+        self,
+        geometryIds: list[int],
+        firstVector: Vector,
+        copyCount: int,
+        secondVector: Vector,
+        rowCount: int,
+        equalizeDimensionalConstraints: bool,
+        /,
+    ) -> dict:
+        """Evaluate the exact ribbon Translate / rectangular-array result without mutation."""
+        ...
+
+    def translateExact(
+        self,
+        geometryIds: list[int],
+        firstVector: Vector,
+        copyCount: int,
+        secondVector: Vector,
+        rowCount: int,
+        equalizeDimensionalConstraints: bool,
+        /,
+    ) -> dict:
+        """Apply the exact ribbon Translate / rectangular-array operation."""
+        ...
+
+    def diagnoseRotate(
+        self,
+        geometryIds: list[int],
+        center: Vector,
+        totalAngleRadians: float,
+        copyCount: int,
+        equalizeDimensionalConstraints: bool,
+        /,
+    ) -> dict:
+        """Evaluate the exact ribbon Rotate / polar-transform result without mutation."""
+        ...
+
+    def rotateExact(
+        self,
+        geometryIds: list[int],
+        center: Vector,
+        totalAngleRadians: float,
+        copyCount: int,
+        equalizeDimensionalConstraints: bool,
+        /,
+    ) -> dict:
+        """Apply the exact ribbon Rotate / polar-transform operation."""
+        ...
+
+    def diagnoseScale(
+        self,
+        geometryIds: list[int],
+        center: Vector,
+        scaleFactor: float,
+        keepOriginals: bool,
+        allowOriginConstraints: bool,
+        /,
+    ) -> dict:
+        """Evaluate the exact ribbon Scale result without mutation."""
+        ...
+
+    def scaleExact(
+        self,
+        geometryIds: list[int],
+        center: Vector,
+        scaleFactor: float,
+        keepOriginals: bool,
+        allowOriginConstraints: bool,
+        /,
+    ) -> dict:
+        """Apply the exact ribbon Scale operation."""
+        ...
+
+    def diagnoseOffset(
+        self,
+        geometryIds: list[int],
+        offsetLength: float,
+        joinType: int,
+        sourceMode: int,
+        /,
+    ) -> dict:
+        """Evaluate the exact ribbon Offset result without mutation."""
+        ...
+
+    def offsetExact(
+        self,
+        geometryIds: list[int],
+        offsetLength: float,
+        joinType: int,
+        sourceMode: int,
+        /,
+    ) -> dict:
+        """Apply the exact ribbon Offset operation."""
+        ...
+
+    def diagnoseSymmetry(
+        self,
+        geometryIds: list[int],
+        referenceGeometryId: int,
+        referencePosition: int,
+        sourceMode: int,
+        /,
+    ) -> dict:
+        """Evaluate the exact ribbon Symmetry result without mutation."""
+        ...
+
+    def symmetryExact(
+        self,
+        geometryIds: list[int],
+        referenceGeometryId: int,
+        referencePosition: int,
+        sourceMode: int,
+        /,
+    ) -> dict:
+        """Apply the exact ribbon Symmetry operation."""
+        ...
+
+    def diagnoseRemoveAxesAlignment(self, geometryIds: list[int], /) -> dict:
+        """Evaluate exact Remove Axes Alignment rewrites without mutation."""
+        ...
+
+    def removeAxesAlignmentExact(self, geometryIds: list[int], /) -> dict:
+        """Apply exact ribbon Remove Axes Alignment rewrites."""
+        ...
+
+    def diagnoseConvertToNURBS(self, geometryIds: list[int], /) -> dict:
+        """Evaluate exact Geometry-to-B-Spline conversion without mutation."""
+        ...
+
+    def convertToNURBSExact(self, geometryIds: list[int], /) -> dict:
+        """Apply exact Geometry-to-B-Spline conversion."""
+        ...
+
+    def diagnoseIncreaseBSplineDegree(self, geometryIds: list[int], /) -> dict:
+        """Evaluate exact one-step B-spline degree elevation without mutation."""
+        ...
+
+    def increaseBSplineDegreeExact(self, geometryIds: list[int], /) -> dict:
+        """Raise exact internal B-spline edges by one degree."""
+        ...
+
+    def diagnoseDecreaseBSplineDegree(self, geometryId: int, /) -> dict:
+        """Evaluate one exact B-spline degree reduction without mutation."""
+        ...
+
+    def decreaseBSplineDegreeExact(self, geometryId: int, /) -> dict:
+        """Approximate one exact internal B-spline edge at one degree lower."""
+        ...
+
+    def diagnoseIncreaseBSplineKnotMultiplicity(
+        self, geometryId: int, knotIndex: int, /
+    ) -> dict:
+        """Evaluate one exact zero-based B-spline knot multiplicity increase without mutation."""
+        ...
+
+    def increaseBSplineKnotMultiplicityExact(
+        self, geometryId: int, knotIndex: int, /
+    ) -> dict:
+        """Increase one exact zero-based B-spline knot multiplicity by one."""
+        ...
+
+    def diagnoseDecreaseBSplineKnotMultiplicity(
+        self, geometryId: int, knotIndex: int, /
+    ) -> dict:
+        """Evaluate one exact zero-based B-spline knot multiplicity decrease without mutation."""
+        ...
+
+    def decreaseBSplineKnotMultiplicityExact(
+        self, geometryId: int, knotIndex: int, /
+    ) -> dict:
+        """Decrease one exact zero-based B-spline knot multiplicity by one."""
+        ...
+
+    def diagnoseInsertBSplineKnot(
+        self, geometryId: int, parameter: float, /
+    ) -> dict:
+        """Evaluate one exact B-spline knot insertion without mutation."""
+        ...
+
+    def insertBSplineKnotExact(
+        self, geometryId: int, parameter: float, /
+    ) -> dict:
+        """Insert one knot at an exact B-spline parameter."""
         ...
 
     def addExternal(
@@ -782,19 +1131,23 @@ class SketchObject(Part2DObject):
         """
         ...
 
-    def convertToNURBS(self) -> None:
+    def convertToNURBS(self, geometryId: int, /) -> None:
         """
         Approximates the given geometry with a B-spline
         """
         ...
 
-    def increaseBSplineDegree(self) -> None:
+    def increaseBSplineDegree(
+        self, geometryId: int, degreeIncrement: int = 1, /
+    ) -> None:
         """
         Increases the given B-spline Degree by a number of degrees
         """
         ...
 
-    def decreaseBSplineDegree(self) -> None:
+    def decreaseBSplineDegree(
+        self, geometryId: int, degreeDecrement: int = 1, /
+    ) -> bool:
         """
         Decreases the given B-spline Degree by a number of degrees by approximating this curve
         """

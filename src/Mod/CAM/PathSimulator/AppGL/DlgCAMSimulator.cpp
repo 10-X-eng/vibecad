@@ -32,9 +32,15 @@
 #include <Gui/View3DInventorViewer.h>
 #include <Inventor/nodes/SoCamera.h>
 #include <QSurfaceFormat>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <deque>
 #include <limits>
 #include <numeric>
+#include <stdexcept>
+#include <type_traits>
 
 // include this last as the defines can mess up other includes
 #include "OpenGlWrapper.h"
@@ -44,19 +50,29 @@ using namespace std::literals;
 namespace CAMSimulator
 {
 
+namespace
+{
+constexpr std::size_t PreparedMeshMaxIndices = 4'000'000;
+SimShape deserializeShapeMesh(std::string_view input);
+}
+
 float SimShape::maxDimension() const
 {
+    if (verts.empty()) {
+        return 0.0f;
+    }
+
     float xmin = NAN, ymin = NAN, zmin = NAN;
     float xmax = NAN, ymax = NAN, zmax = NAN;
 
     for (const auto& v : verts) {
         xmin = std::fmin(xmin, v.x);
-        ymin = std::fmin(ymin, v.x);
-        zmin = std::fmin(zmin, v.x);
+        ymin = std::fmin(ymin, v.y);
+        zmin = std::fmin(zmin, v.z);
 
         xmax = std::fmax(xmax, v.x);
-        ymax = std::fmax(ymax, v.x);
-        zmax = std::fmax(zmax, v.x);
+        ymax = std::fmax(ymax, v.y);
+        zmax = std::fmax(zmax, v.z);
     }
 
     const float xsize = xmax - xmin;
@@ -218,6 +234,30 @@ void DlgCAMSimulator::startSimulation(const Part::TopoShape& stock, float qualit
     Q_EMIT simulationStarted();
 }
 
+void DlgCAMSimulator::startPreparedSimulation(
+    const Part::TopoShape& stock,
+    std::string_view preparedMesh,
+    float quality
+)
+{
+    if (!std::isfinite(quality) || quality <= 0.0f) {
+        throw std::runtime_error("CAM simulator quality must be positive and finite");
+    }
+
+    mQuality = quality;
+    mNeedsInitialize = true;
+
+    mStock = deserializeShapeMesh(preparedMesh);
+    mStock.needsUpdate = true;
+    if (mDummyViewer) {
+        mDummyViewer->setStockShape(stock);
+    }
+    update();
+    setAnimating(true);
+
+    Q_EMIT simulationStarted();
+}
+
 void DlgCAMSimulator::resetSimulation(Gui::Document* doc)
 {
     Q_EMIT documentChanged(doc);
@@ -259,6 +299,18 @@ static SimShape getMeshData(const Part::TopoShape& shape, float resolution)
         std::vector<Base::Vector3d> points;
         std::vector<Data::ComplexGeoData::Facet> facets;
         shape.getFaces(points, facets, resolution);
+        if (points.size() > std::numeric_limits<GLushort>::max() + 1ULL
+            || nVerts + points.size() > std::numeric_limits<GLushort>::max() + 1ULL) {
+            throw std::runtime_error(
+                "Prepared CAM simulator meshes support at most 65536 vertices"
+            );
+        }
+        if (ret.indices.size() > PreparedMeshMaxIndices
+            || facets.size() > (PreparedMeshMaxIndices - ret.indices.size()) / 3) {
+            throw std::runtime_error(
+                "Prepared CAM simulator meshes support at most 4000000 indices"
+            );
+        }
 
         std::vector<Base::Vector3d> normals(points.size());
         std::vector<int> normalCount(points.size());
@@ -288,7 +340,9 @@ static SimShape getMeshData(const Part::TopoShape& shape, float resolution)
             Base::Vector3d& point = points[i];
             Base::Vector3d& normal = normals[i];
             int count = normalCount[i];
-            normal /= count;
+            if (count > 0) {
+                normal /= count;
+            }
             ret.verts.push_back(Vertex(point.x, point.y, point.z, normal.x, normal.y, normal.z));
         }
 
@@ -297,6 +351,117 @@ static SimShape getMeshData(const Part::TopoShape& shape, float resolution)
 
     ret.needsUpdate = true;
     return ret;
+}
+
+namespace
+{
+constexpr std::uint32_t PreparedMeshMagic = 0x5643534dU;
+constexpr std::uint32_t PreparedMeshVersion = 1U;
+
+template<typename T>
+void appendValue(std::string& output, const T& value)
+{
+    output.append(reinterpret_cast<const char*>(&value), sizeof(T));
+}
+
+template<typename T>
+T readValue(std::string_view& input)
+{
+    if (input.size() < sizeof(T)) {
+        throw std::runtime_error("The prepared CAM simulator mesh is truncated");
+    }
+    T value;
+    std::memcpy(&value, input.data(), sizeof(T));
+    input.remove_prefix(sizeof(T));
+    return value;
+}
+
+std::string serializeShapeMesh(const SimShape& shape)
+{
+    static_assert(std::is_trivially_copyable_v<Vertex>);
+    if (shape.verts.empty() || shape.indices.empty() || shape.indices.size() % 3 != 0) {
+        throw std::runtime_error("The prepared CAM simulator mesh is empty or malformed");
+    }
+    if (shape.verts.size() > std::numeric_limits<GLushort>::max() + 1ULL
+        || shape.verts.size() > std::numeric_limits<std::uint32_t>::max()
+        || shape.indices.size() > PreparedMeshMaxIndices
+        || shape.indices.size() > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error("The prepared CAM simulator mesh exceeds its size limit");
+    }
+
+    std::string output;
+    output.reserve(
+        sizeof(std::uint32_t) * 4 + shape.verts.size() * sizeof(Vertex)
+        + shape.indices.size() * sizeof(GLushort)
+    );
+    appendValue(output, PreparedMeshMagic);
+    appendValue(output, PreparedMeshVersion);
+    appendValue(output, static_cast<std::uint32_t>(shape.verts.size()));
+    appendValue(output, static_cast<std::uint32_t>(shape.indices.size()));
+    output.append(
+        reinterpret_cast<const char*>(shape.verts.data()),
+        shape.verts.size() * sizeof(Vertex)
+    );
+    output.append(
+        reinterpret_cast<const char*>(shape.indices.data()),
+        shape.indices.size() * sizeof(GLushort)
+    );
+    return output;
+}
+
+SimShape deserializeShapeMesh(std::string_view input)
+{
+    if (readValue<std::uint32_t>(input) != PreparedMeshMagic
+        || readValue<std::uint32_t>(input) != PreparedMeshVersion) {
+        throw std::runtime_error("The prepared CAM simulator mesh has an invalid header");
+    }
+    const auto vertexCount = readValue<std::uint32_t>(input);
+    const auto indexCount = readValue<std::uint32_t>(input);
+    if (vertexCount == 0 || vertexCount > std::numeric_limits<GLushort>::max() + 1ULL
+        || indexCount == 0 || indexCount > PreparedMeshMaxIndices
+        || indexCount % 3 != 0) {
+        throw std::runtime_error("The prepared CAM simulator mesh has invalid counts");
+    }
+    const std::size_t vertexBytes = static_cast<std::size_t>(vertexCount) * sizeof(Vertex);
+    const std::size_t indexBytes = static_cast<std::size_t>(indexCount) * sizeof(GLushort);
+    if (input.size() != vertexBytes + indexBytes) {
+        throw std::runtime_error("The prepared CAM simulator mesh has an invalid byte size");
+    }
+
+    SimShape shape;
+    shape.verts.resize(vertexCount);
+    shape.indices.resize(indexCount);
+    std::memcpy(shape.verts.data(), input.data(), vertexBytes);
+    std::memcpy(shape.indices.data(), input.data() + vertexBytes, indexBytes);
+    if (std::ranges::any_of(shape.verts, [](const Vertex& vertex) {
+            return !std::isfinite(vertex.x) || !std::isfinite(vertex.y)
+                || !std::isfinite(vertex.z) || !std::isfinite(vertex.nx)
+                || !std::isfinite(vertex.ny) || !std::isfinite(vertex.nz);
+        })) {
+        throw std::runtime_error("The prepared CAM simulator mesh has non-finite vertices");
+    }
+    if (std::ranges::any_of(shape.indices, [vertexCount](GLushort index) {
+            return static_cast<std::uint32_t>(index) >= vertexCount;
+        })) {
+        throw std::runtime_error("The prepared CAM simulator mesh has an invalid index");
+    }
+    shape.needsUpdate = true;
+    return shape;
+}
+}  // namespace
+
+std::string DlgCAMSimulator::prepareShapeMesh(
+    const Part::TopoShape& shape,
+    float resolution
+)
+{
+    if (shape.isNull() || !shape.isValid()) {
+        throw std::runtime_error("CAM simulator mesh preparation requires one valid shape");
+    }
+    if (!std::isfinite(resolution) || resolution <= 0.0f) {
+        throw std::runtime_error("CAM simulator mesh resolution must be positive and finite");
+    }
+    return serializeShapeMesh(getMeshData(shape, resolution));
 }
 
 void DlgCAMSimulator::setStockShape(const Part::TopoShape& shape, float resolution)
@@ -328,6 +493,21 @@ void DlgCAMSimulator::setStockVisible(bool b)
 void DlgCAMSimulator::setBaseShape(const Part::TopoShape& shape, float resolution)
 {
     mBase = getMeshData(shape, resolution);
+
+    if (mDummyViewer) {
+        mDummyViewer->setBaseShape(shape);
+    }
+
+    update();
+}
+
+void DlgCAMSimulator::setPreparedBaseShape(
+    const Part::TopoShape& shape,
+    std::string_view preparedMesh
+)
+{
+    mBase = deserializeShapeMesh(preparedMesh);
+    mBase.needsUpdate = true;
 
     if (mDummyViewer) {
         mDummyViewer->setBaseShape(shape);

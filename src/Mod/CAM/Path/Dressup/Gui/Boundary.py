@@ -36,7 +36,6 @@ from Path.CommandBoundary import (
     is_document_object,
     open_timeline_mode_zero_editor,
 )
-import PathGui
 
 if False:
     Path.Log.setLevel(Path.Log.Level.DEBUG, Path.Log.thisModule())
@@ -209,7 +208,6 @@ class TaskPanel(object):
 
     def updateStockEditor(self, index, force=False):
         import Path.Main.Gui.Job as PathJobGui
-        import Path.Main.Stock as PathStock
 
         def setupFromBaseEdit():
             Path.Log.track(index, force)
@@ -371,6 +369,57 @@ class DressupPathBoundaryViewProvider(object):
             return ":/icons/CAM_OpActive.svg"
 
 
+def _validated_base(base, document):
+    if (
+        not is_document_object(base, document)
+        or not base.isDerivedFrom("Path::Feature")
+        or not PathDressup.isOp(base)
+        or not base.isValid()
+    ):
+        return None
+    underlying = PathDressup.baseOp(base)
+    if not hasattr(underlying, "ClearanceHeight") or not hasattr(
+        underlying,
+        "SafeHeight",
+    ):
+        return None
+    import PathScripts.PathUtils as PathUtils
+
+    job = PathUtils.findParentJob(base)
+    if (
+        not is_document_object(job, document)
+        or getattr(job, "Operations", None) is None
+        or base not in tuple(job.Operations.Group or ())
+        or not hasattr(getattr(job, "Proxy", None), "addOperation")
+    ):
+        return None
+    return job
+
+
+def CreateInTransaction(base, name="DressupPathBoundary", hide_base=True):
+    """Create one Boundary dress-up inside its caller-owned transaction."""
+
+    document = getattr(base, "Document", None)
+    if document is None:
+        raise RuntimeError("A CAM Boundary dress-up requires one live base operation")
+    if _validated_base(base, document) is None:
+        raise RuntimeError("The selected CAM operation cannot be boundary-clipped")
+
+    base_was_visible = bool(base.ViewObject and base.ViewObject.Visibility)
+    obj = PathDressupPathBoundary.Create(base, name)
+    if obj is None:
+        raise RuntimeError("Could not create the CAM Boundary dress-up")
+    obj.ViewObject.Proxy = DressupPathBoundaryViewProvider(obj.ViewObject)
+    PathUtil.markTimelineReplacedInputs(
+        obj,
+        [base] if base_was_visible else [],
+    )
+    if hide_base:
+        obj.Base.ViewObject.Visibility = False
+    obj.Stock.ViewObject.Visibility = False
+    return obj
+
+
 def Create(base, name="DressupPathBoundary"):
     transaction = TaskDocumentTransaction(
         base,
@@ -380,16 +429,10 @@ def Create(base, name="DressupPathBoundary"):
     base_was_visible = False
     try:
         base_was_visible = bool(base.ViewObject and base.ViewObject.Visibility)
-        obj = PathDressupPathBoundary.Create(base, name)
-        provider = DressupPathBoundaryViewProvider(obj.ViewObject)
-        obj.ViewObject.Proxy = provider
+        obj = CreateInTransaction(base, name, hide_base=False)
+        provider = obj.ViewObject.Proxy
         provider._taskTransaction = transaction
-        PathUtil.markTimelineReplacedInputs(
-            obj,
-            [base] if base_was_visible else [],
-        )
         obj.Base.ViewObject.setTemporaryVisibility(False)
-        obj.Stock.ViewObject.Visibility = False
         if not obj.ViewObject.Document.setEdit(obj.ViewObject, 0):
             raise RuntimeError("The Boundary dress-up editor could not be opened")
         return obj
@@ -422,16 +465,8 @@ class CommandPathDressupPathBoundary:
     def IsActive(self):
         if not can_start_document_command():
             return False
-        op = PathDressup.selection()
-        if not is_document_object(op):
-            return False
-        baseOp = PathDressup.baseOp(op)
-        if not hasattr(baseOp, "ClearanceHeight"):
-            return False
-        if not hasattr(baseOp, "SafeHeight"):
-            return False
-
-        return True
+        document = FreeCAD.ActiveDocument
+        return _validated_base(PathDressup.selection(), document) is not None
 
     def Activated(self):
         if not self.IsActive():

@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include <QPrinter>
 
 #include <Gui/MDIView.h>
@@ -51,6 +53,14 @@ class ViewProviderPage;
 class QGVPage;
 class QGSPage;
 class QGIView;
+
+struct TechDrawGuiExport PrintAllPagesResult
+{
+    bool authorized {false};
+    bool submitted {false};
+    bool fileOutput {false};
+    int pageCount {0};
+};
 
 class TechDrawGuiExport MDIViewPage : public Gui::MDIView, public Gui::SelectionObserver
 {
@@ -83,6 +93,9 @@ public:
     void printPreview() override;
     static void printAllPages();
     static void printAllPages(App::Document* document);
+    static PrintAllPagesResult requestPrintAllPages(
+        App::Document* document,
+        const std::function<void()>& validateBeforePrint = {});
     static void printAll(QPrinter* printer,
                          App::Document* doc);
     static void printAllPdf(QPrinter* printer,

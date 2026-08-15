@@ -404,6 +404,9 @@ void ViewProviderDrawingView::stackUp()
     QGIView* v = getQView();
     if (v) {
         int z = StackOrder.getValue();
+        if (z == std::numeric_limits<int>::max()) {
+            return;
+        }
         z++;
         StackOrder.setValue(z);
         v->setStack(z);
@@ -415,6 +418,9 @@ void ViewProviderDrawingView::stackDown()
     QGIView* v = getQView();
     if (v) {
         int z = StackOrder.getValue();
+        if (z == std::numeric_limits<int>::min()) {
+            return;
+        }
         z--;
         StackOrder.setValue(z);
         v->setStack(z);
@@ -445,15 +451,20 @@ void ViewProviderDrawingView::stackTop()
         Gui::Document* gDoc = getDocument();
         for (auto& peer: peerObjects) {
             auto vpPeer = gDoc->getViewProvider(peer);
-            ViewProviderDrawingView* vpdv = static_cast<ViewProviderDrawingView*>(vpPeer);
+            ViewProviderDrawingView* vpdv = freecad_cast<ViewProviderDrawingView*>(vpPeer);
+            if (!vpdv) {
+                continue;
+            }
             int z = vpdv->StackOrder.getValue();
             if (z > maxZ) {
                 maxZ = z;
             }
         }
     }
-    StackOrder.setValue(maxZ + 1);
-    qView->setStack(maxZ + 1);
+    if (maxZ < std::numeric_limits<int>::max()) {
+        StackOrder.setValue(maxZ + 1);
+        qView->setStack(maxZ + 1);
+    }
 }
 
 void ViewProviderDrawingView::stackBottom()
@@ -481,15 +492,20 @@ void ViewProviderDrawingView::stackBottom()
         Gui::Document* gDoc = getDocument();
         for (auto& peer: peerObjects) {
             auto vpPeer = gDoc->getViewProvider(peer);
-            ViewProviderDrawingView* vpdv = static_cast<ViewProviderDrawingView*>(vpPeer);
+            ViewProviderDrawingView* vpdv = freecad_cast<ViewProviderDrawingView*>(vpPeer);
+            if (!vpdv) {
+                continue;
+            }
             int z = vpdv->StackOrder.getValue();
             if (z < minZ) {
                 minZ = z;
             }
         }
     }
-    StackOrder.setValue(minZ - 1);
-    qView->setStack(minZ - 1);
+    if (minZ > std::numeric_limits<int>::min()) {
+        StackOrder.setValue(minZ - 1);
+        qView->setStack(minZ - 1);
+    }
 }
 
 const char*  ViewProviderDrawingView::whoAmI() const
