@@ -151,17 +151,19 @@ The client:
 5. Selects only the native Windows installer or Linux AppImage for the current
    architecture. macOS DMGs are published for manual installation; automatic
    macOS installation is not implemented yet.
-6. Resumes interrupted downloads with HTTP Range and ETag state.
+6. Downloads packages to the user's visible Downloads directory and resumes
+   interrupted downloads with HTTP Range and ETag state.
 7. Verifies the authorized size and SHA-256 before using the package.
 8. Stages installation on explicit request or, when policy allows, on exit.
 
-Windows updates run the installer silently after VibeCAD exits. The installer
-waits for the process to stop, renames the old installation to a sibling
-last-known-good tree, installs into a clean directory, imports the updater in
-`freecadcmd`, and starts the new GUI. The GUI commits a health receipt after it
-survives startup. A failed install, import, crash, or health timeout restores
-the previous installation and registry state. One healthy Windows rollback
-tree is retained until the next update or uninstall.
+Windows updates wait for VibeCAD to exit and then launch the verified installer
+normally, exactly as if the user opened it from Downloads. The updater supplies
+no silent, private-update, destination, or install-scope flags. The normal
+installer UI performs the clean replacement, imports the updater in
+`freecadcmd`, and restores the previous installation if installation or import
+validation fails. The new GUI commits a health receipt when the user launches
+it. One healthy Windows rollback tree is retained until the next update or
+uninstall.
 
 Running a newer Windows installer directly uses the same clean replacement
 transaction instead of overlaying files. The installer compares the canonical
@@ -175,9 +177,11 @@ swap the files after exit, perform a command-line import check, and start the ne
 GUI. A failed check, crash, or health timeout atomically restores the previous
 AppImage. A successful health receipt removes its rollback copy.
 
-Updater state, partial downloads, and receipts live in the `updates` child of
-the user application-data directory reported by VibeCAD. Command-line test
-environments without the application runtime fall back to `~/.vibecad/updates`.
+Updater state and receipts live in the `updates` child of the user
+application-data directory reported by VibeCAD. Packages, partial downloads,
+and their resume metadata live in the user's Downloads directory, and verified
+packages are retained there after installation. Command-line test environments
+without the application runtime fall back to `~/.vibecad/updates` for state.
 
 ## Enterprise policy
 

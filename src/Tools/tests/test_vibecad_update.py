@@ -27,6 +27,7 @@ from VibeCADUpdate import (  # noqa: E402
     UpdateService,
     UpdateTrustError,
     current_release_identity,
+    default_download_directory,
     complete_pending_install_health,
     create_install_plan,
     load_update_policy,
@@ -307,6 +308,29 @@ class UpdateServiceTests(unittest.TestCase):
                 result = service.download_asset(asset)
         self.assertEqual(result, cached)
         verify.assert_not_called()
+
+    def test_default_download_directory_is_user_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+            with (
+                mock.patch("VibeCADUpdate.os.name", "posix"),
+                mock.patch("VibeCADUpdate.Path.home", return_value=home),
+            ):
+                downloads = default_download_directory()
+        self.assertEqual(downloads, (home / "Downloads").resolve())
+
+    def test_default_service_downloads_packages_to_user_downloads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            downloads = Path(temp_dir) / "Downloads"
+            with mock.patch(
+                "VibeCADUpdate.default_download_directory",
+                return_value=downloads,
+            ):
+                service = UpdateService(
+                    ReleaseIdentity("26.3.1-RC3", 1),
+                    UpdatePolicy(),
+                )
+        self.assertEqual(service.download_directory, downloads.resolve())
 
     def test_tampered_cached_windows_installer_is_not_reused(self) -> None:
         asset = self._windows_asset(b"authorized installer fixture")
@@ -813,11 +837,7 @@ class UpdateServiceTests(unittest.TestCase):
                 asset,
                 install_root=install_root,
             )
-            self.assertEqual(plan.command[1:3], ("/S", "/VIBECADUPDATE"))
-            self.assertEqual(
-                plan.command[3],
-                f"/VIBECADINSTALLROOT={install_root.resolve()}",
-            )
+            self.assertEqual(plan.command, (str(package.resolve()),))
             record_pending_install(
                 plan,
                 original,
@@ -831,6 +851,47 @@ class UpdateServiceTests(unittest.TestCase):
             backup_exists = backup.exists()
         self.assertEqual(status, "healthy")
         self.assertTrue(backup_exists)
+
+    def test_health_receipt_keeps_installer_in_user_downloads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "state"
+            downloads = Path(temp_dir) / "Downloads"
+            root.mkdir()
+            downloads.mkdir()
+            package = downloads / "VibeCAD-installer.exe"
+            package.write_bytes(b"installer")
+            install_root = Path(temp_dir) / "VibeCAD 26.3"
+            install_root.mkdir()
+            original = ReleaseIdentity("26.3.1-RC3", 1)
+            target = ReleaseIdentity("26.3.1-RC3", 2)
+            asset = UpdateAsset(
+                "windows",
+                "x86_64",
+                "installer",
+                package.name,
+                "https://github.com/10-X-eng/vibecad/releases/download/"
+                f"{target.tag}/{package.name}",
+                package.stat().st_size,
+                hashlib.sha256(package.read_bytes()).hexdigest(),
+            )
+            with mock.patch(
+                "VibeCADUpdate.default_download_directory",
+                return_value=downloads,
+            ):
+                plan = create_install_plan(package, asset, install_root=install_root)
+                record_pending_install(
+                    plan,
+                    original,
+                    target,
+                    update_directory=root,
+                )
+                status = complete_pending_install_health(
+                    target,
+                    update_directory=root,
+                )
+            package_exists = package.exists()
+        self.assertEqual(status, "healthy")
+        self.assertTrue(package_exists)
 
 
 if __name__ == "__main__":

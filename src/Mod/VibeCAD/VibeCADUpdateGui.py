@@ -265,68 +265,20 @@ class UpdateController(QtCore.QObject):
 
 
 def _launch_windows_install_helper(plan: InstallPlan) -> None:
-    install_root = plan.current_install_root
-    if install_root is None:
-        raise RuntimeError("The staged Windows plan has no install directory.")
     helper_dir = default_update_directory() / "install-helper"
     helper_dir.mkdir(parents=True, exist_ok=True)
     helper = helper_dir / "install-windows-update.ps1"
     helper.write_text(
         """param(
     [Parameter(Mandatory=$true)][string]$Installer,
-    [Parameter(Mandatory=$true)][string]$InstallRoot,
-    [Parameter(Mandatory=$true)][string]$PendingReceipt
+    [Parameter(Mandatory=$true)][int]$VibeCADProcessId
 )
 $ErrorActionPreference = 'Stop'
-$exitCode = 1
-try {
-    if ($InstallRoot.Contains('"')) {
-        throw 'The VibeCAD install path contains an unsupported quote character.'
-    }
-    $installArguments = '/S /VIBECADUPDATE /VIBECADINSTALLROOT="' + $InstallRoot + '"'
-    $process = Start-Process -FilePath $Installer -ArgumentList $installArguments -PassThru -Wait
-    $exitCode = $process.ExitCode
-    $application = Join-Path $InstallRoot 'bin\\VibeCAD.exe'
-    if ($exitCode -ne 0) {
-        exit $exitCode
-    }
-    if (-not (Test-Path -LiteralPath $application)) {
-        throw 'The updated VibeCAD executable is missing.'
-    }
-    $applicationProcess = Start-Process -FilePath $application -PassThru
-    $healthy = $false
-    for ($attempt = 0; $attempt -lt 120; $attempt++) {
-        if (-not (Test-Path -LiteralPath $PendingReceipt)) {
-            $healthy = $true
-            break
-        }
-        if ($applicationProcess.HasExited) {
-            break
-        }
-        Start-Sleep -Seconds 1
-        $applicationProcess.Refresh()
-    }
-    if ($healthy) {
-        exit 0
-    }
-    if (-not $applicationProcess.HasExited) {
-        Stop-Process -Id $applicationProcess.Id -Force
-        $applicationProcess.WaitForExit()
-    }
-    $rollbackArguments = '/S /VIBECADROLLBACK /VIBECADINSTALLROOT="' + $InstallRoot + '"'
-    $rollback = Start-Process -FilePath $Installer -ArgumentList $rollbackArguments -PassThru -Wait
-    $exitCode = $rollback.ExitCode
-    if ($exitCode -eq 0 -and (Test-Path -LiteralPath $application)) {
-        Start-Process -FilePath $application
-    }
+$vibecad = Get-Process -Id $VibeCADProcessId -ErrorAction SilentlyContinue
+if ($null -ne $vibecad) {
+    $vibecad | Wait-Process
 }
-finally {
-    $application = Join-Path $InstallRoot 'bin\\VibeCAD.exe'
-    if ($exitCode -ne 0 -and (Test-Path -LiteralPath $application)) {
-        Start-Process -FilePath $application
-    }
-}
-exit $exitCode
+Start-Process -FilePath $Installer
 """,
         encoding="utf-8",
         newline="\n",
@@ -342,8 +294,7 @@ exit $exitCode
             "-File",
             str(helper),
             str(plan.package),
-            str(install_root),
-            str(default_update_directory() / "pending-install.json"),
+            str(os.getpid()),
         ],
         close_fds=True,
         creationflags=(
@@ -639,7 +590,9 @@ class UpdateCenterDialog(QtWidgets.QDialog):
 
     @QtCore.Slot(object)
     def _install_staged(self, _plan: InstallPlan) -> None:
-        self.status.setText("The verified update is staged and will install as VibeCAD exits.")
+        self.status.setText(
+            "VibeCAD will close, then open the verified installer normally."
+        )
         self._refresh_buttons()
 
     def _install_and_restart(self) -> None:
