@@ -565,6 +565,29 @@ def default_update_directory() -> Path:
     return base / "updates"
 
 
+def default_download_directory() -> Path:
+    """Return the user's visible Downloads directory for update packages."""
+
+    if os.name == "nt":
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+            ) as key:
+                value, _value_type = winreg.QueryValueEx(
+                    key,
+                    "{374DE290-123F-4565-9164-39C4925E467B}",
+                )
+            expanded = os.path.expandvars(str(value)).strip()
+            if expanded:
+                return Path(expanded).expanduser().resolve()
+        except (ImportError, OSError):
+            pass
+    return (Path.home() / "Downloads").resolve()
+
+
 def _atomic_json_write(path: Path, payload: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -587,6 +610,7 @@ class UpdateService:
         policy: UpdatePolicy,
         *,
         update_directory: Path | None = None,
+        download_directory: Path | None = None,
         system: str | None = None,
         machine: str | None = None,
         clock: Callable[[], float] = time.time,
@@ -595,6 +619,13 @@ class UpdateService:
         self.current = current
         self.policy = policy
         self.update_directory = (update_directory or default_update_directory()).resolve()
+        if download_directory is None:
+            download_directory = (
+                Path(update_directory) / "downloads"
+                if update_directory is not None
+                else default_download_directory()
+            )
+        self.download_directory = download_directory.resolve()
         self.system = system or platform.system()
         self.machine = machine or platform.machine()
         self.clock = clock
@@ -867,7 +898,7 @@ class UpdateService:
         cancelled: Callable[[], bool] | None = None,
         timeout: float = 60.0,
     ) -> Path:
-        downloads = self.update_directory / "downloads"
+        downloads = self.download_directory
         downloads.mkdir(parents=True, exist_ok=True)
         destination = downloads / asset.name
         partial = downloads / f"{asset.name}.part"
@@ -1076,12 +1107,7 @@ def create_install_plan(
         return InstallPlan(
             "windows-installer",
             package,
-            (
-                str(package),
-                "/S",
-                "/VIBECADUPDATE",
-                f"/VIBECADINSTALLROOT={install_root.resolve(strict=True)}",
-            ),
+            (str(package),),
             current_install_root=install_root.resolve(strict=True),
         )
     if asset.platform == "linux" and asset.kind == "appimage":
@@ -1107,9 +1133,12 @@ def record_pending_install(
 
     root = (update_directory or default_update_directory()).resolve()
     package = plan.package.resolve(strict=True)
-    downloads = (root / "downloads").resolve()
-    if downloads not in package.parents:
-        raise UpdateError("The staged package is outside the update cache.")
+    downloads = {
+        default_download_directory().resolve(),
+        (root / "downloads").resolve(),
+    }
+    if not any(directory in package.parents for directory in downloads):
+        raise UpdateError("The staged package is outside the Downloads directory.")
     payload: dict[str, object] = {
         "schema": 1,
         "status": "pending",
@@ -1204,10 +1233,13 @@ def complete_pending_install_health(
     package_value = str(payload.get("package") or "")
     if package_value:
         package = Path(package_value).resolve()
-        downloads = (root / "downloads").resolve()
-        if downloads not in package.parents:
-            raise UpdateError("Pending install package is outside the update cache.")
-        package.unlink(missing_ok=True)
+        visible_downloads = default_download_directory().resolve()
+        legacy_downloads = (root / "downloads").resolve()
+        downloads = {visible_downloads, legacy_downloads}
+        if not any(directory in package.parents for directory in downloads):
+            raise UpdateError("Pending install package is outside the Downloads directory.")
+        if legacy_downloads in package.parents:
+            package.unlink(missing_ok=True)
 
     receipt = {
         "schema": 1,

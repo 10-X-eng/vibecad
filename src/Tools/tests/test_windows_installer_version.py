@@ -74,6 +74,25 @@ class TestWindowsInstallerVersion(unittest.TestCase):
         self.assertIn('"UpdateVersion" "${APP_UPDATE_VERSION}"', configure)
         self.assertNotIn('$(AlreadyInstalled)', init)
 
+    def test_in_app_updater_launches_normal_installer_without_flags(self):
+        update_gui = (
+            INSTALLER_ROOT.parents[1]
+            / "src"
+            / "Mod"
+            / "VibeCAD"
+            / "VibeCADUpdateGui.py"
+        ).read_text(encoding="utf-8")
+        helper = update_gui.split(
+            "def _launch_windows_install_helper", 1
+        )[1].split("def _launch_appimage_install_helper", 1)[0]
+
+        self.assertIn("$vibecad | Wait-Process", helper)
+        self.assertIn("Start-Process -FilePath $Installer", helper)
+        self.assertNotIn("-ArgumentList", helper)
+        self.assertNotIn("/S", helper)
+        self.assertNotIn("/VIBECADUPDATE", helper)
+        self.assertNotIn("/VIBECADINSTALLROOT", helper)
+
     def test_rejects_negative_build(self):
         with self.assertRaisesRegex(ValueError, "non-negative"):
             MODULE.render_version_defines(
