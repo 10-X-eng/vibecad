@@ -1,5 +1,5 @@
 context:
-  version: "26.3.1RC3"
+  version: "26.3.1RC4"
 
 package:
   name: vibecad
@@ -10,7 +10,7 @@ source:
   use_gitignore: true
 
 build:
-  number: 4
+  number: 0
   script:
     env:
       # rattler-build runs the build in a sandbox that does not inherit shell
