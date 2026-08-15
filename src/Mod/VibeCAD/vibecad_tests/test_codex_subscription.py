@@ -7,6 +7,8 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -271,6 +273,149 @@ def test_codex_forwards_its_exact_dynamic_tool_call_id(monkeypatch) -> None:
     assert calls == [
         ("core.set_view", '{"model_id":"exact-model"}', "codex-call-42")
     ]
+
+
+def test_codex_steers_tool_images_outside_replayed_tool_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screenshot = tmp_path / "viewport.png"
+    screenshot.write_bytes(b"valid-local-image")
+    clients = []
+
+    class _Client:
+        def __init__(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+            environment=None,
+        ) -> None:
+            self.notification_handler = notification_handler
+            self.server_request_handler = server_request_handler
+            self.environment = environment
+            self.alive = True
+            self.steer_requests = []
+            self.tool_responses = []
+            clients.append(self)
+
+        @property
+        def stderr_tail(self):
+            return []
+
+        def start(self):
+            return None
+
+        def request(self, method, params, timeout):
+            if method == "thread/start":
+                return {"thread": {"id": "thread-visual"}, "model": "gpt-test"}
+            if method == "turn/start":
+                threading.Thread(target=self._complete_turn, daemon=True).start()
+                return {"turn": {"id": "turn-visual"}}
+            if method == "turn/steer":
+                self.steer_requests.append(params)
+                return {"turnId": "turn-visual"}
+            if method == "thread/delete":
+                return {}
+            raise AssertionError(method)
+
+        def _complete_turn(self):
+            time.sleep(0.02)
+            self.tool_responses.append(
+                self.server_request_handler(
+                    "item/tool/call",
+                    {
+                        "callId": "capture-call",
+                        "namespace": "core",
+                        "tool": "capture_view_screenshot",
+                        "arguments": {"model_id": "exact-model"},
+                    },
+                )
+            )
+            self.tool_responses.append(
+                self.server_request_handler(
+                    "item/tool/call",
+                    {
+                        "callId": "view-call",
+                        "namespace": "core",
+                        "tool": "set_view",
+                        "arguments": {"model_id": "exact-model"},
+                    },
+                )
+            )
+            self.notification_handler(
+                "item/completed",
+                {
+                    "threadId": "thread-visual",
+                    "turnId": "turn-visual",
+                    "item": {"type": "agentMessage", "text": "Done."},
+                },
+            )
+            self.notification_handler(
+                "turn/completed",
+                {
+                    "threadId": "thread-visual",
+                    "turnId": "turn-visual",
+                    "turn": {"id": "turn-visual", "status": "completed"},
+                },
+            )
+
+        def close(self):
+            self.alive = False
+
+    monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
+    context = _surface_context(
+        "core.capture_view_screenshot",
+        "core.set_view",
+    )
+    calls = []
+
+    def runner(tool_name, arguments_json, provider_call_id):
+        calls.append((tool_name, provider_call_id))
+        if tool_name == "core.capture_view_screenshot":
+            return {
+                "ok": True,
+                "captured": True,
+                "new_observation": True,
+                "_vibecad_image_attachment": {
+                    "path": str(screenshot),
+                    "name": "current viewport",
+                },
+            }
+        return {"ok": True}
+
+    runner.provider_update = lambda: context
+    active_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="test-key",
+        auth_mode="api_key",
+        timeout_seconds=2.0,
+    )
+
+    result = active_provider.run("Inspect the view.", context, tool_runner=runner)
+
+    assert result.final_output == "Done."
+    assert calls == [
+        ("core.capture_view_screenshot", "capture-call"),
+        ("core.set_view", "view-call"),
+    ]
+    assert clients[0].steer_requests == [
+        {
+            "threadId": "thread-visual",
+            "expectedTurnId": "turn-visual",
+            "input": [
+                {"type": "text", "text": "V:current|current viewport"},
+                {
+                    "type": "localImage",
+                    "path": str(screenshot.resolve()),
+                    "detail": "original",
+                },
+            ],
+        }
+    ]
+    capture_output = clients[0].tool_responses[0]["contentItems"]
+    assert [item["type"] for item in capture_output] == ["inputText"]
+    assert "imageUrl" not in str(capture_output)
 
 
 def test_turn_start_surface_rejects_human_mutation_commands() -> None:

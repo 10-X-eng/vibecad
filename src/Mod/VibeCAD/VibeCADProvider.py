@@ -29,6 +29,7 @@ from VibeCADVibeScriptDomains import get_vibescript_pack
 
 MAX_PROVIDER_IMAGE_BYTES = 2_000_000
 CODEX_INLINE_IMAGE_MAX_BYTES = 60_000
+CODEX_LOCAL_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 PROVIDER_IMAGE_MAX_EDGE = 1568
 PROVIDER_IMAGE_MIN_EDGE = 512
 MAX_PROVIDER_TOOL_RESULT_BYTES = 40 * 1024
@@ -510,6 +511,13 @@ def _codex_prompt_without_replayed_conversation(prompt: str) -> str:
 def _codex_tool_image_content_items(
     context: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    """Build the legacy dynamic-tool image response representation.
+
+    Codex accepts this shape for the immediate tool response, but Responses
+    history replays can reject the nested ``function_call_output`` image URL.
+    New tool captures are therefore delivered with ``turn/steer`` instead.
+    This helper remains for callers that only need protocol serialization.
+    """
     visible = _model_visible_context(context)
     image_blocks = _codex_context_image_blocks(visible)
     items = [
@@ -525,6 +533,75 @@ def _codex_tool_image_content_items(
             }
         )
     return items
+
+
+def _codex_local_image_input(
+    path_text: Any,
+    *,
+    label: str,
+) -> list[dict[str, Any]]:
+    """Return same-turn Codex user input for one verified local image."""
+
+    path = Path(str(path_text or "")).expanduser()
+    if not path.is_file():
+        raise ValueError(f"captured image file not found: {path}")
+    try:
+        size = int(path.stat().st_size)
+    except OSError as exc:
+        raise ValueError(f"captured image file could not be inspected: {path}") from exc
+    if size <= 0:
+        raise ValueError("captured image file is empty")
+    if size > CODEX_LOCAL_IMAGE_MAX_BYTES:
+        raise ValueError(
+            f"captured image is {size} bytes; maximum is "
+            f"{CODEX_LOCAL_IMAGE_MAX_BYTES} bytes"
+        )
+    if _provider_image_mime_for_suffix(path.suffix) is None:
+        raise ValueError(
+            f"captured image type is unsupported: {path.suffix or path.name}"
+        )
+    return [
+        {"type": "text", "text": str(label or "V:current")},
+        {
+            "type": "localImage",
+            "path": str(path.resolve()),
+            "detail": "original",
+        },
+    ]
+
+
+def _codex_tool_image_steer_input(
+    result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return non-replayed visual input for an image-producing CAD tool."""
+
+    attachment = result.get("_vibecad_image_attachment")
+    if not isinstance(attachment, dict) or not str(attachment.get("path") or ""):
+        return []
+    name = str(attachment.get("name") or "current viewport").strip()
+    return _codex_local_image_input(
+        attachment["path"],
+        label=f"V:current|{name}",
+    )
+
+
+def _codex_context_screenshot_steer_input(
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Support older screenshot tools that expose only refreshed context."""
+
+    screenshot = context.get("view_screenshot")
+    if (
+        not isinstance(screenshot, dict)
+        or not screenshot.get("captured")
+        or screenshot.get("pending_attachment") is not True
+        or not str(screenshot.get("path") or "")
+    ):
+        return []
+    return _codex_local_image_input(
+        screenshot["path"],
+        label="V:current|current viewport",
+    )
 
 
 class CodexProvider(BaseProvider):
@@ -831,20 +908,43 @@ class CodexProvider(BaseProvider):
                     ),
                 }
             ]
-            inspected_image_context = _tool_result_image_context(result)
-            if inspected_image_context is not None:
-                content_items.extend(
-                    _codex_tool_image_content_items(inspected_image_context)
-                )
-            elif (
+            image_input = _codex_tool_image_steer_input(result)
+            if not image_input and (
                 tool_name == "core.capture_view_screenshot"
                 and result.get("captured")
                 and result.get("new_observation", True)
             ):
                 # Older capture implementations may not return the private exact
-                # attachment. Fall back to the newly refreshed context only in
-                # that case so one capture never reaches the model twice.
-                content_items.extend(_codex_tool_image_content_items(updated_context))
+                # attachment. Fall back to the newly refreshed screenshot only.
+                image_input = _codex_context_screenshot_steer_input(updated_context)
+            if image_input:
+                if not thread_id or not turn_id:
+                    raise CodexAppServerError(
+                        "VibeCAD captured an image before Codex established the "
+                        "active turn required for visual delivery."
+                    )
+                steer_request = {
+                    "threadId": thread_id,
+                    "expectedTurnId": turn_id,
+                    "input": image_input,
+                }
+                _capture_outbound_request(
+                    live_context,
+                    provider=self.provider_id,
+                    sdk_call="codex-app-server.turn/steer",
+                    turn=1,
+                    request=steer_request,
+                    base_url=(
+                        self.base_url if self.auth_mode == "api_key" else None
+                    ),
+                )
+                try:
+                    client.request("turn/steer", steer_request, timeout=30.0)
+                except Exception as exc:
+                    raise CodexAppServerError(
+                        "VibeCAD captured the image but could not deliver it to "
+                        f"the active Codex turn: {exc}"
+                    ) from exc
             if any(
                 item.get("type") == "inputText"
                 and "data:image/" in str(item.get("text") or "")
