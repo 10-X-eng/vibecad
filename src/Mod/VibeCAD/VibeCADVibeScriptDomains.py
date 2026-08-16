@@ -11,6 +11,7 @@ inspection, and deletion adapters must all be registered.
 from __future__ import annotations
 
 import ast
+import copy
 from dataclasses import dataclass
 import hashlib
 import inspect
@@ -184,6 +185,7 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "fillet",
                 "chamfer",
                 "thickness",
+                "move_planar_faces",
                 "hole",
                 "holes",
                 "bosses",
@@ -305,6 +307,7 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
 # context stays small without asking a model to guess primitive contracts.
 _CORE_API_EXPORTS_BY_DOMAIN: dict[str, tuple[str, ...]] = {
     "partdesign": (
+        "from_object",
         "box",
         "wedge",
         "plane",
@@ -320,6 +323,7 @@ _CORE_API_EXPORTS_BY_DOMAIN: dict[str, tuple[str, ...]] = {
         "holes",
         "bosses",
         "find_subelements",
+        "move_planar_faces",
         "fillet",
         "chamfer",
         "transform",
@@ -410,11 +414,11 @@ def _core_api_snapshot(pack: "VibeScriptWorkbenchPack") -> dict[str, Any]:
             },
             "output_types": list(pack.output_types),
             "result_rule": (
-                "One output: result=final_api_value. Multiple outputs: result is an ordered "
-                "mapping whose keys exactly equal expected_outputs names. VibeCAD publishes "
-                "a solid/feature as its stable Design Body and other matching topology as "
-                "its stable output. api.body/api.publish are optional only for interfaces, "
-                "checks, material, or appearance."
+                "Output names are identifiers; human text belongs in api labels. One "
+                "output: result=final_api_value. Multiple outputs: ordered mapping with keys "
+                "exactly matching expected_outputs. VibeCAD publishes solid/features as "
+                "Design Bodies and matching topology directly. Use api.body/api.publish "
+                "only for interfaces, checks, material, or appearance."
             ),
         },
         "api": calls,
@@ -607,6 +611,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "fillet",
             "chamfer",
             "thickness",
+            "move_planar_faces",
             "hole",
             "holes",
             "bosses",
@@ -5252,8 +5257,36 @@ def validate_program_contract(
     adapter = get_domain_adapter(pack.domain)
     if adapter is not None:
         adapter.validate_source(source)
-    clean_schema = validate_input_schema(input_schema)
     clean_inputs = validate_inputs(inputs)
+    normalized_schema = copy.deepcopy(input_schema)
+    if isinstance(normalized_schema, dict):
+        properties = normalized_schema.get("properties")
+        if isinstance(properties, dict):
+            for name, value in clean_inputs.items():
+                property_schema = properties.get(name)
+                if (
+                    is_document_reference(value)
+                    and isinstance(property_schema, dict)
+                    and property_schema.get("x-vibecad-reference") is True
+                ):
+                    property_schema.setdefault("type", "object")
+                    reference_properties = property_schema.setdefault("properties", {})
+                    if isinstance(reference_properties, dict):
+                        reference_properties.setdefault(
+                            "document_uid", {"type": "string"}
+                        )
+                        reference_properties.setdefault(
+                            "object_name", {"type": "string"}
+                        )
+                        if "document_path" in value:
+                            reference_properties.setdefault(
+                                "document_path", {"type": "string"}
+                            )
+                    property_schema.setdefault(
+                        "required", ["document_uid", "object_name"]
+                    )
+                    property_schema.setdefault("additionalProperties", False)
+    clean_schema = validate_input_schema(normalized_schema)
     errors = sorted(
         Draft202012Validator(clean_schema).iter_errors(clean_inputs),
         key=lambda error: tuple(str(item) for item in error.absolute_path),
@@ -5828,10 +5861,10 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
     )
     outputs = _property_schema(
         (
-            "Only user-requested final deliverables, never intermediate bases, cutters, "
-            "sketches, or selectors. A requested single part is exactly one solid output. "
-            "Names equal final result keys; types are active-domain output types, never "
-            "class names such as Body or Sketch."
+            "Final deliverables only; no intermediate bases, cutters, sketches, or "
+            "selectors. One requested part is one solid output. Names are 1-64 character "
+            "identifiers and equal final result keys; types are active-domain output types, "
+            "not class names such as Body or Sketch."
         ),
         type="array",
         minItems=1,
@@ -6082,7 +6115,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                         type="boolean",
                     ),
                     "max_subelements": _property_schema(
-                        "Maximum faces and edges returned.",
+                        "Returned faces and edges; omit for 32, maximum 32.",
                         type="integer",
                         minimum=1,
                         maximum=32,
@@ -6167,7 +6200,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                         items={"type": "number"},
                     ),
                     "x_direction": _property_schema(
-                        "Primitive local +X; sets roll.",
+                        "Primitive local +X; sets roll and cannot be parallel to direction.",
                         type="array",
                         minItems=3,
                         maxItems=3,

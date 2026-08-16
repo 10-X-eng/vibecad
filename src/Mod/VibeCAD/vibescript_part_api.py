@@ -325,7 +325,7 @@ class PartDomainAPI:
         output_type: str,
         label: str = "",
     ) -> DomainValue:
-        """Snapshot a referenced live object's exact Shape for isolated Part operations."""
+        """Snapshot a live object's exact Shape; reference must be a validated inputs value marked x-vibecad-reference."""
 
         operation = "from_object"
         return self._value(
@@ -346,7 +346,7 @@ class PartDomainAPI:
         x_direction: Sequence[float] | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Solid box in mm; exact size keywords are length, width, and height. Its origin is the minimum corner. With default axes it occupies X=[origin[0], origin[0]+length], Y=[origin[1], origin[1]+width], Z=[origin[2], origin[2]+height]; direction sets local +Z and x_direction sets local +X."""
+        """Solid box in mm; exact size keywords are length, width, and height. Its origin is the minimum corner. With default axes it occupies X=[origin[0], origin[0]+length], Y=[origin[1], origin[1]+width], Z=[origin[2], origin[2]+height]; direction sets local +Z and x_direction sets local +X; they cannot be parallel."""
 
         operation = "box"
         clean_direction = _vector(

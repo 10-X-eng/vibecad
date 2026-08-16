@@ -17969,8 +17969,10 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                 "add/remove features: pass the exact prior feature as base."
             ),
             "standalone": (
-                "new_solid is standalone. api.publish keeps it standalone; api.body "
-                "promotes supported sketch extrusions/revolutions/lofts to Body history."
+                "new_solid is standalone. For extrude, pass distance_mm; vector is an "
+                "optional normalized direction, not displacement. api.publish keeps "
+                "standalone topology standalone; api.body promotes supported sketch "
+                "extrusions/revolutions/lofts to Body history."
             ),
         }
         selector_schema = {

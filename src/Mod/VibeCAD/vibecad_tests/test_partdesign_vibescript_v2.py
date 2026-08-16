@@ -754,6 +754,29 @@ def test_topology_editing_accepts_stable_queries_and_keeps_index_compatibility()
     assert (legacy.operation, legacy.output_type) == ("subshape", "face")
 
 
+def test_move_planar_faces_uses_stable_queries_and_signed_distance() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    base = api.box(10, 20, 30)
+    positive_x = api.find_subelements(
+        element_type="face",
+        expected_count=1,
+        geometry_type="Plane",
+        normal=[1, 0, 0],
+    )
+
+    moved = api.move_planar_faces(base, positive_x, 2)
+    payload = moved.to_payload()
+
+    assert (moved.operation, moved.output_type) == (
+        "model_move_planar_faces",
+        "solid",
+    )
+    assert payload["arguments"][1] == [positive_x]
+    assert payload["arguments"][2] == 2.0
+    with pytest.raises(ValueError, match="distance_mm must be non-zero"):
+        api.move_planar_faces(base, positive_x, 0)
+
+
 def test_body_and_standalone_options_are_never_silently_reinterpreted() -> None:
     api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
     feature = api.extrude(

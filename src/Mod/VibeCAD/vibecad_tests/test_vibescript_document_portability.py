@@ -149,6 +149,35 @@ def test_edited_input_values_keep_existing_constraints() -> None:
     assert synchronized["required"] == ["width"]
 
 
+def test_program_contract_completes_a_marked_stable_reference_schema() -> None:
+    reference = {"document_uid": "document", "object_name": "Source"}
+    contract = domains.validate_program_contract(
+        _pack(),
+        source="result = {'Result': api.from_object(inputs['source'], output_type='solid')}\n",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "source": {"type": "object", "x-vibecad-reference": True}
+            },
+            "required": ["source"],
+            "additionalProperties": False,
+        },
+        inputs={"source": reference},
+        expected_outputs=EXPECTED_OUTPUTS,
+    )
+
+    assert contract["input_schema"]["properties"]["source"] == {
+        "type": "object",
+        "x-vibecad-reference": True,
+        "properties": {
+            "document_uid": {"type": "string"},
+            "object_name": {"type": "string"},
+        },
+        "required": ["document_uid", "object_name"],
+        "additionalProperties": False,
+    }
+
+
 def test_runtime_hydrates_missing_local_artifact_from_document(
     tmp_path: Path,
 ) -> None:
