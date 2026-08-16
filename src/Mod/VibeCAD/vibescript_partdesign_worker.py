@@ -657,6 +657,28 @@ def _resolve_symmetric_through_hole(
         and bool(properties.get("midplane"))
     ):
         return getattr(feature, "Shape", None)
+    shaped_cut = (
+        "counterbore"
+        if properties.get("counterbore_diameter_mm") is not None
+        else "countersink"
+        if properties.get("countersink_diameter_mm") is not None
+        else ""
+    )
+    if shaped_cut:
+        raise PartDesignCandidateError(
+            f"A {shaped_cut} is an entry-side feature and cannot use "
+            "direction='symmetric'.",
+            details={
+                "stage": "hole_entry_side",
+                "operation": "hole",
+                "cut_type": shaped_cut,
+                "correction": (
+                    "Place the hole sketch on the counterbore/countersink entry "
+                    "face, then choose direction='along_normal' or "
+                    "direction='opposite_normal' into the material."
+                ),
+            },
+        )
     base_volume = float(getattr(base_shape, "Volume", 0.0) or 0.0)
     tolerance = max(1.0e-7, abs(base_volume) * 1.0e-9)
     current_shape = getattr(feature, "Shape", None)
@@ -1787,6 +1809,32 @@ def _build_feature(
             ) from exc
         feature = body.newObject("PartDesign::Feature", name)
         feature.Shape = shape
+    elif operation == "base_feature":
+        source = _build_model_shape(
+            body,
+            _payload(
+                _argument(payload, 0, context="api.base_feature"),
+                context="api.base_feature.base",
+            ),
+            memo,
+            sketch_evidence,
+        )
+        if source.isNull() or not source.isValid() or len(source.Solids) != 1:
+            raise PartDesignCandidateError(
+                "A direct modeling base must resolve to one valid connected solid.",
+                details={
+                    "stage": "base_feature",
+                    "operation": operation,
+                    "graph_id": graph_id,
+                    "solid_count": int(len(source.Solids)),
+                    "correction": (
+                        "Union touching material before applying a Body feature, or "
+                        "publish disconnected solids as a compound."
+                    ),
+                },
+            )
+        feature = body.newObject("PartDesign::Feature", name)
+        feature.Shape = source
     elif operation == "fastener":
         try:
             from VibeCADFasteners import (
@@ -2958,9 +3006,30 @@ def validate_and_build_partdesign(
         definition = _payload(raw_result[name], context=f"result[{name!r}]")
         publication_operation = str(definition.get("operation") or "")
         if publication_operation not in {"body", "publish"}:
-            raise PartDesignCandidateError(
-                f"Part Design output {name!r} must be returned by api.body or api.publish."
-            )
+            value_type = str(definition.get("output_type") or "")
+            if output_type == "solid" and value_type in {"feature", "solid"}:
+                definition = {
+                    "domain": "partdesign",
+                    "operation": "body",
+                    "output_type": "solid",
+                    "arguments": [definition],
+                    "properties": {"label": name},
+                }
+                publication_operation = "body"
+            elif value_type == output_type:
+                definition = {
+                    "domain": "partdesign",
+                    "operation": "publish",
+                    "output_type": output_type,
+                    "arguments": [definition],
+                    "properties": {"label": name},
+                }
+                publication_operation = "publish"
+            else:
+                raise PartDesignCandidateError(
+                    f"Part Design output {name!r} has value type {value_type!r}, "
+                    f"not declared type {output_type!r}."
+                )
         if str(definition.get("output_type") or "") != output_type:
             raise PartDesignCandidateError(
                 f"Part Design output {name!r} declaration disagrees with its API value.",

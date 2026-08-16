@@ -62,12 +62,31 @@ def _run() -> None:
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_ARTIFACT")
         or "/tmp/vibecad-ollama-acceptance.FCStd"
     ).expanduser().resolve()
+    reference_image_raw = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_REFERENCE_IMAGE") or ""
+    ).strip()
+    reference_image = (
+        Path(reference_image_raw).expanduser().resolve()
+        if reference_image_raw
+        else None
+    )
+    step_raw = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_STEP") or ""
+    ).strip()
+    step_artifact = (
+        Path(step_raw).expanduser().resolve()
+        if step_raw
+        else artifact.with_suffix(".step")
+    )
     model = str(
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_MODEL") or "qwen3.5:9b"
     ).strip()
     base_url = str(
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_BASE_URL")
         or "http://127.0.0.1:11434/v1"
+    ).strip()
+    reasoning_effort = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_REASONING_EFFORT") or "high"
     ).strip()
     timeout_seconds = int(
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_TIMEOUT_SECONDS") or "900"
@@ -81,7 +100,10 @@ def _run() -> None:
     def finish(code: int) -> None:
         poll.stop()
         timeout.stop()
-        CodexModule.reset_managed_codex_sessions()
+        # Preserve the rollout JSONL for exact post-run diagnosis. The live
+        # acceptance process owns this transport, so closing it is sufficient;
+        # deleting the thread would discard the strongest model evidence.
+        CodexModule.shutdown_managed_codex_sessions()
         application.exit(code)
 
     try:
@@ -99,12 +121,22 @@ def _run() -> None:
         document.saveAs(str(artifact))
         service = get_service()
         service.select_modeling_engine("vibescript")
+        service.clear_reference_images()
+        if reference_image is not None:
+            attached = service.attach_reference_image(
+                str(reference_image),
+                label="Dimensioned CAD drawing",
+            )
+            if attached.get("ok") is not True:
+                raise RuntimeError(
+                    f"Could not attach acceptance reference image: {attached}"
+                )
         CodexModule.reset_managed_codex_sessions()
         provider = CodexProvider(
             model=model,
             api_key="ollama-local",
             auth_mode="api_key",
-            reasoning_effort="medium",
+            reasoning_effort=reasoning_effort,
             timeout_seconds=float(timeout_seconds),
             base_url=base_url,
             web_search_enabled=False,
@@ -141,6 +173,26 @@ def _run() -> None:
                     raise AssertionError(response.error)
                 document.recompute()
                 document.save()
+                final_bodies = [
+                    obj
+                    for obj in document.Objects
+                    if str(getattr(obj, "TypeId", "")) == "PartDesign::Body"
+                    and getattr(obj, "Shape", None) is not None
+                    and not obj.Shape.isNull()
+                    and len(obj.Shape.Solids) == 1
+                    and bool(getattr(getattr(obj, "ViewObject", None), "Visibility", True))
+                ]
+                if len(final_bodies) != 1:
+                    raise AssertionError(
+                        "Live STEP acceptance requires exactly one visible solid Body; "
+                        f"found {[(obj.Name, obj.Label) for obj in final_bodies]}."
+                    )
+                import Part
+
+                step_artifact.parent.mkdir(parents=True, exist_ok=True)
+                Part.export(final_bodies, str(step_artifact))
+                if not step_artifact.is_file() or step_artifact.stat().st_size <= 0:
+                    raise AssertionError("FreeCAD did not write the acceptance STEP file.")
                 view = Gui.activeDocument().activeView()
                 view.viewAxonometric()
                 view.fitAll()
@@ -149,14 +201,28 @@ def _run() -> None:
                 summary = {
                     "ok": True,
                     "model": model,
+                    "reasoning_effort": reasoning_effort,
                     "artifact": str(artifact),
+                    "step": str(step_artifact),
                     "screenshot": str(screenshot),
+                    "reference_image": (
+                        str(reference_image) if reference_image is not None else None
+                    ),
                     "final_output": response.final_output,
                     "tool_trace": [
                         {
                             "tool": item.get("tool_name"),
                             "ok": item.get("ok"),
-                            "failure_code": item.get("failure_code"),
+                            "failure_code": (
+                                item.get("result", {}).get("failure_code")
+                                if isinstance(item.get("result"), dict)
+                                else None
+                            ),
+                            "error": (
+                                item.get("result", {}).get("error")
+                                if isinstance(item.get("result"), dict)
+                                else None
+                            ),
                         }
                         for item in response.tool_trace
                     ],

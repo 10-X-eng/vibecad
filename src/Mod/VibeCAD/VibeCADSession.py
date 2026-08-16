@@ -267,7 +267,6 @@ class _VibeScriptOperationManager:
                         "tool": VIBESCRIPT_READ_OPERATION_TOOL,
                         "arguments": {
                             "operation_id": self._active_operation_id,
-                            "wait_seconds": 30,
                         },
                     },
                 }
@@ -290,7 +289,6 @@ class _VibeScriptOperationManager:
                     "tool": VIBESCRIPT_READ_OPERATION_TOOL,
                     "arguments": {
                         "operation_id": operation_id,
-                        "wait_seconds": 30,
                     },
                 },
             }
@@ -302,7 +300,7 @@ class _VibeScriptOperationManager:
         ).start()
         return response
 
-    def read(self, operation_id: str, wait_seconds: float = 0.0) -> dict[str, Any]:
+    def read(self, operation_id: str, wait_seconds: float = 30.0) -> dict[str, Any]:
         with self._condition:
             operation = self._operations.get(operation_id)
             if operation is None:
@@ -334,7 +332,6 @@ class _VibeScriptOperationManager:
                 "tool": VIBESCRIPT_READ_OPERATION_TOOL,
                 "arguments": {
                     "operation_id": operation_id,
-                    "wait_seconds": 30,
                 },
             }
         elif isinstance(result, Mapping):
@@ -1636,7 +1633,17 @@ def _provider_prompt(
     recent_conversation: list[dict[str, Any]] | None = None,
     current_user_message: str | None = None,
 ) -> str:
-    payload = {"active_state": _provider_state_payload(context)}
+    active_state = _provider_state_payload(context)
+    authoring_contract: dict[str, Any] | None = None
+    editable_sources = active_state.get("editable_sources")
+    if isinstance(editable_sources, Mapping):
+        core_api = editable_sources.get("core_api")
+        if isinstance(core_api, Mapping) and core_api:
+            authoring_contract = dict(core_api)
+            compact_sources = dict(editable_sources)
+            compact_sources.pop("core_api", None)
+            active_state["editable_sources"] = compact_sources
+    payload = {"active_state": active_state}
     encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), default=str)
     encoded_bytes = len(encoded.encode("utf-8"))
     if encoded_bytes > MAX_TURN_CONTEXT_JSON_BYTES:
@@ -1660,6 +1667,17 @@ def _provider_prompt(
             f"{MAX_RECENT_CONVERSATION_JSON_BYTES} bytes "
             f"({conversation_bytes} bytes)."
         )
+    authoring_section = (
+        "VIBESCRIPT_AUTHORING_CONTRACT_JSON\n"
+        + json.dumps(
+            authoring_contract,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        + "\nEND_VIBESCRIPT_AUTHORING_CONTRACT_JSON\n\n"
+        if authoring_contract is not None
+        else ""
+    )
     return (
         "VIBECAD_CONTEXT_JSON\n"
         + encoded
@@ -1667,6 +1685,7 @@ def _provider_prompt(
         + "RECENT_CONVERSATION_JSON\n"
         + encoded_conversation
         + "\nEND_RECENT_CONVERSATION_JSON\n\n"
+        + authoring_section
         + f"{prompt_section}\n"
         + prompt
     )
@@ -3370,6 +3389,31 @@ def _run_universal_vibescript_tool(
         domain_service = service
 
     def finish_source_write(result: dict[str, Any]) -> dict[str, Any]:
+        result["_vibecad_source_lifecycle_result"] = True
+        persisted_source = target is not None or bool(
+            result.get("working_revision")
+            or result.get("current_revision")
+            or result.get("program_id")
+            or result.get("source_id")
+        )
+        if not persisted_source:
+            if (
+                tool_name == "vibescript.create_program"
+                and result.get("ok") is not True
+            ):
+                result["error"] = (
+                    str(result.get("error") or "VibeScript program creation failed.")
+                    + " No editable source was saved. Correct the reported request "
+                    + "field(s), then retry vibescript.create_program with a valid "
+                    + "program label and complete source; "
+                    + "do not call vibescript.read_source."
+                )
+                retry = result.get("retry")
+                if not isinstance(retry, dict):
+                    retry = {}
+                retry["same_call"] = False
+                result["retry"] = retry
+            return result
         if target is not None:
             target_payload = _source_target_payload(target)
         else:
@@ -3397,7 +3441,6 @@ def _run_universal_vibescript_tool(
             target_payload["current_revision"] = str(result["working_revision"])
         result["program"] = str(target_payload["program"])
         result["source_target"] = target_payload
-        result["_vibecad_source_lifecycle_result"] = True
         active_document = service._active_document()
         target_document = target.document if target is not None else document
         if result.get("ok") is True and active_document is not target_document:
@@ -4501,7 +4544,7 @@ def make_provider_tool_runner(
                 return finalize(
                     operation_manager.read(
                         str(args["operation_id"]),
-                        float(args.get("wait_seconds", 0) or 0),
+                        float(args.get("wait_seconds", 30) or 0),
                     )
                 )
             active_operation = operation_manager.active()
@@ -4522,7 +4565,6 @@ def make_provider_tool_runner(
                             "tool": VIBESCRIPT_READ_OPERATION_TOOL,
                             "arguments": {
                                 "operation_id": active_operation["operation_id"],
-                                "wait_seconds": 30,
                             },
                         }
                     ],
@@ -4532,7 +4574,6 @@ def make_provider_tool_runner(
                     "tool": VIBESCRIPT_READ_OPERATION_TOOL,
                     "arguments": {
                         "operation_id": active_operation["operation_id"],
-                        "wait_seconds": 30,
                     },
                 }
                 return finalize(payload)

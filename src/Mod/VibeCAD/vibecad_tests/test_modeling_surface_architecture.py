@@ -3082,6 +3082,8 @@ def test_schema_v1_migrates_to_partdesign_without_relocation(tmp_path: Path) -> 
 
 
 def test_source_and_input_policy_blocks_escape_hatches() -> None:
+    domains.validate_program_source("import api\nresult = api.box(1, 2, 3)")
+    domains.validate_program_source("from api import *\nresult = box(1, 2, 3)")
     for source in (
         "import os\nresult = {}",
         "result = open('/tmp/value')",

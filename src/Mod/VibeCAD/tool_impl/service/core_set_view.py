@@ -108,10 +108,24 @@ def camera_schema(*, allow_auto: bool, default_mode: str) -> dict[str, Any]:
             },
         ]
     )
+    simple_values = list(PRESET_ORIENTATIONS)
+    if allow_auto:
+        simple_values.insert(0, "auto")
+    simple_values.append("unchanged")
     return {
-        "oneOf": modes,
-        "default": {"mode": default_mode},
-        "description": "Camera orientation; framing is independent.",
+        "oneOf": [
+            {
+                "type": "string",
+                "enum": simple_values,
+                "description": "Common camera orientation.",
+            },
+            *modes,
+        ],
+        "default": default_mode,
+        "description": (
+            "Use a preset name such as 'isometric'. Use the direction object only "
+            "for an exact custom camera basis. Framing is independent."
+        ),
     }
 
 
@@ -132,7 +146,8 @@ def _camera_vector_schema(description: str) -> dict[str, Any]:
 TOOL_SPEC = {
     "description": (
         "Set camera, framing, zoom, sketch annotations, and object visibility. "
-        "Use exact internal object names."
+        "Object references accept a published output name, internal name, or unique "
+        "visible label."
     ),
     "name": "core.set_view",
     "parameters": {
@@ -150,7 +165,10 @@ TOOL_SPEC = {
             "object_names": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
-                "description": "Objects for frame='objects'.",
+                "description": (
+                    "Published output names, internal names, or unique labels for "
+                    "frame='objects'."
+                ),
             },
             "zoom_steps": {
                 "type": "integer",
@@ -186,7 +204,7 @@ TOOL_SPEC = {
 
 def run(
     service: Any,
-    camera: dict[str, Any] | None = None,
+    camera: Any = None,
     frame: str = "none",
     object_names: list[str] | None = None,
     zoom_steps: int = 0,
@@ -451,9 +469,24 @@ def resolve_camera_request(
     allowed_modes = ["unchanged", "preset", "direction"]
     if allow_auto:
         allowed_modes.insert(0, "auto")
+    if isinstance(requested, str):
+        simple = requested.strip().lower()
+        if simple in PRESET_ORIENTATIONS:
+            requested = {"mode": "preset", "preset": simple}
+        elif simple in allowed_modes:
+            requested = {"mode": simple}
+        else:
+            return _invalid(
+                f"Unknown camera orientation {simple!r}.",
+                allowed_camera_values=[
+                    *(["auto"] if allow_auto else []),
+                    "unchanged",
+                    *PRESET_ORIENTATIONS,
+                ],
+            )
     if not isinstance(requested, dict):
         return _invalid(
-            "camera must be one structured camera object.",
+            "camera must be a preset name or a structured direction object.",
             allowed_camera_modes=allowed_modes,
         )
     mode = str(requested.get("mode") or "").strip().lower()
@@ -826,19 +859,10 @@ def resolve_frame_objects(
     names = [name for name in names if name]
     if not names:
         return _invalid("object_names is required when frame='objects'.")
-    objects = []
-    missing = []
-    for name in names:
-        obj = document.getObject(name)
-        if obj is None:
-            missing.append(name)
-        else:
-            objects.append(obj)
-    if missing:
-        return _invalid(
-            "Objects not found by exact internal name: " + ", ".join(missing),
-            missing_objects=missing,
-        )
+    resolution = _resolve_object_references(document, names)
+    if not resolution["ok"]:
+        return resolution
+    objects = list(resolution["objects"])
     return {"ok": True, "object_names": _unique_names(objects)}
 
 
@@ -865,6 +889,7 @@ def frame_view(
                 object_names,
                 reveal_targets=False,
             ):
+                _flush_view_visibility(view)
                 if exclude_sketch_annotations:
                     with temporarily_detach_sketch_annotations(view):
                         view.fitAll()
@@ -901,6 +926,7 @@ def frame_view(
 
     with temporarily_isolate_objects(document, object_names):
         with temporarily_hide_objects(document, unbounded_names):
+            _flush_view_visibility(view)
             if exclude_sketch_annotations:
                 with temporarily_detach_sketch_annotations(view):
                     view.fitAll()
@@ -913,6 +939,18 @@ def frame_view(
         "fit_objects": [obj.Name for obj in finite_objects],
         "reference_objects_excluded_from_fit": unbounded_names,
     }
+
+
+def _flush_view_visibility(view: Any) -> None:
+    """Apply pending scene visibility before Coin computes fit bounds."""
+    import FreeCADGui as Gui
+
+    redraw = getattr(view, "redraw", None)
+    if callable(redraw):
+        redraw()
+    update_gui = getattr(Gui, "updateGui", None)
+    if callable(update_gui):
+        update_gui()
 
 
 def frame_active_sketch(view: Any, sketch: Any) -> dict[str, Any]:
@@ -1386,27 +1424,94 @@ def _resolve_visibility(
     document: Any, show_objects: Any, hide_objects: Any
 ) -> dict[str, Any]:
     changes = []
-    missing = []
     seen = set()
     for names, visible in ((show_objects, True), (hide_objects, False)):
-        for raw_name in list(names or []):
-            name = str(raw_name).strip()
-            if name in seen:
-                return _invalid(f"Object {name} appears in both visibility lists.")
-            seen.add(name)
-            obj = document.getObject(name)
-            if obj is None:
-                missing.append(name)
-                continue
+        references = [str(raw_name).strip() for raw_name in list(names or [])]
+        resolution = _resolve_object_references(document, references)
+        if not resolution["ok"]:
+            return resolution
+        for obj in resolution["objects"]:
+            if obj.Name in seen:
+                return _invalid(
+                    f"Object {obj.Name} appears in both visibility lists."
+                )
+            seen.add(obj.Name)
             if getattr(obj, "ViewObject", None) is None:
-                return _invalid(f"Object {name} has no GUI ViewObject.")
+                return _invalid(f"Object {obj.Name} has no GUI ViewObject.")
             changes.append((obj, visible))
+    return {"ok": True, "changes": changes}
+
+
+def _resolve_object_references(
+    document: Any, references: list[str]
+) -> dict[str, Any]:
+    """Resolve model-facing output names, internal names, then human labels."""
+    objects = []
+    missing = []
+    ambiguous: dict[str, list[str]] = {}
+    document_objects = list(getattr(document, "Objects", []) or [])
+    for reference in references:
+        obj = document.getObject(reference)
+        if obj is not None:
+            objects.append(obj)
+            continue
+        body_matches = [
+            candidate
+            for candidate in document_objects
+            if str(getattr(candidate, "TypeId", "") or "")
+            == "PartDesign::Body"
+            and str(
+                getattr(candidate, "VibeCADScriptedOutputKey", "") or ""
+            )
+            == reference
+        ]
+        if len(body_matches) == 1:
+            objects.append(body_matches[0])
+            continue
+        if len(body_matches) > 1:
+            ambiguous[reference] = [candidate.Name for candidate in body_matches]
+            continue
+        output_matches = [
+            candidate
+            for candidate in document_objects
+            if str(
+                getattr(candidate, "VibeCADVibeScriptOutputName", "") or ""
+            )
+            == reference
+        ]
+        if len(output_matches) == 1:
+            objects.append(output_matches[0])
+            continue
+        if len(output_matches) > 1:
+            ambiguous[reference] = [
+                candidate.Name for candidate in output_matches
+            ]
+            continue
+        label_matches = [
+            candidate
+            for candidate in document_objects
+            if str(getattr(candidate, "Label", "") or "") == reference
+        ]
+        if len(label_matches) == 1:
+            objects.append(label_matches[0])
+        elif len(label_matches) > 1:
+            ambiguous[reference] = [candidate.Name for candidate in label_matches]
+        else:
+            missing.append(reference)
+    if ambiguous:
+        return _invalid(
+            "Object labels must be unique; use an internal name for: "
+            + ", ".join(sorted(ambiguous)),
+            ambiguous_labels=ambiguous,
+        )
     if missing:
         return _invalid(
-            "Objects not found by exact internal name: " + ", ".join(missing),
+            "Objects not found by published output name, internal name, or unique "
+            "label: "
+            + ", ".join(missing),
             missing_objects=missing,
         )
-    return {"ok": True, "changes": changes}
+    return {"ok": True, "objects": objects}
 
 
 def _apply_visibility(changes: list[tuple[Any, bool]]) -> dict[str, Any]:

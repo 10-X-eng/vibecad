@@ -15920,6 +15920,10 @@ def _publish_partdesign_design_candidate(
         )
         row = {
             "object_name": str(published.Name),
+            "reference": {
+                "document_uid": str(getattr(doc, "Uid", "") or ""),
+                "object_name": str(published.Name),
+            },
             # The stable hidden App::Link can receive FreeCAD's duplicate-label
             # suffix because the visible native Body already owns the authored
             # label. Tool results describe the authored output, not that hidden

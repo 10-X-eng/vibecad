@@ -29,7 +29,7 @@ from VibeCADVibeScriptDomains import get_vibescript_pack
 
 
 MAX_PROVIDER_IMAGE_BYTES = 2_000_000
-CODEX_INLINE_IMAGE_MAX_BYTES = 60_000
+CODEX_INLINE_IMAGE_MAX_BYTES = MAX_PROVIDER_IMAGE_BYTES
 CODEX_LOCAL_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 PROVIDER_IMAGE_MAX_EDGE = 1568
 PROVIDER_IMAGE_MIN_EDGE = 512
@@ -61,9 +61,9 @@ ANTHROPIC_STREAM_MAX_ATTEMPTS = 3
 
 VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical engineer for the user's live FreeCAD model.
 
-CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Meet explicit requirements and decide ordinary engineering details. Ask only when an answer changes function or geometry. Build editable parametric geometry for the requested function, dimensions, fit, manufacture, and appearance. Preserve existing identity and history unless replacement is requested; a correction changes only the named design. Prefer catalog fasteners.
+CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Meet explicit requirements; decide only ordinary details required for function. Ask only when an answer changes function or geometry. Build editable parametric geometry. Preserve existing identity and history unless replacement is requested; a correction changes only the named design. Search catalogs only for requested or required unspecified components; explicit dimensions are not catalog requests.
 
-Use only exposed tools and exact returned state. Never invent names, references, revisions, or API members. Resolve a failed operation before dependent work and never repeat an unchanged failure. Verify requested geometry, interfaces, clearances, motion, manufacturability, and appearance before claiming completion; use a viewport capture for visual judgment. Never claim work or verification not performed."""
+Use only exposed tools and exact returned state. Never invent names, references, revisions, or API members. Act decisively; do not narrate plans or revisit settled arithmetic. Resolve a failed operation before dependent work and never repeat an unchanged failure. Verify requested and function-critical geometry, interfaces, clearances, motion, manufacture, and appearance before claiming completion; use a viewport capture for visual judgment. Never claim work or verification not performed."""
 
 
 ANTHROPIC_TURN_COMPACTION_INSTRUCTIONS = """You compact one unfinished VibeCAD agent turn.
@@ -118,22 +118,24 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
             return ""
         return (
             "VIBESCRIPT MODEL + ASSEMBLY\n"
-            "VibeScript source is Python: use only doc, inputs, and api; call exported "
-            "operations as api.name(...), assign with '=', and finish with a result "
-            "mapping. Lengths are mm and angles are degrees. Never use arrow syntax or "
-            "unqualified API calls. Minimal part:\n"
-            "shape = api.cylinder(25.0, 100.0, label='Cylinder')\n"
-            "result = {'Body': api.publish(shape, label='Cylinder')}\n"
-            "Use domain='partdesign' for part geometry and domain='assembly' for "
-            "occurrences, joints, mechanisms, and simulations. Read only needed calls "
-            "with vibescript.read_api(domain=..., names=[...]) or groups=[...]. Existing "
-            "sources route by their program reference; the visible ribbon is presentation.\n"
+            "Follow VIBESCRIPT_AUTHORING_CONTRACT_JSON beside the current request; its "
+            "signatures override prior knowledge. Poll writes with read_operation. A "
+            "failed create without program/revision saved nothing.\n"
+            "A request for new geometry, especially from a dimensioned drawing, means "
+            "author the part directly: do not search component, fastener, or material "
+            "catalogs unless the user asks to reuse, select, or standardize an existing "
+            "item. Call listed operations as api.name(...) unless the source explicitly "
+            "imports that name from api; never write an API name, doc, or inputs as a "
+            "bare source directive.\n"
+            "partdesign owns geometry; assembly owns occurrences, joints, and motion. "
+            "Part output types: "
+            f"{', '.join(part_pack.output_types)}; assembly output types are "
+            f"{', '.join(assembly_pack.output_types)}.\n"
             f"PARTS: {part_pack.instructions}\n"
             f"ASSEMBLIES: {assembly_pack.instructions}\n"
-            "Reuse editable_sources: read_source before edit_source; use set_inputs for "
-            "values only and build_program for unchanged code. Use available_components "
-            "with api.component/api.instances; search only when absent. Inspect unfamiliar "
-            "geometry or coordinates with read_geometry/read_placement."
+            "For an existing source, read_source before edit_source; build_program runs "
+            "unchanged code and set_inputs changes values only. Use available_components "
+            "before catalog search."
         )
     component_instruction = (
         " Use a definition in available_components with api.component or api.instances. "
@@ -147,14 +149,12 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
     )
     return (
         f"VIBESCRIPT {pack.title.upper()} AUTHORING\n"
-        "Source is Python: use only doc, inputs, and api; call api.name(...), assign "
-        "with '=', and finish with a result mapping. Never use arrow syntax or "
-        "unqualified API calls. "
+        "Follow VIBESCRIPT_AUTHORING_CONTRACT_JSON beside the current request; its exact "
+        "signatures override prior knowledge. Poll writes with read_operation. A failed "
+        "create without program/revision saved nothing. "
         f"{pack.instructions}{component_instruction}\n"
-        "Reuse editable_sources. Read source before editing it; send complete source "
-        "and its revision to edit_source. Use build_program for unchanged code. Inspect "
-        "unfamiliar geometry/coordinates with read_geometry/read_placement. Read only "
-        "needed API calls with read_api. Output names stay stable and types must be: "
+        "Read an existing source before editing it; build_program runs unchanged code. "
+        "Output names stay stable and types must be: "
         + ", ".join(pack.output_types)
         + ". Use set_inputs for values only; otherwise include changed inputs, schema, "
         "or outputs in edit_source."
@@ -514,6 +514,12 @@ def _codex_turn_input(prompt: str, context: dict[str, Any]) -> list[dict[str, An
     items: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
     for note in _context_image_delivery_notes(visible):
         items.append({"type": "text", "text": note})
+    local_references = _codex_local_reference_image_input(visible)
+    if local_references is not None:
+        items.extend(local_references)
+        image_blocks = [
+            block for block in image_blocks if not block[0].startswith("R")
+        ]
     for label, mime_type, data in image_blocks:
         items.append({"type": "text", "text": label})
         items.append(
@@ -523,6 +529,39 @@ def _codex_turn_input(prompt: str, context: dict[str, Any]) -> list[dict[str, An
             }
         )
     return items
+
+
+def _codex_local_reference_image_input(
+    context: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Deliver every durable reference at original detail, or use inline fallback."""
+
+    references = context.get("reference_images")
+    if not isinstance(references, dict):
+        return None
+    entries = [
+        entry
+        for entry in list(references.get("images") or [])
+        if isinstance(entry, dict)
+    ]
+    if not entries:
+        return None
+    result: list[dict[str, Any]] = []
+    total = len(entries)
+    try:
+        for index, entry in enumerate(entries, start=1):
+            name = str(entry.get("name") or f"reference-{index}")
+            user_label = str(entry.get("label") or "").strip()
+            suffix = f"|{user_label}" if user_label else ""
+            result.extend(
+                _codex_local_image_input(
+                    entry.get("path"),
+                    label=f"R{index}/{total}:{name}{suffix}",
+                )
+            )
+    except ValueError:
+        return None
+    return result
 
 
 def _codex_prompt_without_replayed_conversation(prompt: str) -> str:
@@ -2885,23 +2924,27 @@ def _provider_visible_source_lifecycle_result(
         if observed:
             compact["observed"] = observed
 
-    if program:
+    source_available = bool(
+        program
+        and revision
+        and not result.get("source_deleted")
+    )
+    if source_available and result.get("ok") is not True:
         actions: list[dict[str, Any]] = [
             {
                 "tool": "vibescript.read_source",
                 "arguments": {"program": program, "include_logs": False},
             }
         ]
-        if revision:
-            actions.append(
-                {
-                    "tool": "vibescript.build_program",
-                    "arguments": {
-                        "program": program,
-                        "expected_revision": revision,
-                    },
-                }
-            )
+        actions.append(
+            {
+                "tool": "vibescript.build_program",
+                "arguments": {
+                    "program": program,
+                    "expected_revision": revision,
+                },
+            }
+        )
         compact["next_actions"] = actions
     return compact
 

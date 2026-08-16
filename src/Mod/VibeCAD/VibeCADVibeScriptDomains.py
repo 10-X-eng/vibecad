@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 import hashlib
+import inspect
 import json
 import math
 from pathlib import Path, PurePath
@@ -157,6 +158,9 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "sweep",
                 "helix",
                 "boolean",
+                "union",
+                "cut",
+                "intersect",
                 "section",
                 "general_fuse",
                 "slice",
@@ -176,7 +180,16 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
         ),
         (
             "dressups_and_holes",
-            ("fillet", "chamfer", "thickness", "hole", "fastener_hole", "draft"),
+            (
+                "fillet",
+                "chamfer",
+                "thickness",
+                "hole",
+                "holes",
+                "bosses",
+                "fastener_hole",
+                "draft",
+            ),
         ),
         (
             "repair",
@@ -287,6 +300,33 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
     "part": (),
 }
 
+# Exact, high-frequency calls placed in turn-start context. Less-common calls
+# remain discoverable through api_groups and vibescript.read_api, so the active
+# context stays small without asking a model to guess primitive contracts.
+_CORE_API_EXPORTS_BY_DOMAIN: dict[str, tuple[str, ...]] = {
+    "partdesign": (
+        "box",
+        "wedge",
+        "plane",
+        "prism",
+        "cylinder",
+        "cone",
+        "sphere",
+        "torus",
+        "compound",
+        "union",
+        "cut",
+        "intersect",
+        "holes",
+        "bosses",
+        "find_subelements",
+        "fillet",
+        "chamfer",
+        "transform",
+        "measure",
+    ),
+}
+
 
 def api_groups(pack: "VibeScriptWorkbenchPack") -> dict[str, list[str]]:
     """Return deterministic, exhaustive discovery groups for one domain API."""
@@ -309,6 +349,76 @@ def api_groups(pack: "VibeScriptWorkbenchPack") -> dict[str, list[str]]:
     if remaining:
         result["other"] = remaining
     return result
+
+
+def _core_api_snapshot(pack: "VibeScriptWorkbenchPack") -> dict[str, Any]:
+    """Return compact, authoritative contracts for common source operations."""
+
+    names = _CORE_API_EXPORTS_BY_DOMAIN.get(pack.domain, ())
+    if not names:
+        return {}
+    from vibescript_domain_api import create_domain_api
+
+    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+    calls: dict[str, str] = {}
+    for name in names:
+        if name not in api.exported_names:
+            raise RuntimeError(
+                f"Core VibeScript API {pack.domain}.{name} is not exported."
+            )
+        member = getattr(api, name)
+        raw_signature = inspect.signature(member)
+        signature = raw_signature.replace(
+            parameters=[
+                parameter.replace(annotation=inspect.Signature.empty)
+                for parameter in raw_signature.parameters.values()
+            ],
+            return_annotation=inspect.Signature.empty,
+        )
+        description = str(inspect.getdoc(member) or "").strip()
+        summary = description.split("\n\n", 1)[0].replace("\n", " ")
+        calls[name] = (
+            f"ONLY api.{name}{signature}. " + " ".join(summary.split())
+        )
+    return {
+        "domain": pack.domain,
+        "source": (
+            "Final Python only. api/inputs/doc are prebound; optional imports from api are "
+            "accepted, while every other import is forbidden. No plans, "
+            "corrections, placeholders, pass, undefined names, methods on returned values, "
+            "or guessed calls. Use only api signatures below or returned by ReadAPI this "
+            "turn. Prefer api.holes for round bores and api.bosses for round protrusions; "
+            "use api.cut only for a non-round/custom cutting solid. For one declared output "
+            "assign result=final_value. For multiple outputs assign one ordered mapping: "
+            "result={'ExactOutputName': final_value, ...}. Never end with a bare expression."
+        ),
+        "create_program": {
+            "required_fields": [
+                "program_name",
+                "source",
+                "input_schema",
+                "inputs",
+                "expected_outputs",
+            ],
+            "not_a_field": ["expected_revision"],
+            "no_inputs": {
+                "input_schema": {
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                "inputs": {},
+            },
+            "output_types": list(pack.output_types),
+            "result_rule": (
+                "One output: result=final_api_value. Multiple outputs: result is an ordered "
+                "mapping whose keys exactly equal expected_outputs names. VibeCAD publishes "
+                "a solid/feature as its stable Design Body and other matching topology as "
+                "its stable output. api.body/api.publish are optional only for interfaces, "
+                "checks, material, or appearance."
+            ),
+        },
+        "api": calls,
+    }
 
 
 PROVIDER_DOMAIN_OPERATIONS: tuple[str, ...] = (
@@ -432,20 +542,14 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "partdesign",
         "Part Design",
         ("solid", "shell", "face", "wire", "compound", "component_link"),
-        "Create editable native Body history from source-parametric features; the "
-        "VibeScript source is its definition. Use "
-        "api.sketch for planar feature profiles. Use api.extrude with "
-        "operation='add_material' or 'remove_material' for straight additions and cuts "
-        "whose cross-section stays constant. Always set Body-feature direction to "
-        "'along_normal', 'opposite_normal', or 'symmetric'; do not infer reverse. "
-        "XY uses [X,Y]/+Z, XZ uses [X,Z]/-Y, and YZ uses [Y,Z]/+X. "
-        "Use api.loft only when the intended "
-        "cross-section genuinely changes between section planes. Set operation to "
-        "new_solid, new_surface, add_material, or remove_material. Reserve line_3d, "
-        "arc_3d, wire, and other direct OCC topology for nonplanar, imported, repair, "
-        "or standalone geometry. Use boolean for union, subtract, or intersect and "
-        "compound for separate geometry. Attach material and appearance to the "
-        "published output. Use only canonical exported operation names.",
+        "Source defines editable native history. Prefer primitives plus boolean when "
+        "they exactly express the part; use sketch plus a feature for other planar "
+        "profiles. Extrude constant sections; loft only changing sections. Cuts require "
+        "base; set feature direction explicitly to along_normal, opposite_normal, or "
+        "symmetric. Sketch planes: XY [X,Y]/+Z, XZ [X,Z]/-Y, YZ [Y,Z]/+X. Use direct "
+        "3D topology only for nonplanar or standalone geometry. Boolean output_type solid "
+        "requires one connected solid; compound retains separate shapes. body publishes "
+        "a final Body feature; publish handles standalone topology.",
         (
             "from_object",
             "box",
@@ -488,6 +592,9 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "sweep",
             "helix",
             "boolean",
+            "union",
+            "cut",
+            "intersect",
             "section",
             "general_fuse",
             "slice",
@@ -501,6 +608,8 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "chamfer",
             "thickness",
             "hole",
+            "holes",
+            "bosses",
             "fastener_hole",
             "involute_gear",
             "draft",
@@ -661,13 +770,10 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "exploded_view",
             "bom",
         ),
-        "Define native assembly links, grounding, connector references, joints, "
-        "solved placements, structured solver diagnostics, and worker-generated "
-        "kinematic simulations, exploded views, flexible source hierarchies, and "
-        "authenticated native bills of materials. Component geometry remains in its "
-        "authoring source; read or edit its exact program reference instead of rebuilding it "
-        "inside Assembly. Use assembly.play_simulation on a published simulation when "
-        "GUI playback is requested.",
+        "Link components; never rebuild their geometry in Assembly. Ground at least one "
+        "occurrence, create connectors and joints, then solve. Use simulation for "
+        "kinematics, exploded_view for presentation, and bill_of_materials for a BOM. "
+        "assembly.play_simulation controls GUI playback of a published simulation.",
         (
             "assembly",
             "component",
@@ -1258,6 +1364,11 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
         "sources_truncated": bool(completed.get("programs_truncated")),
         "sources_omitted": int(completed.get("programs_omitted") or 0),
         "api_groups": grouped_api,
+        **(
+            {"core_api": _core_api_snapshot(pack)}
+            if pack is not None and _CORE_API_EXPORTS_BY_DOMAIN.get(pack.domain)
+            else {}
+        ),
         "tools": {
             "read_source": "vibescript.read_source",
             "read_api": "vibescript.read_api",
@@ -4684,6 +4795,7 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
 
 
 _IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+_PROGRAM_NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9 ._-]{0,119}$"
 _PROJECT_ARTIFACT_ID = re.compile(r"^[0-9a-f]{32}$")
 _DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 _BLOCKED_NAMES = frozenset(
@@ -4730,8 +4842,16 @@ def validate_program_source(source: str) -> None:
     violations: list[str] = []
     for node in ast.walk(tree):
         line = int(getattr(node, "lineno", 0) or 0)
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            violations.append(f"line {line}: imports are not allowed")
+        if isinstance(node, ast.Import):
+            if any(alias.name != "api" for alias in node.names):
+                violations.append(
+                    f"line {line}: only the prebound api module may be imported"
+                )
+        elif isinstance(node, ast.ImportFrom):
+            if node.level != 0 or node.module != "api":
+                violations.append(
+                    f"line {line}: only names from the prebound api module may be imported"
+                )
         elif isinstance(node, ast.Name) and node.id in _BLOCKED_NAMES:
             violations.append(f"line {line}: name {node.id!r} is not allowed")
         elif isinstance(node, ast.Attribute):
@@ -5683,21 +5803,36 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         pattern="^[0-9a-f]{64}$",
     )
     source = _property_schema(
-        "Complete VibeScript source, never a patch.",
+        (
+            "Final executable Python, never a patch or explanation. Use prebound doc, "
+            "inputs, and exact api.* signatures only. Optional imports from api are "
+            "accepted; every other import is forbidden. No planning, correction notes, "
+            "placeholders, pass, undefined names, or guessed calls. For one "
+            "expected output assign result=final_api_value; for multiple outputs assign "
+            "one result mapping whose keys exactly match expected_outputs."
+        ),
         type="string",
         minLength=1,
         maxLength=MAX_SOURCE_BYTES,
     )
     input_schema = _property_schema(
-        "Bounded JSON Schema for inputs.",
+        (
+            "Bounded JSON Schema for inputs. With no inputs pass "
+            "{\"properties\":{},\"additionalProperties\":false}."
+        ),
         type="object",
     )
     inputs = _property_schema(
-        "Values satisfying input_schema.",
+        "Values satisfying input_schema; pass {} when there are no inputs.",
         type="object",
     )
     outputs = _property_schema(
-        "Stable output names and types.",
+        (
+            "Only user-requested final deliverables, never intermediate bases, cutters, "
+            "sketches, or selectors. A requested single part is exactly one solid output. "
+            "Names equal final result keys; types are active-domain output types, never "
+            "class names such as Body or Sketch."
+        ),
         type="array",
         minItems=1,
         maxItems=MAX_OUTPUTS,
@@ -5876,7 +6011,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                         pattern="^operation-[1-9][0-9]*$",
                     ),
                     "wait_seconds": _property_schema(
-                        "Maximum wait; zero polls immediately.",
+                        "Maximum wait; omit for 30 seconds, zero polls immediately.",
                         type="number",
                         minimum=0,
                         maximum=60,
@@ -5893,8 +6028,10 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.read_api",
             "description": (
-                "Read exact VibeScript call signatures by names or groups. Pass domain "
-                "for a new source or program for an existing one, never both."
+                "Return exact signatures required before Create/Edit. Pass every planned "
+                "api.* name not already in core_api; api_groups already lists names. Use "
+                "groups only when no listed name fits. domain=new source; program=existing "
+                "source; never both."
             ),
             "parameters": {
                 "type": "object",
@@ -5902,14 +6039,14 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     "program": program,
                     "domain": domain,
                     "names": _property_schema(
-                        "Exact api callable names.",
+                        "Exact api callable names needed by the planned source.",
                         type="array",
                         maxItems=128,
                         uniqueItems=True,
                         items={"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
                     ),
                     "groups": _property_schema(
-                        "Exact names from api_groups.",
+                        "Discovery only when no callable listed in api_groups fits.",
                         type="array",
                         maxItems=32,
                         uniqueItems=True,
@@ -6048,19 +6185,28 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.create_program",
             "description": (
-                "Create and publish one new source. VibeScript is Python using api.* "
-                "calls, normal '=' assignment, and a final result mapping. Use only "
-                "when no editable source owns the design; then read_operation."
+                "After exact api signatures are present, create and publish a new source "
+                "when none owns the design. Submit the complete final program, never a "
+                "staged intermediate. program_name is a label, not a path. With no "
+                "inputs use input_schema={\"properties\":{},"
+                "\"additionalProperties\":false} and inputs={}. Poll read_operation to "
+                "terminal status. A failure without program/revision saved nothing; "
+                "correct the complete request and retry create_program."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "domain": domain,
                     "program_name": _property_schema(
-                        "Stable human-readable label.",
+                        (
+                            "Human-readable label, never an attachment filename or path: "
+                            "start with a letter; then letters, digits, spaces, dots, "
+                            "underscores, or hyphens."
+                        ),
                         type="string",
                         minLength=1,
                         maxLength=120,
+                        pattern=_PROGRAM_NAME_PATTERN,
                     ),
                     "source": source,
                     "input_schema": input_schema,
@@ -6284,7 +6430,13 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
         pattern="^[0-9a-f]{64}$",
     )
     source = _property_schema(
-        f"Complete {pack.title} VibeScript source using only doc, inputs, and api.",
+        (
+            f"Complete final {pack.title} VibeScript source using only prebound doc, "
+            "inputs, and api. Optional imports from api are accepted; every other import "
+            "is forbidden. Never submit staged intermediate geometry. "
+            "For one expected output assign result=final_api_value; for multiple outputs "
+            "assign one result mapping with exactly those names."
+        ),
         type="string",
         minLength=1,
         maxLength=MAX_SOURCE_BYTES,
@@ -6298,7 +6450,10 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
         type="object",
     )
     outputs = _property_schema(
-        f"Stable named outputs with {pack.title}-approved types.",
+        (
+            f"User-requested final deliverables with {pack.title}-approved types; never "
+            "publish intermediate bases, cutters, sketches, or selectors."
+        ),
         type="array",
         minItems=1,
         maxItems=MAX_OUTPUTS,
@@ -6318,14 +6473,16 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
             "create_program",
             description=(
                 f"Create and publish a new {pack.title} program. Use only when no "
-                "existing program owns the requested output."
+                "existing program owns the requested output; submit one complete final "
+                "program, never staged intermediate geometry."
             ),
             properties={
                 "program_name": _property_schema(
-                    "Human-readable stable program label.",
+                    "Human-readable stable label, never an attachment filename or path.",
                     type="string",
                     minLength=1,
                     maxLength=120,
+                    pattern=_PROGRAM_NAME_PATTERN,
                 ),
                 "source": source,
                 "input_schema": input_schema,

@@ -249,10 +249,17 @@ def test_codex_forwards_its_exact_dynamic_tool_call_id(
     monkeypatch,
     base_url: str | None,
 ) -> None:
+    import VibeCADOllama as ollama
+
     monkeypatch.setattr(
         codex_responses,
         "codex_responses_base_url",
         lambda value: value,
+    )
+    monkeypatch.setattr(
+        ollama,
+        "inspect_model",
+        lambda *_args, **_kwargs: {"detected": False, "ok": True},
     )
 
     class _Client:
@@ -848,11 +855,16 @@ def test_codex_resends_the_same_reference_as_image_input_each_turn(
 
     first = provider._codex_turn_input("first", context)
     second = provider._codex_turn_input("second", context)
-    first_images = [item for item in first if item.get("type") == "image"]
-    second_images = [item for item in second if item.get("type") == "image"]
+    first_images = [item for item in first if item.get("type") == "localImage"]
+    second_images = [item for item in second if item.get("type") == "localImage"]
 
     assert len(first_images) == 1
     assert second_images == first_images
+    assert first_images[0] == {
+        "type": "localImage",
+        "path": str(reference.resolve()),
+        "detail": "original",
+    }
 
 
 def test_codex_thread_config_disables_non_vibecad_tool_surfaces() -> None:
