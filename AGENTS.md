@@ -68,7 +68,7 @@ Every PR an agent prepares SHOULD be something the owner can merge with high con
 2. Title and description explain **user-visible outcome** and **why**.
 3. Link related issues when they exist.
 4. Call out risk, test plan, and any deliberate non-goals.
-5. AI agents may author code and repository communication; their work must meet the same review and verification standards as any other contribution.
+5. AI agents may author code and repository communication. For code changes, they must use red/green test-driven development and report the exact build and test commands and results in the PR.
 6. Do not mix unrelated refactors, formatting sweeps, or dependency upgrades with feature work.
 
 ### Compatibility checklist (required in the PR body when relevant)
@@ -82,7 +82,7 @@ Every PR an agent prepares SHOULD be something the owner can merge with high con
 ### Quality bar before asking for merge
 
 1. Builds for the touched area (or full project when CMake/public headers change).
-2. Relevant tests pass; add tests for new behavior when practical.
+2. For code changes, add or update a failing test before the implementation, then make it pass. Report the exact build and test commands and results in the PR. For non-code changes, state why TDD does not apply.
 3. No secrets, credentials, or local machine paths committed.
 4. Diff is reviewable: avoid generated noise and drive-by edits.
 5. Commit history is intentional (no “WIP / fixup later” left on the branch tip).

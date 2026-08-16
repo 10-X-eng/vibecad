@@ -1,5 +1,10 @@
 <!-- Include a brief summary of the changes. -->
 
+## Verification
+
+- [ ] For code changes, a test failed before the implementation and passes afterward; for non-code changes, the PR explains why TDD does not apply.
+- [ ] The PR lists the exact build and test commands and their results.
+
 <!--
 The FreeCAD community thanks you for your contribution!
 By creating a Pull Request you agree to the contributing policy. The complete policy can be found in the root of the source tree (CONTRIBUTING.md) or at https://github.com/FreeCAD/FreeCAD/blob/main/CONTRIBUTING.md
