@@ -1,6 +1,6 @@
 # Agent Instructions for VibeCAD
 
-These rules apply to coding agents and automated assistants working in this repository. Follow them in addition to `CONTRIBUTING.md`, `AI_POLICY.md`, and the project PR template.
+These rules apply to coding agents and automated assistants working in this repository. Follow them in addition to `CONTRIBUTING.md` and the project PR template.
 
 ## Goals
 
@@ -68,7 +68,7 @@ Every PR an agent prepares SHOULD be something the owner can merge with high con
 2. Title and description explain **user-visible outcome** and **why**.
 3. Link related issues when they exist.
 4. Call out risk, test plan, and any deliberate non-goals.
-5. Disclose AI assistance per `AI_POLICY.md` when applicable.
+5. AI agents may author code and repository communication; their work must meet the same review and verification standards as any other contribution.
 6. Do not mix unrelated refactors, formatting sweeps, or dependency upgrades with feature work.
 
 ### Compatibility checklist (required in the PR body when relevant)
