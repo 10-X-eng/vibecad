@@ -12,11 +12,7 @@ from . import domain_runtime
 TOOL_SPEC = {
     "name": "assembly.list_structure",
     "description": (
-        "List every assembly in the active document with its exact internal "
-        "name, component children, joints (type, references, grounded state), "
-        "and group counts. Use the returned identities when reading or editing "
-        "the owning Assembly VibeScript source; this read is available from both "
-        "the Model and Assembly ribbons."
+        "List assemblies with exact names, components, joints, grounding, and groups."
     ),
     "contextual": True,
     "safety": "READ",

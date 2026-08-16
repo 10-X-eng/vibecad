@@ -2770,7 +2770,7 @@ def test_component_inventory_is_copy_ready_and_prepared_search_does_not_rescan(
     }
     prepared = prepare_captured_component_catalog(
         {
-            "owner_document_uid": "assembly-uid",
+            "owner_document_uid": "component-uid",
             "project_directory": "",
             "owner_file": "",
             "open_document_files": [],
@@ -2910,7 +2910,7 @@ def test_component_catalog_large_inventory_has_explicit_bounded_pagination() -> 
         search_prepared_component_catalog(prepared, limit=201)
 
 
-def test_component_catalog_hides_unrelated_file_errors_until_explicitly_requested() -> None:
+def test_component_catalog_hides_unrelated_files_until_explicitly_requested() -> None:
     from VibeCADComponentCatalog import (
         component_inventory,
         search_prepared_component_catalog,
@@ -2918,9 +2918,32 @@ def test_component_catalog_hides_unrelated_file_errors_until_explicitly_requeste
 
     prepared = {
         "schema": "vibecad-component-catalog-snapshot-v1",
+        "owner_document_uid": "active-document-uid",
         "project_file_search_available": True,
         "saved_documents_skipped": 1,
-        "candidates": [],
+        "candidates": [
+            {
+                "document_label": "Active Document",
+                "object_name": "ActiveBody",
+                "label": "Active Body",
+                "kind": "definition",
+                "reference": {
+                    "document_uid": "active-document-uid",
+                    "object_name": "ActiveBody",
+                },
+            },
+            {
+                "document_label": "Unrelated Document",
+                "object_name": "UnrelatedBody",
+                "label": "Unrelated Body",
+                "kind": "definition",
+                "reference": {
+                    "document_uid": "unrelated-document-uid",
+                    "object_name": "UnrelatedBody",
+                    "document_path": "unrelated.FCStd",
+                },
+            },
+        ],
         "errors": [
             {
                 "document_path": "broken.FCStd",
@@ -2940,7 +2963,13 @@ def test_component_catalog_hides_unrelated_file_errors_until_explicitly_requeste
     assert "saved_documents_skipped" not in general
     assert "catalog_health" not in general
     assert exact["errors"] == prepared["errors"]
+    assert [
+        item["reference"]["object_name"] for item in inventory["components"]
+    ] == ["ActiveBody"]
     assert "1 unrelated saved document was not indexed" in inventory["catalog_health"]
+    assert search_prepared_component_catalog(prepared, "Unrelated Body")[
+        "matches"
+    ][0]["reference"]["object_name"] == "UnrelatedBody"
 
 
 def test_component_catalog_never_loses_matches_to_provider_byte_boundary() -> None:
@@ -3053,6 +3082,8 @@ def test_schema_v1_migrates_to_partdesign_without_relocation(tmp_path: Path) -> 
 
 
 def test_source_and_input_policy_blocks_escape_hatches() -> None:
+    domains.validate_program_source("import api\nresult = api.box(1, 2, 3)")
+    domains.validate_program_source("from api import *\nresult = box(1, 2, 3)")
     for source in (
         "import os\nresult = {}",
         "result = open('/tmp/value')",

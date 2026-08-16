@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from VibeCADDebug import capture_provider_request
 from VibeCADModelingSurface import (
@@ -28,7 +29,7 @@ from VibeCADVibeScriptDomains import get_vibescript_pack
 
 
 MAX_PROVIDER_IMAGE_BYTES = 2_000_000
-CODEX_INLINE_IMAGE_MAX_BYTES = 60_000
+CODEX_INLINE_IMAGE_MAX_BYTES = MAX_PROVIDER_IMAGE_BYTES
 CODEX_LOCAL_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 PROVIDER_IMAGE_MAX_EDGE = 1568
 PROVIDER_IMAGE_MIN_EDGE = 512
@@ -58,11 +59,11 @@ ANTHROPIC_ADAPTIVE_EFFORT = {
 ANTHROPIC_STREAM_MAX_ATTEMPTS = 3
 
 
-VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical design engineer for the user's live FreeCAD model.
+VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical engineer for the user's live FreeCAD model.
 
-CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Treat explicit user constraints as requirements. A correction changes only the named geometry; preserve the existing architecture, identity, and history unless replacement or redesign was requested. Build editable, parametric geometry meeting function, dimensions, fit, manufacturability, and appearance. Default to catalog fasteners. Decide unspecified details; ask only if a choice changes function or geometry.
+CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Meet explicit requirements; decide only ordinary details required for function. Ask only when an answer changes function or geometry. Build editable parametric geometry. Preserve existing identity and history unless replacement is requested; a correction changes only the named design. Search catalogs only for requested or required unspecified components; explicit dimensions are not catalog requests.
 
-Use only the tools exposed for this turn and exact state returned in the current context or by a tool; never guess names, references, revisions, or API members. Fix failures before dependent features; never repeat an unchanged failure. Hide source bodies when reviewing assembly occurrences. Before claiming completion, verify requested dimensions, topology, interfaces, clearances, assembly retention, service motion, manufacturability, and appearance; capture the viewport for visual judgment. Never claim work or verification not performed."""
+Use only exposed tools and exact returned state. Never invent names, references, revisions, or API members. Act decisively; do not narrate plans or revisit settled arithmetic. Resolve a failed operation before dependent work and never repeat an unchanged failure. Verify requested and function-critical geometry, interfaces, clearances, motion, manufacture, and appearance before claiming completion; use a viewport capture for visual judgment. Never claim work or verification not performed."""
 
 
 ANTHROPIC_TURN_COMPACTION_INSTRUCTIONS = """You compact one unfinished VibeCAD agent turn.
@@ -116,30 +117,25 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
         if part_pack is None or assembly_pack is None:
             return ""
         return (
-            "VIBESCRIPT MODEL + ASSEMBLY AUTHORING\n"
-            "Model and Assembly are one authoring surface; the visible ribbon is "
-            "presentation only. For a new source, pass domain='partdesign' to "
-            "vibescript.create_program for part geometry or domain='assembly' for "
-            "occurrences, joints, mechanisms, and simulations. Read the matching API "
-            "with vibescript.read_api(domain=...). Existing sources route by their "
-            "human-readable program reference without a workbench switch.\n"
+            "VIBESCRIPT MODEL + ASSEMBLY\n"
+            "Follow VIBESCRIPT_AUTHORING_CONTRACT_JSON beside the current request; its "
+            "signatures override prior knowledge. Poll writes with read_operation. A "
+            "failed create without program/revision saved nothing.\n"
+            "A request for new geometry, especially from a dimensioned drawing, means "
+            "author the part directly: do not search component, fastener, or material "
+            "catalogs unless the user asks to reuse, select, or standardize an existing "
+            "item. Call listed operations as api.name(...) unless the source explicitly "
+            "imports that name from api; never write an API name, doc, or inputs as a "
+            "bare source directive.\n"
+            "partdesign owns geometry; assembly owns occurrences, joints, and motion. "
+            "Part output types: "
+            f"{', '.join(part_pack.output_types)}; assembly output types are "
+            f"{', '.join(assembly_pack.output_types)}.\n"
             f"PARTS: {part_pack.instructions}\n"
             f"ASSEMBLIES: {assembly_pack.instructions}\n"
-            "Use definitions in available_components with api.component or "
-            "api.instances; search only when the needed item is absent or needs more "
-            "metadata. editable_sources.all_sources lists both domains; each item is "
-            "one editable part or program, including failed and unbuilt code. Copy its "
-            "program reference into vibescript.read_source before editing, then send "
-            "the complete updated source "
-            "and revision to vibescript.edit_source, and use "
-            "vibescript.build_program only to rebuild unchanged code. Source receives "
-            "immutable doc and api values plus validated inputs. Reuse existing source. "
-            "Use vibescript.set_inputs for a value-only change; otherwise include "
-            "changed inputs, input_schema, or expected_outputs with "
-            "vibescript.edit_source. Use "
-            "vibescript.read_geometry for imported or unfamiliar geometry and "
-            "vibescript.read_placement before relying on an unfamiliar coordinate "
-            "convention."
+            "For an existing source, read_source before edit_source; build_program runs "
+            "unchanged code and set_inputs changes values only. Use available_components "
+            "before catalog search."
         )
     component_instruction = (
         " Use a definition in available_components with api.component or api.instances. "
@@ -153,23 +149,15 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
     )
     return (
         f"VIBESCRIPT {pack.title.upper()} AUTHORING\n"
-        f"Write CAD only through the active {pack.title} VibeScript API. "
-        f"{pack.instructions}{component_instruction}\n\n"
-        "Each editable_sources item is one editable part or program, including failed "
-        "and unbuilt code. Copy its program reference into vibescript.read_source before "
-        "editing; send the complete updated source and returned revision to "
-        "vibescript.edit_source. Use vibescript.build_program to rebuild unchanged code. "
-        "Use vibescript.read_geometry on an exact object reference before depending on "
-        "imported or unfamiliar geometry. "
-        "Use vibescript.read_placement before relying on an unfamiliar sketch plane or "
-        "oriented primitive. "
-        "Read only needed API calls with vibescript.read_api(names=[...]) or groups=[...]. "
-        "Source receives immutable doc and api values plus validated inputs. Outputs "
-        "keep stable names and must use these types: "
+        "Follow VIBESCRIPT_AUTHORING_CONTRACT_JSON beside the current request; its exact "
+        "signatures override prior knowledge. Poll writes with read_operation. A failed "
+        "create without program/revision saved nothing. "
+        f"{pack.instructions}{component_instruction}\n"
+        "Read an existing source before editing it; build_program runs unchanged code. "
+        "Output names stay stable and types must be: "
         + ", ".join(pack.output_types)
-        + ". Reuse existing source. Use vibescript.set_inputs for a value-only change; "
-        "otherwise use vibescript.edit_source and include any changed inputs, input_schema, "
-        "or expected_outputs in the same call."
+        + ". Use set_inputs for values only; otherwise include changed inputs, schema, "
+        "or outputs in edit_source."
     )
 
 
@@ -279,8 +267,38 @@ def provider_tool_schema_digest(schemas: list[dict[str, Any]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _codex_uses_namespaced_tools(
+    *,
+    auth_mode: str,
+    base_url: str | None,
+) -> bool:
+    """Return whether the active Responses endpoint accepts namespace tools."""
+
+    if str(auth_mode or "").strip().lower() == "chatgpt":
+        return True
+    clean_base_url = str(base_url or "").strip()
+    if not clean_base_url:
+        return True
+    hostname = str(urlsplit(clean_base_url).hostname or "").lower()
+    return hostname == "api.openai.com" or hostname.endswith(".api.openai.com")
+
+
+def _codex_flat_function_name(namespace: str, function_name: str) -> str:
+    name = (
+        f"{_provider_function_name(namespace)}"
+        f"__{_provider_function_name(function_name)}"
+    )
+    if len(name) > 128:
+        raise ValueError(
+            f"Flattened Codex dynamic tool name exceeds 128 characters: {name!r}"
+        )
+    return name
+
+
 def _codex_dynamic_tool_surface(
     context: dict[str, Any],
+    *,
+    namespaced: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[tuple[str, str], str]]:
     """Build app-server tools from the frozen turn-start VibeCAD surface."""
 
@@ -390,6 +408,7 @@ def _codex_dynamic_tool_surface(
         )
     except ValueError as exc:
         raise ProviderUnavailable(str(exc)) from exc
+    dynamic_tools: list[dict[str, Any]] = []
     namespaces: dict[str, dict[str, Any]] = {}
     names: dict[tuple[str, str], str] = {}
     for schema in schemas:
@@ -403,12 +422,36 @@ def _codex_dynamic_tool_surface(
             raise ProviderUnavailable(
                 f"Invalid frozen schema for VibeCAD tool {tool_name!r}: {exc}"
             ) from exc
-        key = (namespace_name, function_name)
+        flat_name = (
+            ""
+            if namespaced
+            else _codex_flat_function_name(namespace_name, function_name)
+        )
+        key = (
+            (namespace_name, function_name)
+            if namespaced
+            else ("", flat_name)
+        )
         if key in names:
             raise ProviderUnavailable(
-                f"Duplicate Codex dynamic tool name: {namespace_name}.{function_name}"
+                "Duplicate Codex dynamic tool name: "
+                + (
+                    f"{namespace_name}.{function_name}"
+                    if namespaced
+                    else flat_name
+                )
             )
         names[key] = tool_name
+        function = {
+            "type": "function",
+            "name": function_name if namespaced else flat_name,
+            "description": str(schema.get("description") or ""),
+            "deferLoading": False,
+            "inputSchema": input_schema,
+        }
+        if not namespaced:
+            dynamic_tools.append(function)
+            continue
         namespace = namespaces.setdefault(
             namespace_name,
             {
@@ -418,55 +461,50 @@ def _codex_dynamic_tool_surface(
                 "tools": [],
             },
         )
-        namespace["tools"].append(
-            {
-                "type": "function",
-                "name": function_name,
-                "description": str(schema.get("description") or ""),
-                "deferLoading": False,
-                "inputSchema": input_schema,
-            }
-        )
-    return [namespaces[name] for name in sorted(namespaces)], names
+        namespace["tools"].append(function)
+    if namespaced:
+        dynamic_tools = [namespaces[name] for name in sorted(namespaces)]
+    return dynamic_tools, names
 
 
-def _codex_skill_read_tool() -> dict[str, Any]:
+def _codex_skill_read_tool(*, namespaced: bool = True) -> dict[str, Any]:
+    function = {
+        "type": "function",
+        "name": (
+            "read" if namespaced else _codex_flat_function_name("skills", "read")
+        ),
+        "description": (
+            "Read one enabled skill's SKILL.md or a referenced UTF-8 "
+            "resource contained in that skill directory."
+        ),
+        "deferLoading": False,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Exact skill name from the available skills list.",
+                },
+                "resource": {
+                    "type": "string",
+                    "description": (
+                        "Relative resource path inside the skill directory; "
+                        "defaults to SKILL.md."
+                    ),
+                    "default": "SKILL.md",
+                },
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    }
+    if not namespaced:
+        return function
     return {
         "type": "namespace",
         "name": "skills",
         "description": "Read enabled Codex skill instructions and resources.",
-        "tools": [
-            {
-                "type": "function",
-                "name": "read",
-                "description": (
-                    "Read one enabled skill's SKILL.md or a referenced UTF-8 "
-                    "resource contained in that skill directory."
-                ),
-                "deferLoading": False,
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": (
-                                "Exact skill name from the available skills list."
-                            ),
-                        },
-                        "resource": {
-                            "type": "string",
-                            "description": (
-                                "Relative resource path inside the skill directory; "
-                                "defaults to SKILL.md."
-                            ),
-                            "default": "SKILL.md",
-                        },
-                    },
-                    "required": ["name"],
-                    "additionalProperties": False,
-                },
-            }
-        ],
+        "tools": [function],
     }
 
 
@@ -476,6 +514,12 @@ def _codex_turn_input(prompt: str, context: dict[str, Any]) -> list[dict[str, An
     items: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
     for note in _context_image_delivery_notes(visible):
         items.append({"type": "text", "text": note})
+    local_references = _codex_local_reference_image_input(visible)
+    if local_references is not None:
+        items.extend(local_references)
+        image_blocks = [
+            block for block in image_blocks if not block[0].startswith("R")
+        ]
     for label, mime_type, data in image_blocks:
         items.append({"type": "text", "text": label})
         items.append(
@@ -485,6 +529,39 @@ def _codex_turn_input(prompt: str, context: dict[str, Any]) -> list[dict[str, An
             }
         )
     return items
+
+
+def _codex_local_reference_image_input(
+    context: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Deliver every durable reference at original detail, or use inline fallback."""
+
+    references = context.get("reference_images")
+    if not isinstance(references, dict):
+        return None
+    entries = [
+        entry
+        for entry in list(references.get("images") or [])
+        if isinstance(entry, dict)
+    ]
+    if not entries:
+        return None
+    result: list[dict[str, Any]] = []
+    total = len(entries)
+    try:
+        for index, entry in enumerate(entries, start=1):
+            name = str(entry.get("name") or f"reference-{index}")
+            user_label = str(entry.get("label") or "").strip()
+            suffix = f"|{user_label}" if user_label else ""
+            result.extend(
+                _codex_local_image_input(
+                    entry.get("path"),
+                    label=f"R{index}/{total}:{name}{suffix}",
+                )
+            )
+    except ValueError:
+        return None
+    return result
 
 
 def _codex_prompt_without_replayed_conversation(prompt: str) -> str:
@@ -686,8 +763,62 @@ class CodexProvider(BaseProvider):
             update_cached_account,
             vibecad_thread_config,
         )
+        from VibeCADCodexResponses import codex_responses_base_url
+        from VibeCADOllama import codex_context_limits, inspect_model
 
         live_context = dict(context)
+        ollama_model: dict[str, Any] = {}
+        model_context_window: int | None = None
+        model_auto_compact_token_limit: int | None = None
+        if self.auth_mode == "api_key" and self.base_url and self.model:
+            ollama_model = inspect_model(
+                self.base_url,
+                self.model,
+                preload=True,
+            )
+            if ollama_model.get("detected"):
+                if not ollama_model.get("ok"):
+                    raise ProviderUnavailable(
+                        "VibeCAD found Ollama but could not inspect the selected "
+                        f"model: {ollama_model.get('error') or 'unknown error'}"
+                    )
+                capabilities = set(ollama_model.get("capabilities") or [])
+                if capabilities and "tools" not in capabilities:
+                    raise ProviderUnavailable(
+                        f"Ollama model {self.model!r} does not advertise tool calling."
+                    )
+                runtime_context = int(
+                    ollama_model.get("runtime_context_length") or 0
+                )
+                if runtime_context <= 0:
+                    raise ProviderUnavailable(
+                        "Ollama loaded the selected model but did not report its "
+                        "allocated context length."
+                    )
+                supported_context = int(
+                    ollama_model.get("supported_context_length") or 0
+                )
+                effective_context = (
+                    min(runtime_context, supported_context)
+                    if supported_context > 0
+                    else runtime_context
+                )
+                (
+                    model_context_window,
+                    model_auto_compact_token_limit,
+                ) = codex_context_limits(effective_context)
+                _emit_provider_progress(
+                    progress_callback,
+                    {
+                        "event": "provider_model_ready",
+                        "provider": "Ollama via Codex",
+                        "model": self.model,
+                        "context_window": model_context_window,
+                        "auto_compact_token_limit": (
+                            model_auto_compact_token_limit
+                        ),
+                    },
+                )
         interaction_mode = (
             str(live_context.get("_vibecad_interaction_mode") or "build")
             .strip()
@@ -698,8 +829,13 @@ class CodexProvider(BaseProvider):
                 f"Unknown VibeCAD interaction mode {interaction_mode!r}."
             )
         plan_mode = interaction_mode == "plan"
+        namespaced_tools = _codex_uses_namespaced_tools(
+            auth_mode=self.auth_mode,
+            base_url=self.base_url,
+        )
         current_dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(
-            live_context
+            live_context,
+            namespaced=namespaced_tools,
         )
         if not current_dynamic_tools:
             raise ProviderUnavailable(
@@ -712,7 +848,13 @@ class CodexProvider(BaseProvider):
         else:
             thread_context = live_context
         thread_dynamic_tools, _thread_name_map = _codex_dynamic_tool_surface(
-            thread_context
+            thread_context,
+            namespaced=namespaced_tools,
+        )
+        skill_call_key = (
+            ("skills", "read")
+            if namespaced_tools
+            else ("", _codex_flat_function_name("skills", "read"))
         )
 
         state_lock = threading.RLock()
@@ -836,7 +978,7 @@ class CodexProvider(BaseProvider):
             arguments = params.get("arguments")
             if not isinstance(arguments, dict):
                 arguments = {}
-            if namespace == "skills" and function_name == "read":
+            if (namespace, function_name) == skill_call_key:
                 _emit_provider_progress(
                     progress_callback,
                     {
@@ -909,6 +1051,8 @@ class CodexProvider(BaseProvider):
                     "arguments": _tool_arguments_summary(arguments_json),
                 },
             )
+            with state_lock:
+                previous_context = _json_safe(live_context)
             result = _call_parent_tool(
                 tool_runner,
                 tool_name,
@@ -919,9 +1063,13 @@ class CodexProvider(BaseProvider):
             with state_lock:
                 live_context = updated_context
             model_result = _provider_visible_tool_result(result)
-            model_result["vibecad_state_after"] = _provider_state_after_tool(
-                updated_context, result
+            state_after = _provider_state_after_tool(
+                updated_context,
+                result,
+                previous_context=previous_context,
             )
+            if state_after:
+                model_result["vibecad_state_after"] = state_after
             content_items: list[dict[str, Any]] = [
                 {
                     "type": "inputText",
@@ -995,6 +1143,11 @@ class CodexProvider(BaseProvider):
 
         if self.auth_mode == "api_key" and not self.api_key:
             raise ProviderUnavailable("No OpenAI API key is configured.")
+        codex_base_url = (
+            codex_responses_base_url(self.base_url)
+            if self.auth_mode == "api_key"
+            else None
+        )
         environment = (
             {CODEX_OPENAI_API_KEY_ENV: self.api_key}
             if self.auth_mode == "api_key" and self.api_key
@@ -1017,6 +1170,10 @@ class CodexProvider(BaseProvider):
                 "base_url": self.base_url or "",
                 "web_search_enabled": self.web_search_enabled,
                 "skills_enabled": self.skills_enabled,
+                "model_context_window": model_context_window,
+                "model_auto_compact_token_limit": (
+                    model_auto_compact_token_limit
+                ),
                 "api_key_sha256": (
                     hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()
                     if self.api_key
@@ -1099,7 +1256,9 @@ class CodexProvider(BaseProvider):
                     cwd=codex_workspace(),
                 )
                 if skill_catalog:
-                    thread_dynamic_tools.append(_codex_skill_read_tool())
+                    thread_dynamic_tools.append(
+                        _codex_skill_read_tool(namespaced=namespaced_tools)
+                    )
 
             forbidden_capabilities = [
                 "shell",
@@ -1121,7 +1280,6 @@ class CodexProvider(BaseProvider):
                     " Read selected skill instructions and referenced resources "
                     "only through skills.read."
                 )
-
             thread_request: dict[str, Any] = {
                 "cwd": str(codex_workspace()),
                 "approvalPolicy": "never",
@@ -1137,7 +1295,13 @@ class CodexProvider(BaseProvider):
                     skills_enabled=self.skills_enabled,
                     collaboration_mode_enabled=managed or plan_mode,
                     openai_base_url=(
-                        (self.base_url or "") if self.auth_mode == "api_key" else None
+                        (codex_base_url or "")
+                        if self.auth_mode == "api_key"
+                        else None
+                    ),
+                    model_context_window=model_context_window,
+                    model_auto_compact_token_limit=(
+                        model_auto_compact_token_limit
                     ),
                 ),
                 "serviceName": "vibecad",
@@ -1282,12 +1446,39 @@ class CodexProvider(BaseProvider):
                     completed_error
                     or f"Codex turn ended with {completed_status or 'unknown status'}."
                 )
+            if not final_output:
+                context_note = (
+                    f" The provider context window was {model_context_window} tokens."
+                    if model_context_window is not None
+                    else ""
+                )
+                raise ProviderUnavailable(
+                    "Codex completed without a final agent message; VibeCAD refused "
+                    "to accept an empty result. The provider may have truncated or "
+                    f"exhausted its context.{context_note}"
+                )
             return ProviderResult(
                 final_output=final_output,
                 raw={
                     "thread_id": thread_id,
                     "interaction_mode": interaction_mode,
                     "auth_mode": self.auth_mode,
+                    **(
+                        {
+                            "ollama": {
+                                "model": self.model,
+                                "server_version": ollama_model.get(
+                                    "server_version"
+                                ),
+                                "context_window": model_context_window,
+                                "auto_compact_token_limit": (
+                                    model_auto_compact_token_limit
+                                ),
+                            }
+                        }
+                        if ollama_model.get("detected")
+                        else {}
+                    ),
                 },
             )
         except CodexAppServerError as exc:
@@ -2226,6 +2417,7 @@ def _compact_active_sketch_state(
 def _provider_state_after_tool(
     context: dict[str, Any],
     tool_result: dict[str, Any] | None = None,
+    previous_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     del tool_result
     surface = context.get("modeling_surface")
@@ -2250,6 +2442,10 @@ def _provider_state_after_tool(
     native_state = context.get("native_state")
     if isinstance(native_state, dict):
         result["active_domain"] = _json_safe(native_state)
+    if isinstance(previous_context, dict):
+        previous = _provider_state_after_tool(previous_context)
+        if result == previous:
+            return {}
     return result
 
 
@@ -2728,23 +2924,27 @@ def _provider_visible_source_lifecycle_result(
         if observed:
             compact["observed"] = observed
 
-    if program:
+    source_available = bool(
+        program
+        and revision
+        and not result.get("source_deleted")
+    )
+    if source_available and result.get("ok") is not True:
         actions: list[dict[str, Any]] = [
             {
                 "tool": "vibescript.read_source",
                 "arguments": {"program": program, "include_logs": False},
             }
         ]
-        if revision:
-            actions.append(
-                {
-                    "tool": "vibescript.build_program",
-                    "arguments": {
-                        "program": program,
-                        "expected_revision": revision,
-                    },
-                }
-            )
+        actions.append(
+            {
+                "tool": "vibescript.build_program",
+                "arguments": {
+                    "program": program,
+                    "expected_revision": revision,
+                },
+            }
+        )
         compact["next_actions"] = actions
     return compact
 

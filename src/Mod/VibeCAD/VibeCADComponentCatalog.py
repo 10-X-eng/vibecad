@@ -1114,9 +1114,32 @@ def component_inventory(
     *,
     limit: int = MAX_INJECTED_COMPONENTS,
 ) -> dict[str, Any]:
-    """Return the bounded inventory injected into component-capable turns."""
+    """Return active-document components safe to inject automatically.
 
-    found = search_prepared_component_catalog(prepared, limit=limit)
+    The prepared catalog intentionally contains broader project candidates for
+    explicit ``component_catalog.search`` calls.  Do not place those unrelated
+    open or neighboring documents in every model turn merely because they are
+    searchable.
+    """
+
+    owner_document_uid = str(prepared.get("owner_document_uid") or "").strip()
+    active_candidates = [
+        dict(candidate)
+        for candidate in list(prepared.get("candidates") or [])
+        if isinstance(candidate, Mapping)
+        and owner_document_uid
+        and str(
+            dict(candidate.get("reference") or {}).get("document_uid") or ""
+        ).strip()
+        == owner_document_uid
+    ]
+    active_catalog = {
+        **dict(prepared),
+        "candidates": active_candidates,
+        "errors": [],
+        "saved_documents_skipped": 0,
+    }
+    found = search_prepared_component_catalog(active_catalog, limit=limit)
     included_fields = (
         "document_label",
         "object_name",

@@ -332,9 +332,17 @@ def fetch_models_for_provider(
             "models": [],
             "error": f"No {display} API key is configured.",
         }
-    return list_provider_models(
+    result = list_provider_models(
         credential.value, provider=clean_provider, base_url=base_url
     )
+    if clean_provider == "openai" and result.get("ok") and base_url:
+        from VibeCADOllama import inspect_models
+
+        ollama = inspect_models(str(base_url), list(result.get("models") or []))
+        if ollama.get("detected"):
+            result["provider_runtime"] = "ollama"
+            result["model_details"] = dict(ollama.get("models") or {})
+    return result
 
 
 class VibeCADPreferencesPage:
@@ -853,7 +861,12 @@ class VibeCADPreferencesPage:
             return "Use active ChatGPT model"
         return "Use active OpenAI model"
 
-    def _apply_provider_models(self, provider: str, models: list[str]) -> None:
+    def _apply_provider_models(
+        self,
+        provider: str,
+        models: list[str],
+        model_details: dict[str, dict] | None = None,
+    ) -> None:
         combo = self._provider_model_combo(provider)
         current = (
             str(combo.currentData() or "").strip()
@@ -884,7 +897,26 @@ class VibeCADPreferencesPage:
             self._provider_active_memory_label(provider),
         )
         display = PROVIDERS[provider].display_name
-        self.status.setText(f"models_ok | {display} | {len(models)} models")
+        selected_model = (
+            str(combo.currentData() or "").strip()
+            if provider == "chatgpt"
+            else combo.currentText().strip()
+        )
+        selected_details = dict((model_details or {}).get(selected_model) or {})
+        runtime_context = int(
+            selected_details.get("runtime_context_length") or 0
+        )
+        supported_context = int(
+            selected_details.get("supported_context_length") or 0
+        )
+        context_status = ""
+        if runtime_context > 0:
+            context_status = f" | allocated context {runtime_context:,}"
+        elif supported_context > 0:
+            context_status = f" | supports context {supported_context:,}"
+        self.status.setText(
+            f"models_ok | {display} | {len(models)} models{context_status}"
+        )
 
     def _fetch_models(self) -> None:
         provider = self._selected_provider()
@@ -905,7 +937,11 @@ class VibeCADPreferencesPage:
         if not result["ok"]:
             self.status.setText(f"models_error | {result['error']}")
             return
-        self._apply_provider_models(provider, list(result["models"]))
+        self._apply_provider_models(
+            provider,
+            list(result["models"]),
+            dict(result.get("model_details") or {}),
+        )
 
     def _save_api_key(self) -> None:
         result = store_keyring_key(
@@ -1113,20 +1149,10 @@ class VibeCADMCPPreferencesPage:
         self.mcp_state.setObjectName("VibeCADPrefMCPState")
         layout.addRow("MCP state", self.mcp_state)
 
-        self.mcp_endpoint = QtWidgets.QLabel(self.form)
-        self.mcp_endpoint.setObjectName("VibeCADPrefMCPEndpoint")
-        self.mcp_endpoint.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        layout.addRow("MCP endpoint", self.mcp_endpoint)
-
-        self.mcp_token = QtWidgets.QLineEdit(self.form)
-        self.mcp_token.setObjectName("VibeCADPrefMCPToken")
-        self.mcp_token.setReadOnly(True)
-        self.mcp_token.setPlaceholderText("Enable MCP to generate the bearer token")
-        self.mcp_token.setToolTip(
-            "Persistent MCP bearer token stored in the OS credential store. "
-            "Give it only to trusted local MCP clients."
-        )
-        layout.addRow("MCP bearer token", self.mcp_token)
+        self.mcp_transport = QtWidgets.QLabel(self.form)
+        self.mcp_transport.setObjectName("VibeCADPrefMCPTransport")
+        self.mcp_transport.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        layout.addRow("MCP transport", self.mcp_transport)
 
         self.mcp_connection = QtWidgets.QLabel(self.form)
         self.mcp_connection.setObjectName("VibeCADPrefMCPConnection")
@@ -1149,22 +1175,6 @@ class VibeCADMCPPreferencesPage:
         )
         layout.addRow("", self.copy_mcp_configuration)
 
-        self.copy_mcp_token = QtWidgets.QPushButton("Copy bearer token", self.form)
-        self.copy_mcp_token.setObjectName("VibeCADPrefCopyMCPToken")
-        self.copy_mcp_token.clicked.connect(self._copy_mcp_token)
-        layout.addRow("", self.copy_mcp_token)
-
-        self.regenerate_mcp_token = QtWidgets.QPushButton(
-            "Regenerate bearer token", self.form
-        )
-        self.regenerate_mcp_token.setObjectName("VibeCADPrefRegenerateMCPToken")
-        self.regenerate_mcp_token.setToolTip(
-            "Replace the persistent token and restart MCP if it is active. "
-            "Existing clients must be updated."
-        )
-        self.regenerate_mcp_token.clicked.connect(self._regenerate_mcp_token)
-        layout.addRow("", self.regenerate_mcp_token)
-
         self._mcp_status_timer = QtCore.QTimer(self.form)
         self._mcp_status_timer.setInterval(500)
         self._mcp_status_timer.timeout.connect(self._refresh_mcp_status)
@@ -1176,32 +1186,22 @@ class VibeCADMCPPreferencesPage:
         try:
             from VibeCADMCP import get_control_mode_controller
 
-            snapshot = get_control_mode_controller().snapshot(include_token=True)
+            snapshot = get_control_mode_controller().snapshot()
         except Exception as exc:
             snapshot = {
                 "state": "unavailable",
-                "endpoint": "http://127.0.0.1:8765/mcp",
+                "transport": "stdio",
                 "connection_state": "unavailable",
                 "last_error": str(exc),
-                "token": "",
-                "token_available": False,
             }
         self.mcp_state.setText(str(snapshot.get("state") or "unknown"))
-        self.mcp_endpoint.setText(str(snapshot.get("endpoint") or ""))
+        self.mcp_transport.setText(str(snapshot.get("transport") or "stdio"))
         self.mcp_connection.setText(
             str(snapshot.get("connection_state") or "unknown")
         )
         self.mcp_error.setText(str(snapshot.get("last_error") or "None"))
-        token = str(snapshot.get("token") or "")
-        if self.mcp_token.text() != token:
-            self.mcp_token.setText(token)
         self.copy_mcp_configuration.setEnabled(
-            bool(snapshot.get("token_available"))
-        )
-        self.copy_mcp_token.setEnabled(bool(token))
-        self.regenerate_mcp_token.setEnabled(
-            snapshot.get("state") in {"internal", "mcp"}
-            and not bool(snapshot.get("active_requests"))
+            snapshot.get("state") != "unavailable"
         )
         if (
             snapshot.get("connection_state") == "error"
@@ -1218,21 +1218,6 @@ class VibeCADMCPPreferencesPage:
         QtWidgets.QApplication.clipboard().setText(
             json.dumps(configuration, indent=2, sort_keys=True)
         )
-
-    def _copy_mcp_token(self) -> None:
-        from PySide import QtWidgets
-
-        QtWidgets.QApplication.clipboard().setText(self.mcp_token.text())
-
-    def _regenerate_mcp_token(self) -> None:
-        from VibeCADMCP import get_control_mode_controller
-
-        result = get_control_mode_controller().regenerate_mcp_token()
-        if not result.get("ok"):
-            self.mcp_error.setText(
-                str(result.get("error") or "Could not regenerate the MCP token.")
-            )
-        self._refresh_mcp_status()
 
     def saveSettings(self) -> None:
         set_mcp_enabled(self.mcp_enabled.isChecked())

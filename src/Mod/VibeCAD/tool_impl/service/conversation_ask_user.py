@@ -7,11 +7,8 @@ from __future__ import annotations
 TOOL_SPEC = {
     "name": "conversation.ask_user",
     "description": (
-        "Ask the user a compact round of design questions when their answer "
-        "would materially change geometry, mechanism, fit, or manufacturing. "
-        "Provide useful choices, your recommended answer, and a custom-answer "
-        "path. This is not an approval gate and must not be used for choices "
-        "you can resolve safely from engineering convention."
+        "Ask one compact round only when an answer materially changes the design. "
+        "Include choices and a recommendation; decide ordinary details yourself."
     ),
     "safety": "READ",
     "parameters": {
@@ -22,21 +19,20 @@ TOOL_SPEC = {
                 "minItems": 1,
                 "maxItems": 8,
                 "description": (
-                    "One round of 1-8 material design questions, each with a "
-                    "stable id, rationale, recommendation, and answer choices."
+                    "Material design questions."
                 ),
                 "items": {
                     "type": "object",
                     "properties": {
                         "id": {
                             "type": "string",
-                            "description": "Stable short identifier for this question.",
+                            "description": "Stable short id.",
                         },
                         "question": {"type": "string"},
                         "why_it_matters": {"type": "string"},
                         "recommended_answer": {
                             "type": "string",
-                            "description": "The model's recommended answer and default.",
+                            "description": "Recommended default.",
                         },
                         "options": {
                             "type": "array",

@@ -24,10 +24,9 @@ DUPLICATE_VISUAL_DIFFERENCE_THRESHOLD = 0.005
 
 TOOL_SPEC = {
     "description": (
-        "Return an image of the current 3D view for visual verification of shape, "
-        "proportion, placement, and appearance. frame='auto' frames the open sketch "
-        "or otherwise the full model. sketch_annotations='clean' hides sketch overlays "
-        "for this image without changing the model or saved display settings."
+        "Capture the 3D view for visual verification. auto frames an open sketch or "
+        "the full model; clean temporarily hides sketch overlays. Omit camera for "
+        "automatic orientation or pass camera='isometric'."
     ),
     "name": "core.capture_view_screenshot",
     "parameters": {
@@ -41,20 +40,22 @@ TOOL_SPEC = {
                 "type": "string",
                 "enum": list(CAPTURE_FRAME_MODES),
                 "default": "auto",
-                "description": "Exact viewport target to frame before capture.",
+                "description": "Viewport target.",
             },
             "object_names": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
-                "description": "Exact internal names when frame is objects.",
+                "description": (
+                    "Published output names, internal names, or unique labels for "
+                    "frame='objects'."
+                ),
             },
             "sketch_annotations": {
                 "type": "string",
                 "enum": list(CAPTURE_ANNOTATION_MODES),
                 "default": "clean",
                 "description": (
-                    "Temporarily hide sketch annotations for this capture or preserve "
-                    "their current display state."
+                    "Hide or retain sketch overlays for this capture."
                 ),
             },
         },
@@ -66,7 +67,7 @@ TOOL_SPEC = {
 
 def run(
     service: Any,
-    camera: dict[str, Any] | None = None,
+    camera: Any = None,
     frame: str = "auto",
     object_names: list[str] | None = None,
     sketch_annotations: str = "clean",
@@ -187,6 +188,7 @@ def run(
     }
     stages: list[dict[str, Any]] = []
     path: Path | None = None
+    empty_view_path: Path | None = None
     camera_before = core_set_view.camera_state(view)
     camera_result: dict[str, Any] = {}
     framing: dict[str, Any] = {"framed": False, "method": "unchanged"}
@@ -308,10 +310,37 @@ def run(
                     "elapsed_ms": capture_elapsed_ms,
                 }
             )
+            current_stage = "empty_view_reference"
+            empty_view_path = path.with_name(f".{path.stem}-empty.png")
+            visible_document_objects = [
+                obj.Name
+                for obj in list(document.Objects)
+                if getattr(obj, "ViewObject", None) is not None
+                and bool(obj.ViewObject.Visibility)
+            ]
+            with core_set_view.temporarily_hide_objects(
+                document,
+                visible_document_objects,
+            ):
+                _capture_framebuffer(
+                    view,
+                    empty_view_path,
+                    capture_width,
+                    capture_height,
+                )
+            stages.append(
+                {
+                    "stage": current_stage,
+                    "ok": empty_view_path.exists(),
+                    "hidden_object_count": len(visible_document_objects),
+                }
+            )
         current_stage = "restore_temporary_view"
         view.redraw()
         stages.append({"stage": current_stage, "ok": True})
     except Exception as exc:
+        if empty_view_path is not None:
+            empty_view_path.unlink(missing_ok=True)
         stages.append(
             {
                 "stage": current_stage,
@@ -370,7 +399,14 @@ def run(
         )
 
     current_stage = "visual_postcondition"
-    visual_observation = service._screenshot_visual_observation(path)
+    try:
+        visual_observation = service._screenshot_visual_observation(
+            path,
+            background_path=empty_view_path,
+        )
+    finally:
+        if empty_view_path is not None:
+            empty_view_path.unlink(missing_ok=True)
     if not bool(visual_observation.get("available")):
         return _remember_failure(
             service,

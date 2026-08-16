@@ -10,9 +10,7 @@ from typing import Any
 TOOL_SPEC = {
     "name": "assembly.stop_simulation",
     "description": (
-        "Stop the active saved Assembly simulation and close its native player. "
-        "This restores the exact placements, visibility, and camera captured "
-        "when playback started. It never closes a different native task."
+        "Stop saved-simulation playback and restore placements, visibility, and camera."
     ),
     "contextual": False,
     "requires_document": True,

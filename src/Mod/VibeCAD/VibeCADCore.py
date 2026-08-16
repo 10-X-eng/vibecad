@@ -140,7 +140,13 @@ def downscale_reference_image(
         height = int(image.height())
         result["image_size"] = [width, height]
         long_edge = max(width, height)
-        if long_edge <= max_edge and original_bytes <= max_bytes:
+        # The project store owns the user's reference, not a provider-specific
+        # thumbnail.  Keep a compact source byte-for-byte; re-encoding an
+        # optimized line drawing as a full-color PNG can make it much larger
+        # while destroying the small dimensions the model needs to read.
+        # Provider payload construction applies its own runtime size/edge
+        # limits without degrading the durable reference.
+        if original_bytes <= max_bytes:
             return result
 
         encode_format = _REFERENCE_ENCODE_FORMATS.get(
@@ -1404,7 +1410,11 @@ class VibeCADService:
         return self._registry.call("core.set_view", **arguments)
 
     @staticmethod
-    def _screenshot_visual_observation(path: Path) -> dict[str, Any]:
+    def _screenshot_visual_observation(
+        path: Path,
+        *,
+        background_path: Path | None = None,
+    ) -> dict[str, Any]:
         try:
             try:
                 from PySide import QtGui
@@ -1420,6 +1430,23 @@ class VibeCADService:
             height = int(image.height())
             if width <= 0 or height <= 0:
                 return {"available": False, "error": "Screenshot image has no pixels."}
+
+            background_image = None
+            if background_path is not None:
+                background_image = QtGui.QImage(str(background_path))
+                if background_image.isNull():
+                    return {
+                        "available": False,
+                        "error": "Empty-view reference image could not be loaded.",
+                    }
+                if (
+                    int(background_image.width()) != width
+                    or int(background_image.height()) != height
+                ):
+                    return {
+                        "available": False,
+                        "error": "Empty-view reference dimensions do not match the screenshot.",
+                    }
 
             corner_points = [
                 (0, 0),
@@ -1466,11 +1493,19 @@ class VibeCADService:
                     green_total += green
                     blue_total += blue
                     sampled += 1
-                    distance = (
-                        abs(red - background[0])
-                        + abs(green - background[1])
-                        + abs(blue - background[2])
-                    )
+                    if background_image is not None:
+                        reference = QtGui.QColor(background_image.pixel(x, y))
+                        distance = (
+                            abs(red - reference.red())
+                            + abs(green - reference.green())
+                            + abs(blue - reference.blue())
+                        )
+                    else:
+                        distance = (
+                            abs(red - background[0])
+                            + abs(green - background[1])
+                            + abs(blue - background[2])
+                        )
                     if distance > threshold:
                         foreground += 1
                         foreground_grid[y_index][x_index] = True
@@ -1567,6 +1602,11 @@ class VibeCADService:
                 "image_size": [width, height],
                 "sampled_pixels": sampled,
                 "background_rgb": list(background),
+                "background_comparison": (
+                    "empty_view_reference"
+                    if background_image is not None
+                    else "corner_color"
+                ),
                 "average_rgb": average_rgb,
                 "foreground_pixel_ratio": round(foreground_ratio, 5),
                 "foreground_bbox": bbox,

@@ -10,9 +10,8 @@ from typing import Any
 TOOL_SPEC = {
     "name": "material_catalog.search",
     "description": (
-        "Find exact FreeCAD material cards and copy-ready api.material arguments. "
-        "Search matches any substring in names, UUIDs, libraries, tags, property "
-        "names, and common values; required properties filter out unusable cards."
+        "Find FreeCAD material cards and copy-ready api.material arguments, "
+        "optionally requiring physical or appearance properties."
     ),
     "contextual": False,
     "requires_document": False,
@@ -26,8 +25,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "maxLength": 256,
                 "description": (
-                    "Words or partial strings that must all occur somewhere on the card; "
-                    "empty lists the first cards."
+                    "Terms matched anywhere on a card."
                 ),
             },
             "require_physical_properties": {
@@ -36,8 +34,7 @@ TOOL_SPEC = {
                 "uniqueItems": True,
                 "items": {"type": "string", "minLength": 1, "maxLength": 128},
                 "description": (
-                    "Exact physical-property names the selected card must contain, such "
-                    "as Density, YoungsModulus, or PoissonRatio."
+                    "Required physical-property names."
                 ),
             },
             "require_appearance_properties": {
@@ -45,15 +42,13 @@ TOOL_SPEC = {
                 "maxItems": 64,
                 "uniqueItems": True,
                 "items": {"type": "string", "minLength": 1, "maxLength": 128},
-                "description": (
-                    "Exact appearance-property names the selected card must contain."
-                ),
+                "description": "Required appearance-property names.",
             },
             "limit": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 100,
-                "description": "Maximum deterministic matches to return.",
+                "description": "Maximum matches.",
             },
         },
         "additionalProperties": False,
@@ -86,4 +81,3 @@ def run(
             "error": f"The native material catalog could not be searched: {exc}",
             "retry_same_call": False,
         }
-

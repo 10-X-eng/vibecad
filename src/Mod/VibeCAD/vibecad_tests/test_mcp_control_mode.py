@@ -4,16 +4,23 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
+import socket
 import sys
 import threading
 import time
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
 import VibeCADMCP as mcp
+from VibeCADMCPToolNames import (
+    MCPToolNameError,
+    mcp_tool_wire_name,
+    mcp_wire_tool_schemas,
+)
 
 
 class _Event:
@@ -41,7 +48,6 @@ class _DeterministicController(mcp.VibeCADControlModeController):
             self._process = self.fake_process
             self._shutdown_event = _Event()
             self._tool_cancellation = threading.Event()
-            self._token = "unit-test-token"
         self._handle_server_event(transition_id, {"event": "listening"})
         self.started.set()
 
@@ -55,48 +61,42 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
     raise AssertionError("Timed out waiting for controller state.")
 
 
-def test_mcp_listener_collision_reports_one_actionable_failure() -> None:
-    first = mcp._bind_mcp_listener("127.0.0.1", 0)
+def test_mcp_wire_names_are_concise_pascal_case() -> None:
+    assert mcp_tool_wire_name("vibescript.create_program") == "CreateProgram"
+    assert mcp_tool_wire_name("vibescript.read_source") == "ReadSource"
+    assert mcp_tool_wire_name("core.set_view") == "SetView"
+    assert mcp_tool_wire_name("conversation.ask_user") == "AskUser"
+    assert mcp_tool_wire_name("assembly.fastener") == "AssemblyFastener"
+    assert mcp_tool_wire_name("model.fastener") == "ModelFastener"
+    assert mcp_tool_wire_name("state.read") == "StateRead"
+    assert mcp_tool_wire_name("vibecad.manage_document") == "ManageDocument"
+
+
+def test_mcp_wire_surface_rejects_ambiguous_names() -> None:
+    schemas = [
+        {"name": "first.read_source", "parameters": {"type": "object"}},
+        {"name": "second.read_source", "parameters": {"type": "object"}},
+    ]
+
+    with pytest.raises(MCPToolNameError, match="both advertise as 'ReadSource'"):
+        mcp_wire_tool_schemas(schemas)
+
+
+def test_mcp_ipc_address_rejects_live_owner_and_removes_stale_socket(
+    tmp_path: Path,
+) -> None:
+    address = str(tmp_path / "mcp.sock")
+    first = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        port = int(first.getsockname()[1])
-        try:
-            duplicate = mcp._bind_mcp_listener("127.0.0.1", port)
-        except RuntimeError as exc:
-            message = str(exc)
-            assert f"127.0.0.1:{port}" in message
-            assert "another VibeCAD instance" in message
-        else:
-            duplicate.close()
-            raise AssertionError("A second MCP listener unexpectedly claimed the port.")
+        first.bind(address)
+        first.listen()
+        with pytest.raises(RuntimeError, match="another VibeCAD instance"):
+            mcp._prepare_mcp_ipc_address(address, "AF_UNIX")
     finally:
         first.close()
-
-
-def test_http_session_shutdown_terminates_every_persistent_response() -> None:
-    calls = []
-
-    class Transport:
-        def __init__(self, name: str, *, fails: bool = False) -> None:
-            self.name = name
-            self.fails = fails
-
-        async def terminate(self) -> None:
-            calls.append(self.name)
-            if self.fails:
-                raise RuntimeError("already closed")
-
-    server = SimpleNamespace(
-        session_manager=SimpleNamespace(
-            _server_instances={
-                "first": Transport("first", fails=True),
-                "second": Transport("second"),
-            }
-        )
-    )
-
-    asyncio.run(mcp._terminate_mcp_http_sessions(server))
-
-    assert calls == ["first", "second"]
+    assert Path(address).exists()
+    mcp._prepare_mcp_ipc_address(address, "AF_UNIX")
+    assert not Path(address).exists()
 
 
 def test_application_shutdown_waits_for_mcp_lifecycle_threads() -> None:
@@ -136,11 +136,10 @@ def test_control_mode_state_machine_never_enables_both_controllers() -> None:
 
     controller.request_mcp_enabled(True)
     assert controller.started.wait(2.0)
-    enabled = controller.snapshot(include_token=True)
+    enabled = controller.snapshot()
     assert enabled["state"] == "mcp"
     assert enabled["internal_agent_enabled"] is False
     assert enabled["mcp_enabled"] is True
-    assert enabled["token"] == "unit-test-token"
 
     controller.request_mcp_enabled(False)
     stopping = controller.snapshot()
@@ -155,8 +154,6 @@ def test_control_mode_state_machine_never_enables_both_controllers() -> None:
     assert disabled["state"] == "internal"
     assert disabled["internal_agent_enabled"] is True
     assert disabled["mcp_enabled"] is False
-    assert disabled["token_available"] is True
-    assert controller.snapshot(include_token=True)["token"] == "unit-test-token"
 
 
 def test_cancelled_pre_spawn_transition_returns_to_internal_mode() -> None:
@@ -217,7 +214,7 @@ def test_start_failure_keeps_internal_agent_blocked_until_child_is_gone() -> Non
     assert recovered["last_error"] == "synthetic failure"
 
 
-def test_endpoint_collision_does_not_disable_persisted_mcp_preference() -> None:
+def test_ipc_collision_does_not_disable_persisted_mcp_preference() -> None:
     events = []
     controller = mcp.VibeCADControlModeController()
     controller._event_callback = events.append
@@ -229,8 +226,8 @@ def test_endpoint_collision_does_not_disable_persisted_mcp_preference() -> None:
         3,
         {
             "event": "error",
-            "failure_code": "MCP_ENDPOINT_UNAVAILABLE",
-            "error": "another VibeCAD instance owns the endpoint",
+            "failure_code": "MCP_IPC_UNAVAILABLE",
+            "error": "another VibeCAD instance owns the local broker",
         },
     )
 
@@ -811,78 +808,6 @@ def test_recover_documents_runs_both_native_dialog_stages() -> None:
     assert dialog.clicks == 2
 
 
-def test_bearer_middleware_rejects_missing_token_and_accepts_exact_token() -> None:
-    called = []
-
-    async def downstream(scope, receive, send) -> None:
-        del receive
-        called.append(scope)
-        await send({"type": "http.response.start", "status": 204, "headers": []})
-        await send({"type": "http.response.body", "body": b""})
-
-    async def invoke(token: str) -> list[dict]:
-        sent = []
-
-        async def send(message: dict) -> None:
-            sent.append(message)
-
-        headers = []
-        if token:
-            headers.append((b"authorization", f"Bearer {token}".encode("ascii")))
-        middleware = mcp._BearerTokenMiddleware(downstream, "secret")
-        await middleware(
-            {"type": "http", "headers": headers},
-            lambda: None,
-            send,
-        )
-        return sent
-
-    missing = asyncio.run(invoke(""))
-    wrong = asyncio.run(invoke("wrong"))
-    accepted = asyncio.run(invoke("secret"))
-    assert missing[0]["status"] == 401
-    assert wrong[0]["status"] == 401
-    assert accepted[0]["status"] == 204
-    assert len(called) == 1
-
-
-def test_mcp_token_persists_in_the_os_credential_store_until_regenerated() -> None:
-    class Keyring:
-        def __init__(self) -> None:
-            self.values = {}
-            self.store_count = 0
-
-        def get_password(self, service: str, account: str):
-            return self.values.get((service, account))
-
-        def set_password(self, service: str, account: str, value: str) -> None:
-            self.store_count += 1
-            self.values[(service, account)] = value
-
-    keyring = Keyring()
-    with mock.patch.object(mcp, "_mcp_keyring_module", return_value=keyring):
-        first = mcp._persistent_mcp_token()
-        second = mcp._persistent_mcp_token()
-        rotated = mcp._persistent_mcp_token(regenerate=True)
-        after_rotation = mcp._persistent_mcp_token()
-
-    assert first == second
-    assert rotated == after_rotation
-    assert rotated != first
-    assert keyring.store_count == 2
-    assert len(first) >= 40
-
-
-def test_missing_keyring_fails_instead_of_creating_an_ephemeral_token() -> None:
-    with mock.patch.object(mcp, "_mcp_keyring_module", return_value=None):
-        try:
-            mcp._persistent_mcp_token()
-        except RuntimeError as exc:
-            assert "credential-store" in str(exc)
-        else:
-            raise AssertionError("Missing keyring unexpectedly produced an MCP token.")
-
-
 def test_server_host_proxy_serializes_concurrent_requests() -> None:
     class Connection:
         def __init__(self) -> None:
@@ -924,16 +849,15 @@ def test_server_host_proxy_serializes_concurrent_requests() -> None:
     assert connection.maximum_active == 1
 
 
-def test_connection_configuration_contains_auth_without_persisting_token_in_status() -> (
-    None
-):
+def test_connection_configuration_is_a_clean_stdio_launch_specification() -> None:
     controller = mcp.VibeCADControlModeController()
-    with controller._lock:
-        controller._token = "private-token"
     status = controller.snapshot()
     configuration = controller.connection_configuration()
-    assert "private-token" not in json.dumps(status)
-    assert configuration["headers"] == {"Authorization": "Bearer private-token"}
+    assert "token" not in json.dumps(status).lower()
+    assert "token" not in json.dumps(configuration).lower()
+    assert set(configuration) == {"command", "args"}
+    assert configuration["command"]
+    assert configuration["args"][-1].endswith("VibeCADMCPStdio.py")
 
 
 def test_model_and_assembly_do_not_emit_a_false_mcp_surface_change() -> None:
