@@ -325,7 +325,7 @@ class PartDomainAPI:
         output_type: str,
         label: str = "",
     ) -> DomainValue:
-        """Snapshot a referenced live object's exact Shape for isolated Part operations."""
+        """Snapshot a live object's exact Shape; reference must be a validated inputs value marked x-vibecad-reference."""
 
         operation = "from_object"
         return self._value(

@@ -965,6 +965,7 @@ class PartDesignDomainAPI:
         "fillet",
         "chamfer",
         "thickness",
+        "move_planar_faces",
         "hole",
         "holes",
         "bosses",
@@ -2750,6 +2751,52 @@ class PartDesignDomainAPI:
             inward=bool(inward),
             join=clean_join,
             label=_label("thickness", label),
+        )
+
+    def move_planar_faces(
+        self,
+        base: DomainValue,
+        selection: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+        distance_mm: float,
+        *,
+        label: str = "",
+    ) -> DomainValue:
+        """Move selected planar faces along their outward normals; positive grows the solid, negative removes material. Pass one exact face query or a list of queries."""
+
+        clean_base = _topology(
+            "move_planar_faces", "base", base, allowed={"solid"}
+        )
+        raw_selections = (
+            [selection] if isinstance(selection, Mapping) else selection
+        )
+        if (
+            not isinstance(raw_selections, (list, tuple))
+            or not raw_selections
+            or len(raw_selections) > 64
+        ):
+            raise _error(
+                "move_planar_faces",
+                "selection",
+                "must be one face query or a list of 1 to 64 face queries",
+            )
+        selections = [
+            _selection("move_planar_faces", item, element_type="face")
+            for item in raw_selections
+        ]
+        distance = _number(
+            "move_planar_faces", "distance_mm", distance_mm
+        )
+        if abs(distance) <= 1.0e-12:
+            raise _error(
+                "move_planar_faces", "distance_mm", "must be non-zero", distance_mm
+            )
+        return self._graph(
+            "model_move_planar_faces",
+            "solid",
+            clean_base,
+            selections,
+            distance,
+            label=_label("move_planar_faces", label),
         )
 
     def hole(
