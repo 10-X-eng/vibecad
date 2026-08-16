@@ -30,6 +30,7 @@ CODEX_HOME_ENV = "VIBECAD_CODEX_HOME"
 CODEX_RUNTIME_DIRECTORY = "codex_runtime"
 CODEX_RUNTIME_MANIFEST = "runtime.json"
 DEFAULT_RPC_TIMEOUT_SECONDS = 30.0
+SERVER_REQUEST_SHUTDOWN_GRACE_SECONDS = 0.25
 LOGIN_TIMEOUT_SECONDS = 15.0 * 60.0
 MAX_SKILL_RESOURCE_BYTES = 256 * 1024
 CODEX_OPENAI_PROVIDER_ID = "vibecad_openai"
@@ -132,13 +133,12 @@ def vibecad_thread_config(
     for feature in DISABLED_CODEX_FEATURES:
         config[f"features.{feature}"] = False
     # Current Codex model catalogs can select code-mode-only tool dispatch even
-    # when the local feature toggle is false.  Core tools must remain direct:
-    # in particular, wrapping capture_view_screenshot in exec makes the model
-    # forward the whole dynamic-tool result through image(), which produces an
-    # invalid outer image_url instead of forwarding the valid inline image.
+    # when the local feature toggle is false. Core and interactive conversation
+    # tools must remain direct: viewport images cannot be wrapped in exec, and
+    # a user question must never be held inside a long-running exec cell.
     config["features.code_mode"] = {
         "enabled": False,
-        "direct_only_tool_namespaces": ["core"],
+        "direct_only_tool_namespaces": ["core", "conversation"],
     }
     if openai_base_url is not None:
         config.update(codex_openai_provider_config(openai_base_url))
@@ -310,11 +310,39 @@ class CodexAppServerClient:
         self._next_request_id = 1
         self._closed = threading.Event()
         self._stderr_lines: deque[str] = deque(maxlen=80)
+        self._server_request_threads: set[threading.Thread] = set()
+        self._shutdown_reason = ""
+        self._process_exit_code: int | None = None
+        self._late_server_response_count = 0
+        self._discarded_server_request_count = 0
 
     @property
     def stderr_tail(self) -> list[str]:
         with self._state_lock:
             return list(self._stderr_lines)
+
+    @property
+    def shutdown_details(self) -> dict[str, Any]:
+        """Return bounded transport lifecycle diagnostics."""
+
+        with self._state_lock:
+            exit_code = self._process_exit_code
+            if exit_code is None and self._process is not None:
+                exit_code = self._process.poll()
+            reason = self._shutdown_reason
+            if not reason and exit_code is not None:
+                reason = "app-server process exited"
+            return {
+                "closed": self._closed.is_set(),
+                "reason": reason,
+                "process_exit_code": exit_code,
+                "active_server_request_count": len(self._server_request_threads),
+                "late_server_response_count": self._late_server_response_count,
+                "discarded_server_request_count": (
+                    self._discarded_server_request_count
+                ),
+                "stderr_tail": list(self._stderr_lines)[-3:],
+            }
 
     @property
     def alive(self) -> bool:
@@ -445,16 +473,20 @@ class CodexAppServerClient:
             self._notification_handler = notification_handler
             self._server_request_handler = server_request_handler
 
-    def close(self) -> None:
+    def close(self, *, reason: str = "client shutdown") -> None:
         process = self._process
         if process is None:
             return
-        self._closed.set()
-        try:
-            if process.stdin is not None:
-                process.stdin.close()
-        except Exception:
-            pass
+        with self._state_lock:
+            if not self._shutdown_reason:
+                self._shutdown_reason = str(reason or "client shutdown")
+            self._closed.set()
+        with self._write_lock:
+            try:
+                if process.stdin is not None:
+                    process.stdin.close()
+            except Exception:
+                pass
         if process.poll() is None:
             process.terminate()
             try:
@@ -462,14 +494,22 @@ class CodexAppServerClient:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2.0)
+        with self._state_lock:
+            self._process_exit_code = process.poll()
         self._fail_pending("Codex app-server connection closed.")
+        self._wait_for_server_requests(SERVER_REQUEST_SHUTDOWN_GRACE_SECONDS)
 
     def _write_message(self, message: dict[str, Any]) -> None:
-        process = self._process
-        if process is None or process.stdin is None or process.poll() is not None:
-            raise CodexAppServerError("Codex app-server input is unavailable.")
         encoded = json.dumps(message, ensure_ascii=True, separators=(",", ":"))
         with self._write_lock:
+            process = self._process
+            if (
+                self._closed.is_set()
+                or process is None
+                or process.stdin is None
+                or process.poll() is not None
+            ):
+                raise CodexAppServerError("Codex app-server input is unavailable.")
             try:
                 process.stdin.write(encoded + "\n")
                 process.stdin.flush()
@@ -502,12 +542,16 @@ class CodexAppServerClient:
                     continue
                 self._dispatch_message(message)
         finally:
-            self._closed.set()
             code = process.poll() if process is not None else None
             tail = " | ".join(self.stderr_tail[-3:])
             detail = f"Codex app-server exited with code {code}."
             if tail:
                 detail += f" {tail}"
+            with self._state_lock:
+                if not self._shutdown_reason:
+                    self._shutdown_reason = "app-server output stream closed"
+                self._process_exit_code = code
+                self._closed.set()
             self._fail_pending(detail)
 
     def _read_stderr(self) -> None:
@@ -553,7 +597,19 @@ class CodexAppServerClient:
                 name=f"VibeCAD-Codex-request-{method}",
                 daemon=True,
             )
-            thread.start()
+            with self._state_lock:
+                if self._closed.is_set():
+                    self._discarded_server_request_count += 1
+                    self._stderr_lines.append(
+                        f"Discarded {method} request after transport shutdown."
+                    )
+                    return
+                self._server_request_threads.add(thread)
+                try:
+                    thread.start()
+                except Exception:
+                    self._server_request_threads.discard(thread)
+                    raise
             return
         with self._state_lock:
             notification_handler = self._notification_handler
@@ -569,29 +625,91 @@ class CodexAppServerClient:
         method: str,
         params: dict[str, Any],
     ) -> None:
-        with self._state_lock:
-            server_request_handler = self._server_request_handler
-        if server_request_handler is None:
-            self._write_message(
-                {
-                    "id": request_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"VibeCAD does not handle {method}.",
-                    },
-                }
-            )
-            return
         try:
-            result = server_request_handler(method, params)
-            self._write_message({"id": request_id, "result": result})
-        except Exception as exc:
-            self._write_message(
-                {
-                    "id": request_id,
-                    "error": {"code": -32000, "message": str(exc)},
-                }
+            with self._state_lock:
+                if self._closed.is_set():
+                    self._discarded_server_request_count += 1
+                    self._stderr_lines.append(
+                        f"Discarded {method} request after transport shutdown."
+                    )
+                    return
+                server_request_handler = self._server_request_handler
+            if server_request_handler is None:
+                self._send_server_response(
+                    {
+                        "id": request_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"VibeCAD does not handle {method}.",
+                        },
+                    },
+                    method=method,
+                )
+                return
+            try:
+                result = server_request_handler(method, params)
+            except Exception as exc:
+                self._send_server_response(
+                    {
+                        "id": request_id,
+                        "error": {"code": -32000, "message": str(exc)},
+                    },
+                    method=method,
+                )
+                return
+            self._send_server_response(
+                {"id": request_id, "result": result},
+                method=method,
             )
+        finally:
+            current = threading.current_thread()
+            with self._state_lock:
+                self._server_request_threads.discard(current)
+
+    def _send_server_response(
+        self,
+        message: dict[str, Any],
+        *,
+        method: str,
+    ) -> bool:
+        """Send one server-request reply or quietly retire it after shutdown."""
+
+        with self._state_lock:
+            if self._closed.is_set():
+                self._late_server_response_count += 1
+                self._stderr_lines.append(
+                    f"Discarded late {method} response after transport shutdown."
+                )
+                return False
+        try:
+            self._write_message(message)
+        except CodexAppServerError as exc:
+            with self._state_lock:
+                self._late_server_response_count += 1
+                self._stderr_lines.append(
+                    f"Discarded unsendable {method} response: {exc}"
+                )
+            return False
+        return True
+
+    def _wait_for_server_requests(self, timeout: float) -> None:
+        """Give detached request handlers a bounded chance to retire."""
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        current = threading.current_thread()
+        while True:
+            with self._state_lock:
+                threads = [
+                    thread
+                    for thread in self._server_request_threads
+                    if thread is not current and thread.is_alive()
+                ]
+            if not threads:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                return
+            threads[0].join(timeout=remaining)
 
     def _fail_pending(self, message: str) -> None:
         with self._state_lock:
@@ -604,7 +722,8 @@ class CodexAppServerClient:
 
 @dataclass(slots=True)
 class _ManagedCodexRuntime:
-    lock: threading.RLock
+    lease_lock: threading.RLock
+    state_lock: threading.RLock
     client: Any = None
     thread_ids: dict[str, str] = field(default_factory=dict)
 
@@ -622,8 +741,9 @@ class ManagedCodexSession:
         clean = str(thread_id or "").strip()
         if not clean:
             raise ValueError("Codex thread id cannot be empty.")
-        self._runtime.thread_ids[self._thread_key] = clean
-        self.thread_id = clean
+        with self._runtime.state_lock:
+            self._runtime.thread_ids[self._thread_key] = clean
+            self.thread_id = clean
 
 
 _managed_codex_lock = threading.RLock()
@@ -671,10 +791,14 @@ def managed_codex_session(
     with _managed_codex_lock:
         runtime = _managed_codex_runtimes.setdefault(
             key,
-            _ManagedCodexRuntime(lock=threading.RLock()),
+            _ManagedCodexRuntime(
+                lease_lock=threading.RLock(),
+                state_lock=threading.RLock(),
+            ),
         )
-    with runtime.lock:
-        client = runtime.client
+    with runtime.lease_lock:
+        with runtime.state_lock:
+            client = runtime.client
         if client is None or not bool(getattr(client, "alive", False)):
             client = client_factory(
                 notification_handler=notification_handler,
@@ -682,12 +806,15 @@ def managed_codex_session(
                 environment=environment,
             )
             client.start()
-            runtime.client = client
+            with runtime.state_lock:
+                runtime.client = client
         else:
             _set_client_handlers(client, notification_handler, server_request_handler)
+        with runtime.state_lock:
+            remembered_thread_id = str(runtime.thread_ids.get(clean_thread) or "")
         lease = ManagedCodexSession(
             client=client,
-            thread_id=str(runtime.thread_ids.get(clean_thread) or ""),
+            thread_id=remembered_thread_id,
             _runtime=runtime,
             _thread_key=clean_thread,
         )
@@ -697,6 +824,24 @@ def managed_codex_session(
             _set_client_handlers(client, None, None)
 
 
+def _take_managed_codex_runtimes() -> list[tuple[Any, tuple[str, ...]]]:
+    """Detach managed clients without waiting for an in-flight turn lease."""
+
+    with _managed_codex_lock:
+        runtimes = list(_managed_codex_runtimes.values())
+        _managed_codex_runtimes.clear()
+    detached: list[tuple[Any, tuple[str, ...]]] = []
+    for runtime in runtimes:
+        with runtime.state_lock:
+            client = runtime.client
+            thread_ids = tuple(dict.fromkeys(runtime.thread_ids.values()))
+            runtime.client = None
+            runtime.thread_ids.clear()
+        if client is not None:
+            detached.append((client, thread_ids))
+    return detached
+
+
 def reset_managed_codex_sessions() -> None:
     """Close managed transports and forget their in-process thread mapping."""
 
@@ -704,29 +849,44 @@ def reset_managed_codex_sessions() -> None:
         runtimes = list(_managed_codex_runtimes.values())
         _managed_codex_runtimes.clear()
     for runtime in runtimes:
-        with runtime.lock:
-            client = runtime.client
-            thread_ids = tuple(dict.fromkeys(runtime.thread_ids.values()))
-            runtime.client = None
-            runtime.thread_ids.clear()
-            if client is not None:
-                try:
-                    if bool(getattr(client, "alive", False)):
-                        for thread_id in thread_ids:
-                            try:
-                                client.request(
-                                    "thread/delete",
-                                    {"threadId": thread_id},
-                                    timeout=5.0,
-                                )
-                            except Exception:
-                                pass
-                    client.close()
-                except Exception:
-                    pass
+        # Explicit reset preserves its graceful behavior and waits for the
+        # exclusive turn lease. Application shutdown uses the force-close path
+        # below and must never wait here.
+        with runtime.lease_lock:
+            with runtime.state_lock:
+                client = runtime.client
+                thread_ids = tuple(dict.fromkeys(runtime.thread_ids.values()))
+                runtime.client = None
+                runtime.thread_ids.clear()
+            if client is None:
+                continue
+            try:
+                if bool(getattr(client, "alive", False)):
+                    for thread_id in thread_ids:
+                        try:
+                            client.request(
+                                "thread/delete",
+                                {"threadId": thread_id},
+                                timeout=5.0,
+                            )
+                        except Exception:
+                            pass
+                client.close()
+            except Exception:
+                pass
 
 
-atexit.register(reset_managed_codex_sessions)
+def shutdown_managed_codex_sessions() -> None:
+    """Force-close managed transports without waiting on active turn ownership."""
+
+    for client, _thread_ids in _take_managed_codex_runtimes():
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+atexit.register(shutdown_managed_codex_sessions)
 
 
 def load_codex_skill_catalog(

@@ -78,6 +78,8 @@ _PANEL_SPLITTER_PARAMETER = "PanelSplitterState"
 _PREFERENCES_PATH = "User parameter:BaseApp/Preferences/VibeCAD"
 _COMPOSER_ICON_ONLY_BREAKPOINT = 500
 _QT_WIDGET_MAXIMUM_SIZE = 16777215
+_DOCUMENT_THREAD_DISPATCH_POLL_SECONDS = 0.05
+_ASSISTANT_SHUTDOWN_JOIN_SECONDS = 1.0
 
 
 class _AssistantRunController:
@@ -129,10 +131,14 @@ class _DocumentThreadCall:
     def __init__(self, operation: Any) -> None:
         self.operation = operation
         self.completed = threading.Event()
+        self.cancelled = threading.Event()
         self.result: Any = None
         self.error: BaseException | None = None
 
     def execute(self) -> None:
+        if self.cancelled.is_set():
+            self.completed.set()
+            return
         try:
             self.result = self.operation()
         except BaseException as exc:
@@ -161,6 +167,8 @@ _document_thread_invoker: Any | None = None
 _pending_question_waiter: _QuestionWaiter | None = None
 _control_modes_initialized = False
 _control_mode_shutdown_connected = False
+_internal_agent_shutdown_connected = False
+_application_shutting_down = threading.Event()
 
 
 def _is_intent_memory_rebuild_active() -> bool:
@@ -172,6 +180,8 @@ def _is_intent_memory_rebuild_active() -> bool:
 
 def _ensure_document_thread_invoker() -> Any:
     """Create the queued Qt dispatcher while running on FreeCAD's GUI thread."""
+    if _application_shutting_down.is_set():
+        raise RuntimeError("VibeCAD is shutting down; Qt dispatch is unavailable.")
     global _document_thread_invoker
     if threading.current_thread() is not threading.main_thread():
         raise RuntimeError("The VibeCAD document-thread dispatcher must start on Qt.")
@@ -201,15 +211,46 @@ def _dispatch_to_document_thread(operation: Any) -> Any:
     """Synchronously execute a short GUI/document operation on FreeCAD's thread."""
     if threading.current_thread() is threading.main_thread():
         return operation()
+    if _application_shutting_down.is_set():
+        raise RuntimeError("VibeCAD is shutting down; Qt dispatch is unavailable.")
     invoker = _document_thread_invoker
     if invoker is None:
         raise RuntimeError("The VibeCAD document-thread dispatcher is not initialized.")
     request = _DocumentThreadCall(operation)
     invoker.requested.emit(request)
-    request.completed.wait()
+    while not request.completed.wait(_DOCUMENT_THREAD_DISPATCH_POLL_SECONDS):
+        if _application_shutting_down.is_set():
+            request.cancelled.set()
+            raise RuntimeError(
+                "VibeCAD shut down before the queued Qt operation could complete."
+            )
     if request.error is not None:
         raise request.error
     return request.result
+
+
+def _shutdown_internal_assistant() -> None:
+    """Cancel active internal work before Qt stops servicing queued calls."""
+
+    if _application_shutting_down.is_set():
+        return
+    _application_shutting_down.set()
+    _assistant_run_controller.request_cancel()
+    _intent_memory_rebuild_cancel_event.set()
+    _cancel_question_round()
+
+    try:
+        from VibeCADCodex import shutdown_managed_codex_sessions
+
+        shutdown_managed_codex_sessions()
+    except Exception as exc:
+        _warn(f"VibeCAD Codex shutdown failed: {exc}")
+
+    current = threading.current_thread()
+    for worker in (_assistant_run_thread, _intent_memory_rebuild_thread):
+        if worker is None or worker is current or not worker.is_alive():
+            continue
+        worker.join(timeout=_ASSISTANT_SHUTDOWN_JOIN_SECONDS)
 
 
 def _internal_agent_allowed() -> bool:
@@ -236,7 +277,8 @@ def _cancel_internal_agent_for_mcp() -> None:
 def _initialize_control_modes() -> None:
     """Bind the single control-mode state machine to the live Qt host once."""
 
-    global _control_modes_initialized, _control_mode_shutdown_connected
+    global _control_modes_initialized
+    global _control_mode_shutdown_connected, _internal_agent_shutdown_connected
     _ensure_document_thread_invoker()
     from PySide import QtWidgets
     from VibeCADMCP import get_control_mode_controller
@@ -273,9 +315,12 @@ def _initialize_control_modes() -> None:
             event_callback=handle_event,
         )
         _control_modes_initialized = True
-    if not _control_mode_shutdown_connected:
-        application = QtWidgets.QApplication.instance()
-        if application is not None:
+    application = QtWidgets.QApplication.instance()
+    if application is not None:
+        if not _internal_agent_shutdown_connected:
+            application.aboutToQuit.connect(_shutdown_internal_assistant)
+            _internal_agent_shutdown_connected = True
+        if not _control_mode_shutdown_connected:
             application.aboutToQuit.connect(
                 lambda: get_control_mode_controller().shutdown(wait=True)
             )
@@ -1029,9 +1074,17 @@ def _turn_image_paths(entry: dict[str, Any]) -> list[str]:
 
 def _append_transcript_block(output: Any, block_html: str) -> None:
     """Append one HTML block, preserving a blank line between turns."""
+    from PySide import QtGui
+
+    cursor = output.textCursor()
+    cursor.movePosition(QtGui.QTextCursor.End)
     if output.toPlainText().strip():
-        output.append("")
-    output.append(block_html)
+        neutral = QtGui.QTextBlockFormat()
+        neutral.setObjectIndex(-1)
+        cursor.insertBlock(neutral, QtGui.QTextCharFormat())
+        cursor.insertBlock(neutral, QtGui.QTextCharFormat())
+    cursor.insertFragment(QtGui.QTextDocumentFragment.fromHtml(block_html))
+    output.setTextCursor(cursor)
 
 
 def _append_output(
@@ -2341,7 +2394,7 @@ def _install_prompt_paste_filter(prompt: Any) -> None:
 
 
 def _install_prompt_submit_filter(prompt: Any) -> None:
-    """Submit the assistant composer on exactly Shift+Enter."""
+    """Submit the assistant composer on exactly Ctrl+Enter."""
 
     try:
         from PySide import QtCore
@@ -2354,7 +2407,7 @@ def _install_prompt_submit_filter(prompt: Any) -> None:
                 if (
                     event.type() == QtCore.QEvent.KeyPress
                     and event.key() in {QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter}
-                    and event.modifiers() == QtCore.Qt.ShiftModifier
+                    and event.modifiers() == QtCore.Qt.ControlModifier
                 ):
                     _run_prompt_from_panel()
                     return True
@@ -2411,9 +2464,9 @@ def _apply_composer_button_presentation(
         "VibeSend": (
             "Steer" if is_busy else "Send",
             (
-                "Steer the current CAD run (Shift+Enter)"
+                "Steer the current CAD run (Ctrl+Enter)"
                 if is_busy
-                else "Send this message to VibeCAD (Shift+Enter)"
+                else "Send this message to VibeCAD (Ctrl+Enter)"
             ),
         ),
         "VibeStop": (
@@ -2668,13 +2721,14 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     if dock is None:
         return
     busy = _is_assistant_run_active()
+    cancel_requested = _is_assistant_cancel_requested()
     control = _control_mode_snapshot()
     internal_available = bool(control.get("internal_agent_enabled"))
     persistence = _document_persistence_state()
     document_ready = bool(persistence.get("enabled"))
     pending_sketch = _sketch_close_continuation_controller.snapshot()
     dock.setProperty("VibeRunActive", busy)
-    dock.setProperty("VibeCancelRequested", _is_assistant_cancel_requested())
+    dock.setProperty("VibeCancelRequested", cancel_requested)
     dock.setProperty("VibeDocumentReady", document_ready)
 
     send_button = _find_child("QPushButton", "VibeSend", dock)
@@ -2691,9 +2745,13 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     composer_buttons = _find_child("QWidget", "VibeComposerButtons", dock)
 
     if send_button is not None:
-        send_button.setEnabled(internal_available and (busy or document_ready))
+        send_button.setEnabled(
+            internal_available
+            and not cancel_requested
+            and (busy or document_ready)
+        )
     if stop_button is not None:
-        stop_button.setEnabled(busy)
+        stop_button.setEnabled(busy and not cancel_requested)
     if attach_button is not None:
         attach_button.setEnabled(internal_available and document_ready and not busy)
     if attach_image_button is not None:
@@ -2737,7 +2795,9 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
         )
     if prompt_box is not None:
         prompt_box.setReadOnly(
-            not internal_available or (not busy and not document_ready)
+            not internal_available
+            or cancel_requested
+            or (not busy and not document_ready)
         )
         if not internal_available:
             placeholder = "VibeCAD is controlled by an external MCP client."
@@ -2791,7 +2851,9 @@ def _stop_prompt_from_panel() -> None:
     if not _is_assistant_run_active():
         _render_assistant_run_state(dock)
         return
-    _assistant_run_controller.request_cancel()
+    if not _assistant_run_controller.request_cancel():
+        _render_assistant_run_state(dock)
+        return
     _cancel_question_round()
     _render_assistant_run_state(
         dock, text="Stopping after the current provider/tool step..."
@@ -2946,7 +3008,10 @@ def _execute_assistant_run(
         current_dock = _find_dock() or dock
         run_succeeded = False
         terminal_status = ""
-        if failure is not None:
+        run_cancelled = _cancelled()
+        if run_cancelled:
+            terminal_status = "Stopped."
+        elif failure is not None:
             terminal_status = f"The CAD run failed: {failure}"
             _append_conversation(
                 "System",
@@ -2980,7 +3045,7 @@ def _execute_assistant_run(
                     "Intent Memory update failed; uncovered turns were retained"
                     f" | {memory_update.get('error', 'unknown error')}"
                 )
-            run_succeeded = response.error is None and not _cancelled()
+            run_succeeded = response.error is None
 
         _assistant_run_controller.finish(run_id)
         _cancel_question_round()
@@ -3033,13 +3098,29 @@ def _execute_assistant_run(
                     **common_arguments,
                 )
         except BaseException as exc:
-            _dispatch_to_document_thread(
-                lambda failure=exc: _complete_run(None, failure)
-            )
+            if _application_shutting_down.is_set():
+                _assistant_run_controller.finish(run_id)
+                return
+            try:
+                _dispatch_to_document_thread(
+                    lambda failure=exc: _complete_run(None, failure)
+                )
+            except RuntimeError:
+                if not _application_shutting_down.is_set():
+                    raise
+                _assistant_run_controller.finish(run_id)
             return
-        _dispatch_to_document_thread(
-            lambda result=response: _complete_run(result, None)
-        )
+        if _application_shutting_down.is_set():
+            _assistant_run_controller.finish(run_id)
+            return
+        try:
+            _dispatch_to_document_thread(
+                lambda result=response: _complete_run(result, None)
+            )
+        except RuntimeError:
+            if not _application_shutting_down.is_set():
+                raise
+            _assistant_run_controller.finish(run_id)
 
     _assistant_run_thread = threading.Thread(
         target=_run_in_background,
@@ -4199,7 +4280,7 @@ def _build_panel_widget():
     send_button.setObjectName("VibeSend")
     send_button.setIcon(QtGui.QIcon(_icon_path(ICON_SEND)))
     send_button.setIconSize(icon_size)
-    send_button.setToolTip("Send this message to VibeCAD (Shift+Enter)")
+    send_button.setToolTip("Send this message to VibeCAD (Ctrl+Enter)")
     send_button.setDefault(True)
     send_button.clicked.connect(_run_prompt_from_panel)
 

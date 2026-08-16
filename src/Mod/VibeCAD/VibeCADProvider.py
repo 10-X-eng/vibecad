@@ -585,6 +585,30 @@ def _codex_tool_image_steer_input(
     )
 
 
+def _codex_shutdown_summary(client: Any) -> str:
+    """Return concise app-server lifecycle state for provider failures."""
+
+    details = getattr(client, "shutdown_details", None)
+    if callable(details):
+        details = details()
+    if not isinstance(details, dict):
+        return ""
+    values: list[str] = []
+    reason = str(details.get("reason") or "").strip()
+    if reason:
+        values.append(f"reason={reason}")
+    exit_code = details.get("process_exit_code")
+    if exit_code is not None:
+        values.append(f"exit_code={exit_code}")
+    active = details.get("active_server_request_count")
+    if isinstance(active, int) and active > 0:
+        values.append(f"active_tool_calls={active}")
+    late = details.get("late_server_response_count")
+    if isinstance(late, int) and late > 0:
+        values.append(f"discarded_late_replies={late}")
+    return ", ".join(values)
+
+
 def _codex_context_screenshot_steer_input(
     context: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -1239,9 +1263,11 @@ class CodexProvider(BaseProvider):
                     finally:
                         raise TimeoutError
                 if not client.alive:
+                    shutdown = _codex_shutdown_summary(client)
                     tail = " | ".join(client.stderr_tail[-3:])
                     raise ProviderUnavailable(
                         "Codex app-server stopped during the VibeCAD turn"
+                        + (f" ({shutdown})" if shutdown else "")
                         + (f": {tail}" if tail else ".")
                     )
 

@@ -797,7 +797,7 @@ def test_codex_thread_config_disables_non_vibecad_tool_surfaces() -> None:
     assert config["include_collaboration_mode_instructions"] is False
     assert config["features.code_mode"] == {
         "enabled": False,
-        "direct_only_tool_namespaces": ["core"],
+        "direct_only_tool_namespaces": ["core", "conversation"],
     }
 
 
