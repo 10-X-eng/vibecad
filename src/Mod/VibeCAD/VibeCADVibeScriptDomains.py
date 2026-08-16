@@ -410,11 +410,11 @@ def _core_api_snapshot(pack: "VibeScriptWorkbenchPack") -> dict[str, Any]:
             },
             "output_types": list(pack.output_types),
             "result_rule": (
-                "One output: result=final_api_value. Multiple outputs: result is an ordered "
-                "mapping whose keys exactly equal expected_outputs names. VibeCAD publishes "
-                "a solid/feature as its stable Design Body and other matching topology as "
-                "its stable output. api.body/api.publish are optional only for interfaces, "
-                "checks, material, or appearance."
+                "Output names are identifiers; human text belongs in api labels. One "
+                "output: result=final_api_value. Multiple outputs: ordered mapping with keys "
+                "exactly matching expected_outputs. VibeCAD publishes solid/features as "
+                "Design Bodies and matching topology directly. Use api.body/api.publish "
+                "only for interfaces, checks, material, or appearance."
             ),
         },
         "api": calls,
@@ -5828,10 +5828,10 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
     )
     outputs = _property_schema(
         (
-            "Only user-requested final deliverables, never intermediate bases, cutters, "
-            "sketches, or selectors. A requested single part is exactly one solid output. "
-            "Names equal final result keys; types are active-domain output types, never "
-            "class names such as Body or Sketch."
+            "Final deliverables only; no intermediate bases, cutters, sketches, or "
+            "selectors. One requested part is one solid output. Names are 1-64 character "
+            "identifiers and equal final result keys; types are active-domain output types, "
+            "not class names such as Body or Sketch."
         ),
         type="array",
         minItems=1,
@@ -6082,7 +6082,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                         type="boolean",
                     ),
                     "max_subelements": _property_schema(
-                        "Maximum faces and edges returned.",
+                        "Returned faces and edges; omit for 32, maximum 32.",
                         type="integer",
                         minimum=1,
                         maximum=32,
@@ -6167,7 +6167,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                         items={"type": "number"},
                     ),
                     "x_direction": _property_schema(
-                        "Primitive local +X; sets roll.",
+                        "Primitive local +X; sets roll and cannot be parallel to direction.",
                         type="array",
                         minItems=3,
                         maxItems=3,

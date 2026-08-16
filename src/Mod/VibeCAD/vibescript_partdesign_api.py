@@ -1736,11 +1736,12 @@ class PartDesignDomainAPI:
     ) -> DomainValue:
         """Extrude when the cross-section stays constant.
 
-        For Body features use add_material or remove_material with base as needed.
-        direction is along_normal, opposite_normal, or symmetric; it has the
-        same meaning for additions and cuts. A cut needs distance_mm or through_all.
-        new_solid/new_surface create standalone geometry; vector and output_type
-        apply only there.
+        Body features use add_material/remove_material and base after the first
+        addition. direction has the same meaning for additions and cuts:
+        along_normal, opposite_normal, or symmetric. Cuts need distance_mm or
+        through_all. Standalone new_solid/new_surface always need distance_mm;
+        vector optionally overrides the profile normal and is normalized, not a
+        displacement. Omit output_type; it is inferred from the source.
         """
 
         intent = _operation_intent("extrude", operation, allow_creation=True)
@@ -2191,7 +2192,7 @@ class PartDesignDomainAPI:
         refine: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Union/intersect all shapes; subtract uses the first as base and the rest as tools. output_type='solid' requires one connected result; 'compound' permits separate pieces."""
+        """Union/intersect all shapes; subtract uses the first as base. A solid union needs positive-volume overlap at each operand; face/edge contact is invalid. compound permits separate pieces."""
 
         intent = str(operation or "").strip().lower()
         if intent not in {"union", "subtract", "intersect"}:
@@ -2236,7 +2237,7 @@ class PartDesignDomainAPI:
         refine: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Fuse two or more solids; output_type='solid' requires one connected result."""
+        """Fuse solids. A solid result needs positive-volume overlap at each operand; face/edge contact is invalid. compound permits separate pieces."""
 
         return self.boolean(
             shapes,
