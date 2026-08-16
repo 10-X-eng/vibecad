@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from VibeCADDebug import capture_provider_request
 from VibeCADModelingSurface import (
@@ -279,8 +280,38 @@ def provider_tool_schema_digest(schemas: list[dict[str, Any]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _codex_uses_namespaced_tools(
+    *,
+    auth_mode: str,
+    base_url: str | None,
+) -> bool:
+    """Return whether the active Responses endpoint accepts namespace tools."""
+
+    if str(auth_mode or "").strip().lower() == "chatgpt":
+        return True
+    clean_base_url = str(base_url or "").strip()
+    if not clean_base_url:
+        return True
+    hostname = str(urlsplit(clean_base_url).hostname or "").lower()
+    return hostname == "api.openai.com" or hostname.endswith(".api.openai.com")
+
+
+def _codex_flat_function_name(namespace: str, function_name: str) -> str:
+    name = (
+        f"{_provider_function_name(namespace)}"
+        f"__{_provider_function_name(function_name)}"
+    )
+    if len(name) > 128:
+        raise ValueError(
+            f"Flattened Codex dynamic tool name exceeds 128 characters: {name!r}"
+        )
+    return name
+
+
 def _codex_dynamic_tool_surface(
     context: dict[str, Any],
+    *,
+    namespaced: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[tuple[str, str], str]]:
     """Build app-server tools from the frozen turn-start VibeCAD surface."""
 
@@ -390,6 +421,7 @@ def _codex_dynamic_tool_surface(
         )
     except ValueError as exc:
         raise ProviderUnavailable(str(exc)) from exc
+    dynamic_tools: list[dict[str, Any]] = []
     namespaces: dict[str, dict[str, Any]] = {}
     names: dict[tuple[str, str], str] = {}
     for schema in schemas:
@@ -403,12 +435,36 @@ def _codex_dynamic_tool_surface(
             raise ProviderUnavailable(
                 f"Invalid frozen schema for VibeCAD tool {tool_name!r}: {exc}"
             ) from exc
-        key = (namespace_name, function_name)
+        flat_name = (
+            ""
+            if namespaced
+            else _codex_flat_function_name(namespace_name, function_name)
+        )
+        key = (
+            (namespace_name, function_name)
+            if namespaced
+            else ("", flat_name)
+        )
         if key in names:
             raise ProviderUnavailable(
-                f"Duplicate Codex dynamic tool name: {namespace_name}.{function_name}"
+                "Duplicate Codex dynamic tool name: "
+                + (
+                    f"{namespace_name}.{function_name}"
+                    if namespaced
+                    else flat_name
+                )
             )
         names[key] = tool_name
+        function = {
+            "type": "function",
+            "name": function_name if namespaced else flat_name,
+            "description": str(schema.get("description") or ""),
+            "deferLoading": False,
+            "inputSchema": input_schema,
+        }
+        if not namespaced:
+            dynamic_tools.append(function)
+            continue
         namespace = namespaces.setdefault(
             namespace_name,
             {
@@ -418,55 +474,50 @@ def _codex_dynamic_tool_surface(
                 "tools": [],
             },
         )
-        namespace["tools"].append(
-            {
-                "type": "function",
-                "name": function_name,
-                "description": str(schema.get("description") or ""),
-                "deferLoading": False,
-                "inputSchema": input_schema,
-            }
-        )
-    return [namespaces[name] for name in sorted(namespaces)], names
+        namespace["tools"].append(function)
+    if namespaced:
+        dynamic_tools = [namespaces[name] for name in sorted(namespaces)]
+    return dynamic_tools, names
 
 
-def _codex_skill_read_tool() -> dict[str, Any]:
+def _codex_skill_read_tool(*, namespaced: bool = True) -> dict[str, Any]:
+    function = {
+        "type": "function",
+        "name": (
+            "read" if namespaced else _codex_flat_function_name("skills", "read")
+        ),
+        "description": (
+            "Read one enabled skill's SKILL.md or a referenced UTF-8 "
+            "resource contained in that skill directory."
+        ),
+        "deferLoading": False,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Exact skill name from the available skills list.",
+                },
+                "resource": {
+                    "type": "string",
+                    "description": (
+                        "Relative resource path inside the skill directory; "
+                        "defaults to SKILL.md."
+                    ),
+                    "default": "SKILL.md",
+                },
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    }
+    if not namespaced:
+        return function
     return {
         "type": "namespace",
         "name": "skills",
         "description": "Read enabled Codex skill instructions and resources.",
-        "tools": [
-            {
-                "type": "function",
-                "name": "read",
-                "description": (
-                    "Read one enabled skill's SKILL.md or a referenced UTF-8 "
-                    "resource contained in that skill directory."
-                ),
-                "deferLoading": False,
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": (
-                                "Exact skill name from the available skills list."
-                            ),
-                        },
-                        "resource": {
-                            "type": "string",
-                            "description": (
-                                "Relative resource path inside the skill directory; "
-                                "defaults to SKILL.md."
-                            ),
-                            "default": "SKILL.md",
-                        },
-                    },
-                    "required": ["name"],
-                    "additionalProperties": False,
-                },
-            }
-        ],
+        "tools": [function],
     }
 
 
@@ -686,6 +737,7 @@ class CodexProvider(BaseProvider):
             update_cached_account,
             vibecad_thread_config,
         )
+        from VibeCADCodexResponses import codex_responses_base_url
 
         live_context = dict(context)
         interaction_mode = (
@@ -698,8 +750,13 @@ class CodexProvider(BaseProvider):
                 f"Unknown VibeCAD interaction mode {interaction_mode!r}."
             )
         plan_mode = interaction_mode == "plan"
+        namespaced_tools = _codex_uses_namespaced_tools(
+            auth_mode=self.auth_mode,
+            base_url=self.base_url,
+        )
         current_dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(
-            live_context
+            live_context,
+            namespaced=namespaced_tools,
         )
         if not current_dynamic_tools:
             raise ProviderUnavailable(
@@ -712,7 +769,13 @@ class CodexProvider(BaseProvider):
         else:
             thread_context = live_context
         thread_dynamic_tools, _thread_name_map = _codex_dynamic_tool_surface(
-            thread_context
+            thread_context,
+            namespaced=namespaced_tools,
+        )
+        skill_call_key = (
+            ("skills", "read")
+            if namespaced_tools
+            else ("", _codex_flat_function_name("skills", "read"))
         )
 
         state_lock = threading.RLock()
@@ -836,7 +899,7 @@ class CodexProvider(BaseProvider):
             arguments = params.get("arguments")
             if not isinstance(arguments, dict):
                 arguments = {}
-            if namespace == "skills" and function_name == "read":
+            if (namespace, function_name) == skill_call_key:
                 _emit_provider_progress(
                     progress_callback,
                     {
@@ -995,6 +1058,11 @@ class CodexProvider(BaseProvider):
 
         if self.auth_mode == "api_key" and not self.api_key:
             raise ProviderUnavailable("No OpenAI API key is configured.")
+        codex_base_url = (
+            codex_responses_base_url(self.base_url)
+            if self.auth_mode == "api_key"
+            else None
+        )
         environment = (
             {CODEX_OPENAI_API_KEY_ENV: self.api_key}
             if self.auth_mode == "api_key" and self.api_key
@@ -1099,7 +1167,9 @@ class CodexProvider(BaseProvider):
                     cwd=codex_workspace(),
                 )
                 if skill_catalog:
-                    thread_dynamic_tools.append(_codex_skill_read_tool())
+                    thread_dynamic_tools.append(
+                        _codex_skill_read_tool(namespaced=namespaced_tools)
+                    )
 
             forbidden_capabilities = [
                 "shell",
@@ -1121,7 +1191,6 @@ class CodexProvider(BaseProvider):
                     " Read selected skill instructions and referenced resources "
                     "only through skills.read."
                 )
-
             thread_request: dict[str, Any] = {
                 "cwd": str(codex_workspace()),
                 "approvalPolicy": "never",
@@ -1137,7 +1206,9 @@ class CodexProvider(BaseProvider):
                     skills_enabled=self.skills_enabled,
                     collaboration_mode_enabled=managed or plan_mode,
                     openai_base_url=(
-                        (self.base_url or "") if self.auth_mode == "api_key" else None
+                        (codex_base_url or "")
+                        if self.auth_mode == "api_key"
+                        else None
                     ),
                 ),
                 "serviceName": "vibecad",

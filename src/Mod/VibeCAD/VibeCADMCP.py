@@ -2,45 +2,145 @@
 
 """Mutually exclusive Internal Agent and MCP control modes for VibeCAD.
 
-The MCP process owns only protocol and network I/O. Every CAD read or write is
-sent through a narrow pipe to the host, where the existing VibeCAD tool-surface
-resolver and provider tool runner retain authority over validation, revisions,
-transactions, cancellation, and document-thread execution.
+The external harness owns stdio. A private OS-local IPC broker
+forwards every CAD read or write to the host, where the existing VibeCAD
+tool-surface resolver and provider tool runner retain authority over validation,
+revisions, transactions, cancellation, and document-thread execution.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
+import errno
 import hashlib
-import hmac
 from enum import Enum
 import json
 import mimetypes
 import os
 from pathlib import Path
-import secrets
 import socket
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Callable
 
 
-MCP_HOST = "127.0.0.1"
-MCP_PORT = 8765
-MCP_PATH = "/mcp"
-MCP_ENDPOINT = f"http://{MCP_HOST}:{MCP_PORT}{MCP_PATH}"
+MCP_TRANSPORT = "stdio"
 MCP_START_TIMEOUT_SECONDS = 15.0
 MCP_STOP_TIMEOUT_SECONDS = 15.0
 MCP_MAX_IMAGE_BYTES = 8 * 1024 * 1024
-MCP_KEYRING_ACCOUNT = "mcp-bearer-token-v1"
-MCP_TOKEN_BYTES = 32
-
 READ_WORKBENCH_TOOL = "vibecad.read_workbench"
 RECOVER_DOCUMENTS_TOOL = "vibecad.recover_documents"
 MANAGE_DOCUMENT_TOOL = "vibecad.manage_document"
 VIBESCRIPT_READ_OPERATION_TOOL = "vibescript.read_operation"
+
+
+def _mcp_runtime_directory(identity: str) -> Path:
+    """Return one owner-only directory shared by broker and stdio children."""
+
+    if sys.platform == "win32":
+        app_data = str(
+            os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or ""
+        ).strip()
+        if not app_data:
+            raise RuntimeError(
+                "VibeCAD cannot locate the current Windows user's application "
+                "data directory for local MCP communication."
+            )
+        runtime_root = Path(app_data) / "VibeCAD" / "runtime"
+    else:
+        # A harness deliberately launches the stdio child with a reduced
+        # environment, so XDG_RUNTIME_DIR is not a stable rendezvous key.
+        runtime_root = Path(tempfile.gettempdir()) / f"vibecad-{identity}"
+    try:
+        runtime_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        metadata = runtime_root.lstat()
+    except OSError as exc:
+        raise RuntimeError(
+            f"VibeCAD cannot prepare its private MCP runtime directory: {exc}"
+        ) from exc
+    if runtime_root.is_symlink() or not runtime_root.is_dir():
+        raise RuntimeError(
+            f"VibeCAD's MCP runtime path is not a private directory: {runtime_root}"
+        )
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid) and metadata.st_uid != getuid():
+        raise RuntimeError(
+            f"VibeCAD's MCP runtime directory has a different owner: {runtime_root}"
+        )
+    try:
+        runtime_root.chmod(0o700)
+    except OSError as exc:
+        raise RuntimeError(
+            f"VibeCAD cannot secure its MCP runtime directory: {exc}"
+        ) from exc
+    return runtime_root
+
+
+def _mcp_ipc_address() -> tuple[str, str]:
+    """Return the owner-only local address for the VibeCAD broker."""
+
+    identity = hashlib.sha256(
+        str(Path.home()).encode("utf-8", errors="replace")
+    ).hexdigest()[:12]
+    runtime_root = _mcp_runtime_directory(identity)
+    if sys.platform == "win32":
+        return rf"\\.\pipe\VibeCAD-MCP-{identity}", "AF_PIPE"
+    address = runtime_root / "mcp.sock"
+    if len(os.fsencode(address)) >= 100:
+        raise RuntimeError(
+            f"VibeCAD's local MCP socket path is too long: {address}"
+        )
+    return str(address), "AF_UNIX"
+
+
+def _prepare_mcp_ipc_address(address: str, family: str) -> None:
+    """Remove only a demonstrably stale Unix socket from a prior crash."""
+
+    if family != "AF_UNIX":
+        return
+    path = Path(address)
+    if not path.exists():
+        return
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(0.25)
+        result = probe.connect_ex(address)
+    finally:
+        probe.close()
+    if result == 0:
+        raise RuntimeError(
+            "VibeCAD's local MCP broker is already active; another VibeCAD "
+            "instance may own it."
+        )
+    if result not in {errno.ECONNREFUSED, errno.ENOENT}:
+        raise RuntimeError(
+            f"VibeCAD cannot validate its existing MCP socket ({os.strerror(result)})."
+        )
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise RuntimeError(
+            f"VibeCAD cannot remove its stale MCP socket: {exc}"
+        ) from exc
+
+
+def _mcp_stdio_server_command() -> tuple[str, list[str]]:
+    """Return the packaged command an external harness should launch."""
+
+    from VibeCADProvider import _provider_spawn_python_executable
+
+    executable = _provider_spawn_python_executable(prefer_windowless=False)
+    if not executable:
+        raise RuntimeError(
+            "VibeCAD cannot locate the packaged Python executable required for "
+            "its stdio MCP server."
+        )
+    script = Path(__file__).resolve().with_name("VibeCADMCPStdio.py")
+    if not script.is_file():
+        raise RuntimeError(f"VibeCAD's stdio MCP server is missing: {script}")
+    return executable, [str(script)]
 
 
 def _ribbon_workbenches(gui: Any) -> list[dict[str, str]]:
@@ -76,99 +176,6 @@ def _ribbon_workbenches(gui: Any) -> list[dict[str, str]]:
     if not available:
         raise RuntimeError("VibeCAD's ribbon exposes no selectable workbenches.")
     return available
-
-
-def _bind_mcp_listener(host: str, port: int) -> socket.socket:
-    """Reserve the MCP endpoint before uvicorn starts its event loop."""
-
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        else:
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((host, int(port)))
-        listener.listen(2048)
-        listener.setblocking(False)
-        listener.set_inheritable(False)
-    except OSError as exc:
-        listener.close()
-        raise RuntimeError(
-            f"MCP endpoint http://{host}:{port}{MCP_PATH} is unavailable; "
-            "another VibeCAD instance may already be using it."
-        ) from exc
-    return listener
-
-
-def _mcp_keyring_module() -> Any | None:
-    try:
-        import keyring
-    except ImportError:
-        return None
-    return keyring
-
-
-def _valid_mcp_token(value: Any) -> str:
-    token = str(value or "").strip()
-    if len(token) < 40:
-        return ""
-    if any(
-        character
-        not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-        for character in token
-    ):
-        return ""
-    return token
-
-
-def _store_mcp_token(token: str) -> str:
-    from VibeCADAuth import KEYRING_SERVICE
-
-    keyring = _mcp_keyring_module()
-    if keyring is None:
-        raise RuntimeError(
-            "VibeCAD cannot persist its MCP bearer token because no OS "
-            "credential-store backend is available."
-        )
-    try:
-        keyring.set_password(KEYRING_SERVICE, MCP_KEYRING_ACCOUNT, token)
-        persisted = _valid_mcp_token(
-            keyring.get_password(KEYRING_SERVICE, MCP_KEYRING_ACCOUNT)
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            f"VibeCAD could not store its MCP bearer token securely: {exc}"
-        ) from exc
-    if not persisted:
-        raise RuntimeError(
-            "The OS credential store did not return the persisted MCP bearer token."
-        )
-    return persisted
-
-
-def _persistent_mcp_token(*, regenerate: bool = False) -> str:
-    """Return one stable bearer token from the OS credential store."""
-
-    from VibeCADAuth import KEYRING_SERVICE
-
-    keyring = _mcp_keyring_module()
-    if keyring is None:
-        raise RuntimeError(
-            "VibeCAD cannot persist its MCP bearer token because no OS "
-            "credential-store backend is available."
-        )
-    if not regenerate:
-        try:
-            existing = _valid_mcp_token(
-                keyring.get_password(KEYRING_SERVICE, MCP_KEYRING_ACCOUNT)
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"VibeCAD could not read its MCP bearer token securely: {exc}"
-            ) from exc
-        if existing:
-            return existing
-    return _store_mcp_token(secrets.token_urlsafe(MCP_TOKEN_BYTES))
 
 
 def _runtime_product_version() -> str:
@@ -1178,93 +1185,22 @@ def _attachment_content(attachment: dict[str, Any] | None) -> Any | None:
     return ImageContent(data=data, mimeType=mime_type)
 
 
-async def _terminate_mcp_http_sessions(server: Any) -> None:
-    """Finish every persistent MCP response before stopping its ASGI host."""
-
-    manager = server.session_manager
-    transports = list(manager._server_instances.values())
-    for transport in transports:
-        try:
-            await transport.terminate()
-        except Exception:
-            # Uvicorn still owns the final request cancellation. Continue
-            # closing the other sessions instead of stranding their streams.
-            pass
-
-
-class _BearerTokenMiddleware:
-    def __init__(self, app: Any, token: str) -> None:
-        self._app = app
-        self._token = token
-
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope.get("type") != "http":
-            await self._app(scope, receive, send)
-            return
-        headers = {
-            key.decode("latin-1").lower(): value.decode("latin-1")
-            for key, value in scope.get("headers") or []
-        }
-        authorization = headers.get("authorization", "")
-        supplied = (
-            authorization[7:] if authorization.lower().startswith("bearer ") else ""
-        )
-        if not supplied or not hmac.compare_digest(supplied, self._token):
-            body = b'{"error":"invalid_token","error_description":"Authentication required"}'
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 401,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"content-length", str(len(body)).encode("ascii")),
-                        (b"www-authenticate", b"Bearer"),
-                    ],
-                }
-            )
-            await send({"type": "http.response.body", "body": body})
-            return
-        await self._app(scope, receive, send)
-
-
-class _ActivityMiddleware:
-    def __init__(self, app: Any, emit: Callable[[dict[str, Any]], None]) -> None:
-        self._app = app
-        self._emit = emit
-        self._active = 0
-        self._lock = threading.Lock()
-
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope.get("type") != "http":
-            await self._app(scope, receive, send)
-            return
-        with self._lock:
-            self._active += 1
-            active = self._active
-        self._emit({"event": "client_activity", "active_requests": active})
-        try:
-            await self._app(scope, receive, send)
-        finally:
-            with self._lock:
-                self._active = max(0, self._active - 1)
-                active = self._active
-            self._emit({"event": "client_activity", "active_requests": active})
-
-
-def _mcp_server_process_main(
+def _mcp_broker_process_main(
     host_connection: Any,
     status_connection: Any,
     shutdown_event: Any,
     surface_generation: Any,
-    token: str,
-    host: str,
-    port: int,
-    path: str,
+    address: str,
+    family: str,
 ) -> None:
-    """Run only MCP/HTTP concerns in the isolated child process."""
+    """Bridge harness-launched stdio MCP processes to the live VibeCAD host."""
 
     status_lock = threading.Lock()
-    listener: socket.socket | None = None
+    clients_lock = threading.RLock()
+    clients: dict[int, tuple[Any, threading.Lock]] = {}
+    client_threads: set[threading.Thread] = set()
+    active_requests = 0
+    listener: Any | None = None
 
     def emit(event: dict[str, Any]) -> None:
         try:
@@ -1273,179 +1209,47 @@ def _mcp_server_process_main(
         except (BrokenPipeError, EOFError, OSError):
             pass
 
+    def send(connection: Any, send_lock: threading.Lock, message: dict[str, Any]) -> bool:
+        try:
+            with send_lock:
+                connection.send(message)
+            return True
+        except (BrokenPipeError, EOFError, OSError):
+            return False
+
+    def set_request_active(delta: int) -> None:
+        nonlocal active_requests
+        with clients_lock:
+            active_requests = max(0, active_requests + delta)
+            current = active_requests
+        emit({"event": "client_activity", "active_requests": current})
+
+    def forget_client(identity: int, connection: Any) -> None:
+        with clients_lock:
+            clients.pop(identity, None)
+            client_threads.discard(threading.current_thread())
+        try:
+            connection.close()
+        except Exception:
+            pass
+
     try:
         import multiprocessing
+        from multiprocessing.connection import Listener
 
-        from mcp.server import NotificationOptions, Server
-        from mcp.server.subscriptions import (
-            InMemorySubscriptionBus,
-            ListenHandler,
+        _prepare_mcp_ipc_address(address, family)
+        listener = Listener(
+            address=address,
+            family=family,
         )
-        from mcp.server.transport_security import TransportSecuritySettings
-        from mcp.shared.subscriptions import ToolsListChanged
-        from mcp_types import CallToolResult, ListToolsResult, TextContent, Tool
-        import uvicorn
+        if family == "AF_UNIX":
+            try:
+                Path(address).chmod(0o600)
+            except OSError:
+                pass
 
-        try:
-            listener = _bind_mcp_listener(host, port)
-        except RuntimeError as exc:
-            emit(
-                {
-                    "event": "error",
-                    "failure_code": "MCP_ENDPOINT_UNAVAILABLE",
-                    "error": str(exc),
-                }
-            )
-            return
         proxy = _ServerHostProxy(host_connection)
         bridge = _ServerOperationStatusCache(proxy, shutdown_event)
-
-        subscriptions = InMemorySubscriptionBus()
-
-        class VibeCADProtocolServer(Server):
-            def __init__(self) -> None:
-                self._client_sessions: dict[int, Any] = {}
-                super().__init__(
-                    "VibeCAD",
-                    version=_runtime_product_version(),
-                    instructions=(
-                        "Control the live VibeCAD document through the active "
-                        "workbench's VibeScript tools. Read or switch workbenches "
-                        "explicitly when needed."
-                    ),
-                    on_list_tools=self._list_tools,
-                    on_call_tool=self._call_tool,
-                    on_subscriptions_listen=ListenHandler(subscriptions),
-                )
-
-            def create_initialization_options(
-                self,
-                notification_options: Any | None = None,
-                experimental_capabilities: dict[str, dict[str, Any]] | None = None,
-                extensions: dict[str, dict[str, Any]] | None = None,
-            ) -> Any:
-                # The SDK derives modern change capability from subscriptions,
-                # while handshake-era clients require this explicit flag.
-                configured_notifications = NotificationOptions(
-                    prompts_changed=bool(
-                        getattr(notification_options, "prompts_changed", False)
-                    ),
-                    resources_changed=bool(
-                        getattr(notification_options, "resources_changed", False)
-                    ),
-                    tools_changed=True,
-                )
-                return super().create_initialization_options(
-                    configured_notifications,
-                    experimental_capabilities,
-                    extensions,
-                )
-
-            def _remember_session(self, session: Any) -> None:
-                self._client_sessions[id(session)] = session
-
-            async def _list_tools(self, ctx: Any, params: Any) -> Any:
-                del params
-                self._remember_session(ctx.session)
-                payload = await asyncio.to_thread(bridge.request, "list_tools")
-                tools = []
-                for schema in payload.get("tools") or []:
-                    if not isinstance(schema, dict):
-                        continue
-                    tools.append(
-                        Tool(
-                            name=str(schema.get("name") or ""),
-                            description=str(schema.get("description") or ""),
-                            inputSchema=dict(schema.get("parameters") or {}),
-                        )
-                    )
-                return ListToolsResult(tools=tools)
-
-            async def _call_tool(self, ctx: Any, params: Any) -> Any:
-                self._remember_session(ctx.session)
-                payload = await asyncio.to_thread(
-                    bridge.request,
-                    "call_tool",
-                    name=str(params.name),
-                    arguments=dict(params.arguments or {}),
-                )
-                result = payload.get("result")
-                if not isinstance(result, dict):
-                    result = {"ok": False, "error": "VibeCAD returned no result."}
-                content: list[Any] = [
-                    TextContent(
-                        text=json.dumps(
-                            result,
-                            ensure_ascii=True,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        )
-                    )
-                ]
-                image = _attachment_content(payload.get("image_attachment"))
-                if image is not None:
-                    content.append(image)
-                return CallToolResult(
-                    content=content,
-                    structuredContent=result,
-                    isError=not bool(result.get("ok")),
-                )
-
-            async def notify_tool_list_changed(self) -> None:
-                # Modern MCP clients receive this through subscriptions/listen;
-                # handshake-era clients receive the equivalent notification on
-                # their persistent Streamable HTTP session.
-                await subscriptions.publish(ToolsListChanged())
-                stale_sessions = []
-                for identity, session in list(self._client_sessions.items()):
-                    try:
-                        await session.send_tool_list_changed()
-                    except Exception:
-                        stale_sessions.append(identity)
-                for identity in stale_sessions:
-                    self._client_sessions.pop(identity, None)
-
-            async def terminate_http_sessions(self) -> None:
-                """Close persistent response streams before uvicorn exits."""
-
-                await _terminate_mcp_http_sessions(self)
-                self._client_sessions.clear()
-
-        server = VibeCADProtocolServer()
-        security = TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
-            allowed_origins=[
-                "http://127.0.0.1:*",
-                "http://localhost:*",
-                "http://[::1]:*",
-            ],
-        )
-        app: Any = server.streamable_http_app(
-            streamable_http_path=path,
-            json_response=False,
-            stateless_http=False,
-            transport_security=security,
-            host=host,
-        )
-        app = _ActivityMiddleware(app, emit)
-        app = _BearerTokenMiddleware(app, token)
-        uvicorn_server = uvicorn.Server(
-            uvicorn.Config(
-                app,
-                host=host,
-                port=port,
-                log_level="warning",
-                access_log=False,
-                # The MCP child runs windowless (pythonw.exe on Windows), so
-                # sys.stdout/sys.stderr are None and uvicorn's default
-                # dictConfig fails with "Unable to configure formatter
-                # 'default'" before the server ever binds. Status already
-                # travels over the status pipe, so no console logging is
-                # needed here.
-                log_config=None,
-            )
-        )
         parent_process = multiprocessing.parent_process()
 
         def host_process_alive() -> bool:
@@ -1456,60 +1260,151 @@ def _mcp_server_process_main(
             except (AssertionError, OSError):
                 return False
 
-        async def run() -> None:
-            assert listener is not None
-            serve_task = asyncio.create_task(uvicorn_server.serve(sockets=[listener]))
-            observed_generation = int(surface_generation.value)
-            sessions_terminated = False
-
-            async def request_shutdown() -> None:
-                nonlocal sessions_terminated
-                if sessions_terminated:
-                    return
-                sessions_terminated = True
-                await server.terminate_http_sessions()
-                uvicorn_server.should_exit = True
-
-            while not serve_task.done():
-                if uvicorn_server.started:
-                    emit(
-                        {
-                            "event": "listening",
-                            "endpoint": f"http://{host}:{port}{path}",
-                            "pid": os.getpid(),
-                        }
+        def handle_client(
+            identity: int,
+            connection: Any,
+            send_lock: threading.Lock,
+        ) -> None:
+            try:
+                while not shutdown_event.is_set():
+                    if not connection.poll(0.1):
+                        continue
+                    try:
+                        request_message = connection.recv()
+                    except EOFError:
+                        break
+                    request_id = (
+                        request_message.get("request_id")
+                        if isinstance(request_message, dict)
+                        else None
                     )
-                    break
-                if shutdown_event.is_set():
-                    await request_shutdown()
-                    break
-                if not host_process_alive():
-                    await request_shutdown()
-                    break
-                await asyncio.sleep(0.05)
+                    set_request_active(1)
+                    try:
+                        if not isinstance(request_message, dict):
+                            raise RuntimeError("Invalid MCP broker request.")
+                        method = str(request_message.get("method") or "")
+                        parameters = request_message.get("parameters")
+                        parameters = (
+                            parameters if isinstance(parameters, dict) else {}
+                        )
+                        if method not in {"list_tools", "call_tool"}:
+                            raise RuntimeError(f"Unknown MCP broker method: {method}")
+                        payload = bridge.request(method, **parameters)
+                        response = {
+                            "request_id": request_id,
+                            "ok": True,
+                            "payload": payload,
+                        }
+                    except BaseException as exc:
+                        response = {
+                            "request_id": request_id,
+                            "ok": False,
+                            "error": f"{exc.__class__.__name__}: {exc}",
+                        }
+                    finally:
+                        set_request_active(-1)
+                    if not send(connection, send_lock, response):
+                        break
+            except (BrokenPipeError, EOFError, OSError):
+                pass
+            finally:
+                forget_client(identity, connection)
 
-            while not serve_task.done():
-                if shutdown_event.is_set() or not host_process_alive():
-                    await request_shutdown()
+        def monitor() -> None:
+            from multiprocessing.connection import Client
+
+            observed_generation = int(surface_generation.value)
+            while not shutdown_event.is_set() and host_process_alive():
                 current_generation = int(surface_generation.value)
                 if current_generation != observed_generation:
                     observed_generation = current_generation
-                    await server.notify_tool_list_changed()
-                    emit(
-                        {
-                            "event": "tool_list_changed",
-                            "generation": observed_generation,
-                        }
-                    )
-                await asyncio.sleep(0.1)
-            await serve_task
+                    event = {
+                        "event": "tool_list_changed",
+                        "generation": observed_generation,
+                    }
+                    stale: list[int] = []
+                    with clients_lock:
+                        current_clients = list(clients.items())
+                    for identity, (connection, send_lock) in current_clients:
+                        if not send(connection, send_lock, event):
+                            stale.append(identity)
+                    if stale:
+                        with clients_lock:
+                            for identity in stale:
+                                clients.pop(identity, None)
+                    emit(event)
+                time.sleep(0.1)
+            shutdown_event.set()
+            # Listener.accept() is a blocking OS call. Closing the listener
+            # from this thread does not reliably wake it on every platform, so
+            # make one local connection and reject it in the accept loop.
+            try:
+                wakeup = Client(address=address, family=family)
+                wakeup.close()
+            except (ConnectionError, FileNotFoundError, OSError):
+                pass
+            current_listener = listener
+            if current_listener is not None:
+                try:
+                    current_listener.close()
+                except Exception:
+                    pass
+            with clients_lock:
+                current_clients = list(clients.values())
+            for connection, _send_lock in current_clients:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
-        asyncio.run(run())
+        monitor_thread = threading.Thread(
+            target=monitor,
+            name="VibeCAD-MCP-Broker-Monitor",
+            daemon=True,
+        )
+        monitor_thread.start()
+        emit(
+            {
+                "event": "listening",
+                "transport": "stdio",
+                "pid": os.getpid(),
+            }
+        )
+        while not shutdown_event.is_set():
+            try:
+                connection = listener.accept()
+            except (OSError, EOFError):
+                break
+            if shutdown_event.is_set():
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                break
+            identity = id(connection)
+            send_lock = threading.Lock()
+            thread = threading.Thread(
+                target=handle_client,
+                args=(identity, connection, send_lock),
+                name=f"VibeCAD-MCP-Client-{identity}",
+                daemon=True,
+            )
+            with clients_lock:
+                clients[identity] = (connection, send_lock)
+                client_threads.add(thread)
+            thread.start()
+        shutdown_event.set()
+        monitor_thread.join(timeout=2.0)
+        with clients_lock:
+            threads = list(client_threads)
+        for thread in threads:
+            thread.join(timeout=2.0)
         emit({"event": "stopped"})
     except BaseException as exc:
         emit(
             {
                 "event": "error",
+                "failure_code": "MCP_IPC_UNAVAILABLE",
                 "error": f"{exc.__class__.__name__}: {exc}",
             }
         )
@@ -1517,6 +1412,11 @@ def _mcp_server_process_main(
         if listener is not None:
             try:
                 listener.close()
+            except Exception:
+                pass
+        if family == "AF_UNIX":
+            try:
+                Path(address).unlink(missing_ok=True)
             except OSError:
                 pass
         try:
@@ -1556,7 +1456,6 @@ class VibeCADControlModeController:
         self._surface_generation: Any | None = None
         self._surface_workbench = ""
         self._tool_cancellation: threading.Event | None = None
-        self._token = ""
         self._bridge_thread: threading.Thread | None = None
         self._monitor_thread: threading.Thread | None = None
         self._start_thread: threading.Thread | None = None
@@ -1592,79 +1491,26 @@ class VibeCADControlModeController:
                 "The Internal Agent is disabled while VibeCAD MCP control is enabled."
             )
 
-    def snapshot(self, *, include_token: bool = False) -> dict[str, Any]:
+    def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            token = self._token if include_token else ""
             return {
                 "state": self._state.value,
                 "desired_mode": self._desired_mode.value,
                 "internal_agent_enabled": self.internal_agent_allowed(),
                 "mcp_enabled": self._state == ControllerState.MCP,
-                "endpoint": MCP_ENDPOINT,
+                "transport": MCP_TRANSPORT,
                 "connection_state": self._connection_state,
                 "active_requests": self._active_requests,
                 "last_activity_at": self._last_activity_at or None,
                 "last_error": self._last_error,
-                "token": token,
-                "token_available": bool(self._token),
                 "pid": getattr(self._process, "pid", None),
             }
 
     def connection_configuration(self) -> dict[str, Any]:
-        snapshot = self.snapshot(include_token=True)
-        token = str(snapshot.pop("token") or "")
+        command, arguments = _mcp_stdio_server_command()
         return {
-            "url": MCP_ENDPOINT,
-            "transport": "streamable-http",
-            "headers": {"Authorization": f"Bearer {token}"} if token else {},
-            "status": snapshot,
-        }
-
-    def regenerate_mcp_token(self) -> dict[str, Any]:
-        """Explicitly rotate the stored token and restart an active server."""
-
-        failure = ""
-        with self._spawn_lock:
-            with self._lock:
-                if self._state not in {
-                    ControllerState.INTERNAL,
-                    ControllerState.MCP,
-                }:
-                    return {
-                        "ok": False,
-                        "error": (
-                            "Wait for the current MCP start or stop transition "
-                            "to finish before regenerating its token."
-                        ),
-                        "snapshot": self.snapshot(),
-                    }
-                restart = self._state == ControllerState.MCP
-                try:
-                    token = _persistent_mcp_token(regenerate=True)
-                except Exception as exc:
-                    failure = str(exc)
-                    self._last_error = str(exc)
-                else:
-                    self._token = token
-                    self._last_error = ""
-
-        if failure:
-            self._emit("mcp_token_regeneration_failed")
-            return {
-                "ok": False,
-                "error": failure,
-                "snapshot": self.snapshot(),
-            }
-
-        if restart:
-            self.request_mcp_enabled(False)
-            self.request_mcp_enabled(True)
-        else:
-            self._emit("mcp_token_regenerated")
-        return {
-            "ok": True,
-            "restarting": restart,
-            "snapshot": self.snapshot(),
+            "command": command,
+            "args": arguments,
         }
 
     def _emit(self, event: str, *, rollback_preference: bool = False) -> None:
@@ -1795,7 +1641,6 @@ class VibeCADControlModeController:
             ):
                 self._state = ControllerState.INTERNAL
                 self._connection_state = "disabled"
-                self._token = ""
                 should_emit = True
         if should_emit:
             self._emit("internal_agent_enabled")
@@ -1829,18 +1674,16 @@ class VibeCADControlModeController:
         shutdown_event = context.Event()
         surface_generation = context.Value("Q", 0)
         cancellation = threading.Event()
-        token = _persistent_mcp_token()
+        address, family = _mcp_ipc_address()
         process = context.Process(
-            target=_mcp_server_process_main,
+            target=_mcp_broker_process_main,
             args=(
                 server_connection,
                 status_send,
                 shutdown_event,
                 surface_generation,
-                token,
-                MCP_HOST,
-                MCP_PORT,
-                MCP_PATH,
+                address,
+                family,
             ),
         )
         process.daemon = True
@@ -1890,7 +1733,6 @@ class VibeCADControlModeController:
             self._shutdown_event = shutdown_event
             self._surface_generation = surface_generation
             self._tool_cancellation = cancellation
-            self._token = token
             if superseded:
                 self._state = ControllerState.STOPPING_MCP
                 self._connection_state = "stopping"
@@ -2065,7 +1907,7 @@ class VibeCADControlModeController:
                 transition_id,
                 str(event.get("error") or "MCP server failed."),
                 rollback_preference=(
-                    str(event.get("failure_code") or "") != "MCP_ENDPOINT_UNAVAILABLE"
+                    str(event.get("failure_code") or "") != "MCP_IPC_UNAVAILABLE"
                 ),
             )
 

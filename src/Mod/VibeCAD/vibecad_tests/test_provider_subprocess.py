@@ -1104,7 +1104,7 @@ def test_assembly_turn_injects_copy_ready_available_components(
             "sources": [],
         },
     )
-    reference = {"document_uid": "part-uid", "object_name": "Bracket"}
+    reference = {"document_uid": "assembly-uid", "object_name": "Bracket"}
     monkeypatch.setattr(
         component_catalog,
         "capture_component_catalog",

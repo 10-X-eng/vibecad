@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import VibeCADCodex as codex
+import VibeCADCodexResponses as codex_responses
 import VibeCADPreferences as preferences
 import VibeCADProvider as provider
 import VibeCADSession as session
@@ -191,7 +192,69 @@ def test_codex_dynamic_tools_use_one_workbench_neutral_namespace() -> None:
     assert [namespace["name"] for namespace in tools] == ["vibescript"]
 
 
-def test_codex_forwards_its_exact_dynamic_tool_call_id(monkeypatch) -> None:
+def test_codex_dynamic_tools_flatten_for_third_party_responses_endpoints() -> None:
+    tools, names = provider._codex_dynamic_tool_surface(
+        _scripted_context(),
+        namespaced=False,
+    )
+
+    assert names == {
+        ("", "vibescript__read_source"): "vibescript.read_source",
+        ("", "vibescript__create_program"): "vibescript.create_program",
+    }
+    assert [tool["type"] for tool in tools] == ["function", "function"]
+    assert [tool["name"] for tool in tools] == [
+        "vibescript__read_source",
+        "vibescript__create_program",
+    ]
+    assert tools[0]["inputSchema"] == _scripted_context()[
+        "provider_tool_schemas"
+    ][0]["parameters"]
+
+
+@pytest.mark.parametrize(
+    ("auth_mode", "base_url", "expected"),
+    (
+        ("chatgpt", None, True),
+        ("api_key", None, True),
+        ("api_key", "https://api.openai.com/v1", True),
+        ("api_key", "https://us.api.openai.com/v1", True),
+        ("api_key", "https://api.x.ai/v1", False),
+        ("api_key", "http://127.0.0.1:11434/v1", False),
+    ),
+)
+def test_codex_selects_endpoint_compatible_dynamic_tool_shape(
+    auth_mode: str,
+    base_url: str | None,
+    expected: bool,
+) -> None:
+    assert (
+        provider._codex_uses_namespaced_tools(
+            auth_mode=auth_mode,
+            base_url=base_url,
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    (
+        None,
+        "https://api.x.ai/v1",
+        "http://127.0.0.1:11434/v1",
+    ),
+)
+def test_codex_forwards_its_exact_dynamic_tool_call_id(
+    monkeypatch,
+    base_url: str | None,
+) -> None:
+    monkeypatch.setattr(
+        codex_responses,
+        "codex_responses_base_url",
+        lambda value: value,
+    )
+
     class _Client:
         def __init__(
             self,
@@ -216,9 +279,16 @@ def test_codex_forwards_its_exact_dynamic_tool_call_id(monkeypatch) -> None:
 
         def request(self, method, params, timeout):
             if method == "thread/start":
-                namespace = params["dynamicTools"][0]
-                self.namespace = namespace["name"]
-                self.tool = namespace["tools"][0]["name"]
+                assert "Operate only through the supplied VibeCAD tools" in params[
+                    "developerInstructions"
+                ]
+                dynamic_tool = params["dynamicTools"][0]
+                if dynamic_tool["type"] == "namespace":
+                    self.namespace = dynamic_tool["name"]
+                    self.tool = dynamic_tool["tools"][0]["name"]
+                else:
+                    self.namespace = ""
+                    self.tool = dynamic_tool["name"]
                 return {"thread": {"id": "thread-1"}, "model": "gpt-test"}
             if method == "turn/start":
                 self.server_request_handler(
@@ -265,6 +335,7 @@ def test_codex_forwards_its_exact_dynamic_tool_call_id(monkeypatch) -> None:
         model="gpt-test",
         api_key="test-key",
         auth_mode="api_key",
+        base_url=base_url,
     )
 
     result = active_provider.run("Set the view.", context, tool_runner=runner)
@@ -1200,6 +1271,12 @@ def test_openai_api_key_and_plan_mode_run_through_codex(
     )
     assert thread_request["modelProvider"] == codex.CODEX_OPENAI_PROVIDER_ID
     assert thread_request["config"]["include_collaboration_mode_instructions"] is True
+    assert "Operate only through the supplied VibeCAD tools" in thread_request[
+        "developerInstructions"
+    ]
+    assert all(
+        tool["type"] == "function" for tool in thread_request["dynamicTools"]
+    )
     turn_request = next(
         params for method, params in client.requests if method == "turn/start"
     )

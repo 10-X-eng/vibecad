@@ -7,6 +7,7 @@ set(VibeCAD_Scripts
     VibeCADAuthoringMode.py
     VibeCADAuthoringModePolicy.py
     VibeCADCodex.py
+    VibeCADCodexResponses.py
     VibeCADComponentCatalog.py
     VibeCADCore.py
     VibeCADDebug.py
@@ -29,6 +30,8 @@ set(VibeCAD_Scripts
     VibeCADMechanismEngine.py
     VibeCADMechanismGeometry.py
     VibeCADMCP.py
+    VibeCADMCPStdio.py
+    VibeCADMCPToolNames.py
     VibeCADModelingSurface.py
     VibeCADNativeActionManifest.py
     VibeCADNativeArguments.py

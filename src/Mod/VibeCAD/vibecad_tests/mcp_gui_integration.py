@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Live GUI gate for authenticated MCP control and dynamic tool parity."""
+"""Live GUI gate for local stdio MCP control and dynamic tool parity."""
 
 from __future__ import annotations
 
@@ -44,20 +44,22 @@ def _live_tool_contracts() -> list[dict[str, Any]]:
 
 
 def _normalized_contracts(contracts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from VibeCADMCPToolNames import mcp_wire_tool_schemas
+
+    advertised, _routing = mcp_wire_tool_schemas(contracts)
     return [
         {
             "name": str(item.get("name") or ""),
             "description": str(item.get("description") or ""),
             "parameters": dict(item.get("parameters") or {}),
         }
-        for item in contracts
+        for item in advertised
     ]
 
 
 def run() -> None:
-    import httpx2
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamable_http_client
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
     import VibeCADGui
     from VibeCADMCP import get_control_mode_controller
     from VibeCADPreferences import (
@@ -100,7 +102,6 @@ def run() -> None:
         assert controller.snapshot()["internal_agent_enabled"] is False
         assert VibeCADGui.AskAICommand().IsActive() is False
         configuration = controller.connection_configuration()
-        token_header = configuration["headers"]
 
         def client_worker() -> None:
             async def execute() -> None:
@@ -109,110 +110,103 @@ def run() -> None:
                         str(getattr(message, "method", ""))
                         == "notifications/tools/list_changed"
                     ):
-                        observed["tool_list_notifications"] = int(
-                            observed.get("tool_list_notifications", 0)
-                        ) + 1
+                        observed["tool_list_notifications"] = (
+                            int(observed.get("tool_list_notifications", 0)) + 1
+                        )
 
-                async with httpx2.AsyncClient() as unauthenticated:
-                    response = await unauthenticated.post(
-                        configuration["url"], content=b"{}"
-                    )
-                    observed["unauthenticated_status"] = response.status_code
-                async with httpx2.AsyncClient(headers=token_header) as client:
-                    async with streamable_http_client(
-                        configuration["url"], http_client=client
-                    ) as (read_stream, write_stream):
-                        async with ClientSession(
-                            read_stream,
-                            write_stream,
-                            message_handler=handle_message,
-                        ) as session:
-                            initialized = await session.initialize()
-                            tool_capability = getattr(
-                                initialized.capabilities, "tools", None
-                            )
-                            observed["tools_list_changed_capability"] = bool(
-                                getattr(tool_capability, "list_changed", False)
-                            )
-                            listed = await session.list_tools()
-                            observed["model_contracts"] = [
-                                {
-                                    "name": tool.name,
-                                    "description": tool.description or "",
-                                    "parameters": dict(tool.input_schema),
-                                }
-                                for tool in listed.tools
-                            ]
-                            workbench = await session.call_tool(
-                                "vibecad.read_workbench", {}
-                            )
-                            observed["workbench_read"] = workbench.structured_content
-                            api_read = await session.call_tool(
-                                "vibescript.read_api", {}
-                            )
-                            observed["api_read_error"] = api_read.is_error
-                            review = await session.call_tool(
-                                "conversation.review_design",
-                                {
-                                    "customer_intent": "Verify MCP provider isolation.",
-                                    "design_draft": (
-                                        "This test proposes no CAD mutation; it verifies that "
-                                        "an MCP tool cannot launch any configured internal "
-                                        "model provider."
-                                    ),
-                                },
-                            )
-                            observed["review"] = review.structured_content
-                            assembly_notification_count = int(
-                                observed.get("tool_list_notifications", 0)
-                            )
-                            request_assembly.set()
-                            await asyncio.to_thread(assembly_changed.wait)
-                            assembly_tools = await session.list_tools()
-                            observed["assembly_contracts"] = [
-                                {
-                                    "name": tool.name,
-                                    "description": tool.description or "",
-                                    "parameters": dict(tool.input_schema),
-                                }
-                                for tool in assembly_tools.tools
-                            ]
-                            await asyncio.sleep(0.25)
-                            observed["assembly_tool_list_notifications"] = int(
-                                observed.get("tool_list_notifications", 0)
-                            ) - assembly_notification_count
-                            request_mesh.set()
-                            await asyncio.to_thread(mesh_changed.wait)
-                            notification_deadline = time.monotonic() + 5.0
-                            while (
-                                int(observed.get("tool_list_notifications", 0))
-                                <= assembly_notification_count
-                                and time.monotonic() < notification_deadline
-                            ):
-                                await asyncio.sleep(0.05)
-                            mesh_tools = await session.list_tools()
-                            observed["mesh_contracts"] = [
-                                {
-                                    "name": tool.name,
-                                    "description": tool.description or "",
-                                    "parameters": dict(tool.input_schema),
-                                }
-                                for tool in mesh_tools.tools
-                            ]
-                            target_ready.set()
-                            await asyncio.to_thread(continue_client.wait)
-                            notification_count = int(
-                                observed.get("tool_list_notifications", 0)
-                            )
-                            request_restore.set()
-                            await asyncio.to_thread(restore_changed.wait)
-                            notification_deadline = time.monotonic() + 5.0
-                            while (
-                                int(observed.get("tool_list_notifications", 0))
-                                <= notification_count
-                                and time.monotonic() < notification_deadline
-                            ):
-                                await asyncio.sleep(0.05)
+                parameters = StdioServerParameters(
+                    command=configuration["command"],
+                    args=list(configuration["args"]),
+                )
+                async with stdio_client(parameters) as (read_stream, write_stream):
+                    async with ClientSession(
+                        read_stream,
+                        write_stream,
+                        message_handler=handle_message,
+                    ) as session:
+                        initialized = await session.initialize()
+                        tool_capability = getattr(
+                            initialized.capabilities, "tools", None
+                        )
+                        observed["tools_list_changed_capability"] = bool(
+                            getattr(tool_capability, "list_changed", False)
+                        )
+                        listed = await session.list_tools()
+                        observed["model_contracts"] = [
+                            {
+                                "name": tool.name,
+                                "description": tool.description or "",
+                                "parameters": dict(tool.input_schema),
+                            }
+                            for tool in listed.tools
+                        ]
+                        workbench = await session.call_tool("ReadWorkbench", {})
+                        observed["workbench_read"] = workbench.structured_content
+                        api_read = await session.call_tool("ReadApi", {})
+                        observed["api_read_error"] = api_read.is_error
+                        review = await session.call_tool(
+                            "ReviewDesign",
+                            {
+                                "customer_intent": "Verify MCP provider isolation.",
+                                "design_draft": (
+                                    "This test proposes no CAD mutation; it verifies that "
+                                    "an MCP tool cannot launch any configured internal "
+                                    "model provider."
+                                ),
+                            },
+                        )
+                        observed["review"] = review.structured_content
+                        assembly_notification_count = int(
+                            observed.get("tool_list_notifications", 0)
+                        )
+                        request_assembly.set()
+                        await asyncio.to_thread(assembly_changed.wait)
+                        assembly_tools = await session.list_tools()
+                        observed["assembly_contracts"] = [
+                            {
+                                "name": tool.name,
+                                "description": tool.description or "",
+                                "parameters": dict(tool.input_schema),
+                            }
+                            for tool in assembly_tools.tools
+                        ]
+                        await asyncio.sleep(0.25)
+                        observed["assembly_tool_list_notifications"] = (
+                            int(observed.get("tool_list_notifications", 0))
+                            - assembly_notification_count
+                        )
+                        request_mesh.set()
+                        await asyncio.to_thread(mesh_changed.wait)
+                        notification_deadline = time.monotonic() + 5.0
+                        while (
+                            int(observed.get("tool_list_notifications", 0))
+                            <= assembly_notification_count
+                            and time.monotonic() < notification_deadline
+                        ):
+                            await asyncio.sleep(0.05)
+                        mesh_tools = await session.list_tools()
+                        observed["mesh_contracts"] = [
+                            {
+                                "name": tool.name,
+                                "description": tool.description or "",
+                                "parameters": dict(tool.input_schema),
+                            }
+                            for tool in mesh_tools.tools
+                        ]
+                        target_ready.set()
+                        await asyncio.to_thread(continue_client.wait)
+                        notification_count = int(
+                            observed.get("tool_list_notifications", 0)
+                        )
+                        request_restore.set()
+                        await asyncio.to_thread(restore_changed.wait)
+                        notification_deadline = time.monotonic() + 5.0
+                        while (
+                            int(observed.get("tool_list_notifications", 0))
+                            <= notification_count
+                            and time.monotonic() < notification_deadline
+                        ):
+                            await asyncio.sleep(0.05)
 
             try:
                 asyncio.run(execute())
@@ -242,14 +236,11 @@ def run() -> None:
         assert observed.get("tool_list_notifications", 0) >= 1
         assert Gui.activeWorkbench().name() == "MeshWorkbench"
         expected_mesh = _normalized_contracts(_live_tool_contracts())
-        assert observed["unauthenticated_status"] == 401
         assert observed["tools_list_changed_capability"] is True
         assert observed["model_contracts"] == expected_model
         assert observed["assembly_contracts"] == expected_model
         assert observed["mesh_contracts"] == expected_mesh
-        assert observed["workbench_read"]["active_workbench"] == (
-            "PartDesignWorkbench"
-        )
+        assert observed["workbench_read"]["active_workbench"] == ("PartDesignWorkbench")
         assert observed["workbench_read"]["available_workbenches"] == [
             {"name": "PartDesignWorkbench", "label": "Model"},
             {"name": "AssemblyWorkbench", "label": "Assemble"},
@@ -260,17 +251,14 @@ def run() -> None:
             {"name": "SpreadsheetWorkbench", "label": "Parameters"},
         ]
         assert observed["api_read_error"] is False
-        assert observed["review"]["failure_code"] == "PROVIDER_CALL_DISABLED", (
-            observed["review"]
-        )
+        assert observed["review"]["failure_code"] == "PROVIDER_CALL_DISABLED", observed[
+            "review"
+        ]
 
         preference_page._refresh_mcp_status()
         assert preference_page.mcp_state.text() == "mcp"
-        assert preference_page.mcp_endpoint.text() == configuration["url"]
+        assert preference_page.mcp_transport.text() == "stdio"
         assert preference_page.mcp_connection.text() in {"listening", "active"}
-        expected_token = token_header["Authorization"].removeprefix("Bearer ")
-        assert preference_page.mcp_token.text() == expected_token
-        assert preference_page.copy_mcp_token.isEnabled()
         assert preference_page.copy_mcp_configuration.isEnabled()
 
         continue_client.set()
@@ -287,12 +275,11 @@ def run() -> None:
         _wait(lambda: controller.snapshot()["state"] == "internal")
         assert controller.snapshot()["internal_agent_enabled"] is True
         assert controller.snapshot()["pid"] is None
-        assert controller.snapshot()["token_available"] is True
 
         controller.request_mcp_enabled(True)
         _wait(lambda: controller.snapshot()["state"] == "mcp")
         restarted_configuration = controller.connection_configuration()
-        assert restarted_configuration["headers"] == token_header
+        assert restarted_configuration == configuration
         controller.request_mcp_enabled(False)
         _wait(lambda: controller.snapshot()["state"] == "internal")
         print(
@@ -317,7 +304,7 @@ def run() -> None:
 
 
 class TestVibeCADMCPGUI(unittest.TestCase):
-    def test_authenticated_dynamic_mcp_control(self) -> None:
+    def test_local_stdio_dynamic_mcp_control(self) -> None:
         if not App.GuiUp or Gui.getMainWindow() is None:
             self.skipTest("Requires GUI")
         run()

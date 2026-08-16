@@ -884,6 +884,12 @@ def shutdown_managed_codex_sessions() -> None:
             client.close()
         except Exception:
             pass
+    try:
+        from VibeCADCodexResponses import shutdown_codex_responses_gateways
+
+        shutdown_codex_responses_gateways()
+    except Exception:
+        pass
 
 
 atexit.register(shutdown_managed_codex_sessions)
