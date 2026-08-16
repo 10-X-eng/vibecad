@@ -1042,6 +1042,7 @@ set(VibeCAD_Scripts
     VibeCADNativeView.py
     VibeCADNativeTransaction.py
     VibeCADObjectDeletion.py
+    VibeCADOllama.py
     VibeCADPreferences.py
     VibeCADPromptStarters.py
     VibeCADProvider.py
@@ -1293,6 +1294,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_provider_thread_gui_integration.py
     vibecad_tests/native_codex_thread_gui_integration.py
     vibecad_tests/native_codex_cross_ribbon_gui_integration.py
+    vibecad_tests/ollama_vibescript_live_acceptance.py
         vibecad_tests/native_common_gui_integration.py
         vibecad_tests/native_model_chamfer_gui_integration.py
         vibecad_tests/native_model_draft_gui_integration.py

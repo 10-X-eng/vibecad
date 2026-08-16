@@ -11,10 +11,8 @@ from VibeCADComponentCatalog import MAX_COMPONENT_SEARCH_RESULTS
 TOOL_SPEC = {
     "name": "component_catalog.search",
     "description": (
-        "Search reusable components absent from available_components. Pass references "
-        "to api.component. Enumerate with query omitted, detail='references', limit=200, "
-        "offset=0; always repeat at next_offset until null because byte-safe pages may "
-        "return fewer than limit."
+        "Search reusable components absent from available_components. Returned "
+        "references are valid api.component inputs; follow next_offset until null."
     ),
     "contextual": False,
     "requires_document": True,
@@ -27,28 +25,28 @@ TOOL_SPEC = {
             "query": {
                 "type": "string",
                 "maxLength": 256,
-                "description": "Words matched anywhere in component metadata.",
+                "description": "Metadata search words.",
             },
             "document_path": {
                 "type": "string",
                 "maxLength": 2048,
-                "description": "Optional project-relative .FCStd path.",
+                "description": "Project-relative .FCStd path.",
             },
             "limit": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": MAX_COMPONENT_SEARCH_RESULTS,
-                "description": "Requested page size: 1 to 200; returned_count may be smaller.",
+                "description": "Requested page size.",
             },
             "offset": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Start at 0; continue at returned next_offset.",
+                "description": "Page offset.",
             },
             "detail": {
                 "type": "string",
                 "enum": ["references", "full"],
-                "description": "references is compact; full (default) includes metadata.",
+                "description": "Compact references or full metadata.",
             },
         },
         "additionalProperties": False,

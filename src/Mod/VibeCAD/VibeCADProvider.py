@@ -59,11 +59,11 @@ ANTHROPIC_ADAPTIVE_EFFORT = {
 ANTHROPIC_STREAM_MAX_ATTEMPTS = 3
 
 
-VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical design engineer for the user's live FreeCAD model.
+VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical engineer for the user's live FreeCAD model.
 
-CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Treat explicit user constraints as requirements. A correction changes only the named geometry; preserve the existing architecture, identity, and history unless replacement or redesign was requested. Build editable, parametric geometry meeting function, dimensions, fit, manufacturability, and appearance. Default to catalog fasteners. Decide unspecified details; ask only if a choice changes function or geometry.
+CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Meet explicit requirements and decide ordinary engineering details. Ask only when an answer changes function or geometry. Build editable parametric geometry for the requested function, dimensions, fit, manufacture, and appearance. Preserve existing identity and history unless replacement is requested; a correction changes only the named design. Prefer catalog fasteners.
 
-Use only the tools exposed for this turn and exact state returned in the current context or by a tool; never guess names, references, revisions, or API members. Fix failures before dependent features; never repeat an unchanged failure. Hide source bodies when reviewing assembly occurrences. Before claiming completion, verify requested dimensions, topology, interfaces, clearances, assembly retention, service motion, manufacturability, and appearance; capture the viewport for visual judgment. Never claim work or verification not performed."""
+Use only exposed tools and exact returned state. Never invent names, references, revisions, or API members. Resolve a failed operation before dependent work and never repeat an unchanged failure. Verify requested geometry, interfaces, clearances, motion, manufacturability, and appearance before claiming completion; use a viewport capture for visual judgment. Never claim work or verification not performed."""
 
 
 ANTHROPIC_TURN_COMPACTION_INSTRUCTIONS = """You compact one unfinished VibeCAD agent turn.
@@ -117,30 +117,23 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
         if part_pack is None or assembly_pack is None:
             return ""
         return (
-            "VIBESCRIPT MODEL + ASSEMBLY AUTHORING\n"
-            "Model and Assembly are one authoring surface; the visible ribbon is "
-            "presentation only. For a new source, pass domain='partdesign' to "
-            "vibescript.create_program for part geometry or domain='assembly' for "
-            "occurrences, joints, mechanisms, and simulations. Read the matching API "
-            "with vibescript.read_api(domain=...). Existing sources route by their "
-            "human-readable program reference without a workbench switch.\n"
+            "VIBESCRIPT MODEL + ASSEMBLY\n"
+            "VibeScript source is Python: use only doc, inputs, and api; call exported "
+            "operations as api.name(...), assign with '=', and finish with a result "
+            "mapping. Lengths are mm and angles are degrees. Never use arrow syntax or "
+            "unqualified API calls. Minimal part:\n"
+            "shape = api.cylinder(25.0, 100.0, label='Cylinder')\n"
+            "result = {'Body': api.publish(shape, label='Cylinder')}\n"
+            "Use domain='partdesign' for part geometry and domain='assembly' for "
+            "occurrences, joints, mechanisms, and simulations. Read only needed calls "
+            "with vibescript.read_api(domain=..., names=[...]) or groups=[...]. Existing "
+            "sources route by their program reference; the visible ribbon is presentation.\n"
             f"PARTS: {part_pack.instructions}\n"
             f"ASSEMBLIES: {assembly_pack.instructions}\n"
-            "Use definitions in available_components with api.component or "
-            "api.instances; search only when the needed item is absent or needs more "
-            "metadata. editable_sources.all_sources lists both domains; each item is "
-            "one editable part or program, including failed and unbuilt code. Copy its "
-            "program reference into vibescript.read_source before editing, then send "
-            "the complete updated source "
-            "and revision to vibescript.edit_source, and use "
-            "vibescript.build_program only to rebuild unchanged code. Source receives "
-            "immutable doc and api values plus validated inputs. Reuse existing source. "
-            "Use vibescript.set_inputs for a value-only change; otherwise include "
-            "changed inputs, input_schema, or expected_outputs with "
-            "vibescript.edit_source. Use "
-            "vibescript.read_geometry for imported or unfamiliar geometry and "
-            "vibescript.read_placement before relying on an unfamiliar coordinate "
-            "convention."
+            "Reuse editable_sources: read_source before edit_source; use set_inputs for "
+            "values only and build_program for unchanged code. Use available_components "
+            "with api.component/api.instances; search only when absent. Inspect unfamiliar "
+            "geometry or coordinates with read_geometry/read_placement."
         )
     component_instruction = (
         " Use a definition in available_components with api.component or api.instances. "
@@ -154,23 +147,17 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
     )
     return (
         f"VIBESCRIPT {pack.title.upper()} AUTHORING\n"
-        f"Write CAD only through the active {pack.title} VibeScript API. "
-        f"{pack.instructions}{component_instruction}\n\n"
-        "Each editable_sources item is one editable part or program, including failed "
-        "and unbuilt code. Copy its program reference into vibescript.read_source before "
-        "editing; send the complete updated source and returned revision to "
-        "vibescript.edit_source. Use vibescript.build_program to rebuild unchanged code. "
-        "Use vibescript.read_geometry on an exact object reference before depending on "
-        "imported or unfamiliar geometry. "
-        "Use vibescript.read_placement before relying on an unfamiliar sketch plane or "
-        "oriented primitive. "
-        "Read only needed API calls with vibescript.read_api(names=[...]) or groups=[...]. "
-        "Source receives immutable doc and api values plus validated inputs. Outputs "
-        "keep stable names and must use these types: "
+        "Source is Python: use only doc, inputs, and api; call api.name(...), assign "
+        "with '=', and finish with a result mapping. Never use arrow syntax or "
+        "unqualified API calls. "
+        f"{pack.instructions}{component_instruction}\n"
+        "Reuse editable_sources. Read source before editing it; send complete source "
+        "and its revision to edit_source. Use build_program for unchanged code. Inspect "
+        "unfamiliar geometry/coordinates with read_geometry/read_placement. Read only "
+        "needed API calls with read_api. Output names stay stable and types must be: "
         + ", ".join(pack.output_types)
-        + ". Reuse existing source. Use vibescript.set_inputs for a value-only change; "
-        "otherwise use vibescript.edit_source and include any changed inputs, input_schema, "
-        "or expected_outputs in the same call."
+        + ". Use set_inputs for values only; otherwise include changed inputs, schema, "
+        "or outputs in edit_source."
     )
 
 
@@ -738,8 +725,61 @@ class CodexProvider(BaseProvider):
             vibecad_thread_config,
         )
         from VibeCADCodexResponses import codex_responses_base_url
+        from VibeCADOllama import codex_context_limits, inspect_model
 
         live_context = dict(context)
+        ollama_model: dict[str, Any] = {}
+        model_context_window: int | None = None
+        model_auto_compact_token_limit: int | None = None
+        if self.auth_mode == "api_key" and self.base_url and self.model:
+            ollama_model = inspect_model(
+                self.base_url,
+                self.model,
+                preload=True,
+            )
+            if ollama_model.get("detected"):
+                if not ollama_model.get("ok"):
+                    raise ProviderUnavailable(
+                        "VibeCAD found Ollama but could not inspect the selected "
+                        f"model: {ollama_model.get('error') or 'unknown error'}"
+                    )
+                capabilities = set(ollama_model.get("capabilities") or [])
+                if capabilities and "tools" not in capabilities:
+                    raise ProviderUnavailable(
+                        f"Ollama model {self.model!r} does not advertise tool calling."
+                    )
+                runtime_context = int(
+                    ollama_model.get("runtime_context_length") or 0
+                )
+                if runtime_context <= 0:
+                    raise ProviderUnavailable(
+                        "Ollama loaded the selected model but did not report its "
+                        "allocated context length."
+                    )
+                supported_context = int(
+                    ollama_model.get("supported_context_length") or 0
+                )
+                effective_context = (
+                    min(runtime_context, supported_context)
+                    if supported_context > 0
+                    else runtime_context
+                )
+                (
+                    model_context_window,
+                    model_auto_compact_token_limit,
+                ) = codex_context_limits(effective_context)
+                _emit_provider_progress(
+                    progress_callback,
+                    {
+                        "event": "provider_model_ready",
+                        "provider": "Ollama via Codex",
+                        "model": self.model,
+                        "context_window": model_context_window,
+                        "auto_compact_token_limit": (
+                            model_auto_compact_token_limit
+                        ),
+                    },
+                )
         interaction_mode = (
             str(live_context.get("_vibecad_interaction_mode") or "build")
             .strip()
@@ -972,6 +1012,8 @@ class CodexProvider(BaseProvider):
                     "arguments": _tool_arguments_summary(arguments_json),
                 },
             )
+            with state_lock:
+                previous_context = _json_safe(live_context)
             result = _call_parent_tool(
                 tool_runner,
                 tool_name,
@@ -982,9 +1024,13 @@ class CodexProvider(BaseProvider):
             with state_lock:
                 live_context = updated_context
             model_result = _provider_visible_tool_result(result)
-            model_result["vibecad_state_after"] = _provider_state_after_tool(
-                updated_context, result
+            state_after = _provider_state_after_tool(
+                updated_context,
+                result,
+                previous_context=previous_context,
             )
+            if state_after:
+                model_result["vibecad_state_after"] = state_after
             content_items: list[dict[str, Any]] = [
                 {
                     "type": "inputText",
@@ -1085,6 +1131,10 @@ class CodexProvider(BaseProvider):
                 "base_url": self.base_url or "",
                 "web_search_enabled": self.web_search_enabled,
                 "skills_enabled": self.skills_enabled,
+                "model_context_window": model_context_window,
+                "model_auto_compact_token_limit": (
+                    model_auto_compact_token_limit
+                ),
                 "api_key_sha256": (
                     hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()
                     if self.api_key
@@ -1209,6 +1259,10 @@ class CodexProvider(BaseProvider):
                         (codex_base_url or "")
                         if self.auth_mode == "api_key"
                         else None
+                    ),
+                    model_context_window=model_context_window,
+                    model_auto_compact_token_limit=(
+                        model_auto_compact_token_limit
                     ),
                 ),
                 "serviceName": "vibecad",
@@ -1353,12 +1407,39 @@ class CodexProvider(BaseProvider):
                     completed_error
                     or f"Codex turn ended with {completed_status or 'unknown status'}."
                 )
+            if not final_output:
+                context_note = (
+                    f" The provider context window was {model_context_window} tokens."
+                    if model_context_window is not None
+                    else ""
+                )
+                raise ProviderUnavailable(
+                    "Codex completed without a final agent message; VibeCAD refused "
+                    "to accept an empty result. The provider may have truncated or "
+                    f"exhausted its context.{context_note}"
+                )
             return ProviderResult(
                 final_output=final_output,
                 raw={
                     "thread_id": thread_id,
                     "interaction_mode": interaction_mode,
                     "auth_mode": self.auth_mode,
+                    **(
+                        {
+                            "ollama": {
+                                "model": self.model,
+                                "server_version": ollama_model.get(
+                                    "server_version"
+                                ),
+                                "context_window": model_context_window,
+                                "auto_compact_token_limit": (
+                                    model_auto_compact_token_limit
+                                ),
+                            }
+                        }
+                        if ollama_model.get("detected")
+                        else {}
+                    ),
                 },
             )
         except CodexAppServerError as exc:
@@ -2297,6 +2378,7 @@ def _compact_active_sketch_state(
 def _provider_state_after_tool(
     context: dict[str, Any],
     tool_result: dict[str, Any] | None = None,
+    previous_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     del tool_result
     surface = context.get("modeling_surface")
@@ -2321,6 +2403,10 @@ def _provider_state_after_tool(
     native_state = context.get("native_state")
     if isinstance(native_state, dict):
         result["active_domain"] = _json_safe(native_state)
+    if isinstance(previous_context, dict):
+        previous = _provider_state_after_tool(previous_context)
+        if result == previous:
+            return {}
     return result
 
 

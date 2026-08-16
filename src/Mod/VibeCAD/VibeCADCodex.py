@@ -112,6 +112,8 @@ def vibecad_thread_config(
     skills_enabled: bool = False,
     collaboration_mode_enabled: bool = False,
     openai_base_url: str | None = None,
+    model_context_window: int | None = None,
+    model_auto_compact_token_limit: int | None = None,
 ) -> dict[str, Any]:
     """Build the narrow Codex capability configuration for one VibeCAD turn."""
     config: dict[str, Any] = {
@@ -142,6 +144,22 @@ def vibecad_thread_config(
     }
     if openai_base_url is not None:
         config.update(codex_openai_provider_config(openai_base_url))
+    if model_context_window is not None:
+        context_window = int(model_context_window)
+        if context_window <= 0:
+            raise ValueError("model_context_window must be positive.")
+        config["model_context_window"] = context_window
+    if model_auto_compact_token_limit is not None:
+        compact_limit = int(model_auto_compact_token_limit)
+        if compact_limit <= 0:
+            raise ValueError("model_auto_compact_token_limit must be positive.")
+        if model_context_window is not None and compact_limit >= int(
+            model_context_window
+        ):
+            raise ValueError(
+                "model_auto_compact_token_limit must be below the context window."
+            )
+        config["model_auto_compact_token_limit"] = compact_limit
     return config
 
 

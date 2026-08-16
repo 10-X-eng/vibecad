@@ -53,10 +53,7 @@ def camera_schema(*, allow_auto: bool, default_mode: str) -> dict[str, Any]:
                 "properties": {
                     "mode": {
                         "const": "auto",
-                        "description": (
-                            "Align perpendicular to an open sketch; otherwise use "
-                            "the isometric preset."
-                        ),
+                        "description": "Normal to open sketch, otherwise isometric.",
                     }
                 },
                 "required": ["mode"],
@@ -70,7 +67,7 @@ def camera_schema(*, allow_auto: bool, default_mode: str) -> dict[str, Any]:
                 "properties": {
                     "mode": {
                         "const": "unchanged",
-                        "description": "Keep the current camera orientation.",
+                        "description": "Keep orientation.",
                     }
                 },
                 "required": ["mode"],
@@ -81,12 +78,12 @@ def camera_schema(*, allow_auto: bool, default_mode: str) -> dict[str, Any]:
                 "properties": {
                     "mode": {
                         "const": "preset",
-                        "description": "Use one canonical CAD camera orientation.",
+                        "description": "Use a CAD preset.",
                     },
                     "preset": {
                         "type": "string",
                         "enum": list(PRESET_ORIENTATIONS),
-                        "description": "Canonical orientation to apply.",
+                        "description": "CAD orientation.",
                     },
                 },
                 "required": ["mode", "preset"],
@@ -97,18 +94,13 @@ def camera_schema(*, allow_auto: bool, default_mode: str) -> dict[str, Any]:
                 "properties": {
                     "mode": {
                         "const": "direction",
-                        "description": (
-                            "Use an arbitrary absolute camera orientation in document "
-                            "coordinates."
-                        ),
+                        "description": "Use document-coordinate directions.",
                     },
                     "view_direction": _camera_vector_schema(
-                        "Direction from the camera into the scene. To look directly "
-                        "at a face from outside, use the negative of its outward normal."
+                        "Camera-to-scene direction; negate an outward face normal."
                     ),
                     "up_direction": _camera_vector_schema(
-                        "World-space direction that should point upward on screen. It "
-                        "must not be parallel to view_direction."
+                        "Screen-up direction; not parallel to view_direction."
                     ),
                 },
                 "required": ["mode", "view_direction", "up_direction"],
@@ -119,10 +111,7 @@ def camera_schema(*, allow_auto: bool, default_mode: str) -> dict[str, Any]:
     return {
         "oneOf": modes,
         "default": {"mode": default_mode},
-        "description": (
-            "Exact camera orientation. Framing independently chooses what geometry "
-            "the camera centers and fits."
-        ),
+        "description": "Camera orientation; framing is independent.",
     }
 
 
@@ -142,11 +131,8 @@ def _camera_vector_schema(description: str) -> dict[str, Any]:
 
 TOOL_SPEC = {
     "description": (
-        "Orient the camera to a preset or any explicit view/up direction, frame an "
-        "exact CAD target, adjust zoom, control Sketcher annotations, or change object "
-        "visibility in the active viewport. Object names must be exact internal names "
-        "from current CAD state. frame='active_sketch' fits the real curve extents, "
-        "not remote arc centers or constraint labels."
+        "Set camera, framing, zoom, sketch annotations, and object visibility. "
+        "Use exact internal object names."
     ),
     "name": "core.set_view",
     "parameters": {
@@ -158,40 +144,38 @@ TOOL_SPEC = {
                 "enum": list(FRAME_MODES),
                 "default": "none",
                 "description": (
-                    "Center and fit the whole scene, active sketch, current selection, "
-                    "or object_names."
+                    "Target to center and fit."
                 ),
             },
             "object_names": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
-                "description": "Exact objects to frame when frame is objects.",
+                "description": "Objects for frame='objects'.",
             },
             "zoom_steps": {
                 "type": "integer",
                 "minimum": -12,
                 "maximum": 12,
                 "default": 0,
-                "description": "Positive zooms in; negative zooms out after framing.",
+                "description": "Positive zooms in.",
             },
             "sketch_annotations": {
                 "type": "string",
                 "enum": list(SKETCH_ANNOTATION_MODES),
                 "default": "unchanged",
                 "description": (
-                    "Show or hide Sketcher constraint icons, dimensions, leaders, and "
-                    "internal-alignment geometry without changing the sketch."
+                    "Sketch constraint/dimension overlays."
                 ),
             },
             "show_objects": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
-                "description": "Exact internal object names to make visible.",
+                "description": "Objects to show.",
             },
             "hide_objects": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
-                "description": "Exact internal object names to hide.",
+                "description": "Objects to hide.",
             },
         },
         "additionalProperties": False,

@@ -1461,6 +1461,67 @@ def _load_conversation_for_session(
     return dict(history) if isinstance(history, dict) else {"conversation": []}
 
 
+_PROVIDER_REDUNDANT_SOURCE_FIELDS = frozenset(
+    {
+        "read_tool",
+        "read_arguments",
+        "build_tool",
+        "build_arguments",
+        "edit_tool",
+        "edit_target_arguments",
+        "delete_output_tool",
+        "delete_program_tool",
+    }
+)
+
+
+def _provider_editable_sources_payload(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove tool-schema duplication from the model-visible source index."""
+
+    result = {
+        key: item
+        for key, item in value.items()
+        if key != "tools"
+        and not (
+            key in {"sources_truncated", "sources_omitted"}
+            and item in (False, 0)
+        )
+    }
+    for collection_name in ("sources", "all_sources", "component_sources"):
+        collection = result.get(collection_name)
+        if not isinstance(collection, list):
+            continue
+        result[collection_name] = [
+            {
+                key: item
+                for key, item in source.items()
+                if key not in _PROVIDER_REDUNDANT_SOURCE_FIELDS
+            }
+            for source in collection
+            if isinstance(source, Mapping)
+        ]
+    return result
+
+
+def _provider_component_inventory_payload(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep empty component discovery truthful without its unused instructions."""
+
+    if int(value.get("component_count") or 0) != 0:
+        return dict(value)
+    return {
+        key: value[key]
+        for key in (
+            "schema",
+            "component_count",
+            "project_file_search_available",
+            "catalog_health",
+        )
+        if key in value and value[key] not in (None, "", [], {})
+    }
+
+
 def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "workbench",
@@ -1471,11 +1532,22 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
         "editable_sources",
         "available_components",
     )
-    return {
+    result = {
         key: context[key]
         for key in keys
         if key in context and context[key] not in (None, "", [], {})
     }
+    editable_sources = result.get("editable_sources")
+    if isinstance(editable_sources, Mapping):
+        result["editable_sources"] = _provider_editable_sources_payload(
+            editable_sources
+        )
+    components = result.get("available_components")
+    if isinstance(components, Mapping):
+        result["available_components"] = _provider_component_inventory_payload(
+            components
+        )
+    return result
 
 
 def _bounded_conversation_content(content: str) -> tuple[str, bool]:
@@ -2607,23 +2679,12 @@ def _filtered_api_payload(
             "ok",
             "domain",
             "workbench",
-            "units",
         )
         if key in result
     }
     focused.update(
         {
             "runtime_exports": [by_name[name] for name in ordered_names],
-            "selected_names": ordered_names,
-            "selected_groups": groups,
-            "selected_group_members": {
-                group: api_groups[group] for group in groups
-            },
-            "available_groups": list(api_groups),
-            "read_more": {
-                "tool": "vibescript.read_api",
-                "arguments": {"names": ["exact_callable_name"]},
-            },
             "_vibecad_complete_api_result": False,
         }
     )

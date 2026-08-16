@@ -332,9 +332,17 @@ def fetch_models_for_provider(
             "models": [],
             "error": f"No {display} API key is configured.",
         }
-    return list_provider_models(
+    result = list_provider_models(
         credential.value, provider=clean_provider, base_url=base_url
     )
+    if clean_provider == "openai" and result.get("ok") and base_url:
+        from VibeCADOllama import inspect_models
+
+        ollama = inspect_models(str(base_url), list(result.get("models") or []))
+        if ollama.get("detected"):
+            result["provider_runtime"] = "ollama"
+            result["model_details"] = dict(ollama.get("models") or {})
+    return result
 
 
 class VibeCADPreferencesPage:
@@ -853,7 +861,12 @@ class VibeCADPreferencesPage:
             return "Use active ChatGPT model"
         return "Use active OpenAI model"
 
-    def _apply_provider_models(self, provider: str, models: list[str]) -> None:
+    def _apply_provider_models(
+        self,
+        provider: str,
+        models: list[str],
+        model_details: dict[str, dict] | None = None,
+    ) -> None:
         combo = self._provider_model_combo(provider)
         current = (
             str(combo.currentData() or "").strip()
@@ -884,7 +897,26 @@ class VibeCADPreferencesPage:
             self._provider_active_memory_label(provider),
         )
         display = PROVIDERS[provider].display_name
-        self.status.setText(f"models_ok | {display} | {len(models)} models")
+        selected_model = (
+            str(combo.currentData() or "").strip()
+            if provider == "chatgpt"
+            else combo.currentText().strip()
+        )
+        selected_details = dict((model_details or {}).get(selected_model) or {})
+        runtime_context = int(
+            selected_details.get("runtime_context_length") or 0
+        )
+        supported_context = int(
+            selected_details.get("supported_context_length") or 0
+        )
+        context_status = ""
+        if runtime_context > 0:
+            context_status = f" | allocated context {runtime_context:,}"
+        elif supported_context > 0:
+            context_status = f" | supports context {supported_context:,}"
+        self.status.setText(
+            f"models_ok | {display} | {len(models)} models{context_status}"
+        )
 
     def _fetch_models(self) -> None:
         provider = self._selected_provider()
@@ -905,7 +937,11 @@ class VibeCADPreferencesPage:
         if not result["ok"]:
             self.status.setText(f"models_error | {result['error']}")
             return
-        self._apply_provider_models(provider, list(result["models"]))
+        self._apply_provider_models(
+            provider,
+            list(result["models"]),
+            dict(result.get("model_details") or {}),
+        )
 
     def _save_api_key(self) -> None:
         result = store_keyring_key(

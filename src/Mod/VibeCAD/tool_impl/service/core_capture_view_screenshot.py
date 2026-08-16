@@ -24,10 +24,8 @@ DUPLICATE_VISUAL_DIFFERENCE_THRESHOLD = 0.005
 
 TOOL_SPEC = {
     "description": (
-        "Return an image of the current 3D view for visual verification of shape, "
-        "proportion, placement, and appearance. frame='auto' frames the open sketch "
-        "or otherwise the full model. sketch_annotations='clean' hides sketch overlays "
-        "for this image without changing the model or saved display settings."
+        "Capture the 3D view for visual verification. auto frames an open sketch or "
+        "the full model; clean temporarily hides sketch overlays."
     ),
     "name": "core.capture_view_screenshot",
     "parameters": {
@@ -41,20 +39,19 @@ TOOL_SPEC = {
                 "type": "string",
                 "enum": list(CAPTURE_FRAME_MODES),
                 "default": "auto",
-                "description": "Exact viewport target to frame before capture.",
+                "description": "Viewport target.",
             },
             "object_names": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
-                "description": "Exact internal names when frame is objects.",
+                "description": "Objects for frame='objects'.",
             },
             "sketch_annotations": {
                 "type": "string",
                 "enum": list(CAPTURE_ANNOTATION_MODES),
                 "default": "clean",
                 "description": (
-                    "Temporarily hide sketch annotations for this capture or preserve "
-                    "their current display state."
+                    "Hide or retain sketch overlays for this capture."
                 ),
             },
         },
