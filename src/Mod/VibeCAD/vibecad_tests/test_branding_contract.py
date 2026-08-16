@@ -87,7 +87,7 @@ class TestVibeCADNativePanelStartup(unittest.TestCase):
 class TestVibeCADResponsiveAssistant(unittest.TestCase):
     """Exercise the compact composer against the real Qt layout engine."""
 
-    def test_shift_enter_sends_while_plain_enter_edits(self) -> None:
+    def test_ctrl_enter_sends_while_plain_enter_edits(self) -> None:
         import FreeCAD as App
 
         if not App.GuiUp:
@@ -112,15 +112,15 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
             self.assertTrue(prompt.property("VibeSubmitFilterInstalled"))
             send_button = root.findChild(QtWidgets.QPushButton, "VibeSend")
             self.assertIsNotNone(send_button)
-            self.assertIn("Shift+Enter", send_button.toolTip())
+            self.assertIn("Ctrl+Enter", send_button.toolTip())
             prompt.setPlainText("Build the mounting bracket")
 
-            shift_enter = QtGui.QKeyEvent(
+            ctrl_enter = QtGui.QKeyEvent(
                 QtCore.QEvent.KeyPress,
                 QtCore.Qt.Key_Return,
-                QtCore.Qt.ShiftModifier,
+                QtCore.Qt.ControlModifier,
             )
-            application.sendEvent(prompt, shift_enter)
+            application.sendEvent(prompt, ctrl_enter)
             self.assertEqual(submitted, ["Build the mounting bracket"])
             self.assertEqual(prompt.toPlainText(), "Build the mounting bracket")
 
@@ -138,6 +138,36 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
                 root.close()
                 root.deleteLater()
                 application.processEvents()
+
+    def test_transcript_turn_starts_outside_prior_markdown_list(self) -> None:
+        import FreeCAD as App
+
+        if not App.GuiUp:
+            self.skipTest("FreeCAD GUI mode is required")
+
+        from PySide import QtWidgets
+
+        import VibeCADGui
+
+        output = QtWidgets.QTextBrowser()
+        VibeCADGui._append_transcript_block(
+            output,
+            VibeCADGui._transcript_block_html(
+                "VibeCAD:\nFinished:\n\n- Added slots\n- Added fillets"
+            ),
+        )
+        VibeCADGui._append_transcript_block(
+            output,
+            VibeCADGui._transcript_block_html("User:\nMake the slots longer"),
+        )
+
+        self.assertIn("Added fillets\n\nUser:", output.toPlainText())
+        rendered = output.document().toHtml()
+        user_position = rendered.index("User:</span>")
+        self.assertGreater(
+            rendered.rfind("</ul>", 0, user_position),
+            rendered.rfind("<ul", 0, user_position),
+        )
 
     def test_narrow_composer_uses_distinct_icons_without_words(self) -> None:
         import FreeCAD as App
