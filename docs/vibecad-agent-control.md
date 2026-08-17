@@ -178,6 +178,18 @@ or
 The CLI prints that JSON and exits `0` on success, `1` on a handled error,
 and `2` when `--gui-only` is set and nothing is listening.
 
+## Aero workbench
+
+The Aero workbench (`VibeCADAero`) can be triggered from `/v1/run` without
+SendKeys. This does not change the assistant, Grok OAuth, or port 8766.
+
+```python
+import VibeCADAero
+result = VibeCADAero.run_analyze(App.ActiveDocument)
+```
+
+See `docs/vibecad-aero.md`.
+
 ## What this channel will not do
 
 - It will not start an OAuth login or accept a password / device code.

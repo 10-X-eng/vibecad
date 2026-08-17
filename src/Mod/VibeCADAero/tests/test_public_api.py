@@ -72,9 +72,6 @@ def test_run_analyze_writes_report_with_injected_solvers(monkeypatch, tmp_path):
 
 
 def test_run_analyze_returns_install_hint_instead_of_raising(monkeypatch):
-    class _Missing(Exception):
-        pass
-
     def boom(*_args, **_kwargs):
         raise VibeCADAero.AeroDependencyError(
             "neuralfoil is not installed. Install it into VibeCAD's bundled Python:\n"

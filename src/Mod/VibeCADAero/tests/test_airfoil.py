@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 import AeroAirfoil as airfoil
@@ -64,5 +62,5 @@ def test_explicit_naca0009_is_allowed():
 def test_missing_airfoil_error_is_explicit(monkeypatch, tmp_path):
     monkeypatch.setattr(airfoil, "_try_import_aerosandbox", lambda: None)
     monkeypatch.setattr(airfoil, "bundled_dat_path", lambda name: tmp_path / f"{name}.dat")
-    with pytest.raises(airfoil.AirfoilLoadError, match="naca2412|install|AeroSandbox|bundled"):
-        airfoil.load_airfoil_coordinates("naca2412")
+    with pytest.raises(airfoil.AirfoilLoadError, match="s1223|install|AeroSandbox|bundled"):
+        airfoil.load_airfoil_coordinates("s1223")

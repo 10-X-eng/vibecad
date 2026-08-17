@@ -1,0 +1,11 @@
+# Optional Aero workbench dependencies.
+# Install them into VibeCAD's bundled interpreter, not a system Python:
+#
+#   "<VibeCAD>\bin\python.exe" -m pip install -r requirements-aero.txt
+#
+# On macOS/Linux the bundled binary is usually `bin/python` next to FreeCAD.
+# Do not vendor wheels into git.
+
+neuralfoil
+aerosandbox
+jsbsim
