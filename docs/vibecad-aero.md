@@ -101,8 +101,13 @@ The plant is written under a user-writable directory:
 - Otherwise: the FreeCAD user data dir `VibeCADAero/jsbsim/`
 
 `AeroReport.JSBSimPlantPath` and the document property `JSBSimPlantPath`
-point at the XML. If `jsbsim.FGFDMExec` fails to load (including IC NaNs),
-the XML is kept and the boot error is reported.
+point at the XML. The report also stores the solved plant geometry
+(`reference_area_m2`, `span_m`, `chord_m`, `mass_kg`, `xyz_ref`) so a later
+export does not silently substitute Voider defaults. Pitch is
+`CM0 + Cmalpha * alpha` with `CM0 = CM - Cmalpha * alpha_solve`. If
+`jsbsim.FGFDMExec` fails to load or `run_ic()` returns false (including
+IC NaNs), the XML is kept, `JSBSimBootError` is stored, and the UI does
+not claim the plant loaded.
 
 ## Agent control
 

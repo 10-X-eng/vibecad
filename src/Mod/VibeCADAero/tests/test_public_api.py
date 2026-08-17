@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import VibeCADAero
 
 
@@ -136,3 +138,169 @@ def test_run_analyze_returns_install_hint_instead_of_raising(monkeypatch):
     assert result["ok"] is False
     assert "pip install neuralfoil" in result["error"]
     assert "python.exe" in result["error"]
+
+
+class _ReportObj:
+    def __init__(self, name):
+        self.Name = name
+        self.Label = name
+        self.Proxy = None
+        self.ViewObject = None
+        self._props = {}
+
+    def addProperty(self, typ, name, group="", doc="", **_kwargs):
+        if not hasattr(self, name):
+            setattr(self, name, None)
+        self._props[name] = typ
+        return self
+
+
+class _ReportDoc:
+    def __init__(self):
+        self.Objects = []
+        self.Name = "Unnamed"
+        self.FileName = ""
+        self._by_name = {}
+
+    def addObject(self, typ, name):
+        obj = _ReportObj(name)
+        obj.TypeId = typ
+        self.Objects.append(obj)
+        self._by_name[name] = obj
+        return obj
+
+    def getObject(self, name):
+        return self._by_name.get(name)
+
+    def recompute(self):
+        return None
+
+
+def test_export_jsbsim_from_report_preserves_custom_plant_geometry(tmp_path):
+    import AeroResults
+
+    doc = _ReportDoc()
+    doc.FileName = str(tmp_path / "custom.FCStd")
+    AeroResults.write_report(
+        doc,
+        {
+            "CL": 1.1,
+            "CD": 0.05,
+            "CM": -0.04,
+            "CLalpha": 6.0,
+            "Cmalpha": -0.5,
+            "Re": 50000.0,
+            "V_loaf": 6.0,
+            "P_hover": 20.0,
+            "P_cruise": 2.0,
+            "source": "AeroBuildup",
+            "PitchUnstable": False,
+            "hover": {"source": "momentum-theory"},
+            "airfoil": "e63",
+            "geometry_source": "AeroConfig",
+            "span_m": 0.8,
+            "chord_m": 0.12,
+            "span_mm": 800.0,
+            "chord_mm": 120.0,
+            "reference_area_m2": 0.192,
+            "mass_kg": 0.25,
+            "alpha_deg": 3.5,
+            "xyz_ref": [0.03, 0.0, 0.08],
+        },
+    )
+    written = VibeCADAero.export_jsbsim(doc)
+    assert written["ok"] is True
+    xml = Path(written["fdm_path"]).read_text(encoding="utf-8")
+    assert '<wingarea unit="M2">0.192000</wingarea>' in xml
+    assert '<wingspan unit="M">0.800000</wingspan>' in xml
+    assert '<chord unit="M">0.120000</chord>' in xml
+    assert "<emptywt unit=\"KG\">0.250000</emptywt>" in xml
+    assert "<x>0.030000</x>" in xml
+    assert "<z>0.080000</z>" in xml
+    assert '<wingarea unit="M2">0.090000</wingarea>' not in xml
+    assert "<emptywt unit=\"KG\">0.149600</emptywt>" not in xml
+
+
+def test_export_jsbsim_merges_resolved_config_when_report_omits_geometry(tmp_path):
+    import AeroResults
+
+    doc = _ReportDoc()
+    doc.FileName = str(tmp_path / "merged.FCStd")
+    config = doc.addObject("App::FeaturePython", "AeroConfig")
+    config.span_mm = 400.0
+    config.chord_mm = 80.0
+    config.auw_g = 200.0
+    config.alpha_deg = 2.0
+    config.gap_c = 1.4
+    config.airfoil = "e63"
+    AeroResults.write_report(
+        doc,
+        {
+            "CL": 0.9,
+            "CD": 0.04,
+            "CM": -0.02,
+            "CLalpha": 5.0,
+            "Cmalpha": 0.0,
+            "source": "NeuralFoil",
+            "hover": {"source": "momentum-theory"},
+            "airfoil": "e63",
+        },
+    )
+    report = doc.getObject("AeroReport")
+    report.span_m = None
+    report.chord_m = None
+    report.span_mm = None
+    report.chord_mm = None
+    report.reference_area_m2 = None
+    written = VibeCADAero.export_jsbsim(doc)
+    xml = Path(written["fdm_path"]).read_text(encoding="utf-8")
+    assert '<wingspan unit="M">0.400000</wingspan>' in xml
+    assert '<chord unit="M">0.080000</chord>' in xml
+    assert '<wingarea unit="M2">0.064000</wingarea>' in xml
+    assert "<emptywt unit=\"KG\">0.200000</emptywt>" in xml
+
+
+def test_export_jsbsim_stores_boot_error_instead_of_claiming_loaded(tmp_path, monkeypatch):
+    import AeroJSBSim
+    import AeroResults
+
+    def fake_write(results, output_dir=None, load_fn=None):
+        dest = Path(output_dir)
+        dest.mkdir(parents=True, exist_ok=True)
+        fdm_path = dest / "vibecad_aero" / "vibecad_aero.xml"
+        fdm_path.parent.mkdir(parents=True, exist_ok=True)
+        fdm_path.write_text("<fdm_config/>", encoding="utf-8")
+        return {
+            "fdm_path": str(fdm_path),
+            "engine_path": str(dest / "engine" / "electric.xml"),
+            "thruster_path": str(dest / "engine" / "direct.xml"),
+            "model": "vibecad_aero",
+            "loaded": False,
+            "boot_error": "jsbsim.FGFDMExec.run_ic returned false.",
+            "message": "jsbsim.FGFDMExec.run_ic returned false.",
+            "output_dir": str(dest),
+        }
+
+    monkeypatch.setattr(AeroJSBSim, "write_plant", fake_write)
+    doc = _ReportDoc()
+    doc.FileName = str(tmp_path / "boot.FCStd")
+    AeroResults.write_report(
+        doc,
+        {
+            "CL": 0.8,
+            "CD": 0.04,
+            "CM": -0.02,
+            "source": "NeuralFoil",
+            "hover": {"source": "momentum-theory"},
+            "span_m": 0.5,
+            "chord_m": 0.09,
+            "reference_area_m2": 0.09,
+            "mass_kg": 0.1496,
+        },
+    )
+    written = VibeCADAero.export_jsbsim(doc)
+    assert written["loaded"] is False
+    assert "run_ic" in written["boot_error"]
+    report = doc.getObject("AeroReport")
+    assert report.JSBSimBootError == "jsbsim.FGFDMExec.run_ic returned false."
+    assert Path(written["fdm_path"]).is_file()

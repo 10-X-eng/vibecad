@@ -74,3 +74,57 @@ def test_missing_jsbsim_package_still_writes_xml(tmp_path, monkeypatch):
     assert written["loaded"] is False
     assert "jsbsim" in written["boot_error"].lower()
     assert "pip install" in written["boot_error"]
+
+
+def test_pitch_axis_includes_cm0_intercept(tmp_path):
+    import math
+
+    results = _sample_results()
+    results["CM"] = -0.136
+    results["Cmalpha"] = 0.0
+    results["alpha_deg"] = 4.0
+    written = jsbsim_export.write_plant(results, output_dir=tmp_path)
+    xml = Path(written["fdm_path"]).read_text(encoding="utf-8")
+    assert "<value>-0.136000</value>" in xml
+    assert "CM0" in xml or "Cm0" in xml or "CM0 + Cmalpha" in xml
+
+    results["CM"] = 0.733
+    results["Cmalpha"] = 4.68
+    written = jsbsim_export.write_plant(results, output_dir=tmp_path / "with_slope")
+    xml = Path(written["fdm_path"]).read_text(encoding="utf-8")
+    cm0 = 0.733 - 4.68 * math.radians(4.0)
+    assert f"<value>{cm0:.6f}</value>" in xml
+
+
+def test_run_ic_false_is_boot_error_and_keeps_xml(tmp_path, monkeypatch):
+    class _FDM:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def set_root_dir(self, _path):
+            return None
+
+        def set_aircraft_path(self, _path):
+            return None
+
+        def set_engine_path(self, _path):
+            return None
+
+        def set_systems_path(self, _path):
+            return None
+
+        def load_model(self, _model):
+            return True
+
+        def run_ic(self):
+            return False
+
+    class _Jsbsim:
+        FGFDMExec = _FDM
+
+    monkeypatch.setattr(jsbsim_export, "_try_import_jsbsim", lambda: _Jsbsim)
+    written = jsbsim_export.write_plant(_sample_results(), output_dir=tmp_path)
+    assert Path(written["fdm_path"]).is_file()
+    assert written["loaded"] is False
+    assert "run_ic" in written["boot_error"]
+    assert "successfully" not in written["boot_error"].lower()

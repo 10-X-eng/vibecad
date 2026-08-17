@@ -93,10 +93,12 @@ def try_load_model(root: Path, model: str) -> tuple[bool, str]:
         if hasattr(fdm, "set_systems_path"):
             fdm.set_systems_path(str(root))
         loaded = fdm.load_model(model)
-        if hasattr(fdm, "run_ic"):
-            fdm.run_ic()
         if loaded is False:
             return False, "jsbsim.FGFDMExec.load_model returned false."
+        if hasattr(fdm, "run_ic"):
+            ic_ok = fdm.run_ic()
+            if ic_ok is False:
+                return False, "jsbsim.FGFDMExec.run_ic returned false."
         return True, ""
     except Exception as exc:
         return False, str(exc)
@@ -118,9 +120,11 @@ def _fdm_xml(results: dict[str, Any]) -> str:
     alpha = float(results.get("alpha_deg") or 0.0)
     cl = float(results.get("CL") or 0.0)
     cd = float(results.get("CD") or 0.0)
+    cm = float(results.get("CM") or 0.0)
     clalpha = float(results.get("CLalpha") or 0.0)
     cmalpha = float(results.get("Cmalpha") or 0.0)
     cl0 = cl - clalpha * math.radians(alpha)
+    cm0 = cm - cmalpha * math.radians(alpha)
     ref = list(results.get("xyz_ref") or [0.25 * chord, 0.0, 0.0])
     ixx = mass * (span**2) / 12.0
     iyy = mass * ((4.0 * chord) ** 2 + (2.0 * (ref[2] or 0.05)) ** 2) / 12.0
@@ -246,15 +250,18 @@ def _fdm_xml(results: dict[str, Any]) -> str:
     </axis>
     <axis name="PITCH">
       <function name="aero/moment/Pitch">
-        <description>Cmalpha * alpha</description>
+        <description>CM0 + Cmalpha * alpha</description>
         <product>
           <property>aero/qbar-psf</property>
           <property>metrics/Sw-sqft</property>
           <property>metrics/cbarw-ft</property>
-          <product>
-            <value>{cmalpha:.6f}</value>
-            <property>aero/alpha-rad</property>
-          </product>
+          <sum>
+            <value>{cm0:.6f}</value>
+            <product>
+              <value>{cmalpha:.6f}</value>
+              <property>aero/alpha-rad</property>
+            </product>
+          </sum>
         </product>
       </function>
     </axis>

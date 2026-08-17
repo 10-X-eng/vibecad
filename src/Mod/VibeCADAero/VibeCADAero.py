@@ -64,11 +64,18 @@ def export_jsbsim(doc: Any | None = None, results: dict[str, Any] | None = None)
         if not solved.get("ok"):
             return solved
         payload = solved
+    else:
+        _merge_resolved_plant_geometry(payload, document)
     written = AeroJSBSim.write_plant(
         payload,
         output_dir=AeroJSBSim.default_output_dir(document),
     )
-    AeroResults.write_report(document, payload, jsbsim_path=written["fdm_path"])
+    AeroResults.write_report(
+        document,
+        payload,
+        jsbsim_path=written["fdm_path"],
+        jsbsim_boot_error=written.get("boot_error") or "",
+    )
     return {"ok": True, **written, **{k: payload.get(k) for k in ("CL", "CD", "source")}}
 
 
@@ -113,6 +120,7 @@ def _run(
             spreadsheet=spreadsheet,
             markdown=markdown,
             jsbsim_path=jsbsim_path,
+            jsbsim_boot_error=boot or "",
         )
         return {
             "ok": True,
@@ -191,6 +199,18 @@ def _ensure_aeroconfig(doc: Any, cfg: dict[str, Any]) -> Any | None:
     return obj
 
 
+_PLANT_GEOMETRY_KEYS = (
+    "reference_area_m2",
+    "span_m",
+    "chord_m",
+    "mass_kg",
+    "xyz_ref",
+    "alpha_deg",
+    "span_mm",
+    "chord_mm",
+)
+
+
 def _results_from_report(doc: Any) -> dict[str, Any] | None:
     getter = getattr(doc, "getObject", None)
     obj = getter("AeroReport") if callable(getter) else None
@@ -218,7 +238,9 @@ def _results_from_report(doc: Any) -> dict[str, Any] | None:
         "span_m": getattr(obj, "span_m", None),
         "chord_m": getattr(obj, "chord_m", None),
         "reference_area_m2": getattr(obj, "reference_area_m2", None),
-        "alpha_deg": 4.0,
+        "mass_kg": getattr(obj, "mass_kg", None),
+        "alpha_deg": getattr(obj, "alpha_deg", None),
+        "xyz_ref": _xyz_ref_from_report(obj),
     }
     if payload["span_m"] is None and payload["span_mm"] is not None:
         payload["span_m"] = float(payload["span_mm"]) / 1000.0
@@ -226,4 +248,43 @@ def _results_from_report(doc: Any) -> dict[str, Any] | None:
         payload["chord_m"] = float(payload["chord_mm"]) / 1000.0
     if payload["reference_area_m2"] is None and payload["span_m"] and payload["chord_m"]:
         payload["reference_area_m2"] = 2.0 * float(payload["span_m"]) * float(payload["chord_m"])
+    _merge_resolved_plant_geometry(payload, doc)
     return payload
+
+
+def _xyz_ref_from_report(obj: Any) -> list[float] | None:
+    raw = getattr(obj, "xyz_ref", None)
+    if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+        return [float(raw[0]), float(raw[1]), float(raw[2])]
+    if raw is not None and all(hasattr(raw, axis) for axis in ("x", "y", "z")):
+        return [float(raw.x), float(raw.y), float(raw.z)]
+    x = getattr(obj, "xyz_ref_x", None)
+    y = getattr(obj, "xyz_ref_y", None)
+    z = getattr(obj, "xyz_ref_z", None)
+    if x is None or y is None or z is None:
+        return None
+    return [float(x), float(y), float(z)]
+
+
+def _missing_plant_value(value: Any) -> bool:
+    if value is None or value == "":
+        return True
+    if isinstance(value, (list, tuple)) and len(value) < 3:
+        return True
+    return False
+
+
+def _merge_resolved_plant_geometry(payload: dict[str, Any], doc: Any) -> None:
+    missing = [key for key in _PLANT_GEOMETRY_KEYS if _missing_plant_value(payload.get(key))]
+    if not missing:
+        return
+    try:
+        cfg = AeroConfig.resolve_geometry(doc)
+    except Exception:
+        return
+    for key in missing:
+        value = cfg.get(key)
+        if not _missing_plant_value(value):
+            payload[key] = value
+    if payload.get("reference_area_m2") is None and payload.get("span_m") and payload.get("chord_m"):
+        payload["reference_area_m2"] = 2.0 * float(payload["span_m"]) * float(payload["chord_m"])

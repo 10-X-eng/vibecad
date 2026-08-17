@@ -144,3 +144,35 @@ def test_jsbsim_path_is_stored_on_document_and_report():
     obj = results.write_report(doc, _payload(), jsbsim_path="/tmp/vibecad_aero.xml")
     assert obj.JSBSimPlantPath == "/tmp/vibecad_aero.xml"
     assert getattr(doc, "JSBSimPlantPath") == "/tmp/vibecad_aero.xml"
+
+
+def test_report_stores_plant_geometry_and_boot_error():
+    doc = _Doc()
+    payload = _payload()
+    payload.update(
+        {
+            "span_m": 0.8,
+            "chord_m": 0.12,
+            "span_mm": 800.0,
+            "chord_mm": 120.0,
+            "reference_area_m2": 0.192,
+            "mass_kg": 0.25,
+            "alpha_deg": 3.5,
+            "xyz_ref": [0.03, 0.0, 0.08],
+        }
+    )
+    obj = results.write_report(
+        doc,
+        payload,
+        jsbsim_path="/tmp/custom_aero.xml",
+        jsbsim_boot_error="jsbsim.FGFDMExec.run_ic returned false.",
+    )
+    assert obj.reference_area_m2 == 0.192
+    assert obj.span_m == 0.8
+    assert obj.chord_m == 0.12
+    assert obj.mass_kg == 0.25
+    assert obj.alpha_deg == 3.5
+    assert obj.xyz_ref_x == 0.03
+    assert obj.xyz_ref_y == 0.0
+    assert obj.xyz_ref_z == 0.08
+    assert obj.JSBSimBootError == "jsbsim.FGFDMExec.run_ic returned false."

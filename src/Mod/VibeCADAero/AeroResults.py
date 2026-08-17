@@ -26,12 +26,18 @@ _FIELDS = (
     ("Airfoil", "App::PropertyString", "Section name"),
     ("GeometrySource", "App::PropertyString", "How geometry was resolved"),
     ("JSBSimPlantPath", "App::PropertyString", "Exported JSBSim XML path"),
+    ("JSBSimBootError", "App::PropertyString", "JSBSim boot error, empty when loaded"),
     ("Notes", "App::PropertyString", "Solver notes"),
     ("span_mm", "App::PropertyFloat", "Span used for the solve, mm"),
     ("chord_mm", "App::PropertyFloat", "Chord used for the solve, mm"),
     ("span_m", "App::PropertyFloat", "Span used for the solve, m"),
     ("chord_m", "App::PropertyFloat", "Chord used for the solve, m"),
     ("reference_area_m2", "App::PropertyFloat", "Biplane reference area, m^2"),
+    ("mass_kg", "App::PropertyFloat", "Mass used for the solve, kg"),
+    ("alpha_deg", "App::PropertyFloat", "Angle of attack used for the solve, deg"),
+    ("xyz_ref_x", "App::PropertyFloat", "Aero reference x, m"),
+    ("xyz_ref_y", "App::PropertyFloat", "Aero reference y, m"),
+    ("xyz_ref_z", "App::PropertyFloat", "Aero reference z, m"),
 )
 
 
@@ -76,6 +82,7 @@ def write_report(
     spreadsheet: bool = False,
     markdown: bool = False,
     jsbsim_path: str | None = None,
+    jsbsim_boot_error: str | None = None,
 ) -> Any:
     obj = _get_or_create(doc, "App::FeaturePython", REPORT_NAME)
     if getattr(obj, "Proxy", None) is None:
@@ -85,7 +92,7 @@ def write_report(
             _add_result_properties(obj)
     else:
         _add_result_properties(obj)
-    _apply_payload(obj, payload, jsbsim_path)
+    _apply_payload(obj, payload, jsbsim_path, jsbsim_boot_error)
     view = getattr(obj, "ViewObject", None)
     if view is not None and getattr(view, "Proxy", None) is None:
         try:
@@ -198,8 +205,14 @@ def _row_values(payload: dict[str, Any], jsbsim_path: str | None) -> list[tuple[
     return rows
 
 
-def _apply_payload(obj: Any, payload: dict[str, Any], jsbsim_path: str | None) -> None:
+def _apply_payload(
+    obj: Any,
+    payload: dict[str, Any],
+    jsbsim_path: str | None,
+    jsbsim_boot_error: str | None = None,
+) -> None:
     hover = payload.get("hover") or {}
+    ref = _xyz_ref_components(payload)
     mapping = {
         "CL": payload.get("CL"),
         "CD": payload.get("CD"),
@@ -216,18 +229,41 @@ def _apply_payload(obj: Any, payload: dict[str, Any], jsbsim_path: str | None) -
         "Airfoil": payload.get("airfoil"),
         "GeometrySource": payload.get("geometry_source"),
         "JSBSimPlantPath": jsbsim_path or "",
+        "JSBSimBootError": (
+            jsbsim_boot_error
+            if jsbsim_boot_error is not None
+            else payload.get("jsbsim_boot_error") or ""
+        ),
         "Notes": "Hover is momentum-theory, not CFD.",
         "span_mm": payload.get("span_mm"),
         "chord_mm": payload.get("chord_mm"),
         "span_m": payload.get("span_m"),
         "chord_m": payload.get("chord_m"),
         "reference_area_m2": payload.get("reference_area_m2"),
+        "mass_kg": payload.get("mass_kg"),
+        "alpha_deg": payload.get("alpha_deg"),
+        "xyz_ref_x": ref[0],
+        "xyz_ref_y": ref[1],
+        "xyz_ref_z": ref[2],
     }
     for name, value in mapping.items():
         try:
             setattr(obj, name, value)
         except Exception:
             pass
+
+
+def _xyz_ref_components(payload: dict[str, Any]) -> tuple[Any, Any, Any]:
+    raw = payload.get("xyz_ref")
+    if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+        return raw[0], raw[1], raw[2]
+    if raw is not None and all(hasattr(raw, axis) for axis in ("x", "y", "z")):
+        return raw.x, raw.y, raw.z
+    return (
+        payload.get("xyz_ref_x"),
+        payload.get("xyz_ref_y"),
+        payload.get("xyz_ref_z"),
+    )
 
 
 def _add_result_properties(obj: Any) -> None:
