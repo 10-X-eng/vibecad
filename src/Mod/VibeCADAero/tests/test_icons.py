@@ -54,9 +54,10 @@ def test_icon_path_helper_resolves_to_workbench_file():
     import AeroIcons
 
     resolved = Path(AeroIcons.aero_icon_path()).resolve()
+    module_dir = Path(AeroIcons.__file__).resolve().parent
     assert resolved == ICON.resolve()
     assert resolved.is_file()
-    assert "C:\\Users" not in AeroIcons.aero_icon_path()
+    assert resolved.relative_to(module_dir) == Path("icons") / AeroIcons.ICON_FILENAME
 
 
 def test_cmake_installs_icon_file():
