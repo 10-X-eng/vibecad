@@ -325,7 +325,7 @@ class PartDomainAPI:
         output_type: str,
         label: str = "",
     ) -> DomainValue:
-        """Snapshot a referenced live object's exact Shape for isolated Part operations."""
+        """Snapshot a live object's exact Shape; reference must be a validated inputs value marked x-vibecad-reference."""
 
         operation = "from_object"
         return self._value(
@@ -346,7 +346,7 @@ class PartDomainAPI:
         x_direction: Sequence[float] | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Create a box in local +X/+Y/+Z; direction sets +Z and x_direction sets +X."""
+        """Solid box in mm; exact size keywords are length, width, and height. Its origin is the minimum corner. With default axes it occupies X=[origin[0], origin[0]+length], Y=[origin[1], origin[1]+width], Z=[origin[2], origin[2]+height]; direction sets local +Z and x_direction sets local +X; they cannot be parallel."""
 
         operation = "box"
         clean_direction = _vector(
@@ -388,7 +388,7 @@ class PartDomainAPI:
         x_direction: Sequence[float] | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Create a wedge in local +X/+Y/+Z; direction sets +Z and x_direction sets +X."""
+        """Triangular-prism wedge: local-XY base vertices [0,0], [length,0], [ridge_x,width], extruded height along +Z; direction sets +Z and x_direction sets +X."""
 
         operation = "wedge"
         clean_length = _number(operation, "length", length, minimum=0.0, strict=True)
@@ -433,7 +433,7 @@ class PartDomainAPI:
         x_direction: Sequence[float] = (1.0, 0.0, 0.0),
         label: str = "",
     ) -> DomainValue:
-        """Create an oriented rectangular planar face."""
+        """Rectangular face from origin: length along x_direction and width in-plane; normal fixes the face normal and must not be parallel to x_direction."""
 
         operation = "plane"
         clean_normal = _vector(operation, "normal", normal, nonzero=True)
@@ -467,7 +467,7 @@ class PartDomainAPI:
         rotation_degrees: float = 0.0,
         label: str = "",
     ) -> DomainValue:
-        """Create a regular 3-64 sided prism from its base circumradius."""
+        """Regular prism centered at center; circumradius reaches each vertex, direction is the height axis, and rotation_degrees rotates the base about it."""
 
         operation = "prism"
         return self._value(
@@ -492,7 +492,7 @@ class PartDomainAPI:
         angle: float = 360.0,
         label: str = "",
     ) -> DomainValue:
-        """Create a full or partial cylinder along an explicit axis."""
+        """Solid cylinder whose origin is the base-circle center; height follows direction (default +Z) and angle is the 0-360 degree sector sweep."""
 
         operation = "cylinder"
         clean_angle = _number(operation, "angle", angle, minimum=0.0, strict=True)
@@ -520,7 +520,7 @@ class PartDomainAPI:
         angle: float = 360.0,
         label: str = "",
     ) -> DomainValue:
-        """Create a cone or frustum; at least one end radius must be positive."""
+        """Solid cone/frustum from radius1 at origin to radius2 after height along direction; angle is the 0-360 sector sweep and at least one radius must be positive."""
 
         operation = "cone"
         first = _number(operation, "radius1", radius1, minimum=0.0)
@@ -553,7 +553,7 @@ class PartDomainAPI:
         longitude: float = 360.0,
         label: str = "",
     ) -> DomainValue:
-        """Create a sphere or angular spherical segment with explicit limits."""
+        """Solid sphere/segment centered at center with direction as pole axis; latitude1/latitude2 bound -90..90 degrees and longitude is the 0-360 sweep."""
 
         operation = "sphere"
         low = _number(operation, "latitude1", latitude1)
@@ -589,7 +589,7 @@ class PartDomainAPI:
         sweep: float = 360.0,
         label: str = "",
     ) -> DomainValue:
-        """Create a torus or toroidal segment; major radius must exceed minor radius."""
+        """Solid torus centered at center around direction; angle1/angle2 bound the tube section, sweep rotates it 0-360 degrees, and major_radius must exceed minor_radius."""
 
         operation = "torus"
         major = _number(operation, "major_radius", major_radius, minimum=0.0, strict=True)

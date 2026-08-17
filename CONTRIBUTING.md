@@ -62,7 +62,7 @@ The FreeCAD Contribution Process is expressed here with the following specific g
     1. the PR description MUST contain proper attribution as the first line, for example: "This is work of XYZ cherry-picked from <link>";
     2. all commits MUST have proper authorship, i.e. be authored by the original author and committed by the author of the PR;
     3. if changes to cherry-picked commits are necessary they SHOULD be done as follow-up commits. If it is not possible to do so, then the modified commits MUST contain a `Co-Authored-By` trailer in their commit message.
-14. Contributions must meet existing quality standards and comply with the [AI Policy](https://github.com/FreeCAD/FreeCAD/blob/main/AI_POLICY.md): All communication should be done by contributors (people), AI is only used in an assistive way, contributors fully understand their contributions, and people are fully in the driver seat.
+14. AI-authored and AI-assisted contributions are welcome. AI-authored code changes MUST use red/green test-driven development: add or update a failing test before the implementation, then make it pass. The PR MUST report the exact build and test commands and results. Non-code changes MUST state why TDD does not apply. All contributions remain subject to the same quality, review, attribution, copyright, and licensing requirements.
 15. The contributor provides reasonable assurance that the contribution does not infringe third-party copyrights or license terms.
 16. A “Valid PR” is one which satisfies the above requirements.
 

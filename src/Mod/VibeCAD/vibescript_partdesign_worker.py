@@ -657,6 +657,28 @@ def _resolve_symmetric_through_hole(
         and bool(properties.get("midplane"))
     ):
         return getattr(feature, "Shape", None)
+    shaped_cut = (
+        "counterbore"
+        if properties.get("counterbore_diameter_mm") is not None
+        else "countersink"
+        if properties.get("countersink_diameter_mm") is not None
+        else ""
+    )
+    if shaped_cut:
+        raise PartDesignCandidateError(
+            f"A {shaped_cut} is an entry-side feature and cannot use "
+            "direction='symmetric'.",
+            details={
+                "stage": "hole_entry_side",
+                "operation": "hole",
+                "cut_type": shaped_cut,
+                "correction": (
+                    "Place the hole sketch on the counterbore/countersink entry "
+                    "face, then choose direction='along_normal' or "
+                    "direction='opposite_normal' into the material."
+                ),
+            },
+        )
     base_volume = float(getattr(base_shape, "Volume", 0.0) or 0.0)
     tolerance = max(1.0e-7, abs(base_volume) * 1.0e-9)
     current_shape = getattr(feature, "Shape", None)
@@ -1512,6 +1534,8 @@ def _build_model_shape(
         "model_thickness",
     }:
         return _build_direct_dressup_shape(body, payload, memo, sketch_evidence)
+    if operation == "model_move_planar_faces":
+        return _build_move_planar_faces_shape(body, payload, memo, sketch_evidence)
     raise PartDesignCandidateError(
         f"Unsupported consolidated modeling operation {operation!r}.",
         details={"stage": "operation_dispatch", "operation": operation},
@@ -1704,6 +1728,103 @@ def _build_direct_dressup_shape(
     )
 
 
+def _build_move_planar_faces_shape(
+    body: Any,
+    payload: Mapping[str, Any],
+    memo: dict[str, Any],
+    sketch_evidence: list[dict[str, Any]],
+) -> Any:
+    import FreeCAD as App
+
+    base = _build_model_shape(
+        body,
+        _payload(
+            _argument(payload, 0, context="api.move_planar_faces"),
+            context="api.move_planar_faces.base",
+        ),
+        memo,
+        sketch_evidence,
+    )
+    raw_selections = _argument(payload, 1, context="api.move_planar_faces")
+    if not isinstance(raw_selections, list) or not raw_selections:
+        raise PartDesignCandidateError(
+            "api.move_planar_faces.selection must contain at least one face query."
+        )
+    face_names: list[str] = []
+    for index, selection in enumerate(raw_selections):
+        names, _details = _query_subelements(base, selection)
+        invalid = [name for name in names if not str(name).startswith("Face")]
+        if invalid:
+            raise PartDesignCandidateError(
+                f"api.move_planar_faces.selection[{index}] resolved non-face topology.",
+                details={
+                    "stage": "move_planar_faces_selection",
+                    "selection_index": index,
+                    "invalid_subelements": invalid,
+                },
+            )
+        face_names.extend(str(name) for name in names)
+    duplicates = sorted(
+        name for name in set(face_names) if face_names.count(name) > 1
+    )
+    if duplicates:
+        raise PartDesignCandidateError(
+            "api.move_planar_faces selections overlap.",
+            details={
+                "stage": "move_planar_faces_selection",
+                "duplicate_faces": duplicates,
+                "correction": "Make each selected face match exactly one query.",
+            },
+        )
+
+    distance = float(_argument(payload, 2, context="api.move_planar_faces"))
+    if abs(distance) <= 1.0e-12:
+        raise PartDesignCandidateError(
+            "api.move_planar_faces.distance_mm must be non-zero."
+        )
+    prisms = []
+    for name in face_names:
+        face = base.getElement(name)
+        if type(face.Surface).__name__ != "Plane":
+            raise PartDesignCandidateError(
+                f"api.move_planar_faces supports planar faces; {name} is "
+                f"{type(face.Surface).__name__}.",
+                details={
+                    "stage": "move_planar_faces_geometry",
+                    "face": name,
+                    "geometry_type": type(face.Surface).__name__,
+                },
+            )
+        u_min, u_max, v_min, v_max = face.ParameterRange
+        normal = face.normalAt(
+            (float(u_min) + float(u_max)) * 0.5,
+            (float(v_min) + float(v_max)) * 0.5,
+        )
+        if normal.Length <= 1.0e-12:
+            raise PartDesignCandidateError(
+                f"api.move_planar_faces could not resolve the outward normal of {name}."
+            )
+        normal.normalize()
+        prisms.append(face.extrude(App.Vector(normal) * distance))
+
+    result = _boolean_sequence(
+        [base, *prisms],
+        intent="union" if distance > 0.0 else "subtract",
+        tolerance=0.0,
+        context="api.move_planar_faces",
+    )
+    result = _normalized_solid_orientation(_refined(result, True))
+    if result.isNull() or not result.isValid() or len(result.Solids) != 1:
+        raise PartDesignCandidateError(
+            "api.move_planar_faces did not produce one valid solid.",
+            details={
+                "stage": "move_planar_faces_result",
+                "solid_count": int(len(result.Solids)),
+            },
+        )
+    return result
+
+
 def _build_feature(
     body: Any,
     payload: Mapping[str, Any],
@@ -1787,6 +1908,32 @@ def _build_feature(
             ) from exc
         feature = body.newObject("PartDesign::Feature", name)
         feature.Shape = shape
+    elif operation == "base_feature":
+        source = _build_model_shape(
+            body,
+            _payload(
+                _argument(payload, 0, context="api.base_feature"),
+                context="api.base_feature.base",
+            ),
+            memo,
+            sketch_evidence,
+        )
+        if source.isNull() or not source.isValid() or len(source.Solids) != 1:
+            raise PartDesignCandidateError(
+                "A direct modeling base must resolve to one valid connected solid.",
+                details={
+                    "stage": "base_feature",
+                    "operation": operation,
+                    "graph_id": graph_id,
+                    "solid_count": int(len(source.Solids)),
+                    "correction": (
+                        "Union touching material before applying a Body feature, or "
+                        "publish disconnected solids as a compound."
+                    ),
+                },
+            )
+        feature = body.newObject("PartDesign::Feature", name)
+        feature.Shape = source
     elif operation == "fastener":
         try:
             from VibeCADFasteners import (
@@ -2958,9 +3105,30 @@ def validate_and_build_partdesign(
         definition = _payload(raw_result[name], context=f"result[{name!r}]")
         publication_operation = str(definition.get("operation") or "")
         if publication_operation not in {"body", "publish"}:
-            raise PartDesignCandidateError(
-                f"Part Design output {name!r} must be returned by api.body or api.publish."
-            )
+            value_type = str(definition.get("output_type") or "")
+            if output_type == "solid" and value_type in {"feature", "solid"}:
+                definition = {
+                    "domain": "partdesign",
+                    "operation": "body",
+                    "output_type": "solid",
+                    "arguments": [definition],
+                    "properties": {"label": name},
+                }
+                publication_operation = "body"
+            elif value_type == output_type:
+                definition = {
+                    "domain": "partdesign",
+                    "operation": "publish",
+                    "output_type": output_type,
+                    "arguments": [definition],
+                    "properties": {"label": name},
+                }
+                publication_operation = "publish"
+            else:
+                raise PartDesignCandidateError(
+                    f"Part Design output {name!r} has value type {value_type!r}, "
+                    f"not declared type {output_type!r}."
+                )
         if str(definition.get("output_type") or "") != output_type:
             raise PartDesignCandidateError(
                 f"Part Design output {name!r} declaration disagrees with its API value.",

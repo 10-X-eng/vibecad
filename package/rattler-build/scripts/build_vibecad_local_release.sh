@@ -55,5 +55,7 @@ fi
     "from VibeCADProvider import _provider_subprocess_smoke; _provider_subprocess_smoke(); print('VibeCAD provider subprocess smoke ok')"
 "${freecadcmd_executable}" --safe-mode -c \
     "from VibeCADCodex import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD Codex app-server smoke ok', result['version'])"
+"${freecadcmd_executable}" --safe-mode -c \
+    "from VibeCADGeometry import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD geometry worker smoke ok', result['worker'])"
 
 echo "VibeCAD local release is runtime-complete: ${build_root}"

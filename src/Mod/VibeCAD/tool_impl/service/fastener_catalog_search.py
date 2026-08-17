@@ -10,9 +10,8 @@ from typing import Any
 TOOL_SPEC = {
     "name": "fastener_catalog.search",
     "description": (
-        "Find an exact published standard fastener and its allowed dimensions. "
-        "Pass returned constructor values to api.fastener; this tool never "
-        "chooses hardware or substitutes a nearby size."
+        "Find an exact standard fastener and copy-ready api.fastener arguments. "
+        "Unavailable sizes are never substituted."
     ),
     "contextual": False,
     "requires_document": False,
@@ -26,48 +25,42 @@ TOOL_SPEC = {
                 "type": "string",
                 "maxLength": 256,
                 "description": (
-                    "Words that must appear in the standard, family, or "
-                    "catalog description; empty lists the first standards."
+                    "Catalog search words."
                 ),
             },
             "family": {
                 "type": "string",
                 "maxLength": 128,
                 "description": (
-                    "Exact catalog family such as Screw, Nut, Washer, Stud, "
-                    "or Standoff; omit to search every family."
+                    "Exact family, such as Screw or Nut."
                 ),
             },
             "standard": {
                 "type": "string",
                 "maxLength": 128,
                 "description": (
-                    "Exact published standard such as ISO4762; omit when "
-                    "discovering standards."
+                    "Exact standard, such as ISO4762."
                 ),
             },
             "nominal_thread": {
                 "type": "string",
                 "maxLength": 128,
                 "description": (
-                    "Exact catalog size/thread token such as M6; omit to "
-                    "return allowed tokens."
+                    "Exact thread token, such as M6."
                 ),
             },
             "length_mm": {
                 "type": "number",
                 "exclusiveMinimum": 0,
                 "description": (
-                    "Requested length in millimeters. nominal_thread is "
-                    "required; unavailable lengths return nearest valid values "
-                    "without selecting one."
+                    "Length in mm; requires nominal_thread."
                 ),
             },
             "limit": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 100,
-                "description": "Maximum deterministic results to return.",
+                "description": "Maximum results.",
             },
         },
         "additionalProperties": False,

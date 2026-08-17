@@ -81,10 +81,55 @@ def test_failed_source_retains_bounded_print_output() -> None:
             document_objects=[],
             inputs={},
             api=object(),
+            expected_output_names=["Body"],
             max_operations=100,
             max_seconds=1.0,
         )
     assert getattr(failure.value, "vibescript_stdout", "") == "axis probe: +Z\n"
+
+
+def test_safe_api_imports_bind_only_the_prebound_domain_surface() -> None:
+    pack = _pack()
+    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+
+    result, _stdout, _budget = _execute_source(
+        source=(
+            "from api import *\n"
+            "result = box(length=2, width=3, height=4)\n"
+        ),
+        document_name="SafeImportFixture",
+        document_objects=[],
+        inputs={},
+        api=api,
+        expected_output_names=["Body"],
+        max_operations=100,
+        max_seconds=1.0,
+    )
+    assert result["Body"].operation == "box"
+
+    alias_result, _stdout, _budget = _execute_source(
+        source="import api as cad\nresult = cad.box(2, 3, 4)\n",
+        document_name="SafeImportFixture",
+        document_objects=[],
+        inputs={},
+        api=api,
+        expected_output_names=["Body"],
+        max_operations=100,
+        max_seconds=1.0,
+    )
+    assert alias_result["Body"].operation == "box"
+
+    with pytest.raises(ImportError, match="Only the prebound api module"):
+        _execute_source(
+            source="import os\nresult = {}\n",
+            document_name="SafeImportFixture",
+            document_objects=[],
+            inputs={},
+            api=api,
+            expected_output_names=["Body"],
+            max_operations=100,
+            max_seconds=1.0,
+        )
 
 
 def test_worker_failure_report_exposes_source_stdout(
@@ -707,6 +752,29 @@ def test_topology_editing_accepts_stable_queries_and_keeps_index_compatibility()
     assert (selected.operation, selected.output_type) == ("model_subshape", "face")
     assert (healed.operation, healed.output_type) == ("model_defeature", "solid")
     assert (legacy.operation, legacy.output_type) == ("subshape", "face")
+
+
+def test_move_planar_faces_uses_stable_queries_and_signed_distance() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    base = api.box(10, 20, 30)
+    positive_x = api.find_subelements(
+        element_type="face",
+        expected_count=1,
+        geometry_type="Plane",
+        normal=[1, 0, 0],
+    )
+
+    moved = api.move_planar_faces(base, positive_x, 2)
+    payload = moved.to_payload()
+
+    assert (moved.operation, moved.output_type) == (
+        "model_move_planar_faces",
+        "solid",
+    )
+    assert payload["arguments"][1] == [positive_x]
+    assert payload["arguments"][2] == 2.0
+    with pytest.raises(ValueError, match="distance_mm must be non-zero"):
+        api.move_planar_faces(base, positive_x, 0)
 
 
 def test_body_and_standalone_options_are_never_silently_reinterpreted() -> None:

@@ -525,6 +525,41 @@ def _vector(operation: str, parameter: str, value: Any) -> list[float]:
     return [_number(operation, f"{parameter}[{index}]", item) for index, item in enumerate(value)]
 
 
+def _centers_mm(
+    operation: str,
+    value: Any,
+    *,
+    maximum: int = 256,
+) -> list[list[float]]:
+    if not isinstance(value, (list, tuple)) or not 1 <= len(value) <= maximum:
+        raise _error(
+            operation,
+            "centers_mm",
+            f"must contain 1-{maximum} [u, v] coordinates",
+            value,
+        )
+    if len(value) == 2 and all(
+        not isinstance(component, (list, tuple)) for component in value
+    ):
+        value = [value]
+    result: list[list[float]] = []
+    for index, center in enumerate(value):
+        if not isinstance(center, (list, tuple)) or len(center) != 2:
+            raise _error(
+                operation,
+                f"centers_mm[{index}]",
+                "must be [u, v]",
+                center,
+            )
+        result.append(
+            [
+                _number(operation, f"centers_mm[{index}][0]", center[0]),
+                _number(operation, f"centers_mm[{index}][1]", center[1]),
+            ]
+        )
+    return result
+
+
 def _rgb255(
     operation: str,
     parameter: str,
@@ -915,6 +950,9 @@ class PartDesignDomainAPI:
         "sweep",
         "helix",
         "boolean",
+        "union",
+        "cut",
+        "intersect",
         "section",
         "general_fuse",
         "slice",
@@ -927,7 +965,10 @@ class PartDesignDomainAPI:
         "fillet",
         "chamfer",
         "thickness",
+        "move_planar_faces",
         "hole",
+        "holes",
+        "bosses",
         "fastener_hole",
         "involute_gear",
         "draft",
@@ -1094,6 +1135,23 @@ class PartDesignDomainAPI:
             properties={"graph_id": self._feature_id(), **properties},
         )
 
+    def _feature_base(
+        self,
+        operation: str,
+        base: DomainValue,
+        *,
+        label: str,
+    ) -> DomainValue:
+        clean_base = _modeled(operation, "base", base, topology={"solid"})
+        if clean_base.output_type == "feature":
+            return clean_base
+        return self._graph(
+            "base_feature",
+            "feature",
+            clean_base,
+            label=f"{label} base" if label else "Base feature",
+        )
+
     def _direct(self, part_operation: str, *arguments: Any, **properties: Any) -> DomainValue:
         """Call the retained OCC graph library and retag it for this domain."""
 
@@ -1115,11 +1173,7 @@ class PartDesignDomainAPI:
         pivot: Sequence[float] = (0.0, 0.0, 0.0),
         label: str = "",
     ) -> DomainValue:
-        """Copy and place topology or a Body feature.
-
-        Features such as api.fastener become solid topology without losing their
-        source graph. Scale, then rotate, then translate.
-        """
+        """Copy and place topology or a Body feature; scale, then rotate about pivot, then translate. A feature becomes solid topology without losing its source graph."""
 
         operation = "transform"
         clean_shape = _modeled(operation, "shape", shape)
@@ -1342,7 +1396,7 @@ class PartDesignDomainAPI:
         )
 
     def point(self, position: Sequence[float], *, construction: bool = True, name: str = "") -> DomainValue:
-        """Create a construction point for a Part Design profile sketch."""
+        """Sketch point at [u,v]; construction defaults true."""
 
         return self._from_sketcher(
             self._sketcher.point(position, construction=construction, name=name)
@@ -1356,7 +1410,7 @@ class PartDesignDomainAPI:
         construction: bool = False,
         name: str = "",
     ) -> DomainValue:
-        """Create a finite profile line with addressable start/end points."""
+        """Sketch line from start [u,v] to end [u,v]."""
 
         return self._from_sketcher(
             self._sketcher.line(
@@ -1376,7 +1430,7 @@ class PartDesignDomainAPI:
         construction: bool = False,
         name: str = "",
     ) -> DomainValue:
-        """Create a circular profile arc through three points."""
+        """Sketch arc traveling start -> through -> end through three [u,v] points."""
 
         return self._from_sketcher(
             self._sketcher.arc(start, through, end, construction=construction, name=name),
@@ -1390,7 +1444,7 @@ class PartDesignDomainAPI:
         construction: bool = False,
         name: str = "",
     ) -> DomainValue:
-        """Create a full profile circle."""
+        """Full sketch circle at center [u,v]."""
 
         return self._from_sketcher(
             self._sketcher.circle(center, radius, construction=construction, name=name),
@@ -1406,7 +1460,7 @@ class PartDesignDomainAPI:
         construction: bool = False,
         name: str = "",
     ) -> DomainValue:
-        """Create a full elliptical profile curve."""
+        """Full sketch ellipse; rotation_degrees sets its major-axis angle."""
 
         return self._from_sketcher(
             self._sketcher.ellipse(
@@ -1432,7 +1486,7 @@ class PartDesignDomainAPI:
         construction: bool = False,
         name: str = "",
     ) -> DomainValue:
-        """Create an interpolated or exact rational B-spline profile curve."""
+        """Sketch B-spline through points, or exact NURBS when knot data is supplied."""
 
         return self._from_sketcher(
             self._sketcher.bspline(
@@ -1539,9 +1593,10 @@ class PartDesignDomainAPI:
 
         XY maps [u,v] to [X,Y] with normal +Z.
         XZ maps [u,v] to [X,Z] with normal -Y.
-        YZ maps [u,v] to [Y,Z] with normal +X. plane_offset_mm follows that
-        normal. Use placement for any other plane, or support plus map_mode to attach
-        to existing geometry. The require_* flags enforce profile validity.
+        YZ maps [u,v] to [Y,Z] with normal +X.
+        plane_offset_mm follows the normal and excludes z_offset_mm. placement defines
+        an unattached arbitrary plane; support requires map_mode. require_* rejects an
+        invalid profile.
         """
 
         clean_z_offset = _number("sketch", "z_offset_mm", z_offset_mm)
@@ -1682,11 +1737,12 @@ class PartDesignDomainAPI:
     ) -> DomainValue:
         """Extrude when the cross-section stays constant.
 
-        For Body features use add_material or remove_material with base as needed.
-        direction is along_normal, opposite_normal, or symmetric; it has the
-        same meaning for additions and cuts. A cut needs distance_mm or through_all.
-        new_solid/new_surface create standalone geometry; vector and output_type
-        apply only there.
+        Body features use add_material/remove_material and base after the first
+        addition. direction has the same meaning for additions and cuts:
+        along_normal, opposite_normal, or symmetric. Cuts need distance_mm or
+        through_all. Standalone new_solid/new_surface always need distance_mm;
+        vector optionally overrides the profile normal and is normalized, not a
+        displacement. Omit output_type; it is inferred from the source.
         """
 
         intent = _operation_intent("extrude", operation, allow_creation=True)
@@ -2137,12 +2193,7 @@ class PartDesignDomainAPI:
         refine: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Combine two or more modeled shapes by union, subtract, or intersect.
-
-        subtract uses the first shape as the base and all remaining shapes as tools.
-        output_type='solid' requires solid inputs and exactly one connected result;
-        use output_type='compound' when the valid result contains separate pieces.
-        """
+        """Union/intersect all shapes; subtract uses the first as base. A solid union needs positive-volume overlap at each operand; face/edge contact is invalid. compound permits separate pieces."""
 
         intent = str(operation or "").strip().lower()
         if intent not in {"union", "subtract", "intersect"}:
@@ -2176,6 +2227,80 @@ class PartDesignDomainAPI:
             ),
             refine=bool(refine),
             label=_label("boolean", label),
+        )
+
+    def union(
+        self,
+        shapes: Sequence[DomainValue],
+        *,
+        output_type: str = "solid",
+        tolerance_mm: float = 0.0,
+        refine: bool = True,
+        label: str = "",
+    ) -> DomainValue:
+        """Fuse solids. A solid result needs positive-volume overlap at each operand; face/edge contact is invalid. compound permits separate pieces."""
+
+        return self.boolean(
+            shapes,
+            operation="union",
+            output_type=output_type,
+            tolerance_mm=tolerance_mm,
+            refine=refine,
+            label=label,
+        )
+
+    def cut(
+        self,
+        base: DomainValue,
+        tools: DomainValue | Sequence[DomainValue],
+        *,
+        output_type: str = "solid",
+        tolerance_mm: float = 0.0,
+        refine: bool = True,
+        label: str = "",
+    ) -> DomainValue:
+        """Subtract one tool or an array of tools from base."""
+
+        if isinstance(tools, DomainValue):
+            clean_tools = [tools]
+        elif isinstance(tools, (list, tuple)):
+            clean_tools = list(tools)
+        else:
+            raise _error(
+                "cut",
+                "tools",
+                "must be one modeled value or an array of modeled values",
+                tools,
+            )
+        if not clean_tools:
+            raise _error("cut", "tools", "must contain at least one modeled value")
+        return self.boolean(
+            [base, *clean_tools],
+            operation="subtract",
+            output_type=output_type,
+            tolerance_mm=tolerance_mm,
+            refine=refine,
+            label=label,
+        )
+
+    def intersect(
+        self,
+        shapes: Sequence[DomainValue],
+        *,
+        output_type: str = "solid",
+        tolerance_mm: float = 0.0,
+        refine: bool = True,
+        label: str = "",
+    ) -> DomainValue:
+        """Keep the volume shared by every supplied solid."""
+
+        return self.boolean(
+            shapes,
+            operation="intersect",
+            output_type=output_type,
+            tolerance_mm=tolerance_mm,
+            refine=refine,
+            label=label,
         )
 
     def compound(
@@ -2559,7 +2684,7 @@ class PartDesignDomainAPI:
         *,
         label: str = "",
     ) -> DomainValue:
-        """Round the exact edges matched by a count-guarded geometric selection."""
+        """Round exact edges; pass selection=api.find_subelements(element_type="edge", expected_count=..., near_point=[x,y,z], ...), using enough filters to identify only the intended edges."""
 
         clean_base = _modeled(
             "fillet", "base", base, topology={"solid", "shell"}
@@ -2581,7 +2706,7 @@ class PartDesignDomainAPI:
         *,
         label: str = "",
     ) -> DomainValue:
-        """Bevel the exact edges matched by a count-guarded geometric selection."""
+        """Bevel exact edges; pass selection=api.find_subelements(element_type="edge", expected_count=..., near_point=[x,y,z], ...), using enough filters to identify only the intended edges."""
 
         clean_base = _modeled(
             "chamfer", "base", base, topology={"solid", "shell"}
@@ -2628,6 +2753,52 @@ class PartDesignDomainAPI:
             label=_label("thickness", label),
         )
 
+    def move_planar_faces(
+        self,
+        base: DomainValue,
+        selection: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+        distance_mm: float,
+        *,
+        label: str = "",
+    ) -> DomainValue:
+        """Move selected planar faces along their outward normals; positive grows the solid, negative removes material. Pass one exact face query or a list of queries."""
+
+        clean_base = _topology(
+            "move_planar_faces", "base", base, allowed={"solid"}
+        )
+        raw_selections = (
+            [selection] if isinstance(selection, Mapping) else selection
+        )
+        if (
+            not isinstance(raw_selections, (list, tuple))
+            or not raw_selections
+            or len(raw_selections) > 64
+        ):
+            raise _error(
+                "move_planar_faces",
+                "selection",
+                "must be one face query or a list of 1 to 64 face queries",
+            )
+        selections = [
+            _selection("move_planar_faces", item, element_type="face")
+            for item in raw_selections
+        ]
+        distance = _number(
+            "move_planar_faces", "distance_mm", distance_mm
+        )
+        if abs(distance) <= 1.0e-12:
+            raise _error(
+                "move_planar_faces", "distance_mm", "must be non-zero", distance_mm
+            )
+        return self._graph(
+            "model_move_planar_faces",
+            "solid",
+            clean_base,
+            selections,
+            distance,
+            label=_label("move_planar_faces", label),
+        )
+
     def hole(
         self,
         base: DomainValue,
@@ -2649,6 +2820,8 @@ class PartDesignDomainAPI:
 
         Use direction=along_normal, opposite_normal, or symmetric. For an ordinary
         through hole, symmetric avoids dependence on which side holds the sketch.
+        A counterbore or countersink is one-sided: put the sketch on its entry face
+        and choose along_normal or opposite_normal into the material.
         """
 
         if through_all == (depth_mm is not None):
@@ -2745,6 +2918,22 @@ class PartDesignDomainAPI:
             midplane=midplane,
             subtractive=True,
         )
+        shaped_cut = (
+            "counterbore"
+            if counterbore_diameter is not None
+            else "countersink"
+            if countersink_diameter is not None
+            else ""
+        )
+        if shaped_cut and clean_midplane:
+            raise _error(
+                "hole",
+                "direction",
+                f"cannot be symmetric for a one-sided {shaped_cut}; place the "
+                "sketch on its entry face and choose along_normal or "
+                "opposite_normal into the material",
+                clean_direction,
+            )
         return self._graph(
             "hole",
             "feature",
@@ -2761,6 +2950,114 @@ class PartDesignDomainAPI:
             midplane=clean_midplane,
             direction=clean_direction,
             label=_label("hole", label),
+        )
+
+    def holes(
+        self,
+        base: DomainValue,
+        centers_mm: Sequence[Sequence[float]],
+        diameter_mm: float,
+        *,
+        plane: str = "XY",
+        plane_offset_mm: float = 0.0,
+        placement: Mapping[str, Sequence[float]] | None = None,
+        depth_mm: float | None = None,
+        through_all: bool = False,
+        countersink_diameter_mm: float | None = None,
+        countersink_angle_degrees: float = 90.0,
+        counterbore_diameter_mm: float | None = None,
+        counterbore_depth_mm: float | None = None,
+        direction: str = "symmetric",
+        label: str = "",
+    ) -> DomainValue:
+        """Native Hole feature at one [u,v] center or many [[u,v],...] centers; a plain through bore may be symmetric, but a counterbore/countersink requires its plane on the entry face and a one-sided direction into material.
+
+        Coordinates use the selected sketch plane. Omit depth_mm for a through
+        hole; direction='symmetric' makes a plain bore independent of sketch-normal
+        orientation. Provide depth_mm for a blind hole. An explicit through_all=True
+        is also accepted. A counterbore or countersink is one-sided: set
+        plane_offset_mm/placement on its entry face and explicitly choose
+        along_normal or opposite_normal into the material.
+        """
+
+        clean_centers = _centers_mm("holes", centers_mm)
+        points = [
+            self.point(center, construction=True, name=f"HoleCenter{index + 1}")
+            for index, center in enumerate(clean_centers)
+        ]
+        profile = self.sketch(
+            points,
+            plane=plane,
+            plane_offset_mm=plane_offset_mm,
+            placement=placement,
+            require_closed_profile=False,
+            label=f"{label} centers" if label else "Hole centers",
+        )
+        effective_through_all = bool(through_all or depth_mm is None)
+        return self.hole(
+            self._feature_base("holes", base, label=label),
+            profile,
+            diameter_mm,
+            depth_mm=depth_mm,
+            through_all=effective_through_all,
+            countersink_diameter_mm=countersink_diameter_mm,
+            countersink_angle_degrees=countersink_angle_degrees,
+            counterbore_diameter_mm=counterbore_diameter_mm,
+            counterbore_depth_mm=counterbore_depth_mm,
+            direction=direction,
+            label=label,
+        )
+
+    def bosses(
+        self,
+        base: DomainValue,
+        centers_mm: Sequence[Sequence[float]],
+        diameter_mm: float,
+        height_mm: float,
+        *,
+        plane: str = "XY",
+        plane_offset_mm: float = 0.0,
+        placement: Mapping[str, Sequence[float]] | None = None,
+        direction: str = "along_normal",
+        refine: bool = True,
+        label: str = "",
+    ) -> DomainValue:
+        """Return one native additive feature for one [u,v] center or many [[u,v],...] centers."""
+
+        clean_centers = _centers_mm("bosses", centers_mm)
+        diameter = _number(
+            "bosses",
+            "diameter_mm",
+            diameter_mm,
+            minimum=0.0,
+            strict=True,
+        )
+        circles = [
+            self.circle(center, diameter / 2.0, name=f"Boss{index + 1}")
+            for index, center in enumerate(clean_centers)
+        ]
+        profile = self.sketch(
+            circles,
+            plane=plane,
+            plane_offset_mm=plane_offset_mm,
+            placement=placement,
+            require_closed_profile=True,
+            label=f"{label} profiles" if label else "Boss profiles",
+        )
+        return self.extrude(
+            profile,
+            _number(
+                "bosses",
+                "height_mm",
+                height_mm,
+                minimum=0.0,
+                strict=True,
+            ),
+            operation="add_material",
+            base=self._feature_base("bosses", base, label=label),
+            direction=direction,
+            refine=refine,
+            label=label,
         )
 
     def fastener_hole(
@@ -2984,7 +3281,7 @@ class PartDesignDomainAPI:
         angle_tolerance_degrees: float = 1.0,
         radius_tolerance_mm: float = 1.0e-6,
     ) -> dict[str, Any]:
-        """Build a stable face/edge selector with exact cardinality."""
+        """Build a stable face/edge selector with exact cardinality; near_point chooses the closest match while geometry, direction, radius, length, and area filters disambiguate it."""
 
         raw: dict[str, Any] = {
             "type": "query",
@@ -3030,7 +3327,7 @@ class PartDesignDomainAPI:
         tolerance: float = 1.0e-6,
         label: str = "",
     ) -> DomainValue:
-        """Verify a regenerated-BREP bound and return a check."""
+        """Verify a BREP quantity: length_mm, area_mm2, volume_mm3, solid/face/edge_count, bounds_(min|max|size)_(x|y|z)_mm, center_of_mass_(x|y|z)_mm, minimum_distance_mm, interference_volume_mm3, radius_mm, diameter_mm, mass_kg, inertia_(xx|xy|xz|yy|yz|zz)_kg_mm2, or minimum_wall_thickness_mm."""
 
         clean_quantity = str(quantity or "").strip().lower()
         if clean_quantity not in _MEASURE_QUANTITIES:
@@ -3263,13 +3560,7 @@ class PartDesignDomainAPI:
         appearance: DomainValue | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Publish one connected solid as a stable parametric Design Body.
-
-        Pass the final feature. Source edits retain Body identity. Attach checks,
-        material, appearance, and interfaces here. Interface names are local to this
-        output and reusable across parts. Assembly connectors require explicit metadata;
-        never infer compatibility from shape.
-        """
+        """Publish the final feature or one connected solid as a stable parametric Design Body; source edits retain Body identity and checks/material/appearance/interfaces attach here."""
 
         return self._graph(
             "body",
@@ -3302,12 +3593,7 @@ class PartDesignDomainAPI:
         appearance: DomainValue | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Publish standalone solid, shell, face, wire, or compound topology.
-
-        Use api.body instead when the result is one solid with native Part Design
-        history. Attach checks, material, appearance, and semantic interfaces here.
-        Interface names are local to this output and may be reused by other outputs.
-        """
+        """Publish standalone solid, shell, face, wire, or compound topology; use api.body instead for one solid with native Part Design history."""
 
         clean_shape = _topology("publish", "shape", shape, allowed=_PUBLISHABLE_TYPES)
         return self._graph(

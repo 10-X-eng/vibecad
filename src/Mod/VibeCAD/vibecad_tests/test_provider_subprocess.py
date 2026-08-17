@@ -554,30 +554,27 @@ def test_instructions_include_vibescript_guidance_only_in_vibescript_mode() -> N
     guidance = provider._vibescript_authoring_instruction(context)
     instructions = provider._provider_instructions(context)
     assert instructions.startswith(provider.VIBECAD_SYSTEM_INSTRUCTIONS)
-    assert "Default to catalog fasteners." in provider.VIBECAD_SYSTEM_INSTRUCTIONS
     assert (
-        "A correction changes only the named geometry"
+        "Search catalogs only for requested or required unspecified components"
         in provider.VIBECAD_SYSTEM_INSTRUCTIONS
     )
-    assert "assembly retention" in provider.VIBECAD_SYSTEM_INSTRUCTIONS
     assert (
-        "Hide source bodies when reviewing assembly occurrences."
+        "a correction changes only the named design"
         in provider.VIBECAD_SYSTEM_INSTRUCTIONS
     )
+    assert "Preserve existing identity and history" in provider.VIBECAD_SYSTEM_INSTRUCTIONS
     assert guidance
     assert guidance in instructions
-    assert "api.extrude" in guidance
-    assert "cross-section stays constant" in guidance
-    assert "api.loft only when" in guidance
-    assert "cross-section genuinely changes" in guidance
+    assert "Extrude constant sections" in guidance
+    assert "loft only changing sections" in guidance
 
     assembly_guidance = provider._vibescript_authoring_instruction(
         _vibescript_mode_context("AssemblyWorkbench", "assembly")
     )
-    assert "VIBESCRIPT MODEL + ASSEMBLY AUTHORING" in assembly_guidance
-    assert "cross-section stays constant" in assembly_guidance
-    assert "cross-section genuinely changes" in assembly_guidance
-    assert "occurrences, joints, mechanisms, and simulations" in assembly_guidance
+    assert "VIBESCRIPT MODEL + ASSEMBLY" in assembly_guidance
+    assert "Extrude constant sections" in assembly_guidance
+    assert "loft only changing sections" in assembly_guidance
+    assert "occurrences, joints, and motion" in assembly_guidance
 
     for other_context in (
         {},
@@ -642,12 +639,13 @@ def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
         )
     for removed_contract in ("params", "new_body", "new_sketch", "sketchbuilder"):
         assert removed_contract not in text
-    assert "validated inputs" in text
-    assert "vibescript.read_source" in text
-    assert "vibescript.read_api" in text
-    assert "vibescript.read_geometry" in text
-    assert "vibescript.read_placement" in text
-    assert "complete updated source" in text
+    assert "vibescript_authoring_contract_json" in text
+    assert "read_operation" in text
+    assert "read_source" in text
+    assert "edit_source" in text
+    assert "build_program" in text
+    assert "set_inputs" in text
+    assert "api.name" in text
 
 
 def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> None:
@@ -656,15 +654,11 @@ def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> N
         _vibescript_mode_context("AssemblyWorkbench", "assembly")
     )
     for instruction in (partdesign, assembly):
-        assert "vibescript.read_source" in instruction
-        assert "vibescript.read_api" in instruction
-        assert "vibescript.read_geometry" in instruction
-        assert "vibescript.read_placement" in instruction
-        assert "vibescript.edit_source" in instruction
+        assert "failed create without program/revision saved nothing" in instruction
+        assert "read_source before edit_source" in instruction
+        assert "build_program runs unchanged code" in instruction
         assert "set_inputs" in instruction
         assert "reconfigure_program" not in instruction
-        assert "expected_outputs" in instruction
-        assert "one editable part or program" in instruction
         assert "before writing the first program" not in instruction
         assert "after success" not in instruction
 
@@ -737,22 +731,6 @@ def test_source_write_result_is_compact_readable_and_actionable() -> None:
             }
         ],
         "state": {"status": "accepted", "accepted_is_current": True},
-        "next_actions": [
-            {
-                "tool": "vibescript.read_source",
-                "arguments": {
-                    "program": "Design/partdesign/Motor Mount",
-                    "include_logs": False,
-                },
-            },
-            {
-                "tool": "vibescript.build_program",
-                "arguments": {
-                    "program": "Design/partdesign/Motor Mount",
-                    "expected_revision": "b" * 64,
-                },
-            },
-        ],
     }
 
 
@@ -836,10 +814,9 @@ def test_background_source_result_is_compacted_once_with_collision_signal() -> N
 
 def test_partdesign_vibescript_guidance_defaults_to_native_editable_history() -> None:
     partdesign = provider._vibescript_authoring_instruction(_vibescript_mode_context())
-    assert "editable native Body history" in partdesign
-    assert "api.sketch for planar feature profiles" in partdesign
-    assert "line_3d, arc_3d, wire" in partdesign
-    assert "nonplanar, imported, repair, or standalone geometry" in partdesign
+    assert "Source defines editable native history" in partdesign
+    assert "use sketch plus a feature for other planar profiles" in partdesign
+    assert "direct 3D topology only for nonplanar or standalone geometry" in partdesign
 
     assembly = provider._vibescript_authoring_instruction(
         _vibescript_mode_context("AssemblyWorkbench", "assembly")
@@ -1104,7 +1081,7 @@ def test_assembly_turn_injects_copy_ready_available_components(
             "sources": [],
         },
     )
-    reference = {"document_uid": "part-uid", "object_name": "Bracket"}
+    reference = {"document_uid": "assembly-uid", "object_name": "Bracket"}
     monkeypatch.setattr(
         component_catalog,
         "capture_component_catalog",

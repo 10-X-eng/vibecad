@@ -238,6 +238,55 @@ Reasoning effort: none
 
 The local server must already be running and expose an OpenAI-compatible API. Some local models reject reasoning parameters even when the server supports the endpoint; use `none` for those models.
 
+### Increase Ollama's context length
+
+VibeCAD's CAD instructions, tool schemas, document state, and reference images
+need more context than an ordinary chat. Use at least 64K tokens for agentic CAD
+work when the model and available memory support it. Larger context consumes
+more RAM or VRAM. VibeCAD cannot set `num_ctx` through Ollama's
+OpenAI-compatible endpoint, so configure Ollama before selecting the model in
+VibeCAD.
+
+When starting Ollama directly:
+
+```bash
+OLLAMA_CONTEXT_LENGTH=65536 ollama serve
+```
+
+For the standard Linux systemd service, run `sudo systemctl edit
+ollama.service` and add:
+
+```ini
+[Service]
+Environment="OLLAMA_CONTEXT_LENGTH=65536"
+```
+
+Then apply the override:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+```
+
+The Ollama desktop application also provides a context-length setting. To give
+only one derived model a larger context, create it from a `Modelfile`:
+
+```dockerfile
+FROM qwen3.5:9b
+PARAMETER num_ctx 65536
+```
+
+```bash
+ollama create qwen3.5:9b-vibecad -f Modelfile
+```
+
+Select the resulting model in VibeCAD after clicking **Fetch models**. Run
+`ollama ps` during a request to verify the allocated context and whether the
+model is fully on GPU or partly offloaded to CPU. See Ollama's official
+[context-length guide](https://docs.ollama.com/context-length) and
+[OpenAI-compatibility notes](https://docs.ollama.com/api/openai-compatibility)
+for current platform-specific details.
+
 ## Troubleshooting
 
 - **`not_configured`:** VibeCAD could not find the selected provider's environment variable, a valid key in the selected `.env` file, or a keyring entry.

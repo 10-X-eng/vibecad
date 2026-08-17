@@ -11,11 +11,8 @@ from typing import Any
 TOOL_SPEC = {
     "name": "assembly.play_simulation",
     "description": (
-        "Play a saved Assembly simulation. Use autoplay=false with time_seconds "
-        "for one stable inspection frame. Optional presentation, hidden components, "
-        "and camera settings are temporary; stop_simulation restores them. The "
-        "result reports automatic deterministic collision evidence for the full trace and "
-        "the displayed frame."
+        "Play or inspect a saved Assembly simulation with collision evidence. "
+        "Temporary presentation changes are restored by stop_simulation."
     ),
     "contextual": False,
     "requires_document": True,
@@ -27,7 +24,7 @@ TOOL_SPEC = {
         "properties": {
             "simulation": {
                 "type": "object",
-                "description": "Exact published simulation reference.",
+                "description": "Published simulation reference.",
                 "properties": {
                     "document_uid": {"type": "string", "minLength": 1},
                     "object_name": {"type": "string", "minLength": 1},
@@ -39,7 +36,7 @@ TOOL_SPEC = {
             "presentation": {
                 "type": "object",
                 "description": (
-                    "Optional published exploded_view applied to every frame."
+                    "Optional exploded-view reference."
                 ),
                 "properties": {
                     "document_uid": {"type": "string", "minLength": 1},
@@ -52,7 +49,7 @@ TOOL_SPEC = {
             "hidden_components": {
                 "type": "array",
                 "description": (
-                    "Exact Assembly components to hide during playback."
+                    "Components hidden during playback."
                 ),
                 "maxItems": 4096,
                 "uniqueItems": True,
@@ -78,20 +75,16 @@ TOOL_SPEC = {
                     "bottom",
                     "isometric",
                 ],
-                "description": "Optional standard camera.",
+                "description": "Camera preset.",
             },
             "autoplay": {
                 "type": "boolean",
-                "description": (
-                    "Start moving after generation; false holds time_seconds."
-                ),
+                "description": "False holds time_seconds.",
                 "default": True,
             },
             "time_seconds": {
                 "type": "number",
-                "description": (
-                    "Exact saved-simulation time to display, in seconds."
-                ),
+                "description": "Displayed time in seconds.",
             },
         },
         "required": ["simulation"],

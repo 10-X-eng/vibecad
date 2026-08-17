@@ -87,7 +87,7 @@ class TestVibeCADNativePanelStartup(unittest.TestCase):
 class TestVibeCADResponsiveAssistant(unittest.TestCase):
     """Exercise the compact composer against the real Qt layout engine."""
 
-    def test_shift_enter_sends_while_plain_enter_edits(self) -> None:
+    def test_ctrl_enter_sends_while_plain_enter_edits(self) -> None:
         import FreeCAD as App
 
         if not App.GuiUp:
@@ -112,15 +112,15 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
             self.assertTrue(prompt.property("VibeSubmitFilterInstalled"))
             send_button = root.findChild(QtWidgets.QPushButton, "VibeSend")
             self.assertIsNotNone(send_button)
-            self.assertIn("Shift+Enter", send_button.toolTip())
+            self.assertIn("Ctrl+Enter", send_button.toolTip())
             prompt.setPlainText("Build the mounting bracket")
 
-            shift_enter = QtGui.QKeyEvent(
+            ctrl_enter = QtGui.QKeyEvent(
                 QtCore.QEvent.KeyPress,
                 QtCore.Qt.Key_Return,
-                QtCore.Qt.ShiftModifier,
+                QtCore.Qt.ControlModifier,
             )
-            application.sendEvent(prompt, shift_enter)
+            application.sendEvent(prompt, ctrl_enter)
             self.assertEqual(submitted, ["Build the mounting bracket"])
             self.assertEqual(prompt.toPlainText(), "Build the mounting bracket")
 
@@ -138,6 +138,36 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
                 root.close()
                 root.deleteLater()
                 application.processEvents()
+
+    def test_transcript_turn_starts_outside_prior_markdown_list(self) -> None:
+        import FreeCAD as App
+
+        if not App.GuiUp:
+            self.skipTest("FreeCAD GUI mode is required")
+
+        from PySide import QtWidgets
+
+        import VibeCADGui
+
+        output = QtWidgets.QTextBrowser()
+        VibeCADGui._append_transcript_block(
+            output,
+            VibeCADGui._transcript_block_html(
+                "VibeCAD:\nFinished:\n\n- Added slots\n- Added fillets"
+            ),
+        )
+        VibeCADGui._append_transcript_block(
+            output,
+            VibeCADGui._transcript_block_html("User:\nMake the slots longer"),
+        )
+
+        self.assertIn("Added fillets\n\nUser:", output.toPlainText())
+        rendered = output.document().toHtml()
+        user_position = rendered.index("User:</span>")
+        self.assertGreater(
+            rendered.rfind("</ul>", 0, user_position),
+            rendered.rfind("<ul", 0, user_position),
+        )
 
     def test_narrow_composer_uses_distinct_icons_without_words(self) -> None:
         import FreeCAD as App
@@ -830,6 +860,26 @@ def test_windows_bundle_creates_branded_executable() -> None:
     assert "CreateProcessW" in launcher_source
 
 
+def test_every_release_bundle_keeps_and_executes_the_geometry_worker() -> None:
+    windows = _source("package/rattler-build/windows/create_bundle.sh")
+    linux = _source("package/rattler-build/linux/create_bundle.sh")
+    macos = _source("package/rattler-build/osx/create_bundle.sh")
+    local = _source("package/rattler-build/scripts/build_vibecad_local_release.sh")
+    geometry = _source("src/Mod/VibeCAD/VibeCADGeometry.py")
+
+    assert (
+        'copy_matching_files "${conda_env}/Library/bin" '
+        '"VibeCADGeometryWorker.exe" "${copy_dir}/bin"'
+    ) in windows
+    assert 'cp ${conda_env}/bin_tmp/VibeCADGeometryWorker ${conda_env}/bin/' in linux
+    assert (
+        'cp "${conda_env}/bin_tmp/VibeCADGeometryWorker" "${conda_env}/bin/"'
+    ) in macos
+    for release_script in (windows, linux, macos, local):
+        assert "from VibeCADGeometry import runtime_execution_smoke" in release_script
+    assert "def runtime_execution_smoke()" in geometry
+
+
 def test_release_packages_share_canonical_artifact_basename() -> None:
     linux_bundle = _source("package/rattler-build/linux/create_bundle.sh")
     macos_bundle = _source("package/rattler-build/osx/create_bundle.sh")
@@ -968,6 +1018,93 @@ def test_vibecad_ships_exactly_two_constrained_appearance_profiles() -> None:
         )
 
     assert schemas["Light"] == schemas["Dark"]
+
+
+def test_vibecad_sketcher_profiles_use_clear_semantic_palettes() -> None:
+    profile_values = {
+        "Light": {
+            "primary": 0x000000FF,
+            "unconstrained": 0x0000FFFF,
+            "auxiliary": 0xA08200FF,
+            "constraint": 0x919191FF,
+            "invalid": 0xE03131FF,
+        },
+        "Dark": {
+            "primary": 0xF1F3F5FF,
+            "unconstrained": 0x4DABF7FF,
+            "auxiliary": 0xFCC419FF,
+            "constraint": 0xADB5BDFF,
+            "invalid": 0xFF6B6BFF,
+        },
+    }
+
+    for mode, palette in profile_values.items():
+        profile = ET.parse(ROOT / f"src/Gui/Themes/{mode}.cfg").getroot()
+        preferences = profile.find(
+            "./FCParamGroup[@Name='Root']/FCParamGroup[@Name='BaseApp']"
+            "/FCParamGroup[@Name='Preferences']"
+        )
+        assert preferences is not None
+        view = preferences.find("./FCParamGroup[@Name='View']")
+        sketch_view = preferences.find(
+            "./FCParamGroup[@Name='Mod']/FCParamGroup[@Name='Sketcher']"
+            "/FCParamGroup[@Name='View']"
+        )
+        assert view is not None
+        assert sketch_view is not None
+        view_values = {
+            item.get("Name"): int(item.get("Value", "0")) for item in view
+        }
+        sketch_values = {
+            item.get("Name"): int(item.get("Value", "0")) for item in sketch_view
+        }
+
+        for key in (
+            "SketchEdgeColor",
+            "SketchVertexColor",
+            "FullyConstrainedColor",
+            "FullyConstraintElementColor",
+        ):
+            assert view_values[key] == palette["primary"]
+        for key in ("EditedEdgeColor", "EditedVertexColor"):
+            assert view_values[key] == palette["unconstrained"]
+        for key in (
+            "ConstructionColor",
+            "ExternalColor",
+            "ExternalDefiningColor",
+            "InternalAlignedGeoColor",
+            "FullyConstraintConstructionElementColor",
+            "FullyConstraintInternalAlignmentColor",
+            "FullyConstraintConstructionPointColor",
+        ):
+            assert view_values[key] == palette["auxiliary"]
+        for key in (
+            "ConstrainedIcoColor",
+            "NonDrivingConstrDimColor",
+            "ConstrainedDimColor",
+            "ExprBasedConstrDimColor",
+            "DeactivatedConstrDimColor",
+        ):
+            assert view_values[key] == palette["constraint"]
+        for key in ("CreateLineColor", "CursorTextColor", "CursorCrosshairColor"):
+            assert view_values[key] == palette["primary"]
+        assert view_values["InvalidSketchColor"] == palette["invalid"]
+        assert view_values["DefaultShapePointSize"] == 3
+        assert view_values["MarkerSize"] == 5
+        for key in (
+            "EdgeWidth",
+            "ConstructionWidth",
+            "InternalWidth",
+            "ExternalWidth",
+            "ExternalDefiningWidth",
+        ):
+            assert sketch_values[key] == 1
+
+
+def test_vibecad_does_not_expose_the_legacy_workbench_preferences_page() -> None:
+    resource = _source("src/Gui/resource.cpp")
+
+    assert "PrefPageProducer<DlgSettingsWorkbenchesImp>" not in resource
 
 
 def test_vibecad_removes_theme_and_preference_pack_escape_hatches() -> None:

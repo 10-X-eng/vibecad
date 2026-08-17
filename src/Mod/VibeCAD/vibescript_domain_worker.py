@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 from contextlib import redirect_stdout
 import io
 import json
@@ -158,6 +159,53 @@ _SAFE_BUILTINS = MappingProxyType(
 )
 
 
+def _compile_source_with_safe_api_imports(
+    source: str,
+    source_filename: str,
+    api: Any,
+    namespace: dict[str, Any],
+) -> Any:
+    """Resolve imports from the prebound API without enabling Python imports."""
+
+    tree = ast.parse(source, filename=source_filename, mode="exec")
+    exported = frozenset(
+        str(name) for name in getattr(api, "exported_names", ())
+    )
+
+    class SafeApiImports(ast.NodeTransformer):
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                if alias.name != "api":
+                    raise ImportError(
+                        "Only the prebound api module may be imported in VibeScript source."
+                    )
+                namespace[str(alias.asname or "api")] = api
+            return None
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            if node.level != 0 or node.module != "api":
+                raise ImportError(
+                    "Only names from the prebound api module may be imported in "
+                    "VibeScript source."
+                )
+            for alias in node.names:
+                if alias.name == "*":
+                    namespace.update(
+                        {name: getattr(api, name) for name in sorted(exported)}
+                    )
+                    continue
+                if alias.name not in exported:
+                    raise ImportError(
+                        f"api has no exported callable {alias.name!r}."
+                    )
+                namespace[str(alias.asname or alias.name)] = getattr(api, alias.name)
+            return None
+
+    transformed = SafeApiImports().visit(tree)
+    ast.fix_missing_locations(transformed)
+    return compile(transformed, source_filename, "exec")
+
+
 def _execute_source(
     *,
     source: str,
@@ -165,6 +213,7 @@ def _execute_source(
     document_objects: list[dict[str, str]],
     inputs: dict[str, Any],
     api: Any,
+    expected_output_names: list[str],
     max_operations: int,
     max_seconds: float,
 ) -> tuple[dict[str, Any], str, dict[str, Any]]:
@@ -193,6 +242,12 @@ def _execute_source(
         "inputs": _immutable_input(inputs),
         "api": api,
     }
+    compiled_source = _compile_source_with_safe_api_imports(
+        source,
+        source_filename,
+        api,
+        namespace,
+    )
     output = io.StringIO()
     previous_trace = sys.gettrace()
     try:
@@ -200,7 +255,7 @@ def _execute_source(
         try:
             with redirect_stdout(output):
                 exec(
-                    compile(source, source_filename, "exec"),
+                    compiled_source,
                     namespace,
                     namespace,
                 )
@@ -214,7 +269,14 @@ def _execute_source(
         sys.settrace(previous_trace)
     result = namespace.get("result")
     if not isinstance(result, dict):
-        raise TypeError("Program source must assign a dictionary to result.")
+        if len(expected_output_names) == 1 and result is not None:
+            result = {expected_output_names[0]: result}
+        else:
+            raise TypeError(
+                "A one-output program may assign its final API value directly to "
+                "result. A multi-output program must assign a result dictionary "
+                "whose keys match expected_outputs in declared order."
+            )
     return (
         result,
         output.getvalue()[-MAX_STDOUT_CHARS:],
@@ -1009,19 +1071,20 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             compatibility_methods=compatibility_methods,
         )
         worker_progress.set_phase("source_execution")
+        expected_names = [str(item.get("name") or "") for item in expected_outputs]
         result, stdout, budget = _execute_source(
             source=source,
             document_name=str(request.get("document_name") or "VibeScriptDocument"),
             document_objects=list(request.get("document_objects") or []),
             inputs=inputs,
             api=api,
+            expected_output_names=expected_names,
             max_operations=int(request.get("max_operations") or 200_000),
             max_seconds=float(request.get("max_seconds") or 300.0),
         )
         (root / "source-stdout.txt").write_text(
             stdout[-MAX_STDOUT_CHARS:], encoding="utf-8"
         )
-        expected_names = [str(item.get("name") or "") for item in expected_outputs]
         if list(result) != expected_names:
             raise ValueError(
                 "result keys must exactly match expected_outputs in declared order: "

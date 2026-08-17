@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -414,6 +415,37 @@ def test_read_geometry_analysis_is_process_isolated(
         "x_direction": [1.0, 0.0, 0.0],
     }
     assert not artifact_directory.exists()
+
+
+def test_geometry_worker_release_smoke_executes_real_brep_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADGeometry as geometry_worker
+
+    shape = object()
+    monkeypatch.setitem(
+        sys.modules,
+        "Part",
+        SimpleNamespace(makeBox=lambda length, width, height: shape),
+    )
+    monkeypatch.setattr(
+        geometry_worker,
+        "worker_executable",
+        lambda: Path("/runtime/bin/VibeCADGeometryWorker"),
+    )
+
+    def validate(candidate, **kwargs):
+        assert candidate is shape
+        assert kwargs == {"deadline_seconds": 10.0}
+        return {"ok": True, "valid": True, "elapsed_seconds": 0.125}
+
+    monkeypatch.setattr(geometry_worker, "validate_shape", validate)
+
+    assert geometry_worker.runtime_execution_smoke() == {
+        "worker": "/runtime/bin/VibeCADGeometryWorker",
+        "valid": True,
+        "elapsed_seconds": 0.125,
+    }
 
 
 def test_every_domain_description_is_copy_ready_for_the_operating_model() -> None:
@@ -2770,7 +2802,7 @@ def test_component_inventory_is_copy_ready_and_prepared_search_does_not_rescan(
     }
     prepared = prepare_captured_component_catalog(
         {
-            "owner_document_uid": "assembly-uid",
+            "owner_document_uid": "component-uid",
             "project_directory": "",
             "owner_file": "",
             "open_document_files": [],
@@ -2910,7 +2942,7 @@ def test_component_catalog_large_inventory_has_explicit_bounded_pagination() -> 
         search_prepared_component_catalog(prepared, limit=201)
 
 
-def test_component_catalog_hides_unrelated_file_errors_until_explicitly_requested() -> None:
+def test_component_catalog_hides_unrelated_files_until_explicitly_requested() -> None:
     from VibeCADComponentCatalog import (
         component_inventory,
         search_prepared_component_catalog,
@@ -2918,9 +2950,32 @@ def test_component_catalog_hides_unrelated_file_errors_until_explicitly_requeste
 
     prepared = {
         "schema": "vibecad-component-catalog-snapshot-v1",
+        "owner_document_uid": "active-document-uid",
         "project_file_search_available": True,
         "saved_documents_skipped": 1,
-        "candidates": [],
+        "candidates": [
+            {
+                "document_label": "Active Document",
+                "object_name": "ActiveBody",
+                "label": "Active Body",
+                "kind": "definition",
+                "reference": {
+                    "document_uid": "active-document-uid",
+                    "object_name": "ActiveBody",
+                },
+            },
+            {
+                "document_label": "Unrelated Document",
+                "object_name": "UnrelatedBody",
+                "label": "Unrelated Body",
+                "kind": "definition",
+                "reference": {
+                    "document_uid": "unrelated-document-uid",
+                    "object_name": "UnrelatedBody",
+                    "document_path": "unrelated.FCStd",
+                },
+            },
+        ],
         "errors": [
             {
                 "document_path": "broken.FCStd",
@@ -2940,7 +2995,13 @@ def test_component_catalog_hides_unrelated_file_errors_until_explicitly_requeste
     assert "saved_documents_skipped" not in general
     assert "catalog_health" not in general
     assert exact["errors"] == prepared["errors"]
+    assert [
+        item["reference"]["object_name"] for item in inventory["components"]
+    ] == ["ActiveBody"]
     assert "1 unrelated saved document was not indexed" in inventory["catalog_health"]
+    assert search_prepared_component_catalog(prepared, "Unrelated Body")[
+        "matches"
+    ][0]["reference"]["object_name"] == "UnrelatedBody"
 
 
 def test_component_catalog_never_loses_matches_to_provider_byte_boundary() -> None:
@@ -3053,6 +3114,8 @@ def test_schema_v1_migrates_to_partdesign_without_relocation(tmp_path: Path) -> 
 
 
 def test_source_and_input_policy_blocks_escape_hatches() -> None:
+    domains.validate_program_source("import api\nresult = api.box(1, 2, 3)")
+    domains.validate_program_source("from api import *\nresult = box(1, 2, 3)")
     for source in (
         "import os\nresult = {}",
         "result = open('/tmp/value')",
