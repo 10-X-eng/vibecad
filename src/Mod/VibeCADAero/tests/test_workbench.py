@@ -23,7 +23,14 @@ def _top_level_imports(path: Path) -> set[str]:
 
 def test_init_modules_do_not_import_optional_solvers():
     forbidden = {"neuralfoil", "aerosandbox", "jsbsim"}
-    for name in ("Init.py", "InitGui.py", "Commands.py", "VibeCADAero.py"):
+    for name in (
+        "Init.py",
+        "InitGui.py",
+        "Commands.py",
+        "VibeCADAero.py",
+        "AeroIcons.py",
+        "AeroWorkspace.py",
+    ):
         imported = _top_level_imports(ROOT / name)
         assert imported.isdisjoint(forbidden), f"{name} imports {imported & forbidden}"
 
@@ -32,6 +39,7 @@ def test_initgui_registers_aero_workbench_without_executing_solvers():
     source = (ROOT / "InitGui.py").read_text(encoding="utf-8")
     assert "class VibeCADAeroWorkbench" in source
     assert 'MenuText = "Aero"' in source
+    assert "AeroIcons.aero_icon_path" in source
     assert "Gui.addWorkbench" in source
     assert "neuralfoil" not in source
     assert "aerosandbox" not in source
@@ -65,6 +73,9 @@ def test_cmake_installs_mod_vibecadaero():
     assert "Mod/VibeCADAero" in cmake
     assert "InitGui.py" in cmake
     assert "data/e63.dat" in cmake
+    assert "icons/vibecad-aero-analyze.svg" in cmake
+    assert "AeroWorkspace.py" in cmake
+    assert "AeroIcons.py" in cmake
 
 
 def test_requirements_list_optional_pip_packages():

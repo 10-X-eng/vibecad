@@ -162,6 +162,57 @@ def test_wild_loft_bbox_is_rejected_for_locked_defaults():
     assert resolved.get("inference_rejected") is True
 
 
+def test_defaults_include_tailsitter_vehicle_type():
+    resolved = config.resolve_geometry(None)
+    assert resolved["vehicle_type"] == "tailsitter"
+    assert resolved["airfoil"] == "e63"
+
+
+def test_write_config_persists_vehicle_and_geometry():
+    created = []
+
+    class _Cfg:
+        def __init__(self):
+            self.Name = "AeroConfig"
+            self.Label = "AeroConfig"
+
+        def addProperty(self, *_args, **_kwargs):
+            return self
+
+    class _Writable(_Doc):
+        def addObject(self, typ, name):
+            obj = _Cfg()
+            obj.TypeId = typ
+            self.Objects.append(obj)
+            created.append(obj)
+            return obj
+
+    doc = _Writable()
+    written = config.write_config(
+        doc,
+        {
+            "vehicle_type": "Airplane",
+            "airfoil": "e63",
+            "span_mm": 800.0,
+            "chord_mm": 120.0,
+            "auw_g": 250.0,
+            "alpha_deg": 3.0,
+            "n_props": 1,
+            "prop_diameter_mm": 200.0,
+            "thrust_to_weight": 0.4,
+        },
+    )
+    assert written is created[0]
+    assert written.vehicle_type == "airplane"
+    assert written.airfoil == "e63"
+    assert written.span_mm == 800.0
+    assert written.chord_mm == 120.0
+    resolved = config.resolve_geometry(doc)
+    assert resolved["geometry_source"] == "AeroConfig"
+    assert resolved["vehicle_type"] == "airplane"
+    assert resolved["span_mm"] == 800.0
+
+
 def test_plausible_inference_still_accepted():
     lower = SimpleNamespace(
         Name="lower_wing",

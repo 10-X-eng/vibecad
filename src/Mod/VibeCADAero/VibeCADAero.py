@@ -168,10 +168,18 @@ def _ensure_aeroconfig(doc: Any, cfg: dict[str, Any]) -> Any | None:
         "auw_g",
         "airfoil",
         "alpha_deg",
+        "n_props",
+        "prop_diameter_mm",
+        "thrust_to_weight",
+        "vehicle_type",
     ):
         if not hasattr(obj, key):
             try:
-                typ = "App::PropertyString" if key == "airfoil" else "App::PropertyFloat"
+                typ = (
+                    "App::PropertyString"
+                    if key in ("airfoil", "vehicle_type")
+                    else "App::PropertyFloat"
+                )
                 obj.addProperty(typ, key, "Aero", key)
             except Exception:
                 setattr(obj, key, cfg.get(key))

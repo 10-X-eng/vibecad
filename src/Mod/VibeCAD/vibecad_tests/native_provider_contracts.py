@@ -3,6 +3,13 @@
 """Reviewed digests for the complete default Native provider surfaces."""
 
 EXPECTED_NATIVE_PROVIDER_CONTRACTS = {
+    "aero": {
+        "tool_count": 5,
+        "schema_bytes": 3639,
+        "schema_sha256": "74eb91c5eba91afbce3b7bc7a1eb95a644c713f40829f75f53723914ffc003f9",
+        "route_count": 8,
+        "routes_sha256": "75c1ab459ea2bb4061a228f587c2cac4568323b72b8ba445c276800cd0ea1f88",
+    },
     "analyze": {
         "tool_count": 30,
         "schema_bytes": 104315,

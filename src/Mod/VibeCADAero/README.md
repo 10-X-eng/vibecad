@@ -7,6 +7,7 @@ In-app aerodynamics workbench for the Voider-validated solver stack:
 - Momentum / actuator-disk hover power (not CFD)
 - JSBSim 6DOF plant export
 
+Use the **Aero** tab on the main ribbon (next to Parameters and Drawing).
 User guide: [`docs/vibecad-aero.md`](../../../docs/vibecad-aero.md)
 
 Optional packages: [`requirements-aero.txt`](requirements-aero.txt)

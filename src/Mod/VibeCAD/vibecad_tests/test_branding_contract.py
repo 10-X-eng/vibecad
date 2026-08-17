@@ -1172,6 +1172,7 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
         ("Manufacture", "CAMWorkbench", "manufacture"),
         ("Drawing", "TechDrawWorkbench", "drawing"),
         ("Parameters", "SpreadsheetWorkbench", "parameters"),
+        ("Aero", "VibeCADAeroWorkbench", "aero"),
     ):
         assert f'{{"{label}", "{workbench}", "{surface}"}}' in ribbon
 
@@ -1200,6 +1201,7 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
         "VibeCADCommandSearch",
         "VibeCADThemeToggle",
         "VibeCADRibbonTabs",
+        "VibeCADAeroWorkspaceHost",
     ):
         assert f'QStringLiteral("{object_name}")' in ribbon
 

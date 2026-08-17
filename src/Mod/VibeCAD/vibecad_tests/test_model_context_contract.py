@@ -305,6 +305,7 @@ def test_provider_context_does_not_copy_conversation_cache() -> None:
         "count": 0,
         "images": [],
     }
+    service.aero_summary = lambda: {"available": False}
     service._conversation_cache = [
         {"role": "user", "content": f"must not leak {index}"}
         for index in range(1000)

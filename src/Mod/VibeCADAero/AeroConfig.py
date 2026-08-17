@@ -6,6 +6,9 @@ from __future__ import annotations
 
 from typing import Any
 
+VEHICLE_TYPES = ("airplane", "multirotor", "tailsitter")
+DEFAULT_VEHICLE_TYPE = "tailsitter"
+
 VOIDER_DEFAULTS: dict[str, Any] = {
     "span_mm": 500.0,
     "chord_mm": 90.0,
@@ -20,7 +23,26 @@ VOIDER_DEFAULTS: dict[str, Any] = {
     "figure_of_merit": 0.55,
     "thrust_to_weight": 1.9,
     "cruise_prop_eta": 0.65,
+    "vehicle_type": DEFAULT_VEHICLE_TYPE,
 }
+
+_STRING_KEYS = ("airfoil", "vehicle_type")
+_WRITE_KEYS = (
+    "span_mm",
+    "chord_mm",
+    "gap_c",
+    "stagger_c",
+    "decalage_deg",
+    "auw_g",
+    "airfoil",
+    "alpha_deg",
+    "n_props",
+    "prop_diameter_mm",
+    "figure_of_merit",
+    "thrust_to_weight",
+    "cruise_prop_eta",
+    "vehicle_type",
+)
 
 _PARAM_KEYS = (
     "span_mm",
@@ -54,6 +76,7 @@ def resolve_geometry(doc: Any | None = None) -> dict[str, Any]:
 
     values = dict(VOIDER_DEFAULTS)
     values["geometry_source"] = "defaults"
+    values["vehicle_type"] = DEFAULT_VEHICLE_TYPE
     if doc is None:
         return finalize(values)
 
@@ -117,7 +140,60 @@ def finalize(values: dict[str, Any]) -> dict[str, Any]:
     )
     cfg["xyz_ref"] = [0.25 * chord_m, 0.0, cfg["gap_m"] / 2.0]
     cfg["airfoil"] = str(cfg.get("airfoil") or "e63")
+    cfg["vehicle_type"] = normalize_vehicle_type(cfg.get("vehicle_type"))
     return cfg
+
+
+def normalize_vehicle_type(value: Any) -> str:
+    raw = str(value or DEFAULT_VEHICLE_TYPE).strip().lower().replace(" ", "_")
+    aliases = {
+        "airplane": "airplane",
+        "plane": "airplane",
+        "fixed_wing": "airplane",
+        "multirotor": "multirotor",
+        "multirotor_drone": "multirotor",
+        "drone": "multirotor",
+        "quad": "multirotor",
+        "tailsitter": "tailsitter",
+        "tailsitter_vtol": "tailsitter",
+        "voider": "tailsitter",
+        "vtol": "tailsitter",
+    }
+    return aliases.get(raw, DEFAULT_VEHICLE_TYPE)
+
+
+def write_config(doc: Any, values: dict[str, Any]) -> Any | None:
+    """Create or update ``AeroConfig`` on ``doc`` from explicit field edits."""
+
+    if doc is None:
+        return None
+    adder = getattr(doc, "addObject", None)
+    if not callable(adder):
+        return None
+    obj = _find_named(doc, "AeroConfig")
+    if obj is None:
+        try:
+            obj = adder("App::FeaturePython", "AeroConfig")
+        except Exception:
+            return None
+        if obj is not None and not getattr(obj, "Label", None):
+            try:
+                obj.Label = "AeroConfig"
+            except Exception:
+                pass
+    payload = dict(VOIDER_DEFAULTS)
+    payload.update(values or {})
+    payload["airfoil"] = str(payload.get("airfoil") or "e63")
+    payload["vehicle_type"] = normalize_vehicle_type(payload.get("vehicle_type"))
+    for key in _WRITE_KEYS:
+        _set_param(obj, key, payload.get(key))
+    recompute = getattr(doc, "recompute", None)
+    if callable(recompute):
+        try:
+            recompute()
+        except Exception:
+            pass
+    return obj
 
 
 def infer_from_named_objects(doc: Any) -> dict[str, Any]:
@@ -188,10 +264,42 @@ def _merge_params(values: dict[str, Any], obj: Any) -> None:
                     raw = None
         if raw is None:
             continue
-        if key == "airfoil":
+        if key in _STRING_KEYS:
             values[key] = str(raw)
         else:
             values[key] = float(raw)
+    vehicle = getattr(obj, "vehicle_type", None)
+    if vehicle is None:
+        getter = getattr(obj, "getPropertyByName", None)
+        if callable(getter):
+            try:
+                vehicle = getter("vehicle_type")
+            except Exception:
+                vehicle = None
+    if vehicle is not None:
+        values["vehicle_type"] = str(vehicle)
+
+
+def _set_param(obj: Any, key: str, value: Any) -> None:
+    if value is None:
+        return
+    stored = str(value) if key in _STRING_KEYS else float(value)
+    if not hasattr(obj, key):
+        adder = getattr(obj, "addProperty", None)
+        if callable(adder):
+            typ = "App::PropertyString" if key in _STRING_KEYS else "App::PropertyFloat"
+            try:
+                adder(typ, key, "Aero", key)
+            except Exception:
+                setattr(obj, key, stored)
+                return
+        else:
+            setattr(obj, key, stored)
+            return
+    try:
+        setattr(obj, key, stored)
+    except Exception:
+        pass
 
 
 def _bbox(obj: Any) -> Any | None:

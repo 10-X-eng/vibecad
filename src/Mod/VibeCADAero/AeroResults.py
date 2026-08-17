@@ -55,7 +55,12 @@ class AeroReportViewProvider:
         view.Proxy = self
 
     def getIcon(self) -> str:
-        return _AERO_ICON
+        try:
+            import AeroIcons
+
+            return AeroIcons.aero_icon_path()
+        except Exception:
+            return _AERO_ICON
 
     def dumps(self) -> None:
         return None

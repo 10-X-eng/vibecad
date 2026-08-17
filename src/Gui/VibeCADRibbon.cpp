@@ -76,7 +76,7 @@ struct DomainDefinition
     const char* surface;
 };
 
-constexpr std::array<DomainDefinition, 7> domains = {{
+constexpr std::array<DomainDefinition, 8> domains = {{
     {"Model", "PartDesignWorkbench", "model"},
     {"Assemble", "AssemblyWorkbench", "assemble"},
     {"Mesh", "MeshWorkbench", "mesh"},
@@ -84,6 +84,7 @@ constexpr std::array<DomainDefinition, 7> domains = {{
     {"Manufacture", "CAMWorkbench", "manufacture"},
     {"Drawing", "TechDrawWorkbench", "drawing"},
     {"Parameters", "SpreadsheetWorkbench", "parameters"},
+    {"Aero", "VibeCADAeroWorkbench", "aero"},
 }};
 
 constexpr auto chromePreferencesPath = "User parameter:BaseApp/Preferences/VibeCAD/Chrome";
@@ -814,6 +815,19 @@ const std::vector<GroupDefinition>& reverseEngineeringGroups()
     return groups;
 }
 
+const std::vector<GroupDefinition>& aeroGroups()
+{
+    static const std::vector<GroupDefinition> groups = {
+        {QObject::tr("Actions"),
+         {"VibeCADAero_Analyze",
+          "VibeCADAero_Section",
+          "VibeCADAero_VLM",
+          "VibeCADAero_ExportJSBSim",
+          "VibeCADAero_Report"}},
+    };
+    return groups;
+}
+
 const std::vector<GroupDefinition>& spreadsheetGroups()
 {
     static const std::vector<GroupDefinition> groups = {
@@ -1176,6 +1190,9 @@ struct Gui::VibeCADRibbon::Private
         if (activeWorkbench == "SpreadsheetWorkbench") {
             return spreadsheetGroups();
         }
+        if (activeWorkbench == "VibeCADAeroWorkbench") {
+            return aeroGroups();
+        }
 
         std::vector<GroupDefinition> groups = currentWorkbenchGroups();
         const auto appendComposed =
@@ -1341,6 +1358,7 @@ struct Gui::VibeCADRibbon::Private
         }
         publishSurfaceManifest(manifestGroups);
         page->setGroups(std::move(groups));
+        updateAeroWorkspace();
     }
 
     void updateThemeButton() const
@@ -1820,6 +1838,17 @@ struct Gui::VibeCADRibbon::Private
 
         page = new RibbonPage(root);
         rootLayout->addWidget(page);
+
+        aeroWorkspaceHost = new QWidget(root);
+        aeroWorkspaceHost->setObjectName(QStringLiteral("VibeCADAeroWorkspaceHost"));
+        aeroWorkspaceHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        aeroWorkspaceHost->setMinimumHeight(168);
+        aeroWorkspaceHost->setMaximumHeight(220);
+        auto* hostLayout = new QVBoxLayout(aeroWorkspaceHost);
+        hostLayout->setContentsMargins(8, 4, 8, 4);
+        hostLayout->setSpacing(4);
+        aeroWorkspaceHost->hide();
+        rootLayout->addWidget(aeroWorkspaceHost);
     }
 
     void build()
@@ -2098,6 +2127,17 @@ struct Gui::VibeCADRibbon::Private
         }
         setDomainTabsEnabled(true);
         removeSketchTabAndSelect(targetIndex);
+        updateAeroWorkspace();
+    }
+
+    void updateAeroWorkspace()
+    {
+        if (!aeroWorkspaceHost) {
+            return;
+        }
+        const bool aero = !inSketchEdit
+            && WorkbenchManager::instance()->activeName() == "VibeCADAeroWorkbench";
+        aeroWorkspaceHost->setVisible(aero);
     }
 
     void enterSketchEdit(const ViewProviderDocumentObject& provider)
@@ -2156,6 +2196,7 @@ struct Gui::VibeCADRibbon::Private
     QToolButton* settingsButton = nullptr;
     QTabBar* tabs = nullptr;
     RibbonPage* page = nullptr;
+    QWidget* aeroWorkspaceHost = nullptr;
     QTimer refreshTimer;
     QTimer documentTabsSyncTimer;
     QSet<QMdiSubWindow*> observedDocumentWindows;

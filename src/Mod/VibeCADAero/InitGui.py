@@ -2,36 +2,15 @@
 
 """GUI bootstrap for the Aero workbench (internal name: VibeCADAero)."""
 
+import AeroIcons
+
 
 class VibeCADAeroWorkbench(Workbench):
     """First-class in-app aerodynamics workbench."""
 
     MenuText = "Aero"
     ToolTip = "NeuralFoil section, AeroSandbox VLM/AeroBuildup, momentum hover, JSBSim"
-    Icon = """
-        /* XPM */
-        static const char * vibecad_aero_wb_xpm[] = {
-        "16 16 3 1",
-        "  c None",
-        ". c #1B4F72",
-        "+ c #5DADE2",
-        "                ",
-        "                ",
-        "         ++     ",
-        "       ++++     ",
-        "     +++++.     ",
-        "   +++++..      ",
-        " +++++...       ",
-        "+++++...        ",
-        " +++...         ",
-        "  ++..          ",
-        "   +.           ",
-        "                ",
-        "  ..........    ",
-        "                ",
-        "                ",
-        "                "};
-        """
+    Icon = AeroIcons.aero_icon_path()
 
     def Initialize(self):
         import Commands
@@ -49,8 +28,20 @@ class VibeCADAeroWorkbench(Workbench):
 
     def Activated(self):
         Msg("VibeCADAeroWorkbench::Activated()\n")
+        try:
+            import AeroWorkspace
+
+            AeroWorkspace.show_workspace()
+        except Exception as exc:
+            Msg(f"VibeCAD Aero workspace unavailable: {exc}\n")
 
     def Deactivated(self):
+        try:
+            import AeroWorkspace
+
+            AeroWorkspace.hide_workspace()
+        except Exception:
+            pass
         Msg("VibeCADAeroWorkbench::Deactivated()\n")
 
     def GetClassName(self):

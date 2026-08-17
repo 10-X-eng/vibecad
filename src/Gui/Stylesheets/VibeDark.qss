@@ -1826,7 +1826,8 @@ QTabBar#VibeCADRibbonTabs::tab:selected {
   background-color: #1a2028;
   border-bottom-color: #4dabf7; }
 
-QWidget#VibeCADRibbonPage {
+QWidget#VibeCADRibbonPage,
+QWidget#VibeCADAeroWorkspaceHost {
   background-color: #1a2028;
   border-top: 1px solid #2a323c; }
 

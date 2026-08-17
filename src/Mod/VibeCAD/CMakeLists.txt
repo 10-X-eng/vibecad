@@ -5,6 +5,7 @@ set(VibeCAD_Scripts
     InitGui.py
     VibeCADAgentCli.py
     VibeCADAgentControl.py
+    VibeCADAeroContext.py
     vibecad-agent.cmd
     VibeCADAuth.py
     VibeCADAuthoringMode.py
@@ -186,6 +187,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeModelRuntime.py
     VibeCADNativeAnalyzeModelSchema.py
     VibeCADNativeAnalyzeSnapshot.py
+    VibeCADNativeAeroSnapshot.py
     VibeCADNativeAnalyzeState.py
     VibeCADNativeAnalyzeSupportBindings.py
     VibeCADNativeAnalyzeSupportCreate.py
@@ -1555,6 +1557,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/read_geometry_integration.py
         vibecad_tests/native_provider_contracts.py
         vibecad_tests/ribbon_surface_gui_integration.py
+        vibecad_tests/test_aero_ribbon_and_context.py
     )
 endif()
 

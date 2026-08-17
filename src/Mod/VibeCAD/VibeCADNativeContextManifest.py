@@ -44,6 +44,7 @@ _INSPECTION_SURFACES = (
     "manufacture",
     "drawing",
     "parameters",
+    "aero",
     "sketch.setup",
 )
 

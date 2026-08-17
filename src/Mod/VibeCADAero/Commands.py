@@ -6,7 +6,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import AeroIcons
 import VibeCADAero
+
+_ICON = AeroIcons.aero_icon_path()
 
 
 def _console(message: str, kind: str = "message") -> None:
@@ -44,7 +47,17 @@ def _active_doc() -> Any:
     return doc
 
 
+def _refresh_workspace() -> None:
+    try:
+        import AeroWorkspace
+
+        AeroWorkspace.refresh_workspace()
+    except Exception:
+        pass
+
+
 def _report_result(result: dict[str, Any], title: str) -> None:
+    _refresh_workspace()
     if not result.get("ok"):
         _dialog(title, result.get("error") or "Aero solve failed.")
         return
@@ -73,7 +86,7 @@ class _AeroCommand:
 class VibeCADAero_Analyze(_AeroCommand):
     def GetResources(self) -> dict[str, str]:
         return {
-            "Pixmap": "utilities-system-monitor",
+            "Pixmap": _ICON,
             "MenuText": "Analyze",
             "ToolTip": "Run NeuralFoil + AeroSandbox + momentum hover and write AeroReport",
         }
@@ -85,7 +98,7 @@ class VibeCADAero_Analyze(_AeroCommand):
 class VibeCADAero_Section(_AeroCommand):
     def GetResources(self) -> dict[str, str]:
         return {
-            "Pixmap": "Sketcher_CreateArc",
+            "Pixmap": _ICON,
             "MenuText": "Section / NeuralFoil",
             "ToolTip": "2D viscous section at low Re (NeuralFoil large)",
         }
@@ -97,7 +110,7 @@ class VibeCADAero_Section(_AeroCommand):
 class VibeCADAero_VLM(_AeroCommand):
     def GetResources(self) -> dict[str, str]:
         return {
-            "Pixmap": "Part_Box",
+            "Pixmap": _ICON,
             "MenuText": "3D / AeroSandbox",
             "ToolTip": "VortexLatticeMethod + AeroBuildup (NeuralFoil-backed)",
         }
@@ -109,13 +122,14 @@ class VibeCADAero_VLM(_AeroCommand):
 class VibeCADAero_ExportJSBSim(_AeroCommand):
     def GetResources(self) -> dict[str, str]:
         return {
-            "Pixmap": "Document-export",
+            "Pixmap": _ICON,
             "MenuText": "Export JSBSim plant",
             "ToolTip": "Write a 6DOF JSBSim XML plant and store the path on the document",
         }
 
     def Activated(self) -> None:
         result = VibeCADAero.export_jsbsim(_active_doc())
+        _refresh_workspace()
         if not result.get("ok"):
             _dialog("JSBSim", result.get("error") or "Export failed.")
             return
@@ -128,7 +142,7 @@ class VibeCADAero_ExportJSBSim(_AeroCommand):
 class VibeCADAero_Report(_AeroCommand):
     def GetResources(self) -> dict[str, str]:
         return {
-            "Pixmap": "Spreadsheet",
+            "Pixmap": _ICON,
             "MenuText": "Write report",
             "ToolTip": "Write markdown and spreadsheet report objects from the last solve",
         }
