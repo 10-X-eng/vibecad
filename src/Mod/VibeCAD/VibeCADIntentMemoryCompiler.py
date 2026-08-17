@@ -165,10 +165,14 @@ def _codex_compiler(
     )
 
     clean_provider = str(provider or "").strip().lower()
-    if clean_provider not in {"openai", "chatgpt"}:
+    if clean_provider not in {"openai", "chatgpt", "grok"}:
         raise ValueError(f"Unsupported Codex auth provider: {provider!r}.")
-    if clean_provider == "openai" and not str(api_key or "").strip():
-        raise ProviderUnavailable("No OpenAI API key is configured.")
+    if clean_provider in {"openai", "grok"} and not str(api_key or "").strip():
+        raise ProviderUnavailable(
+            "No OpenAI API key is configured."
+            if clean_provider == "openai"
+            else "No Grok / X account is signed in."
+        )
 
     schema = compiler_tool_schema()
     tool_name = str(schema["name"])
@@ -236,7 +240,7 @@ def _codex_compiler(
         server_request_handler=server_request,
         environment=(
             {CODEX_OPENAI_API_KEY_ENV: str(api_key)}
-            if clean_provider == "openai"
+            if clean_provider in {"openai", "grok"}
             else None
         ),
     )
@@ -280,12 +284,14 @@ def _codex_compiler(
             ],
             "config": vibecad_thread_config(
                 openai_base_url=(
-                    str(base_url or "") if clean_provider == "openai" else None
+                    str(base_url or "")
+                    if clean_provider in {"openai", "grok"}
+                    else None
                 )
             ),
             "serviceName": "vibecad-intent-memory",
         }
-        if clean_provider == "openai":
+        if clean_provider in {"openai", "grok"}:
             thread_request["modelProvider"] = CODEX_OPENAI_PROVIDER_ID
         if str(model or "").strip():
             thread_request["model"] = str(model).strip()
@@ -295,7 +301,7 @@ def _codex_compiler(
             sdk_call="codex-app-server.thread/start.intent_memory",
             turn=1,
             request=thread_request,
-            base_url=base_url if clean_provider == "openai" else None,
+            base_url=base_url if clean_provider in {"openai", "grok"} else None,
         )
         thread_result = client.request("thread/start", thread_request, timeout=30.0)
         thread = (
@@ -317,7 +323,7 @@ def _codex_compiler(
             sdk_call="codex-app-server.turn/start.intent_memory",
             turn=1,
             request=turn_request,
-            base_url=base_url if clean_provider == "openai" else None,
+            base_url=base_url if clean_provider in {"openai", "grok"} else None,
         )
         turn_result = client.request("turn/start", turn_request, timeout=30.0)
         turn = turn_result.get("turn") if isinstance(turn_result, dict) else None
@@ -385,7 +391,7 @@ def compile_intent_memory_update(
 ) -> dict[str, Any]:
     """Run one isolated, forced-tool compiler request and return its arguments."""
     clean_provider = str(provider or "").strip().lower()
-    if clean_provider not in {"openai", "anthropic", "chatgpt"}:
+    if clean_provider not in {"openai", "anthropic", "chatgpt", "grok"}:
         raise ValueError(f"Unsupported Intent Memory provider: {provider!r}.")
     if not uncovered_turns:
         raise ValueError("Intent Memory compiler requires at least one uncovered turn.")
@@ -397,7 +403,7 @@ def compile_intent_memory_update(
         "uncovered_turn_count": len(uncovered_turns),
     }
     prompt = _compiler_prompt(memory, uncovered_turns, legacy_design_markdown)
-    if clean_provider in {"openai", "chatgpt"}:
+    if clean_provider in {"openai", "chatgpt", "grok"}:
         return _codex_compiler(
             provider=clean_provider,
             prompt=prompt,

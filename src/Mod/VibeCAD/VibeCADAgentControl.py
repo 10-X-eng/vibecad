@@ -1,0 +1,725 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+"""Local loopback control channel for an external desktop agent.
+
+This is additive and independent of MCP. Enabling it does not disable the
+in-app VibeCAD Assistant, so Grok / ChatGPT / OpenAI / Anthropic can keep
+driving the open document while a local agent opens files, runs Python or
+VibeScript, shows Preferences, or reads auth status.
+
+The server binds only to 127.0.0.1. Callers authenticate with a bearer token
+that VibeCAD writes to a private file the agent can read; the agent never
+types passwords or OAuth codes.
+"""
+
+from __future__ import annotations
+
+from contextlib import redirect_stderr, redirect_stdout
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import StringIO
+import json
+import os
+from pathlib import Path
+import secrets
+import socket
+import sys
+import threading
+import traceback
+from typing import Any, Callable
+from urllib.parse import urlparse
+
+
+AGENT_HOST = "127.0.0.1"
+DEFAULT_AGENT_PORT = 8766
+AGENT_PORT_ENV = "VIBECAD_AGENT_PORT"
+AGENT_HOME_ENV = "VIBECAD_AGENT_HOME"
+TOKEN_FILENAME = "token"
+ENDPOINT_FILENAME = "endpoint.json"
+TOKEN_BYTES = 32
+MAX_BODY_BYTES = 1_048_576
+COMMANDS = ("status", "documents", "open", "run", "preferences")
+
+_server_lock = threading.RLock()
+_server: ThreadingHTTPServer | None = None
+_server_thread: threading.Thread | None = None
+_document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None = None
+_bound_port: int | None = None
+
+
+def agent_home() -> Path:
+    override = str(os.environ.get(AGENT_HOME_ENV) or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    if sys.platform == "win32":
+        root = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData/Local"))
+        return root / "VibeCAD" / "Agent"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "VibeCAD" / "Agent"
+    root = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local/share"))
+    return root / "VibeCAD" / "agent"
+
+
+def token_path() -> Path:
+    return agent_home() / TOKEN_FILENAME
+
+
+def endpoint_path() -> Path:
+    return agent_home() / ENDPOINT_FILENAME
+
+
+def _restrict_file(path: Path) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _valid_token(value: Any) -> str:
+    token = str(value or "").strip()
+    if len(token) < 40:
+        return ""
+    # Keep the alphabet identical to the MCP token so agents can reuse parsers.
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+    if any(character not in allowed for character in token):
+        return ""
+    return token
+
+
+def load_or_create_token() -> str:
+    path = token_path()
+    if path.is_file():
+        existing = _valid_token(path.read_text(encoding="utf-8"))
+        if existing:
+            return existing
+    path.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(TOKEN_BYTES)
+    path.write_text(token + "\n", encoding="utf-8")
+    _restrict_file(path)
+    return token
+
+
+def load_token() -> str:
+    path = token_path()
+    if not path.is_file():
+        return ""
+    return _valid_token(path.read_text(encoding="utf-8"))
+
+
+def write_endpoint(*, host: str, port: int) -> Path:
+    path = endpoint_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "host": host,
+        "port": int(port),
+        "base_url": f"http://{host}:{int(port)}",
+        "token_path": str(token_path()),
+        "assistant_disabled_by_this_channel": False,
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _restrict_file(path)
+    return path
+
+
+def load_endpoint() -> dict[str, Any] | None:
+    path = endpoint_path()
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def failure(
+    code: str,
+    message: str,
+    *,
+    stage: str = "precondition",
+    **extra: Any,
+) -> dict[str, Any]:
+    payload = {
+        "ok": False,
+        "failure_code": str(code),
+        "failure_stage": str(stage),
+        "error": str(message),
+    }
+    payload.update(extra)
+    return payload
+
+
+def _app() -> Any:
+    import FreeCAD as App
+
+    return App
+
+
+def _gui() -> Any | None:
+    try:
+        import FreeCADGui as Gui
+    except Exception:
+        return None
+    if Gui is None:
+        return None
+    if not bool(getattr(Gui, "showPreferencesByName", None)) and not bool(
+        getattr(Gui, "getMainWindow", None)
+    ):
+        if not bool(getattr(Gui, "GuiUp", False)):
+            return None
+    return Gui
+
+
+def _on_document_thread(operation: Callable[[], Any]) -> Any:
+    dispatch = _document_thread_dispatch
+    if dispatch is None:
+        return operation()
+    return dispatch(operation)
+
+
+def _document_summary(document: Any) -> dict[str, Any]:
+    return {
+        "document": str(getattr(document, "Name", "") or ""),
+        "label": str(getattr(document, "Label", "") or ""),
+        "path": str(getattr(document, "FileName", "") or ""),
+        "active": document is getattr(_app(), "ActiveDocument", None),
+        "object_count": len(list(getattr(document, "Objects", []) or [])),
+    }
+
+
+def _all_documents() -> list[dict[str, Any]]:
+    listing = getattr(_app(), "listDocuments", None)
+    documents = listing() if callable(listing) else {}
+    if not isinstance(documents, dict):
+        return []
+    return [
+        _document_summary(document)
+        for _name, document in sorted(documents.items(), key=lambda item: str(item[0]))
+    ]
+
+
+def _resolve_existing_path(raw: str, *, kind: str) -> tuple[Path | None, dict[str, Any] | None]:
+    text = str(raw or "").strip()
+    if not text:
+        return None, failure(
+            f"{kind}_PATH_REQUIRED",
+            f"{kind.lower()} path is required.",
+            stage="schema",
+        )
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        return None, failure(
+            f"{kind}_PATH_NOT_ABSOLUTE",
+            f"{kind.lower()} path must be absolute.",
+            stage="schema",
+        )
+    candidate = candidate.resolve()
+    if not candidate.is_file():
+        return None, failure(
+            f"{kind}_NOT_FOUND",
+            f"No file exists at {candidate}.",
+        )
+    return candidate, None
+
+
+def _documents_at_path(path: Path) -> list[Any]:
+    listing = getattr(_app(), "listDocuments", None)
+    documents = listing() if callable(listing) else {}
+    if not isinstance(documents, dict):
+        return []
+    matches = []
+    for document in documents.values():
+        raw = str(getattr(document, "FileName", "") or "").strip()
+        if not raw:
+            continue
+        try:
+            if Path(raw).expanduser().resolve() == path:
+                matches.append(document)
+        except OSError:
+            continue
+    return matches
+
+
+def _safe_settings() -> Any | None:
+    try:
+        from VibeCADPreferences import load_settings
+
+        return load_settings()
+    except Exception:
+        return None
+
+
+def _auth_snapshot(provider: str) -> dict[str, Any]:
+    try:
+        from VibeCADAuth import resolve_auth_state
+
+        state = resolve_auth_state(provider=provider)
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "source": None,
+            "message": str(exc),
+            "can_call_provider": False,
+        }
+    return {
+        "status": getattr(getattr(state, "status", None), "value", str(state.status)),
+        "source": state.source,
+        "message": state.message,
+        "can_call_provider": bool(state.can_call_provider),
+        "redacted_key": state.redacted_key,
+    }
+
+
+def _grok_account_snapshot() -> dict[str, Any]:
+    try:
+        from VibeCADGrokAuth import cached_account
+
+        account = cached_account()
+    except Exception as exc:
+        return {"signed_in": False, "error": str(exc)}
+    if not isinstance(account, dict):
+        return {"signed_in": False}
+    return {
+        "signed_in": True,
+        "email": str(account.get("email") or ""),
+        "name": str(account.get("name") or ""),
+        "type": "grok",
+    }
+
+
+def report_status() -> dict[str, Any]:
+    settings = _safe_settings()
+    provider = (
+        str(getattr(settings, "provider", "") or "").strip().lower()
+        if settings is not None
+        else ""
+    )
+    mcp_enabled = bool(getattr(settings, "mcp_enabled", False)) if settings else False
+    gui = _gui()
+    endpoint = load_endpoint() or {}
+    return {
+        "ok": True,
+        "channel": "vibecad-agent-control",
+        "gui_up": bool(gui is not None and getattr(gui, "GuiUp", True)),
+        "assistant_available": not mcp_enabled,
+        "mcp_enabled": mcp_enabled,
+        "provider": provider or None,
+        "model": str(getattr(settings, "active_model", "") or "") or None,
+        "base_url": getattr(settings, "active_base_url", None) if settings else None,
+        "use_online_provider": (
+            bool(settings.use_online_provider) if settings is not None else None
+        ),
+        "auth": _auth_snapshot(provider) if provider else None,
+        "grok": _grok_account_snapshot(),
+        "documents": _all_documents(),
+        "endpoint": {
+            "host": endpoint.get("host") or AGENT_HOST,
+            "port": endpoint.get("port") or _bound_port or DEFAULT_AGENT_PORT,
+            "base_url": endpoint.get("base_url")
+            or f"http://{AGENT_HOST}:{_bound_port or DEFAULT_AGENT_PORT}",
+            "token_path": str(token_path()),
+        },
+        "oauth_note": (
+            "Grok uses real xAI OAuth at https://auth.x.ai. xAI does not publish "
+            "a VibeCAD-specific OAuth app; VibeCAD reuses the official Grok CLI "
+            "public client. Sign-in happens in Preferences, not through this API."
+        ),
+    }
+
+
+def list_documents() -> dict[str, Any]:
+    documents = _all_documents()
+    return {
+        "ok": True,
+        "document_count": len(documents),
+        "documents": documents,
+    }
+
+
+def open_document(path: str) -> dict[str, Any]:
+    candidate, error = _resolve_existing_path(path, kind="DOCUMENT")
+    if error is not None:
+        return error
+    assert candidate is not None
+    App = _app()
+    matching = _documents_at_path(candidate)
+    if matching:
+        document = matching[0]
+        App.setActiveDocument(str(document.Name))
+        return {
+            "ok": True,
+            "already_open": True,
+            "opened": _document_summary(document),
+        }
+    opener = getattr(App, "openDocument", None)
+    if not callable(opener):
+        return failure(
+            "DOCUMENT_OPEN_UNAVAILABLE",
+            "FreeCAD openDocument is unavailable in this process.",
+            stage="native_call",
+        )
+    document = opener(str(candidate))
+    if document is None:
+        return failure(
+            "DOCUMENT_OPEN_FAILED",
+            f"VibeCAD could not open {candidate}.",
+            stage="native_call",
+        )
+    App.setActiveDocument(str(document.Name))
+    return {
+        "ok": True,
+        "already_open": False,
+        "opened": _document_summary(document),
+    }
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return str(value)
+
+
+def run_script(
+    *,
+    python: str | None = None,
+    script: str | None = None,
+    path: str | None = None,
+    recompute: bool = True,
+) -> dict[str, Any]:
+    source = str(python or "")
+    script_path: Path | None = None
+    if script:
+        script_path, error = _resolve_existing_path(script, kind="SCRIPT")
+        if error is not None:
+            return error
+        assert script_path is not None
+        source = script_path.read_text(encoding="utf-8")
+    if not source.strip():
+        return failure(
+            "SCRIPT_REQUIRED",
+            "Pass python source or an absolute script path.",
+            stage="schema",
+        )
+    opened = None
+    if path:
+        opened = open_document(path)
+        if not opened.get("ok"):
+            return opened
+    App = _app()
+    namespace: dict[str, Any] = {
+        "__name__": "__vibecad_agent__",
+        "__file__": str(script_path) if script_path is not None else "<agent>",
+        "App": App,
+        "FreeCAD": App,
+    }
+    gui = _gui()
+    if gui is not None:
+        namespace["Gui"] = gui
+        namespace["FreeCADGui"] = gui
+    stdout = StringIO()
+    stderr = StringIO()
+    try:
+        compiled = compile(source, namespace["__file__"], "exec")
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            exec(compiled, namespace, namespace)
+        if recompute:
+            document = getattr(App, "ActiveDocument", None)
+            recompute_call = getattr(document, "recompute", None)
+            if callable(recompute_call):
+                recompute_call()
+    except Exception as exc:
+        return failure(
+            "SCRIPT_FAILED",
+            str(exc),
+            stage="script",
+            stdout=stdout.getvalue(),
+            stderr=stderr.getvalue() + traceback.format_exc(),
+            opened=opened,
+        )
+    result = namespace.get("result", namespace.get("__result__"))
+    return {
+        "ok": True,
+        "stdout": stdout.getvalue(),
+        "stderr": stderr.getvalue(),
+        "result": _json_safe(result),
+        "opened": opened,
+        "active_document": (
+            _document_summary(App.ActiveDocument)
+            if getattr(App, "ActiveDocument", None) is not None
+            else None
+        ),
+    }
+
+
+def show_preferences() -> dict[str, Any]:
+    gui = _gui()
+    show = getattr(gui, "showPreferencesByName", None) if gui is not None else None
+    if not callable(show):
+        return failure(
+            "GUI_REQUIRED",
+            "Showing Preferences requires the running VibeCAD GUI. "
+            "Start VibeCAD.exe and call the loopback API, or open "
+            "Edit → Preferences → VibeCAD yourself.",
+            stage="precondition",
+        )
+    show("VibeCAD", "VibeCAD")
+    return {"ok": True, "opened": "VibeCAD"}
+
+
+def dispatch(command: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    action = str(command or "").strip().lower()
+    args = dict(arguments or {})
+    if action not in COMMANDS:
+        return failure(
+            "COMMAND_UNKNOWN",
+            f"Unknown command {command!r}; expected one of {list(COMMANDS)}.",
+            stage="schema",
+        )
+    if action == "status":
+        return report_status()
+    if action == "documents":
+        return _on_document_thread(list_documents)
+    if action == "open":
+        return _on_document_thread(lambda: open_document(str(args.get("path") or "")))
+    if action == "run":
+        return _on_document_thread(
+            lambda: run_script(
+                python=args.get("python"),
+                script=args.get("script"),
+                path=args.get("path"),
+                recompute=bool(args.get("recompute", True)),
+            )
+        )
+    return _on_document_thread(show_preferences)
+
+
+def configured_port() -> int:
+    raw = str(os.environ.get(AGENT_PORT_ENV) or "").strip()
+    if raw:
+        try:
+            port = int(raw)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{AGENT_PORT_ENV} must be an integer port, not {raw!r}."
+            ) from exc
+        if not 1 <= port <= 65535:
+            raise RuntimeError(f"{AGENT_PORT_ENV} is out of range: {port}.")
+        return port
+    return DEFAULT_AGENT_PORT
+
+
+def _bind_listener(host: str, port: int) -> socket.socket:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((host, int(port)))
+        listener.listen(64)
+        listener.set_inheritable(False)
+    except OSError:
+        listener.close()
+        raise
+    return listener
+
+
+def _authorize(handler: BaseHTTPRequestHandler) -> bool:
+    expected = load_or_create_token()
+    header = str(handler.headers.get("Authorization") or "")
+    prefix = "Bearer "
+    offered = header[len(prefix) :] if header.startswith(prefix) else ""
+    return secrets.compare_digest(_valid_token(offered), expected)
+
+
+def handle_http_request(
+    method: str,
+    path: str,
+    body: dict[str, Any] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    parsed = urlparse(path)
+    route = parsed.path.rstrip("/") or "/"
+    payload = dict(body or {})
+    if method == "GET" and route in {"/v1/status", "/status"}:
+        return 200, dispatch("status")
+    if method == "GET" and route in {"/v1/documents", "/documents"}:
+        return 200, dispatch("documents")
+    if method == "POST" and route in {"/v1/open", "/open"}:
+        return 200, dispatch("open", payload)
+    if method == "POST" and route in {"/v1/run", "/run"}:
+        return 200, dispatch("run", payload)
+    if method == "POST" and route in {"/v1/preferences", "/preferences"}:
+        return 200, dispatch("preferences")
+    return 404, failure(
+        "ROUTE_UNKNOWN",
+        f"Unsupported {method} {route}.",
+        stage="schema",
+    )
+
+
+class _AgentRequestHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+        return None
+
+    def _client_is_loopback(self) -> bool:
+        host = str(self.client_address[0] if self.client_address else "")
+        return host in {"127.0.0.1", "::1", "localhost"}
+
+    def _write_json(self, status: int, payload: dict[str, Any]) -> None:
+        raw = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _read_json_body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return {}
+        if length > MAX_BODY_BYTES:
+            raise ValueError("Request body is too large.")
+        raw = self.rfile.read(length)
+        if not raw:
+            return {}
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("JSON body must be an object.")
+        return payload
+
+    def _handle(self, method: str) -> None:
+        if not self._client_is_loopback():
+            self._write_json(
+                403,
+                failure("LOOPBACK_ONLY", "Agent control accepts only 127.0.0.1."),
+            )
+            return
+        if not _authorize(self):
+            self._write_json(
+                401,
+                failure(
+                    "UNAUTHORIZED",
+                    "Pass Authorization: Bearer <token> using the token file "
+                    f"at {token_path()}.",
+                    stage="auth",
+                    token_path=str(token_path()),
+                ),
+            )
+            return
+        try:
+            body = self._read_json_body() if method == "POST" else {}
+            status, payload = handle_http_request(method, self.path, body)
+        except ValueError as exc:
+            self._write_json(400, failure("REQUEST_INVALID", str(exc), stage="schema"))
+            return
+        except Exception as exc:
+            self._write_json(
+                500,
+                failure("INTERNAL_ERROR", str(exc), stage="native_call"),
+            )
+            return
+        self._write_json(status, payload)
+
+    def do_GET(self) -> None:  # noqa: N802
+        self._handle("GET")
+
+    def do_POST(self) -> None:  # noqa: N802
+        self._handle("POST")
+
+
+def server_snapshot() -> dict[str, Any]:
+    with _server_lock:
+        return {
+            "running": _server is not None,
+            "host": AGENT_HOST,
+            "port": _bound_port,
+            "base_url": (
+                f"http://{AGENT_HOST}:{_bound_port}" if _bound_port else None
+            ),
+            "token_path": str(token_path()),
+        }
+
+
+def ensure_server_started(
+    *,
+    document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None = None,
+    host: str = AGENT_HOST,
+    port: int | None = None,
+) -> dict[str, Any]:
+    """Start the loopback server once. Safe to call from GUI startup."""
+
+    global _server, _server_thread, _document_thread_dispatch, _bound_port
+    with _server_lock:
+        if document_thread_dispatch is not None:
+            _document_thread_dispatch = document_thread_dispatch
+        if _server is not None and _bound_port:
+            return server_snapshot()
+        load_or_create_token()
+        requested = DEFAULT_AGENT_PORT if port is None else int(port)
+        if port is None:
+            requested = configured_port()
+        last_error: Exception | None = None
+        listener = None
+        bound = requested
+        candidates = (
+            [requested] if port is not None else list(range(requested, requested + 10))
+        )
+        for candidate in candidates:
+            try:
+                listener = _bind_listener(host, candidate)
+                bound = int(listener.getsockname()[1])
+                last_error = None
+                break
+            except OSError as exc:
+                last_error = exc
+                listener = None
+        if listener is None:
+            raise RuntimeError(
+                f"VibeCAD agent control could not bind {host}:{requested}: {last_error}"
+            )
+        try:
+            server = ThreadingHTTPServer((host, bound), _AgentRequestHandler, False)
+            try:
+                server.socket.close()
+            except OSError:
+                pass
+            server.socket = listener
+            server.server_bind = lambda: None  # type: ignore[method-assign]
+            server.server_activate()
+        except Exception:
+            listener.close()
+            raise
+        _server = server
+        _bound_port = bound
+        write_endpoint(host=host, port=bound)
+        thread = threading.Thread(
+            target=server.serve_forever,
+            name="VibeCAD-AgentControl",
+            daemon=True,
+        )
+        _server_thread = thread
+        thread.start()
+        return server_snapshot()
+
+
+def shutdown_server(*, wait: bool = False) -> None:
+    global _server, _server_thread, _bound_port
+    with _server_lock:
+        server = _server
+        thread = _server_thread
+        _server = None
+        _server_thread = None
+        _bound_port = None
+    if server is not None:
+        server.shutdown()
+        server.server_close()
+    if wait and thread is not None:
+        thread.join(timeout=5.0)

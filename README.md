@@ -10,14 +10,14 @@ VibeCAD is an AI-native parametric CAD platform for designing real 3D parts thro
 
 ## Before You Start
 
-You need either a **ChatGPT subscription** or an **API key** for the provider you select. VibeCAD runs both ChatGPT-subscription and OpenAI-API-key requests through its bundled Codex runtime, connects directly to Anthropic, and can route Codex through OpenAI-compatible endpoints such as xAI, Ollama, and other local model servers.
+You need a **ChatGPT subscription**, a **Grok / X (xAI) login**, or an **API key** for the provider you select. VibeCAD runs ChatGPT-subscription, Grok OAuth, and OpenAI-API-key requests through its bundled Codex runtime, connects directly to Anthropic, and can still route Codex through OpenAI-compatible endpoints such as an xAI API key, Ollama, and other local model servers.
 
 Store the key in one of these places:
 
 - **OS keyring (recommended):** paste the key in VibeCAD Preferences, click **Save Key**, and then click **Validate**.
 - **A selected `.env` file:** create the file yourself, select it in VibeCAD Preferences, and click **Validate**. VibeCAD does not search for `.env` files automatically.
 
-API keys are not stored in ordinary application preferences. ChatGPT OAuth credentials are owned and refreshed by the bundled Codex app-server; VibeCAD does not read or copy those tokens.
+API keys are not stored in ordinary application preferences. ChatGPT OAuth credentials are owned and refreshed by the bundled Codex app-server; VibeCAD does not read or copy those tokens. Grok / X OAuth tokens are stored in a private VibeCAD Grok credential directory and refreshed by VibeCAD; they are never written to ordinary `user.cfg`.
 
 ## Install
 
@@ -51,8 +51,8 @@ SHA256 files are published beside release artifacts so downloads can be verified
 Open **Preferences**, then select **VibeCAD > VibeCAD**.
 
 1. Enable **Use online provider**.
-2. Select **ChatGPT subscription**, **OpenAI API key (Codex)**, or **Anthropic** under **Provider**.
-3. For ChatGPT, use the account sign-in controls described below. For an API provider, configure its key and leave the base URL blank unless you use a compatible or local endpoint.
+2. Select **ChatGPT subscription**, **Grok (X / xAI)**, **OpenAI API key (Codex)**, or **Anthropic** under **Provider**.
+3. For ChatGPT or Grok, use the account sign-in controls described below. For an API provider, configure its key and leave the base URL blank unless you use a compatible or local endpoint.
 4. Configure the selected provider's authentication.
 5. Click **Fetch models**, then select a returned model.
 6. Choose a supported **Reasoning effort**. Use `none` when a model does not support thinking or reasoning parameters.
@@ -67,7 +67,20 @@ Open **Preferences**, then select **VibeCAD > VibeCAD**.
 
 ChatGPT credentials are stored in a private VibeCAD Codex credential directory and refreshed by the bundled, version-pinned app-server. **Logout** asks that runtime to remove the account. VibeCAD never imports credentials from another Codex installation and never falls back to an ambient API key.
 
-ChatGPT subscription, OpenAI-compatible, Anthropic, and offline/debug turns all
+### Sign In With Grok / X
+
+1. Select **Grok (X / xAI)** as the provider.
+2. Click **Sign in with X / Grok** and complete the xAI browser flow at `accounts.x.ai`. Use **Use device code** when the local callback cannot reach VibeCAD (SSH, containers, or a blocked loopback port).
+3. Click **Fetch models** and select a Grok model, or keep the default `grok-4.6`.
+4. Choose a reasoning effort offered by that model, then click **Apply** or **OK**.
+
+This is real xAI OAuth against the documented issuer `https://auth.x.ai` (authorization, device-code, and token endpoints from xAI's OpenID configuration). VibeCAD reuses the official public Grok CLI OAuth client shipped by xAI in [xai-org/grok-build](https://github.com/xai-org/grok-build); xAI does not publish a separate VibeCAD app registration. You need an active SuperGrok subscription or an X Premium+ account that xAI has linked to your xAI session.
+
+Grok OAuth tokens are stored only under the private VibeCAD Grok credential directory and are refreshed automatically. **Logout** revokes and deletes that store. Inference uses the xAI Responses-compatible API at `https://api.x.ai/v1` through the bundled Codex runtime.
+
+If OAuth login succeeds but model calls return HTTP 403, xAI may be gating the OAuth API surface by subscription tier. Use the API-key fallback below in that case.
+
+ChatGPT subscription, Grok OAuth, OpenAI-compatible, Anthropic, and offline/debug turns all
 use the same frozen authoring-surface resolver. The human chooses either
 **VibeScript** or **Native** in the Assistant header. VibeScript exposes the
 active workbench's exact source-backed API. Native exposes only the complete
@@ -115,9 +128,9 @@ VibeCAD resolves a key in this order:
 
 This order matters when a valid key appears to be ignored. For example, an old `OPENAI_API_KEY` exported by the shell overrides both the selected `.env` file and a newer key saved in the keyring.
 
-## Configure Grok Through xAI
+## Configure Grok With an xAI API Key (Fallback)
 
-xAI exposes an OpenAI-compatible API, so Grok uses VibeCAD's Codex transport with OpenAI API-key authentication:
+Prefer **Sign in with X / Grok** when you have SuperGrok or X Premium+. The API-key path remains available when OAuth is gated or you already have a console key:
 
 1. Obtain an API key from xAI.
 2. Select **OpenAI API key (Codex)** as the provider.
@@ -126,7 +139,7 @@ xAI exposes an OpenAI-compatible API, so Grok uses VibeCAD's Codex transport wit
 5. Click **Fetch models** and select the Grok model returned by xAI.
 6. Choose a reasoning effort supported by that model, then click **Apply** or **OK**.
 
-When using a `.env` file for xAI, use `OPENAI_API_KEY`; VibeCAD resolves that key normally and supplies it only to the bundled Codex process.
+When using a `.env` file for this fallback, use `OPENAI_API_KEY`; VibeCAD resolves that key normally and supplies it only to the bundled Codex process.
 
 ![VibeCAD Preferences configured for Grok through the xAI endpoint](docs/images/vibecad-grok-provider-setup.png)
 
@@ -229,6 +242,7 @@ The local server must already be running and expose an OpenAI-compatible API. So
 
 - **`not_configured`:** VibeCAD could not find the selected provider's environment variable, a valid key in the selected `.env` file, or a keyring entry.
 - **No ChatGPT subscription is signed in:** open Preferences, select **ChatGPT subscription**, and complete browser or device-code sign-in.
+- **No Grok / X account is signed in:** open Preferences, select **Grok (X / xAI)**, and complete **Sign in with X / Grok** or **Use device code**.
 - **No CAD authoring tools are shown:** select a supported modeling workbench.
 - **`configured_unverified`:** a key was found but has not been checked against the configured endpoint. Click **Validate**.
 - **`invalid`:** the endpoint rejected the key. Confirm the selected provider, base URL, credential precedence, and account access.
@@ -241,6 +255,12 @@ The local server must already be running and expose an OpenAI-compatible API. So
 ## Project Status
 
 VibeCAD is under active development. The current focus is reliable, readable AI-assisted part design with explicit human control over the document, workbench, and design direction.
+
+A local desktop agent (for example Grok Bot on Windows) can open documents,
+run Python or VibeScript, show Preferences, and read auth status without
+clicking menus. That loopback CLI / HTTP channel is documented in
+[docs/vibecad-agent-control.md](docs/vibecad-agent-control.md). It does not
+disable the in-app Assistant and it is not MCP.
 
 Release packaging details are documented in [docs/vibecad-release-packaging.md](docs/vibecad-release-packaging.md).
 

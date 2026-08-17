@@ -2712,7 +2712,11 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
         prompt_starters.setEnabled(internal_available and document_ready and not busy)
     if interaction_mode is not None:
         try:
-            supports_plan = get_service().provider_name() in {"openai", "chatgpt"}
+            supports_plan = get_service().provider_name() in {
+                "openai",
+                "chatgpt",
+                "grok",
+            }
         except Exception:
             supports_plan = False
         if not supports_plan and interaction_mode.currentData() == "plan":
@@ -2726,7 +2730,7 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
                 "making changes"
             )
             if supports_plan
-            else "Plan mode requires an OpenAI provider running through Codex"
+            else "Plan mode requires ChatGPT, OpenAI, or Grok running through Codex"
         )
     if authoring_mode is not None:
         _refresh_authoring_mode_selector(dock)
