@@ -108,6 +108,32 @@ def validate_shape(
     return result
 
 
+def runtime_execution_smoke() -> dict[str, Any]:
+    """Prove that the installed worker can validate a real BREP shape."""
+    import Part
+
+    executable = worker_executable()
+    result = validate_shape(
+        Part.makeBox(1.0, 2.0, 3.0),
+        deadline_seconds=10.0,
+    )
+    if result.get("ok") is not True or result.get("valid") is not True:
+        diagnostic = json.dumps(
+            result,
+            ensure_ascii=True,
+            sort_keys=True,
+            default=str,
+        )
+        raise RuntimeError(
+            f"VibeCAD geometry worker smoke validation failed: {diagnostic}"
+        )
+    return {
+        "worker": str(executable),
+        "valid": True,
+        "elapsed_seconds": result.get("elapsed_seconds"),
+    }
+
+
 def execute_job(
     request_path: str | Path,
     result_path: str | Path,

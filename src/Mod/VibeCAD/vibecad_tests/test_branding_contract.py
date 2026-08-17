@@ -860,6 +860,26 @@ def test_windows_bundle_creates_branded_executable() -> None:
     assert "CreateProcessW" in launcher_source
 
 
+def test_every_release_bundle_keeps_and_executes_the_geometry_worker() -> None:
+    windows = _source("package/rattler-build/windows/create_bundle.sh")
+    linux = _source("package/rattler-build/linux/create_bundle.sh")
+    macos = _source("package/rattler-build/osx/create_bundle.sh")
+    local = _source("package/rattler-build/scripts/build_vibecad_local_release.sh")
+    geometry = _source("src/Mod/VibeCAD/VibeCADGeometry.py")
+
+    assert (
+        'copy_matching_files "${conda_env}/Library/bin" '
+        '"VibeCADGeometryWorker.exe" "${copy_dir}/bin"'
+    ) in windows
+    assert 'cp ${conda_env}/bin_tmp/VibeCADGeometryWorker ${conda_env}/bin/' in linux
+    assert (
+        'cp "${conda_env}/bin_tmp/VibeCADGeometryWorker" "${conda_env}/bin/"'
+    ) in macos
+    for release_script in (windows, linux, macos, local):
+        assert "from VibeCADGeometry import runtime_execution_smoke" in release_script
+    assert "def runtime_execution_smoke()" in geometry
+
+
 def test_release_packages_share_canonical_artifact_basename() -> None:
     linux_bundle = _source("package/rattler-build/linux/create_bundle.sh")
     macos_bundle = _source("package/rattler-build/osx/create_bundle.sh")

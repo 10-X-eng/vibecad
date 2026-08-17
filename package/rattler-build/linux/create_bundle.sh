@@ -78,6 +78,7 @@ EOF
     cp ${conda_env}/bin_tmp/gmsh ${conda_env}/bin/
     cp ${conda_env}/bin_tmp/dot ${conda_env}/bin/
     cp ${conda_env}/bin_tmp/unflatten ${conda_env}/bin/
+    cp ${conda_env}/bin_tmp/VibeCADGeometryWorker ${conda_env}/bin/
     rm -rf ${conda_env}/bin_tmp
 
     sed -i '1s|.*|#!/usr/bin/env python|' ${conda_env}/bin/pip
@@ -136,6 +137,10 @@ EOF
     fi
     if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "from VibeCADCodex import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD Codex app-server smoke ok', result['version'])"; then
         echo "VibeCAD Codex app-server smoke test failed; the Linux bundle cannot use ChatGPT subscriptions."
+        exit 1
+    fi
+    if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "from VibeCADGeometry import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD geometry worker smoke ok', result['worker'])"; then
+        echo "VibeCAD geometry worker smoke test failed; the Linux bundle cannot inspect geometry."
         exit 1
     fi
 

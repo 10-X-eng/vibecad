@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -414,6 +415,37 @@ def test_read_geometry_analysis_is_process_isolated(
         "x_direction": [1.0, 0.0, 0.0],
     }
     assert not artifact_directory.exists()
+
+
+def test_geometry_worker_release_smoke_executes_real_brep_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADGeometry as geometry_worker
+
+    shape = object()
+    monkeypatch.setitem(
+        sys.modules,
+        "Part",
+        SimpleNamespace(makeBox=lambda length, width, height: shape),
+    )
+    monkeypatch.setattr(
+        geometry_worker,
+        "worker_executable",
+        lambda: Path("/runtime/bin/VibeCADGeometryWorker"),
+    )
+
+    def validate(candidate, **kwargs):
+        assert candidate is shape
+        assert kwargs == {"deadline_seconds": 10.0}
+        return {"ok": True, "valid": True, "elapsed_seconds": 0.125}
+
+    monkeypatch.setattr(geometry_worker, "validate_shape", validate)
+
+    assert geometry_worker.runtime_execution_smoke() == {
+        "worker": "/runtime/bin/VibeCADGeometryWorker",
+        "valid": True,
+        "elapsed_seconds": 0.125,
+    }
 
 
 def test_every_domain_description_is_copy_ready_for_the_operating_model() -> None:
