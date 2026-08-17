@@ -79,3 +79,26 @@ TEST(ThemeManagerTest, ExposesStableModeAndResourceNames)
         "VibeDark_Overlay.qss"
     );
 }
+
+TEST(ThemeManagerTest, StartupPreservesOverridesAfterAProductModeWasStored)
+{
+    const auto light = ThemeManager::startupPlanFromStoredValues("Light", "", "");
+    EXPECT_EQ(light.mode, ThemeManager::Mode::Light);
+    EXPECT_FALSE(light.loadProfile);
+
+    const auto dark = ThemeManager::startupPlanFromStoredValues("Dark", "", "");
+    EXPECT_EQ(dark.mode, ThemeManager::Mode::Dark);
+    EXPECT_FALSE(dark.loadProfile);
+}
+
+TEST(ThemeManagerTest, StartupLoadsAProfileForFirstRunAndLegacyMigration)
+{
+    const auto firstRun = ThemeManager::startupPlanFromStoredValues("", "", "");
+    EXPECT_EQ(firstRun.mode, ThemeManager::Mode::Dark);
+    EXPECT_TRUE(firstRun.loadProfile);
+
+    const auto legacyLight =
+        ThemeManager::startupPlanFromStoredValues("", "VibeLight", "");
+    EXPECT_EQ(legacyLight.mode, ThemeManager::Mode::Light);
+    EXPECT_TRUE(legacyLight.loadProfile);
+}
