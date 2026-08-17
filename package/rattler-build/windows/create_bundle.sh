@@ -142,6 +142,7 @@ cp -a "${conda_env}/Library/bin/ccx.exe" "${copy_dir}/bin"
 cp -a "${conda_env}/Library/bin/gmsh.exe" "${copy_dir}/bin"
 cp -a "${conda_env}/Library/bin/dot.exe" "${copy_dir}/bin"
 cp -a "${conda_env}/Library/bin/unflatten.exe" "${copy_dir}/bin"
+copy_matching_files "${conda_env}/Library/bin" "VibeCADGeometryWorker.exe" "${copy_dir}/bin"
 copy_tree "${conda_env}/Library/mingw-w64/bin" "${copy_dir}/bin"
 # Copy resources with Python instead of Git Bash cp; this avoids silent
 # failures on Windows symlink/path metadata in deep share trees.
@@ -237,6 +238,10 @@ if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "from VibeCADProvider import 
 fi
 if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "from VibeCADCodex import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD Codex app-server smoke ok', result['version'])"; then
   echo "VibeCAD Codex app-server smoke test failed; the Windows bundle cannot use ChatGPT subscriptions."
+  exit 1
+fi
+if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "from VibeCADGeometry import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD geometry worker smoke ok', result['worker'])"; then
+  echo "VibeCAD geometry worker smoke test failed; the Windows bundle cannot inspect geometry."
   exit 1
 fi
 if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "from VibeCADProvider import _provider_subprocess_smoke; _provider_subprocess_smoke(prefer_windowless_python=True, require_windowless_python=True); print('VibeCAD windowless provider subprocess smoke ok')"; then

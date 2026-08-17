@@ -44,6 +44,7 @@ cp "${conda_env}/bin_tmp/pyside6-rcc" "${conda_env}/bin/"
 cp "${conda_env}/bin_tmp/gmsh" "${conda_env}/bin/"
 cp "${conda_env}/bin_tmp/dot" "${conda_env}/bin/"
 cp "${conda_env}/bin_tmp/unflatten" "${conda_env}/bin/"
+cp "${conda_env}/bin_tmp/VibeCADGeometryWorker" "${conda_env}/bin/"
 rm -rf "${conda_env}/bin_tmp"
 
 sed -i '1s|.*|#!/usr/bin/env python|' "${conda_env}/bin/pip"
@@ -182,6 +183,10 @@ done
 
 if ! "${conda_env}/bin/freecadcmd" --safe-mode --version; then
     echo "VibeCAD command-line smoke test failed; the macOS bundle cannot start." >&2
+    exit 1
+fi
+if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "from VibeCADGeometry import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD geometry worker smoke ok', result['worker'])"; then
+    echo "VibeCAD geometry worker smoke test failed; the macOS bundle cannot inspect geometry." >&2
     exit 1
 fi
 for check in \
