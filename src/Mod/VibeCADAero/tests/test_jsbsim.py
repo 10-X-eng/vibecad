@@ -53,6 +53,20 @@ def test_load_failure_is_reported_without_deleting_xml(tmp_path):
     assert written["loaded"] is False
 
 
+def test_metrics_xml_matches_si_payload_with_explicit_units(tmp_path):
+    written = jsbsim_export.write_plant(_sample_results(), output_dir=tmp_path)
+    xml = Path(written["fdm_path"]).read_text(encoding="utf-8")
+    assert '<wingarea unit="M2">0.090000</wingarea>' in xml
+    assert '<wingspan unit="M">0.500000</wingspan>' in xml
+    assert '<chord unit="M">0.090000</chord>' in xml
+    assert "0.09 m" in xml or "0.09 m^2" in xml or "S=0.09" in xml
+    assert "0.5 m" in xml or "b=0.5" in xml
+    # JSBSim dumps internal FPS (0.09 m^2 = 0.969 ft^2, 0.5 m = 1.640 ft).
+    # Those numbers must not appear as if they were the SI metrics.
+    assert '<wingarea unit="M2">0.968' not in xml
+    assert '<wingspan unit="M">1.640' not in xml
+
+
 def test_missing_jsbsim_package_still_writes_xml(tmp_path, monkeypatch):
     monkeypatch.setattr(jsbsim_export, "_try_import_jsbsim", lambda: None)
     written = jsbsim_export.write_plant(_sample_results(), output_dir=tmp_path)

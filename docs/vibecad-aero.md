@@ -30,9 +30,15 @@ Parameters are read in this order:
    `stagger_c`, `decalage_deg`, `auw_g`, `airfoil`, `alpha_deg`)
 2. The same names as document properties
 3. Bounding boxes of objects named like the voider (`lower_wing`,
-   `upper_wing`, `boom`, `h_tail`)
+   `upper_wing`, `boom`, `h_tail`), only when inferred span/chord are
+   within 0.5×–2× of the locked 500/90 mm airframe. A loft bbox such as
+   1640×295 mm is rejected.
 4. Locked voider-ultimate defaults: 500 mm span, 90 mm chord, gap 1.4c,
    stagger 1.15c, decalage 2°, AUW 149.6 g, airfoil **e63**, alpha 4°
+
+One-shot bbox inference is never written onto `AeroConfig`. Create or edit
+`AeroConfig` yourself (or accept the defaults object) so later Analyze runs
+stay at 500/90.
 
 E63 is bundled as `Mod/VibeCADAero/data/e63.dat` (UIUC coordinates). The
 workbench will not silently replace E63 with NACA 0009.

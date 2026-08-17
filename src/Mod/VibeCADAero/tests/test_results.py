@@ -108,6 +108,37 @@ def test_optional_spreadsheet_and_markdown_objects():
     assert "AeroBuildup" in text.Text
 
 
+def test_spreadsheet_type_error_does_not_fail_report():
+    class _NoSheetDoc(_Doc):
+        def addObject(self, typ, name):
+            if "Spreadsheet" in typ:
+                raise RuntimeError(
+                    "Document::addObject: 'Spreadsheet::Sheet' is not a document object type"
+                )
+            return super().addObject(typ, name)
+
+    doc = _NoSheetDoc()
+    written = results.write_report(doc, _payload(), spreadsheet=True, markdown=True)
+    assert written.Name == "AeroReport"
+    assert written.CL == 0.81
+    assert doc.getObject("AeroSpreadsheet") is None
+    assert doc.getObject("AeroReportMarkdown") is not None
+
+
+def test_spreadsheet_module_is_loaded_before_adding_sheet(monkeypatch):
+    calls = []
+
+    def fake_load():
+        calls.append("load")
+        return True
+
+    monkeypatch.setattr(results, "ensure_spreadsheet_type", fake_load)
+    doc = _Doc()
+    results.write_report(doc, _payload(), spreadsheet=True)
+    assert calls == ["load"]
+    assert doc.getObject("AeroSpreadsheet") is not None
+
+
 def test_jsbsim_path_is_stored_on_document_and_report():
     doc = _Doc()
     obj = results.write_report(doc, _payload(), jsbsim_path="/tmp/vibecad_aero.xml")

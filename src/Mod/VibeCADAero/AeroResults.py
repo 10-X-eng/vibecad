@@ -27,6 +27,11 @@ _FIELDS = (
     ("GeometrySource", "App::PropertyString", "How geometry was resolved"),
     ("JSBSimPlantPath", "App::PropertyString", "Exported JSBSim XML path"),
     ("Notes", "App::PropertyString", "Solver notes"),
+    ("span_mm", "App::PropertyFloat", "Span used for the solve, mm"),
+    ("chord_mm", "App::PropertyFloat", "Chord used for the solve, mm"),
+    ("span_m", "App::PropertyFloat", "Span used for the solve, m"),
+    ("chord_m", "App::PropertyFloat", "Chord used for the solve, m"),
+    ("reference_area_m2", "App::PropertyFloat", "Biplane reference area, m^2"),
 )
 
 
@@ -87,7 +92,10 @@ def write_report(
         _set_doc_attr(doc, "JSBSimPlantPath", jsbsim_path)
 
     if spreadsheet:
-        _write_spreadsheet(doc, payload, jsbsim_path)
+        try:
+            _write_spreadsheet(doc, payload, jsbsim_path)
+        except Exception:
+            pass
     if markdown:
         _write_markdown(doc, payload, jsbsim_path)
 
@@ -123,7 +131,28 @@ def format_markdown(payload: dict[str, Any], jsbsim_path: str | None = None) -> 
     return "\n".join(lines)
 
 
+def ensure_spreadsheet_type() -> bool:
+    """Register ``Spreadsheet::Sheet`` so addObject does not crash Analyze."""
+
+    try:
+        import Spreadsheet  # noqa: F401
+        return True
+    except Exception:
+        pass
+    try:
+        import FreeCAD
+
+        loader = getattr(FreeCAD, "loadModule", None)
+        if callable(loader):
+            loader("Spreadsheet")
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _write_spreadsheet(doc: Any, payload: dict[str, Any], jsbsim_path: str | None) -> Any:
+    ensure_spreadsheet_type()
     sheet = _get_or_create(doc, "Spreadsheet::Sheet", SHEET_NAME)
     rows = _row_values(payload, jsbsim_path)
     setter = getattr(sheet, "set", None)
@@ -183,6 +212,11 @@ def _apply_payload(obj: Any, payload: dict[str, Any], jsbsim_path: str | None) -
         "GeometrySource": payload.get("geometry_source"),
         "JSBSimPlantPath": jsbsim_path or "",
         "Notes": "Hover is momentum-theory, not CFD.",
+        "span_mm": payload.get("span_mm"),
+        "chord_mm": payload.get("chord_mm"),
+        "span_m": payload.get("span_m"),
+        "chord_m": payload.get("chord_m"),
+        "reference_area_m2": payload.get("reference_area_m2"),
     }
     for name, value in mapping.items():
         try:

@@ -125,6 +125,10 @@ def _fdm_xml(results: dict[str, Any]) -> str:
     ixx = mass * (span**2) / 12.0
     iyy = mass * ((4.0 * chord) ** 2 + (2.0 * (ref[2] or 0.05)) ** 2) / 12.0
     izz = ixx + iyy
+    ft_per_m = 1.0 / 0.3048
+    area_ft2 = area * ft_per_m * ft_per_m
+    span_ft = span * ft_per_m
+    chord_ft = chord * ft_per_m
     return f"""<?xml version="1.0"?>
 <fdm_config name="VibeCADAero" version="2.0" release="ALPHA"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -134,6 +138,8 @@ def _fdm_xml(results: dict[str, Any]) -> str:
     <description>6DOF plant generated from VibeCAD Aero coefficients (not CFD).</description>
   </fileheader>
   <metrics>
+    <!-- VibeCAD payload (SI): S={area:.6f} m^2, b={span:.6f} m, c={chord:.6f} m -->
+    <!-- JSBSim console dumps internal FPS: {area_ft2:.4f} ft2 / {span_ft:.4f} ft. That is not the loft bbox. -->
     <wingarea unit="M2">{area:.6f}</wingarea>
     <wingspan unit="M">{span:.6f}</wingspan>
     <chord unit="M">{chord:.6f}</chord>

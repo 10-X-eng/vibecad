@@ -69,12 +69,35 @@ def resolve_geometry(doc: Any | None = None) -> dict[str, Any]:
         return finalize(values)
 
     inferred = infer_from_named_objects(doc)
-    if inferred:
+    if inferred and inference_is_plausible(inferred):
         values.update(inferred)
         values["geometry_source"] = "inferred"
         return finalize(values)
+    if inferred:
+        values["inference_rejected"] = True
+        values["inferred_span_mm"] = inferred.get("span_mm")
+        values["inferred_chord_mm"] = inferred.get("chord_mm")
 
     return finalize(values)
+
+
+def inference_is_plausible(inferred: dict[str, Any]) -> bool:
+    """Reject loft-sized bounding boxes that are far from the locked airframe."""
+
+    default_span = float(VOIDER_DEFAULTS["span_mm"])
+    default_chord = float(VOIDER_DEFAULTS["chord_mm"])
+    span = inferred.get("span_mm")
+    if span is None:
+        return False
+    span_ratio = float(span) / default_span
+    if span_ratio > 2.0 or span_ratio < 0.5:
+        return False
+    chord = inferred.get("chord_mm")
+    if chord is not None:
+        chord_ratio = float(chord) / default_chord
+        if chord_ratio > 2.0 or chord_ratio < 0.5:
+            return False
+    return True
 
 
 def finalize(values: dict[str, Any]) -> dict[str, Any]:

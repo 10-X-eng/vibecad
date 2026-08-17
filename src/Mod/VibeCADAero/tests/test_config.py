@@ -138,3 +138,38 @@ def test_missing_named_objects_fall_back_to_defaults():
     assert resolved["geometry_source"] == "defaults"
     assert resolved["span_mm"] == 500.0
     assert resolved["airfoil"] == "e63"
+
+
+def test_wild_loft_bbox_is_rejected_for_locked_defaults():
+    """Real voider.FCStd lower_wing loft was ~1640 x 295 mm, not 500 x 90."""
+
+    lower = SimpleNamespace(
+        Name="lower_wing",
+        Label="lower_wing",
+        Shape=_Shape(_BoundBox(0.0, 295.0, -820.0, 820.0, 0.0, 12.0)),
+    )
+    upper = SimpleNamespace(
+        Name="upper_wing",
+        Label="upper_wing",
+        Shape=_Shape(_BoundBox(-300.0, 0.0, -820.0, 820.0, 400.0, 420.0)),
+    )
+    doc = _Doc(objects=[lower, upper])
+    resolved = config.resolve_geometry(doc)
+    assert resolved["geometry_source"] == "defaults"
+    assert resolved["span_mm"] == 500.0
+    assert resolved["chord_mm"] == 90.0
+    assert resolved["reference_area_m2"] == 0.09
+    assert resolved.get("inference_rejected") is True
+
+
+def test_plausible_inference_still_accepted():
+    lower = SimpleNamespace(
+        Name="lower_wing",
+        Label="lower_wing",
+        Shape=_Shape(_BoundBox(0.0, 90.0, -250.0, 250.0, 0.0, 8.0)),
+    )
+    doc = _Doc(objects=[lower])
+    resolved = config.resolve_geometry(doc)
+    assert resolved["geometry_source"] == "inferred"
+    assert abs(resolved["span_mm"] - 500.0) < 1.0
+    assert abs(resolved["chord_mm"] - 90.0) < 1.0

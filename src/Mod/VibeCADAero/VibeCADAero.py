@@ -144,6 +144,9 @@ def _require_doc(doc: Any | None) -> Any:
 
 
 def _ensure_aeroconfig(doc: Any, cfg: dict[str, Any]) -> Any | None:
+    # Never persist a one-shot bbox inference; a wild loft would lock later runs.
+    if cfg.get("geometry_source") == "inferred":
+        return None
     adder = getattr(doc, "addObject", None)
     if not callable(adder):
         return None
@@ -187,7 +190,7 @@ def _results_from_report(doc: Any) -> dict[str, Any] | None:
         return None
     if getattr(obj, "CL", None) is None:
         return None
-    return {
+    payload = {
         "CL": obj.CL,
         "CD": getattr(obj, "CD", 0.0),
         "CM": getattr(obj, "CM", 0.0),
@@ -202,4 +205,17 @@ def _results_from_report(doc: Any) -> dict[str, Any] | None:
         "geometry_source": getattr(obj, "GeometrySource", ""),
         "PitchUnstable": getattr(obj, "PitchUnstable", False),
         "hover": {"source": getattr(obj, "HoverSource", "momentum-theory")},
+        "span_mm": getattr(obj, "span_mm", None),
+        "chord_mm": getattr(obj, "chord_mm", None),
+        "span_m": getattr(obj, "span_m", None),
+        "chord_m": getattr(obj, "chord_m", None),
+        "reference_area_m2": getattr(obj, "reference_area_m2", None),
+        "alpha_deg": 4.0,
     }
+    if payload["span_m"] is None and payload["span_mm"] is not None:
+        payload["span_m"] = float(payload["span_mm"]) / 1000.0
+    if payload["chord_m"] is None and payload["chord_mm"] is not None:
+        payload["chord_m"] = float(payload["chord_mm"]) / 1000.0
+    if payload["reference_area_m2"] is None and payload["span_m"] and payload["chord_m"]:
+        payload["reference_area_m2"] = 2.0 * float(payload["span_m"]) * float(payload["chord_m"])
+    return payload
