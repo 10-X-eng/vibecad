@@ -90,6 +90,24 @@ Gui::ThemeManager::Mode Gui::ThemeManager::modeFromStoredValues(
     return Mode::Dark;
 }
 
+Gui::ThemeManager::StartupPlan Gui::ThemeManager::startupPlanFromStoredValues(
+    std::string_view appearanceMode,
+    std::string_view legacyTheme,
+    std::string_view legacyStyleSheet
+)
+{
+    if (matches(appearanceMode, {"Light"})) {
+        return {Mode::Light, false};
+    }
+    if (matches(appearanceMode, {"Dark"})) {
+        return {Mode::Dark, false};
+    }
+    return {
+        modeFromStoredValues(appearanceMode, legacyTheme, legacyStyleSheet),
+        true,
+    };
+}
+
 const char* Gui::ThemeManager::modeName(Mode mode)
 {
     return mode == Mode::Light ? "Light" : "Dark";
@@ -107,31 +125,38 @@ const char* Gui::ThemeManager::overlayStyleSheetName(Mode mode)
 
 bool Gui::ThemeManager::apply(Mode mode, bool refreshGui)
 {
-    bool loaded = false;
+    return applyImpl(mode, refreshGui, true);
+}
+
+bool Gui::ThemeManager::applyImpl(Mode mode, bool refreshGui, bool loadProfile)
+{
+    bool applied = !loadProfile;
     const fs::path path = profilePath(mode);
 
-    try {
-        if (fs::is_regular_file(path)) {
-            auto profile = ParameterManager::Create();
-            profile->LoadDocument(Base::FileInfo::pathToString(path).c_str());
-            profile->GetGroup("BaseApp")
-                ->insertTo(App::GetApplication().GetUserParameter().GetGroup("BaseApp"));
-            loaded = true;
+    if (loadProfile) {
+        try {
+            if (fs::is_regular_file(path)) {
+                auto profile = ParameterManager::Create();
+                profile->LoadDocument(Base::FileInfo::pathToString(path).c_str());
+                profile->GetGroup("BaseApp")
+                    ->insertTo(App::GetApplication().GetUserParameter().GetGroup("BaseApp"));
+                applied = true;
+            }
+            else {
+                Base::Console().error(
+                    "VibeCAD %s theme profile is missing: %s\n",
+                    modeName(mode),
+                    Base::FileInfo::pathToString(path).c_str()
+                );
+            }
         }
-        else {
+        catch (const std::exception& error) {
             Base::Console().error(
-                "VibeCAD %s theme profile is missing: %s\n",
+                "VibeCAD could not load the %s theme profile: %s\n",
                 modeName(mode),
-                Base::FileInfo::pathToString(path).c_str()
+                error.what()
             );
         }
-    }
-    catch (const std::exception& error) {
-        Base::Console().error(
-            "VibeCAD could not load the %s theme profile: %s\n",
-            modeName(mode),
-            error.what()
-        );
     }
 
     // These values are the stable public appearance contract. Set them even
@@ -166,10 +191,16 @@ bool Gui::ThemeManager::apply(Mode mode, bool refreshGui)
     }
 
     Q_EMIT modeChanged(mode);
-    return loaded;
+    return applied;
 }
 
 bool Gui::ThemeManager::applyCurrent(bool refreshGui)
 {
-    return apply(currentMode(), refreshGui);
+    const auto parameters = mainWindowParameters();
+    const auto plan = startupPlanFromStoredValues(
+        parameters->GetASCII("AppearanceMode"),
+        parameters->GetASCII("Theme"),
+        parameters->GetASCII("StyleSheet")
+    );
+    return applyImpl(plan.mode, refreshGui, plan.loadProfile);
 }

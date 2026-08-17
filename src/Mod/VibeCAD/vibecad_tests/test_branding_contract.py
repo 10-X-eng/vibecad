@@ -1000,6 +1000,93 @@ def test_vibecad_ships_exactly_two_constrained_appearance_profiles() -> None:
     assert schemas["Light"] == schemas["Dark"]
 
 
+def test_vibecad_sketcher_profiles_use_clear_semantic_palettes() -> None:
+    profile_values = {
+        "Light": {
+            "primary": 0x000000FF,
+            "unconstrained": 0x0000FFFF,
+            "auxiliary": 0xA08200FF,
+            "constraint": 0x919191FF,
+            "invalid": 0xE03131FF,
+        },
+        "Dark": {
+            "primary": 0xF1F3F5FF,
+            "unconstrained": 0x4DABF7FF,
+            "auxiliary": 0xFCC419FF,
+            "constraint": 0xADB5BDFF,
+            "invalid": 0xFF6B6BFF,
+        },
+    }
+
+    for mode, palette in profile_values.items():
+        profile = ET.parse(ROOT / f"src/Gui/Themes/{mode}.cfg").getroot()
+        preferences = profile.find(
+            "./FCParamGroup[@Name='Root']/FCParamGroup[@Name='BaseApp']"
+            "/FCParamGroup[@Name='Preferences']"
+        )
+        assert preferences is not None
+        view = preferences.find("./FCParamGroup[@Name='View']")
+        sketch_view = preferences.find(
+            "./FCParamGroup[@Name='Mod']/FCParamGroup[@Name='Sketcher']"
+            "/FCParamGroup[@Name='View']"
+        )
+        assert view is not None
+        assert sketch_view is not None
+        view_values = {
+            item.get("Name"): int(item.get("Value", "0")) for item in view
+        }
+        sketch_values = {
+            item.get("Name"): int(item.get("Value", "0")) for item in sketch_view
+        }
+
+        for key in (
+            "SketchEdgeColor",
+            "SketchVertexColor",
+            "FullyConstrainedColor",
+            "FullyConstraintElementColor",
+        ):
+            assert view_values[key] == palette["primary"]
+        for key in ("EditedEdgeColor", "EditedVertexColor"):
+            assert view_values[key] == palette["unconstrained"]
+        for key in (
+            "ConstructionColor",
+            "ExternalColor",
+            "ExternalDefiningColor",
+            "InternalAlignedGeoColor",
+            "FullyConstraintConstructionElementColor",
+            "FullyConstraintInternalAlignmentColor",
+            "FullyConstraintConstructionPointColor",
+        ):
+            assert view_values[key] == palette["auxiliary"]
+        for key in (
+            "ConstrainedIcoColor",
+            "NonDrivingConstrDimColor",
+            "ConstrainedDimColor",
+            "ExprBasedConstrDimColor",
+            "DeactivatedConstrDimColor",
+        ):
+            assert view_values[key] == palette["constraint"]
+        for key in ("CreateLineColor", "CursorTextColor", "CursorCrosshairColor"):
+            assert view_values[key] == palette["primary"]
+        assert view_values["InvalidSketchColor"] == palette["invalid"]
+        assert view_values["DefaultShapePointSize"] == 3
+        assert view_values["MarkerSize"] == 5
+        for key in (
+            "EdgeWidth",
+            "ConstructionWidth",
+            "InternalWidth",
+            "ExternalWidth",
+            "ExternalDefiningWidth",
+        ):
+            assert sketch_values[key] == 1
+
+
+def test_vibecad_does_not_expose_the_legacy_workbench_preferences_page() -> None:
+    resource = _source("src/Gui/resource.cpp")
+
+    assert "PrefPageProducer<DlgSettingsWorkbenchesImp>" not in resource
+
+
 def test_vibecad_removes_theme_and_preference_pack_escape_hatches() -> None:
     gui_cmake = _source("src/Gui/CMakeLists.txt")
     stylesheet_cmake = _source("src/Gui/Stylesheets/CMakeLists.txt")
