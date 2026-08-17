@@ -46,11 +46,22 @@ public:
         Dark
     };
 
+    struct StartupPlan
+    {
+        Mode mode;
+        bool loadProfile;
+    };
+
     ThemeManager() = default;
     ~ThemeManager() override = default;
 
     [[nodiscard]] Mode currentMode() const;
     [[nodiscard]] static Mode modeFromStoredValues(
+        std::string_view appearanceMode,
+        std::string_view legacyTheme,
+        std::string_view legacyStyleSheet
+    );
+    [[nodiscard]] static StartupPlan startupPlanFromStoredValues(
         std::string_view appearanceMode,
         std::string_view legacyTheme,
         std::string_view legacyStyleSheet
@@ -70,6 +81,9 @@ public:
 
 Q_SIGNALS:
     void modeChanged(Mode mode);
+
+private:
+    bool applyImpl(Mode mode, bool refreshGui, bool loadProfile);
 };
 
 }  // namespace Gui
