@@ -33,6 +33,7 @@ def test_aero_surface_id_is_registered() -> None:
         "VibeCADAero_Report",
     ):
         assert command in KNOWN_ACTIONS_BY_SURFACE["aero"]
+        assert command in OPTIONAL_ACTIONS_BY_SURFACE["model"]
 
 
 def test_cpp_ribbon_places_aero_tab_after_parameters() -> None:
@@ -51,6 +52,18 @@ def test_cpp_ribbon_places_aero_tab_after_parameters() -> None:
     assert "aeroGroups" in ribbon
     assert "VibeCADAeroWorkspaceHost" in ribbon
     assert "VibeCADAero_Analyze" in ribbon
+    assert "isAeroTab" in ribbon
+    assert "modelPageGroups" in ribbon
+    assert 'QObject::tr("Aero")' in ribbon
+    assert 'if (activeWorkbench == "VibeCADAeroWorkbench")' not in ribbon
+    assert "return aeroGroups();" not in ribbon
+    activate = ribbon[ribbon.index("void activateDomain(int index)") :]
+    activate = activate[: activate.index("void syncDomainToWorkbench")]
+    assert "isAeroTabIndex(index)" in activate
+    assert "activateWorkbench(workbench" in activate
+    assert activate.index("isAeroTabIndex(index)") < activate.index(
+        "activateWorkbench(workbench"
+    )
 
 
 def _aero_manifest() -> dict[str, object]:

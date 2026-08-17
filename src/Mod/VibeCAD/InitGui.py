@@ -252,7 +252,23 @@ try:
             except Exception:
                 pass
 
+    def _setup_aero_ribbon() -> None:
+        try:
+            import VibeCADAeroRibbon
+
+            VibeCADAeroRibbon.install_aero_ribbon_tab()
+        except Exception as exc:
+            try:
+                import FreeCAD as _App
+
+                _App.Console.PrintWarning(
+                    f"VibeCAD Aero ribbon tab failed to install: {exc}\n"
+                )
+            except Exception:
+                pass
+
     QtCore.QTimer.singleShot(0, _setup_always_on_grid)
     QtCore.QTimer.singleShot(0, _setup_agent_control)
+    QtCore.QTimer.singleShot(0, _setup_aero_ribbon)
 except Exception as exc:
     _warn(f"VibeCAD GUI bootstrap failed: {exc}")

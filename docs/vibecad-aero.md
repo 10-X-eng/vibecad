@@ -7,11 +7,16 @@ and it does not vendor NeuralFoil / AeroSandbox / JSBSim wheels.
 ## Use the Aero tab by hand
 
 Aero is a first-class tab on the main VibeCAD ribbon, sitting after
-**Drawing** and **Parameters**. It uses the same tab chrome as those pages.
+**Drawing** and **Parameters**. VibeCAD inserts it at startup (next to the
+agent-control hook) so it is present on every launch. Clicking Aero does
+**not** switch workbenches and does **not** replace Model: the page is the
+same Model groups (View, Structure, Solids, Finish, Transform, Geometry,
+Modify, Inspect, Fasteners, Surface, Connect) plus an **Aero** group
+(Analyze with the drone SVG, Section, 3D VLM, JSBSim).
 
 1. Start VibeCAD and open or create a document.
 2. Click **Aero** on the ribbon (next to Parameters). You do not need the
-   workbench combo.
+   workbench combo. Model tools stay visible.
 3. In **Vehicle**, set the type:
    - **Airplane**
    - **Multirotor drone**
