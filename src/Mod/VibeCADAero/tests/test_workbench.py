@@ -169,6 +169,14 @@ def test_local_release_smoke_checks_aero_dependencies_inside_freecad():
         assert module in script
 
 
+def test_unix_release_bundles_exclude_conda_package_test_payloads():
+    for relative_script in ("osx/create_bundle.sh", "linux/create_bundle.sh"):
+        script = (REPO / "package" / "rattler-build" / relative_script).read_text(
+            encoding="utf-8"
+        )
+        assert 'rm -rf "${conda_env}/etc/conda/test-files"' in script
+
+
 def test_release_cache_keys_include_aero_requirements():
     workflows = {
         "vibecad-release.yml": 3,

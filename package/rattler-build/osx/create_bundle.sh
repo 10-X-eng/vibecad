@@ -31,6 +31,7 @@ python ../scripts/relocate_conda_environment.py \
 # delete unnecessary stuff
 rm -rf "${conda_env}/include"
 rm -rf "${conda_env}/conda-meta"
+rm -rf "${conda_env}/etc/conda/test-files"
 find "${conda_env}" -name \*.a -delete
 
 mv "${conda_env}/bin" "${conda_env}/bin_tmp"
