@@ -373,6 +373,54 @@ def test_document_aero_summary_exposes_assistant_json_when_present() -> None:
     assert "Increase decalage" in summary["assistant_json"]["corrections"][0]
 
 
+def test_document_aero_summary_reads_freecad_named_assistant_object() -> None:
+    report = SimpleNamespace(
+        Name="AeroReport",
+        Label="AeroReport",
+        CL=0.81,
+        CD=0.037,
+        CM=-0.021,
+        CLalpha=5.1,
+        Cmalpha=-0.4,
+        PitchUnstable=False,
+        Re=42000.0,
+        V_loaf=7.4,
+        P_hover=18.2,
+        P_cruise=4.1,
+        Source="NeuralFoil",
+        Airfoil="e63",
+        GeometrySource="AeroConfig",
+        JSBSimPlantPath="",
+        Corrections="Pitch stable.",
+    )
+    assistant = SimpleNamespace(
+        Name="AeroAssistantJson",
+        Label="AeroAssistantJson",
+        Text=(
+            '{"CL":0.81,"CD":0.037,"Cmalpha":-0.4,'
+            '"PitchUnstable":false,"corrections":["Pitch stable."]}'
+        ),
+    )
+
+    def get_object(name: str):
+        return {"AeroReport": report, "AeroAssistantJson": assistant}.get(name)
+
+    doc = SimpleNamespace(
+        Name="Voider",
+        Objects=[report, assistant],
+        getObject=get_object,
+        AeroAssistantJson=assistant,
+    )
+
+    summary = document_aero_summary(doc)
+
+    assert summary["assistant_json"]["CL"] == 0.81
+    assert summary["assistant_json"]["CD"] == 0.037
+    assert summary["assistant_json"]["Cmalpha"] == -0.4
+    assert summary["assistant_json"]["PitchUnstable"] is False
+    assert summary["assistant_json"]["corrections"] == ["Pitch stable."]
+
+
 def test_session_and_provider_allowlists_keep_aero(monkeypatch) -> None:
     import VibeCADProvider as provider
     import VibeCADSession as session

@@ -113,8 +113,9 @@ the nose. Optional extra **aft** stagger is allowed. Analyze does not shove
 the upper wing toward the CAD nose. It re-solves at most twice and stops if
 the model is stable or no CAD/config change landed. The dialog and FreeCAD
 console list each change in plain sentences. `AeroReport.Corrections`,
-`AeroReport.RepairPasses`, and `document.AeroAssistantJson` carry the same
-list for the in-app assistant (`VibeCADCore.aero_summary`).
+`AeroReport.RepairPasses`, and the `Text` property of the document's named
+`AeroAssistantJson` object carry the same list for the in-app assistant
+(`VibeCADCore.aero_summary`).
 `VibeCADAero.run_analyze` returns `changes` and `user_message`.
 
 Section / VLM-only commands stay report-only (`repair=False`) unless they

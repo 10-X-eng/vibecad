@@ -410,6 +410,15 @@ def _get_or_create(doc: Any, typ: str, name: str) -> Any:
 
 
 def _set_doc_attr(doc: Any, name: str, value: Any) -> None:
+    getter = getattr(doc, "getObject", None)
+    named_object = getter(name) if callable(getter) else None
+    try:
+        current = getattr(doc, name)
+    except (AttributeError, RuntimeError):
+        current = None
+    if named_object is not None and current is named_object:
+        return
+
     adder = getattr(doc, "addProperty", None)
     if callable(adder) and not hasattr(doc, name):
         try:

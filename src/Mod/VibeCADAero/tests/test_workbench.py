@@ -158,6 +158,7 @@ def test_local_release_smoke_checks_aero_dependencies_inside_freecad():
     ).read_text(encoding="utf-8")
     for module in ("numpy", "neuralfoil", "aerosandbox", "jsbsim"):
         assert module in script
+    assert "AeroResults.write_report" in script
 
 
 def test_release_cache_keys_include_aero_requirements():

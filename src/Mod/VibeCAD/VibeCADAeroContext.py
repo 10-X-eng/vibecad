@@ -96,17 +96,31 @@ def document_aero_summary(doc: Any | None) -> dict[str, Any]:
 
 
 def _assistant_json(doc: Any, report: Any | None) -> dict[str, Any]:
-    raw = getattr(doc, "AeroAssistantJson", None)
+    raw = _assistant_json_source(getattr(doc, "AeroAssistantJson", None))
     if raw in (None, ""):
         obj = _named(doc, "AeroAssistantJson")
         if obj is not None:
-            raw = getattr(obj, "Text", None) or getattr(obj, "AeroAssistantJson", None)
+            raw = _assistant_json_source(obj)
     if raw in (None, "") and report is not None:
-        raw = getattr(report, "AeroAssistantJson", None)
+        raw = _assistant_json_source(getattr(report, "AeroAssistantJson", None))
     parsed = _parse_assistant_json(raw)
     if parsed:
         return parsed
     return {}
+
+
+def _assistant_json_source(raw: Any) -> Any:
+    """Unwrap the named TextDocument used by real FreeCAD documents."""
+
+    if raw is None or isinstance(raw, (str, dict)):
+        return raw
+    text = getattr(raw, "Text", None)
+    if text not in (None, ""):
+        return text
+    nested = getattr(raw, "AeroAssistantJson", None)
+    if nested is not None and nested is not raw:
+        return nested
+    return raw
 
 
 def _parse_assistant_json(raw: Any) -> dict[str, Any]:
@@ -154,15 +168,15 @@ def _corrections(report: Any | None, doc: Any) -> list[str]:
         items = _bounded_corrections(getattr(report, "Corrections", None))
         if items:
             return items
-    assistant = _parse_assistant_json(getattr(doc, "AeroAssistantJson", None))
+    assistant = _parse_assistant_json(
+        _assistant_json_source(getattr(doc, "AeroAssistantJson", None))
+    )
     items = list(assistant.get("corrections") or [])
     if items:
         return items
     obj = _named(doc, "AeroAssistantJson")
     if obj is not None:
-        assistant = _parse_assistant_json(
-            getattr(obj, "Text", None) or getattr(obj, "AeroAssistantJson", None)
-        )
+        assistant = _parse_assistant_json(_assistant_json_source(obj))
         return list(assistant.get("corrections") or [])
     return []
 
