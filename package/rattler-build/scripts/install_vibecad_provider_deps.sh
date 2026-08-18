@@ -56,6 +56,7 @@ for module_name in (
     "mcp_types",
     "tuf",
     "numpy",
+    "casadi",
     "neuralfoil",
     "aerosandbox",
     "jsbsim",

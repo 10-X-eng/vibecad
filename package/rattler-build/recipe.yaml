@@ -156,6 +156,7 @@ requirements:
     - blas * openblas*
     - blinker
     - calculix
+    - casadi ==3.7.2
     - debugpy
     - defusedxml
     - docutils

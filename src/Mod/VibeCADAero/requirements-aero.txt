@@ -4,6 +4,7 @@
 # release in the 4.2 line that does not require NumPy 2.
 
 numpy>=1.26,<2
+casadi==3.7.2
 neuralfoil==0.3.3
 aerosandbox==4.2.8
 jsbsim==1.3.1

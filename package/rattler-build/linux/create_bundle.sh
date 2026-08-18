@@ -94,6 +94,7 @@ EOF
 
     # reduce size
     rm -rf ${conda_env}/conda-meta/
+    rm -rf "${conda_env}/etc/conda/test-files"
     rm -rf ${conda_env}/doc/global/
     rm -rf ${conda_env}/share/gtk-doc/
     rm -rf ${conda_env}/lib/cmake/
