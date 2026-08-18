@@ -210,11 +210,14 @@ def register_commands(gui: Any | None = None) -> None:
             import FreeCADGui as gui  # type: ignore[no-redef]
         except Exception:
             return
-    gui.addCommand("VibeCADAero_Analyze", VibeCADAero_Analyze())
-    gui.addCommand("VibeCADAero_Section", VibeCADAero_Section())
-    gui.addCommand("VibeCADAero_VLM", VibeCADAero_VLM())
-    gui.addCommand("VibeCADAero_ExportJSBSim", VibeCADAero_ExportJSBSim())
-    gui.addCommand("VibeCADAero_Report", VibeCADAero_Report())
+    add_command = getattr(gui, "addCommand", None)
+    if not callable(add_command):
+        return
+    add_command("VibeCADAero_Analyze", VibeCADAero_Analyze())
+    add_command("VibeCADAero_Section", VibeCADAero_Section())
+    add_command("VibeCADAero_VLM", VibeCADAero_VLM())
+    add_command("VibeCADAero_ExportJSBSim", VibeCADAero_ExportJSBSim())
+    add_command("VibeCADAero_Report", VibeCADAero_Report())
 
 
 register_commands()

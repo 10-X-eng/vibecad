@@ -10,6 +10,10 @@ from types import ModuleType, SimpleNamespace
 import Commands
 
 
+def test_command_module_is_safe_in_headless_freecad_python() -> None:
+    Commands.register_commands(SimpleNamespace())
+
+
 def _result() -> dict:
     return {
         "ok": True,
