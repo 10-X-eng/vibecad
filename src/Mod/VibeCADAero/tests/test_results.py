@@ -52,6 +52,24 @@ class _Doc:
         self.recomputed = True
 
 
+class _FreeCADLikeDoc(_Doc):
+    """Expose named objects as attributes and reject overwriting them."""
+
+    def __getattr__(self, name):
+        obj = self.__dict__.get("_by_name", {}).get(name)
+        if obj is not None:
+            return obj
+        raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        obj = self.__dict__.get("_by_name", {}).get(name)
+        if obj is not None and value is not obj:
+            raise RuntimeError(
+                f"'Document' object attribute '{name}' must not be set this way"
+            )
+        super().__setattr__(name, value)
+
+
 def _payload():
     return {
         "CL": 0.81,
@@ -203,3 +221,16 @@ def test_report_writes_corrections_and_assistant_json():
     assert "0.81" in str(raw)
     assert "PitchUnstable" in str(raw)
     assert "Grew the horizontal tail span" in str(raw)
+
+
+def test_report_preserves_freecad_named_assistant_object_without_overwriting_it():
+    doc = _FreeCADLikeDoc()
+
+    obj = results.write_report(doc, _payload())
+
+    assistant = doc.getObject("AeroAssistantJson")
+    assert obj.Name == "AeroReport"
+    assert assistant is not None
+    assert getattr(doc, "AeroAssistantJson") is assistant
+    assert '"CL": 0.81' in assistant.Text
+    assert doc.recomputed is True
