@@ -24,28 +24,49 @@ else
 fi
 
 requirements="${repo_root}/src/Mod/VibeCAD/requirements.txt"
-if [[ ! -f "${requirements}" ]]; then
-    echo "VibeCAD provider requirements file not found: ${requirements}" >&2
-    exit 1
-fi
+aero_requirements="${repo_root}/src/Mod/VibeCADAero/requirements-aero.txt"
+for requirements_file in "${requirements}" "${aero_requirements}"; do
+    if [[ ! -f "${requirements_file}" ]]; then
+        echo "VibeCAD requirements file not found: ${requirements_file}" >&2
+        exit 1
+    fi
+done
 
 echo "Removing the retired direct OpenAI SDK from ${env_root}"
 "${python_exe}" -m pip uninstall --yes openai openai-agents
 
-echo "Installing VibeCAD Python dependencies into ${env_root}"
+echo "Installing VibeCAD Python and Aero dependencies into ${env_root}"
 "${python_exe}" -m pip install \
     --disable-pip-version-check \
     --upgrade \
     --prefer-binary \
-    -r "${requirements}"
+    -r "${requirements}" \
+    -r "${aero_requirements}"
 "${python_exe}" -m pip check
 "${python_exe}" - <<'PY'
 import importlib
 import importlib.util
 import sys
 
-for module_name in ("anthropic", "keyring", "jsonschema", "mcp", "mcp_types", "tuf"):
+for module_name in (
+    "anthropic",
+    "keyring",
+    "jsonschema",
+    "mcp",
+    "mcp_types",
+    "tuf",
+    "numpy",
+    "neuralfoil",
+    "aerosandbox",
+    "jsbsim",
+):
     importlib.import_module(module_name)
+
+numpy = importlib.import_module("numpy")
+if int(numpy.__version__.split(".", 1)[0]) >= 2:
+    raise RuntimeError(
+        f"NumPy 2 is not compatible with this VibeCAD runtime: {numpy.__version__}"
+    )
 
 if sys.platform == "win32":
     importlib.import_module("keyring.backends.Windows")
@@ -63,5 +84,5 @@ for removed_module in ("openai", "agents"):
             f"The retired direct OpenAI module {removed_module!r} is still present."
         )
 
-print("VibeCAD Python dependencies and OS keyring backend import ok")
+print("VibeCAD Python, Aero, and OS keyring dependencies import ok")
 PY

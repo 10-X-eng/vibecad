@@ -13,4 +13,5 @@ Analyze defaults to repairing pitch-unstable geometry (tail volume, boom,
 avionics CG, upper-wing stagger/decalage) and tells the user and assistant
 what changed. User guide: [`docs/vibecad-aero.md`](../../../docs/vibecad-aero.md)
 
-Optional packages: [`requirements-aero.txt`](requirements-aero.txt)
+Release builds install these dependencies automatically into VibeCAD's bundled
+Python: [`requirements-aero.txt`](requirements-aero.txt)
