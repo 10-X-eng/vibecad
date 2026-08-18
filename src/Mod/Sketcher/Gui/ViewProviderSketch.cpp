@@ -879,7 +879,8 @@ void ViewProviderSketch::setSketchMode(SketchMode mode)
 
 SoPickedPointList ViewProviderSketch::getPickedPointsOnRay(
     const SbVec2s& pos,
-    const Gui::View3DInventorViewer* viewer
+    const Gui::View3DInventorViewer* viewer,
+    SoNode* sceneNode
 ) const
 {
     SoPickedPointList picks;
@@ -895,7 +896,7 @@ SoPickedPointList ViewProviderSketch::getPickedPointsOnRay(
     trans->ref();
     trans->setMatrix(Base::convertTo<SbMatrix>(getDocument()->getEditingTransform()));
     root->addChild(trans);
-    root->addChild(editCoinManager->getRootEditNode());
+    root->addChild(sceneNode ? sceneNode : editCoinManager->getRootEditNode());
 
     SoRayPickAction rp(viewer->getSoRenderManager()->getViewportRegion());
     rp.setPickAll(true);
@@ -921,7 +922,6 @@ EditModeCoinManager::PreselectionResult ViewProviderSketch::getPreselectionResul
     const Gui::View3DInventorViewer* viewer
 ) const
 {
-    SoPickedPointList points = getPickedPointsOnRay(pos, viewer);
     int hoveredPointIndex = EditModeCoinManager::PreselectionResult::InvalidPoint;
     if (viewProviderParameters.hasLastPreselectionResult
         && viewProviderParameters.lastPreselectionResult.Kind
@@ -929,7 +929,16 @@ EditModeCoinManager::PreselectionResult ViewProviderSketch::getPreselectionResul
         hoveredPointIndex = viewProviderParameters.lastPreselectionResult.PointIndex;
     }
 
-    return editCoinManager->detectPreselection(points, pos, hoveredPointIndex);
+    SoPickedPointList constraintPoints
+        = getPickedPointsOnRay(pos, viewer, editCoinManager->getConstraintRootNode());
+    EditModeCoinManager::PreselectionResult result
+        = editCoinManager->detectPreselection(constraintPoints, pos, hoveredPointIndex);
+    if (result.hasWinner()) {
+        return result;
+    }
+
+    SoPickedPointList pickedPoints = getPickedPointsOnRay(pos, viewer);
+    return editCoinManager->detectPreselection(pickedPoints, pos, hoveredPointIndex);
 }
 
 void ViewProviderSketch::cachePreselectionResult(
@@ -5046,6 +5055,47 @@ SbVec2f ViewProviderSketch::getScreenCoordinates(SbVec3f sketchcoordinates) cons
 
     SbVec2s viewportPoint = viewer->getPointOnViewport(Base::convertTo<SbVec3f>(pos));
     return SbVec2f(static_cast<float>(viewportPoint[0]), static_cast<float>(viewportPoint[1]));
+}
+
+std::function<SbVec2f(const SbVec3f&)> ViewProviderSketch::getScreenCoordinateProjector() const
+{
+    Base::Placement sketchPlacement = getEditingPlacement();
+    Base::Rotation sketchRotation(sketchPlacement.getRotation());
+    Base::Vector3d sketchPosition(sketchPlacement.getPosition());
+
+    Gui::MDIView* mdi = this->getActiveView();
+    Gui::View3DInventor* view = qobject_cast<Gui::View3DInventor*>(mdi);
+    if (!view || !isInEditMode()) {
+        return {};
+    }
+
+    Gui::View3DInventorViewer* viewer = view->getViewer();
+    SoRenderManager* renderManager = viewer ? viewer->getSoRenderManager() : nullptr;
+    SoCamera* camera = renderManager ? renderManager->getCamera() : nullptr;
+    if (!camera) {
+        return {};
+    }
+
+    const SbViewportRegion& viewport = renderManager->getViewportRegion();
+    const SbVec2s viewportSize = viewport.getViewportSizePixels();
+    const SbMatrix projectionMatrix
+        = camera->getViewVolume(viewport.getViewportAspectRatio()).getMatrix();
+
+    return [sketchRotation,
+            sketchPosition,
+            projectionMatrix,
+            viewportSize](const SbVec3f& sketchPoint) mutable {
+        Base::Vector3d worldPoint(sketchPoint[0], sketchPoint[1], sketchPoint[2]);
+        sketchRotation.multVec(worldPoint, worldPoint);
+        worldPoint += sketchPosition;
+
+        SbVec3f screenPoint = Base::convertTo<SbVec3f>(worldPoint);
+        projectionMatrix.multVecMatrix(screenPoint, screenPoint);
+        return SbVec2f(
+            std::roundf((screenPoint[0] * 0.5F + 0.5F) * viewportSize[0]),
+            std::roundf((screenPoint[1] * 0.5F + 0.5F) * viewportSize[1])
+        );
+    };
 }
 
 QFont ViewProviderSketch::getApplicationFont() const

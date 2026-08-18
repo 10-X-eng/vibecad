@@ -2186,8 +2186,44 @@ std::set<int> EditModeConstraintCoinManager::detectPreselectionConstr(
     const SbVec2s& cursorScreenPos
 )
 {
-    std::set<int> constrIndices;
+    std::set<int> constrIndices = detectPreselectionConstrIcon(Point, cursorScreenPos);
+    if (!constrIndices.empty() || !Point) {
+        return constrIndices;
+    }
+
     SoPath* path = Point->getPath();
+    if (!path || path->getLength() < 3) {
+        return constrIndices;
+    }
+
+    // Handle selection of datum labels (e.g., radius, distance dimensions).
+    auto* sep = dynamic_cast<SoSeparator*>(path->getNode(path->getLength() - 2));
+    if (sep && dynamic_cast<SoDatumLabel*>(path->getTail())) {
+        for (int i = 0; i < editModeScenegraphNodes.constrGroup->getNumChildren(); ++i) {
+            if (editModeScenegraphNodes.constrGroup->getChild(i) == sep) {
+                constrIndices.insert(i);
+                break;
+            }
+        }
+    }
+
+    return constrIndices;
+}
+
+std::set<int> EditModeConstraintCoinManager::detectPreselectionConstrIcon(
+    const SoPickedPoint* Point,
+    const SbVec2s& cursorScreenPos
+)
+{
+    std::set<int> constrIndices;
+    if (!Point) {
+        return constrIndices;
+    }
+
+    SoPath* path = Point->getPath();
+    if (!path || path->getLength() < 3) {
+        return constrIndices;
+    }
 
     // The picked node must be a child of the main constraint group.
     SoNode* tailFather2 = path->getNode(path->getLength() - 3);
@@ -2196,21 +2232,14 @@ std::set<int> EditModeConstraintCoinManager::detectPreselectionConstr(
     }
 
     SoNode* tail = path->getTail();  // This is the SoImage or SoDatumLabel node that was picked.
-    auto* sep = static_cast<SoSeparator*>(path->getNode(path->getLength() - 2));
+    auto* sep = dynamic_cast<SoSeparator*>(path->getNode(path->getLength() - 2));
+    if (!sep) {
+        return constrIndices;
+    }
 
     for (int childIdx = 0; childIdx < sep->getNumChildren(); ++childIdx) {
         if (tail == sep->getChild(childIdx) && dynamic_cast<SoImage*>(tail)) {
             return detectPreselectionIcon(sep, static_cast<SoImage*>(tail), childIdx, cursorScreenPos);
-        }
-    }
-
-    // Handle selection of datum labels (e.g., radius, distance dimensions).
-    if (dynamic_cast<SoDatumLabel*>(tail)) {
-        for (int i = 0; i < editModeScenegraphNodes.constrGroup->getNumChildren(); ++i) {
-            if (editModeScenegraphNodes.constrGroup->getChild(i) == sep) {
-                constrIndices.insert(i);
-                break;
-            }
         }
     }
 
@@ -3061,13 +3090,13 @@ void EditModeConstraintCoinManager::createEditModeInventorNodes()
     // Render constraint icons ON TOP of geometry lines without
     // affecting depth state for other nodes (#28639).
     // See also issues #25840 and #11603.
-    auto* constrAnnotation = new SoAnnotation();
+    editModeScenegraphNodes.constrAnnotation = new SoAnnotation();
 
     editModeScenegraphNodes.constrGroup = new SmSwitchboard();
     editModeScenegraphNodes.constrGroup->setName("ConstraintGroup");
-    constrAnnotation->addChild(editModeScenegraphNodes.constrGroup);
+    editModeScenegraphNodes.constrAnnotation->addChild(editModeScenegraphNodes.constrGroup);
 
-    editModeScenegraphNodes.EditRoot->addChild(constrAnnotation);
+    editModeScenegraphNodes.EditRoot->addChild(editModeScenegraphNodes.constrAnnotation);
 
     auto* ps = new SoPickStyle();  // used to following nodes aren't impacted
     ps->style.setValue(SoPickStyle::SHAPE);

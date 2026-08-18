@@ -473,7 +473,7 @@ def _authoring_mode_selector_state():
         AuthoringModeEnvironment,
         resolve_authoring_mode_selector,
     )
-    from VibeCADModelingSurface import resolve_modeling_surface
+    from VibeCADNativeProviderContext import native_authoring_mode_availability
     from VibeCADScriptedEditor import scripted_editor_has_unresolved_work
 
     service = get_service()
@@ -489,12 +489,7 @@ def _authoring_mode_selector_state():
     native_available = False
     native_reason = restore_error
     if document is not None and not restore_error:
-        native_surface = resolve_modeling_surface(
-            service.active_workbench_name(),
-            "native",
-        )
-        native_available = native_surface.available
-        native_reason = native_surface.unavailable_reason
+        native_available, native_reason = native_authoring_mode_availability()
     booked_transaction = getattr(document, "getBookedTransactionID", None)
     transaction_open = bool(
         document is not None

@@ -13,12 +13,30 @@ from VibeCADNativeCapabilityRegistry import (
     provider_visible_native_schema,
     resolve_native_provider_surface,
 )
-from VibeCADNativeRegistry import build_native_capability_registry
 import VibeCADRibbonSurface as ribbon_surface
+
+
+def native_authoring_mode_availability() -> tuple[bool, str]:
+    """Return whether the live human ribbon can enter Native authority.
+
+    Authoring-mode UI only needs the validated ribbon identity. Building the
+    complete provider registry here imports every Native binding and schema,
+    even though no provider turn is starting.
+    """
+
+    try:
+        surface = ribbon_surface.read_active_ribbon_surface()
+    except Exception as exc:
+        return False, f"The active VibeCAD ribbon is unavailable: {exc}"
+    if surface.surface_id == "unavailable":
+        return False, "The active VibeCAD ribbon has no Native authoring surface."
+    return True, ""
 
 
 def resolve_production_native_surface(
 ) -> tuple[NativeCapabilityRegistry, NativeProviderSurface]:
+    from VibeCADNativeRegistry import build_native_capability_registry
+
     registry = build_native_capability_registry()
     surface = resolve_native_provider_surface(
         ribbon_surface.read_active_ribbon_surface(),
@@ -55,7 +73,12 @@ def schemas_for_native_provider_surface(
     if mode == "build":
         schemas = surface.schemas
     elif mode == "plan":
-        selected_registry = registry or build_native_capability_registry()
+        if registry is None:
+            from VibeCADNativeRegistry import build_native_capability_registry
+
+            selected_registry = build_native_capability_registry()
+        else:
+            selected_registry = registry
         schemas = []
         for name, schema in zip(
             surface.tool_names,

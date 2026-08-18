@@ -1287,8 +1287,12 @@ class ScriptedEditorController:
         service = get_service()
         next_engine = service.modeling_engine()
         workbench = service.active_workbench_name()
-        resolution = resolve_modeling_surface(workbench, next_engine)
-        next_domain = str(resolution.domain or "")
+        resolution = (
+            resolve_modeling_surface(workbench, next_engine)
+            if next_engine in SCRIPTED_ENGINES
+            else None
+        )
+        next_domain = str(resolution.domain or "") if resolution is not None else ""
         active_document = getattr(service, "_active_document", None)
         doc = active_document() if callable(active_document) else App.ActiveDocument
         next_document_name = str(getattr(doc, "Name", "") or "")
@@ -1328,7 +1332,7 @@ class ScriptedEditorController:
         self.domain = next_domain
         self.document_name = next_document_name
         self.document_uid = next_document_uid
-        scripted = self.engine in SCRIPTED_ENGINES and resolution.available
+        scripted = resolution is not None and resolution.available
         self.root.setEnabled(scripted)
         self.context_label.setText(
             (
@@ -1361,7 +1365,7 @@ class ScriptedEditorController:
             self.source_files = {}
             self.loading = False
             self.status.setText(
-                resolution.unavailable_reason
+                (resolution.unavailable_reason if resolution is not None else "")
                 or "The active workbench has no VibeScript authoring domain."
             )
             return

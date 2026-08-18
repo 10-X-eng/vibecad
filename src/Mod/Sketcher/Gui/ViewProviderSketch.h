@@ -32,6 +32,7 @@
 #include <QCoreApplication>
 #include <QMetaObject>
 #include <fastsignals/signal.h>
+#include <functional>
 #include <memory>
 
 #include <Base/Parameter.h>
@@ -849,7 +850,8 @@ private:
     //@{
     SoPickedPointList getPickedPointsOnRay(
         const SbVec2s& pos,
-        const Gui::View3DInventorViewer* viewer
+        const Gui::View3DInventorViewer* viewer,
+        SoNode* sceneNode = nullptr
     ) const;
     EditModeCoinManager::PreselectionResult getPreselectionResultAtViewportPos(
         const SbVec2s& pos,
@@ -961,6 +963,7 @@ private:
 
     SbVec2f getScreenCoordinates(SbVec2f sketchcoordinates) const;
     SbVec2f getScreenCoordinates(SbVec3f sketchcoordinates) const;
+    std::function<SbVec2f(const SbVec3f&)> getScreenCoordinateProjector() const;
 
     QFont getApplicationFont() const;
 

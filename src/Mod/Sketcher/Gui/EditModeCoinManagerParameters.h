@@ -486,6 +486,7 @@ struct EditModeScenegraphNodes
     /** @name Constraint nodes*/
     //@{
     SmSwitchboard* constrGroup;
+    SoGroup* constrAnnotation;
     SoPickStyle* constrGrpSelect;
     SoDrawStyle* ConstraintDrawStyle;
     //@}

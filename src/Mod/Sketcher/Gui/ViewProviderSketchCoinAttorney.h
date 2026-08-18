@@ -98,6 +98,9 @@ private:
     static inline float getScaleFactor(const ViewProviderSketch& vp);
     static inline SbVec2f getScreenCoordinates(const ViewProviderSketch& vp, SbVec2f sketchcoordinates);
     static inline SbVec2f getScreenCoordinates(const ViewProviderSketch& vp, SbVec3f sketchcoordinates);
+    static inline std::function<SbVec2f(const SbVec3f&)> getScreenCoordinateProjector(
+        const ViewProviderSketch& vp
+    );
     static inline QFont getApplicationFont(const ViewProviderSketch& vp);
     static inline double getRotation(const ViewProviderSketch& vp, SbVec3f pos0, SbVec3f pos1);
     static inline int defaultApplicationFontSizePixels(const ViewProviderSketch& vp);
@@ -195,6 +198,12 @@ inline SbVec2f ViewProviderSketchCoinAttorney::getScreenCoordinates(
 )
 {
     return vp.getScreenCoordinates(sketchcoordinates);
+}
+
+inline std::function<SbVec2f(const SbVec3f&)>
+ViewProviderSketchCoinAttorney::getScreenCoordinateProjector(const ViewProviderSketch& vp)
+{
+    return vp.getScreenCoordinateProjector();
 }
 
 inline SbVec2f ViewProviderSketchCoinAttorney::getScreenCoordinates(

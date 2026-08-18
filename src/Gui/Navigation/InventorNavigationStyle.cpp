@@ -323,18 +323,8 @@ SbBool InventorNavigationStyle::processSoEvent(const SoEvent* const ev)
 
     // If not handled in this class, pass on upwards in the inheritance
     // hierarchy.
-    if (ev->isOfType(SoMouseWheelEvent::getClassTypeId())) {
+    if (!processed) {
         processed = inherited::processSoEvent(ev);
-    }
-    else if (
-        (curmode == NavigationStyle::SELECTION || newmode == NavigationStyle::SELECTION
-         || viewer->isEditing())
-        && !processed
-    ) {
-        processed = inherited::processSoEvent(ev);
-    }
-    else {
-        return true;
     }
 
     return processed;
