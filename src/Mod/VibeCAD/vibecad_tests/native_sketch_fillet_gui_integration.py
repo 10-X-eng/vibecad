@@ -24,18 +24,18 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
-from VibeCADNativeSketchGeometryBindings import SKETCH_GEOMETRY_CAPABILITY_NAME
+from VibeCADNativeSketchRevision import sketch_revision
 from VibeCADNativeSketchState import (
     serialize_sketch_constraint,
     serialize_sketch_geometry,
 )
 from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
+from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
 from vibecad_tests.native_sketch_geometry_gui_support import (
     edit_boundary,
     process_events,
-    provider_turn,
 )
 from vibecad_tests.native_sketch_fillet_gui_case import verify_reopened_fillet
 
@@ -44,18 +44,16 @@ def _phase(name: str) -> None:
     os.write(2, f"VIBECAD_NATIVE_SKETCH_FILLET_PHASE {name}\n".encode("ascii"))
 
 
-def _arguments(sketch, *, expected_geometry_count: int, position: str = "end") -> dict:
+def _arguments(revision: str, *, position: str = "end") -> dict:
     return {
         "operation": "create_fillet",
-        "sketch": {"object_name": sketch.Name},
-        "expected_geometry_count": expected_geometry_count,
-        "expected_constraint_count": int(sketch.ConstraintCount),
-        "expected_external_geometry_count": 0,
+        "revision": revision,
         "target": {
             "form": "corner",
             "geometry_index": 0,
             "position": position,
         },
+        "radius_mm": 2.0,
         "preserve_corner": True,
     }
 
@@ -121,11 +119,9 @@ def _run() -> None:
         production = resolve_native_provider_surface(
             live_surface, build_native_capability_registry()
         )
-        assert production.available is False
-        assert "Sketcher_CreateFillet" not in production.missing_action_ids
-        assert SKETCH_GEOMETRY_CAPABILITY_NAME in (
-            production.incomplete_definition_names
-        )
+        assert production.available is True
+        assert production.missing_action_ids == ()
+        assert production.incomplete_definition_names == ()
         _phase("surface")
 
         service = get_service()
@@ -147,7 +143,7 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: active_edit_object() is not None,
         )
-        turn = provider_turn(live_surface)
+        turn = NativeTurnSnapshot.from_provider_surface(production)
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state,
@@ -160,7 +156,7 @@ def _run() -> None:
 
         def native_call(arguments, *, succeeds=True, call_id="fillet-call"):
             response = dispatcher.call(
-                SKETCH_GEOMETRY_CAPABILITY_NAME,
+                "sketch.fillet",
                 json.dumps(arguments, separators=(",", ":")),
                 call_id,
             )
@@ -174,30 +170,22 @@ def _run() -> None:
             int(document.UndoCount),
             tuple(item.Type for item in sketch.Constraints),
         )
-        diagnosis = sketch.diagnoseFillet(0, 2, True)
+        diagnosis = sketch.diagnoseFillet(0, 2, 2.0, True)
         assert diagnosis["accepted"] is True
-        assert diagnosis["radius_mm"] > 0.0
+        assert diagnosis["radius_mm"] == 2.0
         assert diagnosis_before == (
             int(sketch.GeometryCount),
             int(sketch.ConstraintCount),
             int(document.UndoCount),
             tuple(item.Type for item in sketch.Constraints),
         )
-        stale = native_call(
-            _arguments(sketch, expected_geometry_count=3),
-            succeeds=False,
-            call_id="fillet-stale",
-        )
-        assert stale["error_code"] == "NATIVE_SKETCH_INVALID"
-        assert int(document.UndoCount) == 0
-
         Gui.Selection.clearSelection(document.Name)
         Gui.Selection.addSelection(document.Name, sketch.Name, "Edge2")
         process_events(8)
         selected = _selection(document)
         assert selected == ((sketch.Name, ("Edge2",)),)
 
-        response = native_call(_arguments(sketch, expected_geometry_count=2))
+        response = native_call(_arguments(sketch_revision(sketch)))
         assert response["operation"] == "create_fillet"
         assert response["form"] == "corner"
         assert response["trimmed"] is True

@@ -287,7 +287,7 @@ def model_profile_variants() -> tuple[NativeCapabilityVariant, ...]:
     return (
         NativeCapabilityVariant(
             operation="profile",
-            description="Create or apply one typed reusable-profile Design feature.",
+            description="Create a Body from an exact Sketch profile.",
             action_ids=frozenset(
                 {
                     "PartDesign_DesignExtrude",

@@ -10,6 +10,7 @@ from VibeCADNativeSketchProviderSchema import (
     SKETCH_PROVIDER_CAPABILITY_NAMES,
     sketch_provider_capability_definitions,
 )
+from VibeCADNativeSketchProviderRuntime import _compact_mutation_result
 
 
 def _composition_paths(value, path="") -> list[str]:
@@ -37,7 +38,13 @@ def test_compact_sketch_surface_covers_every_exact_internal_operation_once() -> 
         for definition in definitions
         for variant in definition.variants
         if definition.name
-        not in {"sketch.batch", "sketch.inspect", "sketch.presentation", "sketch.control"}
+        not in {
+            "sketch.batch",
+            "sketch.inspect",
+            "sketch.presentation",
+            "sketch.control",
+            "sketch.finish",
+        }
     ]
     exact = {
         *(variant.operation for variant in sketch_geometry_capability_definition().variants),
@@ -82,8 +89,156 @@ def test_read_state_bootstraps_revision_and_every_other_sketch_call_requires_it(
             properties = variant.parameters["properties"]
             required = set(variant.parameters["required"])
             if definition.name == "sketch.inspect" and variant.operation == "read_state":
-                assert "revision" not in properties
+                assert properties["revision"]["type"] == "string"
                 assert "revision" not in required
             else:
                 assert properties["revision"]["pattern"].startswith("^sketch-v1:")
                 assert "revision" in required
+
+
+def test_target_constraints_have_one_focused_exact_contract_each() -> None:
+    definitions = {
+        definition.name: definition
+        for definition in sketch_provider_capability_definitions()
+    }
+    expected = {
+        "sketch.coincident": "constrain_coincident",
+        "sketch.perpendicular": "constrain_perpendicular",
+        "sketch.tangent": "constrain_tangent",
+        "sketch.symmetric": "constrain_symmetric",
+    }
+
+    assert not {
+        operation
+        for operation in expected.values()
+    } & {variant.operation for variant in definitions["sketch.constrain"].variants}
+    for name, operation in expected.items():
+        definition = definitions[name]
+        assert tuple(variant.operation for variant in definition.variants) == (operation,)
+        parameters = definition.provider_schema((operation,))["parameters"]["oneOf"][0]
+        assert parameters["required"] == ["revision", "target"]
+        target = parameters["properties"]["target"]
+        assert target["type"] == "object"
+        assert target["required"] == ["form"]
+        assert target["description"].startswith("Fields by form:")
+
+
+def test_mutation_result_keeps_next_action_state_without_internal_receipt_noise() -> None:
+    compact = _compact_mutation_result(
+        {
+            "assistant_undo_available": True,
+            "receipt": {"capability": "sketch.draw_line", "changed": []},
+            "sketch": {"object_name": "Sketch"},
+            "geometry": {
+                "index": 3,
+                "geometry_id": 9,
+                "kind": "line",
+                "construction": False,
+                "start_mm": [0.0, 0.0, 0.0],
+                "end_mm": [10.0, 0.0, 0.0],
+            },
+            "geometry_count": 4,
+            "constraint_count": 2,
+            "profile": {
+                "closed_profile": True,
+                "face_maker_succeeded": True,
+                "closed_wire_count": 1,
+                "open_wire_count": 0,
+                "support_plane": {"space": "global"},
+            },
+            "solver": {
+                "degrees_of_freedom": 7,
+                "fully_constrained": False,
+                "conflicting_constraints": [],
+                "open_vertices_mm": [],
+            },
+        }
+    )
+
+    assert compact == {
+        "assistant_undo_available": True,
+        "geometry_count": 4,
+        "constraint_count": 2,
+        "geometry_ref": {
+            "geometry_index": 3,
+            "geometry_id": 9,
+            "kind": "line",
+            "construction": False,
+        },
+        "profile": {
+            "closed": True,
+            "face_buildable": True,
+            "closed_wire_count": 1,
+            "open_wire_count": 0,
+        },
+        "solver": {
+            "degrees_of_freedom": 7,
+            "fully_constrained": False,
+        },
+    }
+
+
+def test_draw_result_hides_generated_constraints_helpers_and_echoed_dimensions() -> None:
+    compact = _compact_mutation_result(
+        {
+            "assistant_undo_available": True,
+            "geometry_refs": [
+                {
+                    "geometry_index": 0,
+                    "geometry_id": 40,
+                    "kind": "line",
+                    "construction": False,
+                }
+            ],
+            "construction_geometry_refs": [
+                {
+                    "geometry_index": 1,
+                    "geometry_id": 41,
+                    "kind": "point",
+                    "construction": True,
+                }
+            ],
+            "constraint_refs": [
+                {"constraint_index": 0, "type": "Coincident"}
+            ],
+            "corners_mm": [[-70.0, -48.0, 0.0], [70.0, 48.0, 0.0]],
+            "corner_radius_mm": 18.0,
+            "geometry_count": 2,
+            "constraint_count": 1,
+            "profile": {
+                "closed_profile": True,
+                "face_maker_succeeded": True,
+                "closed_wire_count": 1,
+                "open_wire_count": 0,
+            },
+            "solver": {
+                "degrees_of_freedom": 0,
+                "fully_constrained": True,
+            },
+        },
+        operation="create_rounded_rectangle",
+    )
+
+    assert compact == {
+        "assistant_undo_available": True,
+        "geometry_refs": [
+            {
+                "geometry_index": 0,
+                "geometry_id": 40,
+                "kind": "line",
+                "construction": False,
+            }
+        ],
+        "geometry_count": 2,
+        "constraint_count": 1,
+        "profile": {
+            "closed": True,
+            "face_buildable": True,
+            "closed_wire_count": 1,
+            "open_wire_count": 0,
+        },
+        "solver": {
+            "degrees_of_freedom": 0,
+            "fully_constrained": True,
+        },
+    }

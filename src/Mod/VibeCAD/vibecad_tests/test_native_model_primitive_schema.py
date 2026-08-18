@@ -5,6 +5,11 @@ from __future__ import annotations
 import json
 
 from VibeCADNativeModelFeatureSchema import model_feature_capability_definition
+from VibeCADNativeModelPrimitiveSchema import (
+    model_box_capability_definition,
+    model_cylinder_capability_definition,
+    model_primitive_capability_definition,
+)
 
 
 EXPECTED_KINDS = (
@@ -40,11 +45,88 @@ def test_model_feature_contract_covers_each_current_design_primitive() -> None:
     )
 
 
-def test_every_primitive_requires_explicit_placement_and_result_semantics() -> None:
+def test_focused_primitive_contract_has_natural_exact_operations() -> None:
+    definition = model_primitive_capability_definition()
+    operations = tuple(variant.operation for variant in definition.variants)
+    schema = definition.provider_schema(operations)
+    parameters = schema["parameters"]
+
+    assert definition.name == "model.primitive"
+    assert operations == EXPECTED_KINDS[2:]
+    assert parameters["properties"]["operation"]["enum"] == list(EXPECTED_KINDS[2:])
+    assert parameters["required"] == ["operation", "label", "center_mm"]
+    field_map = parameters["properties"]["operation"]["description"]
+    assert "tube=outer_radius_mm,inner_radius_mm,height_mm" in field_map
+
+    box = model_box_capability_definition()
+    box_branch = box.provider_schema(("box",))["parameters"]["oneOf"][0]
+    assert box.name == "model.box"
+    assert box_branch["required"] == [
+        "label",
+        "center_mm",
+        "length_mm",
+        "width_mm",
+        "height_mm",
+    ]
+    assert "definition" not in box_branch["properties"]
+
+    cylinder = model_cylinder_capability_definition()
+    cylinder_branch = cylinder.provider_schema(("cylinder",))["parameters"]["oneOf"][0]
+    assert cylinder.name == "model.cylinder"
+    assert cylinder_branch["required"] == [
+        "label",
+        "center_mm",
+        "radius_mm",
+        "height_mm",
+    ]
+    assert "definition" not in cylinder_branch["properties"]
+
+
+def test_focused_primitive_variants_enforce_each_shape_before_mutation() -> None:
+    definitions = (
+        model_box_capability_definition(),
+        model_cylinder_capability_definition(),
+        model_primitive_capability_definition(),
+    )
+    selectors = {
+        variant.operation: variant
+        for definition in definitions
+        for variant in definition.variants
+    }
+
+    assert tuple(selectors) == EXPECTED_KINDS
+    assert selectors["box"].parameters["required"] == [
+        "label",
+        "center_mm",
+        "length_mm",
+        "width_mm",
+        "height_mm",
+    ]
+    assert selectors["tube"].parameters["required"] == [
+        "label",
+        "center_mm",
+        "outer_radius_mm",
+        "inner_radius_mm",
+        "height_mm",
+    ]
+    assert {
+        action_id
+        for definition in definitions
+        for variant in definition.variants
+        for action_id in variant.action_ids
+    } == {f"PartDesign::Design{name.title()}" for name in EXPECTED_KINDS}
+    assert all(
+        "rotation" in variant.parameters["properties"]
+        and "rotation" not in variant.parameters["required"]
+        for definition in definitions
+        for variant in definition.variants
+    )
+
+
+def test_every_primitive_requires_explicit_placement_and_clear_result_semantics() -> None:
     _definition, branch, primitive = _contract()
 
     assert branch["required"] == [
-        "operation",
         "label",
         "placement",
         "result",
@@ -52,14 +134,15 @@ def test_every_primitive_requires_explicit_placement_and_result_semantics() -> N
     ]
     assert branch["additionalProperties"] is False
     result = branch["properties"]["result"]
-    assert result["additionalProperties"] is False
-    assert result["properties"]["mode"]["enum"] == [
-        "new_body",
-        "join",
-        "cut",
-        "intersect",
+    new_body, existing_body = result["oneOf"]
+    assert new_body["properties"]["mode"]["const"] == "new_body"
+    assert new_body["required"] == ["mode"]
+    assert existing_body["properties"]["mode"]["enum"] == [
+        "join", "cut", "intersect"
     ]
-    assert result["properties"]["targets"]["maxItems"] == 16
+    assert existing_body["required"] == ["mode", "targets"]
+    assert existing_body["properties"]["targets"]["minItems"] == 1
+    assert existing_body["properties"]["targets"]["maxItems"] == 16
     assert primitive["additionalProperties"] is False
     assert primitive["required"] == ["kind"]
 

@@ -56,6 +56,7 @@ def _diagnose(sketch: Any, spec: SketchChamferSpec) -> Any:
             return diagnose(
                 spec.selection.geometry_index,
                 spec.selection.position_code,
+                spec.requested_size_mm,
                 spec.preserve_corner,
             )
         import FreeCAD as App
@@ -66,6 +67,7 @@ def _diagnose(sketch: Any, spec: SketchChamferSpec) -> Any:
             second.geometry_index,
             App.Vector(*first.reference_point_mm, 0.0),
             App.Vector(*second.reference_point_mm, 0.0),
+            spec.requested_size_mm,
             spec.preserve_corner,
         )
     except Exception as exc:
@@ -193,7 +195,7 @@ def verify_sketch_chamfer(document: Any, draft: NativeMutationDraft) -> dict[str
         "input_geometry_indices": list(plan.input_geometry_indices),
         "chamfer": chamfer,
         "support_arc_geometry_index": plan.support_arc_geometry_index,
-        "radius_mm": plan.radius_mm,
+        "distance_mm": plan.radius_mm,
         "trimmed": plan.trimmed,
         "preserve_corner": state.spec.preserve_corner,
         "construction": plan.construction,

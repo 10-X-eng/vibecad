@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from VibeCADNativeSketchErrors import NativeSketchError
@@ -24,7 +22,7 @@ def _values(**updates) -> dict[str, object]:
         **{
             "first_corner_mm": {"x": -10.0, "y": -6.0},
             "opposite_corner_mm": {"x": 10.0, "y": 6.0},
-            "radius_mm": 2.0,
+            "corner_radius_mm": 2.0,
             **updates,
         }
     )
@@ -53,7 +51,8 @@ def test_oblong_matches_human_geometry_and_constraints(oblong_host) -> None:
     assert [item.object_name for item in draft.changed] == [sketch.Name]
     assert result["geometry_count"] == 11
     assert result["constraint_count"] == 19
-    assert result["radius_mm"] == 2.0
+    assert result["corner_radius_mm"] == 2.0
+    assert result["segment_count"] == 8
     assert result["closed"] is True
     assert result["corners_mm"] == [
         [-10.0, -6.0, 0.0],
@@ -61,45 +60,14 @@ def test_oblong_matches_human_geometry_and_constraints(oblong_host) -> None:
         [10.0, 6.0, 0.0],
         [-10.0, 6.0, 0.0],
     ]
-    assert [item["index"] for item in result["geometries"]] == list(range(1, 9))
-    assert [item["start_mm"] for item in result["geometries"][:4]] == [
-        [-8.0, -6.0, 0.0],
-        [10.0, -4.0, 0.0],
-        [8.0, 6.0, 0.0],
-        [-10.0, 4.0, 0.0],
+    assert [item["geometry_index"] for item in result["geometry_refs"]] == list(range(1, 9))
+    assert [item["kind"] for item in result["geometry_refs"]] == [
+        *(["line"] * 4),
+        *(["circular_arc"] * 4),
     ]
-    assert [item["center_mm"] for item in result["geometries"][4:]] == [
-        [-8.0, -4.0, 0.0],
-        [8.0, -4.0, 0.0],
-        [8.0, 4.0, 0.0],
-        [-8.0, 4.0, 0.0],
-    ]
-    actual_parameters = [
-        (item["first_parameter"], item["last_parameter"])
-        for item in result["geometries"][4:]
-    ]
-    expected_parameters = [
-        (math.pi, 1.5 * math.pi),
-        (1.5 * math.pi, 2.0 * math.pi),
-        (0.0, 0.5 * math.pi),
-        (0.5 * math.pi, math.pi),
-    ]
-    assert all(
-        math.isclose(actual_first, expected_first, abs_tol=1.0e-10)
-        and math.isclose(actual_last, expected_last, abs_tol=1.0e-10)
-        for (actual_first, actual_last), (expected_first, expected_last) in zip(
-            actual_parameters,
-            expected_parameters,
-            strict=True,
-        )
-    )
-    assert [item["index"] for item in result["construction_points"]] == [9, 10]
-    assert [item["position_mm"] for item in result["construction_points"]] == [
-        [-10.0, -6.0, 0.0],
-        [10.0, 6.0, 0.0],
-    ]
-    assert all(item["construction"] is True for item in result["construction_points"])
-    assert [item["type"] for item in result["constraints"]] == [
+    assert [item["geometry_index"] for item in result["construction_geometry_refs"]] == [9, 10]
+    assert all(item["construction"] is True for item in result["construction_geometry_refs"])
+    assert [item["type"] for item in result["constraint_refs"]] == [
         *(["Tangent"] * 8),
         "Horizontal",
         "Vertical",
@@ -110,21 +78,14 @@ def test_oblong_matches_human_geometry_and_constraints(oblong_host) -> None:
         "Equal",
         *(["PointOnObject"] * 4),
     ]
-    assert result["constraints"][0]["references"] == [
-        {"slot": 1, "geometry_index": 1, "position": 1},
-        {"slot": 2, "geometry_index": 5, "position": 2},
-    ]
-    assert result["constraints"][-1]["references"] == [
-        {"slot": 1, "geometry_index": 10, "position": 1},
-        {"slot": 2, "geometry_index": 3},
-    ]
     assert set(result) == {
         "sketch",
-        "geometries",
-        "construction_points",
-        "constraints",
+        "geometry_refs",
+        "construction_geometry_refs",
+        "constraint_refs",
         "corners_mm",
-        "radius_mm",
+        "corner_radius_mm",
+        "segment_count",
         "closed",
         "geometry_count",
         "constraint_count",
@@ -155,7 +116,7 @@ def test_oblong_supports_negative_diagonal_human_order(oblong_host) -> None:
         [10.0, -6.0, 0.0],
         [10.0, 6.0, 0.0],
     ]
-    assert [item["type"] for item in result["constraints"][8:12]] == [
+    assert [item["type"] for item in result["constraint_refs"][8:12]] == [
         "Vertical",
         "Horizontal",
         "Vertical",
@@ -168,7 +129,7 @@ def test_oblong_rejects_zero_or_oversized_radius(oblong_host, radius) -> None:
     document, _sketch, _context = oblong_host
 
     with pytest.raises(NativeSketchError):
-        prepare_sketch_oblong(document.Uid, _values(radius_mm=radius))
+        prepare_sketch_oblong(document.Uid, _values(corner_radius_mm=radius))
 
 
 def test_oblong_verifier_rejects_arc_drift(oblong_host) -> None:

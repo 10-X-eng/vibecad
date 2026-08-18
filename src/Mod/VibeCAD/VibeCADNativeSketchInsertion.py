@@ -178,3 +178,43 @@ def sketch_geometry_result(
         "constraint_count": constraint_count,
         **serialize_sketch_diagnostics(sketch),
     }
+
+
+def sketch_geometry_refs(records: Any) -> list[dict[str, Any]]:
+    """Return actionable identities without repeating serialized curve data."""
+
+    result = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise TypeError("Sketch geometry reference source is invalid")
+        index = record.get("index")
+        kind = record.get("kind")
+        if type(index) is not int or not isinstance(kind, str) or not kind:
+            raise TypeError("Sketch geometry reference source is incomplete")
+        reference = {
+            "geometry_index": index,
+            "kind": kind,
+            "construction": bool(record.get("construction")),
+        }
+        geometry_id = record.get("geometry_id")
+        if type(geometry_id) is int and geometry_id >= 0:
+            reference["geometry_id"] = geometry_id
+        result.append(reference)
+    return result
+
+
+def sketch_constraint_refs(records: Any) -> list[dict[str, Any]]:
+    """Return actionable constraint identities without repeating references."""
+
+    result = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise TypeError("Sketch constraint reference source is invalid")
+        index = record.get("index")
+        constraint_type = record.get("type")
+        if type(index) is not int or not isinstance(constraint_type, str):
+            raise TypeError("Sketch constraint reference source is incomplete")
+        result.append(
+            {"constraint_index": index, "type": constraint_type}
+        )
+    return result

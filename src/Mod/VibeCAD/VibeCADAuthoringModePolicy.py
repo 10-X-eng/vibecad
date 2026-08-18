@@ -22,6 +22,8 @@ class AuthoringModeEnvironment:
     native_available: bool
     native_unavailable_reason: str
     vibescript_return_safe: bool
+    document_saved: bool = True
+    document_save_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,18 +70,24 @@ def resolve_authoring_mode_selector(
         raise TypeError("environment must be an AuthoringModeEnvironment")
     current = normalize_authoring_mode(environment.current_mode)
     blocker = _common_blocker(environment)
-    native_reason = ""
-    if not environment.native_available:
-        native_reason = str(environment.native_unavailable_reason or "").strip() or (
+    native_blocker = ""
+    native_guidance = ""
+    if not environment.document_saved:
+        native_guidance = str(environment.document_save_reason or "").strip() or (
+            "Save this VibeCAD document before using Native assistance."
+        )
+    elif not environment.native_available:
+        native_blocker = str(environment.native_unavailable_reason or "").strip() or (
             "Native mode is not complete for the active ribbon."
         )
+    native_reason = native_blocker or native_guidance
     vibescript_reason = ""
     if current == "native" and not environment.vibescript_return_safe:
         vibescript_reason = (
             "Native changes are not represented by VibeScript source. Discard the "
             "Native epoch or create a new VibeScript source first."
         )
-    native_enabled = not blocker and (current == "native" or not native_reason)
+    native_enabled = not blocker and (current == "native" or not native_blocker)
     vibescript_enabled = not blocker and (
         current == "vibescript" or not vibescript_reason
     )

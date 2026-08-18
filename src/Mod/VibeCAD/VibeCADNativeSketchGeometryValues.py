@@ -84,9 +84,9 @@ def sketch_positive_length(value: Any, label: str) -> float:
 
 def sketch_start_angle_degrees(value: Any, label: str) -> float:
     result = sketch_coordinate(value, label)
-    if result < 0.0 or result >= 360.0:
-        raise NativeSketchError(f"Sketch {label} must be at least 0 and below 360 degrees.")
-    return result
+    if result < 0.0 or result > 360.0:
+        raise NativeSketchError(f"Sketch {label} must be between 0 and 360 degrees.")
+    return 0.0 if result == 360.0 else result
 
 
 def sketch_sweep_angle_degrees(value: Any, label: str) -> float:

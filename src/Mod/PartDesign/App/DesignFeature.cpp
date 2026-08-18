@@ -1293,7 +1293,10 @@ App::DocumentObjectExecReturn* computeDesignCombineOutputs(
     try {
         combine.OutputShapes.setValues(outputs);
         combine.OutputPresence.setValues(outputPresence);
-        combine.PreviewShape.setValue(transformedShape(result, resultFrame));
+        // Preview in the global frame without rebuilding curved geometry.
+        Part::TopoShape preview = result;
+        preview.setPlacement(resultFrame * preview.getPlacement());
+        combine.PreviewShape.setValue(preview);
     }
     catch (const Standard_Failure& error) {
         return outputError(

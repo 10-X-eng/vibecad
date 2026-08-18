@@ -13,6 +13,7 @@ from VibeCADNativeState import NativeObjectIdentity
 
 MAX_SELECTION_OBJECTS = 32
 MAX_SELECTION_SUBELEMENTS = 64
+MAX_TARGET_CANDIDATES = 16
 MAX_NATIVE_ID_CHARACTERS = 128
 _OBJECT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SUBELEMENT_NAME = re.compile(r"^(Face|Edge|Vertex)[1-9][0-9]*$")
@@ -28,11 +29,13 @@ class NativeTargetError(RuntimeError):
         exact_target: Mapping[str, Any] | None = None,
         actual_type: str | None = None,
         accepted_types: tuple[str, ...] = (),
+        candidates: tuple[Mapping[str, Any], ...] = (),
     ):
         super().__init__(str(message).strip())
         self.exact_target = dict(exact_target) if exact_target is not None else None
         self.actual_type = str(actual_type or "").strip() or None
         self.accepted_types = tuple(str(value) for value in accepted_types if str(value))
+        self.candidates = tuple(dict(value) for value in candidates)
 
     def failure(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -45,6 +48,8 @@ class NativeTargetError(RuntimeError):
             result["actual_type"] = self.actual_type
         if self.accepted_types:
             result["accepted_types"] = list(self.accepted_types)
+        if self.candidates:
+            result["candidates"] = [dict(value) for value in self.candidates]
         return result
 
 
@@ -143,6 +148,19 @@ def _matches_expected_type(obj: Any, expected_types: tuple[str, ...]) -> bool:
     return False
 
 
+def _target_candidates(
+    document: Any,
+    expected_types: tuple[str, ...],
+) -> tuple[dict[str, str], ...]:
+    if not expected_types:
+        return ()
+    return tuple(
+        object_reference(candidate)
+        for candidate in tuple(getattr(document, "Objects", ()) or ())
+        if _matches_expected_type(candidate, expected_types)
+    )[:MAX_TARGET_CANDIDATES]
+
+
 def resolve_object(
     document: Any,
     target: NativeObjectRef | Mapping[str, Any],
@@ -163,6 +181,8 @@ def resolve_object(
         raise NativeTargetError(
             "The exact object target no longer exists.",
             exact_target=reference.summary(),
+            accepted_types=tuple(expected_types),
+            candidates=_target_candidates(document, tuple(expected_types)),
         )
     if not _matches_expected_type(obj, tuple(expected_types)):
         actual_type = str(getattr(obj, "TypeId", "") or "") or "unknown"
@@ -173,6 +193,7 @@ def resolve_object(
             exact_target=reference.summary(),
             actual_type=actual_type,
             accepted_types=accepted,
+            candidates=_target_candidates(document, accepted),
         )
     return obj
 

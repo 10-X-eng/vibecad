@@ -10,7 +10,7 @@ from VibeCADNativeSketchState import (
     serialize_sketch_constraint,
     serialize_sketch_geometry,
 )
-from vibecad_tests.native_sketch_geometry_gui_support import oblong_arguments
+from vibecad_tests.native_sketch_geometry_gui_support import rounded_rectangle_arguments
 
 
 def exercise_oblong_case(
@@ -24,7 +24,7 @@ def exercise_oblong_case(
     controller: Any,
 ) -> dict:
     undo_before = int(document.UndoCount)
-    invalid = oblong_arguments(
+    invalid = rounded_rectangle_arguments(
         sketch,
         geometry_count=40,
         first_corner=(-40.0, -30.0),
@@ -37,7 +37,7 @@ def exercise_oblong_case(
     assert (int(sketch.GeometryCount), int(sketch.ConstraintCount)) == (40, 36)
 
     response = native_call(
-        oblong_arguments(
+        rounded_rectangle_arguments(
             sketch,
             geometry_count=40,
             first_corner=(-40.0, -30.0),
@@ -46,7 +46,8 @@ def exercise_oblong_case(
         )
     )
     assert (response["geometry_count"], response["constraint_count"]) == (50, 55)
-    assert response["radius_mm"] == 2.0
+    assert response["corner_radius_mm"] == 2.0
+    assert response["segment_count"] == 8
     assert response["closed"] is True
     assert response["corners_mm"] == [
         [-40.0, -30.0, 0.0],
@@ -54,28 +55,18 @@ def exercise_oblong_case(
         [-20.0, -18.0, 0.0],
         [-40.0, -18.0, 0.0],
     ]
-    geometries = response["geometries"]
-    assert [item["index"] for item in geometries] == list(range(40, 48))
-    assert [item["type_id"] for item in geometries] == [
-        *(["Part::GeomLineSegment"] * 4),
-        *(["Part::GeomArcOfCircle"] * 4),
+    geometry_refs = response["geometry_refs"]
+    assert [item["geometry_index"] for item in geometry_refs] == list(range(40, 48))
+    assert [item["kind"] for item in geometry_refs] == [
+        *(["line"] * 4),
+        *(["circular_arc"] * 4),
     ]
-    assert [item["center_mm"] for item in geometries[4:]] == [
-        [-38.0, -28.0, 0.0],
-        [-22.0, -28.0, 0.0],
-        [-22.0, -20.0, 0.0],
-        [-38.0, -20.0, 0.0],
-    ]
-    construction_points = response["construction_points"]
-    assert [item["index"] for item in construction_points] == [48, 49]
-    assert [item["position_mm"] for item in construction_points] == [
-        [-40.0, -30.0, 0.0],
-        [-20.0, -18.0, 0.0],
-    ]
-    assert all(item["construction"] is True for item in construction_points)
-    constraints = response["constraints"]
-    assert [item["index"] for item in constraints] == list(range(36, 55))
-    assert [item["type"] for item in constraints] == [
+    construction_refs = response["construction_geometry_refs"]
+    assert [item["geometry_index"] for item in construction_refs] == [48, 49]
+    assert all(item["construction"] is True for item in construction_refs)
+    constraint_refs = response["constraint_refs"]
+    assert [item["constraint_index"] for item in constraint_refs] == list(range(36, 55))
+    assert [item["type"] for item in constraint_refs] == [
         *(["Tangent"] * 8),
         "Horizontal",
         "Vertical",
@@ -83,14 +74,6 @@ def exercise_oblong_case(
         "Vertical",
         *(["Equal"] * 3),
         *(["PointOnObject"] * 4),
-    ]
-    assert constraints[0]["references"] == [
-        {"slot": 1, "geometry_index": 40, "position": 1},
-        {"slot": 2, "geometry_index": 44, "position": 2},
-    ]
-    assert constraints[-1]["references"] == [
-        {"slot": 1, "geometry_index": 49, "position": 1},
-        {"slot": 2, "geometry_index": 42},
     ]
     assert int(document.UndoCount) == undo_before + 1
     assert document.UndoNames[0] == "Create Native Sketch Oblong"
@@ -103,9 +86,15 @@ def exercise_oblong_case(
     assert (int(sketch.GeometryCount), int(sketch.ConstraintCount)) == (50, 55)
     assert edit_boundary(document, sketch, controller) == boundary
     return {
-        "geometries": geometries,
-        "construction_points": construction_points,
-        "constraints": constraints,
+        "geometries": [
+            serialize_sketch_geometry(sketch, index) for index in range(40, 48)
+        ],
+        "construction_points": [
+            serialize_sketch_geometry(sketch, index) for index in (48, 49)
+        ],
+        "constraints": [
+            serialize_sketch_constraint(sketch, index) for index in range(36, 55)
+        ],
     }
 
 

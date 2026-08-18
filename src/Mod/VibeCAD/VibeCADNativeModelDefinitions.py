@@ -158,10 +158,18 @@ def configure_reusable_sketch_support(
     if kind == "base_plane":
         plane = str(support["plane"])
         offset = float(support["offset_mm"])
+        reverse_normal = bool(support.get("reverse_normal", False))
         sketch.AttachmentSupport = None
         sketch.MapMode = "Deactivated"
-        sketch.Placement = reusable_sketch_base_plane_placement(plane, offset)
-        return {"kind": kind, "plane": plane, "offset_mm": offset}
+        sketch.Placement = reusable_sketch_base_plane_placement(
+            plane,
+            offset,
+            reverse_normal=reverse_normal,
+        )
+        result = {"kind": kind, "plane": plane, "offset_mm": offset}
+        if reverse_normal:
+            result["reverse_normal"] = True
+        return result
 
     target = support.get("target")
     if not isinstance(target, Mapping):
@@ -253,5 +261,11 @@ def verify_reusable_sketch(document: Any, draft: NativeMutationDraft) -> dict[st
         "support": draft.value["support"],
         "entered_edit_mode": False,
         "geometry_count": 0,
-        "next_step": {"human_action": "open_created_sketch"},
+        "next_step": {
+            "tool": "sketch.open",
+            "arguments": {
+                "operation": "open",
+                "sketch": {"object_name": str(sketch.Name)},
+            },
+        },
     }

@@ -59,6 +59,7 @@ def _values(*, form: str = "corner", preserve_corner: bool = True, **updates):
             "expected_constraint_count": 1,
             "expected_external_geometry_count": 0,
             "target": target,
+            "distance_mm": 2.0,
             "preserve_corner": preserve_corner,
             **updates,
         }
@@ -430,7 +431,7 @@ def test_chamfer_preflight_is_side_effect_free(monkeypatch) -> None:
     )
 
     assert len(diagnose) == 1
-    assert diagnose[0] == (0, 2, True)
+    assert diagnose[0] == (0, 2, 2.0, True)
     assert prepared.plan.geometry_records
     assert vars(sketch.Geometry[0].EndPoint) == vars(before[0].EndPoint)
     assert (sketch.GeometryCount, sketch.ConstraintCount) == (2, 1)
@@ -509,6 +510,7 @@ def test_chamfer_executes_exact_corner_and_verifies_final_state(monkeypatch) -> 
     assert result["constraint_count"] == 6
     assert result["chamfer"]["kind"] == "line"
     assert result["support_arc_geometry_index"] == 2
+    assert result["distance_mm"] == 2.0
     assert result["preserved_corner"]["construction"] is True
 
 

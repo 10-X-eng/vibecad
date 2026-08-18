@@ -36,6 +36,7 @@ from VibeCADSession import (
     _format_document_delta,
     normalize_interaction_mode,
     rebuild_intent_memory,
+    run_native_surface_continuation,
     run_prompt,
     run_sketch_close_continuation,
 )
@@ -477,6 +478,8 @@ def _authoring_mode_selector_state():
 
     service = get_service()
     document = App.ActiveDocument
+    persistence = service.document_persistence_state()
+    document_saved = bool(persistence.get("enabled"))
     control = _control_mode_snapshot()
     task = service.task_panel_summary() if document is not None else {}
     native_state = service.native_document_state()
@@ -487,7 +490,7 @@ def _authoring_mode_selector_state():
     restore_error = str(native_state.get("restore_error") or "")
     native_available = False
     native_reason = restore_error
-    if document is not None and not restore_error:
+    if document is not None and document_saved and not restore_error:
         native_surface = resolve_modeling_surface(
             service.active_workbench_name(),
             "native",
@@ -534,6 +537,8 @@ def _authoring_mode_selector_state():
                     and not restore_error
                 )
             ),
+            document_saved=document_saved,
+            document_save_reason=str(persistence.get("message") or ""),
         )
     )
 
@@ -592,6 +597,41 @@ def _confirm_take_manual_control() -> bool:
     return message.clickedButton() is take_control
 
 
+def _save_before_native_mode(dock: Any | None = None) -> bool:
+    """Give a new document its portable FCStd identity before Native work."""
+
+    document = getattr(App, "ActiveDocument", None)
+    if document is None:
+        _set_status_line("Create or open a document first.", dock=dock)
+        return False
+    if str(getattr(document, "FileName", "") or "").strip():
+        return True
+    gui_document = getattr(Gui, "ActiveDocument", None)
+    save_as = getattr(gui_document, "saveAs", None)
+    if not callable(save_as):
+        _set_status_line("Save As is unavailable for the active document.", dock=dock)
+        return False
+    try:
+        saved = bool(save_as())
+    except Exception as exc:
+        _set_status_line(f"Could not save the document: {exc}", dock=dock)
+        return False
+    same_document = getattr(App, "ActiveDocument", None) is document
+    file_path = str(getattr(document, "FileName", "") or "").strip()
+    if not saved or not same_document or not file_path:
+        _set_status_line("Save As was cancelled; VibeScript remains active.", dock=dock)
+        return False
+    return True
+
+
+def _ensure_first_conversation(service: Any) -> None:
+    """Create the initial saved-document conversation only when none exists."""
+
+    catalog = service.conversation_catalog()
+    if not str(catalog.get("active_conversation_id") or "").strip():
+        service.create_conversation()
+
+
 def _select_authoring_mode_from_header(index: int) -> None:
     from VibeCADAuthoringModePolicy import (
         requires_take_manual_control_confirmation,
@@ -614,15 +654,32 @@ def _select_authoring_mode_from_header(index: int) -> None:
         ) and not _confirm_take_manual_control():
             _refresh_authoring_mode_selector(dock)
             return
-        result = get_service().select_modeling_engine(validated)
+        service = get_service()
+        if validated == "native":
+            if not _save_before_native_mode(dock):
+                _refresh_authoring_mode_selector(dock)
+                return
+            validate_human_mode_request(
+                _authoring_mode_selector_state(),
+                validated,
+            )
+            _ensure_first_conversation(service)
+        result = service.select_modeling_engine(validated)
     except Exception as exc:
         _set_status_line(str(exc), dock=dock)
         _refresh_authoring_mode_selector(dock)
         return
     _set_status_line(
-        f"Authoring authority changed to {result['mode']} for the next turn.",
+        (
+            "Native is ready for the next request."
+            if result["mode"] == "native"
+            else "VibeScript is ready for the next request."
+        ),
         dock=dock,
     )
+    _render_saved_conversation(dock)
+    _refresh_conversation_selector(dock)
+    _render_assistant_run_state(dock)
     _refresh_authoring_mode_selector(dock)
 
 
@@ -2798,6 +2855,9 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
             busy=busy,
         )
     if prompt_box is not None:
+        prompt_box.setEnabled(
+            internal_available and (busy or document_ready)
+        )
         prompt_box.setReadOnly(
             not internal_available
             or cancel_requested
@@ -2933,6 +2993,58 @@ def start_aero_designer_turn(prompt: str) -> bool:
     return True
 
 
+def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
+    if response is None or getattr(response, "error", None):
+        return None
+    document = getattr(App, "ActiveDocument", None)
+    if document is None:
+        return None
+    for trace in reversed(list(getattr(response, "tool_trace", ()) or ())):
+        if not isinstance(trace, dict) or trace.get("tool_name") not in {
+            "workspace.switch",
+            "sketch.open",
+            "sketch.control",
+            "sketch.finish",
+        }:
+            continue
+        result = trace.get("result")
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            continue
+        if result.get("next_turn_required") is not True:
+            continue
+        if trace.get("tool_name") in {
+            "sketch.open",
+            "sketch.control",
+            "sketch.finish",
+        }:
+            next_surface = str(result.get("next_surface") or "").strip()
+            from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
+
+            workspace = str(NATIVE_WORKSPACE_BY_SURFACE.get(next_surface) or "")
+        else:
+            workspace = str(result.get("workspace") or "").strip()
+            from VibeCADNativeWorkspaceSchema import NATIVE_SURFACE_BY_WORKSPACE
+
+            next_surface = str(NATIVE_SURFACE_BY_WORKSPACE.get(workspace) or "")
+        if not workspace or not next_surface:
+            return None
+        try:
+            from VibeCADRibbonSurface import read_active_ribbon_surface
+
+            if read_active_ribbon_surface().surface_id != next_surface:
+                return None
+        except Exception:
+            return None
+        return {
+            "type": "cad_workspace_changed",
+            "document_uid": str(getattr(document, "Uid", "") or "").strip(),
+            "document_name": str(getattr(document, "Name", "") or "").strip(),
+            "surface_id": next_surface,
+            "workspace": workspace,
+        }
+    return None
+
+
 def _execute_assistant_run(
     dock: Any,
     service: Any,
@@ -2970,9 +3082,14 @@ def _execute_assistant_run(
     run_id = _assistant_run_controller.begin()
     _render_assistant_run_state(
         dock,
-        text="Sketch closed. Continuing the CAD work..."
-        if continuation_event
-        else None,
+        text=(
+            "Sketch closed. Continuing the CAD work..."
+            if continuation_event
+            and continuation_event.get("type") == "human_closed_sketch"
+            else "CAD work changed. Continuing the design..."
+            if continuation_event
+            else None
+        ),
     )
     _clear_thinking(dock)
     displayed_provider_texts: list[str] = []
@@ -3039,6 +3156,7 @@ def _execute_assistant_run(
         global _assistant_run_thread
         current_dock = _find_dock() or dock
         run_succeeded = False
+        surface_continuation = None
         terminal_status = ""
         run_cancelled = _cancelled()
         if run_cancelled:
@@ -3078,10 +3196,14 @@ def _execute_assistant_run(
                     f" | {memory_update.get('error', 'unknown error')}"
                 )
             run_succeeded = response.error is None
+            if run_succeeded:
+                surface_continuation = _native_surface_continuation_event(response)
 
         _assistant_run_controller.finish(run_id)
         _cancel_question_round()
-        if run_succeeded:
+        if surface_continuation is not None:
+            _sketch_close_continuation_controller.clear()
+        elif run_succeeded:
             try:
                 _arm_sketch_close_continuation()
             except Exception as exc:
@@ -3104,6 +3226,8 @@ def _execute_assistant_run(
         _refresh_view_status(current_dock)
         _render_questions(current_dock)
         _assistant_run_thread = None
+        if surface_continuation is not None:
+            _schedule_native_surface_continuation(surface_continuation)
 
     def _run_in_background() -> None:
         common_arguments = {
@@ -3119,10 +3243,16 @@ def _execute_assistant_run(
         }
         try:
             if continuation_event is not None:
-                response = run_sketch_close_continuation(
-                    continuation_event,
-                    **common_arguments,
-                )
+                if continuation_event.get("type") == "human_closed_sketch":
+                    response = run_sketch_close_continuation(
+                        continuation_event,
+                        **common_arguments,
+                    )
+                else:
+                    response = run_native_surface_continuation(
+                        continuation_event,
+                        **common_arguments,
+                    )
             else:
                 response = run_prompt(
                     clean_prompt,
@@ -3199,6 +3329,64 @@ def _start_sketch_close_continuation(event: dict[str, Any]) -> None:
     if dock is None or not _assistant_panel_is_built(dock):
         _warn(
             "VibeCAD could not continue after sketch close because its panel is unavailable."
+        )
+        return
+    service = get_service()
+    persistence = service.document_persistence_state()
+    if not persistence.get("enabled"):
+        _render_assistant_run_state(
+            dock,
+            text=str(
+                persistence.get("message")
+                or "Save this VibeCAD document to enable VibeCAD."
+            ),
+        )
+        return
+    _execute_assistant_run(
+        dock,
+        service,
+        continuation_event=event,
+    )
+
+
+def _start_native_surface_continuation(event: dict[str, Any]) -> None:
+    if not _internal_agent_allowed():
+        return
+    if _is_assistant_run_active() or _is_intent_memory_rebuild_active():
+        _warn(
+            "VibeCAD ignored a workspace continuation while another run was active."
+        )
+        return
+    document = getattr(App, "ActiveDocument", None)
+    if document is None:
+        return
+    if str(getattr(document, "Uid", "") or "") != str(
+        event.get("document_uid") or ""
+    ) or str(getattr(document, "Name", "") or "") != str(
+        event.get("document_name") or ""
+    ):
+        return
+    if active_edit_state(getattr(Gui, "ActiveDocument", None)).active:
+        _warn(
+            "VibeCAD did not continue after the workspace change because an edit "
+            "session is active."
+        )
+        return
+    try:
+        from VibeCADRibbonSurface import read_active_ribbon_surface
+
+        if read_active_ribbon_surface().surface_id != str(
+            event.get("surface_id") or ""
+        ):
+            return
+    except Exception as exc:
+        _warn(f"VibeCAD could not verify the continued CAD workspace: {exc}")
+        return
+    dock = _find_dock()
+    if dock is None or not _assistant_panel_is_built(dock):
+        _warn(
+            "VibeCAD could not continue after the workspace change because its panel "
+            "is unavailable."
         )
         return
     service = get_service()
@@ -4039,6 +4227,20 @@ def _schedule_sketch_close_continuation(event: dict[str, Any]) -> None:
     QtCore.QTimer.singleShot(
         0,
         lambda continuation=dict(event): _start_sketch_close_continuation(continuation),
+    )
+
+
+def _schedule_native_surface_continuation(event: dict[str, Any]) -> None:
+    try:
+        from PySide import QtCore
+    except Exception as exc:
+        _warn(f"VibeCAD cannot schedule a CAD workspace continuation: {exc}")
+        return
+    QtCore.QTimer.singleShot(
+        0,
+        lambda continuation=dict(event): _start_native_surface_continuation(
+            continuation
+        ),
     )
 
 

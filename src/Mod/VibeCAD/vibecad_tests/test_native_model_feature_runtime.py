@@ -14,6 +14,7 @@ from VibeCADNativeDesignProfiles import (
 )
 from VibeCADNativeDesignResults import DesignResultSpec
 from VibeCADNativeModelErrors import NativeModelError
+from VibeCADNativeModelFeatureBindings import _extrude_runtime_arguments
 from VibeCADNativeModelFeatureRuntime import NativeModelFeatureRuntime
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeDocumentStateStore
@@ -89,6 +90,41 @@ def _box_result(mode="new_body", targets=None, component=None):
             "length_mm": 12.0,
             "width_mm": 8.0,
             "height_mm": 5.0,
+        },
+    }
+
+
+def test_exact_extrude_defaults_to_all_regions_sketch_normal_and_new_body() -> None:
+    assert _extrude_runtime_arguments(
+        {
+            "operation": "extrude",
+            "label": "Plate",
+            "profile": {"object_name": "Sketch"},
+            "length_mm": 10.0,
+        }
+    ) == {
+        "operation": "profile",
+        "label": "Plate",
+        "profile": {"object_name": "Sketch", "regions": []},
+        "result": {
+            "mode": "new_body",
+            "targets": [],
+            "destination_component": None,
+        },
+        "definition": {
+            "kind": "extrude",
+            "direction": {"kind": "sketch_normal"},
+            "extent": {
+                "kind": "one_side",
+                "sides": [
+                    {
+                        "kind": "length",
+                        "length_mm": 10.0,
+                        "taper_degrees": 0.0,
+                    }
+                ],
+                "reversed": False,
+            },
         },
     }
 

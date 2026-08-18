@@ -10,6 +10,7 @@ from typing import Any
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeProviderSurface,
+    provider_visible_native_schema,
     resolve_native_provider_surface,
 )
 from VibeCADNativeRegistry import build_native_capability_registry
@@ -69,7 +70,7 @@ def schemas_for_native_provider_surface(
                 schemas.append(schema)
     else:
         raise ValueError(f"Unknown Native interaction mode {mode!r}.")
-    return json.loads(json.dumps(schemas))
+    return [provider_visible_native_schema(schema) for schema in schemas]
 
 
 def native_active_state(service: Any) -> dict[str, Any]:

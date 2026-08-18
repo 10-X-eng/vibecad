@@ -2584,27 +2584,52 @@ PyObject* SketchObjectPy::diagnoseFillet(PyObject* args)
     PyObject* point1;
     PyObject* point2;
     PyObject* preserveCorner;
+    double requestedRadius = 0.0;
     auto* sketch = getSketchObjectPtr();
 
-    if (PyArg_ParseTuple(args,
-                         "iiO!O!O!",
-                         &geoId1,
-                         &geoId2,
-                         &(Base::VectorPy::Type),
-                         &point1,
-                         &(Base::VectorPy::Type),
-                         &point2,
-                         &PyBool_Type,
-                         &preserveCorner)) {
+    bool explicitRadius = PyArg_ParseTuple(args,
+                                           "iiO!O!dO!",
+                                           &geoId1,
+                                           &geoId2,
+                                           &(Base::VectorPy::Type),
+                                           &point1,
+                                           &(Base::VectorPy::Type),
+                                           &point2,
+                                           &requestedRadius,
+                                           &PyBool_Type,
+                                           &preserveCorner);
+    if (!explicitRadius) {
+        PyErr_Clear();
+    }
+    if (explicitRadius
+        || PyArg_ParseTuple(args,
+                            "iiO!O!O!",
+                            &geoId1,
+                            &geoId2,
+                            &(Base::VectorPy::Type),
+                            &point1,
+                            &(Base::VectorPy::Type),
+                            &point2,
+                            &PyBool_Type,
+                            &preserveCorner)) {
         const Base::Vector3d refPnt1 = static_cast<Base::VectorPy*>(point1)->value();
         const Base::Vector3d refPnt2 = static_cast<Base::VectorPy*>(point2)->value();
-        auto diagnostic = sketch->diagnoseFillet(
-            geoId1,
-            geoId2,
-            refPnt1,
-            refPnt2,
-            Base::asBoolean(preserveCorner)
-        );
+        auto diagnostic = explicitRadius
+            ? sketch->diagnoseFillet(
+                  geoId1,
+                  geoId2,
+                  refPnt1,
+                  refPnt2,
+                  requestedRadius,
+                  Base::asBoolean(preserveCorner)
+              )
+            : sketch->diagnoseFillet(
+                  geoId1,
+                  geoId2,
+                  refPnt1,
+                  refPnt2,
+                  Base::asBoolean(preserveCorner)
+              );
         if (!diagnostic) {
             PyErr_SetString(PyExc_ValueError, "The exact curve-pair Fillet is unavailable.");
             return nullptr;
@@ -2617,12 +2642,30 @@ PyObject* SketchObjectPy::diagnoseFillet(PyObject* args)
 
     PyErr_Clear();
     int posId;
-    if (PyArg_ParseTuple(args, "iiO!", &geoId1, &posId, &PyBool_Type, &preserveCorner)) {
-        auto diagnostic = sketch->diagnoseFillet(
-            geoId1,
-            static_cast<PointPos>(posId),
-            Base::asBoolean(preserveCorner)
-        );
+    explicitRadius = PyArg_ParseTuple(args,
+                                      "iidO!",
+                                      &geoId1,
+                                      &posId,
+                                      &requestedRadius,
+                                      &PyBool_Type,
+                                      &preserveCorner);
+    if (!explicitRadius) {
+        PyErr_Clear();
+    }
+    if (explicitRadius
+        || PyArg_ParseTuple(args, "iiO!", &geoId1, &posId, &PyBool_Type, &preserveCorner)) {
+        auto diagnostic = explicitRadius
+            ? sketch->diagnoseFillet(
+                  geoId1,
+                  static_cast<PointPos>(posId),
+                  requestedRadius,
+                  Base::asBoolean(preserveCorner)
+              )
+            : sketch->diagnoseFillet(
+                  geoId1,
+                  static_cast<PointPos>(posId),
+                  Base::asBoolean(preserveCorner)
+              );
         if (!diagnostic) {
             PyErr_SetString(PyExc_ValueError, "The exact corner Fillet is unavailable.");
             return nullptr;
@@ -2645,7 +2688,8 @@ PyObject* SketchObjectPy::diagnoseFillet(PyObject* args)
 
     PyErr_SetString(
         PyExc_TypeError,
-        "diagnoseFillet() accepts (int, int, bool) or (int, int, Vector, Vector, bool)."
+        "diagnoseFillet() accepts (int, int, bool), (int, int, float, bool), "
+        "(int, int, Vector, Vector, bool), or (int, int, Vector, Vector, float, bool)."
     );
     return nullptr;
 }
@@ -2657,27 +2701,52 @@ PyObject* SketchObjectPy::diagnoseChamfer(PyObject* args)
     PyObject* point1;
     PyObject* point2;
     PyObject* preserveCorner;
+    double requestedDistance = 0.0;
     auto* sketch = getSketchObjectPtr();
 
-    if (PyArg_ParseTuple(args,
-                         "iiO!O!O!",
-                         &geoId1,
-                         &geoId2,
-                         &(Base::VectorPy::Type),
-                         &point1,
-                         &(Base::VectorPy::Type),
-                         &point2,
-                         &PyBool_Type,
-                         &preserveCorner)) {
+    bool explicitDistance = PyArg_ParseTuple(args,
+                                             "iiO!O!dO!",
+                                             &geoId1,
+                                             &geoId2,
+                                             &(Base::VectorPy::Type),
+                                             &point1,
+                                             &(Base::VectorPy::Type),
+                                             &point2,
+                                             &requestedDistance,
+                                             &PyBool_Type,
+                                             &preserveCorner);
+    if (!explicitDistance) {
+        PyErr_Clear();
+    }
+    if (explicitDistance
+        || PyArg_ParseTuple(args,
+                            "iiO!O!O!",
+                            &geoId1,
+                            &geoId2,
+                            &(Base::VectorPy::Type),
+                            &point1,
+                            &(Base::VectorPy::Type),
+                            &point2,
+                            &PyBool_Type,
+                            &preserveCorner)) {
         const Base::Vector3d refPnt1 = static_cast<Base::VectorPy*>(point1)->value();
         const Base::Vector3d refPnt2 = static_cast<Base::VectorPy*>(point2)->value();
-        auto diagnostic = sketch->diagnoseChamfer(
-            geoId1,
-            geoId2,
-            refPnt1,
-            refPnt2,
-            Base::asBoolean(preserveCorner)
-        );
+        auto diagnostic = explicitDistance
+            ? sketch->diagnoseChamfer(
+                  geoId1,
+                  geoId2,
+                  refPnt1,
+                  refPnt2,
+                  requestedDistance,
+                  Base::asBoolean(preserveCorner)
+              )
+            : sketch->diagnoseChamfer(
+                  geoId1,
+                  geoId2,
+                  refPnt1,
+                  refPnt2,
+                  Base::asBoolean(preserveCorner)
+              );
         if (!diagnostic) {
             PyErr_SetString(PyExc_ValueError, "The exact curve-pair Chamfer is unavailable.");
             return nullptr;
@@ -2695,12 +2764,30 @@ PyObject* SketchObjectPy::diagnoseChamfer(PyObject* args)
 
     PyErr_Clear();
     int posId;
-    if (PyArg_ParseTuple(args, "iiO!", &geoId1, &posId, &PyBool_Type, &preserveCorner)) {
-        auto diagnostic = sketch->diagnoseChamfer(
-            geoId1,
-            static_cast<PointPos>(posId),
-            Base::asBoolean(preserveCorner)
-        );
+    explicitDistance = PyArg_ParseTuple(args,
+                                        "iidO!",
+                                        &geoId1,
+                                        &posId,
+                                        &requestedDistance,
+                                        &PyBool_Type,
+                                        &preserveCorner);
+    if (!explicitDistance) {
+        PyErr_Clear();
+    }
+    if (explicitDistance
+        || PyArg_ParseTuple(args, "iiO!", &geoId1, &posId, &PyBool_Type, &preserveCorner)) {
+        auto diagnostic = explicitDistance
+            ? sketch->diagnoseChamfer(
+                  geoId1,
+                  static_cast<PointPos>(posId),
+                  requestedDistance,
+                  Base::asBoolean(preserveCorner)
+              )
+            : sketch->diagnoseChamfer(
+                  geoId1,
+                  static_cast<PointPos>(posId),
+                  Base::asBoolean(preserveCorner)
+              );
         if (!diagnostic) {
             PyErr_SetString(PyExc_ValueError, "The exact corner Chamfer is unavailable.");
             return nullptr;
@@ -2728,7 +2815,8 @@ PyObject* SketchObjectPy::diagnoseChamfer(PyObject* args)
 
     PyErr_SetString(
         PyExc_TypeError,
-        "diagnoseChamfer() accepts (int, int, bool) or (int, int, Vector, Vector, bool)."
+        "diagnoseChamfer() accepts (int, int, bool), (int, int, float, bool), "
+        "(int, int, Vector, Vector, bool), or (int, int, Vector, Vector, float, bool)."
     );
     return nullptr;
 }

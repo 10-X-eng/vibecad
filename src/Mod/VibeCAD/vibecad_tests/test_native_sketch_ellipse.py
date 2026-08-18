@@ -90,7 +90,6 @@ def test_ellipse_creates_closed_curve_and_all_human_internal_geometry(host) -> N
         {"minor_radius_mm": 0.0},
         {"minor_radius_mm": 8.0},
         {"minor_radius_mm": 9.0},
-        {"rotation_degrees": 360.0},
     ),
 )
 def test_ellipse_rejects_invalid_definition(host, updates) -> None:

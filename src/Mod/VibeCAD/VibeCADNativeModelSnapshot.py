@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from VibeCADFastenerModel import model_fastener_graph_from_body
+from VibeCADNativeSketchReadiness import sketch_readiness
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 from VibeCADReferenceContracts import (
     is_native_coordinate_system,
@@ -127,6 +128,21 @@ def _sketch_summary(sketch: Any) -> dict[str, Any]:
     map_mode = str(getattr(sketch, "MapMode", "") or "")
     if map_mode:
         result["map_mode"] = map_mode
+    readiness = sketch_readiness(
+        sketch.Document,
+        {
+            "document_uid": str(sketch.Document.Uid),
+            "object_name": str(sketch.Name),
+        },
+    )
+    for key in (
+        "fully_constrained",
+        "profile",
+        "valid",
+        "surface_feature_ready",
+        "solid_feature_ready",
+    ):
+        result[key] = readiness[key]
     return result
 
 

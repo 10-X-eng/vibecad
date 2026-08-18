@@ -318,6 +318,52 @@ def test_model_snapshot_exposes_meshes_needed_by_model_surface_tools() -> None:
     ]
 
 
+def test_model_snapshot_exposes_exact_sketch_feature_readiness(monkeypatch) -> None:
+    document = _document()
+    sketch = document.getObject("Sketch")
+    observed = []
+    monkeypatch.setattr(
+        model_snapshot_module,
+        "sketch_readiness",
+        lambda exact_document, exact_target: observed.append(
+            (exact_document, dict(exact_target))
+        )
+        or {
+            "fully_constrained": False,
+            "profile": {
+                "wire_count": 2,
+                "closed_wire_count": 2,
+                "open_wire_count": 0,
+            },
+            "valid": True,
+            "surface_feature_ready": True,
+            "solid_feature_ready": True,
+        },
+        raising=False,
+    )
+
+    sketch.ViewObject = SimpleNamespace(Visibility=True)
+    summary = model_snapshot_module._sketch_summary(sketch)
+    assert summary["fully_constrained"] is False
+    assert summary["profile"] == {
+        "wire_count": 2,
+        "closed_wire_count": 2,
+        "open_wire_count": 0,
+    }
+    assert summary["valid"] is True
+    assert summary["surface_feature_ready"] is True
+    assert summary["solid_feature_ready"] is True
+    assert observed == [
+        (
+            document,
+            {
+                "document_uid": document.Uid,
+                "object_name": sketch.Name,
+            },
+        )
+    ]
+
+
 def test_model_snapshot_exposes_exact_editable_standard_fastener_definition(
     monkeypatch,
 ) -> None:

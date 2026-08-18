@@ -134,6 +134,47 @@ def test_inspect_runtime_maps_object_and_subelement_targets_without_labels(
     assert observed[1][1].object_name == "Box"
 
 
+def test_mass_properties_accepts_one_target_or_the_existing_targets_list(
+    monkeypatch,
+) -> None:
+    runtime, _state, document = _runtime()
+    observed = []
+    monkeypatch.setattr(
+        runtime_module,
+        "mass_properties",
+        lambda target_document, targets: observed.append((target_document, targets))
+        or {"volume_mm3": 1.0},
+    )
+
+    assert runtime.inspect(
+        {"operation": "mass_properties", "target": {"object_name": "Body"}}
+    ) == {"volume_mm3": 1.0}
+    assert runtime.inspect(
+        {
+            "operation": "mass_properties",
+            "targets": [
+                {"object_name": "Body"},
+                {"object_name": "ToolBody"},
+            ],
+        }
+    ) == {"volume_mm3": 1.0}
+    assert [target.object_name for target in observed[0][1]] == ["Body"]
+    assert [target.object_name for target in observed[1][1]] == [
+        "Body",
+        "ToolBody",
+    ]
+    assert all(item[0] is document for item in observed)
+
+    with pytest.raises(NativeArgumentError, match="do not match"):
+        runtime.inspect(
+            {
+                "operation": "mass_properties",
+                "target": {"object_name": "Body"},
+                "targets": [{"object_name": "Body"}],
+            }
+        )
+
+
 def test_save_runtime_uses_guarded_existing_path_only(monkeypatch) -> None:
     runtime, _state, document = _runtime()
     monkeypatch.setattr(

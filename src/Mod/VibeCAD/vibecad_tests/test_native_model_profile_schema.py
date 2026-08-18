@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 
-from VibeCADNativeModelFeatureSchema import model_feature_capability_definition
+from VibeCADNativeModelFeatureSchema import (
+    model_extrude_capability_definition,
+    model_feature_capability_definition,
+)
 
 
 PROFILE_KINDS = (
@@ -34,6 +37,34 @@ def _kind_values(schema):
     return [kind["const"]] if "const" in kind else kind["enum"]
 
 
+def test_exact_extrude_uses_the_natural_finite_length_contract() -> None:
+    definition = model_extrude_capability_definition()
+    schema = definition.provider_schema(("extrude",))
+    branch = schema["parameters"]["oneOf"][0]
+
+    assert definition.name == "model.extrude"
+    assert schema["description"] == "Extrude a closed Sketch into a new Body."
+    assert branch["required"] == [
+        "label",
+        "profile",
+        "length_mm",
+    ]
+    assert set(branch["properties"]) == {
+        "operation",
+        "label",
+        "profile",
+        "length_mm",
+        "destination_component",
+    }
+    assert branch["properties"]["operation"] == {
+        "type": "string",
+        "const": "extrude",
+    }
+    profile = branch["properties"]["profile"]
+    assert profile["required"] == ["object_name"]
+    assert set(profile["properties"]) == {"object_name"}
+
+
 def test_profile_contract_matches_the_five_current_design_actions() -> None:
     definition = model_feature_capability_definition()
     variant = next(item for item in definition.variants if item.operation == "profile")
@@ -47,7 +78,7 @@ def test_profile_contract_matches_the_five_current_design_actions() -> None:
     assert variant.surface_ids == frozenset({"model"})
 
 
-def test_extrude_exposes_current_direction_side_and_termination_controls() -> None:
+def test_generic_profile_retains_advanced_extrusion_controls() -> None:
     _branch, contract = _contract()
     direction = contract["properties"]["direction"]
     extent = contract["properties"]["extent"]["anyOf"][0]

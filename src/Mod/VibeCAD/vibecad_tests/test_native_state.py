@@ -103,8 +103,8 @@ def test_call_ticket_is_host_generated_and_stale_mutation_is_rejected() -> None:
     assert caught.value.failure() == {
         "error_code": NATIVE_REVISION_CONFLICT,
         "message": (
-            "The document changed after this Native operation was prepared. "
-            "Read the current ribbon state and retry in a new call."
+            "The document changed after this operation was prepared. "
+            "Read its current state and retry."
         ),
         "current_revision": 1,
         "repair": {"retry_from_current_state": True},

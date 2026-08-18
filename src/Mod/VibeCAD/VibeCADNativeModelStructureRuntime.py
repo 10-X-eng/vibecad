@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from VibeCADEditState import active_edit_object
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeModelDefinitions import (
@@ -32,8 +33,12 @@ from VibeCADNativeModelObjects import (
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeSketchReadiness import sketch_readiness
 from VibeCADNativeState import NativeCallTicket
-from VibeCADNativeTargets import NativeObjectRef
-from VibeCADNativeTargets import resolve_object
+from VibeCADNativeTargets import (
+    NativeObjectRef,
+    object_identity,
+    object_reference,
+    resolve_object,
+)
 
 
 def _label(value: Any) -> str:
@@ -216,14 +221,59 @@ class NativeModelStructureRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
-        _operation, values = strict_variant_arguments(
-            arguments,
-            {"new_sketch": frozenset({"label", "support"})},
+        normalized_arguments = dict(arguments)
+        if normalized_arguments.get("operation") == "create_on_base_plane":
+            normalized_arguments.setdefault("offset_mm", 0.0)
+        operation, values = strict_variant_arguments(
+            normalized_arguments,
+            {
+                "create_on_base_plane": frozenset({"label", "plane", "offset_mm"}),
+                "create_on_face": frozenset({"label", "target"}),
+                "create_on_datum_plane": frozenset({"label", "target"}),
+                "create_revolution": frozenset({"label", "axis"}),
+            },
         )
+        revolution_axes = {
+            "X": ("XY", "H_Axis", False),
+            "Y": ("XY", "V_Axis", False),
+            "Z": ("XZ", "V_Axis", True),
+        }
+        revolution_axis = None
+        if operation == "create_revolution":
+            global_axis = str(values["axis"])
+            try:
+                plane, revolution_axis, reverse_normal = revolution_axes[global_axis]
+            except KeyError as exc:
+                raise NativeModelError(
+                    "A revolution Sketch axis must be X, Y, or Z."
+                ) from exc
+            support: Any = {
+                "kind": "base_plane",
+                "plane": plane,
+                "offset_mm": 0.0,
+                "reverse_normal": reverse_normal,
+            }
+        elif operation == "create_on_base_plane":
+            support = {
+                "kind": "base_plane",
+                "plane": str(values["plane"]),
+                "offset_mm": float(values.get("offset_mm", 0.0)),
+            }
+        else:
+            support = {
+                "kind": (
+                    "planar_face"
+                    if operation == "create_on_face"
+                    else "datum_plane"
+                ),
+                "target": values["target"],
+            }
         label = _label(values["label"])
-        support = values["support"]
         if not isinstance(support, Mapping):
             raise NativeModelError("A reusable Sketch requires explicit support.")
+        support = dict(support)
+        if str(support.get("kind") or "") == "base_plane":
+            support.setdefault("offset_mm", 0.0)
         if str(support.get("kind") or "") in {"datum_plane", "planar_face"}:
             target = support.get("target")
             if not isinstance(target, Mapping):
@@ -231,17 +281,110 @@ class NativeModelStructureRuntime:
             self._require_object(
                 self._object_ref({"object_name": target.get("object_name")})
             )
-        return run_immediate_mutation(
+        result = run_immediate_mutation(
             self._context,
             ticket=ticket,
             transaction_name="Create Native Reusable Sketch",
             mutate=lambda document: create_reusable_sketch(
                 document,
                 label=label,
-                support=dict(support),
+                support=support,
             ),
             verify=verify_reusable_sketch,
         )
+        if revolution_axis is not None:
+            sketch = result["sketch"]
+            result["revolution_axis"] = {
+                "object_name": sketch["object_name"],
+                "subelements": [revolution_axis],
+            }
+            result["global_axis"] = str(values["axis"])
+        return result
+
+    def open_sketch(
+        self,
+        arguments: Mapping[str, Any],
+        *,
+        ticket: NativeCallTicket,
+    ) -> dict[str, Any]:
+        _operation, values = strict_variant_arguments(
+            arguments,
+            {"open": frozenset({"sketch"})},
+        )
+        return self._open_sketch(values["sketch"], ticket=ticket)
+
+    def _open_sketch(
+        self,
+        value: Any,
+        *,
+        ticket: NativeCallTicket,
+    ) -> dict[str, Any]:
+        if not isinstance(ticket, NativeCallTicket):
+            raise TypeError("ticket must be a NativeCallTicket")
+        reference = self._object_ref(value)
+        sketch = self._require_object(reference, "Sketcher::SketchObject")
+        if active_edit_object() is not None or bool(self._context.edit_or_task_active()):
+            raise NativeModelError("Finish the active task before opening a Sketch.")
+        dispatch = self._context.document_thread_dispatch
+        if dispatch is None:
+            raise NativeModelError("Opening a Sketch requires the document thread.")
+
+        authorization = self._context.state.authorize_mutation(ticket)
+        if authorization.duplicate:
+            return dict(authorization.prior_verified_result or {})
+        self._context.state.begin_mutation_observation(ticket)
+        try:
+            document = self._context.document
+
+            def activate() -> None:
+                import FreeCADGui as Gui
+                from PySide import QtCore, QtWidgets
+
+                gui_document = Gui.activeDocument()
+                if (
+                    gui_document is None
+                    or self._context.active_document() is not document
+                ):
+                    raise NativeModelError("The Sketch document is no longer active.")
+                if not bool(gui_document.setEdit(str(sketch.Name))):
+                    raise NativeModelError("Sketcher could not open the exact Sketch.")
+                for _index in range(8):
+                    Gui.updateGui()
+                    QtWidgets.QApplication.processEvents(
+                        QtCore.QEventLoop.AllEvents,
+                        25,
+                    )
+
+            dispatch(activate)
+            if self._context.active_document() is not document:
+                raise NativeModelError("The Sketch document changed while opening it.")
+            if active_edit_object() is not sketch:
+                raise NativeModelError("The requested Sketch did not enter edit mode.")
+            if str(self._context.active_surface_id() or "") != "sketch.edit":
+                raise NativeModelError("Sketch editing did not become available.")
+            result = {
+                "operation": "open",
+                "sketch": object_reference(sketch),
+                "edit_mode": "open",
+                "next_surface": "sketch.edit",
+                "next_turn_required": True,
+            }
+            revision_after = self._context.state.commit_mutation_observation(ticket)
+            changed = (
+                (object_identity(sketch),)
+                if revision_after > ticket.expected_revision
+                else ()
+            )
+            completion = self._context.state.prepare_mutation_completion(
+                ticket,
+                result,
+                changed=changed,
+            )
+            receipt = self._context.state.complete_prepared_mutation(completion)
+        except Exception:
+            self._context.state.cancel_mutation(ticket)
+            raise
+        return {**result, "receipt": receipt.summary()}
 
     def validate_sketch(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         _operation, values = strict_variant_arguments(

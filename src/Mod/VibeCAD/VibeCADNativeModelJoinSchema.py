@@ -54,7 +54,7 @@ def model_join_capability_definition() -> NativeCapabilityDefinition:
     pair = _ordered_pair_definition()
     return NativeCapabilityDefinition(
         name="model.join",
-        description="Create one retained Part Join feature from exact current shapes.",
+        description="Connect, embed, or cut out Part shapes.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

@@ -108,12 +108,12 @@ def _variant(
 def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
     state = NativeCapabilityDefinition(
         name="state.read",
-        description="Read concise live state owned by the current Native ribbon.",
+        description="Read document state.",
         primary_classification="read",
         variants=(
             _variant(
                 "active",
-                "Read the active ribbon domain, revision, and bounded working set.",
+                "Read the current CAD work, revision, and bounded working set.",
                 ("VibeCAD_NativeReadState",),
             ),
             _variant(
@@ -125,7 +125,7 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
     )
     view = NativeCapabilityDefinition(
         name="view.control",
-        description="Control or capture the active view without changing model structure.",
+        description="Control or capture the active view.",
         primary_classification="view",
         variants=(
             _variant(
@@ -204,14 +204,14 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
             ),
             _variant(
                 "capture_active_sketch",
-                "Capture a bounded image framed around the human-opened sketch.",
+                "Capture a bounded image framed around the active Sketch.",
                 ("VibeCAD_NativeCaptureView",),
             ),
         ),
     )
     inspect = NativeCapabilityDefinition(
         name="inspect.query",
-        description="Measure or inspect exact live geometry with explicit units.",
+        description="Measure or inspect live geometry.",
         primary_classification="read",
         variants=(
             _variant(
@@ -243,10 +243,11 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
             ),
             _variant(
                 "mass_properties",
-                "Read bounded volume, area, density, mass, and centers for exact objects.",
+                "Read volume, area, mass, and centers for one target or a targets list.",
                 ("Std_MassProperties",),
                 parameters=_parameters(
                     {
+                        "target": _object_ref(),
                         "targets": {
                             "type": "array",
                             "items": _object_ref(),
@@ -255,13 +256,12 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                             "uniqueItems": True,
                         }
                     },
-                    ("targets",),
                 ),
                 exact_target_type="PartFeature[]",
             ),
             _variant(
-                "visual_result",
-                "Read bounded statistics from one exact visual-inspection result.",
+                "inspection_result",
+                "Read statistics from one Inspection result.",
                 ("Inspection_VisualInspection",),
                 parameters=_parameters({"target": _object_ref()}, ("target",)),
                 exact_target_type="Inspection::Feature",
@@ -322,7 +322,7 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
     )
     save = NativeCapabilityDefinition(
         name="document.save",
-        description="Save the exact active document to its existing file path.",
+        description="Save the document.",
         primary_classification="export",
         variants=(
             _variant(
@@ -336,7 +336,7 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
     )
     undo = NativeCapabilityDefinition(
         name="document.undo",
-        description="Undo only the latest exact operation from this assistant run.",
+        description="Undo the latest unchanged assistant operation.",
         primary_classification="mutation",
         variants=(
             _variant(

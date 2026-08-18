@@ -60,6 +60,7 @@ class NativeProviderToolRunner:
         self._cancelled = cancellation_check
         self._steering = steering_check
         self._closed = False
+        self._turn_transition_requested = False
 
     def __call__(
         self,
@@ -128,6 +129,8 @@ class NativeProviderToolRunner:
                 steering = []
         if steering:
             result = {**result, "human_steering": steering}
+        if result.get("ok") is True and result.get("next_turn_required") is True:
+            self._turn_transition_requested = True
         elapsed = round(time.monotonic() - started, 4)
         trace = {
             "tool_name": name,
@@ -146,6 +149,11 @@ class NativeProviderToolRunner:
             },
         )
         return result
+
+    def turn_transition_requested(self) -> bool:
+        """Return whether an exact CAD transition ended this frozen turn."""
+
+        return self._turn_transition_requested
 
     def provider_update(self) -> dict[str, Any]:
         try:

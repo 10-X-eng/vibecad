@@ -227,7 +227,7 @@ def model_hole_capability_definition() -> NativeCapabilityDefinition:
     )
     return NativeCapabilityDefinition(
         name="model.hole",
-        description="Cut typed holes from one exact profile into explicit Bodies.",
+        description="Cut typed holes from a profile into Bodies.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

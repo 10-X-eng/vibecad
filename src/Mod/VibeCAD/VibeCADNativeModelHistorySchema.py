@@ -73,10 +73,7 @@ def _variant(
 def model_history_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="model.history",
-        description=(
-            "Control exact Model History lifecycle state. Body.Tip is host-owned and "
-            "remains the stable BodyResult; it is never rewired by this tool."
-        ),
+        description="Delete or suppress Model features.",
         primary_classification="mutation",
         variants=(
             _variant(
@@ -112,10 +109,7 @@ def model_history_capability_definition() -> NativeCapabilityDefinition:
 def model_recompute_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="model.recompute",
-        description=(
-            "Recompute exact Model targets and validate the stable Design graph. "
-            "Body.Tip remains the host-owned BodyResult."
-        ),
+        description="Recompute and validate Design History.",
         primary_classification="mutation",
         variants=(
             _variant(

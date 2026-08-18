@@ -303,6 +303,28 @@ def test_exact_sketch_state_reads_geometry_constraints_and_context() -> None:
     assert result["solver"]["redundant_constraints"] == [2]
 
 
+def test_profile_plane_reports_effective_global_sketch_axes() -> None:
+    document = _Document()
+    sketch, _support = _sketch(document)
+    half_sqrt_two = 2.0 ** -0.5
+    sketch.getGlobalPlacement = lambda: SimpleNamespace(
+        Base=_vector(0, 0, 0),
+        Rotation=SimpleNamespace(
+            Q=(half_sqrt_two, 0.0, 0.0, half_sqrt_two)
+        ),
+    )
+
+    result = serialize_sketch_state(sketch)
+
+    assert result["profile"]["support_plane"] == {
+        "space": "global",
+        "origin_mm": [0.0, 0.0, 0.0],
+        "x_direction": [1.0, 0.0, 0.0],
+        "y_direction": [0.0, 0.0, 1.0],
+        "normal": [0.0, -1.0, 0.0],
+    }
+
+
 def test_large_sketch_state_truncates_explicitly_below_snapshot_limit(
     monkeypatch,
 ) -> None:

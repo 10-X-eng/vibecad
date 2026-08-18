@@ -222,7 +222,7 @@ def model_transform_capability_definition() -> NativeCapabilityDefinition:
     )
     return NativeCapabilityDefinition(
         name="model.transform",
-        description="Apply exact native Body transforms and Design patterns.",
+        description="Scale or pattern Bodies and Design features.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

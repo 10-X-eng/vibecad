@@ -114,7 +114,6 @@ def test_hyperbolic_arc_allows_major_coefficient_below_minor(
     (
         ({"major_radius_mm": 0.0}, "greater than"),
         ({"minor_radius_mm": 1.0e-10}, "greater than"),
-        ({"rotation_degrees": 360.0}, "below 360"),
         ({"start_parameter": -20.1}, "within"),
         ({"end_parameter": 20.1}, "within"),
         ({"start_parameter": 1.0, "end_parameter": 1.0}, "must be greater"),

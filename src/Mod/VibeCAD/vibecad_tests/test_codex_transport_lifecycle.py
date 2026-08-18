@@ -150,6 +150,34 @@ def test_live_server_request_failure_sends_one_error_reply() -> None:
     client.close(reason="test complete")
 
 
+def test_server_response_handler_runs_after_tool_reply_is_written() -> None:
+    observed: list[tuple[str, list[str]]] = []
+    completed = threading.Event()
+    client = codex.CodexAppServerClient(
+        server_request_handler=lambda _method, _params: {"ok": True}
+    )
+    process = _Process()
+    client._process = process
+
+    def response_sent(method: str) -> None:
+        observed.append((method, list(process.stdin.messages)))
+        completed.set()
+
+    client.set_server_response_handler(response_sent)
+
+    client._dispatch_message(
+        {"id": 11, "method": "item/tool/call", "params": {}}
+    )
+    assert completed.wait(1.0)
+
+    assert observed[0][0] == "item/tool/call"
+    assert json.loads(observed[0][1][0]) == {
+        "id": 11,
+        "result": {"ok": True},
+    }
+    client.close(reason="test complete")
+
+
 def test_managed_shutdown_does_not_wait_for_active_turn_lease() -> None:
     entered = threading.Event()
     closed = threading.Event()

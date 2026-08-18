@@ -42,7 +42,7 @@ def _combine_definition():
                 "type": "string",
                 "enum": ["join", "cut", "intersect"],
             },
-            "result_body": body,
+            "source_body": body,
             "tool_bodies": {
                 "type": "array",
                 "items": body,
@@ -52,7 +52,7 @@ def _combine_definition():
             },
             "keep_tools": {"type": "boolean"},
         },
-        ("mode", "result_body", "tool_bodies", "keep_tools"),
+        ("mode", "source_body", "tool_bodies", "keep_tools"),
     )
 
 
@@ -98,7 +98,7 @@ def _split_definition():
 def model_boolean_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="model.boolean",
-        description="Create one exact Boolean result.",
+        description="Boolean bodies[].body.object_name; combine keeps source_body.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

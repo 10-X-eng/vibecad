@@ -32,6 +32,7 @@ def test_part_section_contract_matches_the_live_immediate_command() -> None:
     definition, _schema, branch, section = _section_schema_parts()
 
     assert definition.name == "model.boolean"
+    assert "bodies[].body.object_name" in definition.description
     assert branch["properties"]["operation"]["const"] == "section"
     variant = definition.variants[0]
     assert variant.action_ids == frozenset({"Part_Section"})
@@ -39,7 +40,7 @@ def test_part_section_contract_matches_the_live_immediate_command() -> None:
     assert variant.exact_target_type == "TwoOrderedExactCurrentShapes"
     assert variant.transaction_behavior == "document"
     assert variant.background_required is False
-    assert branch["required"] == ["operation", "label", "definition"]
+    assert branch["required"] == ["label", "definition"]
     assert branch["additionalProperties"] is False
     assert section["required"] == ["operands"]
     assert section["additionalProperties"] is False
@@ -77,17 +78,17 @@ def test_design_combine_contract_covers_every_human_result_mode() -> None:
     assert variant.transaction_behavior == "document"
     assert variant.background_required is False
     assert branch["properties"]["operation"]["const"] == "combine"
-    assert branch["required"] == ["operation", "label", "definition"]
+    assert branch["required"] == ["label", "definition"]
     assert combine["additionalProperties"] is False
     assert combine["required"] == [
         "mode",
-        "result_body",
+        "source_body",
         "tool_bodies",
         "keep_tools",
     ]
     assert set(combine["properties"]) == {
         "mode",
-        "result_body",
+        "source_body",
         "tool_bodies",
         "keep_tools",
     }
@@ -120,7 +121,7 @@ def test_design_split_contract_matches_the_live_identity_safe_task() -> None:
     assert variant.transaction_behavior == "document"
     assert variant.background_required is False
     assert branch["properties"]["operation"]["const"] == "split"
-    assert branch["required"] == ["operation", "label", "definition"]
+    assert branch["required"] == ["label", "definition"]
     assert branch["additionalProperties"] is False
     assert split["required"] == [
         "source_body",

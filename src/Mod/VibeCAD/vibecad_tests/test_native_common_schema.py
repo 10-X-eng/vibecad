@@ -52,7 +52,11 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
         for definition in definitions
         if definition.name != "document.save"
         for variant in definition.variants
-        if variant.operation != "drawing_projected_geometry"
+        if variant.operation
+        not in {"drawing_projected_geometry", "set_object_visibility"}
+    )
+    assert variants[("view.control", "set_object_visibility")].surface_ids == frozenset(
+        {"model"}
     )
     drawing_projection = variants[("inspect.query", "drawing_projected_geometry")]
     assert drawing_projection.surface_ids == frozenset({"drawing"})
@@ -70,6 +74,7 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
         "fit_all",
         "isometric",
         "set_grid",
+        "set_object_visibility",
         "capture_all",
         "capture_selection",
         "capture_objects",
@@ -83,7 +88,7 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
         "angle",
         "radius",
         "mass_properties",
-        "visual_result",
+        "inspection_result",
         "element",
         "drawing_projected_geometry",
         "validity",
@@ -110,6 +115,9 @@ def test_exact_targets_and_arrays_are_bounded_in_final_common_schemas() -> None:
         16,
         True,
     )
+    target = inspect_branches["mass_properties"]["properties"]["target"]
+    assert target["required"] == ["object_name"]
+    assert set(target["properties"]) == {"object_name"}
     capture_branches = {
         "capture_objects": definitions["view.control"].provider_schema(
             ("capture_objects",)

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 import sys
 import threading
@@ -351,6 +352,162 @@ def test_codex_forwards_its_exact_dynamic_tool_call_id(
     assert calls == [
         ("core.set_view", '{"model_id":"exact-model"}', "codex-call-42")
     ]
+
+
+def test_codex_ends_a_frozen_turn_after_an_exact_cad_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADOllama as ollama
+
+    monkeypatch.setattr(
+        codex_responses,
+        "codex_responses_base_url",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        ollama,
+        "inspect_model",
+        lambda *_args, **_kwargs: {"detected": False, "ok": True},
+    )
+    interrupted = threading.Event()
+    calls = []
+
+    class _Client:
+        def __init__(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+            environment=None,
+        ) -> None:
+            del environment
+            self.notification_handler = notification_handler
+            self.server_request_handler = server_request_handler
+            self.response_handler = None
+            self.namespace = ""
+            self.tool = ""
+            self.alive = True
+
+        @property
+        def stderr_tail(self):
+            return []
+
+        def set_server_response_handler(self, handler):
+            self.response_handler = handler
+
+        def start(self):
+            return None
+
+        def request(self, method, params, timeout):
+            del timeout
+            if method == "thread/start":
+                dynamic_tool = params["dynamicTools"][0]
+                if dynamic_tool["type"] == "namespace":
+                    self.namespace = dynamic_tool["name"]
+                    self.tool = dynamic_tool["tools"][0]["name"]
+                else:
+                    self.tool = dynamic_tool["name"]
+                return {"thread": {"id": "thread-transition"}, "model": "gpt-test"}
+            if method == "turn/start":
+                self._call_transition()
+                return {"turn": {"id": "turn-transition"}}
+            if method == "turn/interrupt":
+                interrupted.set()
+                self.notification_handler(
+                    "turn/completed",
+                    {
+                        "threadId": params["threadId"],
+                        "turnId": params["turnId"],
+                        "turn": {"id": params["turnId"], "status": "interrupted"},
+                    },
+                )
+                return {}
+            if method == "thread/delete":
+                return {}
+            raise AssertionError(method)
+
+        def _call_transition(self):
+            self.server_request_handler(
+                "item/tool/call",
+                {
+                    "callId": "transition-call",
+                    "namespace": self.namespace,
+                    "tool": self.tool,
+                    "arguments": {"workspace": "assembly"},
+                },
+            )
+            assert self.response_handler is not None
+            self.response_handler("item/tool/call")
+
+        def close(self):
+            self.alive = False
+
+    class _Runner:
+        def __init__(self, context):
+            self.context = context
+            self.transition = False
+
+        def __call__(self, tool_name, arguments_json, provider_call_id):
+            calls.append((tool_name, json.loads(arguments_json), provider_call_id))
+            self.transition = True
+            return {
+                "ok": True,
+                "workspace": "assembly",
+                "next_turn_required": True,
+            }
+
+        def provider_update(self):
+            return self.context
+
+        def turn_transition_requested(self):
+            return self.transition
+
+    monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
+    schemas = [_tool_schema("workspace.switch")]
+    surface = {
+        "kind": "turn_start_snapshot",
+        "frozen": True,
+        "workbench": "PartDesignWorkbench",
+        "engine": "native",
+        "domain": "model",
+        "surface_id": "model",
+        "available": True,
+        "unavailable_reason": "",
+        "tool_names": ["workspace.switch"],
+        "schema_count": 1,
+        "schema_sha256": provider.provider_tool_schema_digest(schemas),
+    }
+    context = {
+        "provider_tool_schemas": schemas,
+        "provider_tool_surface": surface,
+        "modeling_surface": {
+            key: surface[key]
+            for key in (
+                "workbench",
+                "engine",
+                "domain",
+                "surface_id",
+                "available",
+                "unavailable_reason",
+            )
+        },
+    }
+    runner = _Runner(context)
+    active_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="test-key",
+        auth_mode="api_key",
+        timeout_seconds=2,
+    )
+
+    result = active_provider.run("Continue in Assembly.", context, tool_runner=runner)
+
+    assert interrupted.is_set()
+    assert calls == [
+        ("workspace.switch", {"workspace": "assembly"}, "transition-call")
+    ]
+    assert result.final_output == ""
+    assert result.raw["cad_transition"] is True
 
 
 def test_codex_steers_tool_images_outside_replayed_tool_output(
@@ -1304,7 +1461,7 @@ def test_openai_api_key_and_plan_mode_run_through_codex(
     assert result.raw["interaction_mode"] == "plan"
 
 
-def test_codex_plan_and_build_resume_one_conversation_thread(
+def test_codex_plan_and_build_resume_one_schema_thread_across_surface_revisions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Client:
@@ -1392,6 +1549,17 @@ def test_codex_plan_and_build_resume_one_conversation_thread(
     plan_context["_vibecad_interaction_mode"] = "plan"
     build_context = dict(context)
     build_context["_vibecad_interaction_mode"] = "build"
+    build_context["_vibecad_codex_thread_surface"] = {
+        "provider_tool_schemas": list(context["provider_tool_schemas"]),
+        "provider_tool_surface": {
+            **dict(context["provider_tool_surface"]),
+            "surface_id": "vibecad/surface/native/model/revision-2",
+        },
+        "modeling_surface": {
+            **dict(context["modeling_surface"]),
+            "surface_id": "vibecad/surface/native/model/revision-2",
+        },
+    }
     first_provider = provider.CodexProvider(
         model="gpt-test",
         api_key="test-key",

@@ -50,7 +50,7 @@ def _geometry_item_schema() -> dict:
                 "description": (
                     "Fields: point=position_mm; line=start_mm,end_mm; "
                     "circle=center_mm,radius_mm; arc=center_mm,radius_mm,"
-                    "start_angle_degrees,sweep_angle_degrees."
+                    "start_angle_degrees,end_angle_degrees (counterclockwise)."
                 ),
             },
             "construction": {"type": "boolean"},
@@ -62,12 +62,12 @@ def _geometry_item_schema() -> dict:
             "start_angle_degrees": {
                 "type": "number",
                 "minimum": 0.0,
-                "exclusiveMaximum": 360.0,
+                "maximum": 360.0,
             },
-            "sweep_angle_degrees": {
+            "end_angle_degrees": {
                 "type": "number",
-                "exclusiveMinimum": 1.0e-9,
-                "exclusiveMaximum": 360.0,
+                "minimum": 0.0,
+                "maximum": 360.0,
             },
         },
         ("ref", "kind", "construction"),

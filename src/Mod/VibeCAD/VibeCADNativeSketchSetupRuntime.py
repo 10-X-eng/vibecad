@@ -212,7 +212,9 @@ def _verify_created_sketches(document: Any, draft: NativeMutationDraft) -> dict[
         "sketches": [object_reference(sketch) for sketch in outputs],
         "revisions": list(expected),
         "entered_edit_mode": False,
-        "next_step": {"human_action": "open_created_sketch"},
+        "next_step": {
+            "tool": "sketch.open",
+        },
     }
 
 

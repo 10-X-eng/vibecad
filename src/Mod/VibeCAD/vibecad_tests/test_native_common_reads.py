@@ -141,6 +141,26 @@ def test_mass_properties_use_explicit_units_and_default_density() -> None:
     assert result["objects"][0]["density_source"] == "default_1000_kg_m3"
 
 
+def test_mass_properties_compute_solid_weighted_center_for_compound_shape() -> None:
+    document = _Document()
+    shape = _Shape(volume=1000.0)
+    del shape.CenterOfMass
+    shape.Solids = [
+        SimpleNamespace(Volume=250.0, CenterOfMass=_Vector(2.0, 4.0, 6.0)),
+        SimpleNamespace(Volume=750.0, CenterOfMass=_Vector(10.0, 12.0, 14.0)),
+    ]
+    document.add(_Object(document, "CompoundBody", shape=shape))
+
+    result = mass_properties(
+        document,
+        (NativeObjectRef("document-a", "CompoundBody"),),
+    )
+
+    assert result["volume_mm3"] == 1000.0
+    assert result["center_of_volume_mm"] == [8.0, 10.0, 12.0]
+    assert result["center_of_mass_mm"] == [8.0, 10.0, 12.0]
+
+
 def test_new_material_wrapper_default_name_uses_mass_properties_fallback() -> None:
     document = _Document()
     obj = document.add(_Object(document, "Box"))

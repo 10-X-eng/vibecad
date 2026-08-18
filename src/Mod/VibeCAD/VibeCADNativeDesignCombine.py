@@ -9,6 +9,7 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeDesignBodies import is_valid_body_shape
+from VibeCADNativeDesignResults import shape_bounds_mm
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import (
@@ -25,7 +26,7 @@ _MODE_TO_NATIVE = {
     "intersect": "Intersect",
 }
 _DEFINITION_FIELDS = frozenset(
-    {"mode", "result_body", "tool_bodies", "keep_tools"}
+    {"mode", "source_body", "tool_bodies", "keep_tools"}
 )
 _MAX_TOOLS = 15
 
@@ -79,7 +80,7 @@ def prepare_design_combine(
         raise NativeModelError("Design Combine mode must be join, cut, or intersect.")
     if type(value["keep_tools"]) is not bool:
         raise NativeModelError("Design Combine keep_tools must be true or false.")
-    result = _object_ref(document_uid, value["result_body"], role="result Body")
+    result = _object_ref(document_uid, value["source_body"], role="source Body")
     raw_tools = value["tool_bodies"]
     if not isinstance(raw_tools, list) or not 1 <= len(raw_tools) <= _MAX_TOOLS:
         raise NativeModelError("Design Combine requires 1 to 15 exact tool Bodies.")
@@ -88,7 +89,7 @@ def prepare_design_combine(
     )
     names = (result.object_name, *(item.object_name for item in tools))
     if len(names) != len(set(names)):
-        raise NativeModelError("Design Combine result and tool Bodies must be distinct.")
+        raise NativeModelError("Design Combine source and tool Bodies must be distinct.")
     return DesignCombineSpec(mode, result, tools, value["keep_tools"])
 
 
@@ -243,7 +244,7 @@ def create_design_combine(
 
 
 def _shape_signature(shape: Any) -> tuple[Any, ...]:
-    bounds = shape.BoundBox
+    bounds = shape.optimalBoundingBox(False, False)
     return (
         str(shape.ShapeType),
         len(shape.Vertexes),
@@ -357,14 +358,15 @@ def verify_design_combine(document: Any, draft: NativeMutationDraft) -> dict[str
         shape = body.Shape
         if present != (not shape.isNull()):
             raise NativeModelError("Design Combine Body presence differs from its saved port.")
-        body_results.append(
-            {
-                "body": object_reference(body),
-                "role": "result" if index == 0 else "tool",
-                "present": present,
-                "volume_mm3": float(shape.Volume) if present else 0.0,
-            }
-        )
+        body_result = {
+            "body": object_reference(body),
+            "role": "result" if index == 0 else "tool",
+            "present": present,
+            "volume_mm3": float(shape.Volume) if present else 0.0,
+        }
+        if present:
+            body_result["bounds_mm"] = shape_bounds_mm(shape)
+        body_results.append(body_result)
 
     PartDesign.validateDesign(operation)
     return {

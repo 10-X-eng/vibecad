@@ -104,7 +104,7 @@ def _select_elements_parameters() -> dict:
 def sketch_inspect_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="sketch.inspect",
-        description="Read exact relationships in the human-opened Sketch without changing selection.",
+        description="Read relationships in the active Sketch without changing selection.",
         primary_classification="read",
         variants=(
             NativeCapabilityVariant(

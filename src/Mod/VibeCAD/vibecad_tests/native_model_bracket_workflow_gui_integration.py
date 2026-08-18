@@ -19,6 +19,7 @@ from PySide import QtCore, QtWidgets
 
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
+from VibeCADNativeModelSnapshot import build_model_snapshot
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeSessionFactory import create_native_session_execution
 from VibeCADNativeSurface import SURFACE_CHANGED
@@ -59,29 +60,10 @@ def _new_execution(service, controller):
 
 def _extrude_arguments(sketch_name: str, component_name: str):
     return {
-        "operation": "profile",
         "label": "Bracket Base Extrude",
-        "profile": {"object_name": sketch_name, "regions": []},
-        "result": {
-            "mode": "new_body",
-            "targets": [],
-            "destination_component": {"object_name": component_name},
-        },
-        "definition": {
-            "kind": "extrude",
-            "direction": {"kind": "sketch_normal"},
-            "extent": {
-                "kind": "one_side",
-                "sides": [
-                    {
-                        "kind": "length",
-                        "length_mm": 8.0,
-                        "taper_degrees": 0.0,
-                    }
-                ],
-                "reversed": False,
-            },
-        },
+        "profile": {"object_name": sketch_name},
+        "length_mm": 8.0,
+        "destination_component": {"object_name": component_name},
     }
 
 
@@ -225,24 +207,38 @@ def _run() -> None:
             first_turn,
             "model.sketch",
             {
-                "operation": "new_sketch",
+                "operation": "create_on_base_plane",
                 "label": "Bracket Base Profile",
-                "support": {
-                    "kind": "base_plane",
-                    "plane": "XY",
-                    "offset_mm": 0.0,
-                },
+                "plane": "XY",
+                "offset_mm": 0.0,
             },
         )
         base_sketch_name = base_sketch_result["sketch"]["object_name"]
         base_sketch = document.getObject(base_sketch_name)
         assert base_sketch_result["entered_edit_mode"] is False
         assert base_sketch_result["next_step"] == {
-            "human_action": "open_created_sketch"
+            "tool": "sketch.open",
+            "arguments": {
+                "operation": "open",
+                "sketch": {"object_name": base_sketch_name},
+            },
         }
         human_edits_sketch(first_turn, base_sketch, _rectangle_geometry())
 
         second_turn = begin_model_turn()
+        base_summary = next(
+            item
+            for item in build_model_snapshot(document)["sketches"]
+            if item["object_name"] == base_sketch_name
+        )
+        assert base_summary["valid"] is True
+        assert base_summary["solid_feature_ready"] is True
+        assert base_summary["profile"] == {
+            "wire_count": 1,
+            "closed_wire_count": 1,
+            "open_wire_count": 0,
+            "edge_count": 4,
+        }
         base_readiness = native_call(
             second_turn,
             "sketch.validate",
@@ -256,7 +252,7 @@ def _run() -> None:
 
         extrude_result = native_call(
             second_turn,
-            "model.feature",
+            "model.extrude",
             _extrude_arguments(base_sketch_name, component_name),
         )
         extrude_name = extrude_result["operation"]["object_name"]
@@ -270,13 +266,10 @@ def _run() -> None:
             second_turn,
             "model.sketch",
             {
-                "operation": "new_sketch",
+                "operation": "create_on_base_plane",
                 "label": "Bracket Hole Profile",
-                "support": {
-                    "kind": "base_plane",
-                    "plane": "XY",
-                    "offset_mm": 8.0,
-                },
+                "plane": "XY",
+                "offset_mm": 8.0,
             },
         )
         hole_sketch_name = hole_sketch_result["sketch"]["object_name"]

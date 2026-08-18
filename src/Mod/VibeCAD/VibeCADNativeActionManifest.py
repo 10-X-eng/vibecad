@@ -816,7 +816,6 @@ _HUMAN_ONLY_COMMAND_IDS = frozenset(
     {
         "Assembly_ActivateAssembly",
         "FEM_Examples",
-        "Sketcher_EditSketch",
         "Sketcher_CancelSketch",
     }
 )
@@ -1134,7 +1133,7 @@ _CAPABILITY_OVERRIDES = {
     "Spreadsheet_StyleItalic": "parameters.format",
     "Spreadsheet_StyleUnderline": "parameters.format",
     "Sketcher_NewSketch": "model.sketch",
-    "Sketcher_EditSketch": "sketch.control",
+    "Sketcher_EditSketch": "sketch.open",
     "Sketcher_ValidateSketch": "sketch.validate",
     "Sketcher_LeaveSketch": "sketch.control",
     "Sketcher_CancelSketch": "sketch.control",
@@ -1228,20 +1227,25 @@ _CAPABILITY_OVERRIDES.update(
     {
         command_id: "sketch.draw_line"
         for command_id in (
-            "Sketcher_CreatePoint",
             "Sketcher_CreatePolyline",
             "Sketcher_CreateLine",
         )
     }
 )
+_CAPABILITY_OVERRIDES["Sketcher_CreatePoint"] = "sketch.draw_point"
 _CAPABILITY_OVERRIDES["TechDraw_DimensionRepair"] = "drawing.dimension_repair"
 _CAPABILITY_OVERRIDES["VibeCADAero_ExportJSBSim"] = "aero.export"
 _CAPABILITY_OVERRIDES["VibeCADAero_FlightCard"] = "aero.inspect"
 _CAPABILITY_OVERRIDES.update(
     {
         command_id: "sketch.draw_arc"
+        for command_id in ("Sketcher_CreateArc",)
+    }
+)
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.draw_conic_arc"
         for command_id in (
-            "Sketcher_CreateArc",
             "Sketcher_CreateArcOfEllipse",
             "Sketcher_CreateArcOfHyperbola",
             "Sketcher_CreateArcOfParabola",
@@ -1249,6 +1253,25 @@ _CAPABILITY_OVERRIDES.update(
     }
 )
 _CAPABILITY_OVERRIDES["Sketcher_Create3PointArc"] = "sketch.draw_three_point_arc"
+_CAPABILITY_OVERRIDES["PartDesign_DesignExtrude"] = "model.extrude"
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "model.primitive"
+        for command_id in (
+            "PartDesign::DesignBox",
+            "PartDesign::DesignCylinder",
+            "PartDesign::DesignSphere",
+            "PartDesign::DesignCone",
+            "PartDesign::DesignEllipsoid",
+            "PartDesign::DesignTorus",
+            "PartDesign::DesignPrism",
+            "PartDesign::DesignWedge",
+            "PartDesign::DesignTube",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES["PartDesign::DesignBox"] = "model.box"
+_CAPABILITY_OVERRIDES["PartDesign::DesignCylinder"] = "model.cylinder"
 _CAPABILITY_OVERRIDES.update(
     {
         command_id: "sketch.draw_circle"
@@ -1260,20 +1283,21 @@ _CAPABILITY_OVERRIDES.update(
 )
 _CAPABILITY_OVERRIDES.update(
     {
-        command_id: "sketch.draw_ellipse"
-        for command_id in (
-            "Sketcher_CreateEllipseByCenter",
-            "Sketcher_CreateEllipseBy3Points",
-        )
+        "Sketcher_CreateEllipseByCenter": "sketch.draw_ellipse",
+        "Sketcher_CreateEllipseBy3Points": "sketch.draw_three_point_ellipse",
     }
 )
 _CAPABILITY_OVERRIDES.update(
     {
-        command_id: "sketch.draw_profile"
+        "Sketcher_CreateRectangle": "sketch.draw_rectangle",
+        "Sketcher_CreateRectangle_Center": "sketch.draw_center_rectangle",
+        "Sketcher_CreateOblong": "sketch.draw_rounded_rectangle",
+    }
+)
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.draw_polygon"
         for command_id in (
-            "Sketcher_CreateRectangle",
-            "Sketcher_CreateRectangle_Center",
-            "Sketcher_CreateOblong",
             "Sketcher_CreateTriangle",
             "Sketcher_CreateSquare",
             "Sketcher_CreatePentagon",
@@ -1281,6 +1305,13 @@ _CAPABILITY_OVERRIDES.update(
             "Sketcher_CreateHeptagon",
             "Sketcher_CreateOctagon",
             "Sketcher_CreateRegularPolygon",
+        )
+    }
+)
+_CAPABILITY_OVERRIDES.update(
+    {
+        command_id: "sketch.draw_slot"
+        for command_id in (
             "Sketcher_CreateSlot",
             "Sketcher_CreateArcSlot",
         )
@@ -1318,18 +1349,22 @@ _CAPABILITY_OVERRIDES.update(
     {
         command_id: "sketch.constrain"
         for command_id in (
-            "Sketcher_ConstrainCoincidentUnified",
             "Sketcher_ConstrainHorVer",
             "Sketcher_ConstrainHorizontal",
             "Sketcher_ConstrainVertical",
             "Sketcher_ConstrainParallel",
-            "Sketcher_ConstrainPerpendicular",
-            "Sketcher_ConstrainTangent",
             "Sketcher_ConstrainEqual",
-            "Sketcher_ConstrainSymmetric",
             "Sketcher_ConstrainBlock",
             "Sketcher_ConstrainGroup",
         )
+    }
+)
+_CAPABILITY_OVERRIDES.update(
+    {
+        "Sketcher_ConstrainCoincidentUnified": "sketch.coincident",
+        "Sketcher_ConstrainPerpendicular": "sketch.perpendicular",
+        "Sketcher_ConstrainTangent": "sketch.tangent",
+        "Sketcher_ConstrainSymmetric": "sketch.symmetric",
     }
 )
 _CAPABILITY_OVERRIDES.update(
@@ -1377,6 +1412,8 @@ _OPERATION_VARIANT_OVERRIDES = {
     "VibeCADAero_ProposeRepairs": "propose_repairs",
     "VibeCADAero_ApplyRepairs": "apply_repairs",
     "VibeCADAero_FlightCard": "flight_card",
+    "Sketcher_CreateOblong": "create_rounded_rectangle",
+    "Sketcher_NewSketch": "create_on_base_plane",
     "Spreadsheet_CreateSheet": "create",
     "Spreadsheet_Import": "import_csv",
     "Spreadsheet_Export": "export_csv",
@@ -1510,16 +1547,16 @@ _OPERATION_VARIANT_OVERRIDES = {
     "FEM_MeshTransfiniteCurve": "create_transfinite_curve",
     "FEM_MeshTransfiniteSurface": "create_transfinite_surface",
     "FEM_MeshTransfiniteVolume": "create_transfinite_volume",
-    "PartDesign::DesignBox": "primitive",
-    "PartDesign::DesignCylinder": "primitive",
-    "PartDesign::DesignSphere": "primitive",
-    "PartDesign::DesignCone": "primitive",
-    "PartDesign::DesignEllipsoid": "primitive",
-    "PartDesign::DesignTorus": "primitive",
-    "PartDesign::DesignPrism": "primitive",
-    "PartDesign::DesignWedge": "primitive",
-    "PartDesign::DesignTube": "primitive",
-    "PartDesign_DesignExtrude": "profile",
+    "PartDesign::DesignBox": "box",
+    "PartDesign::DesignCylinder": "cylinder",
+    "PartDesign::DesignSphere": "sphere",
+    "PartDesign::DesignCone": "cone",
+    "PartDesign::DesignEllipsoid": "ellipsoid",
+    "PartDesign::DesignTorus": "torus",
+    "PartDesign::DesignPrism": "prism",
+    "PartDesign::DesignWedge": "wedge",
+    "PartDesign::DesignTube": "tube",
+    "PartDesign_DesignExtrude": "extrude",
     "PartDesign_DesignRevolve": "profile",
     "PartDesign_DesignLoft": "profile",
     "PartDesign_DesignSweep": "profile",
@@ -1555,7 +1592,7 @@ _OPERATION_VARIANT_OVERRIDES = {
     "Std_ViewIsometric": "isometric",
     "VibeCAD_ToggleGrid": "set_grid",
     "Std_Measure": "distance",
-    "Inspection_VisualInspection": "visual_result",
+    "Inspection_VisualInspection": "inspection_result",
     "Inspection_InspectElement": "element",
     "Part_CheckGeometry": "validity",
     "CAM_Pocket3D": "pocket_3d",
@@ -1616,6 +1653,7 @@ _OPERATION_VARIANT_OVERRIDES = {
         "create_periodic_b_spline_by_interpolation"
     ),
     "Sketcher_SelectElementsAssociatedWithConstraints": "select_elements",
+    "Sketcher_EditSketch": "open",
     "Sketcher_ViewSketch": "align_view_to_sketch",
     "Sketcher_ViewSection": "section_view",
     "Sketcher_Dimension": "infer_dimension",
@@ -2238,7 +2276,7 @@ def _plan(
     elif classification.human_only:
         transaction_behavior = "human"
         status = "human_only"
-    elif action.command_id == "Sketcher_LeaveSketch":
+    elif action.command_id in {"Sketcher_EditSketch", "Sketcher_LeaveSketch"}:
         transaction_behavior = "edit_control"
         status = "planned"
     elif action.command_id in _SESSION_COMMAND_IDS:

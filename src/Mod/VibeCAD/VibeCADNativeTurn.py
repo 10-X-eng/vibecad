@@ -47,8 +47,8 @@ class NativeTurnChanged(RuntimeError):
 
     def __init__(self, current_surface: str) -> None:
         super().__init__(
-            "The active VibeCAD ribbon tool contract changed after this turn "
-            "started. Resume from the current ribbon in a new turn."
+            "The available CAD tools changed after this turn started. "
+            "Continue in a new turn."
         )
         self.current_surface = str(current_surface)
 

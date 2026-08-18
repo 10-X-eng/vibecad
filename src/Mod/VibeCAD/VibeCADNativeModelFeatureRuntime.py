@@ -75,6 +75,23 @@ class NativeModelFeatureRuntime:
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
 
+    def profile_destination_component(
+        self,
+        profile: Mapping[str, Any],
+    ) -> dict[str, str] | None:
+        """Return the Component already owning a reusable profile, if any."""
+        object_name = str(profile.get("object_name") or "").strip()
+        source = self._context.document.getObject(object_name) if object_name else None
+        current = source
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if str(getattr(current, "TypeId", "")) == "PartDesign::Component":
+                return {"object_name": str(current.Name)}
+            parent_getter = getattr(current, "getParentGeoFeatureGroup", None)
+            current = parent_getter() if callable(parent_getter) else None
+        return None
+
     def mutate_feature(
         self,
         arguments: Mapping[str, Any],

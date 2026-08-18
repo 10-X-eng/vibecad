@@ -1016,11 +1016,16 @@ def test_native_context_replaces_legacy_document_and_selection_summaries(
     assert "document" not in context
     assert "selection" not in context
     assert context["native_state"]["structural_revision"] == 9
-    assert visible["native_state"] == context["native_state"]
+    assert visible == {
+        "work": "modeling",
+        "state": {"domain": {"kind": "model", "counts": {"bodies": 1}}},
+        "document": {"name": "Part"},
+    }
+    assert "native_state" not in visible
+    assert "document-a" not in json.dumps(visible)
+    assert session._provider_state_payload(context) == visible
     assert "must not leak" not in json.dumps(context)
-    assert provider._provider_state_after_tool(context)["active_domain"] == (
-        context["native_state"]
-    )
+    assert provider._provider_state_after_tool(context) == {}
 
 
 def test_editable_source_manifests_complete_after_document_thread_capture(

@@ -51,43 +51,42 @@ def _variant(
     )
 
 
-def _feature_definition() -> NativeCapabilityDefinition:
+def _primitive_definition() -> NativeCapabilityDefinition:
+    names = (
+        "Sphere",
+        "Cone",
+        "Ellipsoid",
+        "Torus",
+        "Prism",
+        "Wedge",
+        "Tube",
+    )
     return NativeCapabilityDefinition(
-        name="model.feature",
-        description="Create one exact solid feature variant.",
+        name="model.primitive",
+        description="Create one exact solid primitive.",
+        primary_classification="mutation",
+        variants=tuple(
+            _variant(
+                name.lower(),
+                f"PartDesign::Design{name}",
+                transaction_behavior="document",
+            )
+            for name in names
+        ),
+    )
+
+
+def _single_primitive_definition(name: str) -> NativeCapabilityDefinition:
+    operation = name.lower()
+    return NativeCapabilityDefinition(
+        name=f"model.{operation}",
+        description=f"Create one exact {operation}.",
         primary_classification="mutation",
         variants=(
             _variant(
-                "primitive",
-                None,
+                operation,
+                f"PartDesign::Design{name}",
                 transaction_behavior="document",
-                parameters=_parameters(
-                    definition={
-                        "oneOf": [
-                            _parameters(
-                                kind={"type": "string", "const": "box"},
-                                width_mm={"type": "number", "exclusiveMinimum": 0},
-                            ),
-                            _parameters(
-                                kind={"type": "string", "const": "cylinder"},
-                                radius_mm={"type": "number", "exclusiveMinimum": 0},
-                            ),
-                        ]
-                    }
-                ),
-                action_ids=frozenset(
-                    {
-                        "PartDesign::DesignBox",
-                        "PartDesign::DesignCylinder",
-                        "PartDesign::DesignSphere",
-                        "PartDesign::DesignCone",
-                        "PartDesign::DesignEllipsoid",
-                        "PartDesign::DesignTorus",
-                        "PartDesign::DesignPrism",
-                        "PartDesign::DesignWedge",
-                        "PartDesign::DesignTube",
-                    }
-                ),
             ),
         ),
     )
@@ -125,7 +124,12 @@ def _inspection_definition() -> NativeCapabilityDefinition:
 
 def _register_complete() -> NativeCapabilityRegistry:
     registry = NativeCapabilityRegistry()
-    for definition in (_feature_definition(), _inspection_definition()):
+    for definition in (
+        _single_primitive_definition("Box"),
+        _single_primitive_definition("Cylinder"),
+        _primitive_definition(),
+        _inspection_definition(),
+    ):
         registry.register_definition(definition)
         registry.register_implementation(
             NativeCapabilityImplementation(
@@ -162,7 +166,9 @@ def test_production_empty_registry_keeps_native_fully_disabled() -> None:
     assert surface.tool_names == ()
     assert surface.schemas == ()
     assert surface.missing_definition_names == (
-        "model.feature",
+        "model.box",
+        "model.cylinder",
+        "model.primitive",
         "inspect.query",
     )
     assert surface.missing_implementation_names == surface.missing_definition_names
@@ -178,9 +184,18 @@ def test_production_empty_registry_keeps_native_fully_disabled() -> None:
     }
 
 
+def test_single_purpose_provider_tool_does_not_repeat_its_operation_name() -> None:
+    definition = _inspection_definition()
+
+    parameters = definition.provider_schema(("validity",))["parameters"]["oneOf"][0]
+
+    assert parameters["properties"]["operation"]["const"] == "validity"
+    assert parameters["required"] == ["target"]
+
+
 def test_partial_registry_never_advertises_a_partial_surface() -> None:
     registry = NativeCapabilityRegistry()
-    definition = _feature_definition()
+    definition = _primitive_definition()
     registry.register_definition(definition)
     registry.register_implementation(
         NativeCapabilityImplementation(definition.name, lambda _arguments: {})
@@ -191,8 +206,12 @@ def test_partial_registry_never_advertises_a_partial_surface() -> None:
     assert surface.available is False
     assert surface.tool_names == ()
     assert surface.schemas == ()
-    assert surface.missing_definition_names == ("inspect.query",)
-    assert surface.missing_implementation_names == ("inspect.query",)
+    assert surface.missing_definition_names == (
+        "model.box",
+        "model.cylinder",
+        "inspect.query",
+    )
+    assert surface.missing_implementation_names == surface.missing_definition_names
 
 
 def test_complete_registry_emits_only_live_variants_in_live_family_order() -> None:
@@ -200,13 +219,29 @@ def test_complete_registry_emits_only_live_variants_in_live_family_order() -> No
 
     assert surface.available is True
     assert surface.unavailable_reason == ""
-    assert surface.tool_names == ("model.feature", "inspect.query")
+    assert surface.tool_names == (
+        "model.box",
+        "model.cylinder",
+        "model.primitive",
+        "inspect.query",
+    )
     assert tuple(schema["name"] for schema in surface.schemas) == surface.tool_names
-    assert [
-        branch["properties"]["operation"]["const"]
-        for branch in surface.schemas[0]["parameters"]["oneOf"]
-    ] == ["primitive"]
+    assert surface.schemas[0]["parameters"]["oneOf"][0]["properties"][
+        "operation"
+    ]["const"] == "box"
     assert surface.schemas[1]["parameters"]["oneOf"][0]["properties"][
+        "operation"
+    ]["const"] == "cylinder"
+    assert surface.schemas[2]["parameters"]["properties"]["operation"]["enum"] == [
+        "sphere",
+        "cone",
+        "ellipsoid",
+        "torus",
+        "prism",
+        "wedge",
+        "tube",
+    ]
+    assert surface.schemas[3]["parameters"]["oneOf"][0]["properties"][
         "operation"
     ]["const"] == "validity"
     serialized = repr(surface.schemas)
@@ -217,11 +252,11 @@ def test_complete_registry_emits_only_live_variants_in_live_family_order() -> No
 
 def test_complete_family_includes_declared_supplemental_operations() -> None:
     feature = NativeCapabilityDefinition(
-        name="model.feature",
+        name="model.primitive",
         description="Create or configure one exact solid feature.",
         primary_classification="mutation",
         variants=(
-            _feature_definition().variants[0],
+            *_primitive_definition().variants,
             _variant(
                 "configure",
                 "VibeCAD_ModelConfigureFeature",
@@ -231,7 +266,12 @@ def test_complete_family_includes_declared_supplemental_operations() -> None:
         ),
     )
     registry = NativeCapabilityRegistry()
-    for definition in (feature, _inspection_definition()):
+    for definition in (
+        _single_primitive_definition("Box"),
+        _single_primitive_definition("Cylinder"),
+        feature,
+        _inspection_definition(),
+    ):
         registry.register_definition(definition)
         registry.register_implementation(
             NativeCapabilityImplementation(definition.name, lambda _arguments: {})
@@ -240,8 +280,14 @@ def test_complete_family_includes_declared_supplemental_operations() -> None:
     surface = resolve_native_provider_surface(_surface(), registry)
 
     assert surface.available is True
-    assert surface.schemas[0]["parameters"]["properties"]["operation"]["enum"] == [
-        "primitive",
+    assert surface.schemas[2]["parameters"]["properties"]["operation"]["enum"] == [
+        "sphere",
+        "cone",
+        "ellipsoid",
+        "torus",
+        "prism",
+        "wedge",
+        "tube",
         "configure",
     ]
 
@@ -261,9 +307,9 @@ def test_fixed_surface_fails_closed_when_a_manifest_required_action_is_missing()
     assert surface.missing_action_ids == ("Part_CheckGeometry",)
 
 
-def test_provider_lists_operations_once_without_repeating_variant_prose() -> None:
+def test_provider_keeps_operations_in_the_enum_without_description_duplication() -> None:
     definition = NativeCapabilityDefinition(
-        name="model.feature",
+        name="model.primitive",
         description="Create an exact feature.",
         primary_classification="mutation",
         variants=(
@@ -274,9 +320,7 @@ def test_provider_lists_operations_once_without_repeating_variant_prose() -> Non
 
     schema = definition.provider_schema(("primitive", "profile"))
 
-    assert schema["description"] == (
-        "Create an exact feature. Operations: primitive, profile."
-    )
+    assert schema["description"] == "Create an exact feature."
     parameters = schema["parameters"]
     assert parameters["type"] == "object"
     assert parameters["additionalProperties"] is False
@@ -385,7 +429,7 @@ def test_compact_multi_operation_schema_merges_repeated_closed_objects() -> None
         "type": "string",
     }
     assert definition_schema["description"] == (
-        "Fields: first=kind,distance; second=kind,count."
+        "Fields: first=distance; second=count."
     )
 
 
@@ -465,12 +509,12 @@ def test_compact_object_union_preserves_the_broadest_explicit_array_contract() -
 def test_wrong_action_coverage_fails_closed_without_schema_leakage() -> None:
     registry = _register_complete()
     wrong = NativeCapabilityDefinition(
-        name="model.feature",
+        name="model.primitive",
         description="Create one exact solid feature variant.",
         primary_classification="mutation",
         variants=(
             _variant(
-                "primitive",
+                "box",
                 None,
                 transaction_behavior="document",
                 action_ids=frozenset(
@@ -482,7 +526,7 @@ def test_wrong_action_coverage_fails_closed_without_schema_leakage() -> None:
     replacement = NativeCapabilityRegistry()
     replacement.register_definition(wrong)
     replacement.register_implementation(
-        NativeCapabilityImplementation("model.feature", lambda _arguments: {})
+        NativeCapabilityImplementation("model.primitive", lambda _arguments: {})
     )
     inspection = registry.definition("inspect.query")
     assert inspection is not None
@@ -495,31 +539,31 @@ def test_wrong_action_coverage_fails_closed_without_schema_leakage() -> None:
 
     assert surface.available is False
     assert surface.schemas == ()
-    assert surface.incomplete_definition_names == ("model.feature",)
+    assert surface.incomplete_definition_names == ("model.primitive",)
 
 
 def test_primary_classification_mismatch_fails_closed() -> None:
     registry = NativeCapabilityRegistry()
     wrong = NativeCapabilityDefinition(
-        name="model.feature",
+        name="model.primitive",
         description="Read one exact feature.",
         primary_classification="read",
-        variants=_feature_definition().variants,
+        variants=_primitive_definition().variants,
     )
     registry.register_definition(wrong)
     registry.register_implementation(
-        NativeCapabilityImplementation("model.feature", lambda _arguments: {})
+        NativeCapabilityImplementation("model.primitive", lambda _arguments: {})
     )
 
     surface = resolve_native_provider_surface(_surface(), registry)
 
     assert surface.available is False
-    assert "model.feature" in surface.incomplete_definition_names
+    assert "model.primitive" in surface.incomplete_definition_names
 
 
 def test_registry_rejects_duplicate_definition_and_implementation() -> None:
     registry = NativeCapabilityRegistry()
-    definition = _feature_definition()
+    definition = _primitive_definition()
     implementation = NativeCapabilityImplementation(
         definition.name,
         lambda _arguments: {},
@@ -591,7 +635,7 @@ def test_canonical_schema_keeps_large_bounds_in_scientific_json() -> None:
 
 def test_tool_and_schema_budgets_fail_before_advertisement(monkeypatch) -> None:
     monkeypatch.setattr(registry_module, "MAX_NATIVE_TOOLS_PER_SURFACE", 1)
-    with pytest.raises(NativeCapabilityRegistryError, match="requires 2 tools"):
+    with pytest.raises(NativeCapabilityRegistryError, match="requires 4 tools"):
         resolve_native_provider_surface(_surface(), _register_complete())
 
     monkeypatch.setattr(registry_module, "MAX_NATIVE_TOOLS_PER_SURFACE", 24)

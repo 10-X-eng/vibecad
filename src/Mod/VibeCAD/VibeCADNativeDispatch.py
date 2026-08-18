@@ -122,6 +122,15 @@ def _schema_expectation(error: Any) -> dict[str, Any]:
 def _schema_example(schema: Mapping[str, Any], *, depth: int = 0) -> Any:
     if depth > 6:
         return None
+    examples = schema.get("examples")
+    if isinstance(examples, list) and examples:
+        return examples[0]
+    for keyword in ("oneOf", "anyOf"):
+        options = schema.get(keyword)
+        if isinstance(options, list):
+            first = next((item for item in options if isinstance(item, Mapping)), None)
+            if first is not None:
+                return _schema_example(first, depth=depth + 1)
     if "const" in schema:
         return schema["const"]
     values = schema.get("enum")
@@ -150,9 +159,26 @@ def _schema_example(schema: Mapping[str, Any], *, depth: int = 0) -> Any:
     if kind == "integer":
         return int(schema.get("minimum", 0) or 0)
     if kind == "number":
+        minimum = schema.get("minimum")
+        exclusive_minimum = schema.get("exclusiveMinimum")
+        maximum = schema.get("maximum")
+        exclusive_maximum = schema.get("exclusiveMaximum")
+        if (
+            (minimum is None or float(minimum) <= 0.0)
+            and (exclusive_minimum is None or float(exclusive_minimum) < 0.0)
+            and (maximum is None or float(maximum) >= 0.0)
+            and (exclusive_maximum is None or float(exclusive_maximum) > 0.0)
+        ):
+            return 0.0
         if "exclusiveMinimum" in schema:
             return float(schema["exclusiveMinimum"]) + 1.0
-        return float(schema.get("minimum", 0.0) or 0.0)
+        if "minimum" in schema:
+            return float(schema["minimum"])
+        if "exclusiveMaximum" in schema:
+            return float(schema["exclusiveMaximum"]) - 1.0
+        if "maximum" in schema:
+            return float(schema["maximum"])
+        return 0.0
     if kind == "boolean":
         return True
     return None
@@ -287,15 +313,21 @@ class NativeTurnDispatcher:
         self._guard_document()
 
     def _guard_after_call(self, variant: Any, payload: Mapping[str, Any]) -> None:
-        if getattr(variant, "transaction_behavior", "") != "edit_control":
+        if getattr(variant, "transaction_behavior", "") not in {
+            "edit_control",
+            "surface_control",
+        }:
             self._guard()
             return
 
         self._guard_document()
-        if (
-            payload.get("next_turn_required") is not True
-            or not str(payload.get("next_surface") or "").strip()
-        ):
+        transition_behavior = getattr(variant, "transaction_behavior", "")
+        transition_target = (
+            str(payload.get("next_surface") or "").strip()
+            if transition_behavior == "edit_control"
+            else str(payload.get("workspace") or "").strip()
+        )
+        if payload.get("next_turn_required") is not True or not transition_target:
             raise NativeDispatchError(
                 "NATIVE_EDIT_CONTROL_FAILED",
                 "Native edit control did not publish its required surface transition.",
@@ -305,11 +337,20 @@ class NativeTurnDispatcher:
         except Exception as exc:
             failure = getattr(exc, "failure", None)
             details = failure() if callable(failure) else None
+            expected_surface = transition_target
+            if transition_behavior == "surface_control":
+                from VibeCADNativeWorkspaceSchema import (
+                    NATIVE_SURFACE_BY_WORKSPACE,
+                )
+
+                expected_surface = str(
+                    NATIVE_SURFACE_BY_WORKSPACE.get(transition_target) or ""
+                )
             if (
                 isinstance(details, Mapping)
                 and details.get("error_code") == "NATIVE_SURFACE_CHANGED"
                 and str(details.get("current_surface") or "")
-                == str(payload["next_surface"])
+                == expected_surface
             ):
                 return
             raise
@@ -405,15 +446,45 @@ class NativeTurnDispatcher:
         self,
         tool_name: str,
         arguments: Mapping[str, Any],
-    ) -> Any:
+    ) -> tuple[Any, dict[str, Any]]:
         definition = self._registry.definition(tool_name)
-        operation = arguments.get("operation")
+        parameters = self._schemas[tool_name].get("parameters")
+        operation_schemas = (
+            list(parameters.get("oneOf") or [])
+            if isinstance(parameters, Mapping)
+            else []
+        )
+        if not operation_schemas and isinstance(parameters, Mapping):
+            operation_schemas = [parameters]
+        frozen_operations: list[str] = []
+        for schema in operation_schemas:
+            if not isinstance(schema, Mapping):
+                continue
+            operation_schema = dict(schema.get("properties") or {}).get("operation")
+            if not isinstance(operation_schema, Mapping):
+                continue
+            values = (
+                [operation_schema.get("const")]
+                if "const" in operation_schema
+                else list(operation_schema.get("enum") or [])
+            )
+            for value in values:
+                clean = str(value or "").strip()
+                if clean and clean not in frozen_operations:
+                    frozen_operations.append(clean)
+
+        normalized = dict(arguments)
+        operation = normalized.get("operation")
+        if operation is None and len(frozen_operations) == 1:
+            operation = frozen_operations[0]
+            normalized["operation"] = operation
         variant = (
             next(
                 (
                     item
                     for item in definition.variants
                     if item.operation == operation
+                    and item.operation in frozen_operations
                 ),
                 None,
             )
@@ -422,7 +493,7 @@ class NativeTurnDispatcher:
         )
         if variant is None:
             operations = (
-                [item.operation for item in definition.variants]
+                frozen_operations
                 if definition is not None
                 else []
             )
@@ -443,14 +514,14 @@ class NativeTurnDispatcher:
             )
         exact_schema = variant.provider_parameters()
         exact_validator = Draft202012Validator(exact_schema)
-        exact_error = next(iter(exact_validator.iter_errors(arguments)), None)
+        exact_error = next(iter(exact_validator.iter_errors(normalized)), None)
         if exact_error is not None:
             raise NativeDispatchError(
                 "NATIVE_ARGUMENTS_INVALID",
                 _schema_error(exact_error),
                 details=_schema_error_details(exact_error, exact_schema),
             )
-        return variant
+        return variant, normalized
 
     def call(
         self,
@@ -503,7 +574,10 @@ class NativeTurnDispatcher:
                         "NATIVE_TOOL_UNAVAILABLE",
                         "That capability is not on the frozen Native ribbon surface.",
                     )
-                variant = self._validate_arguments(name, arguments)
+                variant, normalized_arguments = self._validate_arguments(
+                    name,
+                    arguments,
+                )
                 if len(self._calls) >= MAX_NATIVE_CALLS_PER_TURN:
                     raise NativeDispatchError(
                         "NATIVE_TURN_CALL_LIMIT",
@@ -521,7 +595,11 @@ class NativeTurnDispatcher:
                         "The frozen Native capability has no implementation.",
                     )
                 payload = implementation.handler(
-                    NativeCapabilityCall(arguments, ticket, self._runtimes[name])
+                    NativeCapabilityCall(
+                        normalized_arguments,
+                        ticket,
+                        self._runtimes[name],
+                    )
                 )
                 if not isinstance(payload, Mapping) or "ok" in payload:
                     raise NativeDispatchError(
@@ -543,7 +621,7 @@ class NativeTurnDispatcher:
                             details={
                                 "current_revision": revision_after,
                                 "repair": {
-                                    "operation": arguments.get("operation"),
+                                    "operation": normalized_arguments.get("operation"),
                                     "revision_before": ticket.expected_revision,
                                     "revision_after": revision_after,
                                 },

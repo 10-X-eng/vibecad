@@ -192,8 +192,12 @@ class NativeCommonRuntime:
                 "distance": frozenset({"first", "second"}),
                 "angle": frozenset({"first", "second"}),
                 "radius": frozenset({"target"}),
-                "mass_properties": frozenset({"targets"}),
-                "visual_result": frozenset({"target"}),
+                "mass_properties": (
+                    frozenset({"target"})
+                    if "target" in arguments and "targets" not in arguments
+                    else frozenset({"targets"})
+                ),
+                "inspection_result": frozenset({"target"}),
                 "element": frozenset({"target"}),
                 "drawing_projected_geometry": frozenset(
                     {
@@ -222,7 +226,12 @@ class NativeCommonRuntime:
         if operation == "radius":
             return measure_radius(self._document, self._element(values["target"]))
         if operation == "mass_properties":
-            targets = tuple(self._object(value) for value in list(values["targets"]))
+            raw_targets = (
+                [values["target"]]
+                if "target" in values
+                else list(values["targets"])
+            )
+            targets = tuple(self._object(value) for value in raw_targets)
             return mass_properties(self._document, targets)
         if operation == "element":
             return inspect_element(
@@ -232,7 +241,7 @@ class NativeCommonRuntime:
         if operation == "drawing_projected_geometry":
             return self._drawing_projected_geometry(values)
         target = self._object(values["target"])
-        if operation == "visual_result":
+        if operation == "inspection_result":
             return visual_inspection_result(self._document, target)
         return geometry_validity(self._document, target)
 

@@ -25,7 +25,7 @@ def _values(**updates) -> dict[str, object]:
             "center_mm": {"x": 4.0, "y": -2.0},
             "radius_mm": 6.0,
             "start_angle_degrees": 30.0,
-            "sweep_angle_degrees": 120.0,
+            "end_angle_degrees": 150.0,
             **updates,
         }
     )
@@ -74,6 +74,22 @@ def test_center_radius_arc_preflight_create_and_verify_exact_result(arc_host) ->
     }
 
 
+def test_center_radius_arc_accepts_360_as_zero_without_losing_its_sweep(
+    arc_host,
+) -> None:
+    document, _sketch, _context = arc_host
+
+    prepared = prepare_sketch_arc(
+        document.Uid,
+        _values(start_angle_degrees=270.0, end_angle_degrees=360.0),
+    )
+
+    assert prepared.start_angle_degrees == 270.0
+    assert prepared.end_angle_degrees == 0.0
+    assert prepared.sweep_angle_degrees == 90.0
+    assert math.isclose(prepared.last_parameter, math.radians(360.0))
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     (
@@ -81,10 +97,9 @@ def test_center_radius_arc_preflight_create_and_verify_exact_result(arc_host) ->
         ("radius_mm", 1.0e-10, "greater than"),
         ("radius_mm", True, "finite number"),
         ("radius_mm", float("inf"), "within"),
-        ("start_angle_degrees", -1.0, "at least 0"),
-        ("start_angle_degrees", 360.0, "below 360"),
-        ("sweep_angle_degrees", 0.0, "greater than 0"),
-        ("sweep_angle_degrees", 360.0, "below 360"),
+        ("start_angle_degrees", -1.0, "between 0 and 360"),
+        ("end_angle_degrees", -1.0, "between 0 and 360"),
+        ("end_angle_degrees", 30.0, "must differ"),
     ),
 )
 def test_center_radius_arc_rejects_invalid_parameters(

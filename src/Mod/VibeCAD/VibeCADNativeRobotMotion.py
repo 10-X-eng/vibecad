@@ -366,11 +366,11 @@ def preflight_robot_simulation(
     trajectories = _capture_trajectories(document)
     if setup.state_sha256 != spec.expected_setup_state_sha256:
         raise NativeRobotMotionError(
-            "The Robot setup changed; read current ribbon state and retry."
+            "The Robot setup changed; inspect it and retry."
         )
     if trajectories.state_sha256 != spec.expected_trajectory_setup_state_sha256:
         raise NativeRobotMotionError(
-            "The trajectory setup changed; read current ribbon state and retry."
+            "The trajectory setup changed; inspect it and retry."
         )
     robot_index = _exact_record(
         setup.robots,

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Exact rounded Rectangle (Oblong) creation in the human-opened Sketch."""
+"""Exact rounded Rectangle creation in the active Sketch."""
 
 from __future__ import annotations
 
@@ -23,6 +23,8 @@ from VibeCADNativeSketchInsertion import (
     PreparedSketchInsertion,
     preflight_sketch_insertion,
     require_unchanged_sketch_insertion,
+    sketch_constraint_refs,
+    sketch_geometry_refs,
     sketch_geometry_result,
     verify_sketch_append,
 )
@@ -50,7 +52,7 @@ _FIELDS = frozenset(
         "expected_constraint_count",
         "first_corner_mm",
         "opposite_corner_mm",
-        "radius_mm",
+        "corner_radius_mm",
     }
 )
 
@@ -155,19 +157,26 @@ def prepare_sketch_oblong(
     value: Mapping[str, Any],
 ) -> SketchOblongSpec:
     if not isinstance(value, Mapping) or set(value) != _FIELDS:
-        raise NativeSketchError("A Sketch Oblong definition has incorrect fields.")
-    first = sketch_point_2d(value["first_corner_mm"], "Oblong first_corner_mm")
+        raise NativeSketchError(
+            "A Sketch Rounded Rectangle definition has incorrect fields."
+        )
+    first = sketch_point_2d(
+        value["first_corner_mm"], "Rounded Rectangle first_corner_mm"
+    )
     opposite = sketch_point_2d(
         value["opposite_corner_mm"],
-        "Oblong opposite_corner_mm",
+        "Rounded Rectangle opposite_corner_mm",
     )
     boundary = rectangle_boundary(first, opposite)
-    radius = sketch_positive_length(value["radius_mm"], "Oblong radius_mm")
+    radius = sketch_positive_length(
+        value["corner_radius_mm"], "Rounded Rectangle corner_radius_mm"
+    )
     width = abs(opposite[0] - first[0])
     height = abs(opposite[1] - first[1])
     if radius >= 0.5 * min(width, height) - MIN_SKETCH_GEOMETRY_LENGTH_MM:
         raise NativeSketchError(
-            "Sketch Oblong radius must be smaller than half its width and height."
+            "Sketch Rounded Rectangle corner_radius_mm must be smaller than half "
+            "its width and height."
         )
     return SketchOblongSpec(
         prepare_active_sketch_target(
@@ -199,7 +208,7 @@ def create_sketch_oblong(
     sketch = require_unchanged_sketch_insertion(
         document,
         prepared.insertion,
-        stage="after Oblong preflight",
+        stage="after Rounded Rectangle preflight",
     )
     spec = prepared.spec
     base_geometry = spec.target.expected_geometry_count
@@ -216,7 +225,7 @@ def create_sketch_oblong(
     line_indices = exact_rectangle_indices(
         sketch.addGeometry(lines, False),
         tuple(range(base_geometry, base_geometry + 4)),
-        "Oblong line",
+        "Rounded Rectangle line",
     )
     arcs = []
     for center, (first, last) in zip(
@@ -233,7 +242,7 @@ def create_sketch_oblong(
     arc_indices = exact_rectangle_indices(
         sketch.addGeometry(arcs, False),
         tuple(range(base_geometry + 4, base_geometry + 8)),
-        "Oblong arc",
+        "Rounded Rectangle arc",
     )
     corner_points = [
         Part.Point(App.Vector(*spec.boundary.corners_mm[index], 0.0))
@@ -242,7 +251,7 @@ def create_sketch_oblong(
     point_indices = exact_rectangle_indices(
         sketch.addGeometry(corner_points, True),
         (base_geometry + 8, base_geometry + 9),
-        "Oblong construction point",
+        "Rounded Rectangle construction point",
     )
 
     constraints = _oblong_constraints(
@@ -255,7 +264,7 @@ def create_sketch_oblong(
     constraint_indices = exact_rectangle_indices(
         sketch.addConstraint(constraints),
         tuple(range(base_constraint, base_constraint + 19)),
-        "Oblong constraint",
+        "Rounded Rectangle constraint",
     )
     return NativeMutationDraft(
         value={
@@ -320,7 +329,7 @@ def _verify_constraint(
         not active_rectangle_constraint(record, constraint_type)
         or record.get("references") != references
     ):
-        raise NativeSketchError(f"Sketch Oblong {label} constraint changed.")
+        raise NativeSketchError(f"Sketch Rounded Rectangle {label} constraint changed.")
 
 
 def verify_sketch_oblong(document: Any, draft: NativeMutationDraft) -> dict[str, Any]:
@@ -333,13 +342,15 @@ def verify_sketch_oblong(document: Any, draft: NativeMutationDraft) -> dict[str,
     points = tuple(draft.value["point_indices"])
     constraint_indices = tuple(draft.value["constraint_indices"])
     if lines != tuple(range(base_geometry, base_geometry + 4)):
-        raise NativeSketchError("Sketch Oblong line indices changed.")
+        raise NativeSketchError("Sketch Rounded Rectangle line indices changed.")
     if arcs != tuple(range(base_geometry + 4, base_geometry + 8)):
-        raise NativeSketchError("Sketch Oblong arc indices changed.")
+        raise NativeSketchError("Sketch Rounded Rectangle arc indices changed.")
     if points != (base_geometry + 8, base_geometry + 9):
-        raise NativeSketchError("Sketch Oblong construction point indices changed.")
+        raise NativeSketchError(
+            "Sketch Rounded Rectangle construction point indices changed."
+        )
     if constraint_indices != tuple(range(base_constraint, base_constraint + 19)):
-        raise NativeSketchError("Sketch Oblong constraint indices changed.")
+        raise NativeSketchError("Sketch Rounded Rectangle constraint indices changed.")
     sketch = verify_sketch_append(
         document,
         prepared.insertion,
@@ -356,7 +367,7 @@ def verify_sketch_oblong(document: Any, draft: NativeMutationDraft) -> dict[str,
             or not same_sketch_point(record.get("start_mm"), start)
             or not same_sketch_point(record.get("end_mm"), end)
         ):
-            raise NativeSketchError("Sketch Oblong line geometry changed.")
+            raise NativeSketchError("Sketch Rounded Rectangle line geometry changed.")
 
     arc_records = [serialize_sketch_geometry(sketch, index) for index in arcs]
     for record, center, parameters, endpoints in zip(
@@ -374,7 +385,7 @@ def verify_sketch_oblong(document: Any, draft: NativeMutationDraft) -> dict[str,
             last_parameter=parameters[1],
             start_mm=endpoints[0],
             end_mm=endpoints[1],
-            label="Oblong corner Arc",
+            label="Rounded Rectangle corner Arc",
         )
 
     point_records = [serialize_sketch_geometry(sketch, index) for index in points]
@@ -390,7 +401,9 @@ def verify_sketch_oblong(document: Any, draft: NativeMutationDraft) -> dict[str,
             or bool(record.get("blocked"))
             or not same_sketch_point(record.get("position_mm"), corner)
         ):
-            raise NativeSketchError("Sketch Oblong construction point changed.")
+            raise NativeSketchError(
+                "Sketch Rounded Rectangle construction point changed."
+            )
 
     constraints = [
         serialize_sketch_constraint(sketch, index) for index in constraint_indices
@@ -470,17 +483,18 @@ def verify_sketch_oblong(document: Any, draft: NativeMutationDraft) -> dict[str,
         same_sketch_number(record.get("radius_mm"), spec.radius_mm)
         for record in arc_records
     ):
-        raise NativeSketchError("Sketch Oblong corner Arc radius changed.")
+        raise NativeSketchError("Sketch Rounded Rectangle corner Arc radius changed.")
     return sketch_geometry_result(
         sketch,
         {
-            "geometries": [*line_records, *arc_records],
-            "construction_points": point_records,
-            "constraints": constraints,
+            "geometry_refs": sketch_geometry_refs((*line_records, *arc_records)),
+            "construction_geometry_refs": sketch_geometry_refs(point_records),
+            "constraint_refs": sketch_constraint_refs(constraints),
             "corners_mm": [
                 [x, y, 0.0] for x, y in spec.boundary.corners_mm
             ],
-            "radius_mm": spec.radius_mm,
+            "corner_radius_mm": spec.radius_mm,
+            "segment_count": 8,
             "closed": True,
         },
     )

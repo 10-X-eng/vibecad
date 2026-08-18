@@ -101,8 +101,8 @@ def test_any_surface_identity_change_invalidates_without_fallback(change: str) -
     assert caught.value.failure() == {
         "error_code": SURFACE_CHANGED,
         "message": (
-            "The active VibeCAD tool surface changed after this turn started. "
-            "Resume from the current ribbon in a new turn."
+            "The available CAD tools changed after this turn started. "
+            "Continue in a new turn."
         ),
         "current_surface": (
             "mesh"

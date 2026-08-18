@@ -80,6 +80,7 @@ class _PendingRequest:
 
 NotificationHandler = Callable[[str, dict[str, Any]], None]
 ServerRequestHandler = Callable[[str, dict[str, Any]], Any]
+ServerResponseHandler = Callable[[str], None]
 
 
 _account_cache_lock = threading.RLock()
@@ -317,6 +318,7 @@ class CodexAppServerClient:
     ) -> None:
         self._notification_handler = notification_handler
         self._server_request_handler = server_request_handler
+        self._server_response_handler: ServerResponseHandler | None = None
         self._command = command
         self._environment = dict(environment or {})
         self._process: subprocess.Popen[str] | None = None
@@ -490,6 +492,15 @@ class CodexAppServerClient:
         with self._state_lock:
             self._notification_handler = notification_handler
             self._server_request_handler = server_request_handler
+
+    def set_server_response_handler(
+        self,
+        handler: ServerResponseHandler | None,
+    ) -> None:
+        """Observe a server-request reply only after it reaches app-server."""
+
+        with self._state_lock:
+            self._server_response_handler = handler
 
     def close(self, *, reason: str = "client shutdown") -> None:
         process = self._process
@@ -675,10 +686,20 @@ class CodexAppServerClient:
                     method=method,
                 )
                 return
-            self._send_server_response(
+            sent = self._send_server_response(
                 {"id": request_id, "result": result},
                 method=method,
             )
+            if sent:
+                with self._state_lock:
+                    response_handler = self._server_response_handler
+                if response_handler is not None:
+                    try:
+                        response_handler(method)
+                    except Exception as exc:
+                        self._record_stderr(
+                            f"Server response handler failed for {method}: {exc}"
+                        )
         finally:
             current = threading.current_thread()
             with self._state_lock:

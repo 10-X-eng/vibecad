@@ -279,6 +279,9 @@ set(VibeCAD_Scripts
     VibeCADNativeCommonBindings.py
     VibeCADNativeCommonSchema.py
     VibeCADNativeCommonRuntime.py
+    VibeCADNativeWorkspaceBindings.py
+    VibeCADNativeWorkspaceRuntime.py
+    VibeCADNativeWorkspaceSchema.py
     VibeCADNativeComponentInterface.py
     VibeCADNativeComponentInterfaceBindings.py
     VibeCADNativeComponentInterfaceRuntime.py
@@ -713,6 +716,7 @@ set(VibeCAD_Scripts
     VibeCADNativeModelFeatureBindings.py
     VibeCADNativeModelFeatureRuntime.py
     VibeCADNativeModelFeatureSchema.py
+    VibeCADNativeModelExtrudeSchema.py
     VibeCADNativeModelFastener.py
     VibeCADNativeModelFastenerAttachment.py
     VibeCADNativeModelFastenerBindings.py
@@ -1417,6 +1421,9 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_sketch_geometry_gui_support.py
         vibecad_tests/native_sketch_provider_turn.py
         vibecad_tests/native_sketch_leave_gui_integration.py
+        vibecad_tests/native_workspace_switch_gui_integration.py
+        vibecad_tests/test_native_surface_continuation.py
+        vibecad_tests/test_native_workspace_schema.py
         vibecad_tests/native_sketch_geometry_reopen_gui_case.py
         vibecad_tests/native_sketch_chamfer_gui_case.py
         vibecad_tests/native_sketch_fillet_gui_case.py
@@ -1565,7 +1572,6 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/qt_ribbon_theme_integration.py
         vibecad_tests/read_geometry_integration.py
         vibecad_tests/test_geometry_worker_fallback.py
-        vibecad_tests/native_provider_contracts.py
         vibecad_tests/ribbon_surface_gui_integration.py
         vibecad_tests/test_aero_ribbon_and_context.py
         vibecad_tests/test_aero_ribbon_install.py

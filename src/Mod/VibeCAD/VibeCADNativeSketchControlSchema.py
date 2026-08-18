@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Bounded provider contract for leaving the exact active Sketch."""
+"""Bounded provider contract for finishing the exact active Sketch."""
 
 from __future__ import annotations
 
@@ -41,14 +41,14 @@ def _leave_parameters() -> dict:
 def sketch_control_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="sketch.control",
-        description="Finish the exact human-opened Sketch edit session.",
+        description="Finish the exact active Sketch edit session.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="leave",
                 description=(
-                    "Finish the exact active Sketch and require a new AI turn "
-                    "for the resulting ribbon surface."
+                    "Finish the active Sketch. End this turn after success; "
+                    "modeling continues automatically."
                 ),
                 action_ids=frozenset({"Sketcher_LeaveSketch"}),
                 surface_ids=frozenset({"sketch.edit"}),

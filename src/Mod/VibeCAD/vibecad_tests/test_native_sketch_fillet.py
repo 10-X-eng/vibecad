@@ -59,6 +59,7 @@ def _values(*, form: str = "corner", preserve_corner: bool = True, **updates):
             "expected_constraint_count": 1,
             "expected_external_geometry_count": 0,
             "target": target,
+            "radius_mm": 2.0,
             "preserve_corner": preserve_corner,
             **updates,
         }
@@ -365,7 +366,7 @@ def test_fillet_preflight_is_side_effect_free(monkeypatch) -> None:
     )
 
     assert len(diagnose) == 1
-    assert diagnose[0] == (0, 2, True)
+    assert diagnose[0] == (0, 2, 2.0, True)
     assert prepared.plan.geometry_records
     assert vars(sketch.Geometry[0].EndPoint) == vars(before[0].EndPoint)
     assert (sketch.GeometryCount, sketch.ConstraintCount) == (2, 1)

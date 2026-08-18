@@ -173,12 +173,13 @@ def test_session_factory_refuses_schema_or_authority_drift(monkeypatch) -> None:
 
 
 class _Dispatcher:
-    def __init__(self) -> None:
+    def __init__(self, result=None) -> None:
         self.calls = []
+        self.result = result or {"ok": True, "value": 4}
 
     def call(self, name, arguments, call_id):
         self.calls.append((name, arguments, call_id))
-        return {"ok": True, "value": 4}
+        return dict(self.result)
 
 
 class _Ledger:
@@ -189,9 +190,9 @@ class _Ledger:
         self.ended.append(run_id)
 
 
-def _provider_runner(*, changed=False, cancelled=False):
+def _provider_runner(*, changed=False, cancelled=False, result=None):
     _turn, schemas, frozen = _common_turn()
-    dispatcher = _Dispatcher()
+    dispatcher = _Dispatcher(result)
     ledger = _Ledger()
     execution = NativeSessionExecution(dispatcher, SimpleNamespace(), ledger, "run-a")
     live = dict(frozen)
@@ -234,6 +235,19 @@ def test_provider_runner_dispatches_call_id_and_records_concise_trace() -> None:
         "native_tool_started",
         "native_tool_completed",
     ]
+
+
+def test_provider_runner_reports_only_a_successful_exact_turn_transition() -> None:
+    ordinary, *_rest = _provider_runner()
+    assert ordinary.turn_transition_requested() is False
+    ordinary("state.read", '{"operation":"active"}', "provider-call-1")
+    assert ordinary.turn_transition_requested() is False
+
+    transition, *_rest = _provider_runner(
+        result={"ok": True, "next_turn_required": True}
+    )
+    transition("sketch.open", "{}", "provider-call-2")
+    assert transition.turn_transition_requested() is True
 
 
 def test_provider_update_keeps_state_only_while_frozen_surface_is_live() -> None:

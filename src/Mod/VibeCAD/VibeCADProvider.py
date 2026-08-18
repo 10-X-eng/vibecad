@@ -17,7 +17,7 @@ import signal
 import sys
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 from VibeCADDebug import capture_provider_request
@@ -867,6 +867,8 @@ class CodexProvider(BaseProvider):
 
         state_lock = threading.RLock()
         turn_completed = threading.Event()
+        transition_requested = threading.Event()
+        transition_response_sent = threading.Event()
         thread_id = ""
         turn_id = ""
         turn_status = ""
@@ -1070,6 +1072,8 @@ class CodexProvider(BaseProvider):
             updated_context = _tool_runner_provider_update(tool_runner)
             with state_lock:
                 live_context = updated_context
+            if _tool_runner_transition_requested(tool_runner):
+                transition_requested.set()
             model_result = _provider_visible_tool_result(result)
             state_after = _provider_state_after_tool(
                 updated_context,
@@ -1149,6 +1153,10 @@ class CodexProvider(BaseProvider):
             # the model can diagnose and repair them in the same turn.
             return {"contentItems": content_items, "success": True}
 
+        def server_response_sent(method: str) -> None:
+            if method == "item/tool/call" and transition_requested.is_set():
+                transition_response_sent.set()
+
         if self.auth_mode == "api_key" and not self.api_key:
             raise ProviderUnavailable("No OpenAI API key is configured.")
         codex_base_url = (
@@ -1201,9 +1209,7 @@ class CodexProvider(BaseProvider):
                 "conversation_path": str(
                     session_identity.get("conversation_path") or ""
                 ),
-                "workbench": str(thread_declaration.get("workbench") or ""),
                 "engine": str(thread_declaration.get("engine") or ""),
-                "surface_id": str(thread_declaration.get("surface_id") or ""),
                 "schema_sha256": str(
                     thread_declaration.get("schema_sha256") or ""
                 ),
@@ -1233,6 +1239,13 @@ class CodexProvider(BaseProvider):
                 server_request_handler=server_request,
                 environment=environment,
             )
+        response_handler_setter = getattr(
+            client,
+            "set_server_response_handler",
+            None,
+        )
+        if callable(response_handler_setter):
+            response_handler_setter(server_response_sent)
         deadline = (
             time.monotonic() + self.timeout_seconds
             if self.timeout_seconds is not None and self.timeout_seconds > 0
@@ -1301,7 +1314,7 @@ class CodexProvider(BaseProvider):
                 "config": vibecad_thread_config(
                     web_search_enabled=self.web_search_enabled,
                     skills_enabled=self.skills_enabled,
-                    collaboration_mode_enabled=managed or plan_mode,
+                    collaboration_mode_enabled=plan_mode,
                     openai_base_url=(
                         (codex_base_url or "")
                         if self.auth_mode == "api_key"
@@ -1415,7 +1428,19 @@ class CodexProvider(BaseProvider):
                 raise ProviderUnavailable("Codex app-server created no VibeCAD turn.")
             turn_id = str(turn["id"])
 
+            transition_interrupt_sent = False
             while not turn_completed.wait(0.05):
+                if (
+                    transition_response_sent.is_set()
+                    and not transition_interrupt_sent
+                ):
+                    transition_interrupt_sent = True
+                    client.request(
+                        "turn/interrupt",
+                        {"threadId": thread_id, "turnId": turn_id},
+                        timeout=5.0,
+                    )
+                    continue
                 if cancellation_check is not None and cancellation_check():
                     try:
                         client.request(
@@ -1447,12 +1472,32 @@ class CodexProvider(BaseProvider):
                 completed_status = turn_status
                 completed_error = turn_error
                 final_output = latest_message
+            if completed_status == "interrupted" and transition_interrupt_sent:
+                return ProviderResult(
+                    final_output="",
+                    raw={
+                        "thread_id": thread_id,
+                        "interaction_mode": interaction_mode,
+                        "auth_mode": self.auth_mode,
+                        "cad_transition": True,
+                    },
+                )
             if completed_status == "interrupted":
                 raise ProviderUnavailable("VibeCAD run stopped by user.")
             if completed_status != "completed":
                 raise ProviderUnavailable(
                     completed_error
                     or f"Codex turn ended with {completed_status or 'unknown status'}."
+                )
+            if not final_output and transition_requested.is_set():
+                return ProviderResult(
+                    final_output="",
+                    raw={
+                        "thread_id": thread_id,
+                        "interaction_mode": interaction_mode,
+                        "auth_mode": self.auth_mode,
+                        "cad_transition": True,
+                    },
                 )
             if not final_output:
                 context_note = (
@@ -1492,6 +1537,8 @@ class CodexProvider(BaseProvider):
         except CodexAppServerError as exc:
             raise ProviderUnavailable(str(exc)) from exc
         finally:
+            if callable(response_handler_setter):
+                response_handler_setter(None)
             if managed_lease is not None:
                 managed_stack.close()
             else:
@@ -1942,6 +1989,9 @@ def _run_provider_subprocess(
                             "type": "tool_result",
                             "result": result,
                             "context": _tool_runner_provider_update(tool_runner),
+                            "turn_transition": (
+                                _tool_runner_transition_requested(tool_runner)
+                            ),
                         }
                     )
                     _emit_provider_progress(
@@ -2175,9 +2225,22 @@ def _tool_runner_provider_update(
     return value
 
 
+def _tool_runner_transition_requested(tool_runner: ToolRunner | None) -> bool:
+    if tool_runner is None:
+        return False
+    requested = getattr(tool_runner, "turn_transition_requested", None)
+    return bool(requested()) if callable(requested) else False
+
+
 def _model_visible_context(
     context: dict[str, Any],
 ) -> dict[str, Any]:
+    modeling_surface = context.get("modeling_surface")
+    if (
+        isinstance(modeling_surface, dict)
+        and str(modeling_surface.get("engine") or "").strip().lower() == "native"
+    ):
+        return _model_visible_native_context(context)
     sections = (
         "workbench",
         "modeling_surface",
@@ -2207,6 +2270,46 @@ def _model_visible_context(
             if isinstance(item, dict)
         ]
         result["available_components"] = cleaned_components
+    return result
+
+
+def _without_native_internal_ids(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(name): _without_native_internal_ids(item)
+            for name, item in value.items()
+            if str(name) != "document_uid"
+        }
+    if isinstance(value, list):
+        return [_without_native_internal_ids(item) for item in value]
+    return _json_safe(value)
+
+
+def _model_visible_native_context(context: Mapping[str, Any]) -> dict[str, Any]:
+    snapshot = context.get("native_state")
+    if not isinstance(snapshot, Mapping):
+        return {}
+    from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
+
+    surface_id = str(snapshot.get("surface_id") or "")
+    work = str(NATIVE_WORKSPACE_BY_SURFACE.get(surface_id) or surface_id)
+    document = snapshot.get("document")
+    document_name = (
+        str(document.get("document_name") or "")
+        if isinstance(document, Mapping)
+        else ""
+    )
+    state = {
+        name: _without_native_internal_ids(snapshot[name])
+        for name in ("revision", "domain", "working_set", "selection")
+        if name in snapshot and snapshot[name] not in (None, "", [], {})
+    }
+    result: dict[str, Any] = {"work": work, "state": state}
+    if document_name:
+        result["document"] = {"name": document_name}
+    for name in ("view_screenshot", "reference_images"):
+        if name in context and context[name] not in (None, "", [], {}):
+            result[name] = _json_safe(context[name])
     return result
 
 
@@ -2432,6 +2535,11 @@ def _provider_state_after_tool(
     surface = context.get("modeling_surface")
     if not isinstance(surface, dict):
         return {"workbench": str(context.get("workbench") or "")}
+    if str(surface.get("engine") or "").strip().lower() == "native":
+        # Native results already return exact created/changed targets. Repeating
+        # the complete active-domain snapshot after every call is noisy and can
+        # be requested explicitly with state.read when it is actually needed.
+        return {}
     keys = (
         "workbench",
         "engine",
@@ -4719,17 +4827,27 @@ def _anthropic_child_main(
                             "error": "VibeCAD tool returned no structured result.",
                         }
                     updated_context = bridge.get("context")
+                    if bridge.get("turn_transition") is True:
+                        conn.send(
+                            {
+                                "type": "done",
+                                "final_output": "",
+                                "raw": {"cad_transition": True},
+                            }
+                        )
+                        return
                 if isinstance(updated_context, dict):
                     live_context = updated_context
                     tools_by_name, tool_definitions = build_tool_surface(live_context)
                     request_kwargs["tools"] = _anthropic_request_tools(
                         tool_definitions, web_search_enabled
                     )
-                if isinstance(result, dict):
-                    result["vibecad_state_after"] = _provider_state_after_tool(
-                        live_context,
-                        result,
-                    )
+                state_after = _provider_state_after_tool(
+                    live_context,
+                    result if isinstance(result, dict) else None,
+                )
+                if isinstance(result, dict) and state_after:
+                    result["vibecad_state_after"] = state_after
                 if (
                     tool_name == "core.capture_view_screenshot"
                     and not pending_server_tool

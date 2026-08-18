@@ -36,7 +36,7 @@ def test_join_contract_maps_each_live_leaf_to_one_exact_variant() -> None:
 def test_connect_schema_is_closed_bounded_and_exposes_durable_controls() -> None:
     _definition, _schema, branch, join = _branch("connect")
 
-    assert branch["required"] == ["operation", "label", "definition"]
+    assert branch["required"] == ["label", "definition"]
     assert branch["additionalProperties"] is False
     assert branch["properties"]["operation"]["const"] == "connect"
     assert join["required"] == ["sources", "refine", "tolerance_mm"]
@@ -108,8 +108,8 @@ def test_complete_join_schema_uses_the_compact_closed_multi_operation_encoding()
     }
     assert join["required"] == ["refine", "tolerance_mm"]
     assert join["description"] == (
-        "Fields: connect=sources,refine,tolerance_mm; "
-        "embed|cutout=base,tool,refine,tolerance_mm."
+        "Fields: all=refine,tolerance_mm; connect=sources; "
+        "embed|cutout=base,tool."
     )
     assert len(encoded) < 2_100
     for forbidden in ("selection", "runCommand", "workbench", "ribbon"):

@@ -134,8 +134,8 @@ def test_schema_change_rejects_the_existing_turn(focused_inventory) -> None:
     assert caught.value.failure() == {
         "error_code": SURFACE_CHANGED,
         "message": (
-            "The active VibeCAD ribbon tool contract changed after this turn "
-            "started. Resume from the current ribbon in a new turn."
+            "The available CAD tools changed after this turn started. "
+            "Continue in a new turn."
         ),
         "current_surface": "model",
         "repair": {"resume_next_turn": True},

@@ -520,7 +520,7 @@ def _parallel_parameters() -> dict:
 def sketch_constraint_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="sketch.constraint",
-        description="Constrain exact elements in the one human-opened Sketch.",
+        description="Constrain elements in the active Sketch.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

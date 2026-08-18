@@ -86,6 +86,23 @@ def test_incomplete_ribbon_disables_native_without_hiding_current_mode() -> None
     assert state.native_reason == "Model Native tools are incomplete."
 
 
+def test_unsaved_document_guides_save_without_misreporting_ribbon_state() -> None:
+    state = resolve_authoring_mode_selector(
+        _environment(
+            document_saved=False,
+            document_save_reason="Save this VibeCAD document to enable VibeCAD.",
+            native_available=False,
+            native_unavailable_reason="Native mode is not complete for the active ribbon.",
+        )
+    )
+
+    assert state.selector_enabled is True
+    assert state.native_enabled is True
+    assert state.native_reason == "Save this VibeCAD document to enable VibeCAD."
+    assert state.selector_reason == "Save this VibeCAD document to enable VibeCAD."
+    assert validate_human_mode_request(state, "native") == "native"
+
+
 def test_native_changes_block_silent_vibescript_return() -> None:
     state = resolve_authoring_mode_selector(
         _environment(

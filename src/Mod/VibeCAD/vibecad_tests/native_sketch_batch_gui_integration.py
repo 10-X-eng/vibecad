@@ -82,7 +82,7 @@ def _mixed_batch_arguments(sketch) -> dict:
                 "center_mm": {"x": 65.0, "y": 45.0},
                 "radius_mm": 4.0,
                 "start_angle_degrees": 0.0,
-                "sweep_angle_degrees": 120.0,
+                "end_angle_degrees": 120.0,
             },
             {
                 "ref": "point",

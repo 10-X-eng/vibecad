@@ -703,6 +703,44 @@ def _attachment(sketch: Any) -> dict[str, Any]:
     return result
 
 
+def _global_profile_plane(sketch: Any) -> dict[str, Any]:
+    placement = None
+    global_placement = _read(sketch, "getGlobalPlacement")
+    if callable(global_placement):
+        try:
+            placement = global_placement()
+        except Exception:
+            placement = None
+    if placement is None:
+        placement = _read(sketch, "Placement")
+    origin = _vector(_read(placement, "Base"))
+    quaternion = list(_read(_read(placement, "Rotation"), "Q", []) or [])[:4]
+    converted = [_number(value) for value in quaternion]
+    if origin is None or len(converted) != 4 or any(value is None for value in converted):
+        return {}
+    x, y, z, w = (float(value) for value in converted)
+    magnitude = math.sqrt(x * x + y * y + z * z + w * w)
+    if magnitude <= 1.0e-15:
+        return {}
+    x, y, z, w = (value / magnitude for value in (x, y, z, w))
+    matrix = (
+        (1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)),
+        (2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)),
+        (2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)),
+    )
+
+    def column(index: int) -> list[float]:
+        return [float(_number(matrix[row][index]) or 0.0) for row in range(3)]
+
+    return {
+        "space": "global",
+        "origin_mm": origin,
+        "x_direction": column(0),
+        "y_direction": column(1),
+        "normal": column(2),
+    }
+
+
 def _bounded_indices(value: Any) -> tuple[list[int], bool]:
     raw = sorted({_integer(item) for item in list(value or [])})
     return raw[:MAX_DIAGNOSTIC_INDICES], len(raw) > MAX_DIAGNOSTIC_INDICES
@@ -792,15 +830,19 @@ def _profile_state(sketch: Any) -> dict[str, Any]:
     status = _text(diagnostics.get("face_maker_status"), 160)
     if status:
         result["face_maker_status"] = status
+    global_plane = _global_profile_plane(sketch)
     plane = diagnostics.get("support_plane")
-    if isinstance(plane, str):
+    if global_plane:
+        result["support_plane"] = global_plane
+    elif isinstance(plane, str):
         result["support_plane"] = _text(plane, 96)
-    if isinstance(plane, dict):
+    elif isinstance(plane, dict):
         support_plane = {}
         for source_key, result_key in (
             ("origin", "origin_mm"),
             ("normal", "normal"),
             ("x_direction", "x_direction"),
+            ("y_direction", "y_direction"),
         ):
             _add_vector(support_plane, result_key, plane.get(source_key))
         if support_plane:

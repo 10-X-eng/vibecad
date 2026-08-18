@@ -373,13 +373,10 @@ def _run() -> None:
         sketch_response = native_call(
             "model.sketch",
             {
-                "operation": "new_sketch",
+                "operation": "create_on_base_plane",
                 "label": "Draft Neutral Sketch",
-                "support": {
-                    "kind": "base_plane",
-                    "plane": "XY",
-                    "offset_mm": 0.0,
-                },
+                "plane": "XY",
+                "offset_mm": 0.0,
             },
         )
         neutral_sketch = sketch_response["sketch"]["object_name"]

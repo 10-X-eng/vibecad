@@ -43,6 +43,8 @@ def _run() -> None:
             )
         )
         VibeGui._confirm_take_manual_control = lambda: True
+        VibeGui._save_before_native_mode = lambda _dock=None: True
+        VibeGui._ensure_first_conversation = lambda _service: None
 
         document = App.newDocument("NativeAuthoritySaved")
         documents.append(document.Name)

@@ -127,6 +127,56 @@ def test_dispatch_injects_one_host_ticket_and_returns_concise_success() -> None:
     assert len(calls[0].ticket.idempotency_token) == 32
 
 
+def test_single_purpose_tool_infers_its_frozen_operation() -> None:
+    calls = []
+    dispatcher, _state, _debug = _dispatcher(
+        lambda call: calls.append(call) or {"value": call.arguments["value"]}
+    )
+
+    result = dispatcher.call(
+        "test.execute",
+        json.dumps({"value": 12}),
+        "provider-call-1",
+    )
+
+    assert result == {"ok": True, "value": 12}
+    assert calls[0].arguments == {"operation": "read", "value": 12}
+
+
+def test_multi_purpose_tool_still_requires_a_frozen_operation() -> None:
+    definition = NativeCapabilityDefinition(
+        name="test.execute",
+        description="Execute one exact test operation.",
+        primary_classification="read",
+        variants=tuple(
+            NativeCapabilityVariant(
+                operation=operation,
+                description=f"Execute {operation}.",
+                action_ids=frozenset({f"VibeCAD_Test_{operation}"}),
+                surface_ids=frozenset({"model"}),
+                exact_target_type=None,
+                transaction_behavior="none",
+                background_required=False,
+                parameters=_parameters(),
+            )
+            for operation in ("read", "measure")
+        ),
+    )
+    dispatcher, _state, _debug = _dispatcher(
+        lambda _call: pytest.fail("handler must not execute"),
+        definition=definition,
+    )
+
+    result = dispatcher.call(
+        "test.execute",
+        json.dumps({"value": 12}),
+        "provider-call-1",
+    )
+
+    assert result["error_code"] == "NATIVE_ARGUMENTS_INVALID"
+    assert result["argument_error"]["expected"] == ["read", "measure"]
+
+
 def test_read_capability_cannot_report_success_after_a_structural_change() -> None:
     state_holder = {}
 
@@ -226,6 +276,81 @@ def test_schema_and_surface_failures_happen_before_the_handler() -> None:
     assert extra["error_code"] == "NATIVE_ARGUMENTS_INVALID"
     assert unavailable["error_code"] == "NATIVE_TOOL_UNAVAILABLE"
     assert calls == []
+
+
+def test_schema_failure_example_resolves_nested_union_to_one_valid_payload() -> None:
+    support = {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "const": "base_plane"},
+                    "plane": {"type": "string", "enum": ["XY", "XZ", "YZ"]},
+                    "offset_mm": {
+                        "type": "number",
+                        "minimum": -1000,
+                        "maximum": 1000,
+                    },
+                },
+                "required": ["kind", "plane", "offset_mm"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "const": "datum_plane"},
+                    "target": {
+                        "type": "object",
+                        "properties": {
+                            "object_name": {"type": "string", "maxLength": 128}
+                        },
+                        "required": ["object_name"],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["kind", "target"],
+                "additionalProperties": False,
+            },
+        ]
+    }
+    definition = NativeCapabilityDefinition(
+        name="test.execute",
+        description="Execute one exact nested-union test operation.",
+        primary_classification="read",
+        variants=(
+            NativeCapabilityVariant(
+                operation="read",
+                description="Read one exact supported object.",
+                action_ids=frozenset({"VibeCAD_Test"}),
+                surface_ids=frozenset({"model"}),
+                exact_target_type=None,
+                transaction_behavior="none",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {"support": support},
+                    "required": ["support"],
+                    "additionalProperties": False,
+                },
+            ),
+        ),
+    )
+    dispatcher, _state, _debug = _dispatcher(
+        lambda _call: pytest.fail("handler must not execute"),
+        definition=definition,
+    )
+
+    result = dispatcher.call(
+        "test.execute",
+        json.dumps({"operation": "read", "support": None}),
+        "provider-call-1",
+    )
+
+    example = result["argument_error"]["valid_example"]
+    assert example == {
+        "operation": "read",
+        "support": {"kind": "base_plane", "plane": "XY", "offset_mm": 0.0},
+    }
 
 
 def test_compact_multi_variant_schema_is_revalidated_against_exact_branch() -> None:
@@ -463,6 +588,63 @@ def test_exact_edit_control_requires_and_accepts_one_turn_invalidating_transitio
         "next_surface": "model",
         "next_turn_required": True,
         "closed": True,
+    }
+    assert checks == 2
+
+
+def test_surface_control_accepts_one_turn_invalidating_workspace_transition() -> None:
+    definition = NativeCapabilityDefinition(
+        name="test.surface_control",
+        description="Switch to one exact Native workspace surface.",
+        primary_classification="view",
+        variants=(
+            NativeCapabilityVariant(
+                operation="switch",
+                description="Switch surfaces after the current turn.",
+                action_ids=frozenset({"VibeCAD_Test"}),
+                surface_ids=frozenset({"model"}),
+                exact_target_type=None,
+                transaction_behavior="surface_control",
+                background_required=False,
+                parameters=_parameters(),
+            ),
+        ),
+    )
+    checks = 0
+
+    class _SurfaceChanged(RuntimeError):
+        def failure(self):
+            return {
+                "error_code": "NATIVE_SURFACE_CHANGED",
+                "message": "The Native workspace changed.",
+                "current_surface": "assemble",
+            }
+
+    def reauthorize():
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            raise _SurfaceChanged()
+
+    dispatcher, _state, _debug = _dispatcher(
+        lambda _call: {
+            "workspace": "assembly",
+            "next_turn_required": True,
+        },
+        definition=definition,
+        reauthorize_turn=reauthorize,
+    )
+
+    result = dispatcher.call(
+        "test.surface_control",
+        json.dumps({"operation": "switch", "value": 1}),
+        "provider-call-1",
+    )
+
+    assert result == {
+        "ok": True,
+        "workspace": "assembly",
+        "next_turn_required": True,
     }
     assert checks == 2
 

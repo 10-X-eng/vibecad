@@ -172,7 +172,38 @@ def _assert_exact_state(snapshot: dict, sketch, support) -> None:
     assert profile["open_wire_count"] == 0
     assert profile["closed_profile"] is True
     assert profile["face_maker_succeeded"] is True
-    assert profile["support_plane"] == "sketch_xy"
+    placement = sketch.getGlobalPlacement()
+
+    def vector(value):
+        return [
+            0.0 if abs(float(item)) < 1.0e-14 else round(float(item), 12)
+            for item in (value.x, value.y, value.z)
+        ]
+
+    expected_plane = {
+        "space": "global",
+        "origin_mm": vector(placement.Base),
+        "x_direction": vector(
+            placement.Rotation.multVec(App.Vector(1.0, 0.0, 0.0))
+        ),
+        "y_direction": vector(
+            placement.Rotation.multVec(App.Vector(0.0, 1.0, 0.0))
+        ),
+        "normal": vector(
+            placement.Rotation.multVec(App.Vector(0.0, 0.0, 1.0))
+        ),
+    }
+    actual_plane = profile["support_plane"]
+    assert actual_plane["space"] == "global"
+    for field in ("origin_mm", "x_direction", "y_direction", "normal"):
+        assert max(
+            abs(float(actual) - float(expected))
+            for actual, expected in zip(
+                actual_plane[field],
+                expected_plane[field],
+                strict=True,
+            )
+        ) < 1.0e-11, (field, actual_plane[field], expected_plane[field])
 
     solver = active["solver"]
     assert solver["degrees_of_freedom"] == int(sketch.DoF)
@@ -238,13 +269,11 @@ def _run() -> None:
             read_active_ribbon_surface(controller),
             build_native_capability_registry(),
         )
-        assert provider_surface.available is False
-        assert provider_surface.schemas == ()
-        assert (
-            provider_surface.missing_action_ids
-            or provider_surface.missing_definition_names
-            or provider_surface.incomplete_definition_names
-        )
+        assert provider_surface.available is True
+        assert provider_surface.schemas
+        assert provider_surface.missing_action_ids == ()
+        assert provider_surface.missing_definition_names == ()
+        assert provider_surface.incomplete_definition_names == ()
 
         before_read = _read_boundary(document, sketch)
         first = _snapshot(document, controller)

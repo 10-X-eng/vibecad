@@ -611,8 +611,8 @@ def _compound_filter_definition() -> dict[str, Any]:
         ("source", "mode"),
     )
     schema["description"] = (
-        "Mode fields: specific_items selectors/invert; collision stencil/invert; windows "
-        "stencil/window_percent/maximum/invert."
+        "specific_items: selectors,invert; collision: stencil,invert; "
+        "windows: stencil,window_percent,maximum,invert."
     )
     return schema
 
@@ -653,12 +653,12 @@ def model_part_capability_definition() -> NativeCapabilityDefinition:
     }
     return NativeCapabilityDefinition(
         name="model.part",
-        description="Create standalone Part results from explicit exact definitions.",
+        description="Create Part shapes outside Bodies.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="primitive",
-                description="Create one placed standalone Part primitive.",
+                description="Create a Part primitive.",
                 action_ids=frozenset({"Part_Primitives"}),
                 surface_ids=_MODEL_SURFACE,
                 exact_target_type="NewPartPrimitive",
@@ -668,10 +668,7 @@ def model_part_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="builder",
-                description=(
-                    "Build an Edge, Wire, Face, Shell, or Solid from exact current "
-                    "shape inputs; the selected kind determines its required fields."
-                ),
+                description="Build an Edge, Wire, Face, Shell, or Solid from exact shapes.",
                 action_ids=frozenset({"Part_Builder"}),
                 surface_ids=_MODEL_SURFACE,
                 exact_target_type="ExactShapeInputs",
@@ -685,8 +682,8 @@ def model_part_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="extrude",
                 description=(
-                    "Extrude exact current Part shapes with the live direction, "
-                    "length, taper, symmetry, reversal, and solid controls."
+                    "Extrude Part shapes with direction, length, taper, symmetry, "
+                    "reversal, and solid controls."
                 ),
                 action_ids=frozenset({"Part_Extrude"}),
                 surface_ids=_MODEL_SURFACE,
@@ -700,11 +697,7 @@ def model_part_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="revolve",
-                description=(
-                    "Revolve exact current Part shapes about a custom axis or "
-                    "exact line/circular edge with signed angle, symmetry, and "
-                    "solid controls."
-                ),
+                description="Revolve Part shapes about an axis with angle and solid controls.",
                 action_ids=frozenset({"Part_Revolve"}),
                 surface_ids=_MODEL_SURFACE,
                 exact_target_type="ExactCurrentShapeSourcesAndAxis",
@@ -717,10 +710,7 @@ def model_part_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="mirror",
-                description=(
-                    "Mirror exact current Part shapes across an XY, XZ, or YZ "
-                    "plane at an explicit base, or one exact plane reference."
-                ),
+                description="Mirror Part shapes across XY, XZ, YZ, or an exact plane.",
                 action_ids=frozenset({"Part_Mirror"}),
                 surface_ids=_MODEL_SURFACE,
                 exact_target_type="ExactCurrentShapeSourcesAndMirrorPlane",
@@ -733,10 +723,7 @@ def model_part_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="make_face",
-                description=(
-                    "Create one parametric face from exact current objects whose "
-                    "wires are all closed and which contain no existing faces."
-                ),
+                description="Create a parametric face from exact closed wires.",
                 action_ids=frozenset({"Part_MakeFace"}),
                 surface_ids=_MODEL_SURFACE,
                 exact_target_type="ExactCurrentClosedWireSources",

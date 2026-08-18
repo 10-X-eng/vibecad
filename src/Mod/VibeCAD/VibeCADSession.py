@@ -23,6 +23,7 @@ from VibeCADProvider import (
     CodexProvider,
     OfflineProvider,
     ProviderUnavailable,
+    _model_visible_context,
     provider_tool_schema_digest,
 )
 from VibeCADIntentMemoryCompiler import compile_intent_memory_update
@@ -1535,6 +1536,18 @@ def _provider_component_inventory_payload(
 
 
 def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
+    modeling_surface = context.get("modeling_surface")
+    if (
+        isinstance(modeling_surface, Mapping)
+        and str(modeling_surface.get("engine") or "").strip().lower() == "native"
+    ):
+        result = _model_visible_context(context)
+        result.pop("view_screenshot", None)
+        result.pop("reference_images", None)
+        aero = context.get("aero")
+        if aero not in (None, "", [], {}):
+            result["aero"] = aero
+        return result
     # Final first-prompt allowlist. This dict is serialized as
     # VIBECAD_CONTEXT_JSON. Aero is a sibling of document/selection, not a
     # field on provider_turn_document_summary, and it is not delivered by
@@ -5567,6 +5580,76 @@ def run_sketch_close_continuation(
         output_authorization_callback=output_authorization_callback,
         input_authorization_callback=input_authorization_callback,
         session_trigger=clean_event,
+        persist_input_as_user=False,
+        prompt_section="CURRENT_SESSION_EVENT",
+        document_thread_dispatch=document_thread_dispatch,
+        interaction_mode="build",
+    )
+
+
+def run_native_surface_continuation(
+    event: dict[str, Any],
+    service: VibeCADService | None = None,
+    prefer_online: bool = True,
+    provider: BaseProvider | None = None,
+    progress_callback: ProgressCallback | None = None,
+    cancellation_check: CancellationCheck | None = None,
+    steering_check: SteeringCheck | None = None,
+    question_callback: QuestionCallback | None = None,
+    output_authorization_callback: NativeOutputAuthorizer | None = None,
+    input_authorization_callback: NativeInputAuthorizer | None = None,
+    document_thread_dispatch: DocumentThreadDispatch | None = None,
+) -> VibeCADResponse:
+    if not isinstance(event, dict):
+        raise ValueError("CAD workspace continuation event must be an object.")
+    expected_fields = {
+        "type",
+        "document_uid",
+        "document_name",
+        "surface_id",
+        "workspace",
+    }
+    if set(event) != expected_fields:
+        raise ValueError(
+            "CAD workspace continuation event requires exactly: "
+            + ", ".join(sorted(expected_fields))
+            + "."
+        )
+    if str(event.get("type") or "").strip() != "cad_workspace_changed":
+        raise ValueError(
+            "CAD workspace continuation event type must be cad_workspace_changed."
+        )
+    clean_event = {
+        "type": "cad_workspace_changed",
+        "document_uid": str(event.get("document_uid") or "").strip(),
+        "document_name": str(event.get("document_name") or "").strip(),
+        "surface_id": str(event.get("surface_id") or "").strip(),
+        "workspace": str(event.get("workspace") or "").strip(),
+    }
+    missing = [key for key, value in clean_event.items() if not value]
+    if missing:
+        raise ValueError(
+            "CAD workspace continuation event is missing: "
+            + ", ".join(sorted(missing))
+            + "."
+        )
+    workspace = clean_event["workspace"].replace("_", " ").capitalize()
+    prompt = (
+        f"{workspace} work is now available. Continue the current design from its "
+        "existing document state. Do not repeat completed operations."
+    )
+    return _run_session_turn(
+        prompt,
+        service=service,
+        prefer_online=prefer_online,
+        provider=provider,
+        progress_callback=progress_callback,
+        cancellation_check=cancellation_check,
+        steering_check=steering_check,
+        question_callback=question_callback,
+        output_authorization_callback=output_authorization_callback,
+        input_authorization_callback=input_authorization_callback,
+        session_trigger={"workspace": clean_event["workspace"]},
         persist_input_as_user=False,
         prompt_section="CURRENT_SESSION_EVENT",
         document_thread_dispatch=document_thread_dispatch,

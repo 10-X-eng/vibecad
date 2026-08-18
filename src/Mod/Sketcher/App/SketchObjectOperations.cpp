@@ -409,18 +409,45 @@ std::unique_ptr<SketchObject> SketchObject::makeGeometryMutationDiagnosticClone(
 std::unique_ptr<SketchObject>
 SketchObject::diagnoseFillet(int GeoId, PointPos PosId, bool preserveCorner) const
 {
-    return diagnoseFilletOrChamfer(GeoId, PosId, preserveCorner, false);
+    return diagnoseFilletOrChamfer(GeoId, PosId, 0.0, preserveCorner, false);
+}
+
+std::unique_ptr<SketchObject> SketchObject::diagnoseFillet(
+    int GeoId,
+    PointPos PosId,
+    double radius,
+    bool preserveCorner
+) const
+{
+    if (!std::isfinite(radius) || radius <= 0.0) {
+        return nullptr;
+    }
+    return diagnoseFilletOrChamfer(GeoId, PosId, radius, preserveCorner, false);
 }
 
 std::unique_ptr<SketchObject>
 SketchObject::diagnoseChamfer(int GeoId, PointPos PosId, bool preserveCorner) const
 {
-    return diagnoseFilletOrChamfer(GeoId, PosId, preserveCorner, true);
+    return diagnoseFilletOrChamfer(GeoId, PosId, 0.0, preserveCorner, true);
+}
+
+std::unique_ptr<SketchObject> SketchObject::diagnoseChamfer(
+    int GeoId,
+    PointPos PosId,
+    double distance,
+    bool preserveCorner
+) const
+{
+    if (!std::isfinite(distance) || distance <= 0.0) {
+        return nullptr;
+    }
+    return diagnoseFilletOrChamfer(GeoId, PosId, distance, preserveCorner, true);
 }
 
 std::unique_ptr<SketchObject> SketchObject::diagnoseFilletOrChamfer(
     int GeoId,
     PointPos PosId,
+    double requestedRadius,
     bool preserveCorner,
     bool chamfer
 ) const
@@ -457,7 +484,9 @@ std::unique_ptr<SketchObject> SketchObject::diagnoseFilletOrChamfer(
     }
     const double length1 = dir1.Length();
     const double length2 = dir2.Length();
-    const double radius = std::min(length1, length2) * 0.2 * std::sin(dir1.GetAngle(dir2) / 2);
+    const double radius = requestedRadius > 0.0
+        ? requestedRadius
+        : std::min(length1, length2) * 0.2 * std::sin(dir1.GetAngle(dir2) / 2);
     if (!std::isfinite(radius) || radius <= 0.0) {
         return nullptr;
     }
@@ -513,7 +542,24 @@ std::unique_ptr<SketchObject> SketchObject::diagnoseFillet(
 ) const
 {
     return diagnoseFilletOrChamfer(
-        GeoId1, GeoId2, refPnt1, refPnt2, preserveCorner, false
+        GeoId1, GeoId2, refPnt1, refPnt2, 0.0, preserveCorner, false
+    );
+}
+
+std::unique_ptr<SketchObject> SketchObject::diagnoseFillet(
+    int GeoId1,
+    int GeoId2,
+    const Base::Vector3d& refPnt1,
+    const Base::Vector3d& refPnt2,
+    double radius,
+    bool preserveCorner
+) const
+{
+    if (!std::isfinite(radius) || radius <= 0.0) {
+        return nullptr;
+    }
+    return diagnoseFilletOrChamfer(
+        GeoId1, GeoId2, refPnt1, refPnt2, radius, preserveCorner, false
     );
 }
 
@@ -526,7 +572,24 @@ std::unique_ptr<SketchObject> SketchObject::diagnoseChamfer(
 ) const
 {
     return diagnoseFilletOrChamfer(
-        GeoId1, GeoId2, refPnt1, refPnt2, preserveCorner, true
+        GeoId1, GeoId2, refPnt1, refPnt2, 0.0, preserveCorner, true
+    );
+}
+
+std::unique_ptr<SketchObject> SketchObject::diagnoseChamfer(
+    int GeoId1,
+    int GeoId2,
+    const Base::Vector3d& refPnt1,
+    const Base::Vector3d& refPnt2,
+    double distance,
+    bool preserveCorner
+) const
+{
+    if (!std::isfinite(distance) || distance <= 0.0) {
+        return nullptr;
+    }
+    return diagnoseFilletOrChamfer(
+        GeoId1, GeoId2, refPnt1, refPnt2, distance, preserveCorner, true
     );
 }
 
@@ -535,6 +598,7 @@ std::unique_ptr<SketchObject> SketchObject::diagnoseFilletOrChamfer(
     int GeoId2,
     const Base::Vector3d& refPnt1,
     const Base::Vector3d& refPnt2,
+    double requestedRadius,
     bool preserveCorner,
     bool chamfer
 ) const
@@ -551,8 +615,9 @@ std::unique_ptr<SketchObject> SketchObject::diagnoseFilletOrChamfer(
         return nullptr;
     }
 
-    double radius = 0.0;
-    if (geo1->is<Part::GeomLineSegment>() && geo2->is<Part::GeomLineSegment>()) {
+    double radius = requestedRadius;
+    if (radius <= 0.0 && geo1->is<Part::GeomLineSegment>()
+        && geo2->is<Part::GeomLineSegment>()) {
         radius = Part::suggestFilletRadius(
             static_cast<const Part::GeomLineSegment*>(geo1),
             static_cast<const Part::GeomLineSegment*>(geo2),

@@ -29,6 +29,15 @@ _NATIVE_RESULT_MODES = {
 _PROVIDER_RESULT_MODES = frozenset({"new_body", "join", "cut", "intersect"})
 
 
+def shape_bounds_mm(shape: Any) -> dict[str, list[float]]:
+    bounds = shape.optimalBoundingBox(False, False)
+    return {
+        "x": [float(bounds.XMin), float(bounds.XMax)],
+        "y": [float(bounds.YMin), float(bounds.YMax)],
+        "z": [float(bounds.ZMin), float(bounds.ZMax)],
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class DesignResultSpec:
     mode: str
@@ -77,16 +86,17 @@ def result_spec_from_mapping(
     document_uid: str,
     value: Mapping[str, Any],
 ) -> DesignResultSpec:
-    if not isinstance(value, Mapping) or set(value) != {
-        "mode",
-        "targets",
-        "destination_component",
-    }:
+    allowed = {"mode", "targets", "destination_component"}
+    if (
+        not isinstance(value, Mapping)
+        or "mode" not in value
+        or not set(value).issubset(allowed)
+    ):
         raise NativeModelError("A Design result definition is invalid.")
     mode = str(value["mode"])
     if mode not in _PROVIDER_RESULT_MODES:
         raise NativeModelError("A Design result mode is unavailable.")
-    targets = value["targets"]
+    targets = value.get("targets", [])
     if not isinstance(targets, list) or len(targets) > 16:
         raise NativeModelError("A Design result requires at most 16 exact Bodies.")
     refs = []
@@ -99,7 +109,7 @@ def result_spec_from_mapping(
             raise NativeModelError("A Design result repeats the same Body target.")
         seen.add(reference.object_name)
         refs.append(reference)
-    component_value = value["destination_component"]
+    component_value = value.get("destination_component")
     if component_value is None:
         component = None
     elif isinstance(component_value, Mapping) and set(component_value) == {"object_name"}:
@@ -230,14 +240,15 @@ def verify_design_operation(document: Any, draft: NativeMutationDraft) -> dict[s
     for index, body in enumerate(outputs):
         present = bool(presence[index]) if index < len(presence) else True
         shape = body.Shape
-        body_results.append(
-            {
-                "body": object_reference(body),
-                "present": present,
-                "solid_count": len(shape.Solids) if not shape.isNull() else 0,
-                "volume_mm3": float(shape.Volume) if not shape.isNull() else 0.0,
-            }
-        )
+        body_result = {
+            "body": object_reference(body),
+            "present": present,
+            "solid_count": len(shape.Solids) if not shape.isNull() else 0,
+            "volume_mm3": float(shape.Volume) if not shape.isNull() else 0.0,
+        }
+        if not shape.isNull():
+            body_result["bounds_mm"] = shape_bounds_mm(shape)
+        body_results.append(body_result)
     result = {
         "operation": object_reference(operation),
         "result_mode": spec.mode,

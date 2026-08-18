@@ -90,7 +90,6 @@ def test_parabolic_arc_creates_curve_and_all_human_internal_geometry(
     ("updates", "message"),
     (
         ({"focal_length_mm": 0.0}, "greater than"),
-        ({"rotation_degrees": 360.0}, "below 360"),
         ({"start_parameter_mm": -1_000_001.0}, "within"),
         ({"end_parameter_mm": 1_000_001.0}, "within"),
         (
