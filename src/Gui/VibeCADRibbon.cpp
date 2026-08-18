@@ -815,19 +815,6 @@ const std::vector<GroupDefinition>& reverseEngineeringGroups()
     return groups;
 }
 
-const std::vector<GroupDefinition>& aeroGroups()
-{
-    static const std::vector<GroupDefinition> groups = {
-        {QObject::tr("Aero"),
-         {"VibeCADAero_Analyze",
-          "VibeCADAero_Section",
-          "VibeCADAero_VLM",
-          "VibeCADAero_ExportJSBSim",
-          "VibeCADAero_Report"}},
-    };
-    return groups;
-}
-
 const std::vector<GroupDefinition>& spreadsheetGroups()
 {
     static const std::vector<GroupDefinition> groups = {
@@ -1200,33 +1187,10 @@ struct Gui::VibeCADRibbon::Private
         return groups;
     }
 
-    bool isAeroTabIndex(int index) const
-    {
-        if (!tabs || index < 0 || index >= tabs->count()) {
-            return false;
-        }
-        if (tabs->tabText(index).compare(QStringLiteral("Aero"), Qt::CaseInsensitive) == 0) {
-            return true;
-        }
-        const QString data = tabs->tabData(index).toString();
-        return data == QLatin1String("VibeCADAeroWorkbench") || data == QLatin1String("aero");
-    }
-
-    bool isAeroTab() const
-    {
-        return tabs && isAeroTabIndex(tabs->currentIndex());
-    }
-
     std::vector<GroupDefinition> pageGroups() const
     {
         if (inSketchEdit) {
             return sketchGroups();
-        }
-        if (isAeroTab()) {
-            Application::Instance->initializeWorkbench("VibeCADAeroWorkbench");
-            std::vector<GroupDefinition> groups = aeroGroups();
-            mergeGroups(groups, modelPageGroups());
-            return groups;
         }
         const std::string activeWorkbench = WorkbenchManager::instance()->activeName();
         if (activeWorkbench == "SketcherWorkbench") {
@@ -1270,12 +1234,6 @@ struct Gui::VibeCADRibbon::Private
         if (!tabs || tabs->currentIndex() < 0) {
             return QStringLiteral("unavailable");
         }
-        if (isAeroTab()) {
-            // Aero is Model plus Aero buttons. Native keeps the Model surface
-            // so an unknown aero-only page cannot hide stock groups.
-            return QStringLiteral("model");
-        }
-
         const QString selectedWorkbench = tabs->tabData(tabs->currentIndex()).toString();
         const QString activeWorkbench
             = QString::fromStdString(WorkbenchManager::instance()->activeName());
@@ -1405,7 +1363,6 @@ struct Gui::VibeCADRibbon::Private
         }
         publishSurfaceManifest(manifestGroups);
         page->setGroups(std::move(groups));
-        updateAeroWorkspace();
     }
 
     void updateThemeButton() const
@@ -1886,16 +1843,6 @@ struct Gui::VibeCADRibbon::Private
         page = new RibbonPage(root);
         rootLayout->addWidget(page);
 
-        aeroWorkspaceHost = new QWidget(root);
-        aeroWorkspaceHost->setObjectName(QStringLiteral("VibeCADAeroWorkspaceHost"));
-        aeroWorkspaceHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        aeroWorkspaceHost->setMinimumHeight(168);
-        aeroWorkspaceHost->setMaximumHeight(220);
-        auto* hostLayout = new QVBoxLayout(aeroWorkspaceHost);
-        hostLayout->setContentsMargins(8, 4, 8, 4);
-        hostLayout->setSpacing(4);
-        aeroWorkspaceHost->hide();
-        rootLayout->addWidget(aeroWorkspaceHost);
     }
 
     void build()
@@ -2142,7 +2089,7 @@ struct Gui::VibeCADRibbon::Private
             return;
         }
         const QString workbench = tabs->tabData(index).toString();
-        if (workbench.isEmpty() || isAeroTabIndex(index)) {
+        if (workbench.isEmpty()) {
             rebuildPage();
             return;
         }
@@ -2164,25 +2111,6 @@ struct Gui::VibeCADRibbon::Private
         if (inSketchEdit) {
             return;
         }
-        if (workbench == QStringLiteral("VibeCADAeroWorkbench")) {
-            int aeroIndex = previousDomain;
-            for (int index = 0; index < tabs->count(); ++index) {
-                if (isAeroTabIndex(index)) {
-                    aeroIndex = index;
-                    previousDomain = index;
-                    break;
-                }
-            }
-            setDomainTabsEnabled(true);
-            removeSketchTabAndSelect(aeroIndex);
-            updateAeroWorkspace();
-            return;
-        }
-        if (isAeroTab() && workbench == QStringLiteral("PartDesignWorkbench")) {
-            setDomainTabsEnabled(true);
-            updateAeroWorkspace();
-            return;
-        }
         int targetIndex = previousDomain;
         for (int index = 0; index < tabs->count(); ++index) {
             if (tabs->tabData(index).toString() == workbench) {
@@ -2193,16 +2121,6 @@ struct Gui::VibeCADRibbon::Private
         }
         setDomainTabsEnabled(true);
         removeSketchTabAndSelect(targetIndex);
-        updateAeroWorkspace();
-    }
-
-    void updateAeroWorkspace()
-    {
-        if (!aeroWorkspaceHost) {
-            return;
-        }
-        const bool aero = !inSketchEdit && isAeroTab();
-        aeroWorkspaceHost->setVisible(aero);
     }
 
     void enterSketchEdit(const ViewProviderDocumentObject& provider)
@@ -2261,7 +2179,6 @@ struct Gui::VibeCADRibbon::Private
     QToolButton* settingsButton = nullptr;
     QTabBar* tabs = nullptr;
     RibbonPage* page = nullptr;
-    QWidget* aeroWorkspaceHost = nullptr;
     QTimer refreshTimer;
     QTimer documentTabsSyncTimer;
     QSet<QMdiSubWindow*> observedDocumentWindows;

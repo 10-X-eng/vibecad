@@ -50,26 +50,13 @@ def test_cpp_ribbon_places_aero_tab_after_parameters() -> None:
     )
     assert drawing < parameters < aero
     assert manufacture < drawing
-    assert "aeroGroups" in ribbon
-    assert "VibeCADAeroWorkspaceHost" in ribbon
-    assert "VibeCADAero_Analyze" in ribbon
-    assert "isAeroTab" in ribbon
-    assert "modelPageGroups" in ribbon
-    assert 'QObject::tr("Aero")' in ribbon
-    assert 'if (activeWorkbench == "VibeCADAeroWorkbench")' not in ribbon
-    assert "return aeroGroups();" not in ribbon
-    aero_page = ribbon[ribbon.index("if (isAeroTab())") :]
-    aero_page = aero_page[: aero_page.index("const std::string activeWorkbench")]
-    assert 'initializeWorkbench("VibeCADAeroWorkbench")' in aero_page
-    assert "std::vector<GroupDefinition> groups = aeroGroups();" in aero_page
-    assert "mergeGroups(groups, modelPageGroups());" in aero_page
+    assert "aeroGroups" not in ribbon
+    assert "VibeCADAeroWorkspaceHost" not in ribbon
+    assert "isAeroTab" not in ribbon
     activate = ribbon[ribbon.index("void activateDomain(int index)") :]
     activate = activate[: activate.index("void syncDomainToWorkbench")]
-    assert "isAeroTabIndex(index)" in activate
     assert "activateWorkbench(workbench" in activate
-    assert activate.index("isAeroTabIndex(index)") < activate.index(
-        "activateWorkbench(workbench"
-    )
+    assert "isAeroTabIndex(index)" not in activate
 
 
 def _aero_manifest() -> dict[str, object]:

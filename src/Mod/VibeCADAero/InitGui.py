@@ -2,15 +2,18 @@
 
 """GUI bootstrap for the Aero workbench (internal name: VibeCADAero)."""
 
-import AeroIcons
-
 
 class VibeCADAeroWorkbench(Workbench):
     """First-class in-app aerodynamics workbench."""
 
     MenuText = "Aero"
     ToolTip = "NeuralFoil section, AeroSandbox VLM/AeroBuildup, momentum hover, JSBSim"
-    Icon = AeroIcons.aero_icon_path()
+
+    def __init__(self):
+        self.__class__.Icon = (
+            FreeCAD.getHomePath()
+            + "Mod/VibeCADAero/icons/vibecad-aero-analyze.svg"
+        )
 
     def Initialize(self):
         import AeroCommandLoader
@@ -29,20 +32,8 @@ class VibeCADAeroWorkbench(Workbench):
 
     def Activated(self):
         Msg("VibeCADAeroWorkbench::Activated()\n")
-        try:
-            import AeroWorkspace
-
-            AeroWorkspace.show_workspace()
-        except Exception as exc:
-            Msg(f"VibeCAD Aero workspace unavailable: {exc}\n")
 
     def Deactivated(self):
-        try:
-            import AeroWorkspace
-
-            AeroWorkspace.hide_workspace()
-        except Exception:
-            pass
         Msg("VibeCADAeroWorkbench::Deactivated()\n")
 
     def GetClassName(self):

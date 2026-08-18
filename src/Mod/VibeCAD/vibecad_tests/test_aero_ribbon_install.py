@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Aero tab is installed at VibeCAD startup and stays additive on Model."""
+"""Aero ribbon fallback for builds without the native Aero domain."""
 
 from __future__ import annotations
 
@@ -329,6 +329,29 @@ def test_installer_inserts_aero_after_parameters_without_activating() -> None:
         index for index in range(tabs.count()) if tabs.tabText(index) == "Parameters"
     )
     assert tabs.tabText(parameters + 1) == "Aero"
+
+
+def test_existing_native_aero_tab_does_not_install_python_page_patch() -> None:
+    tabs = FakeTabBar()
+    tabs._tabs.append(("Aero", "VibeCADAeroWorkbench"))
+    page = FakeWidget("VibeCADRibbonPage")
+    groups = _stock_groups()
+    gui, qt_widgets, qt_gui, qt_core, window = _qt(tabs, page, groups)
+
+    installed = VibeCADAeroRibbon.install_aero_ribbon_tab(
+        gui=gui,
+        qt_widgets=qt_widgets,
+        qt_gui=qt_gui,
+        qt_core=qt_core,
+    )
+
+    assert installed is True
+    assert tabs.currentChanged._slots == []
+    assert not [
+        widget
+        for widget in window.findChildren(FakeWidget)
+        if widget.objectName() == "VibeCADRibbonGroup_Aero"
+    ]
 
 
 def test_selecting_aero_unhides_stock_groups_and_appends_aero() -> None:

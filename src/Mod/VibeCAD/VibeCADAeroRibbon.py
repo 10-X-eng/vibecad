@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Install the Aero ribbon tab from VibeCAD startup without replacing Model."""
+"""Install an Aero ribbon fallback when the native ribbon does not provide one."""
 
 from __future__ import annotations
 
@@ -211,9 +211,11 @@ def install_aero_ribbon_tab(
     qt_gui: Any | None = None,
     qt_core: Any | None = None,
 ) -> bool:
-    """Insert Aero after Parameters and keep Model groups visible when it is selected.
+    """Register Aero commands and install a tab only for legacy native ribbons.
 
-    Does not activate VibeCADAeroWorkbench and does not change the current tab.
+    Current native ribbons already own the Aero domain and return without a
+    Python page patch. Older ribbons get the additive fallback tab without
+    changing the active workbench or current tab.
     """
 
     if gui is None:
@@ -243,8 +245,11 @@ def install_aero_ribbon_tab(
 
     _ensure_aero_commands(gui)
 
-    already = getattr(tabs, _INSTALLED_PROPERTY, False)
     aero_index = _tab_index(tabs, AERO_TAB_LABEL)
+    if aero_index >= 0:
+        return True
+
+    already = getattr(tabs, _INSTALLED_PROPERTY, False)
     if aero_index < 0:
         parameters_index = _tab_index(tabs, PARAMETERS_TAB_LABEL)
         insert_at = parameters_index + 1 if parameters_index >= 0 else tabs.count()

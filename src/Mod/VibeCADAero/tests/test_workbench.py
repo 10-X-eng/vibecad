@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import ast
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,11 +42,42 @@ def test_initgui_registers_aero_workbench_without_executing_solvers():
     source = (ROOT / "InitGui.py").read_text(encoding="utf-8")
     assert "class VibeCADAeroWorkbench" in source
     assert 'MenuText = "Aero"' in source
-    assert "AeroIcons.aero_icon_path" in source
+    assert "FreeCAD.getHomePath()" in source
+    assert "Mod/VibeCADAero/icons/vibecad-aero-analyze.svg" in source
     assert "Gui.addWorkbench" in source
     assert "neuralfoil" not in source
     assert "aerosandbox" not in source
     assert "jsbsim" not in source
+    assert "show_workspace" not in source
+
+
+def test_initgui_supports_freecad_separate_global_and_local_namespaces():
+    source_path = ROOT / "InitGui.py"
+    registered = []
+
+    class FakeWorkbench:
+        pass
+
+    globals_namespace = {
+        "__builtins__": __builtins__,
+        "__file__": str(source_path),
+        "Workbench": FakeWorkbench,
+        "FreeCAD": SimpleNamespace(getHomePath=lambda: "C:/VibeCAD/"),
+        "Gui": SimpleNamespace(addWorkbench=registered.append),
+        "Log": lambda _message: None,
+        "Msg": lambda _message: None,
+    }
+
+    exec(
+        compile(source_path.read_text(encoding="utf-8"), str(source_path), "exec"),
+        globals_namespace,
+        {},
+    )
+
+    assert len(registered) == 1
+    assert registered[0].Icon == (
+        "C:/VibeCAD/Mod/VibeCADAero/icons/vibecad-aero-analyze.svg"
+    )
 
 
 def test_commands_cover_analyze_section_vlm_jsbsim_and_report():

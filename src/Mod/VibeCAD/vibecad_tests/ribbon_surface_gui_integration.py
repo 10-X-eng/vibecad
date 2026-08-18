@@ -11,6 +11,10 @@ from pathlib import Path
 import sys
 import traceback
 
+_VIBECAD_MODULE_DIR = Path(__file__).resolve().parent.parent
+if str(_VIBECAD_MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(_VIBECAD_MODULE_DIR))
+
 import FreeCAD as App
 import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
@@ -555,46 +559,6 @@ def _run() -> None:
             assert workbench in _PERMANENT_SURFACES
             tabs.setCurrentIndex(index)
             _process_events()
-            if tabs.tabText(index) == "Aero":
-                assert Gui.activeWorkbench().name() != "VibeCADAeroWorkbench"
-                labels, command_ids = _page_graph(main_window)
-                assert "AERO" in labels
-                assert labels[0] == "AERO"
-                assert {
-                    "Std_ViewFitAll",
-                    "Std_ViewIsometric",
-                    "VibeCAD_ToggleGrid",
-                    "VibeCADAero_Analyze",
-                    "VibeCADAero_Section",
-                    "VibeCADAero_VLM",
-                    "VibeCADAero_ExportJSBSim",
-                } <= set(command_ids)
-                stock = {
-                    widget.objectName()
-                    for widget in main_window.findChildren(QtWidgets.QFrame)
-                    if str(widget.objectName()).startswith("VibeCADRibbonGroup_")
-                }
-                for title in (
-                    "View",
-                    "Structure",
-                    "Solids",
-                    "Finish",
-                    "Transform",
-                    "Geometry",
-                    "Modify",
-                    "Inspect",
-                    "Fasteners",
-                    "Surface",
-                    "Connect",
-                    "Aero",
-                ):
-                    assert f"VibeCADRibbonGroup_{title}" in stock
-                    for widget in main_window.findChildren(
-                        QtWidgets.QFrame,
-                        f"VibeCADRibbonGroup_{title}",
-                    ):
-                        assert widget.isVisible() or widget.property("collapsed")
-                continue
             assert Gui.activeWorkbench().name() == workbench
             surface = _assert_surface(
                 main_window,

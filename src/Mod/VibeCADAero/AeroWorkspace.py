@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Native Aero ribbon page: vehicle fields and live solver results.
+"""Legacy optional Aero workspace for hosts that explicitly provide one.
 
-This is a QWidget hosted by the C++ ribbon (``VibeCADAeroWorkspaceHost``),
-not a floating plugin dialog.
+The native Aero domain presents its commands through the standard VibeCAD
+ribbon and does not mount this widget automatically. The module remains
+available for compatibility with older hosts that provide
+``VibeCADAeroWorkspaceHost``.
 """
 
 from __future__ import annotations
