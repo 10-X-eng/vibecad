@@ -129,10 +129,19 @@ def test_requirements_pin_bundled_aero_runtime_without_numpy_2():
     ]
     assert requirements == [
         "numpy>=1.26,<2",
+        "casadi==3.7.2",
         "neuralfoil==0.3.3",
         "aerosandbox==4.2.8",
         "jsbsim==1.3.1",
     ]
+
+
+def test_compiled_casadi_runtime_is_conda_managed_on_every_platform():
+    recipe = (
+        REPO / "package" / "rattler-build" / "recipe.yaml"
+    ).read_text(encoding="utf-8")
+    run_requirements = recipe.split("\n  run:\n", 1)[1].split("\n    - if:", 1)[0]
+    assert "\n    - casadi ==3.7.2\n" in run_requirements
 
 
 def test_readme_says_release_builds_bundle_aero_dependencies():
@@ -147,7 +156,7 @@ def test_shared_release_installer_installs_and_imports_aero_dependencies():
     ).read_text(encoding="utf-8")
     assert "src/Mod/VibeCADAero/requirements-aero.txt" in script
     assert '-r "${aero_requirements}"' in script
-    for module in ("numpy", "neuralfoil", "aerosandbox", "jsbsim"):
+    for module in ("numpy", "casadi", "neuralfoil", "aerosandbox", "jsbsim"):
         assert f'"{module}"' in script
     assert "NumPy 2" in script
 
@@ -156,7 +165,7 @@ def test_local_release_smoke_checks_aero_dependencies_inside_freecad():
     script = (
         REPO / "package" / "rattler-build" / "scripts" / "build_vibecad_local_release.sh"
     ).read_text(encoding="utf-8")
-    for module in ("numpy", "neuralfoil", "aerosandbox", "jsbsim"):
+    for module in ("numpy", "casadi", "neuralfoil", "aerosandbox", "jsbsim"):
         assert module in script
 
 
