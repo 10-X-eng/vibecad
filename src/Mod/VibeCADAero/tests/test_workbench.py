@@ -9,6 +9,7 @@ import ast
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO = ROOT.parents[2]
 
 
 def _top_level_imports(path: Path) -> set[str]:
@@ -118,10 +119,53 @@ def test_cmake_installs_mod_vibecadaero():
     assert "test_repair.py" in cmake
 
 
-def test_requirements_list_optional_pip_packages():
-    text = (ROOT / "requirements-aero.txt").read_text(encoding="utf-8")
-    assert "neuralfoil" in text
-    assert "aerosandbox" in text
-    assert "jsbsim" in text
-    assert "python.exe" in text
-    assert "wheel" not in text.lower() or "do not vendor" in text.lower()
+def test_requirements_pin_bundled_aero_runtime_without_numpy_2():
+    requirements = [
+        line.strip()
+        for line in (ROOT / "requirements-aero.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert requirements == [
+        "numpy>=1.26,<2",
+        "neuralfoil==0.3.3",
+        "aerosandbox==4.2.8",
+        "jsbsim==1.3.1",
+    ]
+
+
+def test_readme_says_release_builds_bundle_aero_dependencies():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "Release builds install these dependencies automatically" in readme
+    assert "Optional packages" not in readme
+
+
+def test_shared_release_installer_installs_and_imports_aero_dependencies():
+    script = (
+        REPO / "package" / "rattler-build" / "scripts" / "install_vibecad_provider_deps.sh"
+    ).read_text(encoding="utf-8")
+    assert "src/Mod/VibeCADAero/requirements-aero.txt" in script
+    assert '-r "${aero_requirements}"' in script
+    for module in ("numpy", "neuralfoil", "aerosandbox", "jsbsim"):
+        assert f'"{module}"' in script
+    assert "NumPy 2" in script
+
+
+def test_local_release_smoke_checks_aero_dependencies_inside_freecad():
+    script = (
+        REPO / "package" / "rattler-build" / "scripts" / "build_vibecad_local_release.sh"
+    ).read_text(encoding="utf-8")
+    for module in ("numpy", "neuralfoil", "aerosandbox", "jsbsim"):
+        assert module in script
+
+
+def test_release_cache_keys_include_aero_requirements():
+    workflows = {
+        "vibecad-release.yml": 3,
+        "vibecad-windows-installer.yml": 1,
+        "vibecad-macos.yml": 1,
+    }
+    for name, expected_count in workflows.items():
+        source = (REPO / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert source.count("'src/Mod/VibeCADAero/requirements-aero.txt'") == expected_count

@@ -143,7 +143,7 @@ jobs:
             ~/.cache/pixi
             ~/.cache/rattler
             ~/.cache/pip
-          key: pixi-linux-${{ hashFiles('package/rattler-build/pixi.lock', 'package/rattler-build/pixi.toml', 'package/rattler-build/recipe.yaml', 'src/Mod/VibeCAD/requirements.txt', 'package/rattler-build/scripts/install_vibecad_provider_deps.sh', 'package/rattler-build/scripts/install_vibecad_codex_runtime.sh', 'package/rattler-build/scripts/purge_vibecad_retired_authoring_artifacts.sh') }}
+          key: pixi-linux-${{ hashFiles('package/rattler-build/pixi.lock', 'package/rattler-build/pixi.toml', 'package/rattler-build/recipe.yaml', 'src/Mod/VibeCAD/requirements.txt', 'src/Mod/VibeCADAero/requirements-aero.txt', 'package/rattler-build/scripts/install_vibecad_provider_deps.sh', 'package/rattler-build/scripts/install_vibecad_codex_runtime.sh', 'package/rattler-build/scripts/purge_vibecad_retired_authoring_artifacts.sh') }}
           restore-keys: |
             pixi-linux-
 
@@ -265,7 +265,7 @@ jobs:
             ~\AppData\Local\pixi
             ~\AppData\Local\rattler
             ~\AppData\Local\pip\Cache
-          key: pixi-windows-${{ hashFiles('package/rattler-build/pixi.lock', 'package/rattler-build/pixi.toml', 'package/rattler-build/recipe.yaml', 'src/Mod/VibeCAD/requirements.txt', 'package/rattler-build/scripts/install_vibecad_provider_deps.sh', 'package/rattler-build/scripts/install_vibecad_codex_runtime.sh', 'package/rattler-build/scripts/purge_vibecad_retired_authoring_artifacts.sh') }}
+          key: pixi-windows-${{ hashFiles('package/rattler-build/pixi.lock', 'package/rattler-build/pixi.toml', 'package/rattler-build/recipe.yaml', 'src/Mod/VibeCAD/requirements.txt', 'src/Mod/VibeCADAero/requirements-aero.txt', 'package/rattler-build/scripts/install_vibecad_provider_deps.sh', 'package/rattler-build/scripts/install_vibecad_codex_runtime.sh', 'package/rattler-build/scripts/purge_vibecad_retired_authoring_artifacts.sh') }}
           restore-keys: |
             pixi-windows-
 
@@ -383,7 +383,7 @@ jobs:
             ~/.cache/pixi
             ~/.cache/rattler
             ~/Library/Caches/pip
-          key: pixi-${{ matrix.target }}-${{ hashFiles('package/rattler-build/pixi.lock', 'package/rattler-build/pixi.toml', 'package/rattler-build/recipe.yaml', 'src/Mod/VibeCAD/requirements.txt', 'package/rattler-build/scripts/install_vibecad_provider_deps.sh', 'package/rattler-build/scripts/install_vibecad_codex_runtime.sh', 'package/rattler-build/scripts/purge_vibecad_retired_authoring_artifacts.sh', 'package/rattler-build/scripts/relocate_conda_environment.py') }}
+          key: pixi-${{ matrix.target }}-${{ hashFiles('package/rattler-build/pixi.lock', 'package/rattler-build/pixi.toml', 'package/rattler-build/recipe.yaml', 'src/Mod/VibeCAD/requirements.txt', 'src/Mod/VibeCADAero/requirements-aero.txt', 'package/rattler-build/scripts/install_vibecad_provider_deps.sh', 'package/rattler-build/scripts/install_vibecad_codex_runtime.sh', 'package/rattler-build/scripts/purge_vibecad_retired_authoring_artifacts.sh', 'package/rattler-build/scripts/relocate_conda_environment.py') }}
           restore-keys: |
             pixi-${{ matrix.target }}-
 

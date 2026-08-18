@@ -1,11 +1,9 @@
-# Optional Aero workbench dependencies.
-# Install them into VibeCAD's bundled interpreter, not a system Python:
-#
-#   "<VibeCAD>\bin\python.exe" -m pip install -r requirements-aero.txt
-#
-# On macOS/Linux the bundled binary is usually `bin/python` next to FreeCAD.
-# Do not vendor wheels into git.
+# Aero workbench runtime dependencies bundled by the VibeCAD release scripts.
+# Keep NumPy below 2 because the packaged FreeCAD environment contains compiled
+# extensions built against the NumPy 1.x ABI. AeroSandbox 4.2.8 is the newest
+# release in the 4.2 line that does not require NumPy 2.
 
-neuralfoil
-aerosandbox
-jsbsim
+numpy>=1.26,<2
+neuralfoil==0.3.3
+aerosandbox==4.2.8
+jsbsim==1.3.1
