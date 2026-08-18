@@ -718,6 +718,8 @@ class CodexProvider(BaseProvider):
         base_url: str | None = None,
         web_search_enabled: bool = False,
         skills_enabled: bool = False,
+        identity_id: str | None = None,
+        identity_label: str | None = None,
     ) -> None:
         clean_auth_mode = str(auth_mode or "").strip().lower()
         if clean_auth_mode not in {"api_key", "chatgpt"}:
@@ -730,13 +732,19 @@ class CodexProvider(BaseProvider):
         self.base_url = str(base_url or "").strip() or None
         self.web_search_enabled = bool(web_search_enabled)
         self.skills_enabled = bool(skills_enabled)
+        self._identity_id = str(identity_id or "").strip() or None
+        self._identity_label = str(identity_label or "").strip() or None
 
     @property
     def provider_id(self) -> str:
+        if self._identity_id:
+            return self._identity_id
         return "openai" if self.auth_mode == "api_key" else "chatgpt"
 
     @property
     def provider_label(self) -> str:
+        if self._identity_label:
+            return self._identity_label
         return (
             "OpenAI API key via Codex"
             if self.auth_mode == "api_key"
@@ -2180,6 +2188,7 @@ def _model_visible_context(
         "available_components",
         "view_screenshot",
         "reference_images",
+        "aero",
     )
     result = {
         key: _json_safe(context[key])

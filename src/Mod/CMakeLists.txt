@@ -166,6 +166,7 @@ if(BUILD_TECHDRAW)
 endif(BUILD_TECHDRAW)
 
 add_subdirectory(VibeCAD)
+add_subdirectory(VibeCADAero)
 
 #add_subdirectory(TemplatePyMod)
 

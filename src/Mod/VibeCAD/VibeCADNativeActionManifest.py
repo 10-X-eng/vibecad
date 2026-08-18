@@ -646,6 +646,21 @@ KNOWN_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "Inspection_InspectElement",
         "Part_CheckGeometry",
     ),
+    "aero": (
+        "Std_ViewFitAll",
+        "Std_ViewIsometric",
+        "VibeCAD_ToggleGrid",
+        "VibeCADAero_Analyze",
+        "VibeCADAero_Section",
+        "VibeCADAero_VLM",
+        "VibeCADAero_ExportJSBSim",
+        "VibeCADAero_Report",
+        "Std_Measure",
+        "Std_MassProperties",
+        "Inspection_VisualInspection",
+        "Inspection_InspectElement",
+        "Part_CheckGeometry",
+    ),
     "unavailable": (),
 }
 
@@ -674,8 +689,15 @@ OPTIONAL_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "CAM_RotarySurface",
     ),
     "mesh": (),
-    "model": (),
+    "model": (
+        "VibeCADAero_Analyze",
+        "VibeCADAero_Section",
+        "VibeCADAero_VLM",
+        "VibeCADAero_ExportJSBSim",
+        "VibeCADAero_Report",
+    ),
     "parameters": (),
+    "aero": (),
     "sketch.edit": (),
     "sketch.setup": (),
     "unavailable": (),
@@ -790,6 +812,11 @@ _HUMAN_ONLY_COMMAND_IDS = frozenset(
         "FEM_Examples",
         "Sketcher_EditSketch",
         "Sketcher_CancelSketch",
+        "VibeCADAero_Analyze",
+        "VibeCADAero_Section",
+        "VibeCADAero_VLM",
+        "VibeCADAero_ExportJSBSim",
+        "VibeCADAero_Report",
     }
 )
 
@@ -1998,6 +2025,7 @@ _GROUP_CAPABILITY_FAMILIES = {
     ("model", "Fasteners"): "model.fastener",
     ("model", "Surface"): "model.surface",
     ("model", "Connect"): "component.interface",
+    ("model", "Aero"): "aero.solve",
     ("sketch.setup", "Sketch"): "sketch.setup",
     ("sketch.edit", "Finish"): "sketch.control",
     ("sketch.edit", "Geometry"): "sketch.draw_line",
@@ -2055,6 +2083,8 @@ _GROUP_CAPABILITY_FAMILIES = {
     ("parameters", "Cells"): "parameters.cell",
     ("parameters", "Align"): "parameters.format",
     ("parameters", "Style"): "parameters.format",
+    ("aero", "Actions"): "aero.solve",
+    ("aero", "Aero"): "aero.solve",
 }
 
 

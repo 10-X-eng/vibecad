@@ -229,6 +229,46 @@ try:
             except Exception:
                 pass
 
+    def _setup_agent_control() -> None:
+        try:
+            from PySide import QtWidgets
+            import VibeCADAgentControl
+
+            VibeCADAgentControl.ensure_server_started(
+                document_thread_dispatch=VibeCADGui._dispatch_to_document_thread,
+            )
+            application = QtWidgets.QApplication.instance()
+            if application is not None:
+                application.aboutToQuit.connect(
+                    lambda: VibeCADAgentControl.shutdown_server(wait=False)
+                )
+        except Exception as exc:
+            try:
+                import FreeCAD as _App
+
+                _App.Console.PrintWarning(
+                    f"VibeCAD agent control server failed to start: {exc}\n"
+                )
+            except Exception:
+                pass
+
+    def _setup_aero_ribbon() -> None:
+        try:
+            import VibeCADAeroRibbon
+
+            VibeCADAeroRibbon.install_aero_ribbon_tab()
+        except Exception as exc:
+            try:
+                import FreeCAD as _App
+
+                _App.Console.PrintWarning(
+                    f"VibeCAD Aero ribbon tab failed to install: {exc}\n"
+                )
+            except Exception:
+                pass
+
     QtCore.QTimer.singleShot(0, _setup_always_on_grid)
+    QtCore.QTimer.singleShot(0, _setup_agent_control)
+    QtCore.QTimer.singleShot(0, _setup_aero_ribbon)
 except Exception as exc:
     _warn(f"VibeCAD GUI bootstrap failed: {exc}")

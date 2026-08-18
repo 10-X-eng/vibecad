@@ -4,7 +4,9 @@
 
 API providers use environment variables, explicit dotenv files, or the OS
 keyring. ChatGPT subscriptions are managed exclusively by Codex app-server;
-VibeCAD never reads, copies, or stores their OAuth tokens.
+VibeCAD never reads, copies, or stores those OAuth tokens. Grok / X sign-in
+uses xAI OAuth and stores tokens in a private VibeCAD Grok credential
+directory, not ordinary user.cfg.
 """
 
 from __future__ import annotations
@@ -95,6 +97,14 @@ PROVIDERS: dict[str, ProviderSpec] = {
         keyring_username="",
         models_url="",
     ),
+    "grok": ProviderSpec(
+        provider_id="grok",
+        display_name="Grok (X / xAI)",
+        auth_kind="xai_oauth",
+        env_var="",
+        keyring_username="",
+        models_url="https://api.x.ai/v1/models",
+    ),
 }
 
 
@@ -181,6 +191,12 @@ def store_keyring_key(
     value: str, provider: str = DEFAULT_PROVIDER
 ) -> dict[str, str | bool | None]:
     spec = provider_spec(provider)
+    if spec.auth_kind == "xai_oauth":
+        return {
+            "stored": False,
+            "error": f"{spec.display_name} sign-in uses X / xAI OAuth, not an API key.",
+            "redacted_key": None,
+        }
     if not spec.uses_api_key:
         return {
             "stored": False,
@@ -210,6 +226,11 @@ def store_keyring_key(
 
 def delete_keyring_key(provider: str = DEFAULT_PROVIDER) -> dict[str, str | bool]:
     spec = provider_spec(provider)
+    if spec.auth_kind == "xai_oauth":
+        return {
+            "deleted": False,
+            "error": f"{spec.display_name} sign-out is handled by Grok logout.",
+        }
     if not spec.uses_api_key:
         return {
             "deleted": False,
@@ -231,6 +252,16 @@ def resolve_auth_credential(
     provider: str = DEFAULT_PROVIDER,
 ) -> AuthCredential | None:
     spec = provider_spec(provider)
+    if spec.auth_kind == "xai_oauth":
+        try:
+            from VibeCADGrokAuth import resolve_access_token
+
+            token = resolve_access_token()
+        except Exception:
+            return None
+        if not token:
+            return None
+        return AuthCredential(value=token, source="Grok credential store")
     if not spec.uses_api_key:
         return None
     data = env if env is not None else os.environ
@@ -256,6 +287,30 @@ def resolve_auth_state(
     provider: str = DEFAULT_PROVIDER,
 ) -> AuthState:
     spec = provider_spec(provider)
+    if spec.auth_kind == "xai_oauth":
+        try:
+            from VibeCADGrokAuth import resolve_tokens
+
+            tokens = resolve_tokens()
+            if tokens is None:
+                return AuthState(
+                    AuthStatus.NOT_CONFIGURED,
+                    source="Grok credential store",
+                    message="No Grok / X account is signed in.",
+                )
+            email = tokens.account.email
+            suffix = f" ({email})" if email else ""
+            return AuthState(
+                AuthStatus.VERIFIED,
+                source="Grok credential store",
+                message=f"Grok / X account is signed in{suffix}.",
+            )
+        except Exception as exc:
+            return AuthState(
+                AuthStatus.INVALID,
+                source="Grok credential store",
+                message=str(exc),
+            )
     if not spec.uses_api_key:
         try:
             from VibeCADCodex import cached_account, runtime_health
@@ -320,6 +375,12 @@ def validate_api_key(
     base_url: str | None = None,
 ) -> AuthState:
     spec = provider_spec(provider)
+    if spec.auth_kind == "xai_oauth":
+        return AuthState(
+            AuthStatus.INVALID,
+            source=source,
+            message=f"{spec.display_name} uses X / xAI OAuth, not pasted API keys.",
+        )
     if not spec.uses_api_key:
         return AuthState(
             AuthStatus.INVALID,
@@ -396,6 +457,37 @@ def validate_configured_auth(
     base_url: str | None = None,
 ) -> AuthState:
     spec = provider_spec(provider)
+    if spec.auth_kind == "xai_oauth":
+        try:
+            from VibeCADGrokAuth import list_models, resolve_tokens
+
+            tokens = resolve_tokens()
+            if tokens is None:
+                return AuthState(
+                    AuthStatus.NOT_CONFIGURED,
+                    source="Grok credential store",
+                    message="No Grok / X account is signed in.",
+                )
+            result = list_models()
+            email = tokens.account.email
+            suffix = f" ({email})" if email else ""
+            if result.get("ok"):
+                return AuthState(
+                    AuthStatus.VERIFIED,
+                    source="Grok credential store",
+                    message=f"Grok / X account is signed in{suffix}.",
+                )
+            return AuthState(
+                AuthStatus.INVALID,
+                source="Grok credential store",
+                message=str(result.get("error") or "Grok sign-in could not be verified."),
+            )
+        except Exception as exc:
+            return AuthState(
+                AuthStatus.OFFLINE,
+                source="Grok credential store",
+                message=f"Grok sign-in status could not be checked: {exc}",
+            )
     if not spec.uses_api_key:
         try:
             from VibeCADCodex import read_account
@@ -469,6 +561,13 @@ def list_provider_models(
     """
 
     spec = provider_spec(provider)
+    if spec.auth_kind == "xai_oauth":
+        try:
+            from VibeCADGrokAuth import list_models as list_grok_models
+
+            return list_grok_models()
+        except Exception as exc:
+            return {"ok": False, "models": [], "error": str(exc)}
     if not spec.uses_api_key:
         try:
             from VibeCADCodex import list_models

@@ -76,7 +76,7 @@ struct DomainDefinition
     const char* surface;
 };
 
-constexpr std::array<DomainDefinition, 7> domains = {{
+constexpr std::array<DomainDefinition, 8> domains = {{
     {"Model", "PartDesignWorkbench", "model"},
     {"Assemble", "AssemblyWorkbench", "assemble"},
     {"Mesh", "MeshWorkbench", "mesh"},
@@ -84,6 +84,7 @@ constexpr std::array<DomainDefinition, 7> domains = {{
     {"Manufacture", "CAMWorkbench", "manufacture"},
     {"Drawing", "TechDrawWorkbench", "drawing"},
     {"Parameters", "SpreadsheetWorkbench", "parameters"},
+    {"Aero", "VibeCADAeroWorkbench", "aero"},
 }};
 
 constexpr auto chromePreferencesPath = "User parameter:BaseApp/Preferences/VibeCAD/Chrome";
@@ -1138,9 +1139,8 @@ struct Gui::VibeCADRibbon::Private
         return entries;
     }
 
-    std::vector<GroupDefinition> currentWorkbenchGroups() const
+    std::vector<GroupDefinition> groupsFromWorkbench(Workbench* workbench) const
     {
-        Workbench* workbench = WorkbenchManager::instance()->active();
         if (!workbench) {
             return {};
         }
@@ -1162,6 +1162,29 @@ struct Gui::VibeCADRibbon::Private
             result.emplace_back(displayTitle, std::move(commandNames));
         }
         return result;
+    }
+
+    std::vector<GroupDefinition> currentWorkbenchGroups() const
+    {
+        return groupsFromWorkbench(WorkbenchManager::instance()->active());
+    }
+
+    std::vector<GroupDefinition> namedWorkbenchGroups(const char* workbenchName) const
+    {
+        if (!Application::Instance->initializeWorkbench(workbenchName)) {
+            return {};
+        }
+        return groupsFromWorkbench(WorkbenchManager::instance()->getWorkbench(workbenchName));
+    }
+
+    std::vector<GroupDefinition> modelPageGroups() const
+    {
+        std::vector<GroupDefinition> groups = namedWorkbenchGroups("PartDesignWorkbench");
+        if (Application::Instance->initializeWorkbench("SurfaceWorkbench")) {
+            mergeGroups(groups, surfaceGroups());
+        }
+        mergeGroups(groups, componentInterfaceGroups());
+        return groups;
     }
 
     std::vector<GroupDefinition> pageGroups() const
@@ -1211,7 +1234,6 @@ struct Gui::VibeCADRibbon::Private
         if (!tabs || tabs->currentIndex() < 0) {
             return QStringLiteral("unavailable");
         }
-
         const QString selectedWorkbench = tabs->tabData(tabs->currentIndex()).toString();
         const QString activeWorkbench
             = QString::fromStdString(WorkbenchManager::instance()->activeName());
@@ -1820,6 +1842,7 @@ struct Gui::VibeCADRibbon::Private
 
         page = new RibbonPage(root);
         rootLayout->addWidget(page);
+
     }
 
     void build()

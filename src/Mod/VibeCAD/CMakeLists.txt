@@ -3,6 +3,11 @@
 set(VibeCAD_Scripts
     Init.py
     InitGui.py
+    VibeCADAgentCli.py
+    VibeCADAgentControl.py
+    VibeCADAeroContext.py
+    VibeCADAeroRibbon.py
+    vibecad-agent.cmd
     VibeCADAuth.py
     VibeCADAuthoringMode.py
     VibeCADAuthoringModePolicy.py
@@ -20,6 +25,7 @@ set(VibeCAD_Scripts
     VibeCADFastenerAttachment.py
     VibeCADFastenerAssembly.py
     VibeCADGrid.py
+    VibeCADGrokAuth.py
     VibeCADGeometry.py
     VibeCADGeometryInspection.py
     VibeCADPlacementInspection.py
@@ -182,6 +188,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeModelRuntime.py
     VibeCADNativeAnalyzeModelSchema.py
     VibeCADNativeAnalyzeSnapshot.py
+    VibeCADNativeAeroSnapshot.py
     VibeCADNativeAnalyzeState.py
     VibeCADNativeAnalyzeSupportBindings.py
     VibeCADNativeAnalyzeSupportCreate.py
@@ -1385,6 +1392,8 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_native_assembly_export.py
         vibecad_tests/test_native_assembly_fastener.py
         vibecad_tests/test_native_input.py
+        vibecad_tests/test_grok_oauth.py
+        vibecad_tests/test_agent_control.py
         vibecad_tests/test_native_robot_setup.py
         vibecad_tests/test_native_robot_motion.py
         vibecad_tests/test_native_robot_export.py
@@ -1549,6 +1558,8 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/read_geometry_integration.py
         vibecad_tests/native_provider_contracts.py
         vibecad_tests/ribbon_surface_gui_integration.py
+        vibecad_tests/test_aero_ribbon_and_context.py
+        vibecad_tests/test_aero_ribbon_install.py
     )
 endif()
 

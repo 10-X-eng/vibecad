@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="VibeCAD Aero drone">
+  <rect x="4" y="18" width="56" height="7" rx="2" fill="#e8edf2"/>
+  <rect x="10" y="34" width="44" height="6" rx="2" fill="#74c0fc"/>
+  <rect x="29" y="14" width="6" height="36" rx="2" fill="#4dabf7"/>
+  <circle cx="10" cy="21.5" r="7" fill="none" stroke="#4dabf7" stroke-width="2.5"/>
+  <circle cx="54" cy="21.5" r="7" fill="none" stroke="#4dabf7" stroke-width="2.5"/>
+  <circle cx="10" cy="21.5" r="2" fill="#e8edf2"/>
+  <circle cx="54" cy="21.5" r="2" fill="#e8edf2"/>
+  <path d="M32 12v-3" stroke="#4dabf7" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="32" cy="8" r="2" fill="#74c0fc"/>
+</svg>

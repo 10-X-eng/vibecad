@@ -181,6 +181,10 @@ def _domain_builder(
         from VibeCADNativeParametersSnapshot import build_parameters_snapshot
 
         return build_parameters_snapshot
+    if surface_id == "aero":
+        from VibeCADNativeAeroSnapshot import build_aero_snapshot
+
+        return build_aero_snapshot
     raise NativeSnapshotError(f"No Native state builder exists for {surface_id!r}.")
 
 

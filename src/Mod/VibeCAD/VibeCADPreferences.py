@@ -26,6 +26,7 @@ from VibeCADAuth import (
     validate_api_key,
     validate_configured_auth,
 )
+from VibeCADGrokAuth import DEFAULT_XAI_API_BASE
 from VibeCADDebug import default_capture_directory, resolve_capture_directory
 from VibeCADPromptStarters import (
     BUILTIN_PROMPT_STARTERS,
@@ -41,10 +42,12 @@ PREFERENCE_GROUP = "User parameter:BaseApp/Preferences/Mod/VibeCAD"
 DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"
 DEFAULT_CHATGPT_MODEL = ""
+DEFAULT_GROK_MODEL = "grok-4.6"
 DEFAULT_MODELS = {
     "openai": DEFAULT_MODEL,
     "anthropic": DEFAULT_ANTHROPIC_MODEL,
     "chatgpt": DEFAULT_CHATGPT_MODEL,
+    "grok": DEFAULT_GROK_MODEL,
 }
 REASONING_EFFORTS = (
     "none",
@@ -75,6 +78,7 @@ class VibeCADSettings:
     provider: str = DEFAULT_PROVIDER
     anthropic_model: str = DEFAULT_ANTHROPIC_MODEL
     chatgpt_model: str = DEFAULT_CHATGPT_MODEL
+    grok_model: str = DEFAULT_GROK_MODEL
     web_search_enabled: bool = False
     design_review_enabled: bool = False
     codex_skills_enabled: bool = False
@@ -84,6 +88,7 @@ class VibeCADSettings:
     openai_intent_memory_model: str = ""
     anthropic_intent_memory_model: str = ""
     chatgpt_intent_memory_model: str = ""
+    grok_intent_memory_model: str = ""
     scripted_timeout_seconds: float = DEFAULT_SCRIPTED_TIMEOUT_SECONDS
     scripted_memory_limit_mb: int = DEFAULT_SCRIPTED_MEMORY_LIMIT_MB
     mcp_enabled: bool = False
@@ -102,6 +107,8 @@ class VibeCADSettings:
             return self.anthropic_model.strip() or DEFAULT_ANTHROPIC_MODEL
         if provider == "chatgpt":
             return self.chatgpt_model.strip()
+        if provider == "grok":
+            return self.grok_model.strip() or DEFAULT_GROK_MODEL
         return self.model.strip() or DEFAULT_MODEL
 
     @property
@@ -110,6 +117,8 @@ class VibeCADSettings:
         provider = normalize_provider(self.provider)
         if provider == "chatgpt":
             return None
+        if provider == "grok":
+            return DEFAULT_XAI_API_BASE
         if provider == "anthropic":
             override = self.anthropic_base_url.strip()
         else:
@@ -121,6 +130,8 @@ class VibeCADSettings:
         clean_provider = normalize_provider(provider)
         if clean_provider == "chatgpt":
             return None
+        if clean_provider == "grok":
+            return DEFAULT_XAI_API_BASE
         if clean_provider == "anthropic":
             override = self.anthropic_base_url.strip()
         else:
@@ -134,6 +145,8 @@ class VibeCADSettings:
             return self.anthropic_model.strip() or DEFAULT_ANTHROPIC_MODEL
         if clean_provider == "chatgpt":
             return self.chatgpt_model.strip()
+        if clean_provider == "grok":
+            return self.grok_model.strip() or DEFAULT_GROK_MODEL
         return self.model.strip() or DEFAULT_MODEL
 
     def intent_memory_model_for(self, provider: str) -> str:
@@ -143,6 +156,8 @@ class VibeCADSettings:
             override = self.anthropic_intent_memory_model.strip()
         elif clean_provider == "chatgpt":
             override = self.chatgpt_intent_memory_model.strip()
+        elif clean_provider == "grok":
+            override = self.grok_intent_memory_model.strip()
         else:
             override = self.openai_intent_memory_model.strip()
         return override or self.model_for(provider)
@@ -197,6 +212,7 @@ def load_settings() -> VibeCADSettings:
         anthropic_model=pref.GetString("AnthropicModel", DEFAULT_ANTHROPIC_MODEL)
         or DEFAULT_ANTHROPIC_MODEL,
         chatgpt_model=pref.GetString("ChatGPTModel", DEFAULT_CHATGPT_MODEL),
+        grok_model=pref.GetString("GrokModel", DEFAULT_GROK_MODEL) or DEFAULT_GROK_MODEL,
         web_search_enabled=pref.GetBool("WebSearchEnabled", False),
         design_review_enabled=pref.GetBool("DesignReviewEnabled", False),
         codex_skills_enabled=pref.GetBool("CodexSkillsEnabled", False),
@@ -206,6 +222,7 @@ def load_settings() -> VibeCADSettings:
         openai_intent_memory_model=pref.GetString("OpenAIIntentMemoryModel", ""),
         anthropic_intent_memory_model=pref.GetString("AnthropicIntentMemoryModel", ""),
         chatgpt_intent_memory_model=pref.GetString("ChatGPTIntentMemoryModel", ""),
+        grok_intent_memory_model=pref.GetString("GrokIntentMemoryModel", ""),
         scripted_timeout_seconds=_positive_float(
             pref.GetFloat("ScriptedTimeoutSeconds", DEFAULT_SCRIPTED_TIMEOUT_SECONDS),
             DEFAULT_SCRIPTED_TIMEOUT_SECONDS,
@@ -239,6 +256,7 @@ def save_settings(settings: VibeCADSettings) -> None:
         "AnthropicModel", settings.anthropic_model.strip() or DEFAULT_ANTHROPIC_MODEL
     )
     pref.SetString("ChatGPTModel", settings.chatgpt_model.strip())
+    pref.SetString("GrokModel", settings.grok_model.strip() or DEFAULT_GROK_MODEL)
     pref.SetBool("WebSearchEnabled", bool(settings.web_search_enabled))
     pref.SetBool("DesignReviewEnabled", bool(settings.design_review_enabled))
     pref.SetBool("CodexSkillsEnabled", bool(settings.codex_skills_enabled))
@@ -253,6 +271,9 @@ def save_settings(settings: VibeCADSettings) -> None:
     )
     pref.SetString(
         "ChatGPTIntentMemoryModel", settings.chatgpt_intent_memory_model.strip()
+    )
+    pref.SetString(
+        "GrokIntentMemoryModel", settings.grok_intent_memory_model.strip()
     )
     pref.SetFloat(
         "ScriptedTimeoutSeconds",
@@ -284,6 +305,7 @@ def reset_settings() -> None:
     pref.RemString("Provider")
     pref.RemString("AnthropicModel")
     pref.RemString("ChatGPTModel")
+    pref.RemString("GrokModel")
     pref.RemBool("WebSearchEnabled")
     pref.RemBool("DesignReviewEnabled")
     pref.RemBool("CodexSkillsEnabled")
@@ -293,6 +315,7 @@ def reset_settings() -> None:
     pref.RemString("OpenAIIntentMemoryModel")
     pref.RemString("AnthropicIntentMemoryModel")
     pref.RemString("ChatGPTIntentMemoryModel")
+    pref.RemString("GrokIntentMemoryModel")
     pref.RemFloat("ScriptedTimeoutSeconds")
     pref.RemInt("ScriptedMemoryLimitMB")
     pref.RemBool("ContextDebugEnabled")
@@ -320,7 +343,7 @@ def fetch_models_for_provider(
     {"ok": bool, "models": [str, ...], "error": str | None}.
     """
     clean_provider = normalize_provider(provider)
-    if clean_provider == "chatgpt":
+    if clean_provider in {"chatgpt", "grok"}:
         return list_provider_models(None, provider=clean_provider)
     credential = resolve_auth_credential(
         dotenv_path=dotenv_path, provider=clean_provider
@@ -358,6 +381,8 @@ class VibeCADPreferencesPage:
         self._chatgpt_task_active = False
         self._chatgpt_model_details: dict[str, dict] = {}
         self._chatgpt_default_model = ""
+        self._grok_login_session = None
+        self._oauth_task_provider = ""
 
         class _AsyncBridge(QtCore.QObject):
             event = QtCore.Signal(str, object)
@@ -393,6 +418,11 @@ class VibeCADPreferencesPage:
         self.chatgpt_model.addItem("Use account default", "")
         self.chatgpt_model.currentIndexChanged.connect(self._chatgpt_model_changed)
         layout.addRow("ChatGPT model", self.chatgpt_model)
+
+        self.grok_model = QtWidgets.QComboBox(self.form)
+        self.grok_model.setObjectName("VibeCADPrefGrokModel")
+        self.grok_model.setEditable(True)
+        layout.addRow("Grok model", self.grok_model)
 
         self.web_search_enabled = QtWidgets.QCheckBox(self.form)
         self.web_search_enabled.setObjectName("VibeCADPrefWebSearchEnabled")
@@ -479,6 +509,13 @@ class VibeCADPreferencesPage:
         self.chatgpt_intent_memory_model.addItem("Use active ChatGPT model", "")
         layout.addRow("ChatGPT memory model", self.chatgpt_intent_memory_model)
 
+        self.grok_intent_memory_model = QtWidgets.QComboBox(self.form)
+        self.grok_intent_memory_model.setObjectName(
+            "VibeCADPrefGrokIntentMemoryModel"
+        )
+        self.grok_intent_memory_model.addItem("Use active Grok model", "")
+        layout.addRow("Grok memory model", self.grok_intent_memory_model)
+
         self.rebuild_intent_memory = QtWidgets.QPushButton(
             "Rebuild Intent Memory", self.form
         )
@@ -553,6 +590,30 @@ class VibeCADPreferencesPage:
         chatgpt_auth_layout.addWidget(self.chatgpt_logout)
         layout.addRow("ChatGPT account", self.chatgpt_auth_row)
 
+        self.grok_auth_row = QtWidgets.QWidget(self.form)
+        grok_auth_layout = QtWidgets.QHBoxLayout(self.grok_auth_row)
+        grok_auth_layout.setContentsMargins(0, 0, 0, 0)
+        self.grok_sign_in = QtWidgets.QPushButton("Sign in with X / Grok", self.form)
+        self.grok_sign_in.setObjectName("VibeCADPrefGrokSignIn")
+        self.grok_sign_in.clicked.connect(lambda: self._start_grok_login("browser"))
+        self.grok_device_sign_in = QtWidgets.QPushButton("Use device code", self.form)
+        self.grok_device_sign_in.setObjectName("VibeCADPrefGrokDeviceSignIn")
+        self.grok_device_sign_in.clicked.connect(
+            lambda: self._start_grok_login("device")
+        )
+        self.grok_cancel_sign_in = QtWidgets.QPushButton("Cancel", self.form)
+        self.grok_cancel_sign_in.setObjectName("VibeCADPrefGrokCancelSignIn")
+        self.grok_cancel_sign_in.setEnabled(False)
+        self.grok_cancel_sign_in.clicked.connect(self._cancel_grok_login)
+        self.grok_logout = QtWidgets.QPushButton("Logout", self.form)
+        self.grok_logout.setObjectName("VibeCADPrefGrokLogout")
+        self.grok_logout.clicked.connect(self._grok_logout)
+        grok_auth_layout.addWidget(self.grok_sign_in)
+        grok_auth_layout.addWidget(self.grok_device_sign_in)
+        grok_auth_layout.addWidget(self.grok_cancel_sign_in)
+        grok_auth_layout.addWidget(self.grok_logout)
+        layout.addRow("Grok account", self.grok_auth_row)
+
         self.status = QtWidgets.QLabel(self.form)
         self.status.setObjectName("VibeCADPrefAuthStatus")
         self.status.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
@@ -610,6 +671,7 @@ class VibeCADPreferencesPage:
         self._set_form_row_visible(self.model, provider == "openai")
         self._set_form_row_visible(self.anthropic_model, provider == "anthropic")
         self._set_form_row_visible(self.chatgpt_model, provider == "chatgpt")
+        self._set_form_row_visible(self.grok_model, provider == "grok")
         self._set_form_row_visible(self.web_search_enabled, True)
         self._set_form_row_visible(self.design_review_enabled, True)
         self._set_form_row_visible(self.codex_skills_enabled, provider == "chatgpt")
@@ -624,10 +686,14 @@ class VibeCADPreferencesPage:
         self._set_form_row_visible(
             self.chatgpt_intent_memory_model, provider == "chatgpt"
         )
+        self._set_form_row_visible(
+            self.grok_intent_memory_model, provider == "grok"
+        )
         api_key_provider = provider in {"openai", "anthropic"}
         self._set_form_row_visible(self.dotenv_row, api_key_provider)
         self._set_form_row_visible(self.api_key_row, api_key_provider)
         self._set_form_row_visible(self.chatgpt_auth_row, provider == "chatgpt")
+        self._set_form_row_visible(self.grok_auth_row, provider == "grok")
         self._refresh_reasoning_efforts()
 
     def _chatgpt_model_changed(self, _index: int = 0) -> None:
@@ -679,13 +745,21 @@ class VibeCADPreferencesPage:
         self.chatgpt_sign_in.setEnabled(not busy)
         self.chatgpt_device_sign_in.setEnabled(not busy)
         self.chatgpt_logout.setEnabled(not busy)
-        self.chatgpt_cancel_sign_in.setEnabled(login_busy)
+        self.chatgpt_cancel_sign_in.setEnabled(
+            login_busy and self._oauth_task_provider == "chatgpt"
+        )
+        self.grok_sign_in.setEnabled(not busy)
+        self.grok_device_sign_in.setEnabled(not busy)
+        self.grok_logout.setEnabled(not busy)
+        self.grok_cancel_sign_in.setEnabled(
+            login_busy and self._oauth_task_provider == "grok"
+        )
         self.fetch_models.setEnabled(not busy)
 
     def _run_chatgpt_task(self, task: str, operation) -> bool:
         if self._chatgpt_task_active:
             self.status.setText(
-                "busy | A ChatGPT account operation is already running."
+                "busy | An account operation is already running."
             )
             return False
         self._chatgpt_task_active = True
@@ -722,15 +796,21 @@ class VibeCADPreferencesPage:
             return
         from PySide import QtCore, QtGui
 
-        if payload.get("type") == "chatgpt":
+        login_type = str(payload.get("type") or "")
+        if login_type in {"chatgpt", "grok"}:
             url = str(payload.get("authUrl") or "")
             if url:
                 QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+            label = "ChatGPT" if login_type == "chatgpt" else "X / Grok"
             self.status.setText(
-                "sign_in_pending | Complete ChatGPT sign-in in your browser."
+                f"sign_in_pending | Complete {label} sign-in in your browser."
             )
             return
-        url = str(payload.get("verificationUrl") or "")
+        url = str(
+            payload.get("verificationUrlComplete")
+            or payload.get("verificationUrl")
+            or ""
+        )
         code = str(payload.get("userCode") or "")
         if url:
             QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
@@ -746,6 +826,8 @@ class VibeCADPreferencesPage:
         if not clean.get("ok"):
             self.status.setText(f"auth_error | {clean.get('error') or 'Unknown error'}")
             self._chatgpt_login_session = None
+            self._grok_login_session = None
+            self._oauth_task_provider = ""
             return
         result = clean.get("result")
         if task == "models":
@@ -754,23 +836,38 @@ class VibeCADPreferencesPage:
                 self.status.setText(
                     f"models_error | {model_result.get('error') or 'Unknown error'}"
                 )
+                self._oauth_task_provider = ""
                 return
-            self._chatgpt_model_details = {
-                str(item.get("id")): dict(item)
-                for item in model_result.get("model_details") or []
-                if isinstance(item, dict) and item.get("id")
-            }
-            self._chatgpt_default_model = str(model_result.get("default_model") or "")
+            provider = self._oauth_task_provider or self._selected_provider()
+            if provider == "chatgpt":
+                self._chatgpt_model_details = {
+                    str(item.get("id")): dict(item)
+                    for item in model_result.get("model_details") or []
+                    if isinstance(item, dict) and item.get("id")
+                }
+                self._chatgpt_default_model = str(
+                    model_result.get("default_model") or ""
+                )
             self._apply_provider_models(
-                "chatgpt", list(model_result.get("models") or [])
+                provider, list(model_result.get("models") or [])
             )
             self._refresh_reasoning_efforts()
+            self._oauth_task_provider = ""
             return
         if task == "logout":
-            self.status.setText("not_configured | ChatGPT account signed out.")
+            if self._oauth_task_provider == "grok":
+                self.status.setText("not_configured | Grok / X account signed out.")
+            else:
+                self.status.setText("not_configured | ChatGPT account signed out.")
+            self._oauth_task_provider = ""
             return
-        self.status.setText(self._chatgpt_account_status(result))
-        self._chatgpt_login_session = None
+        if self._oauth_task_provider == "grok":
+            self.status.setText(self._grok_account_status(result))
+            self._grok_login_session = None
+        else:
+            self.status.setText(self._chatgpt_account_status(result))
+            self._chatgpt_login_session = None
+        self._oauth_task_provider = ""
 
     def _start_chatgpt_login(self, mode: str) -> None:
         if self._selected_provider() != "chatgpt":
@@ -779,6 +876,7 @@ class VibeCADPreferencesPage:
 
         session = ChatGPTLoginSession()
         self._chatgpt_login_session = session
+        self._oauth_task_provider = "chatgpt"
 
         def operation():
             try:
@@ -802,7 +900,53 @@ class VibeCADPreferencesPage:
     def _chatgpt_logout(self) -> None:
         from VibeCADCodex import logout_account
 
+        self._oauth_task_provider = "chatgpt"
         self.status.setText("sign_out_pending | Signing out of ChatGPT...")
+        self._run_chatgpt_task("logout", logout_account)
+
+    def _grok_account_status(self, result: object) -> str:
+        payload = result if isinstance(result, dict) else {}
+        account = payload.get("account") if isinstance(payload, dict) else None
+        if not isinstance(account, dict) or account.get("type") != "grok":
+            return "not_configured | No Grok / X account is signed in."
+        email = str(account.get("email") or "").strip()
+        suffix = f" | {email}" if email else ""
+        return f"verified | Grok / X account is signed in{suffix}"
+
+    def _start_grok_login(self, mode: str) -> None:
+        if self._selected_provider() != "grok":
+            return
+        from VibeCADGrokAuth import GrokLoginSession
+
+        session = GrokLoginSession()
+        self._grok_login_session = session
+        self._oauth_task_provider = "grok"
+
+        def operation():
+            try:
+                started = session.start(mode)
+                self._async_bridge.event.emit("login_started", started)
+                return session.wait()
+            finally:
+                session.close()
+
+        self.status.setText("sign_in_starting | Starting secure Grok / X sign-in...")
+        if not self._run_chatgpt_task("login", operation):
+            session.close()
+            self._grok_login_session = None
+            self._oauth_task_provider = ""
+
+    def _cancel_grok_login(self) -> None:
+        session = self._grok_login_session
+        if session is not None:
+            session.request_cancel()
+            self.status.setText("sign_in_cancelling | Cancelling Grok / X sign-in...")
+
+    def _grok_logout(self) -> None:
+        from VibeCADGrokAuth import logout_account
+
+        self._oauth_task_provider = "grok"
+        self.status.setText("sign_out_pending | Signing out of Grok / X...")
         self._run_chatgpt_task("logout", logout_account)
 
     def _set_combo_text(self, combo, text: str) -> None:
@@ -845,6 +989,8 @@ class VibeCADPreferencesPage:
             return self.anthropic_model
         if provider == "chatgpt":
             return self.chatgpt_model
+        if provider == "grok":
+            return self.grok_model
         return self.model
 
     def _provider_memory_combo(self, provider: str):
@@ -852,6 +998,8 @@ class VibeCADPreferencesPage:
             return self.anthropic_intent_memory_model
         if provider == "chatgpt":
             return self.chatgpt_intent_memory_model
+        if provider == "grok":
+            return self.grok_intent_memory_model
         return self.openai_intent_memory_model
 
     def _provider_active_memory_label(self, provider: str) -> str:
@@ -859,6 +1007,8 @@ class VibeCADPreferencesPage:
             return "Use active Anthropic model"
         if provider == "chatgpt":
             return "Use active ChatGPT model"
+        if provider == "grok":
+            return "Use active Grok model"
         return "Use active OpenAI model"
 
     def _apply_provider_models(
@@ -923,9 +1073,17 @@ class VibeCADPreferencesPage:
         if provider == "chatgpt":
             from VibeCADCodex import list_models
 
+            self._oauth_task_provider = "chatgpt"
             self.status.setText(
                 "models_pending | Loading ChatGPT subscription models..."
             )
+            self._run_chatgpt_task("models", list_models)
+            return
+        if provider == "grok":
+            from VibeCADGrokAuth import list_models
+
+            self._oauth_task_provider = "grok"
+            self.status.setText("models_pending | Loading Grok models...")
             self._run_chatgpt_task("models", list_models)
             return
         settings = self._current_settings()
@@ -980,6 +1138,9 @@ class VibeCADPreferencesPage:
         if self._selected_provider() == "chatgpt":
             self._chatgpt_logout()
             return
+        if self._selected_provider() == "grok":
+            self._grok_logout()
+            return
         delete_keyring_key(provider=self._selected_provider())
         self.api_key.clear()
         self.intent_memory_status.clear()
@@ -989,6 +1150,9 @@ class VibeCADPreferencesPage:
         provider = self._selected_provider()
         if provider == "chatgpt":
             self._refresh_chatgpt_status()
+            return
+        if provider == "grok":
+            self._refresh_grok_status()
             return
         typed_key = self.api_key.text().strip()
         settings = self._current_settings()
@@ -1026,6 +1190,7 @@ class VibeCADPreferencesPage:
             anthropic_model=self.anthropic_model.currentText().strip()
             or DEFAULT_ANTHROPIC_MODEL,
             chatgpt_model=str(self.chatgpt_model.currentData() or "").strip(),
+            grok_model=self.grok_model.currentText().strip() or DEFAULT_GROK_MODEL,
             web_search_enabled=self.web_search_enabled.isChecked(),
             design_review_enabled=self.design_review_enabled.isChecked(),
             codex_skills_enabled=self.codex_skills_enabled.isChecked(),
@@ -1041,6 +1206,9 @@ class VibeCADPreferencesPage:
             chatgpt_intent_memory_model=(
                 self._memory_model_value(self.chatgpt_intent_memory_model)
             ),
+            grok_intent_memory_model=(
+                self._memory_model_value(self.grok_intent_memory_model)
+            ),
             scripted_timeout_seconds=persisted.scripted_timeout_seconds,
             scripted_memory_limit_mb=persisted.scripted_memory_limit_mb,
         )
@@ -1048,6 +1216,9 @@ class VibeCADPreferencesPage:
     def _refresh_status(self) -> None:
         if self._selected_provider() == "chatgpt":
             self._refresh_chatgpt_status()
+            return
+        if self._selected_provider() == "grok":
+            self._refresh_grok_status()
             return
         settings = self._current_settings()
         auth = resolve_auth_state(
@@ -1063,8 +1234,18 @@ class VibeCADPreferencesPage:
             return
         from VibeCADCodex import read_account
 
+        self._oauth_task_provider = "chatgpt"
         self.status.setText("checking | Checking ChatGPT subscription sign-in...")
         self._run_chatgpt_task("status", lambda: read_account(refresh_token=False))
+
+    def _refresh_grok_status(self) -> None:
+        if self._chatgpt_task_active:
+            return
+        from VibeCADGrokAuth import read_account
+
+        self._oauth_task_provider = "grok"
+        self.status.setText("checking | Checking Grok / X sign-in...")
+        self._run_chatgpt_task("status", lambda: read_account(refresh_token=True))
 
     def saveSettings(self) -> None:
         save_settings(self._current_settings())
@@ -1094,6 +1275,7 @@ class VibeCADPreferencesPage:
             self.chatgpt_model.setCurrentIndex(index)
         else:
             self.chatgpt_model.setCurrentIndex(0)
+        self._set_combo_text(self.grok_model, settings.grok_model)
         self.web_search_enabled.setChecked(settings.web_search_enabled)
         self.design_review_enabled.setChecked(settings.design_review_enabled)
         self.codex_skills_enabled.setChecked(settings.codex_skills_enabled)
@@ -1120,6 +1302,12 @@ class VibeCADPreferencesPage:
             [],
             settings.chatgpt_intent_memory_model,
             "Use active ChatGPT model",
+        )
+        self._set_memory_models(
+            self.grok_intent_memory_model,
+            [],
+            settings.grok_intent_memory_model,
+            "Use active Grok model",
         )
         self.api_key.clear()
         self._update_provider_visibility()

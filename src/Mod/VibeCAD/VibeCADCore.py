@@ -678,7 +678,15 @@ class VibeCADService:
             "objects_truncated": bounds["truncated"],
             "objects_omitted": bounds["omitted"],
             "objects": visible_objects,
+            "aero": self.aero_summary(),
         }
+
+    def aero_summary(self) -> dict[str, Any]:
+        """Bounded AeroConfig / AeroReport facts for the active document."""
+
+        from VibeCADAeroContext import document_aero_summary
+
+        return document_aero_summary(self._active_document())
 
     def provider_document_summary(self) -> dict[str, Any]:
         """Return exact object identity without duplicating domain state."""
@@ -5071,6 +5079,7 @@ class VibeCADService:
             "surface": self.surface_summary(),
             "robot": self.robot_summary(),
             "meshpart": self.meshpart_summary(),
+            "aero": self.aero_summary(),
             "provider_tool_surface": self.provider_tool_surface(),
             "conversation": self.conversation_history(),
         }
@@ -5106,6 +5115,7 @@ class VibeCADService:
             "selection": self.provider_turn_selection_summary(),
             "view_screenshot": self.view_screenshot_summary(),
             "reference_images": self.provider_reference_image_attachments(),
+            "aero": self.aero_summary(),
         }
 
     def _register_core_tools(self) -> None:

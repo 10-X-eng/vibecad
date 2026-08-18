@@ -27,6 +27,7 @@ SURFACE_IDS = frozenset(
         "manufacture",
         "drawing",
         "parameters",
+        "aero",
         "sketch.setup",
         "sketch.edit",
         "unavailable",

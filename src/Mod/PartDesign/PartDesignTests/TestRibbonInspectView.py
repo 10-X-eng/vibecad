@@ -23,6 +23,7 @@ SHIPPED_RIBBON_DOMAINS = (
     ("Manufacture", "CAMWorkbench"),
     ("Drawing", "TechDrawWorkbench"),
     ("Parameters", "SpreadsheetWorkbench"),
+    ("Aero", "VibeCADAeroWorkbench"),
 )
 
 INSPECTION_COMMANDS = (
@@ -393,12 +394,12 @@ class TestRibbonInspectView(unittest.TestCase):
         source = source_path.read_text(encoding="utf-8")
 
         domains_start = source.index(
-            "constexpr std::array<DomainDefinition, 7> domains"
+            "constexpr std::array<DomainDefinition, 8> domains"
         )
         domains_end = source.index("}};", domains_start)
         actual_domains = tuple(
             re.findall(
-                r'\{"([^"]+)",\s*"([^"]+)"\}',
+                r'\{"([^"]+)",\s*"([^"]+)",\s*"[^"]+"\}',
                 source[domains_start:domains_end],
             )
         )

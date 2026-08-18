@@ -103,6 +103,53 @@ def test_turn_prompt_contains_only_the_approved_exact_facts() -> None:
         assert forbidden not in serialized
 
 
+def test_first_prompt_context_json_includes_toplevel_aero() -> None:
+    """VIBECAD_CONTEXT_JSON is the first-prompt path, not steering.
+
+    ``_provider_state_payload`` is the last allowlist before that JSON is
+    serialized. Aero must sit next to document/selection, not inside
+    ``provider_turn_document_summary``.
+    """
+
+    aero = {
+        "available": True,
+        "CL": 1.516,
+        "CD": 0.242,
+        "Cmalpha": 4.68,
+        "PitchUnstable": True,
+        "corrections": [
+            "PitchUnstable: Cmα > 0. Increase decalage, add tail volume, "
+            "or move CG forward until Cmα < 0."
+        ],
+    }
+    context = {
+        **_active_state(),
+        "aero": aero,
+        "human_steering": {"must": "not be the first-prompt path"},
+    }
+
+    state = session._provider_state_payload(context)
+    payload, conversation, remainder = _prompt_payload("Continue.", context)
+
+    assert "aero" in state
+    assert state["aero"]["CL"] == 1.516
+    assert state["aero"]["PitchUnstable"] is True
+    assert "aero" not in (state.get("document") or {})
+    assert set(payload) == {"active_state"}
+    assert payload["active_state"]["aero"] == aero
+    assert "aero" not in (payload["active_state"].get("document") or {})
+    assert set(payload["active_state"]) == {
+        "workbench",
+        "modeling_surface",
+        "document",
+        "selection",
+        "aero",
+    }
+    assert conversation["turns"] == []
+    assert remainder == "CURRENT_USER_MESSAGE\nContinue."
+    assert "human_steering" not in json.dumps(payload)
+
+
 def test_turn_history_is_supplied_separately_from_model_state_packet() -> None:
     prior_user = "What hole diameter did I specify?"
     prior_assistant = "You specified a 6 mm through-hole."
@@ -196,6 +243,38 @@ def test_stop_button_control_is_not_reinjected_as_a_design_instruction() -> None
         [{"role": "user", "content": "Stop."}]
     )
     assert literal_user_request["turns"] == [{"role": "user", "content": "Stop."}]
+
+
+def test_recent_conversation_keeps_aero_analyze_as_assistant() -> None:
+    report = (
+        "Aero Analyze (AeroBuildup)\n"
+        "CL=1.516  CD=0.242  CM=0.733\n"
+        "CLα=7.3  Cmα=4.68  PITCH UNSTABLE (Cmα > 0)\n"
+        "Corrections:\n"
+        "- PitchUnstable: Cmα > 0. Increase decalage, add tail volume, "
+        "or move CG forward until Cmα < 0."
+    )
+    turns = [
+        {"role": "user", "content": "Analyze the voider."},
+        {
+            "role": "assistant",
+            "content": report,
+            "metadata": {"source": "aero"},
+        },
+        {
+            "role": "system",
+            "content": "internal status must not become dialogue",
+        },
+    ]
+
+    payload = session._recent_conversation_payload(turns)
+
+    assert payload["turns"] == [
+        {"role": "user", "content": "Analyze the voider."},
+        {"role": "assistant", "content": report},
+    ]
+    assert "PITCH UNSTABLE" in payload["turns"][-1]["content"]
+    assert "internal status" not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("object_count", (10, 100, 1000))
@@ -305,6 +384,7 @@ def test_provider_context_does_not_copy_conversation_cache() -> None:
         "count": 0,
         "images": [],
     }
+    service.aero_summary = lambda: {"available": False}
     service._conversation_cache = [
         {"role": "user", "content": f"must not leak {index}"}
         for index in range(1000)

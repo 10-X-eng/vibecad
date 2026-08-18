@@ -181,6 +181,7 @@ def test_concise_object_preserves_a_preexisting_touch() -> None:
         ("manufacture", "manufacture"),
         ("drawing", "drawing"),
         ("parameters", "parameters"),
+        ("aero", "aero"),
     ),
 )
 def test_each_surface_builds_only_its_live_domain(

@@ -11,6 +11,10 @@ from pathlib import Path
 import sys
 import traceback
 
+_VIBECAD_MODULE_DIR = Path(__file__).resolve().parent.parent
+if str(_VIBECAD_MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(_VIBECAD_MODULE_DIR))
+
 import FreeCAD as App
 import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
@@ -41,6 +45,7 @@ _PERMANENT_SURFACES = {
     "CAMWorkbench": "manufacture",
     "TechDrawWorkbench": "drawing",
     "SpreadsheetWorkbench": "parameters",
+    "VibeCADAeroWorkbench": "aero",
 }
 
 _CAM_PREFERENCE_PATH = "User parameter:BaseApp/Preferences/Mod/CAM"

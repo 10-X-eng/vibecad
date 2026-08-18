@@ -1343,8 +1343,13 @@ def _run():
             "Manufacture",
             "Drawing",
             "Parameters",
+            "Aero",
         ]
-        assert [tabs.tabText(index) for index in range(tabs.count())] == (expected_tabs)
+        actual_tabs = [tabs.tabText(index) for index in range(tabs.count())]
+        assert actual_tabs == expected_tabs, {
+            "actual_tabs": actual_tabs,
+            "expected_tabs": expected_tabs,
+        }
         tabs.setCurrentIndex(0)
         _process_events()
         structure_group = main_window.findChild(
@@ -1624,6 +1629,7 @@ def _run():
                 "CAMWorkbench": "manufacture",
                 "TechDrawWorkbench": "drawing",
                 "SpreadsheetWorkbench": "parameters",
+                "VibeCADAeroWorkbench": "aero",
             }[workbench]
             _assert_ribbon_surface(
                 ribbon_controller,
@@ -1670,7 +1676,34 @@ def _run():
             assert page_overflow.isVisible() == bool(hidden_page_groups)
             if page_overflow.isVisible():
                 _assert_visible_inside(page_overflow, page)
-            if workbench == "MeshWorkbench":
+            if workbench == "VibeCADAeroWorkbench":
+                aero_group_labels = _page_group_labels(page)
+                assert aero_group_labels == [
+                    "VIEW",
+                    "AERO",
+                    "INSPECT",
+                ], aero_group_labels
+                aero_group = main_window.findChild(
+                    QtWidgets.QFrame, "VibeCADRibbonGroup_Aero"
+                )
+                assert aero_group is not None
+                assert _group_commands(aero_group) == {
+                    "VibeCADAero_Analyze",
+                    "VibeCADAero_Section",
+                    "VibeCADAero_VLM",
+                    "VibeCADAero_ExportJSBSim",
+                    "VibeCADAero_Report",
+                }
+                aero_screenshot_path = os.environ.get(
+                    "VIBECAD_RIBBON_AERO_SCREENSHOT"
+                )
+                if aero_screenshot_path:
+                    aero_screenshot = main_window.grab()
+                    assert not aero_screenshot.isNull()
+                    assert aero_screenshot.save(aero_screenshot_path)
+                    del aero_screenshot
+                del aero_group, aero_group_labels, aero_screenshot_path
+            elif workbench == "MeshWorkbench":
                 mesh_group_labels = _page_group_labels(page)
                 assert mesh_group_labels == [
                     "VIEW",

@@ -587,6 +587,20 @@ def choose_provider(
     auth = service.auth_state()
     if provider_name != "chatgpt" and not auth.can_call_provider:
         return OfflineProvider()
+    if provider_name == "grok":
+        from VibeCADGrokAuth import DEFAULT_XAI_API_BASE
+
+        return CodexProvider(
+            model=service.provider_model(),
+            api_key=service.provider_api_key(),
+            auth_mode="api_key",
+            reasoning_effort=service.provider_reasoning_effort(),
+            base_url=service.provider_base_url() or DEFAULT_XAI_API_BASE,
+            web_search_enabled=service.web_search_enabled(),
+            skills_enabled=False,
+            identity_id="grok",
+            identity_label="Grok via X / xAI OAuth",
+        )
     if provider_name in {"openai", "chatgpt"}:
         return CodexProvider(
             model=service.provider_model(),
@@ -1119,6 +1133,7 @@ def _capture_context_for_provider(
         "selection",
         "view_screenshot",
         "reference_images",
+        "aero",
     )
     context = {
         key: raw_context[key] for key in allowed_turn_facts if key in raw_context
@@ -1233,7 +1248,7 @@ def _capture_context_for_provider(
             workbench, schemas, resolution=resolution
         )
     except ValueError as exc:
-        if service.provider_name() not in {"openai", "chatgpt"}:
+        if service.provider_name() not in {"openai", "chatgpt", "grok"}:
             raise
         context["provider_tool_surface"] = {
             "kind": "unavailable",
@@ -1520,6 +1535,10 @@ def _provider_component_inventory_payload(
 
 
 def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
+    # Final first-prompt allowlist. This dict is serialized as
+    # VIBECAD_CONTEXT_JSON. Aero is a sibling of document/selection, not a
+    # field on provider_turn_document_summary, and it is not delivered by
+    # steering.
     keys = (
         "workbench",
         "modeling_surface",
@@ -1528,6 +1547,7 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
         "selection",
         "editable_sources",
         "available_components",
+        "aero",
     )
     result = {
         key: context[key]
@@ -5210,7 +5230,9 @@ def _run_session_turn(
     if clean_interaction_mode == "plan" and not isinstance(
         active_provider, CodexProvider
     ):
-        raise ProviderUnavailable("Plan mode requires an OpenAI Codex provider.")
+        raise ProviderUnavailable(
+            "Plan mode requires a Codex-backed provider (ChatGPT, OpenAI, or Grok)."
+        )
     provider_name = active_provider.__class__.__name__
     provider_runtime = provider_execution_identity(active_provider)
     provider_runtime["interaction_mode"] = clean_interaction_mode

@@ -382,6 +382,7 @@ def test_read_workbench_returns_only_live_ribbon_workbenches() -> None:
         ("Manufacture", "CAMWorkbench"),
         ("Drawing", "TechDrawWorkbench"),
         ("Parameters", "SpreadsheetWorkbench"),
+        ("Aero", "VibeCADAeroWorkbench"),
         ("Sketch", ""),
     ]
 

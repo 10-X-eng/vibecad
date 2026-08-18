@@ -1172,6 +1172,7 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
         ("Manufacture", "CAMWorkbench", "manufacture"),
         ("Drawing", "TechDrawWorkbench", "drawing"),
         ("Parameters", "SpreadsheetWorkbench", "parameters"),
+        ("Aero", "VibeCADAeroWorkbench", "aero"),
     ):
         assert f'{{"{label}", "{workbench}", "{surface}"}}' in ribbon
 
@@ -1200,6 +1201,7 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
         "VibeCADCommandSearch",
         "VibeCADThemeToggle",
         "VibeCADRibbonTabs",
+        "VibeCADAeroWorkspaceHost",
     ):
         assert f'QStringLiteral("{object_name}")' in ribbon
 
@@ -1282,6 +1284,8 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
     assert startup_events == [
         "commands",
         "scheduled:_setup_always_on_grid",
+        "scheduled:_setup_agent_control",
+        "scheduled:_setup_aero_ribbon",
     ]
 
     preferences.disabled = (
@@ -1365,6 +1369,8 @@ def test_vibecad_bootstrap_helpers_survive_freecad_exec_namespace(monkeypatch) -
     assert "assistant" in startup_events
     assert "fasteners" in startup_events
     assert "scheduled:_setup_always_on_grid" in startup_events
+    assert "scheduled:_setup_agent_control" in startup_events
+    assert "scheduled:_setup_aero_ribbon" in startup_events
     assert not any("GUI bootstrap failed" in warning for warning in warnings)
     assert any("ribbon extension" in warning for warning in warnings)
 

@@ -5,6 +5,10 @@ client. The modes are mutually exclusive: enabling MCP stops and disables the
 built-in agent; disabling MCP shuts the local server down before the built-in
 agent becomes available again.
 
+To keep the in-app Assistant (including Grok) running while a desktop agent
+opens documents or runs scripts, use the separate loopback channel in
+[vibecad-agent-control.md](vibecad-agent-control.md) instead of MCP.
+
 ## Connect a client
 
 1. Open **Edit → Preferences → VibeCAD**.
