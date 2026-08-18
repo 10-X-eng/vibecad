@@ -75,6 +75,9 @@ def _report_result(result: dict[str, Any], title: str) -> None:
         text += f"\nJSBSim: {result['jsbsim_path']}"
         if result.get("jsbsim_boot_error"):
             text += f"\nJSBSim boot: {result['jsbsim_boot_error']}"
+    message = result.get("user_message") or ""
+    if message:
+        text += "\n\n" + message
     _dialog(title, text, kind="info")
 
 
@@ -88,7 +91,7 @@ class VibeCADAero_Analyze(_AeroCommand):
         return {
             "Pixmap": _ICON,
             "MenuText": "Analyze",
-            "ToolTip": "Run NeuralFoil + AeroSandbox + momentum hover and write AeroReport",
+            "ToolTip": "Run NeuralFoil + AeroSandbox + momentum hover, repair pitch-unstable geometry, and write AeroReport",
         }
 
     def Activated(self) -> None:

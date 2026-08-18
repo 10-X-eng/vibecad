@@ -15,6 +15,7 @@ from typing import Any
 import AeroAirfoil
 import AeroConfig
 import AeroJSBSim
+import AeroRepair
 import AeroResults
 import AeroSolvers
 from AeroSolvers import AeroDependencyError
@@ -35,8 +36,9 @@ def run_analyze(
     spreadsheet: bool = False,
     markdown: bool = False,
     export_plant: bool = False,
+    repair: bool = True,
 ) -> dict[str, Any]:
-    """Run section + 3D + hover and write ``AeroReport`` onto ``doc``."""
+    """Run section + 3D + hover, optionally repair pitch-unstable geometry, and write ``AeroReport``."""
 
     return _run(
         doc,
@@ -45,15 +47,16 @@ def run_analyze(
         spreadsheet=spreadsheet,
         markdown=markdown,
         export_plant=export_plant,
+        repair=repair,
     )
 
 
 def run_section(doc: Any | None = None) -> dict[str, Any]:
-    return _run(doc, run_section_solve=True, run_vlm_solve=False)
+    return _run(doc, run_section_solve=True, run_vlm_solve=False, repair=False)
 
 
 def run_vlm(doc: Any | None = None) -> dict[str, Any]:
-    return _run(doc, run_section_solve=False, run_vlm_solve=True)
+    return _run(doc, run_section_solve=False, run_vlm_solve=True, repair=False)
 
 
 def export_jsbsim(doc: Any | None = None, results: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -91,6 +94,7 @@ def _run(
     spreadsheet: bool = False,
     markdown: bool = False,
     export_plant: bool = False,
+    repair: bool = False,
 ) -> dict[str, Any]:
     try:
         document = _require_doc(doc)
@@ -104,6 +108,34 @@ def _run(
             run_vlm_solve=run_vlm_solve,
         )
         payload["airfoil_source"] = airfoil_source
+        changes: list[dict[str, Any]] = []
+        repair_passes = 0
+        if repair:
+            for _pass in range(AeroRepair.MAX_REPAIR_PASSES):
+                if not payload.get("PitchUnstable") and not _positive_cmalpha(payload):
+                    break
+                proposed = AeroRepair.propose_repairs(cfg, payload, document)
+                landed = AeroRepair.apply_repairs(document, cfg, proposed)
+                if not landed:
+                    break
+                repair_passes += 1
+                changes.extend(landed)
+                cfg = AeroConfig.resolve_geometry(document)
+                payload = AeroSolvers.analyze(
+                    cfg,
+                    coords=coords,
+                    run_section_solve=run_section_solve,
+                    run_vlm_solve=run_vlm_solve,
+                )
+                payload["airfoil_source"] = airfoil_source
+        payload["changes"] = changes
+        payload["RepairPasses"] = repair_passes
+        payload["Corrections"] = [
+            str(item.get("sentence") or "") for item in changes if item.get("sentence")
+        ]
+        payload["user_message"] = AeroRepair.format_user_message(
+            changes, payload, repair_passes
+        )
         jsbsim_path = None
         boot = ""
         if export_plant:
@@ -125,6 +157,8 @@ def _run(
         return {
             "ok": True,
             **payload,
+            "changes": changes,
+            "user_message": payload["user_message"],
             "jsbsim_path": jsbsim_path,
             "jsbsim_boot_error": boot,
         }
@@ -132,6 +166,11 @@ def _run(
         return {"ok": False, "error": str(exc)}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _positive_cmalpha(payload: dict[str, Any]) -> bool:
+    value = payload.get("Cmalpha")
+    return value is not None and float(value) > 0.0
 
 
 def _require_doc(doc: Any | None) -> Any:

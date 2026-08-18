@@ -30,7 +30,7 @@ Modify, Inspect, Fasteners, Surface, Connect) plus an **Aero** group
 
 | Command | What it does |
 | --- | --- |
-| Analyze | Section + 3D + hover, writes `AeroReport` on the active document |
+| Analyze | Section + 3D + hover, writes `AeroReport` on the active document. Defaults to `repair=True`: if the solve is pitch-unstable (`Cmα > 0`), Analyze applies bounded CAD/config repairs and re-solves up to two times |
 | Section / NeuralFoil | 2D viscous section only (`model_size="large"`) |
 | 3D / AeroSandbox | VortexLatticeMethod (8×6) + AeroBuildup |
 | Export JSBSim plant | Writes XML and stores `JSBSimPlantPath` |
@@ -89,6 +89,25 @@ Analyze writes a tree-visible `AeroReport` FeaturePython with CL, CD, CM,
 CLα, Cmα, Re, V_loaf, P_hover, P_cruise, source, and a pitch-unstable flag
 when Cmα > 0. Coefficient source order is AeroBuildup, else VLM, else
 NeuralFoil.
+
+The AeroSandbox airplane includes the biplane plus an `h_tail` sized from
+`tail_span_m` / `tail_chord_m` / `boom_length_m`. Those sizes are seeded
+from named `h_tail` and `boom` objects when present. A missing tail plus a
+CG aft of the staggered-biplane aero center is why a wings-only solve stays
+pitch-unstable.
+
+When Analyze sees `PitchUnstable` / `Cmα > 0`, it proposes bounded repairs
+to both `AeroConfig` and live named parts: horizontal-tail volume and arm,
+boom length, `avionics_pod` / `camera_bay` toward the nose, and upper-wing
+stagger / decalage. It re-solves at most twice and stops if the model is
+stable or no CAD/config change landed. The dialog and FreeCAD console list
+each change in plain sentences. `AeroReport.Corrections`,
+`AeroReport.RepairPasses`, and `document.AeroAssistantJson` carry the same
+list for the in-app assistant (`VibeCADCore.aero_summary`).
+`VibeCADAero.run_analyze` returns `changes` and `user_message`.
+
+Section / VLM-only commands stay report-only (`repair=False`) unless they
+go through Analyze.
 
 Hover power is **momentum-theory** (default 2× 178 mm props, FM=0.55,
 T/W=1.9), not CFD. Cruise power is `D*V/0.65`.

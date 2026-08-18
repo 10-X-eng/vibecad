@@ -349,20 +349,41 @@ def build_airplane(cfg: dict[str, Any], coords: list[list[float]]) -> Any:
             ),
         ],
     )
+    boom_length = float(cfg.get("boom_length_m") or max(0.25, 3.5 * chord))
+    tail_span = float(cfg.get("tail_span_m") or 0.30 * span)
+    tail_chord = float(cfg.get("tail_chord_m") or 0.60 * chord)
     boom = asb.Fuselage(
         name="Boom",
         xsecs=[
             asb.FuselageXSec(xyz_c=[-0.02, 0.0, gap / 2.0], radius=0.004),
             asb.FuselageXSec(
-                xyz_c=[float(cfg.get("boom_length_m") or 0.25), 0.0, gap / 2.0],
+                xyz_c=[boom_length, 0.0, gap / 2.0],
                 radius=0.004,
+            ),
+        ],
+    )
+    h_tail = asb.Wing(
+        name="h_tail",
+        symmetric=True,
+        xsecs=[
+            asb.WingXSec(
+                xyz_le=[boom_length, 0.0, gap / 2.0],
+                chord=tail_chord,
+                twist=0.0,
+                airfoil=foil,
+            ),
+            asb.WingXSec(
+                xyz_le=[boom_length, tail_span / 2.0, gap / 2.0],
+                chord=tail_chord,
+                twist=0.0,
+                airfoil=foil,
             ),
         ],
     )
     return asb.Airplane(
         name="VibeCADAero",
         xyz_ref=list(cfg.get("xyz_ref") or [0.25 * chord, 0.0, gap / 2.0]),
-        wings=[lower, upper],
+        wings=[lower, upper, h_tail],
         fuselages=[boom],
     )
 

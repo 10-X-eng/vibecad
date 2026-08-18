@@ -41,6 +41,18 @@ class _Doc:
         return None
 
 
+def test_run_analyze_defaults_to_repair_true():
+    import inspect
+
+    assert inspect.signature(VibeCADAero.run_analyze).parameters["repair"].default is True
+    assert inspect.signature(VibeCADAero.run_section).parameters.get("repair") is None
+    source = Path(__file__).resolve().parents[1].joinpath("VibeCADAero.py").read_text(
+        encoding="utf-8"
+    )
+    assert "run_section_solve=True" in source
+    assert "run_vlm_solve=False" in source
+
+
 def test_run_analyze_writes_report_with_injected_solvers(monkeypatch, tmp_path):
     def fake_analyze(cfg, **_kwargs):
         return {
@@ -71,6 +83,91 @@ def test_run_analyze_writes_report_with_injected_solvers(monkeypatch, tmp_path):
     assert result["CL"] == 0.77
     assert doc.getObject("AeroReport") is not None
     assert result["source"] == "NeuralFoil"
+    assert result["changes"] == []
+    assert result["RepairPasses"] == 0
+    assert "user_message" in result
+
+
+def test_run_analyze_repairs_when_pitch_unstable(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_analyze(cfg, **_kwargs):
+        calls["n"] += 1
+        unstable = calls["n"] == 1
+        return {
+            "CL": 0.77,
+            "CD": 0.03,
+            "CM": -0.02,
+            "CLalpha": 4.8,
+            "Cmalpha": 0.6 if unstable else -0.4,
+            "Re": 40000.0,
+            "V_loaf": 7.1,
+            "P_hover": 17.0,
+            "P_cruise": 3.5,
+            "source": "VLM",
+            "PitchUnstable": unstable,
+            "hover": {"source": "momentum-theory"},
+            "geometry_source": cfg["geometry_source"],
+            "airfoil": cfg["airfoil"],
+        }
+
+    monkeypatch.setattr("AeroSolvers.analyze", fake_analyze)
+    monkeypatch.setattr(
+        "AeroAirfoil.load_airfoil_coordinates",
+        lambda name: ([[1.0, 0.0], [0.0, 0.07], [1.0, 0.0]], "bundled:e63"),
+    )
+    doc = _Doc()
+    result = VibeCADAero.run_analyze(doc)
+    assert result["ok"] is True
+    assert calls["n"] == 2
+    assert result["PitchUnstable"] is False
+    assert result["RepairPasses"] == 1
+    assert result["changes"]
+    assert result["user_message"]
+    report = doc.getObject("AeroReport")
+    assert report.RepairPasses == 1
+    assert report.Corrections
+    assert getattr(doc, "AeroAssistantJson", "")
+    assert "tail" in result["user_message"].lower() or "boom" in result["user_message"].lower()
+
+
+def test_run_section_and_vlm_stay_report_only(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_analyze(cfg, **_kwargs):
+        calls["n"] += 1
+        return {
+            "CL": 0.6,
+            "CD": 0.04,
+            "CM": 0.0,
+            "CLalpha": 5.0,
+            "Cmalpha": 0.5,
+            "Re": 30000.0,
+            "V_loaf": 8.0,
+            "P_hover": 17.0,
+            "P_cruise": 3.0,
+            "source": "NeuralFoil",
+            "PitchUnstable": True,
+            "hover": {"source": "momentum-theory"},
+            "geometry_source": cfg["geometry_source"],
+            "airfoil": cfg["airfoil"],
+        }
+
+    monkeypatch.setattr("AeroSolvers.analyze", fake_analyze)
+    monkeypatch.setattr(
+        "AeroAirfoil.load_airfoil_coordinates",
+        lambda name: ([[1.0, 0.0], [0.0, 0.07], [1.0, 0.0]], "bundled:e63"),
+    )
+    doc = _Doc()
+    section = VibeCADAero.run_section(doc)
+    vlm = VibeCADAero.run_vlm(doc)
+    assert section["ok"] is True
+    assert vlm["ok"] is True
+    assert calls["n"] == 2
+    assert section["RepairPasses"] == 0
+    assert vlm["RepairPasses"] == 0
+    assert section["changes"] == []
+    assert vlm["changes"] == []
 
 
 def test_inferred_geometry_is_not_persisted_onto_aeroconfig(monkeypatch):

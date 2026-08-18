@@ -31,6 +31,7 @@ def test_init_modules_do_not_import_optional_solvers():
         "VibeCADAero.py",
         "AeroIcons.py",
         "AeroWorkspace.py",
+        "AeroRepair.py",
     ):
         imported = _top_level_imports(ROOT / name)
         assert imported.isdisjoint(forbidden), f"{name} imports {imported & forbidden}"
@@ -78,6 +79,8 @@ def test_cmake_installs_mod_vibecadaero():
     assert "AeroWorkspace.py" in cmake
     assert "AeroIcons.py" in cmake
     assert "AeroCommandLoader.py" in cmake
+    assert "AeroRepair.py" in cmake
+    assert "test_repair.py" in cmake
 
 
 def test_requirements_list_optional_pip_packages():

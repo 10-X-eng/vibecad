@@ -13,6 +13,7 @@ SET(VibeCADAero_SRCS
     AeroResults.py
     AeroJSBSim.py
     AeroWorkspace.py
+    AeroRepair.py
     requirements-aero.txt
     README.md
 )
@@ -33,6 +34,7 @@ SET(VibeCADAero_Tests
     tests/test_icons.py
     tests/test_jsbsim.py
     tests/test_public_api.py
+    tests/test_repair.py
     tests/test_results.py
     tests/test_solvers.py
     tests/test_workbench.py

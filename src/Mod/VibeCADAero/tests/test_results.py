@@ -68,6 +68,11 @@ def _payload():
         "hover": {"source": "momentum-theory"},
         "geometry_source": "defaults",
         "airfoil": "e63",
+        "Corrections": [
+            "Grew the horizontal tail span from 150 mm to 180 mm.",
+            "Lengthened the boom from 315 mm to 378 mm.",
+        ],
+        "RepairPasses": 1,
     }
 
 
@@ -87,12 +92,16 @@ def test_featurepython_report_exposes_required_fields():
         "P_cruise",
         "Source",
         "PitchUnstable",
+        "Corrections",
+        "RepairPasses",
     ):
         assert hasattr(obj, field)
     assert obj.CL == 0.81
     assert obj.Source == "AeroBuildup"
     assert obj.PitchUnstable is True
     assert obj.V_loaf == 7.4
+    assert "Grew the horizontal tail span" in obj.Corrections
+    assert obj.RepairPasses == 1
 
 
 def test_optional_spreadsheet_and_markdown_objects():

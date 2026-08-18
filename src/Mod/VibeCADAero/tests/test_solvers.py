@@ -160,3 +160,52 @@ def test_missing_solver_error_names_bundled_python_pip():
     assert "neuralfoil" in message
     assert "pip install" in message
     assert "python.exe" in message
+
+
+def test_build_airplane_grows_a_third_horizontal_tail_wing(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    class _Airfoil:
+        def __init__(self, coordinates=None):
+            self.coordinates = coordinates
+
+    class _Named:
+        def __init__(self, name="", **kwargs):
+            self.name = name
+            self.kwargs = kwargs
+
+    class _XSec:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _Airplane:
+        def __init__(self, name="", xyz_ref=None, wings=None, fuselages=None):
+            self.name = name
+            self.xyz_ref = xyz_ref
+            self.wings = list(wings or [])
+            self.fuselages = list(fuselages or [])
+
+    fake = SimpleNamespace(
+        Airfoil=_Airfoil,
+        Wing=_Named,
+        WingXSec=_XSec,
+        Fuselage=_Named,
+        FuselageXSec=_XSec,
+        Airplane=_Airplane,
+    )
+    monkeypatch.setitem(sys.modules, "aerosandbox", fake)
+    monkeypatch.setattr(solvers, "require_backend", lambda *_args, **_kwargs: None)
+
+    cfg = config.resolve_geometry(None)
+    plane = solvers.build_airplane(cfg, [[1.0, 0.0], [0.0, 0.07], [1.0, 0.0]])
+    assert len(plane.wings) == 3
+    names = [str(getattr(wing, "name", "")).lower() for wing in plane.wings]
+    assert names[0] == "lower wing"
+    assert names[1] == "upper wing"
+    assert "tail" in names[2]
+    tail = plane.wings[2]
+    le = tail.kwargs["xsecs"][0].kwargs["xyz_le"]
+    assert le[0] == pytest.approx(cfg["boom_length_m"])
+    assert tail.kwargs["xsecs"][0].kwargs["chord"] == pytest.approx(cfg["tail_chord_m"])
+    assert tail.kwargs["xsecs"][1].kwargs["xyz_le"][1] == pytest.approx(cfg["tail_span_m"] / 2.0)

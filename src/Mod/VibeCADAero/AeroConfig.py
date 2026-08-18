@@ -59,9 +59,20 @@ _PARAM_KEYS = (
     "thrust_to_weight",
     "cruise_prop_eta",
     "boom_length_mm",
+    "tail_span_mm",
+    "tail_chord_mm",
+    "cg_x_m",
+)
+
+_REPAIR_KEYS = (
+    "boom_length_mm",
+    "tail_span_mm",
+    "tail_chord_mm",
+    "cg_x_m",
 )
 
 _NAMED_PARTS = ("lower_wing", "upper_wing", "boom", "h_tail")
+_NAMED_TAIL_KEYS = ("boom_length_mm", "tail_span_mm", "tail_chord_mm")
 
 
 def resolve_geometry(doc: Any | None = None) -> dict[str, Any]:
@@ -80,15 +91,17 @@ def resolve_geometry(doc: Any | None = None) -> dict[str, Any]:
     if doc is None:
         return finalize(values)
 
-    aero = _find_named(doc, "AeroConfig")
+    aero = find_named(doc, "AeroConfig")
     if aero is not None and _has_any_param(aero):
         _merge_params(values, aero)
         values["geometry_source"] = "AeroConfig"
+        _seed_missing_named_parts(values, doc, aero)
         return finalize(values)
 
     if _has_any_param(doc):
         _merge_params(values, doc)
         values["geometry_source"] = "document"
+        _seed_missing_named_parts(values, doc, doc)
         return finalize(values)
 
     inferred = infer_from_named_objects(doc)
@@ -138,7 +151,19 @@ def finalize(values: dict[str, Any]) -> dict[str, Any]:
     cfg["boom_length_m"] = (
         float(boom_mm) / 1000.0 if boom_mm else max(0.25, 3.5 * chord_m)
     )
-    cfg["xyz_ref"] = [0.25 * chord_m, 0.0, cfg["gap_m"] / 2.0]
+    if not boom_mm:
+        cfg["boom_length_mm"] = cfg["boom_length_m"] * 1000.0
+    if not cfg.get("tail_span_mm"):
+        cfg["tail_span_mm"] = 0.30 * float(cfg["span_mm"])
+    if not cfg.get("tail_chord_mm"):
+        cfg["tail_chord_mm"] = 0.60 * float(cfg["chord_mm"])
+    cfg["tail_span_m"] = float(cfg["tail_span_mm"]) / 1000.0
+    cfg["tail_chord_m"] = float(cfg["tail_chord_mm"]) / 1000.0
+    if cfg.get("cg_x_m") is not None:
+        cfg["xyz_ref"] = [float(cfg["cg_x_m"]), 0.0, cfg["gap_m"] / 2.0]
+    else:
+        cfg["xyz_ref"] = [0.25 * chord_m, 0.0, cfg["gap_m"] / 2.0]
+        cfg["cg_x_m"] = cfg["xyz_ref"][0]
     cfg["airfoil"] = str(cfg.get("airfoil") or "e63")
     cfg["vehicle_type"] = normalize_vehicle_type(cfg.get("vehicle_type"))
     return cfg
@@ -170,7 +195,7 @@ def write_config(doc: Any, values: dict[str, Any]) -> Any | None:
     adder = getattr(doc, "addObject", None)
     if not callable(adder):
         return None
-    obj = _find_named(doc, "AeroConfig")
+    obj = find_named(doc, "AeroConfig")
     if obj is None:
         try:
             obj = adder("App::FeaturePython", "AeroConfig")
@@ -187,6 +212,10 @@ def write_config(doc: Any, values: dict[str, Any]) -> Any | None:
     payload["vehicle_type"] = normalize_vehicle_type(payload.get("vehicle_type"))
     for key in _WRITE_KEYS:
         _set_param(obj, key, payload.get(key))
+    if values:
+        for key in _REPAIR_KEYS:
+            if key in values:
+                _set_param(obj, key, values[key])
     recompute = getattr(doc, "recompute", None)
     if callable(recompute):
         try:
@@ -197,7 +226,7 @@ def write_config(doc: Any, values: dict[str, Any]) -> Any | None:
 
 
 def infer_from_named_objects(doc: Any) -> dict[str, Any]:
-    lower = _find_named(doc, "lower_wing")
+    lower = find_named(doc, "lower_wing")
     bbox = _bbox(lower)
     if bbox is None:
         return {}
@@ -208,7 +237,7 @@ def infer_from_named_objects(doc: Any) -> dict[str, Any]:
         "chord_mm": chord_mm,
     }
 
-    upper = _find_named(doc, "upper_wing")
+    upper = find_named(doc, "upper_wing")
     upper_bbox = _bbox(upper)
     if upper_bbox is not None and chord_mm:
         gap_mm = abs(_center(upper_bbox)[2] - _center(bbox)[2])
@@ -216,15 +245,50 @@ def infer_from_named_objects(doc: Any) -> dict[str, Any]:
         inferred["gap_c"] = gap_mm / chord_mm
         inferred["stagger_c"] = stagger_mm / chord_mm
 
-    boom = _find_named(doc, "boom")
-    boom_bbox = _bbox(boom)
-    if boom_bbox is not None:
-        inferred["boom_length_mm"] = float(boom_bbox.XLength)
-
+    inferred.update(named_part_geometry(doc))
     return inferred
 
 
-def _find_named(doc: Any, name: str) -> Any | None:
+def named_part_geometry(doc: Any) -> dict[str, Any]:
+    """Read boom length and h_tail span/chord from named objects when present."""
+
+    inferred: dict[str, Any] = {}
+    boom = find_named(doc, "boom")
+    boom_bbox = _bbox(boom)
+    if boom_bbox is not None:
+        inferred["boom_length_mm"] = float(boom_bbox.XLength)
+    tail = find_named(doc, "h_tail")
+    tail_bbox = _bbox(tail)
+    if tail_bbox is not None:
+        span_mm, chord_mm = _span_and_chord_mm(tail_bbox)
+        inferred["tail_span_mm"] = span_mm
+        inferred["tail_chord_mm"] = chord_mm
+    return inferred
+
+
+def _seed_missing_named_parts(values: dict[str, Any], doc: Any, source: Any) -> None:
+    named = named_part_geometry(doc)
+    for key in _NAMED_TAIL_KEYS:
+        if key not in named:
+            continue
+        if _has_param(source, key):
+            continue
+        values[key] = named[key]
+
+
+def _has_param(obj: Any, key: str) -> bool:
+    if getattr(obj, key, None) is not None:
+        return True
+    getter = getattr(obj, "getPropertyByName", None)
+    if callable(getter):
+        try:
+            return getter(key) is not None
+        except Exception:
+            return False
+    return False
+
+
+def find_named(doc: Any, name: str) -> Any | None:
     getter = getattr(doc, "getObject", None)
     if callable(getter):
         obj = getter(name)

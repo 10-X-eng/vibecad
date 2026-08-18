@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 REPORT_NAME = "AeroReport"
@@ -28,6 +29,8 @@ _FIELDS = (
     ("JSBSimPlantPath", "App::PropertyString", "Exported JSBSim XML path"),
     ("JSBSimBootError", "App::PropertyString", "JSBSim boot error, empty when loaded"),
     ("Notes", "App::PropertyString", "Solver notes"),
+    ("Corrections", "App::PropertyString", "Plain-language geometry repairs from Analyze"),
+    ("RepairPasses", "App::PropertyInteger", "Number of pitch-stability repair passes"),
     ("span_mm", "App::PropertyFloat", "Span used for the solve, mm"),
     ("chord_mm", "App::PropertyFloat", "Chord used for the solve, mm"),
     ("span_m", "App::PropertyFloat", "Span used for the solve, m"),
@@ -111,6 +114,8 @@ def write_report(
     if markdown:
         _write_markdown(doc, payload, jsbsim_path)
 
+    _write_assistant_json(doc, payload)
+
     recompute = getattr(doc, "recompute", None)
     if callable(recompute):
         recompute()
@@ -135,7 +140,13 @@ def format_markdown(payload: dict[str, Any], jsbsim_path: str | None = None) -> 
         f"- P_hover (W): {payload.get('P_hover')} ({hover.get('source', 'momentum-theory')})",
         f"- P_cruise (W): {payload.get('P_cruise')} (prop η = 0.65)",
         f"- Pitch unstable: {payload.get('PitchUnstable')}",
+        f"- Repair passes: {payload.get('RepairPasses') or 0}",
     ]
+    corrections = _corrections_text(payload)
+    if corrections:
+        lines.append("- Corrections:")
+        for line in corrections.splitlines():
+            lines.append(f"  - {line}")
     if jsbsim_path:
         lines.append(f"- JSBSim plant: `{jsbsim_path}`")
     lines.append("")
@@ -235,6 +246,8 @@ def _apply_payload(
             else payload.get("jsbsim_boot_error") or ""
         ),
         "Notes": "Hover is momentum-theory, not CFD.",
+        "Corrections": _corrections_text(payload),
+        "RepairPasses": int(payload.get("RepairPasses") or 0),
         "span_mm": payload.get("span_mm"),
         "chord_mm": payload.get("chord_mm"),
         "span_m": payload.get("span_m"),
@@ -251,6 +264,36 @@ def _apply_payload(
             setattr(obj, name, value)
         except Exception:
             pass
+
+
+def _corrections_text(payload: dict[str, Any]) -> str:
+    raw = payload.get("Corrections")
+    if isinstance(raw, (list, tuple)):
+        return "\n".join(str(item) for item in raw if item)
+    return str(raw or "")
+
+
+def _write_assistant_json(doc: Any, payload: dict[str, Any]) -> None:
+    blob = json.dumps(
+        {
+            "changes": payload.get("changes") or [],
+            "Corrections": (
+                list(payload.get("Corrections") or [])
+                if isinstance(payload.get("Corrections"), (list, tuple))
+                else [
+                    line
+                    for line in str(payload.get("Corrections") or "").splitlines()
+                    if line
+                ]
+            ),
+            "RepairPasses": int(payload.get("RepairPasses") or 0),
+            "PitchUnstable": bool(payload.get("PitchUnstable")),
+            "Cmalpha": payload.get("Cmalpha"),
+            "user_message": payload.get("user_message") or "",
+        },
+        ensure_ascii=True,
+    )
+    _set_doc_attr(doc, "AeroAssistantJson", blob)
 
 
 def _xyz_ref_components(payload: dict[str, Any]) -> tuple[Any, Any, Any]:

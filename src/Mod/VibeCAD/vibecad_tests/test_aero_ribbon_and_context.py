@@ -169,6 +169,8 @@ def test_document_aero_summary_reads_report_and_config() -> None:
         n_props=2.0,
         prop_diameter_mm=178.0,
         thrust_to_weight=1.9,
+        Corrections="Grew the horizontal tail span from 150 mm to 180 mm.",
+        RepairPasses=1,
     )
     config = SimpleNamespace(
         Name="AeroConfig",
@@ -215,6 +217,8 @@ def test_document_aero_summary_reads_report_and_config() -> None:
     assert summary["geometry_source"] == "AeroConfig"
     assert summary["geometry"]["span_mm"] == 500.0
     assert summary["geometry"]["chord_mm"] == 90.0
+    assert summary["RepairPasses"] == 1
+    assert "Grew the horizontal tail span" in str(summary["Corrections"])
     assert "trace" not in summary
     assert "solver_log" not in summary
 

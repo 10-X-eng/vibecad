@@ -130,6 +130,9 @@ def test_infer_biplane_from_voider_named_objects():
     assert abs(resolved["chord_mm"] - 90.0) < 1.0
     assert abs(resolved["gap_c"] - 1.4) < 0.15
     assert abs(resolved["stagger_c"] - 1.15) < 0.15
+    assert abs(resolved["boom_length_mm"] - 300.0) < 1.0
+    assert abs(resolved["tail_span_mm"] - 160.0) < 1.0
+    assert abs(resolved["tail_chord_mm"] - 60.0) < 1.0
 
 
 def test_missing_named_objects_fall_back_to_defaults():
@@ -211,6 +214,44 @@ def test_write_config_persists_vehicle_and_geometry():
     assert resolved["geometry_source"] == "AeroConfig"
     assert resolved["vehicle_type"] == "airplane"
     assert resolved["span_mm"] == 800.0
+
+
+def test_aeroconfig_without_tail_fields_seeds_named_h_tail_and_boom():
+    aero = SimpleNamespace(
+        Name="AeroConfig",
+        Label="AeroConfig",
+        span_mm=500.0,
+        chord_mm=90.0,
+        gap_c=1.4,
+        stagger_c=1.15,
+        decalage_deg=2.0,
+        auw_g=149.6,
+        airfoil="e63",
+        alpha_deg=4.0,
+    )
+    boom = SimpleNamespace(
+        Name="boom",
+        Label="boom",
+        Shape=_Shape(_BoundBox(-20.0, 280.0, -4.0, 4.0, 60.0, 68.0)),
+    )
+    tail = SimpleNamespace(
+        Name="h_tail",
+        Label="h_tail",
+        Shape=_Shape(_BoundBox(250.0, 310.0, -80.0, 80.0, 60.0, 66.0)),
+    )
+    doc = _Doc(objects=[aero, boom, tail])
+    resolved = config.resolve_geometry(doc)
+    assert resolved["geometry_source"] == "AeroConfig"
+    assert abs(resolved["boom_length_mm"] - 300.0) < 1.0
+    assert abs(resolved["tail_span_mm"] - 160.0) < 1.0
+    assert abs(resolved["tail_chord_mm"] - 60.0) < 1.0
+
+
+def test_finalize_defaults_include_tail_and_boom_sizes():
+    resolved = config.resolve_geometry(None)
+    assert abs(resolved["tail_span_m"] - 0.3 * 0.5) < 1e-9
+    assert abs(resolved["tail_chord_m"] - 0.6 * 0.09) < 1e-9
+    assert abs(resolved["boom_length_m"] - max(0.25, 3.5 * 0.09)) < 1e-9
 
 
 def test_plausible_inference_still_accepted():

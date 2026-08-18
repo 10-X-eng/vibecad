@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 _RESULT_FIELDS = (
@@ -28,9 +29,14 @@ _GEOMETRY_FIELDS = (
     "n_props",
     "prop_diameter_mm",
     "thrust_to_weight",
+    "boom_length_mm",
+    "tail_span_mm",
+    "tail_chord_mm",
 )
 _MAX_PATH = 240
 _MAX_TEXT = 80
+_MAX_CORRECTION = 160
+_MAX_CORRECTIONS = 12
 
 
 def document_aero_summary(doc: Any | None) -> dict[str, Any]:
@@ -68,6 +74,8 @@ def document_aero_summary(doc: Any | None) -> dict[str, Any]:
     for key in _RESULT_FIELDS:
         summary[key] = _as_float(getattr(report, key, None))
     summary["PitchUnstable"] = bool(getattr(report, "PitchUnstable", False))
+    summary["RepairPasses"] = int(getattr(report, "RepairPasses", 0) or 0)
+    summary["Corrections"] = _corrections(doc, report)
     summary["source"] = _clip(getattr(report, "Source", "") or "", _MAX_TEXT)
     boot = _clip(
         getattr(report, "JSBSimBootError", None)
@@ -139,6 +147,33 @@ def _vehicle_type(config: Any | None, report: Any | None) -> str:
         "vtol": "tailsitter",
     }
     return aliases.get(normalized, "tailsitter")
+
+
+def _corrections(doc: Any, report: Any | None) -> list[str]:
+    items: list[str] = []
+    raw = getattr(report, "Corrections", None) if report is not None else None
+    if isinstance(raw, (list, tuple)):
+        items = [str(item) for item in raw if item]
+    elif raw:
+        items = [line.strip() for line in str(raw).splitlines() if line.strip()]
+    if not items:
+        blob = getattr(doc, "AeroAssistantJson", None)
+        if blob:
+            try:
+                data = json.loads(blob)
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                raw_list = data.get("Corrections") or []
+                if raw_list:
+                    items = [str(item) for item in raw_list if item]
+                else:
+                    items = [
+                        str(change.get("sentence") or "")
+                        for change in data.get("changes") or []
+                        if isinstance(change, dict) and change.get("sentence")
+                    ]
+    return [_clip(item, _MAX_CORRECTION) for item in items[:_MAX_CORRECTIONS]]
 
 
 def _jsbsim_path(doc: Any, report: Any | None) -> str:
