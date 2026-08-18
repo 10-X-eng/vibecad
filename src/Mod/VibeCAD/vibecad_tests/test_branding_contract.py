@@ -1201,9 +1201,9 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
         "VibeCADCommandSearch",
         "VibeCADThemeToggle",
         "VibeCADRibbonTabs",
-        "VibeCADAeroWorkspaceHost",
     ):
         assert f'QStringLiteral("{object_name}")' in ribbon
+    assert 'QStringLiteral("VibeCADAeroWorkspaceHost")' not in ribbon
 
     assert "workbench->getToolbarItems()" in ribbon
     assert "command->getAction()->action()" in ribbon
