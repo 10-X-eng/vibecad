@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -322,6 +323,13 @@ def test_provider_context_summary_includes_aero_when_report_exists() -> None:
     assert context["aero"]["CL"] == 0.77
     assert context["aero"]["source"] == "NeuralFoil"
     assert context["aero"]["PitchUnstable"] is False
+    assert "aero" not in context["document"]
+    assert set(context["document"]) == {
+        "name",
+        "uid",
+        "object_count",
+        "edit_object",
+    }
 
 
 def test_document_aero_summary_exposes_assistant_json_when_present() -> None:
@@ -444,3 +452,14 @@ def test_session_and_provider_allowlists_keep_aero(monkeypatch) -> None:
     state = session._provider_state_payload(context)
     assert state["aero"]["corrections"][0].startswith("PitchUnstable")
     assert state["aero"]["assistant_json"]["CL"] == 1.516
+    assert "aero" not in (state.get("document") or {})
+
+    prompt = session._provider_prompt("Continue.", context)
+    encoded = prompt.split("VIBECAD_CONTEXT_JSON\n", 1)[1].split(
+        "\nEND_VIBECAD_CONTEXT_JSON\n", 1
+    )[0]
+    payload = json.loads(encoded)
+    assert payload["active_state"]["aero"]["CL"] == 1.516
+    assert payload["active_state"]["aero"]["PitchUnstable"] is True
+    assert "aero" not in (payload["active_state"].get("document") or {})
+    assert "human_steering" not in encoded

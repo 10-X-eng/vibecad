@@ -103,6 +103,53 @@ def test_turn_prompt_contains_only_the_approved_exact_facts() -> None:
         assert forbidden not in serialized
 
 
+def test_first_prompt_context_json_includes_toplevel_aero() -> None:
+    """VIBECAD_CONTEXT_JSON is the first-prompt path, not steering.
+
+    ``_provider_state_payload`` is the last allowlist before that JSON is
+    serialized. Aero must sit next to document/selection, not inside
+    ``provider_turn_document_summary``.
+    """
+
+    aero = {
+        "available": True,
+        "CL": 1.516,
+        "CD": 0.242,
+        "Cmalpha": 4.68,
+        "PitchUnstable": True,
+        "corrections": [
+            "PitchUnstable: Cmα > 0. Increase decalage, add tail volume, "
+            "or move CG forward until Cmα < 0."
+        ],
+    }
+    context = {
+        **_active_state(),
+        "aero": aero,
+        "human_steering": {"must": "not be the first-prompt path"},
+    }
+
+    state = session._provider_state_payload(context)
+    payload, conversation, remainder = _prompt_payload("Continue.", context)
+
+    assert "aero" in state
+    assert state["aero"]["CL"] == 1.516
+    assert state["aero"]["PitchUnstable"] is True
+    assert "aero" not in (state.get("document") or {})
+    assert set(payload) == {"active_state"}
+    assert payload["active_state"]["aero"] == aero
+    assert "aero" not in (payload["active_state"].get("document") or {})
+    assert set(payload["active_state"]) == {
+        "workbench",
+        "modeling_surface",
+        "document",
+        "selection",
+        "aero",
+    }
+    assert conversation["turns"] == []
+    assert remainder == "CURRENT_USER_MESSAGE\nContinue."
+    assert "human_steering" not in json.dumps(payload)
+
+
 def test_turn_history_is_supplied_separately_from_model_state_packet() -> None:
     prior_user = "What hole diameter did I specify?"
     prior_assistant = "You specified a 6 mm through-hole."

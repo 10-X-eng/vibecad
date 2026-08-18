@@ -1535,6 +1535,10 @@ def _provider_component_inventory_payload(
 
 
 def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
+    # Final first-prompt allowlist. This dict is serialized as
+    # VIBECAD_CONTEXT_JSON. Aero is a sibling of document/selection, not a
+    # field on provider_turn_document_summary, and it is not delivered by
+    # steering.
     keys = (
         "workbench",
         "modeling_surface",
