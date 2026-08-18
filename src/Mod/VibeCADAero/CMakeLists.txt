@@ -3,6 +3,7 @@
 SET(VibeCADAero_SRCS
     Init.py
     InitGui.py
+    AeroCommandLoader.py
     Commands.py
     VibeCADAero.py
     AeroConfig.py

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import VibeCADAeroRibbon
@@ -90,6 +91,12 @@ class FakeLayout:
 
     def addWidget(self, widget: FakeWidget) -> None:
         self.widgets.append(widget)
+        if widget not in self._parent._children:
+            self._parent._children.append(widget)
+            widget._parent = self._parent
+
+    def insertWidget(self, index: int, widget: FakeWidget) -> None:
+        self.widgets.insert(index, widget)
         if widget not in self._parent._children:
             self._parent._children.append(widget)
             widget._parent = self._parent
@@ -199,11 +206,14 @@ def _stock_groups() -> list[FakeWidget]:
 
 def _qt(tabs: FakeTabBar, page: FakeWidget, groups: list[FakeWidget]):
     main_window = FakeMainWindow(tabs, page, groups)
+    registered_commands: dict[str, object] = {}
     gui = SimpleNamespace(
         getMainWindow=lambda: main_window,
         activateWorkbench=lambda _name: (_ for _ in ()).throw(
             AssertionError("Aero install must not activate a workbench")
         ),
+        addCommand=lambda name, command: registered_commands.__setitem__(name, command),
+        listCommands=lambda: list(registered_commands),
         runCommand=lambda _name: None,
     )
     qt_widgets = SimpleNamespace(
@@ -250,6 +260,49 @@ def test_initgui_schedules_aero_ribbon_next_to_agent_control() -> None:
     aero = source.index("QtCore.QTimer.singleShot(0, _setup_aero_ribbon)")
     assert agent < aero
     assert "activateWorkbench" not in source[source.index("def _setup_aero_ribbon") :]
+
+
+def test_command_loader_ignores_cached_generic_commands_module(monkeypatch) -> None:
+    registered: dict[str, object] = {}
+    gui = SimpleNamespace(
+        addCommand=lambda name, command: registered.__setitem__(name, command),
+        listCommands=lambda: list(registered),
+    )
+    generic_commands = SimpleNamespace(owner="another workbench")
+    monkeypatch.setitem(sys.modules, "FreeCADGui", gui)
+    monkeypatch.setitem(sys.modules, "Commands", generic_commands)
+    monkeypatch.delitem(sys.modules, "AeroCommandLoader", raising=False)
+    monkeypatch.delitem(sys.modules, "_vibecad_aero_commands", raising=False)
+
+    VibeCADAeroRibbon._ensure_aero_commands()
+
+    assert {
+        "VibeCADAero_Analyze",
+        "VibeCADAero_Section",
+        "VibeCADAero_VLM",
+        "VibeCADAero_ExportJSBSim",
+        "VibeCADAero_Report",
+    } <= set(registered)
+    assert sys.modules["Commands"] is generic_commands
+
+
+def test_aero_group_is_inserted_before_existing_model_groups() -> None:
+    page = FakeWidget("VibeCADRibbonPage")
+    model_group = FakeWidget("VibeCADRibbonGroup_View")
+    page.layout().addWidget(model_group)
+    tabs = FakeTabBar()
+    groups = [model_group]
+    gui, qt_widgets, qt_gui, _qt_core, _window = _qt(tabs, page, groups)
+
+    group = VibeCADAeroRibbon._append_aero_group(
+        page,
+        qt_widgets,
+        qt_gui,
+        gui,
+    )
+
+    assert page.layout().widgets[0] is group
+    assert page.layout().widgets[1] is model_group
 
 
 def test_installer_inserts_aero_after_parameters_without_activating() -> None:

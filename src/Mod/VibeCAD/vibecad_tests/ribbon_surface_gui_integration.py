@@ -559,6 +559,7 @@ def _run() -> None:
                 assert Gui.activeWorkbench().name() != "VibeCADAeroWorkbench"
                 labels, command_ids = _page_graph(main_window)
                 assert "AERO" in labels
+                assert labels[0] == "AERO"
                 assert {
                     "Std_ViewFitAll",
                     "Std_ViewIsometric",

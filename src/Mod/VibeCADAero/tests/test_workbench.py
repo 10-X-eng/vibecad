@@ -26,6 +26,7 @@ def test_init_modules_do_not_import_optional_solvers():
     for name in (
         "Init.py",
         "InitGui.py",
+        "AeroCommandLoader.py",
         "Commands.py",
         "VibeCADAero.py",
         "AeroIcons.py",
@@ -76,6 +77,7 @@ def test_cmake_installs_mod_vibecadaero():
     assert "icons/vibecad-aero-analyze.svg" in cmake
     assert "AeroWorkspace.py" in cmake
     assert "AeroIcons.py" in cmake
+    assert "AeroCommandLoader.py" in cmake
 
 
 def test_requirements_list_optional_pip_packages():

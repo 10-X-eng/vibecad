@@ -156,16 +156,17 @@ class VibeCADAero_Report(_AeroCommand):
         _report_result(result, "Aero Report")
 
 
-def register_commands() -> None:
-    try:
-        import FreeCADGui
-    except Exception:
-        return
-    FreeCADGui.addCommand("VibeCADAero_Analyze", VibeCADAero_Analyze())
-    FreeCADGui.addCommand("VibeCADAero_Section", VibeCADAero_Section())
-    FreeCADGui.addCommand("VibeCADAero_VLM", VibeCADAero_VLM())
-    FreeCADGui.addCommand("VibeCADAero_ExportJSBSim", VibeCADAero_ExportJSBSim())
-    FreeCADGui.addCommand("VibeCADAero_Report", VibeCADAero_Report())
+def register_commands(gui: Any | None = None) -> None:
+    if gui is None:
+        try:
+            import FreeCADGui as gui  # type: ignore[no-redef]
+        except Exception:
+            return
+    gui.addCommand("VibeCADAero_Analyze", VibeCADAero_Analyze())
+    gui.addCommand("VibeCADAero_Section", VibeCADAero_Section())
+    gui.addCommand("VibeCADAero_VLM", VibeCADAero_VLM())
+    gui.addCommand("VibeCADAero_ExportJSBSim", VibeCADAero_ExportJSBSim())
+    gui.addCommand("VibeCADAero_Report", VibeCADAero_Report())
 
 
 register_commands()

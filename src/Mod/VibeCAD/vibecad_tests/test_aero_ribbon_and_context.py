@@ -57,6 +57,11 @@ def test_cpp_ribbon_places_aero_tab_after_parameters() -> None:
     assert 'QObject::tr("Aero")' in ribbon
     assert 'if (activeWorkbench == "VibeCADAeroWorkbench")' not in ribbon
     assert "return aeroGroups();" not in ribbon
+    aero_page = ribbon[ribbon.index("if (isAeroTab())") :]
+    aero_page = aero_page[: aero_page.index("const std::string activeWorkbench")]
+    assert 'initializeWorkbench("VibeCADAeroWorkbench")' in aero_page
+    assert "std::vector<GroupDefinition> groups = aeroGroups();" in aero_page
+    assert "mergeGroups(groups, modelPageGroups());" in aero_page
     activate = ribbon[ribbon.index("void activateDomain(int index)") :]
     activate = activate[: activate.index("void syncDomainToWorkbench")]
     assert "isAeroTabIndex(index)" in activate

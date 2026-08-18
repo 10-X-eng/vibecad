@@ -37,24 +37,19 @@ def _analyze_icon_path() -> str:
         )
 
 
-def _ensure_aero_commands() -> None:
-    try:
-        import FreeCADGui
+def _ensure_aero_commands(gui: Any | None = None) -> None:
+    import sys
 
-        get_command = getattr(FreeCADGui, "getCommand", None)
-        if callable(get_command) and get_command("VibeCADAero_Analyze"):
-            return
-    except Exception:
-        pass
-    try:
-        import sys
+    if gui is None:
+        import FreeCADGui as gui  # type: ignore[no-redef]
+    aero_dir = Path(__file__).resolve().parent.parent / "VibeCADAero"
+    if not aero_dir.is_dir():
+        raise RuntimeError(f"VibeCAD Aero module directory is missing: {aero_dir}")
+    if str(aero_dir) not in sys.path:
+        sys.path.insert(0, str(aero_dir))
+    import AeroCommandLoader
 
-        aero_dir = Path(__file__).resolve().parent.parent / "VibeCADAero"
-        if aero_dir.is_dir() and str(aero_dir) not in sys.path:
-            sys.path.insert(0, str(aero_dir))
-        import Commands  # noqa: F401
-    except Exception:
-        pass
+    AeroCommandLoader.ensure_commands_registered(gui=gui)
 
 
 def _tab_index(tabs: Any, label: str) -> int:
@@ -169,7 +164,9 @@ def _append_aero_group(
             layout.addWidget(button)
 
     page_layout = getattr(page, "layout", lambda: None)()
-    if page_layout is not None and hasattr(page_layout, "addWidget"):
+    if page_layout is not None and hasattr(page_layout, "insertWidget"):
+        page_layout.insertWidget(0, group)
+    elif page_layout is not None and hasattr(page_layout, "addWidget"):
         page_layout.addWidget(group)
     show = getattr(group, "show", None)
     if callable(show):
@@ -244,7 +241,7 @@ def install_aero_ribbon_tab(
     if tabs is None:
         return False
 
-    _ensure_aero_commands()
+    _ensure_aero_commands(gui)
 
     already = getattr(tabs, _INSTALLED_PROPERTY, False)
     aero_index = _tab_index(tabs, AERO_TAB_LABEL)

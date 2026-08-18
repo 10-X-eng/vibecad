@@ -13,8 +13,9 @@ class VibeCADAeroWorkbench(Workbench):
     Icon = AeroIcons.aero_icon_path()
 
     def Initialize(self):
-        import Commands
+        import AeroCommandLoader
 
+        AeroCommandLoader.ensure_commands_registered()
         commands = [
             "VibeCADAero_Analyze",
             "VibeCADAero_Section",

@@ -1223,8 +1223,9 @@ struct Gui::VibeCADRibbon::Private
             return sketchGroups();
         }
         if (isAeroTab()) {
-            std::vector<GroupDefinition> groups = modelPageGroups();
-            mergeGroups(groups, aeroGroups());
+            Application::Instance->initializeWorkbench("VibeCADAeroWorkbench");
+            std::vector<GroupDefinition> groups = aeroGroups();
+            mergeGroups(groups, modelPageGroups());
             return groups;
         }
         const std::string activeWorkbench = WorkbenchManager::instance()->activeName();
