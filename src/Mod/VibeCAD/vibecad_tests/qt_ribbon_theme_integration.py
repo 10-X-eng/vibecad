@@ -2033,6 +2033,10 @@ def _run():
         assert_tree_rendered()
 
         sketch = document.addObject("Sketcher::SketchObject", "RibbonSketch")
+        sketch.addGeometry(
+            Part.LineSegment(App.Vector(0, 0, 0), App.Vector(20, 0, 0)),
+            False,
+        )
         document.recompute()
         Gui.activeDocument().setEdit(sketch.Name)
         _process_events()
@@ -2072,6 +2076,29 @@ def _run():
             "Sketcher_CancelSketch",
         }.issubset(_group_commands(finish_group))
         print("VIBECAD_RIBBON_STAGE sketch-edit", flush=True)
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(document.Name, sketch.Name, "Edge1")
+        _process_events()
+        selected_geometry = Gui.Selection.getSelectionEx()
+        assert selected_geometry
+        assert "Edge1" in selected_geometry[0].SubElementNames
+        sketch_theme_button = main_window.findChild(
+            QtWidgets.QToolButton,
+            "VibeCADThemeToggle",
+        )
+        assert sketch_theme_button is not None
+        sketch_theme_mode = theme_parameters.GetString("AppearanceMode", "")
+        sketch_theme_button.click()
+        _process_events()
+        assert Gui.activeDocument().getInEdit() is not None
+        assert theme_parameters.GetString("AppearanceMode", "") != sketch_theme_mode
+        sketch_theme_button.click()
+        _process_events()
+        assert Gui.activeDocument().getInEdit() is not None
+        assert theme_parameters.GetString("AppearanceMode", "") == sketch_theme_mode
+        Gui.Selection.clearSelection()
+        print("VIBECAD_RIBBON_STAGE sketch-theme-switch", flush=True)
 
         Gui.runCommand("Sketcher_LeaveSketch")
         _process_events()

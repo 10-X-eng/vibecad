@@ -199,7 +199,7 @@ def test_each_surface_builds_only_its_live_domain(
         monkeypatch.setattr(
             sketch_snapshot_module,
             "build_sketch_snapshot",
-            lambda _document, _surface_id: {
+            lambda _document, _surface_id, *, selection=None: {
                 "kind": "sketch",
                 "context": "edit",
                 "revision": "sketch-v1:" + ("a" * 64),

@@ -874,6 +874,18 @@ class _ProviderContextService:
     def provider_context_summary(self) -> dict[str, object]:
         return dict(self.base_context)
 
+    def provider_turn_document_summary(self) -> dict[str, object]:
+        return dict(self.base_context.get("document") or {})
+
+    def provider_turn_selection_summary(self) -> dict[str, object]:
+        return dict(self.base_context.get("selection") or {})
+
+    def view_screenshot_summary(self) -> dict[str, object]:
+        return dict(self.base_context.get("view_screenshot") or {})
+
+    def provider_reference_image_attachments(self) -> dict[str, object]:
+        return dict(self.base_context.get("reference_images") or {})
+
     def active_workbench_name(self) -> str:
         return self.workbench
 
@@ -988,11 +1000,20 @@ def test_native_context_replaces_legacy_document_and_selection_summaries(
         available=True,
         unavailable_reason="",
     )
-    monkeypatch.setattr(session, "resolve_service_surface", lambda *_args: resolution)
+    native_surface = object()
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeProviderContext",
+        SimpleNamespace(
+            resolve_production_native_surface=lambda: (object(), native_surface),
+            schemas_for_native_provider_surface=lambda *_args, **_kwargs: [schema],
+            native_active_state=lambda service: service.native_active_snapshot(),
+        ),
+    )
     monkeypatch.setattr(
         session,
-        "provider_tool_schemas",
-        lambda *_args, **_kwargs: [schema],
+        "modeling_surface_from_native_provider",
+        lambda _workbench, _surface: resolution,
     )
     service = _ProviderContextService(
         "PartDesignWorkbench",

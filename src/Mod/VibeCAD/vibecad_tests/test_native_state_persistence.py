@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -79,7 +80,9 @@ def _service(project: _ProjectStore) -> VibeCADService:
     service._native_document_states = NativeDocumentStateStore()
     service._native_state_restores = set()
     service._native_state_restore_errors = {}
-    service._active_document_uid = lambda: "document-a"
+    document = SimpleNamespace(Uid="document-a", Meta={})
+    service._active_document = lambda: document
+    service._active_document_uid = lambda: document.Uid
     return service
 
 

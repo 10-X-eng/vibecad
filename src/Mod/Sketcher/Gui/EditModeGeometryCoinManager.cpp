@@ -80,8 +80,12 @@ void EditModeGeometryCoinManager::processGeometry(const GeoListFacade& geolistfa
     editModeScenegraphNodes.CurvesGroup->enable.setNum(
         geometryLayerParameters.getCoinLayerCount() * geometryLayerParameters.getSubLayerCount()
     );
+    editModeScenegraphNodes.SelectedCurvesGroup->enable.setNum(
+        geometryLayerParameters.getCoinLayerCount() * geometryLayerParameters.getSubLayerCount()
+    );
     SbBool* swsp = editModeScenegraphNodes.PointsGroup->enable.startEditing();
     SbBool* swsc = editModeScenegraphNodes.CurvesGroup->enable.startEditing();
+    SbBool* swss = editModeScenegraphNodes.SelectedCurvesGroup->enable.startEditing();
 
     auto layersconfigurations = viewProvider.VisualLayerList.getValues();
 
@@ -92,11 +96,13 @@ void EditModeGeometryCoinManager::processGeometry(const GeoListFacade& geolistfa
         int slCount = geometryLayerParameters.getSubLayerCount();
         for (int t = 0; t < slCount; t++) {
             swsc[l * slCount + t] = enabled;
+            swss[l * slCount + t] = enabled;
         }
     }
 
     editModeScenegraphNodes.PointsGroup->enable.finishEditing();
     editModeScenegraphNodes.CurvesGroup->enable.finishEditing();
+    editModeScenegraphNodes.SelectedCurvesGroup->enable.finishEditing();
 
     // Define the coin nodes that will be filled in with the geometry layers
     GeometryLayerNodes geometrylayernodes {
@@ -454,6 +460,10 @@ void EditModeGeometryCoinManager::updateGeometryColor(
             int CurvNum = editModeScenegraphNodes.CurvesMaterials[l][t]->diffuseColor.getNum();
             SbColor* color = editModeScenegraphNodes.CurvesMaterials[l][t]->diffuseColor.startEditing();
             SbVec3f* verts = editModeScenegraphNodes.CurvesCoordinate[l][t]->point.startEditing();
+            std::vector<SbColor> selectedColors;
+            std::vector<SbVec3f> selectedVertices;
+            std::vector<int32_t> selectedVertexCounts;
+            bool emphasizeSelection = drawingParameters.SelectionWidthIncrease > 0;
 
             int j = 0;  // vertexindex
             for (int i = 0; i < CurvNum; i++) {
@@ -465,6 +475,7 @@ void EditModeGeometryCoinManager::updateGeometryColor(
                 // CurvId has several vertices associated to 1 material
                 // edit->CurveSet->numVertices => [i] indicates number of vertex for line i.
                 int indexes = (editModeScenegraphNodes.CurveSet[l][t]->numVertices[i]);
+                int curveVertexStart = j;
 
                 bool preselected = (preselectcurve == GeoId);
 
@@ -489,6 +500,19 @@ void EditModeGeometryCoinManager::updateGeometryColor(
                     for (int k = j; j < k + indexes; j++) {
                         verts[j].getValue(x, y, z);
                         verts[j] = SbVec3f(x, y, viewOrientationFactor * drawingParameters.zHighLine);
+                    }
+
+                    if (selected && emphasizeSelection) {
+                        selectedColors.push_back(color[i]);
+                        selectedVertexCounts.push_back(indexes);
+                        for (int vertexIndex = curveVertexStart; vertexIndex < j; ++vertexIndex) {
+                            verts[vertexIndex].getValue(x, y, z);
+                            selectedVertices.emplace_back(
+                                x,
+                                y,
+                                viewOrientationFactor * drawingParameters.zSelectedLine
+                            );
+                        }
                     }
                 }
                 else if (isExternal) {
@@ -567,6 +591,31 @@ void EditModeGeometryCoinManager::updateGeometryColor(
             editModeScenegraphNodes.CurvesMaterials[l][t]->diffuseColor.finishEditing();
             editModeScenegraphNodes.CurvesCoordinate[l][t]->point.finishEditing();
             editModeScenegraphNodes.CurveSet[l][t]->numVertices.finishEditing();
+
+            auto* selectedMaterial = editModeScenegraphNodes.SelectedCurvesMaterials[l][t];
+            auto* selectedCoordinates = editModeScenegraphNodes.SelectedCurvesCoordinate[l][t];
+            auto* selectedLineSet = editModeScenegraphNodes.SelectedCurveSet[l][t];
+
+            selectedMaterial->diffuseColor.setNum(static_cast<int>(selectedColors.size()));
+            selectedCoordinates->point.setNum(static_cast<int>(selectedVertices.size()));
+            selectedLineSet->numVertices.setNum(static_cast<int>(selectedVertexCounts.size()));
+            if (!selectedColors.empty()) {
+                selectedMaterial->diffuseColor.setValues(
+                    0,
+                    static_cast<int>(selectedColors.size()),
+                    selectedColors.data()
+                );
+                selectedCoordinates->point.setValues(
+                    0,
+                    static_cast<int>(selectedVertices.size()),
+                    selectedVertices.data()
+                );
+                selectedLineSet->numVertices.setValues(
+                    0,
+                    static_cast<int>(selectedVertexCounts.size()),
+                    selectedVertexCounts.data()
+                );
+            }
         }
 
         // colors of the cross
@@ -611,6 +660,7 @@ void EditModeGeometryCoinManager::updateGeometryLayersConfiguration()
     emptyGeometryRootNodes();
     createEditModePointInventorNodes();
     createEditModeCurveInventorNodes();
+    createSelectedCurveInventorNodes();
 }
 
 auto concat(std::string string, int i)
@@ -628,6 +678,7 @@ void EditModeGeometryCoinManager::createEditModeInventorNodes()
     createEditModePointInventorNodes();
 
     createEditModeCurveInventorNodes();
+    createSelectedCurveInventorNodes();
 }
 
 void EditModeGeometryCoinManager::createGeometryRootNodes()
@@ -639,12 +690,23 @@ void EditModeGeometryCoinManager::createGeometryRootNodes()
     // stuff for the Curves +++++++++++++++++++++++++++++++++++++++
     editModeScenegraphNodes.CurvesGroup = new SmSwitchboard;
     editModeScenegraphNodes.EditRoot->addChild(editModeScenegraphNodes.CurvesGroup);
+
+    // Selected curves are drawn a second time with an emphasized width. Keep this overlay out of
+    // picking so the original geometry remains the single source of selection details.
+    auto* selectedCurvesRoot = new SoSeparator;
+    auto* selectedCurvesPickStyle = new SoPickStyle;
+    selectedCurvesPickStyle->style = SoPickStyle::UNPICKABLE;
+    selectedCurvesRoot->addChild(selectedCurvesPickStyle);
+    editModeScenegraphNodes.SelectedCurvesGroup = new SmSwitchboard;
+    selectedCurvesRoot->addChild(editModeScenegraphNodes.SelectedCurvesGroup);
+    editModeScenegraphNodes.EditRoot->addChild(selectedCurvesRoot);
 }
 
 void EditModeGeometryCoinManager::emptyGeometryRootNodes()
 {
     Gui::coinRemoveAllChildren(editModeScenegraphNodes.PointsGroup);
     Gui::coinRemoveAllChildren(editModeScenegraphNodes.CurvesGroup);
+    Gui::coinRemoveAllChildren(editModeScenegraphNodes.SelectedCurvesGroup);
 }
 
 void EditModeGeometryCoinManager::createEditModePointInventorNodes()
@@ -774,6 +836,77 @@ void EditModeGeometryCoinManager::createEditModeCurveInventorNodes()
 
             editModeScenegraphNodes.CurvesGroup->addChild(sep);
             sep->unref();
+        }
+    }
+}
+
+void EditModeGeometryCoinManager::createSelectedCurveInventorNodes()
+{
+    editModeScenegraphNodes.SelectedCurvesMaterials.clear();
+    editModeScenegraphNodes.SelectedCurvesCoordinate.clear();
+    editModeScenegraphNodes.SelectedCurveSet.clear();
+    editModeScenegraphNodes.SelectedCurvesDrawStyle.clear();
+
+    auto baseDrawStyle = [this](int subLayer) {
+        if (geometryLayerParameters.isConstructionSubLayer(subLayer)) {
+            return editModeScenegraphNodes.CurvesConstructionDrawStyle;
+        }
+        if (geometryLayerParameters.isInternalSubLayer(subLayer)) {
+            return editModeScenegraphNodes.CurvesInternalDrawStyle;
+        }
+        if (geometryLayerParameters.isExternalSubLayer(subLayer)) {
+            return editModeScenegraphNodes.CurvesExternalDrawStyle;
+        }
+        if (geometryLayerParameters.isExternalDefiningSubLayer(subLayer)) {
+            return editModeScenegraphNodes.CurvesExternalDefiningDrawStyle;
+        }
+        return editModeScenegraphNodes.CurvesDrawStyle;
+    };
+
+    for (int t = 0; t < geometryLayerParameters.getSubLayerCount(); ++t) {
+        auto* drawStyle = new SoDrawStyle;
+        drawStyle->setName(concat("SelectedCurvesDrawStyle", t).c_str());
+        auto* sourceStyle = baseDrawStyle(t);
+        drawStyle->lineWidth = sourceStyle->lineWidth.getValue()
+            + std::max(0, drawingParameters.SelectionWidthIncrease)
+                * drawingParameters.pixelScalingFactor;
+        drawStyle->linePattern = sourceStyle->linePattern;
+        drawStyle->linePatternScaleFactor = sourceStyle->linePatternScaleFactor;
+        editModeScenegraphNodes.SelectedCurvesDrawStyle.push_back(drawStyle);
+    }
+
+    for (int i = 0; i < geometryLayerParameters.getCoinLayerCount(); ++i) {
+        editModeScenegraphNodes.SelectedCurvesMaterials.emplace_back();
+        editModeScenegraphNodes.SelectedCurvesCoordinate.emplace_back();
+        editModeScenegraphNodes.SelectedCurveSet.emplace_back();
+
+        for (int t = 0; t < geometryLayerParameters.getSubLayerCount(); ++t) {
+            auto* separator = new SoSeparator;
+            separator->ref();
+
+            auto* material = new SoMaterial;
+            material->setName(concat("SelectedCurvesMaterials", i * 10 + t).c_str());
+            editModeScenegraphNodes.SelectedCurvesMaterials[i].push_back(material);
+            separator->addChild(material);
+
+            auto* materialBinding = new SoMaterialBinding;
+            materialBinding->value = SoMaterialBinding::PER_FACE;
+            separator->addChild(materialBinding);
+
+            auto* coordinates = new SoCoordinate3;
+            coordinates->setName(concat("SelectedCurvesCoordinate", i * 10 + t).c_str());
+            editModeScenegraphNodes.SelectedCurvesCoordinate[i].push_back(coordinates);
+            separator->addChild(coordinates);
+
+            separator->addChild(editModeScenegraphNodes.SelectedCurvesDrawStyle[t]);
+
+            auto* lineSet = new SoLineSet;
+            lineSet->setName(concat("SelectedCurvesLineSet", i * 10 + t).c_str());
+            editModeScenegraphNodes.SelectedCurveSet[i].push_back(lineSet);
+            separator->addChild(lineSet);
+
+            editModeScenegraphNodes.SelectedCurvesGroup->addChild(separator);
+            separator->unref();
         }
     }
 }

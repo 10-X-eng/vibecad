@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 import tempfile
 import traceback
+from types import SimpleNamespace
+from unittest import mock
 
 import FreeCAD as App
 import FreeCADGui as Gui
@@ -110,6 +112,27 @@ def _run() -> None:
         live_surface = read_active_ribbon_surface(controller)
         assert live_surface.surface_id == "sketch.edit"
         assert active_edit_object() is sketch
+        continuation = VibeGui._native_surface_continuation_event(
+            SimpleNamespace(
+                error=None,
+                tool_trace=[{"tool_name": "sketch.open", "result": opened}],
+            )
+        )
+        assert continuation is not None
+        launched = []
+        with mock.patch.multiple(
+            VibeGui,
+            _internal_agent_allowed=lambda: True,
+            _is_assistant_run_active=lambda: False,
+            _is_intent_memory_rebuild_active=lambda: False,
+            _find_dock=lambda: object(),
+            _assistant_panel_is_built=lambda _dock: True,
+            _execute_assistant_run=lambda _dock, _service, **kwargs: launched.append(
+                kwargs
+            ),
+        ):
+            VibeGui._start_native_surface_continuation(continuation)
+        assert launched == [{"continuation_event": continuation}]
 
         provider = resolve_native_provider_surface(live_surface, registry)
         assert provider.available is True, provider.debug_summary()

@@ -64,11 +64,22 @@ REASONING_EFFORTS = (
 DEFAULT_REASONING_EFFORT = "high"
 DEFAULT_SCRIPTED_TIMEOUT_SECONDS = 300.0
 DEFAULT_SCRIPTED_MEMORY_LIMIT_MB = 6144
+NEW_DOCUMENT_AUTHORING_MODES = ("ask", "native", "vibescript")
+DEFAULT_NEW_DOCUMENT_AUTHORING_MODE = "ask"
 
 
 def normalize_provider(value: str | None) -> str:
     clean = (value or "").strip().lower()
     return clean if clean in PROVIDERS else DEFAULT_PROVIDER
+
+
+def normalize_new_document_authoring_mode(value: str | None) -> str:
+    clean = str(value or "").strip().lower()
+    return (
+        clean
+        if clean in NEW_DOCUMENT_AUTHORING_MODES
+        else DEFAULT_NEW_DOCUMENT_AUTHORING_MODE
+    )
 
 
 @dataclass(frozen=True)
@@ -94,6 +105,7 @@ class VibeCADSettings:
     scripted_timeout_seconds: float = DEFAULT_SCRIPTED_TIMEOUT_SECONDS
     scripted_memory_limit_mb: int = DEFAULT_SCRIPTED_MEMORY_LIMIT_MB
     mcp_enabled: bool = False
+    new_document_authoring_mode: str = DEFAULT_NEW_DOCUMENT_AUTHORING_MODE
 
     @property
     def resolved_dotenv_path(self) -> Path | None:
@@ -203,6 +215,12 @@ def _positive_int(value: object, default: int) -> int:
 def load_settings() -> VibeCADSettings:
     pref = preferences()
     return VibeCADSettings(
+        new_document_authoring_mode=normalize_new_document_authoring_mode(
+            pref.GetString(
+                "NewDocumentAuthoringMode",
+                DEFAULT_NEW_DOCUMENT_AUTHORING_MODE,
+            )
+        ),
         mcp_enabled=pref.GetBool("MCPEnabled", False),
         use_online_provider=pref.GetBool("UseOnlineProvider", True),
         model=pref.GetString("Model", DEFAULT_MODEL) or DEFAULT_MODEL,
@@ -246,6 +264,12 @@ def load_debug_settings() -> VibeCADDebugSettings:
 
 def save_settings(settings: VibeCADSettings) -> None:
     pref = preferences()
+    pref.SetString(
+        "NewDocumentAuthoringMode",
+        normalize_new_document_authoring_mode(
+            settings.new_document_authoring_mode
+        ),
+    )
     pref.SetBool("MCPEnabled", bool(settings.mcp_enabled))
     pref.SetBool("UseOnlineProvider", bool(settings.use_online_provider))
     pref.SetString("Model", settings.model.strip() or DEFAULT_MODEL)
@@ -299,6 +323,7 @@ def save_debug_settings(settings: VibeCADDebugSettings) -> None:
 
 def reset_settings() -> None:
     pref = preferences()
+    pref.RemString("NewDocumentAuthoringMode")
     pref.RemBool("MCPEnabled")
     pref.RemBool("UseOnlineProvider")
     pref.RemString("Model")
@@ -394,6 +419,19 @@ class VibeCADPreferencesPage:
         self._async_bridge = _AsyncBridge(self.form)
         self._async_bridge.event.connect(self._chatgpt_task_event)
         self._async_bridge.finished.connect(self._chatgpt_task_finished)
+
+        self.new_document_authoring_mode = QtWidgets.QComboBox(self.form)
+        self.new_document_authoring_mode.setObjectName(
+            "VibeCADPrefNewDocumentAuthoringMode"
+        )
+        self.new_document_authoring_mode.addItem("Ask each time", "ask")
+        self.new_document_authoring_mode.addItem("Native", "native")
+        self.new_document_authoring_mode.addItem("VibeScript", "vibescript")
+        self.new_document_authoring_mode.setToolTip(
+            "Choose how genuinely new documents begin. Existing documents always "
+            "use the authoring authority stored in the CAD file."
+        )
+        layout.addRow("New document authoring", self.new_document_authoring_mode)
 
         self.use_online = QtWidgets.QCheckBox(self.form)
         self.use_online.setObjectName("VibeCADPrefUseOnlineProvider")
@@ -1426,6 +1464,9 @@ class VibeCADPreferencesPage:
     def _current_settings(self) -> VibeCADSettings:
         persisted = load_settings()
         return VibeCADSettings(
+            new_document_authoring_mode=normalize_new_document_authoring_mode(
+                self.new_document_authoring_mode.currentData()
+            ),
             mcp_enabled=persisted.mcp_enabled,
             use_online_provider=self.use_online.isChecked(),
             model=self.model.currentText().strip() or DEFAULT_MODEL,
@@ -1510,6 +1551,12 @@ class VibeCADPreferencesPage:
 
     def loadSettings(self) -> None:
         settings = load_settings()
+        authoring_index = self.new_document_authoring_mode.findData(
+            settings.new_document_authoring_mode
+        )
+        self.new_document_authoring_mode.setCurrentIndex(
+            authoring_index if authoring_index >= 0 else 0
+        )
         self.use_online.setChecked(settings.use_online_provider)
         provider_index = self.provider.findData(normalize_provider(settings.provider))
         self.provider.setCurrentIndex(provider_index if provider_index >= 0 else 0)

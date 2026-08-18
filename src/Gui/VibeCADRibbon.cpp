@@ -59,6 +59,7 @@
 #include "Application.h"
 #include "BitmapFactory.h"
 #include "Command.h"
+#include "Document.h"
 #include "MainWindow.h"
 #include "ThemeManager.h"
 #include "ViewProviderDocumentObject.h"
@@ -1187,9 +1188,25 @@ struct Gui::VibeCADRibbon::Private
         return groups;
     }
 
-    std::vector<GroupDefinition> pageGroups() const
+    bool sketchEditActive() const
     {
-        if (inSketchEdit) {
+        Document* document = Application::Instance->activeDocument();
+        if (!document || !Application::Instance->isInEdit(document)) {
+            return false;
+        }
+        const auto* provider = dynamic_cast<ViewProviderDocumentObject*>(
+            document->getEditViewProvider()
+        );
+        const App::DocumentObject* object = provider ? provider->getObject() : nullptr;
+        return object
+            && std::string_view(object->getTypeId().getName()).starts_with(
+                "Sketcher::SketchObject"
+            );
+    }
+
+    std::vector<GroupDefinition> pageGroups(bool sketchEdit) const
+    {
+        if (sketchEdit) {
             return sketchGroups();
         }
         const std::string activeWorkbench = WorkbenchManager::instance()->activeName();
@@ -1226,9 +1243,9 @@ struct Gui::VibeCADRibbon::Private
         return groups;
     }
 
-    QString activeSurfaceId() const
+    QString activeSurfaceId(bool sketchEdit) const
     {
-        if (inSketchEdit) {
+        if (sketchEdit) {
             return QStringLiteral("sketch.edit");
         }
         if (!tabs || tabs->currentIndex() < 0) {
@@ -1256,9 +1273,9 @@ struct Gui::VibeCADRibbon::Private
                                       : QString::fromLatin1(found->surface);
     }
 
-    void publishSurfaceManifest(const QVariantList& groupRecords)
+    void publishSurfaceManifest(const QVariantList& groupRecords, bool sketchEdit)
     {
-        const QString surfaceId = activeSurfaceId();
+        const QString surfaceId = activeSurfaceId(sketchEdit);
         QVariantMap manifest;
         manifest.insert(QStringLiteral("schema_version"), 1);
         manifest.insert(QStringLiteral("surface_id"), surfaceId);
@@ -1281,6 +1298,7 @@ struct Gui::VibeCADRibbon::Private
 
     void rebuildPage()
     {
+        const bool sketchEdit = sketchEditActive();
         std::vector<RibbonGroup*> groups;
         QVariantList manifestGroups;
         bool inspectionAdded = false;
@@ -1346,22 +1364,22 @@ struct Gui::VibeCADRibbon::Private
         );
         addGroup(QObject::tr("View"), std::move(viewEntries));
 
-        for (const auto& [title, commands] : pageGroups()) {
-            if (!inSketchEdit && title == QObject::tr("Fasteners")) {
+        for (const auto& [title, commands] : pageGroups(sketchEdit)) {
+            if (!sketchEdit && title == QObject::tr("Fasteners")) {
                 addInspectionGroup();
             }
 
             std::vector<QString> domainCommands = commands;
-            if (!inSketchEdit) {
+            if (!sketchEdit) {
                 std::erase_if(domainCommands, isSharedInspectionCommand);
             }
             CommandEntries entries = resolveUniqueEntries(domainCommands);
             addGroup(title, std::move(entries));
         }
-        if (!inSketchEdit && !inspectionAdded) {
+        if (!sketchEdit && !inspectionAdded) {
             addInspectionGroup();
         }
-        publishSurfaceManifest(manifestGroups);
+        publishSurfaceManifest(manifestGroups, sketchEdit);
         page->setGroups(std::move(groups));
     }
 
@@ -2093,7 +2111,7 @@ struct Gui::VibeCADRibbon::Private
             rebuildPage();
             return;
         }
-        if (inSketchEdit) {
+        if (sketchEditActive()) {
             showSketchTab();
             return;
         }
@@ -2105,10 +2123,10 @@ struct Gui::VibeCADRibbon::Private
     {
         if (workbench == QStringLiteral("SketcherWorkbench")) {
             showSketchTab();
-            setDomainTabsEnabled(!inSketchEdit);
+            setDomainTabsEnabled(!sketchEditActive());
             return;
         }
-        if (inSketchEdit) {
+        if (sketchEditActive()) {
             return;
         }
         int targetIndex = previousDomain;
@@ -2123,31 +2141,18 @@ struct Gui::VibeCADRibbon::Private
         removeSketchTabAndSelect(targetIndex);
     }
 
-    void enterSketchEdit(const ViewProviderDocumentObject& provider)
+    void syncEditState()
     {
-        const App::DocumentObject* object = provider.getObject();
-        if (!object) {
-            return;
+        if (sketchEditActive()) {
+            showSketchTab();
+            setDomainTabsEnabled(false);
         }
-        const std::string_view typeName = object->getTypeId().getName();
-        if (!typeName.starts_with("Sketcher::SketchObject")) {
-            return;
+        else {
+            setDomainTabsEnabled(true);
+            syncDomainToWorkbench(
+                QString::fromStdString(WorkbenchManager::instance()->activeName())
+            );
         }
-        inSketchEdit = true;
-        showSketchTab();
-        setDomainTabsEnabled(false);
-        rebuildPage();
-        QTimer::singleShot(0, q, [this]() { enforceChrome(); });
-    }
-
-    void leaveSketchEdit()
-    {
-        if (!inSketchEdit) {
-            return;
-        }
-        inSketchEdit = false;
-        setDomainTabsEnabled(true);
-        syncDomainToWorkbench(QString::fromStdString(WorkbenchManager::instance()->activeName()));
         rebuildPage();
         QTimer::singleShot(0, q, [this]() { enforceChrome(); });
     }
@@ -2184,7 +2189,6 @@ struct Gui::VibeCADRibbon::Private
     QSet<QMdiSubWindow*> observedDocumentWindows;
     bool syncingTabs = false;
     bool syncingDocumentTabs = false;
-    bool inSketchEdit = false;
     bool legacyMenuVisible = false;
     int previousDomain = 0;
     qulonglong surfaceRevision = 0;
@@ -2235,10 +2239,10 @@ Gui::VibeCADRibbon::VibeCADRibbon(MainWindow* mainWindow)
         d->scheduleRefresh();
     });
     d->enteredEdit = Application::Instance->signalInEdit.connect(
-        [this](const ViewProviderDocumentObject& provider) { d->enterSketchEdit(provider); }
+        [this](const ViewProviderDocumentObject&) { d->syncEditState(); }
     );
     d->leftEdit = Application::Instance->signalResetEdit.connect(
-        [this](const ViewProviderDocumentObject&) { d->leaveSketchEdit(); }
+        [this](const ViewProviderDocumentObject&) { d->syncEditState(); }
     );
 
     d->observeSurfacePreferences();

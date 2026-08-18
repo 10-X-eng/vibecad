@@ -147,7 +147,11 @@ def _domain_builder(
     if surface_id in {"sketch.setup", "sketch.edit"}:
         from VibeCADNativeSketchSnapshot import build_sketch_snapshot
 
-        return lambda document: build_sketch_snapshot(document, surface_id)
+        return lambda document: build_sketch_snapshot(
+            document,
+            surface_id,
+            selection=selection,
+        )
     if surface_id == "assemble":
         from VibeCADNativeAssemblySnapshot import build_assembly_snapshot
 

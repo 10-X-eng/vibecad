@@ -162,3 +162,21 @@ def test_current_selection_is_exact_bounded_and_ordered(monkeypatch) -> None:
     ]
     assert result["items"][0]["subelements"] == ["Face1", "Edge1"]
     assert result["truncated"] is True
+
+
+def test_current_selection_reports_subelement_truncation(monkeypatch) -> None:
+    document = _Document()
+    selection = SimpleNamespace(
+        getSelectionEx=lambda _name: [
+            SimpleNamespace(
+                Object=document.obj,
+                SubElementNames=["Edge1", "Edge2", "Edge3"],
+            )
+        ]
+    )
+    monkeypatch.setattr(targets_module, "MAX_SELECTION_SUBELEMENTS", 2)
+
+    result = read_current_selection(document, selection)
+
+    assert result["items"][0]["subelements"] == ["Edge1", "Edge2"]
+    assert result["items"][0]["subelements_truncated"] is True

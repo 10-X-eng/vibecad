@@ -1034,6 +1034,7 @@ set(VibeCAD_Scripts
     VibeCADNativeSketchJoinState.py
     VibeCADNativeSketchJoinTarget.py
     VibeCADNativeSketchThreePointEllipse.py
+    VibeCADNativeSketchSelection.py
     VibeCADNativeSketchSnapshot.py
     VibeCADNativeSketchState.py
     VibeCADNativeSketchMutationState.py

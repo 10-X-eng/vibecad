@@ -114,6 +114,7 @@ private:
     void emptyGeometryRootNodes();
     void createEditModePointInventorNodes();
     void createEditModeCurveInventorNodes();
+    void createSelectedCurveInventorNodes();
 
 private:
     ViewProviderSketch& viewProvider;

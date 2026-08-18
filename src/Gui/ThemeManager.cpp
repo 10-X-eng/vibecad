@@ -181,7 +181,8 @@ bool Gui::ThemeManager::applyImpl(Mode mode, bool refreshGui, bool loadProfile)
     retiredCustomization->RemoveUnsigned("ThemeAccentColor3");
 
     if (refreshGui && Application::Instance) {
-        Application::Instance->setStyle(QStringLiteral("Fusion"));
+        // Fusion is installed during startup. Replacing the application-owned QStyle here can
+        // invalidate explicit widget style pointers while the widget tree is still alive.
         Application::Instance->styleParameterManager()->reload();
         Application::Instance->setStyleSheet(
             QString::fromLatin1(styleSheetName(mode)),

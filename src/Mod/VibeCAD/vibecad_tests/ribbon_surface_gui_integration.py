@@ -527,6 +527,7 @@ def _run() -> None:
     application = QtWidgets.QApplication.instance()
     main_window = Gui.getMainWindow()
     document = None
+    other_document = None
     preference_snapshots = {}
     exit_code = 1
     try:
@@ -706,6 +707,23 @@ def _run() -> None:
         manifests[edit.surface_id] = edit.to_manifest()
         unique_commands.update(edit.command_ids)
 
+        other_document = App.newDocument("VibeCADOtherEditDocument")
+        other_sketch = other_document.addObject(
+            "Sketcher::SketchObject",
+            "OtherSurfaceContractSketch",
+        )
+        other_document.recompute()
+        App.setActiveDocument(other_document.Name)
+        assert Gui.activeDocument().setEdit(other_sketch.Name)
+        App.setActiveDocument(document.Name)
+        _process_events()
+        _assert_surface(main_window, controller, "sketch.edit")
+        Gui.getDocument(other_document.Name).resetEdit()
+        _process_events()
+        _assert_surface(main_window, controller, "sketch.edit")
+        App.closeDocument(other_document.Name)
+        other_document = None
+
         Gui.activeDocument().resetEdit()
         _process_events()
         returned = _assert_surface(main_window, controller, "model")
@@ -741,6 +759,8 @@ def _run() -> None:
         _restore_test_bools(preference_snapshots)
         if Gui.activeDocument() and Gui.activeDocument().getInEdit():
             Gui.activeDocument().resetEdit()
+        if other_document is not None and other_document.Name in App.listDocuments():
+            App.closeDocument(other_document.Name)
         if document is not None and document.Name in App.listDocuments():
             App.closeDocument(document.Name)
         application.exit(exit_code)

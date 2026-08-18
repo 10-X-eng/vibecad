@@ -42,10 +42,13 @@ from VibeCADNativeStatePersistence import (
     write_native_state,
 )
 from VibeCADProject import (
+    AUTHORING_MODE_META_KEY,
     DEFAULT_CONVERSATION_TITLE,
+    NATIVE_AUTHORITY_META_KEY,
     VibeCADConversationStore,
     VibeCADProjectStore,
     project_root_for_document_file,
+    project_root_for_unsaved_document,
     vibecad_data_dir,
 )
 from VibeCADTools import ToolRegistry
@@ -223,6 +226,7 @@ class VibeCADService:
         self._native_background_jobs = NativeBackgroundManager()
         self._native_state_restores: set[tuple[str, str]] = set()
         self._native_state_restore_errors: dict[str, str] = {}
+        self._new_document_authoring_pending: set[str] = set()
         self._steering_messages: list[dict[str, Any]] = []
         self._steering_sequence = 0
         self._vibescript_reference_cache_lock = threading.RLock()
@@ -445,18 +449,67 @@ class VibeCADService:
 
         return self._project_store.modeling_engine()
 
+    def _pending_authoring_documents(self) -> set[str]:
+        pending = getattr(self, "_new_document_authoring_pending", None)
+        if pending is None:
+            pending = set()
+            self._new_document_authoring_pending = pending
+        return pending
+
+    def new_document_authoring_mode_required(
+        self,
+        document_uid: str | None = None,
+    ) -> bool:
+        uid = str(document_uid or self._active_document_uid() or "").strip()
+        return bool(uid and uid in self._pending_authoring_documents())
+
+    def initialize_new_document_authoring_mode(
+        self,
+        document: Any,
+    ) -> dict[str, Any]:
+        """Apply the user default once to a genuinely new unsaved document."""
+
+        uid = str(getattr(document, "Uid", "") or "").strip()
+        if not uid or uid != str(self._active_document_uid() or ""):
+            return {"required": False, "applied": False}
+        metadata = dict(getattr(document, "Meta", {}) or {})
+        embedded_mode = str(metadata.get(AUTHORING_MODE_META_KEY) or "").strip()
+        if str(getattr(document, "FileName", "") or "").strip() or embedded_mode:
+            self._pending_authoring_documents().discard(uid)
+            return {"required": False, "applied": False}
+        if self.new_document_authoring_mode_required(uid):
+            return {"required": True, "applied": False}
+
+        preference = load_settings().new_document_authoring_mode
+        self._pending_authoring_documents().add(uid)
+        if preference == "ask":
+            return {"required": True, "applied": False}
+        result = self.select_modeling_engine(preference)
+        return {
+            "required": False,
+            "applied": True,
+            "mode": result["mode"],
+        }
+
     def select_modeling_engine(self, mode: str) -> dict[str, str]:
-        """Store a human mode selection without mutating the CAD document."""
+        """Select document authority and embed the portable choice in the FCStd."""
 
         from VibeCADAuthoringMode import normalize_authoring_mode
 
         selected = normalize_authoring_mode(mode)
         current = self.modeling_engine()
-        if selected == current:
-            return {"mode": current, "persistence": "unchanged"}
         uid = str(self._active_document_uid() or "")
         if not uid:
             raise RuntimeError("Select an authoring mode with an active document.")
+        document = self._active_document()
+        previous_metadata = dict(getattr(document, "Meta", {}) or {})
+        pending_choice = self.new_document_authoring_mode_required(uid)
+        if selected == current:
+            if pending_choice:
+                self._write_active_authoring_metadata(selected)
+                self._pending_authoring_documents().discard(uid)
+                return {"mode": current, "persistence": "session"}
+            return {"mode": current, "persistence": "unchanged"}
         self.ensure_native_document_state(uid)
         restore_error = self._native_state_restore_errors.get(uid)
         if restore_error:
@@ -467,19 +520,82 @@ class VibeCADService:
             self._native_document_states.begin_native_authority(uid)
             try:
                 result = self._project_store.select_modeling_engine(selected)
+                self._write_active_authoring_metadata(selected)
+                self._sync_active_native_authority_metadata()
                 self._persist_active_native_state()
             except Exception:
                 try:
                     self._project_store.select_modeling_engine(current)
                 finally:
+                    document.Meta = previous_metadata
                     self._native_document_states.end_native_authority(uid)
                 raise
+            self._pending_authoring_documents().discard(uid)
             return result
 
         self._native_document_states.require_vibescript_return_safe(uid)
-        result = self._project_store.select_modeling_engine(selected)
-        self._native_document_states.end_native_authority(uid)
+        try:
+            result = self._project_store.select_modeling_engine(selected)
+            self._write_active_authoring_metadata(selected)
+            self._native_document_states.end_native_authority(uid)
+        except Exception:
+            try:
+                self._project_store.select_modeling_engine(current)
+            finally:
+                document.Meta = previous_metadata
+            raise
+        self._pending_authoring_documents().discard(uid)
         return result
+
+    def _write_active_authoring_metadata(self, mode: str) -> None:
+        document = self._active_document()
+        if document is None:
+            raise RuntimeError("VibeCAD has no active document authority to persist.")
+        metadata = dict(getattr(document, "Meta", {}) or {})
+        metadata[AUTHORING_MODE_META_KEY] = str(mode)
+        document.Meta = metadata
+
+    def _sync_active_native_authority_metadata(self) -> None:
+        document = self._active_document()
+        if document is None:
+            return
+        uid = str(getattr(document, "Uid", "") or "").strip()
+        if not uid:
+            return
+        exported = self._native_document_states.export_document(uid)
+        exported["receipts"] = []
+        metadata = dict(getattr(document, "Meta", {}) or {})
+        metadata[NATIVE_AUTHORITY_META_KEY] = json.dumps(
+            exported,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        document.Meta = metadata
+
+    def _sync_native_authority_metadata_if_active(self, document_uid: str) -> None:
+        uid = str(document_uid or "").strip()
+        if uid != str(self._active_document_uid() or ""):
+            return
+        authority = self._native_document_states.snapshot(uid)["native_authority"]
+        if authority.get("active"):
+            self._sync_active_native_authority_metadata()
+
+    @staticmethod
+    def _embedded_native_authority_state(document: Any) -> dict[str, Any] | None:
+        metadata = dict(getattr(document, "Meta", {}) or {})
+        raw = str(metadata.get(NATIVE_AUTHORITY_META_KEY) or "").strip()
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Embedded Native authority state is invalid JSON: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("Embedded Native authority state is not an object.")
+        return payload
 
     def persist_modeling_engine_after_save(
         self,
@@ -493,13 +609,28 @@ class VibeCADService:
             return None
         selection = self._project_store.persist_modeling_engine_after_save()
         if selection.get("mode") == "native":
-            self.ensure_native_document_state(document_identity)
+            if not self._native_document_states.has_document(document_identity):
+                self.ensure_native_document_state(document_identity)
             self._native_document_states.begin_native_authority(document_identity)
             self._persist_active_native_state()
         return selection
 
+    def prepare_document_for_save(self, document: Any) -> None:
+        """Synchronize portable authority metadata before FCStd serialization."""
+
+        uid = str(getattr(document, "Uid", "") or "").strip()
+        if not uid or uid != str(self._active_document_uid() or ""):
+            return
+        mode = self.modeling_engine()
+        self._write_active_authoring_metadata(mode)
+        if mode == "native":
+            self._sync_active_native_authority_metadata()
+
     def discard_session_modeling_engine(self, document_identity: str) -> None:
         self._project_store.discard_session_modeling_engine(document_identity)
+        self._pending_authoring_documents().discard(
+            str(document_identity or "").strip()
+        )
 
     @staticmethod
     def _object_document_uid(obj: Any) -> str:
@@ -522,6 +653,10 @@ class VibeCADService:
             return self._native_document_states.current_revision(uid)
         try:
             payload = read_native_state(path)
+            if payload is None:
+                payload = self._embedded_native_authority_state(
+                    self._active_document()
+                )
             if payload is None:
                 self._native_document_states.begin_native_authority(uid)
             else:
@@ -554,11 +689,19 @@ class VibeCADService:
 
     def note_native_object_created(self, obj: Any) -> int | None:
         uid = self._object_document_uid(obj)
-        return self._native_document_states.note_structural_change(uid) if uid else None
+        revision = (
+            self._native_document_states.note_structural_change(uid) if uid else None
+        )
+        self._sync_native_authority_metadata_if_active(uid)
+        return revision
 
     def note_native_object_deleted(self, obj: Any) -> int | None:
         uid = self._object_document_uid(obj)
-        return self._native_document_states.note_structural_change(uid) if uid else None
+        revision = (
+            self._native_document_states.note_structural_change(uid) if uid else None
+        )
+        self._sync_native_authority_metadata_if_active(uid)
+        return revision
 
     def note_native_object_property_change(
         self,
@@ -568,10 +711,14 @@ class VibeCADService:
         uid = self._object_document_uid(obj)
         if not uid:
             return None
-        return self._native_document_states.note_object_property_change(
+        previous_revision = self._native_document_states.current_revision(uid)
+        revision = self._native_document_states.note_object_property_change(
             uid,
             property_name,
         )
+        if revision != previous_revision:
+            self._sync_native_authority_metadata_if_active(uid)
+        return revision
 
     def native_document_state(self) -> dict[str, Any]:
         uid = str(self._active_document_uid() or "")
@@ -1113,6 +1260,8 @@ class VibeCADService:
         if doc is None:
             return {
                 "enabled": False,
+                "turn_enabled": False,
+                "authoring_mode_required": False,
                 "reason": "no_document",
                 "document": None,
                 "file_path": None,
@@ -1133,6 +1282,57 @@ class VibeCADService:
             "document": str(getattr(doc, "Name", "") or ""),
             "file_path": file_path,
             "message": "",
+        }
+
+    def assistant_document_state(self) -> dict[str, Any]:
+        """Return whether chat may operate on the active document.
+
+        Saving is not a prerequisite: an unsaved document receives an isolated
+        temporary project scope that is relocated on first save.
+        """
+
+        doc = self._active_document()
+        if doc is None:
+            return {
+                "enabled": False,
+                "turn_enabled": False,
+                "authoring_mode_required": False,
+                "reason": "no_document",
+                "document": None,
+                "document_uid": None,
+                "file_path": None,
+                "saved": False,
+                "message": "Create or open a document to use VibeCAD.",
+            }
+        uid = str(getattr(doc, "Uid", "") or "").strip()
+        if not uid:
+            return {
+                "enabled": False,
+                "turn_enabled": False,
+                "authoring_mode_required": False,
+                "reason": "document_identity_unavailable",
+                "document": str(getattr(doc, "Name", "") or ""),
+                "document_uid": None,
+                "file_path": None,
+                "saved": False,
+                "message": "The active document has no stable identity.",
+            }
+        file_path = str(getattr(doc, "FileName", "") or "").strip()
+        mode_required = self.new_document_authoring_mode_required(uid)
+        return {
+            "enabled": True,
+            "turn_enabled": not mode_required,
+            "authoring_mode_required": mode_required,
+            "reason": "authoring_mode_required" if mode_required else "ready",
+            "document": str(getattr(doc, "Name", "") or ""),
+            "document_uid": uid,
+            "file_path": file_path or None,
+            "saved": bool(file_path),
+            "message": (
+                "Choose Native or VibeScript to begin."
+                if mode_required
+                else ""
+            ),
         }
 
     @staticmethod
@@ -4343,19 +4543,17 @@ class VibeCADService:
         return {**catalog, "scope": scope}
 
     def create_conversation(self) -> dict[str, Any]:
-        if not self.document_persistence_state().get("enabled"):
-            raise RuntimeError(
-                "Save this VibeCAD document before starting a conversation."
-            )
+        state = self.assistant_document_state()
+        if not state.get("enabled"):
+            raise RuntimeError(str(state.get("message") or "Open a document first."))
         result = self._project_store.conversation_store().create_conversation()
         self._set_conversation_cache(result)
         return result
 
     def activate_conversation(self, conversation_id: str) -> dict[str, Any]:
-        if not self.document_persistence_state().get("enabled"):
-            raise RuntimeError(
-                "Save this VibeCAD document before opening a conversation."
-            )
+        state = self.assistant_document_state()
+        if not state.get("enabled"):
+            raise RuntimeError(str(state.get("message") or "Open a document first."))
         result = self._project_store.conversation_store().activate_conversation(
             conversation_id
         )
@@ -4379,6 +4577,114 @@ class VibeCADService:
         self._invalidate_conversation_cache()
         return result
 
+    @staticmethod
+    def discard_temporary_project_root(project_root: str | Path) -> bool:
+        """Delete one validated unsaved-document artifact root."""
+
+        root = Path(str(project_root)).expanduser().resolve()
+        projects = (vibecad_data_dir() / "projects").expanduser().resolve()
+        if root.parent != projects or not root.name.startswith("unsaved-"):
+            raise RuntimeError(
+                "Refusing to discard a project folder outside VibeCAD temporary scope."
+            )
+        if not root.exists():
+            return False
+        shutil.rmtree(root)
+        return True
+
+    @staticmethod
+    def relocate_temporary_project_artifacts_for_document_file(
+        project_root: str | Path,
+        file_path: str | Path,
+    ) -> dict[str, Any]:
+        """Move non-conversation artifacts from first-save scope without overwrite."""
+
+        source = Path(str(project_root)).expanduser().resolve()
+        projects = (vibecad_data_dir() / "projects").expanduser().resolve()
+        destination = project_root_for_document_file(file_path).resolve()
+        if (
+            source.parent != projects
+            or not source.name.startswith("unsaved-")
+            or destination.parent != projects
+        ):
+            raise RuntimeError("VibeCAD project relocation escaped its artifact scope.")
+        if source == destination or not source.exists():
+            return {"moved": False, "source": str(source), "path": str(destination)}
+
+        destination.mkdir(parents=True, exist_ok=True)
+        handled_separately = {
+            "conversations",
+            "conversation.json",
+            "native-state.json",
+            "project.vibecad.json",
+            "references",
+            "references.json",
+        }
+
+        def move_without_overwrite(source_path: Path, target_path: Path) -> None:
+            if not target_path.exists():
+                source_path.replace(target_path)
+                return
+            if source_path.is_dir() and target_path.is_dir():
+                for child in list(source_path.iterdir()):
+                    move_without_overwrite(child, target_path / child.name)
+                source_path.rmdir()
+                return
+            if source_path.is_file() and target_path.is_file():
+                if source_path.read_bytes() != target_path.read_bytes():
+                    raise RuntimeError(
+                        "Cannot merge VibeCAD project artifacts because "
+                        f"{target_path.name!r} differs at the destination."
+                    )
+                source_path.unlink()
+                return
+            raise RuntimeError(
+                "Cannot merge VibeCAD project artifacts with incompatible paths: "
+                f"{source_path.name!r}."
+            )
+
+        moved: list[str] = []
+        for child in list(source.iterdir()):
+            if child.name in handled_separately:
+                continue
+            move_without_overwrite(child, destination / child.name)
+            moved.append(child.name)
+        return {
+            "moved": bool(moved),
+            "source": str(source),
+            "path": str(destination),
+            "artifacts": moved,
+        }
+
+    def discard_unsaved_document_project(self, document: Any) -> bool:
+        """Discard local artifacts when an unsaved document is closed."""
+
+        if document is None or str(getattr(document, "FileName", "") or "").strip():
+            return False
+        uid = str(getattr(document, "Uid", "") or "").strip()
+        if not uid:
+            return False
+        root = project_root_for_unsaved_document(uid)
+        removed = self.discard_temporary_project_root(root)
+        if self._conversation_cache_document_uid == uid:
+            self._invalidate_conversation_cache()
+        if self._reference_cache_document_uid == uid:
+            self._reference_images = []
+            self._pending_reference_image_ids = []
+            self._reference_cache_key = None
+            self._reference_cache_document_uid = None
+        return removed
+
+    @staticmethod
+    def temporary_project_root_for_document(document: Any) -> str:
+        """Return an existing UID-scoped temporary root, even during first save."""
+
+        uid = str(getattr(document, "Uid", "") or "").strip()
+        if not uid:
+            return ""
+        root = project_root_for_unsaved_document(uid)
+        return str(root) if root.exists() else ""
+
     def prepare_conversation_turn(
         self,
         role: str,
@@ -4391,11 +4697,9 @@ class VibeCADService:
 
         if role not in {"user", "assistant", "system"}:
             raise ValueError(f"Unsupported conversation role: {role}")
-        persistence = self.document_persistence_state()
-        if not persistence.get("enabled"):
-            raise RuntimeError(
-                "Save this VibeCAD document before recording a conversation."
-            )
+        state = self.assistant_document_state()
+        if not state.get("enabled"):
+            raise RuntimeError(str(state.get("message") or "Open a document first."))
         clean_content = str(content).strip()
         if not clean_content:
             raise ValueError("Conversation content cannot be empty.")

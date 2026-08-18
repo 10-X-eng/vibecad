@@ -231,14 +231,17 @@ def read_current_selection(document: Any, selection_api: Any | None = None) -> d
         obj = getattr(entry, "Object", None)
         if obj is None or getattr(obj, "Document", None) is not document:
             continue
-        subelements = [
+        raw_subelements = [
             str(name)
             for name in list(getattr(entry, "SubElementNames", []) or [])
             if str(name)
-        ][:MAX_SELECTION_SUBELEMENTS]
+        ]
+        subelements = raw_subelements[:MAX_SELECTION_SUBELEMENTS]
         item: dict[str, Any] = {"object": object_reference(obj)}
         if subelements:
             item["subelements"] = subelements
+        if len(raw_subelements) > len(subelements):
+            item["subelements_truncated"] = True
         items.append(item)
     result: dict[str, Any] = {
         "document_uid": uid,

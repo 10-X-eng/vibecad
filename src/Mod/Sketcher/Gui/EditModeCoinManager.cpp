@@ -510,6 +510,10 @@ void EditModeCoinManager::ParameterObserver::initParameters()
          [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
              updateWidth(drawingParameters.ExternalDefiningWidth, param, 2);
          }},
+        {"SelectionWidthIncrease",
+         [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
+             updateWidth(drawingParameters.SelectionWidthIncrease, param, 0);
+         }},
         {"EdgePattern",
          [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
              updatePattern(drawingParameters.CurvePattern, param, 0b1111111111111111);
@@ -601,6 +605,10 @@ void EditModeCoinManager::ParameterObserver::initParameters()
         {"SelectionColor",
          [this, drawingParameters = Client.drawingParameters](const std::string& param) {
              updateColor(drawingParameters.SelectColor, param);
+         }},
+        {"PreselectionSelectedColor",
+         [this, drawingParameters = Client.drawingParameters](const std::string& param) {
+             updateColor(drawingParameters.PreselectSelectedColor, param);
          }},
         {"CursorTextColor",
          [this, drawingParameters = Client.drawingParameters](const std::string& param) {
@@ -1875,6 +1883,26 @@ void EditModeCoinManager::updateInventorWidths()
         * drawingParameters.pixelScalingFactor;
     editModeScenegraphNodes.CurvesExternalDefiningDrawStyle->lineWidth
         = drawingParameters.ExternalDefiningWidth * drawingParameters.pixelScalingFactor;
+
+    for (int t = 0; t < geometryLayerParameters.getSubLayerCount(); ++t) {
+        int baseWidth = drawingParameters.CurveWidth;
+        if (geometryLayerParameters.isConstructionSubLayer(t)) {
+            baseWidth = drawingParameters.ConstructionWidth;
+        }
+        else if (geometryLayerParameters.isInternalSubLayer(t)) {
+            baseWidth = drawingParameters.InternalWidth;
+        }
+        else if (geometryLayerParameters.isExternalSubLayer(t)) {
+            baseWidth = drawingParameters.ExternalWidth;
+        }
+        else if (geometryLayerParameters.isExternalDefiningSubLayer(t)) {
+            baseWidth = drawingParameters.ExternalDefiningWidth;
+        }
+
+        editModeScenegraphNodes.SelectedCurvesDrawStyle[t]->lineWidth
+            = (baseWidth + std::max(0, drawingParameters.SelectionWidthIncrease))
+            * drawingParameters.pixelScalingFactor;
+    }
 }
 
 void EditModeCoinManager::updateInventorPatterns()
@@ -1886,6 +1914,23 @@ void EditModeCoinManager::updateInventorPatterns()
     editModeScenegraphNodes.CurvesExternalDrawStyle->linePattern = drawingParameters.ExternalPattern;
     editModeScenegraphNodes.CurvesExternalDefiningDrawStyle->linePattern
         = drawingParameters.ExternalDefiningPattern;
+
+    for (int t = 0; t < geometryLayerParameters.getSubLayerCount(); ++t) {
+        unsigned int pattern = drawingParameters.CurvePattern;
+        if (geometryLayerParameters.isConstructionSubLayer(t)) {
+            pattern = drawingParameters.ConstructionPattern;
+        }
+        else if (geometryLayerParameters.isInternalSubLayer(t)) {
+            pattern = drawingParameters.InternalPattern;
+        }
+        else if (geometryLayerParameters.isExternalSubLayer(t)) {
+            pattern = drawingParameters.ExternalPattern;
+        }
+        else if (geometryLayerParameters.isExternalDefiningSubLayer(t)) {
+            pattern = drawingParameters.ExternalDefiningPattern;
+        }
+        editModeScenegraphNodes.SelectedCurvesDrawStyle[t]->linePattern = pattern;
+    }
 }
 
 void EditModeCoinManager::updateInventorColors()
