@@ -116,20 +116,28 @@ def test_infer_biplane_from_voider_named_objects():
     boom = SimpleNamespace(
         Name="boom",
         Label="boom",
-        Shape=_Shape(_BoundBox(-20.0, 280.0, -4.0, 4.0, 60.0, 68.0)),
+        Shape=_Shape(_BoundBox(-280.0, 20.0, -4.0, 4.0, 60.0, 68.0)),
     )
     tail = SimpleNamespace(
         Name="h_tail",
         Label="h_tail",
-        Shape=_Shape(_BoundBox(250.0, 310.0, -80.0, 80.0, 60.0, 66.0)),
+        Shape=_Shape(_BoundBox(-310.0, -250.0, -80.0, 80.0, 60.0, 66.0)),
     )
-    doc = _Doc(objects=[lower, upper, boom, tail])
+    camera = SimpleNamespace(
+        Name="camera_bay",
+        Label="camera_bay",
+        Shape=_Shape(_BoundBox(70.0, 100.0, -15.0, 15.0, 10.0, 30.0)),
+    )
+    doc = _Doc(objects=[lower, upper, boom, tail, camera])
     resolved = config.resolve_geometry(doc)
     assert resolved["geometry_source"] == "inferred"
     assert abs(resolved["span_mm"] - 500.0) < 1.0
     assert abs(resolved["chord_mm"] - 90.0) < 1.0
     assert abs(resolved["gap_c"] - 1.4) < 0.15
     assert abs(resolved["stagger_c"] - 1.15) < 0.15
+    assert resolved["stagger_c"] > 0.0
+    assert resolved["upper_le_x_m"] > 0.0
+    assert resolved["cad_plus_is_nose"] is True
     assert abs(resolved["boom_length_mm"] - 300.0) < 1.0
     assert abs(resolved["tail_span_mm"] - 160.0) < 1.0
     assert abs(resolved["tail_chord_mm"] - 60.0) < 1.0
@@ -232,12 +240,12 @@ def test_aeroconfig_without_tail_fields_seeds_named_h_tail_and_boom():
     boom = SimpleNamespace(
         Name="boom",
         Label="boom",
-        Shape=_Shape(_BoundBox(-20.0, 280.0, -4.0, 4.0, 60.0, 68.0)),
+        Shape=_Shape(_BoundBox(-280.0, 20.0, -4.0, 4.0, 60.0, 68.0)),
     )
     tail = SimpleNamespace(
         Name="h_tail",
         Label="h_tail",
-        Shape=_Shape(_BoundBox(250.0, 310.0, -80.0, 80.0, 60.0, 66.0)),
+        Shape=_Shape(_BoundBox(-310.0, -250.0, -80.0, 80.0, 60.0, 66.0)),
     )
     doc = _Doc(objects=[aero, boom, tail])
     resolved = config.resolve_geometry(doc)
@@ -252,6 +260,81 @@ def test_finalize_defaults_include_tail_and_boom_sizes():
     assert abs(resolved["tail_span_m"] - 0.3 * 0.5) < 1e-9
     assert abs(resolved["tail_chord_m"] - 0.6 * 0.09) < 1e-9
     assert abs(resolved["boom_length_m"] - max(0.25, 3.5 * 0.09)) < 1e-9
+
+
+def test_finalize_honors_xyz_ref_c():
+    values = dict(config.VOIDER_DEFAULTS)
+    values["xyz_ref_c"] = 0.10
+    cfg = config.finalize(values)
+    assert abs(cfg["xyz_ref"][0] - 0.10 * 0.09) < 1e-9
+    assert cfg["xyz_ref_c"] == 0.10
+    assert abs(cfg["cg_x_m"] - 0.10 * 0.09) < 1e-9
+
+
+def test_xyz_ref_c_and_tail_sizes_survive_write_and_resolve():
+    created = []
+
+    class _Cfg:
+        def __init__(self):
+            self.Name = "AeroConfig"
+            self.Label = "AeroConfig"
+
+        def addProperty(self, *_args, **_kwargs):
+            return self
+
+    class _Writable(_Doc):
+        def addObject(self, typ, name):
+            obj = _Cfg()
+            obj.TypeId = typ
+            self.Objects.append(obj)
+            created.append(obj)
+            return obj
+
+    doc = _Writable()
+    config.write_config(
+        doc,
+        {
+            "span_mm": 500.0,
+            "chord_mm": 90.0,
+            "xyz_ref_c": 0.05,
+            "tail_span_mm": 180.0,
+            "tail_chord_mm": 62.0,
+        },
+    )
+    resolved = config.resolve_geometry(doc)
+    assert abs(resolved["xyz_ref_c"] - 0.05) < 1e-9
+    assert abs(resolved["xyz_ref"][0] - 0.05 * 0.09) < 1e-9
+    assert abs(resolved["tail_span_mm"] - 180.0) < 1e-9
+    assert abs(resolved["tail_chord_mm"] - 62.0) < 1e-9
+
+
+def test_named_bboxes_map_upper_wing_aft_in_asb():
+    lower = SimpleNamespace(
+        Name="lower_wing",
+        Label="lower_wing",
+        Shape=_Shape(_BoundBox(0.0, 90.0, -250.0, 250.0, 0.0, 8.0)),
+    )
+    upper = SimpleNamespace(
+        Name="upper_wing",
+        Label="upper_wing",
+        Shape=_Shape(_BoundBox(-103.5, -13.5, -250.0, 250.0, 126.0, 134.0)),
+    )
+    tail = SimpleNamespace(
+        Name="h_tail",
+        Label="h_tail",
+        Shape=_Shape(_BoundBox(-310.0, -250.0, -80.0, 80.0, 60.0, 66.0)),
+    )
+    camera = SimpleNamespace(
+        Name="camera_bay",
+        Label="camera_bay",
+        Shape=_Shape(_BoundBox(70.0, 100.0, -15.0, 15.0, 10.0, 30.0)),
+    )
+    doc = _Doc(objects=[lower, upper, tail, camera])
+    mapped = config.map_named_parts_to_asb(doc)
+    assert mapped["cad_plus_is_nose"] is True
+    assert mapped["upper_le_x_m"] > 0.0
+    assert abs(mapped["upper_le_x_m"] - 0.1035) < 0.005
+    assert mapped["tail_le_x_m"] > mapped["upper_le_x_m"]
 
 
 def test_plausible_inference_still_accepted():

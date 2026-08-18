@@ -79,8 +79,8 @@ def _voider_parts():
         _BoundBox(-103.5, -13.5, -250.0, 250.0, 126.0, 134.0),
         x=-103.5,
     )
-    boom = _Part("boom", _BoundBox(-20.0, 280.0, -4.0, 4.0, 60.0, 68.0))
-    tail = _Part("h_tail", _BoundBox(250.0, 310.0, -80.0, 80.0, 60.0, 66.0), x=250.0)
+    boom = _Part("boom", _BoundBox(-280.0, 20.0, -4.0, 4.0, 60.0, 68.0), x=-20.0)
+    tail = _Part("h_tail", _BoundBox(-310.0, -250.0, -80.0, 80.0, 60.0, 66.0), x=-250.0)
     pod = _Part("avionics_pod", _BoundBox(40.0, 80.0, -20.0, 20.0, 20.0, 40.0), x=60.0)
     camera = _Part("camera_bay", _BoundBox(70.0, 100.0, -15.0, 15.0, 10.0, 30.0), x=85.0)
     return lower, upper, boom, tail, pod, camera
@@ -105,20 +105,24 @@ def test_propose_grows_tail_boom_moves_cg_and_nudge_upper_wing():
     assert "tail_chord_mm" in fields
     assert "boom_length_mm" in fields
     assert "stagger_c" in fields
-    assert "decalage_deg" in fields
-    assert "cg_x_m" in fields
+    assert "decalage_deg" not in fields
+    assert "xyz_ref_c" in fields
     assert {item["part"] for item in proposed} >= {"h_tail", "boom", "avionics_pod", "camera_bay", "upper_wing"}
     tail_span = next(item for item in proposed if item["field"] == "tail_span_mm")
     assert tail_span["after"] > tail_span["before"]
     boom = next(item for item in proposed if item["field"] == "boom_length_mm")
     assert boom["after"] > boom["before"]
-    cg = next(item for item in proposed if item["field"] == "cg_x_m")
+    cg = next(item for item in proposed if item["field"] == "xyz_ref_c")
     assert cg["after"] < cg["before"]
+    stagger = next(item for item in proposed if item["field"] == "stagger_c")
+    assert stagger["after"] > stagger["before"]
     pod = next(item for item in proposed if item["part"] == "avionics_pod")
-    assert pod["after"] < pod["before"]
+    assert pod["after"] > pod["before"]
     for item in proposed:
         assert item["sentence"]
         assert item["sentence"].endswith(".")
+        assert "canard" not in item["sentence"].lower()
+        assert "toward the cad nose" not in item["sentence"].lower()
 
 
 def test_propose_respects_hard_bounds():
@@ -126,10 +130,9 @@ def test_propose_respects_hard_bounds():
     cfg["tail_span_mm"] = cfg["span_mm"] * repair.TAIL_SPAN_MAX_FRAC
     cfg["tail_chord_mm"] = cfg["chord_mm"] * repair.TAIL_CHORD_MAX_FRAC
     cfg["boom_length_mm"] = cfg["chord_mm"] * repair.BOOM_MAX_CHORD_MULT
-    cfg["stagger_c"] = repair.STAGGER_MIN
-    cfg["decalage_deg"] = repair.DECALAGE_MAX
-    cfg["cg_x_m"] = repair.cg_x_floor_m(cfg)
-    cfg["xyz_ref"] = [cfg["cg_x_m"], 0.0, cfg["gap_m"] / 2.0]
+    cfg["stagger_c"] = repair.STAGGER_MAX
+    cfg["xyz_ref_c"] = repair.XYZ_REF_C_MIN
+    cfg["xyz_ref"] = [cfg["xyz_ref_c"] * cfg["chord_m"], 0.0, cfg["gap_m"] / 2.0]
     proposed = repair.propose_repairs(cfg, {"PitchUnstable": True, "Cmalpha": 1.0})
     fields = {item["field"] for item in proposed}
     assert "tail_span_mm" not in fields
@@ -137,7 +140,7 @@ def test_propose_respects_hard_bounds():
     assert "boom_length_mm" not in fields
     assert "stagger_c" not in fields
     assert "decalage_deg" not in fields
-    assert "cg_x_m" not in fields
+    assert "xyz_ref_c" not in fields
 
 
 def test_apply_writes_aeroconfig_and_moves_mock_cad():
@@ -155,13 +158,16 @@ def test_apply_writes_aeroconfig_and_moves_mock_cad():
     assert aero is not None
     assert float(aero.tail_span_mm) > 150.0 * 0.99
     assert float(aero.boom_length_mm) > 250.0
-    assert float(aero.cg_x_m) < 0.25 * cfg["chord_m"]
-    assert pod.Placement.Base.x < 60.0
+    assert float(aero.xyz_ref_c) < 0.25
+    assert pod.Placement.Base.x > 60.0
     assert tail.Shape.BoundBox.YLength > 160.0
     assert boom.Shape.BoundBox.XLength > 300.0
-    assert upper.Placement.Base.x > -103.5
+    assert upper.Placement.Base.x < -103.5
     sentences = [item["sentence"] for item in landed]
     assert any("horizontal tail" in text.lower() or "tail span" in text.lower() for text in sentences)
+    resolved = config.resolve_geometry(doc)
+    assert abs(resolved["xyz_ref_c"] - float(aero.xyz_ref_c)) < 1e-9
+    assert abs(resolved["xyz_ref"][0] - resolved["xyz_ref_c"] * resolved["chord_m"]) < 1e-9
 
 
 def test_apply_without_cad_parts_still_lands_config():

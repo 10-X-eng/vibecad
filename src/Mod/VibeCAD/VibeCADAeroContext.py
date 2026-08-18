@@ -32,6 +32,7 @@ _GEOMETRY_FIELDS = (
     "boom_length_mm",
     "tail_span_mm",
     "tail_chord_mm",
+    "xyz_ref_c",
 )
 _MAX_PATH = 240
 _MAX_TEXT = 80

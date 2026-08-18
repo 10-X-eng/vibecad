@@ -55,7 +55,8 @@ Parameters are read in this order:
 
 1. An `AeroConfig` object on the document (`span_mm`, `chord_mm`, `gap_c`,
    `stagger_c`, `decalage_deg`, `auw_g`, `airfoil`, `alpha_deg`,
-   `vehicle_type`, prop fields)
+   `vehicle_type`, `tail_span_mm`, `tail_chord_mm`, `boom_length_mm`,
+   `xyz_ref_c`, prop fields)
 2. The same names as document properties
 3. Bounding boxes of objects named like the voider (`lower_wing`,
    `upper_wing`, `boom`, `h_tail`), only when inferred span/chord are
@@ -92,16 +93,23 @@ NeuralFoil.
 
 The AeroSandbox airplane includes the biplane plus an `h_tail` sized from
 `tail_span_m` / `tail_chord_m` / `boom_length_m`. Those sizes are seeded
-from named `h_tail` and `boom` objects when present. A missing tail plus a
-CG aft of the staggered-biplane aero center is why a wings-only solve stays
-pitch-unstable.
+from named `h_tail` and `boom` objects when present. AeroSandbox +X is aft.
+Named-part bounding boxes are mapped into that frame (the live voider has
+CAD +X toward the nose), so the upper wing is placed at **+stagger** (aft
+of the lower wing), not as a canard. The HTail uses a symmetric
+NACA 0008 section; the main wings stay on the configured airfoil (E63).
+
+`AeroConfig.xyz_ref_c` is the CG in chords and survives `finalize`. A
+missing tail plus a CG aft of the aero center is why a canard / wings-only
+solve stays pitch-unstable.
 
 When Analyze sees `PitchUnstable` / `Cmα > 0`, it proposes bounded repairs
-to both `AeroConfig` and live named parts: horizontal-tail volume and arm,
-boom length, `avionics_pod` / `camera_bay` toward the nose, and upper-wing
-stagger / decalage. It re-solves at most twice and stops if the model is
-stable or no CAD/config change landed. The dialog and FreeCAD console list
-each change in plain sentences. `AeroReport.Corrections`,
+to both `AeroConfig` and live named parts: more horizontal-tail volume,
+more tail arm / boom length, and CG / `avionics_pod` / `camera_bay` toward
+the nose. Optional extra **aft** stagger is allowed. Analyze does not shove
+the upper wing toward the CAD nose. It re-solves at most twice and stops if
+the model is stable or no CAD/config change landed. The dialog and FreeCAD
+console list each change in plain sentences. `AeroReport.Corrections`,
 `AeroReport.RepairPasses`, and `document.AeroAssistantJson` carry the same
 list for the in-app assistant (`VibeCADCore.aero_summary`).
 `VibeCADAero.run_analyze` returns `changes` and `user_message`.

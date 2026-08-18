@@ -42,6 +42,10 @@ _WRITE_KEYS = (
     "thrust_to_weight",
     "cruise_prop_eta",
     "vehicle_type",
+    "boom_length_mm",
+    "tail_span_mm",
+    "tail_chord_mm",
+    "xyz_ref_c",
 )
 
 _PARAM_KEYS = (
@@ -61,6 +65,7 @@ _PARAM_KEYS = (
     "boom_length_mm",
     "tail_span_mm",
     "tail_chord_mm",
+    "xyz_ref_c",
     "cg_x_m",
 )
 
@@ -68,6 +73,7 @@ _REPAIR_KEYS = (
     "boom_length_mm",
     "tail_span_mm",
     "tail_chord_mm",
+    "xyz_ref_c",
     "cg_x_m",
 )
 
@@ -96,25 +102,25 @@ def resolve_geometry(doc: Any | None = None) -> dict[str, Any]:
         _merge_params(values, aero)
         values["geometry_source"] = "AeroConfig"
         _seed_missing_named_parts(values, doc, aero)
-        return finalize(values)
+        return _with_layout(finalize(values), doc)
 
     if _has_any_param(doc):
         _merge_params(values, doc)
         values["geometry_source"] = "document"
         _seed_missing_named_parts(values, doc, doc)
-        return finalize(values)
+        return _with_layout(finalize(values), doc)
 
     inferred = infer_from_named_objects(doc)
     if inferred and inference_is_plausible(inferred):
         values.update(inferred)
         values["geometry_source"] = "inferred"
-        return finalize(values)
+        return _with_layout(finalize(values), doc)
     if inferred:
         values["inference_rejected"] = True
         values["inferred_span_mm"] = inferred.get("span_mm")
         values["inferred_chord_mm"] = inferred.get("chord_mm")
 
-    return finalize(values)
+    return _with_layout(finalize(values), doc)
 
 
 def inference_is_plausible(inferred: dict[str, Any]) -> bool:
@@ -159,11 +165,17 @@ def finalize(values: dict[str, Any]) -> dict[str, Any]:
         cfg["tail_chord_mm"] = 0.60 * float(cfg["chord_mm"])
     cfg["tail_span_m"] = float(cfg["tail_span_mm"]) / 1000.0
     cfg["tail_chord_m"] = float(cfg["tail_chord_mm"]) / 1000.0
-    if cfg.get("cg_x_m") is not None:
-        cfg["xyz_ref"] = [float(cfg["cg_x_m"]), 0.0, cfg["gap_m"] / 2.0]
+    if cfg.get("xyz_ref_c") is not None:
+        xyz_c = float(cfg["xyz_ref_c"])
+    elif cfg.get("cg_x_m") is not None and chord_m:
+        xyz_c = float(cfg["cg_x_m"]) / chord_m
     else:
-        cfg["xyz_ref"] = [0.25 * chord_m, 0.0, cfg["gap_m"] / 2.0]
-        cfg["cg_x_m"] = cfg["xyz_ref"][0]
+        xyz_c = 0.25
+    cfg["xyz_ref_c"] = xyz_c
+    cfg["xyz_ref"] = [xyz_c * chord_m, 0.0, cfg["gap_m"] / 2.0]
+    cfg["cg_x_m"] = cfg["xyz_ref"][0]
+    cfg["upper_le_x_m"] = float(cfg.get("upper_le_x_m") if cfg.get("upper_le_x_m") is not None else cfg["stagger_m"])
+    cfg["tail_le_x_m"] = float(cfg.get("tail_le_x_m") if cfg.get("tail_le_x_m") is not None else cfg["boom_length_m"])
     cfg["airfoil"] = str(cfg.get("airfoil") or "e63")
     cfg["vehicle_type"] = normalize_vehicle_type(cfg.get("vehicle_type"))
     return cfg
@@ -241,12 +253,111 @@ def infer_from_named_objects(doc: Any) -> dict[str, Any]:
     upper_bbox = _bbox(upper)
     if upper_bbox is not None and chord_mm:
         gap_mm = abs(_center(upper_bbox)[2] - _center(bbox)[2])
-        stagger_mm = abs(float(bbox.XMin) - float(upper_bbox.XMin))
         inferred["gap_c"] = gap_mm / chord_mm
-        inferred["stagger_c"] = stagger_mm / chord_mm
+        frame = document_aero_frame(doc)
+        inferred["stagger_c"] = (
+            frame.asb_x_m(frame.wing_le_cad_mm(upper_bbox)) * 1000.0 / chord_mm
+        )
 
     inferred.update(named_part_geometry(doc))
     return inferred
+
+
+def _with_layout(cfg: dict[str, Any], doc: Any | None) -> dict[str, Any]:
+    cfg.update(airplane_layout(cfg, doc))
+    return cfg
+
+
+class CadAeroFrame:
+    """Map CAD millimetres onto AeroSandbox metres.
+
+    AeroSandbox +X is aft. CAD +X is whatever the document used; the live
+    voider has +X toward the nose (camera) and −X toward the tail. The
+    frame is inferred from named-part bboxes instead of a hard-coded flip.
+    """
+
+    def __init__(self, cad_plus_is_nose: bool, lower_le_mm: float):
+        self.cad_plus_is_nose = bool(cad_plus_is_nose)
+        self.lower_le_mm = float(lower_le_mm)
+
+    def asb_x_m(self, cad_x_mm: float) -> float:
+        if self.cad_plus_is_nose:
+            return (self.lower_le_mm - float(cad_x_mm)) / 1000.0
+        return (float(cad_x_mm) - self.lower_le_mm) / 1000.0
+
+    def wing_le_cad_mm(self, bbox: Any) -> float:
+        return float(bbox.XMax) if self.cad_plus_is_nose else float(bbox.XMin)
+
+    def cad_dx_mm_for_asb_aft(self, asb_dx_m: float) -> float:
+        mm = float(asb_dx_m) * 1000.0
+        return -mm if self.cad_plus_is_nose else mm
+
+    def cad_dx_mm_toward_nose(self, mm: float) -> float:
+        return float(mm) if self.cad_plus_is_nose else -float(mm)
+
+
+def document_aero_frame(doc: Any | None) -> CadAeroFrame:
+    """Infer CAD nose/aft from ``h_tail``, ``camera_bay``, or boom extent."""
+
+    lower = _bbox(find_named(doc, "lower_wing")) if doc is not None else None
+    tail = _bbox(find_named(doc, "h_tail")) if doc is not None else None
+    camera = _bbox(find_named(doc, "camera_bay")) if doc is not None else None
+    boom = _bbox(find_named(doc, "boom")) if doc is not None else None
+
+    cad_plus_is_nose = True
+    if lower is not None:
+        lower_c = _center(lower)[0]
+        if tail is not None:
+            cad_plus_is_nose = _center(tail)[0] < lower_c
+        elif camera is not None:
+            cad_plus_is_nose = _center(camera)[0] > lower_c
+        elif boom is not None:
+            cad_plus_is_nose = abs(float(boom.XMin) - lower_c) > abs(
+                float(boom.XMax) - lower_c
+            )
+
+    if lower is None:
+        return CadAeroFrame(cad_plus_is_nose, 0.0)
+    probe = CadAeroFrame(cad_plus_is_nose, 0.0)
+    return CadAeroFrame(cad_plus_is_nose, probe.wing_le_cad_mm(lower))
+
+
+def map_named_parts_to_asb(doc: Any | None) -> dict[str, Any]:
+    """Return ASB +X-aft locations for named voider parts, when present."""
+
+    if doc is None:
+        return {}
+    frame = document_aero_frame(doc)
+    mapped: dict[str, Any] = {"cad_plus_is_nose": frame.cad_plus_is_nose}
+    upper = _bbox(find_named(doc, "upper_wing"))
+    if upper is not None:
+        mapped["upper_le_x_m"] = frame.asb_x_m(frame.wing_le_cad_mm(upper))
+    tail = _bbox(find_named(doc, "h_tail"))
+    if tail is not None:
+        mapped["tail_le_x_m"] = frame.asb_x_m(frame.wing_le_cad_mm(tail))
+    boom = _bbox(find_named(doc, "boom"))
+    if boom is not None:
+        x0 = frame.asb_x_m(float(boom.XMin))
+        x1 = frame.asb_x_m(float(boom.XMax))
+        mapped["boom_x0_m"] = min(x0, x1)
+        mapped["boom_x1_m"] = max(x0, x1)
+    return mapped
+
+
+def airplane_layout(cfg: dict[str, Any], doc: Any | None = None) -> dict[str, Any]:
+    """ASB layout. Default stagger is aft (+X). Named bboxes override when present."""
+
+    stagger = float(cfg.get("stagger_m") or 0.0)
+    boom = float(cfg.get("boom_length_m") or 0.25)
+    layout = {
+        "cad_plus_is_nose": True,
+        "upper_le_x_m": stagger,
+        "tail_le_x_m": boom,
+        "boom_x0_m": -0.02,
+        "boom_x1_m": boom,
+    }
+    layout.update(map_named_parts_to_asb(doc))
+    return layout
 
 
 def named_part_geometry(doc: Any) -> dict[str, Any]:

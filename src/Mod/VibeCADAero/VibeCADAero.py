@@ -217,6 +217,10 @@ def _ensure_aeroconfig(doc: Any, cfg: dict[str, Any]) -> Any | None:
         "alpha_deg",
         "n_props",
         "prop_diameter_mm",
+        "boom_length_mm",
+        "tail_span_mm",
+        "tail_chord_mm",
+        "xyz_ref_c",
         "thrust_to_weight",
         "vehicle_type",
     ):

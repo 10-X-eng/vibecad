@@ -2,10 +2,9 @@
 
 """Bounded pitch-stability geometry repairs for Analyze.
 
-The AeroSandbox airplane is a staggered biplane. Without an ``h_tail`` the
-neutral point stays forward of the default quarter-chord ``xyz_ref``, so
-``Cmα`` is positive. Analyze therefore grows tail volume / boom arm, walks
-avionics mass toward the nose, and nudges upper-wing stagger / decalage.
+Pitch repairs are tail volume, tail arm, and CG toward the nose. Optional
+aft stagger is allowed. Moving the upper wing toward the CAD nose is not:
+that increases the canard and makes ``Cmα`` worse.
 """
 
 from __future__ import annotations
@@ -24,16 +23,12 @@ TAIL_CHORD_MAX_FRAC = 1.0
 BOOM_MAX_CHORD_MULT = 6.0
 BOOM_MIN_M = 0.25
 
-STAGGER_DELTA = -0.10
+STAGGER_DELTA = 0.10
 STAGGER_MIN = 0.80
-STAGGER_MAX = 1.50
-
-DECALAGE_DELTA = 0.5
-DECALAGE_MIN = 0.0
-DECALAGE_MAX = 4.0
+STAGGER_MAX = 1.80
 
 CG_SHIFT_MM = 18.0
-CG_X_MIN_CHORD = -1.2
+XYZ_REF_C_MIN = -1.2
 NOSE_PARTS = ("avionics_pod", "camera_bay")
 
 _CONFIG_FIELDS = frozenset(
@@ -42,7 +37,7 @@ _CONFIG_FIELDS = frozenset(
         "tail_chord_mm",
         "boom_length_mm",
         "stagger_c",
-        "decalage_deg",
+        "xyz_ref_c",
         "cg_x_m",
     }
 )
@@ -51,7 +46,7 @@ _UNIT_THRESHOLD = 1e-6
 
 
 def cg_x_floor_m(cfg: dict[str, Any]) -> float:
-    return float(cfg["chord_m"]) * CG_X_MIN_CHORD
+    return float(cfg["chord_m"]) * XYZ_REF_C_MIN
 
 
 def propose_repairs(
@@ -71,8 +66,7 @@ def propose_repairs(
     tail_chord = float(cfg.get("tail_chord_mm") or 0.60 * chord_mm)
     boom_mm = float(cfg.get("boom_length_mm") or (cfg.get("boom_length_m") or BOOM_MIN_M) * 1000.0)
     stagger = float(cfg.get("stagger_c") or 1.15)
-    decalage = float(cfg.get("decalage_deg") or 2.0)
-    cg_x = _current_cg_x_m(cfg)
+    xyz_c = _current_xyz_ref_c(cfg)
 
     new_tail_span = min(span_mm * TAIL_SPAN_MAX_FRAC, tail_span * TAIL_SPAN_GROW)
     if new_tail_span - tail_span > _MM_THRESHOLD:
@@ -118,7 +112,7 @@ def propose_repairs(
         )
 
     new_stagger = _clamp(stagger + STAGGER_DELTA, STAGGER_MIN, STAGGER_MAX)
-    if abs(new_stagger - stagger) > _UNIT_THRESHOLD:
+    if new_stagger - stagger > _UNIT_THRESHOLD:
         changes.append(
             _change(
                 "upper_wing",
@@ -126,46 +120,30 @@ def propose_repairs(
                 stagger,
                 new_stagger,
                 (
-                    f"Reduced upper-wing stagger from {stagger:.2f}c to {new_stagger:.2f}c."
-                    if new_stagger < stagger
-                    else f"Increased upper-wing stagger from {stagger:.2f}c to {new_stagger:.2f}c."
+                    f"Moved the upper wing farther aft "
+                    f"(stagger {stagger:.2f}c to {new_stagger:.2f}c)."
                 ),
             )
         )
 
-    new_decalage = _clamp(decalage + DECALAGE_DELTA, DECALAGE_MIN, DECALAGE_MAX)
-    if abs(new_decalage - decalage) > _UNIT_THRESHOLD:
-        changes.append(
-            _change(
-                "upper_wing",
-                "decalage_deg",
-                decalage,
-                new_decalage,
-                (
-                    f"Increased upper-wing decalage from {decalage:.1f}° to {new_decalage:.1f}°."
-                    if new_decalage > decalage
-                    else f"Decreased upper-wing decalage from {decalage:.1f}° to {new_decalage:.1f}°."
-                ),
-            )
-        )
-
-    floor = cg_x_floor_m(cfg)
-    new_cg = max(floor, cg_x - CG_SHIFT_MM / 1000.0)
-    if cg_x - new_cg > _UNIT_THRESHOLD:
+    new_c = max(XYZ_REF_C_MIN, xyz_c - CG_SHIFT_MM / chord_mm)
+    if xyz_c - new_c > _UNIT_THRESHOLD:
         changes.append(
             _change(
                 None,
-                "cg_x_m",
-                cg_x,
-                new_cg,
+                "xyz_ref_c",
+                xyz_c,
+                new_c,
                 (
                     "Moved the aero CG "
-                    f"{_mm((cg_x - new_cg) * 1000.0)} mm toward the nose."
+                    f"{_mm((xyz_c - new_c) * chord_mm)} mm toward the nose."
                 ),
             )
         )
 
     if doc is not None:
+        frame = AeroConfig.document_aero_frame(doc)
+        nose_dx = frame.cad_dx_mm_toward_nose(CG_SHIFT_MM)
         for name in NOSE_PARTS:
             obj = AeroConfig.find_named(doc, name)
             if obj is None:
@@ -173,7 +151,7 @@ def propose_repairs(
             current = _part_x_mm(obj)
             if current is None:
                 continue
-            after = current - CG_SHIFT_MM
+            after = current + nose_dx
             changes.append(
                 _change(
                     name,
@@ -215,8 +193,10 @@ def apply_repairs(
             landed.append(item)
 
     if boom_delta_mm > _MM_THRESHOLD and doc is not None:
+        frame = AeroConfig.document_aero_frame(doc)
+        tail_dx = frame.cad_dx_mm_for_asb_aft(boom_delta_mm / 1000.0)
         tail = AeroConfig.find_named(doc, "h_tail")
-        if tail is not None and _translate(tail, boom_delta_mm, 0.0, 0.0):
+        if tail is not None and _translate(tail, tail_dx, 0.0, 0.0):
             for item in landed:
                 if item.get("part") == "h_tail" and item.get("field") == "tail_span_mm":
                     item["cad"] = True
@@ -251,9 +231,13 @@ def format_user_message(
 def _persist_config(doc: Any, cfg: dict[str, Any], updates: dict[str, Any]) -> None:
     payload = {key: cfg.get(key) for key in AeroConfig._WRITE_KEYS if cfg.get(key) is not None}
     payload.update(updates)
+    if "xyz_ref_c" in updates:
+        payload["cg_x_m"] = float(updates["xyz_ref_c"]) * float(cfg["chord_m"])
     for key in AeroConfig._REPAIR_KEYS:
         if key in updates:
             payload[key] = updates[key]
+        elif key == "cg_x_m" and "xyz_ref_c" in updates:
+            continue
         elif cfg.get(key) is not None:
             payload[key] = cfg[key]
     AeroConfig.write_config(doc, payload)
@@ -269,7 +253,13 @@ def _sync_cfg(cfg: dict[str, Any], updates: dict[str, Any]) -> None:
         cfg["boom_length_m"] = float(updates["boom_length_mm"]) / 1000.0
     if "stagger_c" in updates:
         cfg["stagger_m"] = float(updates["stagger_c"]) * float(cfg["chord_m"])
-    if "cg_x_m" in updates:
+        cfg["upper_le_x_m"] = cfg["stagger_m"]
+    if "xyz_ref_c" in updates:
+        gap = float(cfg.get("gap_m") or 0.0)
+        chord_m = float(cfg["chord_m"])
+        cfg["xyz_ref"] = [float(updates["xyz_ref_c"]) * chord_m, 0.0, gap / 2.0]
+        cfg["cg_x_m"] = cfg["xyz_ref"][0]
+    if "cg_x_m" in updates and "xyz_ref_c" not in updates:
         gap = float(cfg.get("gap_m") or 0.0)
         cfg["xyz_ref"] = [float(updates["cg_x_m"]), 0.0, gap / 2.0]
 
@@ -285,17 +275,17 @@ def _apply_cad(doc: Any, change: dict[str, Any], cfg: dict[str, Any]) -> bool:
         return False
     if field in {"x_mm"}:
         return _translate(obj, after - before, 0.0, 0.0)
+    frame = AeroConfig.document_aero_frame(doc)
     if field == "tail_span_mm":
-        return _scale_part(obj, 1.0, after / before, 1.0, _center_y0_le(obj))
+        return _scale_part(obj, 1.0, after / before, 1.0, _scale_origin(obj, frame))
     if field == "tail_chord_mm":
-        return _scale_part(obj, after / before, 1.0, 1.0, _center_y0_le(obj))
+        sx, sy = _chord_span_scales(obj, frame, after / before, 1.0)
+        return _scale_part(obj, sx, sy, 1.0, _scale_origin(obj, frame))
     if field == "boom_length_mm":
-        return _scale_part(obj, after / before, 1.0, 1.0, _center_y0_le(obj))
+        return _scale_part(obj, after / before, 1.0, 1.0, _scale_origin(obj, frame))
     if field == "stagger_c":
-        dx = -(after - before) * float(cfg["chord_mm"])
+        dx = frame.cad_dx_mm_for_asb_aft((after - before) * float(cfg["chord_m"]))
         return _translate(obj, dx, 0.0, 0.0)
-    if field == "decalage_deg":
-        return _rotate_about_y(obj, after - before)
     return False
 
 
@@ -428,6 +418,33 @@ def _ensure_placement(obj: Any) -> Any:
     return placement
 
 
+def _scale_origin(obj: Any, frame: Any) -> tuple[float, float, float]:
+    bbox = _bbox_of(obj)
+    if bbox is None:
+        return (0.0, 0.0, 0.0)
+    return (
+        frame.wing_le_cad_mm(bbox),
+        0.0,
+        0.5 * (float(bbox.ZMin) + float(bbox.ZMax)),
+    )
+
+
+def _chord_span_scales(
+    obj: Any,
+    frame: Any,
+    chord_scale: float,
+    span_scale: float,
+) -> tuple[float, float]:
+    bbox = _bbox_of(obj)
+    if bbox is None:
+        return chord_scale, span_scale
+    x_len = abs(float(bbox.XMax) - float(bbox.XMin))
+    y_len = abs(float(bbox.YMax) - float(bbox.YMin))
+    if y_len >= x_len:
+        return chord_scale, span_scale
+    return span_scale, chord_scale
+
+
 def _center_y0_le(obj: Any) -> tuple[float, float, float]:
     bbox = _bbox_of(obj)
     if bbox is None:
@@ -454,13 +471,15 @@ def _part_x_mm(obj: Any) -> float | None:
     return 0.5 * (float(bbox.XMin) + float(bbox.XMax))
 
 
-def _current_cg_x_m(cfg: dict[str, Any]) -> float:
-    if cfg.get("cg_x_m") is not None:
-        return float(cfg["cg_x_m"])
+def _current_xyz_ref_c(cfg: dict[str, Any]) -> float:
+    if cfg.get("xyz_ref_c") is not None:
+        return float(cfg["xyz_ref_c"])
+    if cfg.get("cg_x_m") is not None and cfg.get("chord_m"):
+        return float(cfg["cg_x_m"]) / float(cfg["chord_m"])
     ref = cfg.get("xyz_ref")
-    if isinstance(ref, (list, tuple)) and ref:
-        return float(ref[0])
-    return 0.25 * float(cfg["chord_m"])
+    if isinstance(ref, (list, tuple)) and ref and cfg.get("chord_m"):
+        return float(ref[0]) / float(cfg["chord_m"])
+    return 0.25
 
 
 def _positive_cmalpha(payload: dict[str, Any]) -> bool:

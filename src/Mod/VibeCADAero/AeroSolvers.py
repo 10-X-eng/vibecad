@@ -313,16 +313,29 @@ def run_three_d(
     return buildup, vlm, derivatives
 
 
+TAIL_AIRFOIL = "naca0008"
+
+
 def build_airplane(cfg: dict[str, Any], coords: list[list[float]]) -> Any:
     require_backend("aerosandbox")
     import aerosandbox as asb  # type: ignore
 
+    import AeroAirfoil
+
     foil = asb.Airfoil(coordinates=_as_array(coords))
+    tail_foil = asb.Airfoil(
+        coordinates=_as_array(AeroAirfoil.naca4_coordinates(0.0, 0.0, 8.0))
+    )
     span = float(cfg["span_m"])
     chord = float(cfg["chord_m"])
     gap = float(cfg["gap_m"])
     stagger = float(cfg["stagger_m"])
     decalage = float(cfg["decalage_deg"])
+    # ASB +X is aft. Positive stagger / mapped upper_le_x_m puts the upper wing
+    # behind the lower wing, matching the live voider CAD (upper more nose-off).
+    upper_x = float(
+        cfg["upper_le_x_m"] if cfg.get("upper_le_x_m") is not None else stagger
+    )
     lower = asb.Wing(
         name="Lower Wing",
         symmetric=True,
@@ -336,13 +349,13 @@ def build_airplane(cfg: dict[str, Any], coords: list[list[float]]) -> Any:
         symmetric=True,
         xsecs=[
             asb.WingXSec(
-                xyz_le=[-stagger, 0.0, gap],
+                xyz_le=[upper_x, 0.0, gap],
                 chord=chord,
                 twist=decalage,
                 airfoil=foil,
             ),
             asb.WingXSec(
-                xyz_le=[-stagger, span / 2.0, gap],
+                xyz_le=[upper_x, span / 2.0, gap],
                 chord=chord,
                 twist=decalage,
                 airfoil=foil,
@@ -352,12 +365,17 @@ def build_airplane(cfg: dict[str, Any], coords: list[list[float]]) -> Any:
     boom_length = float(cfg.get("boom_length_m") or max(0.25, 3.5 * chord))
     tail_span = float(cfg.get("tail_span_m") or 0.30 * span)
     tail_chord = float(cfg.get("tail_chord_m") or 0.60 * chord)
+    tail_x = float(
+        cfg["tail_le_x_m"] if cfg.get("tail_le_x_m") is not None else boom_length
+    )
+    boom_x0 = float(cfg["boom_x0_m"] if cfg.get("boom_x0_m") is not None else -0.02)
+    boom_x1 = float(cfg["boom_x1_m"] if cfg.get("boom_x1_m") is not None else boom_length)
     boom = asb.Fuselage(
         name="Boom",
         xsecs=[
-            asb.FuselageXSec(xyz_c=[-0.02, 0.0, gap / 2.0], radius=0.004),
+            asb.FuselageXSec(xyz_c=[boom_x0, 0.0, gap / 2.0], radius=0.004),
             asb.FuselageXSec(
-                xyz_c=[boom_length, 0.0, gap / 2.0],
+                xyz_c=[boom_x1, 0.0, gap / 2.0],
                 radius=0.004,
             ),
         ],
@@ -367,16 +385,16 @@ def build_airplane(cfg: dict[str, Any], coords: list[list[float]]) -> Any:
         symmetric=True,
         xsecs=[
             asb.WingXSec(
-                xyz_le=[boom_length, 0.0, gap / 2.0],
+                xyz_le=[tail_x, 0.0, gap / 2.0],
                 chord=tail_chord,
                 twist=0.0,
-                airfoil=foil,
+                airfoil=tail_foil,
             ),
             asb.WingXSec(
-                xyz_le=[boom_length, tail_span / 2.0, gap / 2.0],
+                xyz_le=[tail_x, tail_span / 2.0, gap / 2.0],
                 chord=tail_chord,
                 twist=0.0,
-                airfoil=foil,
+                airfoil=tail_foil,
             ),
         ],
     )

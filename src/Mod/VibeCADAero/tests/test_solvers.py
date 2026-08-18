@@ -209,3 +209,86 @@ def test_build_airplane_grows_a_third_horizontal_tail_wing(monkeypatch):
     assert le[0] == pytest.approx(cfg["boom_length_m"])
     assert tail.kwargs["xsecs"][0].kwargs["chord"] == pytest.approx(cfg["tail_chord_m"])
     assert tail.kwargs["xsecs"][1].kwargs["xyz_le"][1] == pytest.approx(cfg["tail_span_m"] / 2.0)
+    upper_le = plane.wings[1].kwargs["xsecs"][0].kwargs["xyz_le"]
+    assert upper_le[0] == pytest.approx(cfg["stagger_m"])
+    assert upper_le[0] > 0.0
+    tail_coords = tail.kwargs["xsecs"][0].kwargs["airfoil"].coordinates
+    ys = [row[1] for row in tail_coords]
+    assert abs(max(ys) + min(ys)) < 0.01
+    wing_coords = plane.wings[0].kwargs["xsecs"][0].kwargs["airfoil"].coordinates
+    assert len(tail_coords) != len(wing_coords)
+
+
+def test_build_airplane_places_upper_wing_aft_from_named_bboxes(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    class _Airfoil:
+        def __init__(self, coordinates=None):
+            self.coordinates = coordinates
+
+    class _Named:
+        def __init__(self, name="", **kwargs):
+            self.name = name
+            self.kwargs = kwargs
+
+    class _XSec:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _Airplane:
+        def __init__(self, name="", xyz_ref=None, wings=None, fuselages=None):
+            self.wings = list(wings or [])
+            self.fuselages = list(fuselages or [])
+            self.xyz_ref = xyz_ref
+
+    fake = SimpleNamespace(
+        Airfoil=_Airfoil,
+        Wing=_Named,
+        WingXSec=_XSec,
+        Fuselage=_Named,
+        FuselageXSec=_XSec,
+        Airplane=_Airplane,
+    )
+    monkeypatch.setitem(sys.modules, "aerosandbox", fake)
+    monkeypatch.setattr(solvers, "require_backend", lambda *_args, **_kwargs: None)
+
+    class _BoundBox:
+        def __init__(self, x_min, x_max, y_min, y_max, z_min, z_max):
+            self.XMin, self.XMax = x_min, x_max
+            self.YMin, self.YMax = y_min, y_max
+            self.ZMin, self.ZMax = z_min, z_max
+            self.XLength = x_max - x_min
+            self.YLength = y_max - y_min
+            self.ZLength = z_max - z_min
+
+    class _Part:
+        def __init__(self, name, bbox):
+            self.Name = name
+            self.Label = name
+            self.Shape = SimpleNamespace(BoundBox=bbox)
+
+    class _Doc:
+        def __init__(self, objects):
+            self.Objects = objects
+
+        def getObject(self, name):
+            for obj in self.Objects:
+                if obj.Name == name:
+                    return obj
+            return None
+
+    doc = _Doc(
+        [
+            _Part("lower_wing", _BoundBox(0.0, 90.0, -250.0, 250.0, 0.0, 8.0)),
+            _Part("upper_wing", _BoundBox(-103.5, -13.5, -250.0, 250.0, 126.0, 134.0)),
+            _Part("h_tail", _BoundBox(-310.0, -250.0, -80.0, 80.0, 60.0, 66.0)),
+            _Part("camera_bay", _BoundBox(70.0, 100.0, -15.0, 15.0, 10.0, 30.0)),
+        ]
+    )
+    cfg = config.resolve_geometry(doc)
+    plane = solvers.build_airplane(cfg, [[1.0, 0.0], [0.0, 0.07], [1.0, 0.0]])
+    upper_x = plane.wings[1].kwargs["xsecs"][0].kwargs["xyz_le"][0]
+    assert upper_x > 0.0
+    assert upper_x == pytest.approx(cfg["upper_le_x_m"])
+    assert cfg["upper_le_x_m"] == pytest.approx(0.1035, abs=0.005)
