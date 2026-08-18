@@ -2188,6 +2188,7 @@ def _model_visible_context(
         "available_components",
         "view_screenshot",
         "reference_images",
+        "aero",
     )
     result = {
         key: _json_safe(context[key])

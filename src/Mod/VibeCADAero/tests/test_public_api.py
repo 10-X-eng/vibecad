@@ -86,6 +86,9 @@ def test_run_analyze_writes_report_with_injected_solvers(monkeypatch, tmp_path):
     assert result["changes"] == []
     assert result["RepairPasses"] == 0
     assert "user_message" in result
+    assert doc.getObject("AeroAssistantJson") is not None
+    assert "Pitch stable" in result["corrections"][0]
+    assert "0.77" in str(getattr(doc, "AeroAssistantJson", ""))
 
 
 def test_run_analyze_repairs_when_pitch_unstable(monkeypatch):

@@ -56,28 +56,73 @@ def _refresh_workspace() -> None:
         pass
 
 
+def format_analyze_report(result: dict[str, Any], title: str = "Aero Analyze") -> str:
+    """Human-readable Analyze text for the dialog and signed-in Grok chat."""
+
+    try:
+        import AeroResults
+
+        return AeroResults.format_human_report(result, title)
+    except Exception:
+        unstable = (
+            "PITCH UNSTABLE (Cmα > 0)"
+            if result.get("PitchUnstable")
+            else "pitch stable"
+        )
+        return (
+            f"{title} ({result.get('source')})\n"
+            f"CL={result.get('CL')}  CD={result.get('CD')}  CM={result.get('CM')}\n"
+            f"CLα={result.get('CLalpha')}  Cmα={result.get('Cmalpha')}  {unstable}"
+        )
+
+
+def _append_in_app_conversation(
+    role: str,
+    text: str,
+    *,
+    persist: bool = False,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    try:
+        import VibeCADGui
+
+        VibeCADGui._append_conversation(
+            role, text, persist=persist, metadata=metadata
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _queue_in_app_steering(text: str, source: str = "aero") -> dict[str, Any]:
+    try:
+        from VibeCADCore import get_service
+
+        return get_service().queue_steering_message(text, source=source)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _push_analyze_to_in_app_grok(result: dict[str, Any], title: str) -> str:
+    """Persist Analyze as a VibeCAD/assistant turn and steer an in-flight Grok run."""
+
+    text = format_analyze_report(result, title)
+    _append_in_app_conversation(
+        "VibeCAD",
+        text,
+        persist=True,
+        metadata={"source": "aero"},
+    )
+    _queue_in_app_steering(text, "aero")
+    return text
+
+
 def _report_result(result: dict[str, Any], title: str) -> None:
     _refresh_workspace()
     if not result.get("ok"):
         _dialog(title, result.get("error") or "Aero solve failed.")
         return
-    unstable = "PITCH UNSTABLE (Cmα > 0)" if result.get("PitchUnstable") else "pitch stable"
-    text = (
-        f"{title} ({result.get('source')})\n"
-        f"CL={result.get('CL')}  CD={result.get('CD')}  CM={result.get('CM')}\n"
-        f"CLα={result.get('CLalpha')}  Cmα={result.get('Cmalpha')}  {unstable}\n"
-        f"Re={result.get('Re')}  V_loaf={result.get('V_loaf')} m/s\n"
-        f"P_hover={result.get('P_hover')} W (momentum-theory)\n"
-        f"P_cruise={result.get('P_cruise')} W (η=0.65)\n"
-        f"Airfoil={result.get('airfoil')} from {result.get('airfoil_source')}"
-    )
-    if result.get("jsbsim_path"):
-        text += f"\nJSBSim: {result['jsbsim_path']}"
-        if result.get("jsbsim_boot_error"):
-            text += f"\nJSBSim boot: {result['jsbsim_boot_error']}"
-    message = result.get("user_message") or ""
-    if message:
-        text += "\n\n" + message
+    text = _push_analyze_to_in_app_grok(result, title)
     _dialog(title, text, kind="info")
 
 

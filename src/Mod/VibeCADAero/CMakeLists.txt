@@ -30,6 +30,7 @@ SET(VibeCADAero_Tests
     tests/__init__.py
     tests/conftest.py
     tests/test_airfoil.py
+    tests/test_assistant_push.py
     tests/test_config.py
     tests/test_icons.py
     tests/test_jsbsim.py

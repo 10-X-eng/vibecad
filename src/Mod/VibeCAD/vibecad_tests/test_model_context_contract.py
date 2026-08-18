@@ -198,6 +198,38 @@ def test_stop_button_control_is_not_reinjected_as_a_design_instruction() -> None
     assert literal_user_request["turns"] == [{"role": "user", "content": "Stop."}]
 
 
+def test_recent_conversation_keeps_aero_analyze_as_assistant() -> None:
+    report = (
+        "Aero Analyze (AeroBuildup)\n"
+        "CL=1.516  CD=0.242  CM=0.733\n"
+        "CLα=7.3  Cmα=4.68  PITCH UNSTABLE (Cmα > 0)\n"
+        "Corrections:\n"
+        "- PitchUnstable: Cmα > 0. Increase decalage, add tail volume, "
+        "or move CG forward until Cmα < 0."
+    )
+    turns = [
+        {"role": "user", "content": "Analyze the voider."},
+        {
+            "role": "assistant",
+            "content": report,
+            "metadata": {"source": "aero"},
+        },
+        {
+            "role": "system",
+            "content": "internal status must not become dialogue",
+        },
+    ]
+
+    payload = session._recent_conversation_payload(turns)
+
+    assert payload["turns"] == [
+        {"role": "user", "content": "Analyze the voider."},
+        {"role": "assistant", "content": report},
+    ]
+    assert "PITCH UNSTABLE" in payload["turns"][-1]["content"]
+    assert "internal status" not in json.dumps(payload)
+
+
 @pytest.mark.parametrize("object_count", (10, 100, 1000))
 def test_turn_context_size_does_not_scale_with_document_objects(object_count: int) -> None:
     payload, _conversation, _ = _prompt_payload(

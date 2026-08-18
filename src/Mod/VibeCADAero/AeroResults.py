@@ -10,6 +10,7 @@ from typing import Any
 REPORT_NAME = "AeroReport"
 SHEET_NAME = "AeroSpreadsheet"
 MARKDOWN_NAME = "AeroReportMarkdown"
+ASSISTANT_JSON_NAME = "AeroAssistantJson"
 
 _FIELDS = (
     ("CL", "App::PropertyFloat", "Lift coefficient"),
@@ -95,7 +96,10 @@ def write_report(
             _add_result_properties(obj)
     else:
         _add_result_properties(obj)
+    assistant = assistant_payload(payload, jsbsim_path=jsbsim_path)
+    payload["corrections"] = list(assistant.get("corrections") or [])
     _apply_payload(obj, payload, jsbsim_path, jsbsim_boot_error)
+    _write_assistant_json(doc, assistant)
     view = getattr(obj, "ViewObject", None)
     if view is not None and getattr(view, "Proxy", None) is None:
         try:
@@ -113,8 +117,6 @@ def write_report(
             pass
     if markdown:
         _write_markdown(doc, payload, jsbsim_path)
-
-    _write_assistant_json(doc, payload)
 
     recompute = getattr(doc, "recompute", None)
     if callable(recompute):
@@ -142,11 +144,11 @@ def format_markdown(payload: dict[str, Any], jsbsim_path: str | None = None) -> 
         f"- Pitch unstable: {payload.get('PitchUnstable')}",
         f"- Repair passes: {payload.get('RepairPasses') or 0}",
     ]
-    corrections = _corrections_text(payload)
+    corrections = corrections_for(payload)
     if corrections:
         lines.append("- Corrections:")
-        for line in corrections.splitlines():
-            lines.append(f"  - {line}")
+        for item in corrections:
+            lines.append(f"  - {item}")
     if jsbsim_path:
         lines.append(f"- JSBSim plant: `{jsbsim_path}`")
     lines.append("")
@@ -210,6 +212,7 @@ def _row_values(payload: dict[str, Any], jsbsim_path: str | None) -> list[tuple[
         ("PitchUnstable", payload.get("PitchUnstable")),
         ("HoverSource", hover.get("source", "momentum-theory")),
         ("Airfoil", payload.get("airfoil")),
+        ("Corrections", "\n".join(corrections_for(payload))),
     ]
     if jsbsim_path:
         rows.append(("JSBSimPlantPath", jsbsim_path))
@@ -246,7 +249,7 @@ def _apply_payload(
             else payload.get("jsbsim_boot_error") or ""
         ),
         "Notes": "Hover is momentum-theory, not CFD.",
-        "Corrections": _corrections_text(payload),
+        "Corrections": "\n".join(corrections_for(payload)),
         "RepairPasses": int(payload.get("RepairPasses") or 0),
         "span_mm": payload.get("span_mm"),
         "chord_mm": payload.get("chord_mm"),
@@ -266,34 +269,105 @@ def _apply_payload(
             pass
 
 
-def _corrections_text(payload: dict[str, Any]) -> str:
-    raw = payload.get("Corrections")
-    if isinstance(raw, (list, tuple)):
-        return "\n".join(str(item) for item in raw if item)
-    return str(raw or "")
+def corrections_for(payload: dict[str, Any]) -> list[str]:
+    """Return a short, deterministic change list from one solve."""
+
+    existing = _corrections_list(payload.get("corrections"))
+    if not existing:
+        existing = _corrections_list(payload.get("Corrections"))
+    if existing:
+        return existing
+    if payload.get("PitchUnstable"):
+        return [
+            "PitchUnstable: Cmα > 0. Increase decalage, add tail volume, "
+            "or move CG forward until Cmα < 0."
+        ]
+    return ["Pitch stable (Cmα ≤ 0). No pitch-stiffness correction required."]
 
 
-def _write_assistant_json(doc: Any, payload: dict[str, Any]) -> None:
-    blob = json.dumps(
-        {
-            "changes": payload.get("changes") or [],
-            "Corrections": (
-                list(payload.get("Corrections") or [])
-                if isinstance(payload.get("Corrections"), (list, tuple))
-                else [
-                    line
-                    for line in str(payload.get("Corrections") or "").splitlines()
-                    if line
-                ]
-            ),
-            "RepairPasses": int(payload.get("RepairPasses") or 0),
-            "PitchUnstable": bool(payload.get("PitchUnstable")),
-            "Cmalpha": payload.get("Cmalpha"),
-            "user_message": payload.get("user_message") or "",
-        },
-        ensure_ascii=True,
+def assistant_payload(
+    payload: dict[str, Any],
+    *,
+    jsbsim_path: str | None = None,
+) -> dict[str, Any]:
+    """Bounded JSON the signed-in in-app Grok turn can reuse."""
+
+    corrections = corrections_for(payload)
+    result: dict[str, Any] = {
+        "CL": payload.get("CL"),
+        "CD": payload.get("CD"),
+        "CM": payload.get("CM"),
+        "CLalpha": payload.get("CLalpha"),
+        "Cmalpha": payload.get("Cmalpha"),
+        "PitchUnstable": bool(payload.get("PitchUnstable")),
+        "source": payload.get("source"),
+        "corrections": corrections,
+        "Corrections": corrections,
+        "RepairPasses": int(payload.get("RepairPasses") or 0),
+        "changes": payload.get("changes") or [],
+        "user_message": payload.get("user_message") or "",
+    }
+    if jsbsim_path:
+        result["jsbsim_path"] = jsbsim_path
+    return result
+
+
+def format_human_report(payload: dict[str, Any], title: str = "Aero Analyze") -> str:
+    """Human-readable Analyze text for the dialog and in-app Grok chat."""
+
+    unstable = (
+        "PITCH UNSTABLE (Cmα > 0)" if payload.get("PitchUnstable") else "pitch stable"
     )
-    _set_doc_attr(doc, "AeroAssistantJson", blob)
+    source = payload.get("source") or ""
+    heading = f"{title} ({source})" if source else title
+    lines = [
+        heading,
+        f"CL={payload.get('CL')}  CD={payload.get('CD')}  CM={payload.get('CM')}",
+        f"CLα={payload.get('CLalpha')}  Cmα={payload.get('Cmalpha')}  {unstable}",
+        f"Re={payload.get('Re')}  V_loaf={payload.get('V_loaf')} m/s",
+        f"P_hover={payload.get('P_hover')} W (momentum-theory)",
+        f"P_cruise={payload.get('P_cruise')} W (η=0.65)",
+        f"Airfoil={payload.get('airfoil')} from {payload.get('airfoil_source')}",
+    ]
+    if payload.get("jsbsim_path"):
+        lines.append(f"JSBSim: {payload['jsbsim_path']}")
+        if payload.get("jsbsim_boot_error"):
+            lines.append(f"JSBSim boot: {payload['jsbsim_boot_error']}")
+    corrections = corrections_for(payload)
+    if corrections:
+        lines.append("Corrections:")
+        lines.extend(f"- {item}" for item in corrections)
+    message = str(payload.get("user_message") or "").strip()
+    if message:
+        lines.append("")
+        lines.append(message)
+    return "\n".join(lines)
+
+
+def _write_assistant_json(doc: Any, assistant: dict[str, Any]) -> Any:
+    encoded = json.dumps(assistant, ensure_ascii=True, indent=2)
+    try:
+        obj = _get_or_create(doc, "App::TextDocument", ASSISTANT_JSON_NAME)
+        obj.Text = encoded
+    except Exception:
+        obj = None
+    _set_doc_attr(doc, ASSISTANT_JSON_NAME, encoded)
+    return obj
+
+
+def _corrections_list(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, list):
+        return [str(item).strip() for item in parsed if str(item).strip()]
+    return [line.strip().lstrip("- ") for line in text.splitlines() if line.strip()]
 
 
 def _xyz_ref_components(payload: dict[str, Any]) -> tuple[Any, Any, Any]:

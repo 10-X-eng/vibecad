@@ -322,3 +322,125 @@ def test_provider_context_summary_includes_aero_when_report_exists() -> None:
     assert context["aero"]["CL"] == 0.77
     assert context["aero"]["source"] == "NeuralFoil"
     assert context["aero"]["PitchUnstable"] is False
+
+
+def test_document_aero_summary_exposes_assistant_json_when_present() -> None:
+    report = SimpleNamespace(
+        Name="AeroReport",
+        Label="AeroReport",
+        CL=1.516,
+        CD=0.242,
+        CM=0.733,
+        CLalpha=7.3,
+        Cmalpha=4.68,
+        PitchUnstable=True,
+        Re=25000.0,
+        V_loaf=4.19,
+        P_hover=24.2,
+        P_cruise=1.51,
+        Source="AeroBuildup",
+        Airfoil="e63",
+        GeometrySource="AeroConfig",
+        JSBSimPlantPath="",
+        Corrections=(
+            "PitchUnstable: Cmα > 0. Increase decalage, add tail volume, "
+            "or move CG forward until Cmα < 0."
+        ),
+    )
+    assistant = SimpleNamespace(
+        Name="AeroAssistantJson",
+        Label="AeroAssistantJson",
+        Text=(
+            '{"CL":1.516,"CD":0.242,"Cmalpha":4.68,"PitchUnstable":true,'
+            '"corrections":["PitchUnstable: Cmα > 0. Increase decalage, '
+            'add tail volume, or move CG forward until Cmα < 0."]}'
+        ),
+    )
+
+    def get_object(name: str):
+        return {"AeroReport": report, "AeroAssistantJson": assistant}.get(name)
+
+    doc = SimpleNamespace(
+        Name="Voider",
+        Objects=[report, assistant],
+        getObject=get_object,
+        AeroAssistantJson=assistant.Text,
+    )
+    summary = document_aero_summary(doc)
+    assert summary["available"] is True
+    assert summary["CL"] == 1.516
+    assert summary["PitchUnstable"] is True
+    assert "Increase decalage" in summary["corrections"][0]
+    assert summary["assistant_json"]["CL"] == 1.516
+    assert summary["assistant_json"]["CD"] == 0.242
+    assert summary["assistant_json"]["Cmalpha"] == 4.68
+    assert summary["assistant_json"]["PitchUnstable"] is True
+    assert "Increase decalage" in summary["assistant_json"]["corrections"][0]
+
+
+def test_session_and_provider_allowlists_keep_aero(monkeypatch) -> None:
+    import VibeCADProvider as provider
+    import VibeCADSession as session
+
+    aero = {
+        "available": True,
+        "CL": 1.516,
+        "CD": 0.242,
+        "Cmalpha": 4.68,
+        "PitchUnstable": True,
+        "corrections": [
+            "PitchUnstable: Cmα > 0. Increase decalage, add tail volume, "
+            "or move CG forward until Cmα < 0."
+        ],
+        "assistant_json": {
+            "CL": 1.516,
+            "CD": 0.242,
+            "Cmalpha": 4.68,
+            "PitchUnstable": True,
+        },
+    }
+
+    class _Service:
+        def provider_context_summary(self):
+            return {
+                "document": {"name": "Voider", "uid": "doc-1", "object_count": 2},
+                "selection": {"selection_count": 0, "selection": []},
+                "view_screenshot": {"captured": False},
+                "reference_images": {"count": 0, "images": []},
+                "aero": aero,
+                "cad_state": {"must": "not leak"},
+            }
+
+        def active_workbench_name(self):
+            return "PartWorkbench"
+
+        def modeling_engine(self):
+            return "vibescript"
+
+        def provider_debug_config(self):
+            return {"enabled": False}
+
+        def provider_name(self):
+            return "grok"
+
+    monkeypatch.setattr(session, "provider_tool_schemas", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        session,
+        "_capture_editable_sources_for_workbench",
+        lambda *_args, **_kwargs: {"sources": []},
+    )
+
+    context = session._capture_context_for_provider(_Service())
+    assert context["aero"]["CL"] == 1.516
+    assert context["aero"]["PitchUnstable"] is True
+    assert "cad_state" not in context
+
+    visible = provider._model_visible_context(context)
+    assert visible["aero"]["CL"] == 1.516
+    assert visible["aero"]["CD"] == 0.242
+    assert visible["aero"]["Cmalpha"] == 4.68
+    assert visible["aero"]["PitchUnstable"] is True
+
+    state = session._provider_state_payload(context)
+    assert state["aero"]["corrections"][0].startswith("PitchUnstable")
+    assert state["aero"]["assistant_json"]["CL"] == 1.516

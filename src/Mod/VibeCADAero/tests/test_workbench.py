@@ -58,6 +58,9 @@ def test_commands_cover_analyze_section_vlm_jsbsim_and_report():
         "VibeCADAero_Report",
     ):
         assert command in source
+    assert "def format_analyze_report" in source
+    assert "_append_in_app_conversation" in source
+    assert '{"source": "aero"}' in source
 
 
 def test_public_helper_is_import_path_for_agent_control():

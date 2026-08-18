@@ -45,9 +45,12 @@ The same commands remain on the Aero workbench toolbar if you switch
 workbenches from the combo. If no document is open, Analyze creates one
 named `Aero`.
 
-The assistant sees the same numbers at turn start as an `aero` object in
-`provider_context_summary` (coefficients when `AeroReport` exists,
-otherwise the intended `AeroConfig` geometry).
+The signed-in in-app Grok turn sees the same numbers as an `aero` object
+in provider context (coefficients when `AeroReport` exists, otherwise
+the intended `AeroConfig` geometry). Analyze also appends the
+human-readable report to the in-app chat as a VibeCAD turn
+(`metadata.source=aero`) and queues it as steering so an in-flight Grok
+run can use CL/CD/Cmα/PitchUnstable and the change list without Grok Bot.
 
 ## Geometry
 

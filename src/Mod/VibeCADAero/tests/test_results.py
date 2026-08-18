@@ -185,3 +185,21 @@ def test_report_stores_plant_geometry_and_boot_error():
     assert obj.xyz_ref_y == 0.0
     assert obj.xyz_ref_z == 0.08
     assert obj.JSBSimBootError == "jsbsim.FGFDMExec.run_ic returned false."
+
+
+def test_report_writes_corrections_and_assistant_json():
+    doc = _Doc()
+    obj = results.write_report(doc, _payload())
+    assert hasattr(obj, "Corrections")
+    assert "Grew the horizontal tail span" in obj.Corrections
+    assert obj.RepairPasses == 1
+    assistant = doc.getObject("AeroAssistantJson")
+    assert assistant is not None
+    text = assistant.Text
+    assert '"CL": 0.81' in text or '"CL":0.81' in text
+    assert "PitchUnstable" in text
+    assert "corrections" in text
+    raw = getattr(doc, "AeroAssistantJson", "")
+    assert "0.81" in str(raw)
+    assert "PitchUnstable" in str(raw)
+    assert "Grew the horizontal tail span" in str(raw)
