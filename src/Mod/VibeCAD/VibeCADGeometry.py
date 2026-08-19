@@ -141,7 +141,108 @@ def execute_job(
     cancellation_check: Callable[[], bool] | None = None,
     deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
 ) -> dict[str, Any]:
-    executable = worker_executable()
+    try:
+        executable = worker_executable()
+    except RuntimeError as exc:
+        if "geometry worker is missing" not in str(exc):
+            raise
+        return _execute_job_in_process(
+            request_path,
+            result_path,
+            cancellation_check=cancellation_check,
+            deadline_seconds=deadline_seconds,
+        )
+    try:
+        return _execute_job_isolated(
+            executable,
+            request_path,
+            result_path,
+            cancellation_check=cancellation_check,
+            deadline_seconds=deadline_seconds,
+        )
+    except FileNotFoundError:
+        return _execute_job_in_process(
+            request_path,
+            result_path,
+            cancellation_check=cancellation_check,
+            deadline_seconds=deadline_seconds,
+        )
+
+
+def _execute_job_in_process(
+    request_path: str | Path,
+    result_path: str | Path,
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+) -> dict[str, Any]:
+    from VibeCADGeometryFallback import execute_request
+
+    started = time.monotonic()
+    if cancellation_check is not None and cancellation_check():
+        return {
+            "ok": False,
+            "failure_code": "RUN_CANCELLED",
+            "failure_stage": "in_process_fallback",
+            "error": "The in-process geometry operation was stopped by the user.",
+            "execution_mode": "in_process_part",
+            "elapsed_seconds": round(time.monotonic() - started, 6),
+        }
+    try:
+        request = json.loads(Path(request_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {
+            "ok": False,
+            "failure_code": "GEOMETRY_WORKER_REQUEST_INVALID",
+            "failure_stage": "in_process_fallback",
+            "error": f"Could not read the geometry request: {exc}",
+            "execution_mode": "in_process_part",
+            "elapsed_seconds": round(time.monotonic() - started, 6),
+        }
+    if not isinstance(request, dict):
+        return {
+            "ok": False,
+            "failure_code": "GEOMETRY_WORKER_REQUEST_INVALID",
+            "failure_stage": "in_process_fallback",
+            "error": "The geometry request is not an object.",
+            "execution_mode": "in_process_part",
+            "elapsed_seconds": round(time.monotonic() - started, 6),
+        }
+    result = execute_request(request)
+    elapsed = round(time.monotonic() - started, 6)
+    result.setdefault("elapsed_seconds", elapsed)
+    if (
+        elapsed > max(0.1, float(deadline_seconds))
+        and result.get("ok") is True
+    ):
+        return {
+            "ok": False,
+            "failure_code": "GEOMETRY_DEADLINE_EXCEEDED",
+            "failure_stage": "in_process_fallback",
+            "error": (
+                f"The in-process geometry operation exceeded {deadline_seconds:.1f} seconds."
+            ),
+            "execution_mode": "in_process_part",
+            "elapsed_seconds": elapsed,
+        }
+    try:
+        Path(result_path).write_text(
+            json.dumps(result, ensure_ascii=True, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    return result
+
+
+def _execute_job_isolated(
+    executable: Path,
+    request_path: str | Path,
+    result_path: str | Path,
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+) -> dict[str, Any]:
     creation_flags = (
         int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if sys.platform == "win32"
@@ -241,6 +342,7 @@ def execute_job(
             "elapsed_seconds": elapsed,
         }
     result.setdefault("elapsed_seconds", elapsed)
+    result.setdefault("execution_mode", "isolated_geometry_worker")
     if process.returncode != 0 and result.get("ok"):
         result.update(
             {
