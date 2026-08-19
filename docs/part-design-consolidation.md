@@ -100,19 +100,20 @@ Ownership and dependency are separate concepts in the model tree:
 ## AI-native contract
 
 The active Native pack advertises one semantic operation per intent.
-`model.primitive` creates solid Body primitives. `model.feature` creates
-Extrude, Revolve, Loft, Sweep, and Helix features from Sketch profiles.
-`model.dressup` owns Fillet, Chamfer, Draft, and Thickness, while
-`model.transform` owns Mirror, Linear Pattern, Circular Pattern, and Scale.
-`model.boolean` owns Body composition, split, and section operations. Exact
-inspection and the non-overlapping construction, surface, repair, fastener,
-history, and structure tools complete the surface.
+`model.primitive` creates solid Body primitives. `model.extrude`,
+`model.revolve`, `model.loft`, `model.sweep`, and `model.helix` expose focused
+Sketch-profile contracts backed by the shared feature runtime. `model.dressup`
+owns Fillet, Chamfer, Draft, and Thickness, while `model.transform` owns Mirror,
+Linear Pattern, Circular Pattern, and Scale. `model.boolean` owns Body
+composition, split, and section operations. Exact inspection and the
+non-overlapping construction, surface, repair, fastener, history, and structure
+tools complete the surface.
 
-The provider does not advertise Pad, Pocket, Groove, standalone Part feature
-duplicates, or per-feature aliases. Each `model.feature` request contains an
-exact nested feature branch. Omitting `combine` creates a new Body; `join`,
-`cut`, and `intersect` combine the result with named Bodies. Global and
-subelement axes use the same typed representation throughout Modeling.
+The provider does not advertise Pad, Pocket, Groove, or standalone Part feature
+duplicates. Each focused profile request exposes only its operation-specific
+fields. Omitting `combine` creates a new Body; `join`, `cut`, and `intersect`
+combine the result with named Bodies. Global and subelement axes use the same
+typed representation throughout Modeling.
 
 Dispatch validates the frozen provider-visible schema and never silently drops
 an option. Runtime diagnostics identify the exact invalid field or target while

@@ -36,8 +36,8 @@ PartDesign is the only creation path for ordinary solid-feature modeling.
 
 - `model.primitive` creates Box, Cylinder, Sphere, Cone, Ellipsoid, Torus, Prism,
   Wedge, or Tube Bodies.
-- `model.feature` creates Extrude, Revolve, Loft, Sweep, or Helix features from
-  Sketch profiles.
+- `model.extrude`, `model.revolve`, `model.loft`, `model.sweep`, and
+  `model.helix` create focused Body features from Sketch profiles.
 - `model.hole` creates holes.
 - `model.dressup` creates Fillet, Chamfer, Draft, or Thickness features.
 - `model.transform` creates Mirror, Linear Pattern, Circular Pattern, or Scale
@@ -46,28 +46,25 @@ PartDesign is the only creation path for ordinary solid-feature modeling.
 - `model.history` owns feature deletion, suppression, and Body Tip changes;
   `model.recompute` recomputes an exact Body.
 
-`model.feature` has one provider-visible request shape:
+Each profile operation has one provider-visible request shape. For example,
+`model.revolve` accepts:
 
 ```json
 {
   "label": "Flanged Shaft",
   "profile": {"object_name": "Sketch"},
-  "feature": {
-    "kind": "revolve",
-    "axis": {"kind": "global_axis", "axis": "Z"},
-    "angle_degrees": 360
-  }
+  "profile_scope": "entire_sketch",
+  "axis": {"kind": "global_axis", "axis": "Z"},
+  "extent": {"kind": "angle", "angle_degrees": 360}
 }
 ```
 
-The exact `feature.kind` branch exposes only the fields meaningful to that
-feature. Omitting `combine` creates a new Body. Supplying `combine` performs
-`join`, `cut`, or `intersect` against named Bodies. Axes use the same two forms
-throughout Modeling: a global X/Y/Z axis or an exact object subelement.
-
-There are no `model.extrude`, `model.revolve`, `model.box`, or `model.cylinder`
-aliases and no duplicate standalone Part extrusion, revolution, loft, sweep, or
-mirror tools.
+Each focused tool exposes only the fields meaningful to that operation and
+adapts into the shared feature runtime. Omitting `combine` creates a new Body.
+Supplying `combine` performs `join`, `cut`, or `intersect` against named Bodies.
+Axes use the same two forms throughout Modeling: a global X/Y/Z axis or an exact
+object subelement. There are no `model.box` or `model.cylinder` aliases and no
+duplicate standalone Part extrusion, revolution, loft, sweep, or mirror tools.
 
 ### Retained Part value
 
