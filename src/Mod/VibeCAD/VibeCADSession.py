@@ -1551,11 +1551,16 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
         "aero",
         "intent",
     )
-    result = {
-        key: context[key]
-        for key in keys
-        if key in context and context[key] not in (None, "", [], {})
-    }
+    result = {}
+    for key in keys:
+        if key not in context:
+            continue
+        value = context[key]
+        if key == "intent":
+            result[key] = value if isinstance(value, list) else []
+            continue
+        if value not in (None, "", [], {}):
+            result[key] = value
     editable_sources = result.get("editable_sources")
     if isinstance(editable_sources, Mapping):
         result["editable_sources"] = _provider_editable_sources_payload(

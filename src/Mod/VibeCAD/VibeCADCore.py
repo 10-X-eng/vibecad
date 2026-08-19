@@ -112,9 +112,11 @@ def provider_intent_disposition_list(memory: Any) -> list[dict[str, str]]:
             other_active.append(payload)
         else:
             rest.append(payload)
-    return (user_explicit_active + other_active + rest)[
-        :MAX_PROVIDER_INTENT_DISPOSITIONS
-    ]
+    actives = user_explicit_active + other_active
+    if len(actives) >= MAX_PROVIDER_INTENT_DISPOSITIONS:
+        return actives
+    room = MAX_PROVIDER_INTENT_DISPOSITIONS - len(actives)
+    return actives + rest[:room]
 
 
 def _clip_provider_receipt_text(value: Any) -> str:
