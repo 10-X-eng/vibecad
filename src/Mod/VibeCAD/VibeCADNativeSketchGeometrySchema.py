@@ -23,6 +23,13 @@ from VibeCADNativeSketchInternalAlignmentSchema import (
 from VibeCADNativeSketchTransformSchema import sketch_transform_variants
 
 
+SIGNED_ANGLE_DEGREES_SCHEMA = {
+    "type": "number",
+    "minimum": -360.0,
+    "maximum": 360.0,
+}
+
+
 def _point_parameters() -> dict:
     return _geometry_parameters(
         {
@@ -149,6 +156,13 @@ def _polyline_parameters() -> dict:
                 "items": _point_2d_schema(),
                 "minItems": 2,
                 "maxItems": 65,
+                "examples": [
+                    [
+                        {"x": 0.0, "y": 0.0},
+                        {"x": 10.0, "y": 0.0},
+                        {"x": 10.0, "y": 10.0},
+                    ]
+                ],
             },
             "closed": {"type": "boolean"},
         },
@@ -161,15 +175,9 @@ def _arc_parameters() -> dict:
         {
             "center_mm": _point_2d_schema(),
             "radius_mm": POSITIVE_MM_SCHEMA,
-            "start_angle_degrees": {
-                "type": "number",
-                "minimum": 0.0,
-                "maximum": 360.0,
-            },
+            "start_angle_degrees": SIGNED_ANGLE_DEGREES_SCHEMA,
             "end_angle_degrees": {
-                "type": "number",
-                "minimum": 0.0,
-                "maximum": 360.0,
+                **SIGNED_ANGLE_DEGREES_SCHEMA,
                 "description": "Distinct counterclockwise arc end angle.",
             },
         },
@@ -194,11 +202,7 @@ def _three_point_arc_parameters() -> dict:
 
 
 def _elliptical_arc_parameters() -> dict:
-    angle = {
-        "type": "number",
-        "minimum": 0.0,
-        "maximum": 360.0,
-    }
+    angle = SIGNED_ANGLE_DEGREES_SCHEMA
     sweep = {
         "type": "number",
         "exclusiveMinimum": 0.0,
@@ -231,11 +235,7 @@ def _hyperbolic_arc_parameters() -> dict:
             "center_mm": _point_2d_schema(),
             "major_radius_mm": POSITIVE_MM_SCHEMA,
             "minor_radius_mm": POSITIVE_MM_SCHEMA,
-            "rotation_degrees": {
-                "type": "number",
-                "minimum": 0.0,
-                "maximum": 360.0,
-            },
+            "rotation_degrees": SIGNED_ANGLE_DEGREES_SCHEMA,
             "start_parameter": parameter,
             "end_parameter": parameter,
         },
@@ -255,11 +255,7 @@ def _parabolic_arc_parameters() -> dict:
         {
             "vertex_mm": _point_2d_schema(),
             "focal_length_mm": POSITIVE_MM_SCHEMA,
-            "rotation_degrees": {
-                "type": "number",
-                "minimum": 0.0,
-                "maximum": 360.0,
-            },
+            "rotation_degrees": SIGNED_ANGLE_DEGREES_SCHEMA,
             "start_parameter_mm": SIGNED_MM_SCHEMA,
             "end_parameter_mm": SIGNED_MM_SCHEMA,
         },
@@ -301,9 +297,7 @@ def _ellipse_parameters() -> dict:
             "major_radius_mm": POSITIVE_MM_SCHEMA,
             "minor_radius_mm": POSITIVE_MM_SCHEMA,
             "rotation_degrees": {
-                "type": "number",
-                "minimum": 0.0,
-                "maximum": 360.0,
+                **SIGNED_ANGLE_DEGREES_SCHEMA,
                 "default": 0.0,
             },
         },
@@ -408,11 +402,7 @@ def _arc_slot_parameters() -> dict:
         {
             "center_mm": _point_2d_schema(),
             "centerline_radius_mm": POSITIVE_MM_SCHEMA,
-            "start_angle_degrees": {
-                "type": "number",
-                "minimum": 0.0,
-                "maximum": 360.0,
-            },
+            "start_angle_degrees": SIGNED_ANGLE_DEGREES_SCHEMA,
             "sweep_angle_degrees": signed_sweep,
             "slot_radius_mm": POSITIVE_MM_SCHEMA,
         },

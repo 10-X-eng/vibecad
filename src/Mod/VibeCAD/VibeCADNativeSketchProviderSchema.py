@@ -403,12 +403,14 @@ def _definition(
     variants: Iterable[NativeCapabilityVariant],
     *,
     classification: str = "mutation",
+    preserve_operation_branches: bool = False,
 ) -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=name,
         description=description,
         primary_classification=classification,
         variants=_harmonize_variants(variants),
+        preserve_operation_branches=preserve_operation_branches,
     )
 
 
@@ -475,6 +477,7 @@ def sketch_provider_capability_definitions() -> tuple[NativeCapabilityDefinition
             "sketch.draw_line",
             "Draw a Line or Polyline.",
             (geometry[name] for name in LINE_DRAW_OPERATIONS),
+            preserve_operation_branches=True,
         ),
         _definition(
             "sketch.draw_arc",

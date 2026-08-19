@@ -374,6 +374,78 @@ def test_schema_failure_example_resolves_nested_union_to_one_valid_payload() -> 
     }
 
 
+def test_schema_failure_reports_selected_nested_union_leaf() -> None:
+    support = {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "const": "base_plane"},
+                    "plane": {"type": "string", "enum": ["XY", "XZ", "YZ"]},
+                },
+                "required": ["kind", "plane"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "const": "face"},
+                    "object_name": {"type": "string", "maxLength": 128},
+                },
+                "required": ["kind", "object_name"],
+                "additionalProperties": False,
+            },
+        ]
+    }
+    definition = NativeCapabilityDefinition(
+        name="test.execute",
+        description="Read one support.",
+        primary_classification="read",
+        variants=(
+            NativeCapabilityVariant(
+                operation="read",
+                description="Read one support.",
+                action_ids=frozenset({"VibeCAD_Test"}),
+                surface_ids=frozenset({"model"}),
+                exact_target_type=None,
+                transaction_behavior="none",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {"support": support},
+                    "required": ["support"],
+                    "additionalProperties": False,
+                },
+            ),
+        ),
+    )
+    dispatcher, _state, _debug = _dispatcher(
+        lambda _call: pytest.fail("handler must not execute"),
+        definition=definition,
+    )
+
+    result = dispatcher.call(
+        "test.execute",
+        json.dumps(
+            {
+                "operation": "read",
+                "support": {
+                    "kind": "base_plane",
+                    "plane": "XY",
+                    "offset_mm": 2.0,
+                },
+            }
+        ),
+        "provider-call-1",
+    )
+
+    assert result["error_code"] == "NATIVE_ARGUMENTS_INVALID"
+    assert result["argument_error"]["path"] == ["support"]
+    assert result["argument_error"]["rule"] == "additionalProperties"
+    assert result["argument_error"]["expected"] is False
+    assert len(json.dumps(result["argument_error"])) < 1000
+
+
 def test_compact_multi_variant_schema_is_revalidated_against_exact_branch() -> None:
     def parameters(unit: str) -> dict:
         return {

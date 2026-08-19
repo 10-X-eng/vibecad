@@ -126,7 +126,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
                 "PartDesign_NewComponent",
                 _parameters(
                     {"label": _LABEL, "parent_component": _nullable_object_ref()},
-                    ("label", "parent_component"),
+                    ("label",),
                 ),
                 exact_target_type="PartDesign::Component?",
                 transaction_behavior="document",
@@ -137,7 +137,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
                 "PartDesign_NewBody",
                 _parameters(
                     {"label": _LABEL, "component": _nullable_object_ref()},
-                    ("label", "component"),
+                    ("label",),
                 ),
                 exact_target_type="PartDesign::Component?",
                 transaction_behavior="document",
@@ -186,7 +186,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
                         "source": _object_ref(),
                         "destination_component": _nullable_object_ref(),
                     },
-                    ("label", "source", "destination_component"),
+                    ("label", "source"),
                 ),
                 exact_target_type="ReusableMultiSolidDefinitionAndComponent?",
                 transaction_behavior="document",
@@ -294,12 +294,12 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
 def model_revolution_sketch_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="model.revolution_sketch",
-        description="Create an axis-aligned Sketch.",
+        description="Create an axisymmetric profile Sketch.",
         primary_classification="mutation",
         variants=(
             _variant(
                 "create",
-                "Create the Sketch on a deterministic base plane containing the axis.",
+                "Align a Sketch axis to X, Y, or Z and return its axial and radial coordinates.",
                 "Sketcher_NewSketch",
                 _parameters(
                     {

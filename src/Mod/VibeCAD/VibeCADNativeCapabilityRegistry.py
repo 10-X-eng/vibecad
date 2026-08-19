@@ -35,6 +35,7 @@ MAX_NATIVE_TOOLS_PER_SURFACE = 28
 MAX_NATIVE_TOOLS_BY_SURFACE = {
     "analyze": 32,
     "drawing": 41,
+    "model": 32,
     "sketch.edit": 39,
 }
 MAX_NATIVE_SCHEMAS_JSON_BYTES = 64 * 1024
@@ -223,28 +224,29 @@ def _serialized_schema(value: Mapping[str, Any]) -> str:
 
 
 def provider_visible_native_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
-    """Hide a redundant sole operation while retaining the frozen dispatch schema."""
+    """Publish one compact provider schema while retaining exact dispatch validation."""
 
     projected = json.loads(_serialized_schema(schema))
     parameters = projected.get("parameters")
     branches = parameters.get("oneOf") if isinstance(parameters, Mapping) else None
-    if not (
+    if (
         isinstance(branches, list)
         and len(branches) == 1
         and isinstance(branches[0], dict)
     ):
-        return projected
-    branch = branches[0]
-    properties = branch.get("properties")
-    required = branch.get("required", [])
-    operation = properties.get("operation") if isinstance(properties, dict) else None
-    if (
-        isinstance(operation, Mapping)
-        and "const" in operation
-        and "operation" not in required
-    ):
-        properties.pop("operation", None)
-    return projected
+        branch = branches[0]
+        properties = branch.get("properties")
+        required = branch.get("required", [])
+        operation = (
+            properties.get("operation") if isinstance(properties, dict) else None
+        )
+        if (
+            isinstance(operation, Mapping)
+            and "const" in operation
+            and "operation" not in required
+        ):
+            properties.pop("operation", None)
+    return _compact_nested_provider_unions(projected)
 
 
 def _unique_schema_options(
@@ -410,8 +412,18 @@ def _compact_schema_options(
             {"type": "string", "enum": string_values},
             fallback,
         )
+    labels = [_kind_labels(option) for option in unique]
+    kinded = (
+        _compact_closed_object_options(
+            tuple("/".join(label) for label in labels if label is not None),
+            tuple(unique),
+        )
+        if all(labels)
+        else None
+    )
     candidate = (
-        _numeric_union(unique)
+        kinded
+        or _numeric_union(unique)
         or _unlabelled_closed_object_union(unique)
         or _array_union(unique)
     )

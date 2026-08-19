@@ -694,7 +694,7 @@ def test_extrude_has_one_exact_provider_capability() -> None:
 
     plan = classify_native_surface(RibbonSurface.from_manifest(manifest, revision=1))[0]
 
-    assert plan.capability_family == "model.feature"
+    assert plan.capability_family == "model.extrude"
     assert plan.operation_variant == "create"
 
 
@@ -719,7 +719,7 @@ def test_revolve_has_one_exact_provider_capability() -> None:
 
     plan = classify_native_surface(RibbonSurface.from_manifest(manifest, revision=1))[0]
 
-    assert plan.capability_family == "model.feature"
+    assert plan.capability_family == "model.revolve"
     assert plan.operation_variant == "create"
 
 

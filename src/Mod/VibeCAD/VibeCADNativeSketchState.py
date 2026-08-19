@@ -73,6 +73,17 @@ def _text(value: Any, limit: int = 160) -> str:
     return str(value or "").strip()[:limit]
 
 
+def _profile_intent(sketch: Any) -> dict[str, str] | None:
+    raw = _read(sketch, "VibeCADProfileIntent", {})
+    if not isinstance(raw, Mapping):
+        return None
+    keys = ("kind", "global_axis", "sketch_axis", "axial", "radius", "axis")
+    result = {key: _text(raw.get(key), 32) for key in keys}
+    if result["kind"] != "axisymmetric" or not all(result.values()):
+        return None
+    return result
+
+
 def _vector(value: Any) -> list[float] | None:
     if value is None:
         return None
@@ -913,6 +924,9 @@ def serialize_sketch_state(sketch: Any) -> dict[str, Any]:
         "attachment": _attachment(sketch),
         **serialize_sketch_diagnostics(sketch),
     }
+    profile_intent = _profile_intent(sketch)
+    if profile_intent is not None:
+        result["profile_intent"] = profile_intent
     _enforce_state_bound(result)
     return result
 

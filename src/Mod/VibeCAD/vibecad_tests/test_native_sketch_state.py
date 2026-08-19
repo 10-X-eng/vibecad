@@ -325,6 +325,23 @@ def test_profile_plane_reports_effective_global_sketch_axes() -> None:
     }
 
 
+def test_sketch_state_preserves_axisymmetric_profile_intent() -> None:
+    document = _Document()
+    sketch, _support = _sketch(document)
+    sketch.VibeCADProfileIntent = {
+        "kind": "axisymmetric",
+        "global_axis": "Z",
+        "sketch_axis": "V_Axis",
+        "axial": "y_mm",
+        "radius": "x_mm >= 0",
+        "axis": "x_mm = 0",
+    }
+
+    result = serialize_sketch_state(sketch)
+
+    assert result["profile_intent"] == sketch.VibeCADProfileIntent
+
+
 def test_large_sketch_state_truncates_explicitly_below_snapshot_limit(
     monkeypatch,
 ) -> None:

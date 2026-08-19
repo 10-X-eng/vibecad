@@ -15,8 +15,17 @@ from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeModelFeatureRuntime import NativeModelFeatureRuntime
 
 
+_FOCUSED_PROFILE_FEATURE_KINDS = {
+    "model.extrude": "extrude",
+    "model.revolve": "revolve",
+    "model.loft": "loft",
+    "model.sweep": "sweep",
+    "model.helix": "helix",
+}
+
 MODEL_FEATURE_CAPABILITY_NAMES = (
     "model.feature",
+    *_FOCUSED_PROFILE_FEATURE_KINDS,
     "model.primitive",
 )
 
@@ -175,13 +184,11 @@ def _aligned_sketch_axis(
     )
 
 
-def _feature(call: Any) -> Mapping[str, Any]:
-    runtime = getattr(call, "runtime", None)
-    arguments = getattr(call, "arguments", None)
-    if not isinstance(runtime, NativeModelFeatureRuntime):
-        raise TypeError("A Model feature call requires its exact runtime.")
-    if not isinstance(arguments, Mapping):
-        raise TypeError("A Model feature call requires argument data.")
+def _mutate_profile_feature(
+    runtime: NativeModelFeatureRuntime,
+    arguments: Mapping[str, Any],
+    ticket: Any,
+) -> Mapping[str, Any]:
     feature = dict(arguments["feature"])
     operation = str(feature.pop("kind"))
     profile = dict(arguments["profile"])
@@ -256,8 +263,142 @@ def _feature(call: Any) -> Mapping[str, Any]:
             "result": result,
             "definition": {"kind": operation, **definition},
         },
-        ticket=getattr(call, "ticket", None),
+        ticket=ticket,
     )
+
+
+def _feature(call: Any) -> Mapping[str, Any]:
+    runtime = getattr(call, "runtime", None)
+    arguments = getattr(call, "arguments", None)
+    if not isinstance(runtime, NativeModelFeatureRuntime):
+        raise TypeError("A Model feature call requires its exact runtime.")
+    if not isinstance(arguments, Mapping):
+        raise TypeError("A Model feature call requires argument data.")
+    return _mutate_profile_feature(
+        runtime,
+        arguments,
+        getattr(call, "ticket", None),
+    )
+
+
+def _focused_extrude_side(values: Mapping[str, Any]) -> dict[str, Any]:
+    side = dict(values)
+    if side["kind"] == "length":
+        side["taper_degrees"] = float(side.get("taper_degrees", 0.0))
+    else:
+        side["offset_mm"] = float(side.get("offset_mm", 0.0))
+    return side
+
+
+def _focused_extrude_definition(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    direction_axis = arguments.get("direction_axis")
+    direction_vector = arguments.get("direction_vector")
+    if direction_axis is not None and direction_vector is not None:
+        raise NativeModelError(
+            "An Extrude direction uses either an axis or a vector, not both."
+        )
+    align = bool(arguments.get("align_with_sketch_normal", True))
+    if direction_axis is not None:
+        direction = {
+            "kind": "reference_axis",
+            "target": direction_axis,
+            "along_sketch_normal": align,
+        }
+    elif direction_vector is not None:
+        direction = {
+            "kind": "custom_vector",
+            "vector": direction_vector,
+            "along_sketch_normal": align,
+        }
+    else:
+        direction = {"kind": "sketch_normal"}
+
+    requested_extent = dict(arguments["extent"])
+    kind = str(requested_extent.pop("kind"))
+    if kind == "two_sides":
+        extent = {
+            "kind": "two_sides",
+            "sides": [
+                _focused_extrude_side(requested_extent.pop("side1")),
+                _focused_extrude_side(requested_extent.pop("side2")),
+            ],
+            "reversed": bool(requested_extent.pop("reversed", False)),
+        }
+    else:
+        direction_name = str(requested_extent.pop("direction", "forward"))
+        extent = {
+            "kind": "symmetric" if direction_name == "symmetric" else "one_side",
+            "sides": [
+                _focused_extrude_side({"kind": kind, **requested_extent})
+            ],
+            "reversed": direction_name == "reverse",
+        }
+    return {"kind": "extrude", "direction": direction, "extent": extent}
+
+
+def _focused_feature(kind: str):
+    def execute(call: Any) -> Mapping[str, Any]:
+        runtime = getattr(call, "runtime", None)
+        arguments = getattr(call, "arguments", None)
+        if not isinstance(runtime, NativeModelFeatureRuntime):
+            raise TypeError("A Model feature call requires its exact runtime.")
+        if not isinstance(arguments, Mapping):
+            raise TypeError("A Model feature call requires argument data.")
+        profile = dict(arguments["profile"])
+        profile_scope = str(arguments["profile_scope"])
+        internal_faces = arguments.get("internal_faces")
+        if profile_scope == "entire_sketch":
+            if internal_faces is not None:
+                raise NativeModelError(
+                    "An entire-sketch profile does not take internal faces."
+                )
+        elif profile_scope == "selected_internal_faces":
+            if not isinstance(internal_faces, list) or not internal_faces:
+                raise NativeModelError(
+                    "A selected-internal-faces profile needs internal_faces."
+                )
+            profile["regions"] = internal_faces
+        else:
+            raise NativeModelError("That profile scope is unavailable.")
+        common = {
+            name: arguments[name]
+            for name in (
+                "operation",
+                "label",
+                "combine",
+                "destination_component",
+            )
+            if name in arguments
+        }
+        common["profile"] = profile
+        focused_fields = {
+            "operation",
+            "label",
+            "profile",
+            "profile_scope",
+            "internal_faces",
+            "combine",
+            "destination_component",
+        }
+        feature = (
+            _focused_extrude_definition(arguments)
+            if kind == "extrude"
+            else {
+                "kind": kind,
+                **{
+                    name: value
+                    for name, value in arguments.items()
+                    if name not in focused_fields
+                },
+            }
+        )
+        return _mutate_profile_feature(
+            runtime,
+            {**common, "feature": feature},
+            getattr(call, "ticket", None),
+        )
+
+    return execute
 
 
 def _primitive(call: Any) -> Mapping[str, Any]:
@@ -329,6 +470,10 @@ def register_model_feature_capability_implementation(
     registry.register_implementation(
         NativeCapabilityImplementation("model.feature", _feature)
     )
+    for capability, kind in _FOCUSED_PROFILE_FEATURE_KINDS.items():
+        registry.register_implementation(
+            NativeCapabilityImplementation(capability, _focused_feature(kind))
+        )
     registry.register_implementation(
         NativeCapabilityImplementation("model.primitive", _primitive)
     )
@@ -341,5 +486,6 @@ def model_feature_runtime_bindings(
         raise TypeError("runtime must be a NativeModelFeatureRuntime")
     return {
         "model.feature": runtime,
+        **{name: runtime for name in _FOCUSED_PROFILE_FEATURE_KINDS},
         "model.primitive": runtime,
     }

@@ -140,16 +140,23 @@ def test_revolution_sketch_is_a_focused_axis_aware_tool() -> None:
     definition = model_revolution_sketch_capability_definition()
 
     assert definition.name == "model.revolution_sketch"
+    assert definition.description == "Create an axisymmetric profile Sketch."
     assert [variant.operation for variant in definition.variants] == ["create"]
+    assert definition.variants[0].description == (
+        "Align a Sketch axis to X, Y, or Z and return its axial and radial coordinates."
+    )
     branch = definition.provider_schema(("create",))["parameters"]["oneOf"][0]
     assert set(branch["required"]) == {"label", "axis"}
-    assert branch["properties"]["axis"]["enum"] == ["X", "Y", "Z"]
+    axis = branch["properties"]["axis"]
+    assert set(axis["required"]) == {"kind", "axis"}
+    assert axis["properties"]["kind"]["const"] == "global_axis"
+    assert axis["properties"]["axis"]["enum"] == ["X", "Y", "Z"]
     assert not list(
         Draft202012Validator(branch).iter_errors(
             {
                 "operation": "create",
                 "label": "Turned Profile",
-                "axis": "Z",
+                "axis": {"kind": "global_axis", "axis": "Z"},
             }
         )
     )
@@ -176,7 +183,6 @@ def test_separate_contract_has_only_exact_human_controls() -> None:
     assert set(branch["required"]) == {
         "label",
         "source",
-        "destination_component",
     }
     assert branch["additionalProperties"] is False
     assert branch["properties"]["source"]["additionalProperties"] is False
@@ -186,3 +192,15 @@ def test_separate_contract_has_only_exact_human_controls() -> None:
     serialized = json.dumps(branch, sort_keys=True)
     for forbidden in ("refine", "subelement", "selection", "runCommand"):
         assert forbidden not in serialized
+
+
+def test_root_structure_ownership_is_naturally_optional() -> None:
+    component = _structure_branch("new_component")
+    body = _structure_branch("new_body")
+
+    assert set(component["required"]) == {"label"}
+    assert set(body["required"]) == {"label"}
+    assert component["properties"]["parent_component"]["oneOf"][1] == {
+        "type": "null"
+    }
+    assert body["properties"]["component"]["oneOf"][1] == {"type": "null"}

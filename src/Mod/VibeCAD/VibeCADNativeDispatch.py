@@ -19,6 +19,7 @@ from VibeCADNativeCapabilityRegistry import (
 from VibeCADNativeState import NativeCallTicket, NativeDocumentStateStore
 from VibeCADNativeTargets import document_uid
 from VibeCADNativeTurn import NativeTurnSnapshot
+from VibeCADTools import _most_specific_schema_error
 
 
 MAX_NATIVE_CALLS_PER_TURN = 256
@@ -123,7 +124,7 @@ def _schema_expectation(error: Any) -> dict[str, Any]:
 
 
 def _schema_example(schema: Mapping[str, Any], *, depth: int = 0) -> Any:
-    if depth > 6:
+    if depth > 16:
         return None
     examples = schema.get("examples")
     if isinstance(examples, list) and examples:
@@ -540,6 +541,7 @@ class NativeTurnDispatcher:
         exact_validator = Draft202012Validator(exact_schema)
         exact_error = next(iter(exact_validator.iter_errors(normalized)), None)
         if exact_error is not None:
+            exact_error = _most_specific_schema_error(exact_error)
             raise NativeDispatchError(
                 "NATIVE_ARGUMENTS_INVALID",
                 _schema_error(exact_error),

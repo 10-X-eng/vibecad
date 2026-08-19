@@ -100,8 +100,13 @@ def test_part_primitive_contract_matches_every_live_creation_choice() -> None:
     definition, _schema, branch, primitive = _schema_parts()
 
     assert definition.name == "model.part"
-    assert definition.description == "Create Part geometry."
+    assert definition.description == (
+        "Create standalone curves, surfaces, compounds, and repairs."
+    )
     assert branch["properties"]["operation"]["const"] == "primitive"
+    assert definition.variants[0].description == (
+        "Create a plane, curve, point, or regular polygon."
+    )
     assert tuple(primitive["properties"]["kind"]["enum"]) == EXPECTED_KINDS
     variant = definition.variants[0]
     assert variant.action_ids == frozenset({"Part_Primitives"})

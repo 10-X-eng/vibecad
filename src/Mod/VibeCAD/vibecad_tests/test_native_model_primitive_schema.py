@@ -26,6 +26,10 @@ def test_model_primitive_owns_every_body_primitive() -> None:
     variants = {variant.operation: variant for variant in definition.variants}
 
     assert definition.name == "model.primitive"
+    assert definition.description == (
+        "Create one box, cylinder, sphere, cone, ellipsoid, torus, prism, "
+        "wedge, or tube Body."
+    )
     assert tuple(variants) == EXPECTED_PRIMITIVES
     assert {
         operation: variant.action_ids

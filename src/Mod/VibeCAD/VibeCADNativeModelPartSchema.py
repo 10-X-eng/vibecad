@@ -415,12 +415,12 @@ def model_part_capability_definition() -> NativeCapabilityDefinition:
     }
     return NativeCapabilityDefinition(
         name="model.part",
-        description="Create Part geometry.",
+        description="Create standalone curves, surfaces, compounds, and repairs.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="primitive",
-                description="Create a Part primitive.",
+                description="Create a plane, curve, point, or regular polygon.",
                 action_ids=frozenset({"Part_Primitives"}),
                 surface_ids=_MODEL_SURFACE,
                 exact_target_type="NewPartPrimitive",

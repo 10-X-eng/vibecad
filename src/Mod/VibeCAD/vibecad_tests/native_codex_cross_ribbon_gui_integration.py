@@ -26,7 +26,7 @@ from VibeCADSession import run_prompt
 
 
 _SURFACES = (
-    ("model", "PartDesignWorkbench", "model.feature"),
+    ("model", "PartDesignWorkbench", "model.extrude"),
     ("assemble", "AssemblyWorkbench", "assembly.structure"),
     ("mesh", "MeshWorkbench", "mesh.modify"),
     ("analyze", "FemWorkbench", "analyze.model"),

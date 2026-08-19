@@ -162,21 +162,11 @@ def _run() -> None:
             _process_events()
             assert all(document.getObject(name) is not None for name in names)
 
-        before_invalid = tuple(obj.Name for obj in document.Objects)
-        invalid = native_call(
-            "model.structure",
-            {"operation": "new_body", "label": "Missing explicit parent"},
-            succeeds=False,
-        )
-        assert invalid["error_code"] == "NATIVE_ARGUMENTS_INVALID"
-        assert tuple(obj.Name for obj in document.Objects) == before_invalid
-
         component_result = native_call(
             "model.structure",
             {
                 "operation": "new_component",
                 "label": "Bracket Component",
-                "parent_component": None,
             },
         )
         component_name = component_result["component"]["object_name"]
@@ -228,7 +218,7 @@ def _run() -> None:
             {
                 "operation": "create",
                 "label": "Z Axis Turned Profile",
-                "axis": "Z",
+                "axis": {"kind": "global_axis", "axis": "Z"},
             },
         )
         revolution_sketch = document.getObject(
@@ -245,6 +235,22 @@ def _run() -> None:
             "object_name": revolution_sketch.Name,
             "subelements": ["V_Axis"],
         }
+        assert revolution_sketch_result["profile_coordinates"] == {
+            "axial": "y_mm",
+            "radius": "x_mm >= 0",
+            "axis": "x_mm = 0",
+        }
+        assert revolution_sketch_result["profile_intent"] == {
+            "kind": "axisymmetric",
+            "global_axis": "Z",
+            "sketch_axis": "V_Axis",
+            "axial": "y_mm",
+            "radius": "x_mm >= 0",
+            "axis": "x_mm = 0",
+        }
+        assert serialize_sketch_state(revolution_sketch)["profile_intent"] == (
+            revolution_sketch_result["profile_intent"]
+        )
         local_vertical = revolution_sketch.Placement.Rotation.multVec(
             App.Vector(0.0, 1.0, 0.0)
         )

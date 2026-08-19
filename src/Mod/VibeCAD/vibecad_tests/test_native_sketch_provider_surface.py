@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from jsonschema import Draft202012Validator
+
 from VibeCADNativeSketchConstraintSchema import sketch_constraint_capability_definition
 from VibeCADNativeSketchGeometrySchema import sketch_geometry_capability_definition
 from VibeCADNativeSketchProviderSchema import (
@@ -11,6 +13,7 @@ from VibeCADNativeSketchProviderSchema import (
     sketch_provider_capability_definitions,
 )
 from VibeCADNativeSketchProviderRuntime import _compact_mutation_result
+from VibeCADNativeDispatch import _schema_example
 
 
 def _composition_paths(value, path="") -> list[str]:
@@ -66,20 +69,70 @@ def test_compact_sketch_provider_contract_has_no_nested_union_types_or_count_tri
             tuple(variant.operation for variant in definition.variants)
         )
         parameters = schema["parameters"]
-        root_single_variant = (
-            set(parameters) == {"oneOf"}
+        root_branches = (
+            parameters["oneOf"]
+            if set(parameters) == {"oneOf"}
             and isinstance(parameters["oneOf"], list)
-            and len(parameters["oneOf"]) == 1
+            else [parameters]
         )
-        inspected = parameters["oneOf"][0] if root_single_variant else parameters
-        assert _composition_paths(inspected) == []
-        text = json.dumps(inspected, ensure_ascii=True, separators=(",", ":"))
-        assert '"sketch"' not in text
-        assert '"expected_geometry_count"' not in text
-        assert '"expected_constraint_count"' not in text
-        assert '"expected_external_geometry_count"' not in text
-        encoded_size += len(text.encode("utf-8"))
+        for inspected in root_branches:
+            assert _composition_paths(inspected) == []
+            text = json.dumps(inspected, ensure_ascii=True, separators=(",", ":"))
+            assert '"sketch"' not in text
+            assert '"expected_geometry_count"' not in text
+            assert '"expected_constraint_count"' not in text
+            assert '"expected_external_geometry_count"' not in text
+            encoded_size += len(text.encode("utf-8"))
     assert encoded_size < 48 * 1024
+
+
+def test_line_and_polyline_provider_branches_do_not_accept_each_others_fields() -> None:
+    definition = next(
+        item
+        for item in sketch_provider_capability_definitions()
+        if item.name == "sketch.draw_line"
+    )
+    parameters = definition.provider_schema(
+        ("create_line", "create_polyline")
+    )["parameters"]
+
+    assert len(parameters["oneOf"]) == 2
+    validator = Draft202012Validator(parameters)
+    line = {
+        "operation": "create_line",
+        "revision": "sketch-v1:" + ("0" * 64),
+        "start_mm": {"x": 0.0, "y": 0.0},
+        "end_mm": {"x": 10.0, "y": 0.0},
+    }
+    polyline = {
+        "operation": "create_polyline",
+        "revision": "sketch-v1:" + ("0" * 64),
+        "vertices_mm": [
+            {"x": 0.0, "y": 0.0},
+            {"x": 10.0, "y": 0.0},
+            {"x": 10.0, "y": 10.0},
+        ],
+        "closed": True,
+    }
+
+    assert not list(validator.iter_errors(line))
+    assert not list(validator.iter_errors(polyline))
+    assert list(validator.iter_errors({**line, "closed": False}))
+    assert list(
+        validator.iter_errors(
+            {**polyline, "end_mm": {"x": 10.0, "y": 10.0}}
+        )
+    )
+
+    polyline_branch = next(
+        branch
+        for branch in parameters["oneOf"]
+        if branch["properties"]["operation"].get("const") == "create_polyline"
+    )
+    repair_example = _schema_example(polyline_branch)
+    assert repair_example["closed"] is True
+    assert len(repair_example["vertices_mm"]) == 3
+    assert not list(Draft202012Validator(polyline_branch).iter_errors(repair_example))
 
 
 def test_read_state_bootstraps_revision_and_every_other_sketch_call_requires_it() -> None:

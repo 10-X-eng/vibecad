@@ -90,6 +90,19 @@ def test_center_radius_arc_accepts_360_as_zero_without_losing_its_sweep(
     assert math.isclose(prepared.last_parameter, math.radians(360.0))
 
 
+def test_center_radius_arc_normalizes_natural_signed_angles(arc_host) -> None:
+    document, _sketch, _context = arc_host
+
+    prepared = prepare_sketch_arc(
+        document.Uid,
+        _values(start_angle_degrees=-40.0, end_angle_degrees=40.0),
+    )
+
+    assert prepared.start_angle_degrees == 320.0
+    assert prepared.end_angle_degrees == 40.0
+    assert prepared.sweep_angle_degrees == 80.0
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     (
@@ -97,8 +110,8 @@ def test_center_radius_arc_accepts_360_as_zero_without_losing_its_sweep(
         ("radius_mm", 1.0e-10, "greater than"),
         ("radius_mm", True, "finite number"),
         ("radius_mm", float("inf"), "within"),
-        ("start_angle_degrees", -1.0, "between 0 and 360"),
-        ("end_angle_degrees", -1.0, "between 0 and 360"),
+        ("start_angle_degrees", -361.0, "between -360 and 360"),
+        ("end_angle_degrees", -361.0, "between -360 and 360"),
         ("end_angle_degrees", 30.0, "must differ"),
     ),
 )

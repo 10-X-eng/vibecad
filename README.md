@@ -148,7 +148,8 @@ When using a `.env` file for this fallback, use `OPENAI_API_KEY`; VibeCAD resolv
 1. Create or open a CAD document and **save it**. VibeCAD keeps the assistant disabled for unsaved documents so the conversation, design record, references, and generated source have a durable project location.
 2. Select the VibeCAD ribbon that matches the work you are doing, then choose
    **VibeScript** or **Native** in the Assistant header. Only the human can
-   change either choice.
+   change the authoring system. Native may change CAD work between provider turns
+   when the requested design requires another ribbon.
 3. Open **View > Panels > VibeCAD Assistant** if the assistant is not visible.
 4. Describe the intended result, including the dimensions, interfaces, material, manufacturing process, and constraints that matter.
 5. Use **Attach Image** for a reference design, or paste an image into the message box with `Ctrl+V`. Use **Attach View** to include the current viewport in the next model request only; it is consumed after that delivery.
@@ -177,7 +178,7 @@ of each later turn until the human removes or replaces them.
 
 **Native** is for direct, parametric editing with the same command families the
 current VibeCAD ribbon exposes to a human. Tool surfaces are replaced only
-between turns after the human changes ribbons. Calls use exact object and
+between turns after a human or Native work transition. Calls use exact object and
 subelement identities, structural revisions, transactions, concise receipts,
 and domain-state refreshes. Native changes do not rewrite or regenerate a
 VibeScript program.
@@ -190,6 +191,8 @@ VibeScript-owned document until the human explicitly takes manual control.
 
 See [VibeCAD authoring modes](docs/vibecad-authoring-modes.md) for the complete
 authority boundary and migration from the retired direct-tool surface.
+For products that require several verified turns and ribbons, see the
+[Native complex-design workflow](docs/native-complex-design-workflow.md).
 
 ## Workbench-shaped VibeScript execution
 

@@ -609,11 +609,11 @@ def test_canonical_schema_keeps_large_bounds_in_scientific_json() -> None:
 
 
 def test_tool_and_schema_budgets_fail_before_advertisement(monkeypatch) -> None:
-    monkeypatch.setattr(registry_module, "MAX_NATIVE_TOOLS_PER_SURFACE", 1)
+    monkeypatch.setitem(registry_module.MAX_NATIVE_TOOLS_BY_SURFACE, "model", 1)
     with pytest.raises(NativeCapabilityRegistryError, match="requires 2 tools"):
         resolve_native_provider_surface(_surface(), _register_complete())
 
-    monkeypatch.setattr(registry_module, "MAX_NATIVE_TOOLS_PER_SURFACE", 24)
+    monkeypatch.setitem(registry_module.MAX_NATIVE_TOOLS_BY_SURFACE, "model", 24)
     monkeypatch.setattr(registry_module, "MAX_NATIVE_SCHEMAS_JSON_BYTES", 10)
     with pytest.raises(NativeCapabilityRegistryError, match="schemas use"):
         resolve_native_provider_surface(_surface(), _register_complete())

@@ -85,8 +85,16 @@ class NativeModelStructureRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
+        normalized = dict(arguments)
+        optional_parent = {
+            "new_component": "parent_component",
+            "new_body": "component",
+            "separate": "destination_component",
+        }.get(str(normalized.get("operation") or ""))
+        if optional_parent is not None:
+            normalized.setdefault(optional_parent, None)
         operation, values = strict_variant_arguments(
-            arguments,
+            normalized,
             {
                 "new_component": frozenset({"label", "parent_component"}),
                 "new_body": frozenset({"label", "component"}),
@@ -234,15 +242,37 @@ class NativeModelStructureRuntime:
             },
         )
         revolution_axes = {
-            "X": ("XY", "H_Axis", False),
-            "Y": ("XY", "V_Axis", False),
-            "Z": ("XZ", "V_Axis", True),
+            "X": (
+                "XY",
+                "H_Axis",
+                False,
+                {"axial": "x_mm", "radius": "y_mm >= 0", "axis": "y_mm = 0"},
+            ),
+            "Y": (
+                "XY",
+                "V_Axis",
+                False,
+                {"axial": "y_mm", "radius": "x_mm >= 0", "axis": "x_mm = 0"},
+            ),
+            "Z": (
+                "XZ",
+                "V_Axis",
+                True,
+                {"axial": "y_mm", "radius": "x_mm >= 0", "axis": "x_mm = 0"},
+            ),
         }
         revolution_axis = None
+        profile_coordinates = None
+        profile_intent = None
         if operation == "create_revolution":
             global_axis = str(values["axis"])
             try:
-                plane, revolution_axis, reverse_normal = revolution_axes[global_axis]
+                (
+                    plane,
+                    revolution_axis,
+                    reverse_normal,
+                    profile_coordinates,
+                ) = revolution_axes[global_axis]
             except KeyError as exc:
                 raise NativeModelError(
                     "A revolution Sketch axis must be X, Y, or Z."
@@ -252,6 +282,12 @@ class NativeModelStructureRuntime:
                 "plane": plane,
                 "offset_mm": 0.0,
                 "reverse_normal": reverse_normal,
+            }
+            profile_intent = {
+                "kind": "axisymmetric",
+                "global_axis": global_axis,
+                "sketch_axis": revolution_axis,
+                **profile_coordinates,
             }
         elif operation == "create_on_base_plane":
             support = {
@@ -289,6 +325,7 @@ class NativeModelStructureRuntime:
                 document,
                 label=label,
                 support=support,
+                profile_intent=profile_intent,
             ),
             verify=verify_reusable_sketch,
         )
@@ -299,6 +336,8 @@ class NativeModelStructureRuntime:
                 "subelements": [revolution_axis],
             }
             result["global_axis"] = str(values["axis"])
+            result["profile_coordinates"] = profile_coordinates
+            result["profile_intent"] = profile_intent
         return result
 
     def open_sketch(

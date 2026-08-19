@@ -126,6 +126,25 @@ prohibition, migration, and recovery prose was removed from descriptions.
 Closed schemas and runtime diagnostics still enforce every invariant and return
 the exact rejected field and required shape when a call is invalid.
 
+### Focused profile operations
+
+The Model ribbon presents Extrude, Revolve, Loft, Sweep, and Helix as distinct
+human operations. Native now presents the same five focused tools instead of
+collapsing their incompatible direction, axis, extent, path, and helix grammars
+into one `model.feature` union. All five adapt into the existing exact feature
+runtime; there is no second geometry implementation.
+
+The focused schemas total 15,787 JSON bytes. The collapsed schema was 8,822
+bytes, so exact operation-specific inputs cost 6,965 bytes while the complete
+Model surface remains within its 64-KiB schema budget. The Model tool-count cap
+is 32 and the current surface uses 29.
+
+Focused Extrude uses a direct length/up-to/two-sided extent. Its canonical
+length form is `{"kind":"length","length_mm":12}` and the Sketch normal is
+used unless an axis or vector is supplied. Profile topology is explicit:
+`entire_sketch` uses the complete closed profile, while
+`selected_internal_faces` requires exact `InternalFaceN` identities.
+
 ## Live model evidence
 
 ### Canonical revolution fixture
@@ -140,33 +159,81 @@ eight-edge Sketch on the XZ plane and no solid. The request is:
 The independent expected result is one solid with bounds
 `36 x 36 x 50 mm` and volume `18221.2373908208 mm3` (`5800*pi`).
 
-#### GPT-5.6 Terra, subscription, high reasoning
+#### Qwen local, 65,536-token context
 
-The final accepted rollout is retained as
-`terra-model-feature-revolve-canonical-run-9.FCStd`, `.step`, and `.png` in the
-local benchmark artifacts directory.
+With the collapsed `model.feature` schema, Qwen selected the right family but
+needed four calls: three rejected payloads mixed helix parameters, an invented
+extent kind, and an Extrude direction into a Revolve before the fourth call
+created the exact solid. The retained artifact is
+`modeling/qwen-model-feature-compact-1/result.FCStd`.
+
+With the focused surface, the unchanged request selected `model.revolve` and
+supplied the exact whole profile, global Z axis, and 360-degree extent on the
+first call. The retained `result.FCStd`, `.step`, and `.png` are under
+`modeling/qwen-model-revolve-focused-2/`.
 
 - one user turn;
-- `model.feature` selected on the first mutation;
-- the canonical profile, nested revolve feature, and global Z axis supplied on
-  the first call;
-- all subsequent inspection, view, export, and save calls accepted;
-- zero rejected calls and no corrective steering;
-- exact dimensions and volume, one valid solid, valid Body history, and valid
-  STEP export.
+- one accepted tool call and zero rejected calls;
+- exact `36 x 36 x 50 mm` bounds and `18221.2373908208 mm3` volume;
+- one valid solid and valid STEP export.
 
-This is acceptance evidence for the final canonical feature contract.
+### Annular Extrude fixture
 
-#### Qwen local run
+The second fixture contains one face-buildable Sketch with an 80-mm outer circle
+and 32-mm inner circle and no Body. The unchanged request asks for a 12-mm normal
+Extrude. The independent result is one solid with `80 x 80 x 12 mm` bounds and
+`50667.606317096186 mm3` volume.
 
-The final Qwen 9B run used a 65,536-token context and the same fixture and prompt.
-The provider did not emit its first trace within the fixed 1,500-second allowance.
-The partial artifact is retained as
-`qwen-model-feature-revolve-canonical-run-2.FCStd`. Because no tool selection was
-emitted, this run is classified as local inference throughput, not a success or
-failure of the final tool contract. Earlier Qwen runs were useful discovery
-evidence, but they targeted tool aliases that have since been removed and are not
-claimed as final-surface acceptance.
+The first focused Extrude schema still exposed the internal `one_side/sides`
+layout. Qwen needed two rejected calls before creating the correct geometry. A
+direct length extent removed both payload errors. The next run revealed a
+topology ambiguity: Qwen selected both internal faces and produced two solids.
+Making whole-Sketch versus selected-face scope explicit removed that ambiguity.
+
+The final Qwen artifact is retained under
+`modeling/qwen-model-extrude-focused-3/`:
+
+- one user turn;
+- one `model.extrude` call and zero rejected calls;
+- `profile_scope: "entire_sketch"` selected on the first call;
+- exact dimensions and volume, one valid annular solid, and valid STEP export.
+
+GPT-5.6 Terra through ChatGPT subscription at high reasoning repeated the final
+case with no steering. Its artifact is retained under
+`modeling/terra-high-model-extrude-focused-1/`:
+
+- one accepted `model.extrude` mutation;
+- two accepted inspections and one accepted viewport capture;
+- zero rejected calls;
+- exact dimensions, volume, topology, validity, and STEP export.
+
+### NTS-D01 impeller baseline
+
+The 2026-08-19 Qwen 9B run used a 65,536-token context, the original attached
+compressor-wheel image, and the unchanged request:
+
+> Recreate this turbo to the best of your ability.
+
+The rollout and partial FCStd are retained under
+`native-tool-sharpening/impeller/baseline-qwen` in the local benchmark artifacts
+directory.
+
+- Vision correctly identified a central bore, hub, and curved, twisted blades.
+- The first mutation chose `model.revolution_sketch`; `model.primitive` was never
+  called.
+- After the automatic Sketch transition, the model created concentric circles and
+  fifteen standalone points in the axis-profile Sketch, then attempted unrelated
+  circular arcs.
+- One negative-angle call was rejected by the published schema and corrected on
+  the next call.
+- The run was stopped after the geometry had diverged from a revolvable hub profile
+  and continued to accumulate unconstrained, non-face geometry.
+
+This baseline disproves the primitive-only hypothesis. The first observed defect
+is operation selection: an axis-profile Sketch and standalone Point geometry looked
+like suitable inputs for the pictured blade field. The next comparison removes
+those attractors only from the benchmark provider surface; no production capability
+is removed until repeated live evidence supports that boundary.
 
 ## Deterministic evidence
 
@@ -175,7 +242,7 @@ The release build completes after the command and DesignModel changes.
 Focused Python contract, registry, provider, dispatch, and runtime suite:
 
 ```text
-275 passed
+255 passed
 ```
 
 Real GUI/provider lifecycle gates:
@@ -183,6 +250,7 @@ Real GUI/provider lifecycle gates:
 ```text
 VIBECAD_NATIVE_MODEL_PROFILES_GUI_OK
 VIBECAD_NATIVE_MODEL_BRACKET_WORKFLOW_GUI_OK
+VIBECAD_NATIVE_CODEX_CROSS_RIBBON_GUI_OK
 ```
 
 The profile gate exercises all five canonical feature kinds, advanced
@@ -192,12 +260,14 @@ invalid-call rollback, undo/redo, save/reopen, stable operation and Body IDs, an
 
 The bracket gate starts from a clean profile and exercises the complete Native
 session/turn path used by the application, ending with one valid editable Body.
+The cross-ribbon gate freezes the exact tool set selected by the human across all
+nine supported CAD work surfaces.
 
 ## Current conclusion
 
 The Model ribbon now has one ordinary solid-modeling language for humans and AI:
 PartDesign Body features. Retained Part tools provide only capabilities that add
-real construction, surface, composition, or repair value. The canonical feature
-contract has a zero-retry Terra-high live pass and complete deterministic GUI
-coverage. Qwen's remaining final-run limitation is measured local throughput,
-not an observed schema or CAD execution defect.
+real construction, surface, composition, or repair value. Focused Revolve and
+Extrude each have zero-retry Qwen live passes, and the final Extrude contract has
+a zero-retry Terra-high subscription pass. The saved artifacts prove exact CAD
+geometry and topology rather than provider-only schema acceptance.

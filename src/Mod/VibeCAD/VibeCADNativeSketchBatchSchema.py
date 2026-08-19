@@ -61,12 +61,12 @@ def _geometry_item_schema() -> dict:
             "radius_mm": _POSITIVE_MM_SCHEMA,
             "start_angle_degrees": {
                 "type": "number",
-                "minimum": 0.0,
+                "minimum": -360.0,
                 "maximum": 360.0,
             },
             "end_angle_degrees": {
                 "type": "number",
-                "minimum": 0.0,
+                "minimum": -360.0,
                 "maximum": 360.0,
             },
         },

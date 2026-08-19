@@ -8,9 +8,11 @@ import json
 import math
 import os
 from pathlib import Path
+import signal
 import sys
 import threading
 import traceback
+import zipfile
 
 import FreeCAD as App
 import FreeCADGui as Gui
@@ -20,8 +22,50 @@ import VibeCADCodex as CodexModule
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADMCP import get_control_mode_controller
-from VibeCADProvider import CodexProvider
+from VibeCADProvider import CodexProvider, provider_tool_schema_digest
 from VibeCADSession import run_native_surface_continuation, run_prompt
+
+
+class _FilteredCodexProvider(CodexProvider):
+    """Hide selected tools from one live acceptance run."""
+
+    def __init__(self, *args, excluded_tools: frozenset[str], **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._excluded_tools = excluded_tools
+
+    def _filtered_context(self, context: dict) -> dict:
+        filtered = dict(context)
+
+        def filter_surface(source: dict) -> dict:
+            result = dict(source)
+            schemas = [
+                dict(schema)
+                for schema in source.get("provider_tool_schemas") or []
+                if str(schema.get("name") or "") not in self._excluded_tools
+            ]
+            surface = dict(source.get("provider_tool_surface") or {})
+            surface["tool_names"] = [schema["name"] for schema in schemas]
+            surface["schema_count"] = len(schemas)
+            surface["schema_sha256"] = provider_tool_schema_digest(schemas)
+            result["provider_tool_schemas"] = schemas
+            result["provider_tool_surface"] = surface
+            return result
+
+        filtered.update(filter_surface(filtered))
+        thread_surface = filtered.get("_vibecad_codex_thread_surface")
+        if isinstance(thread_surface, dict):
+            filtered["_vibecad_codex_thread_surface"] = filter_surface(
+                thread_surface
+            )
+        return filtered
+
+    def run(self, prompt, context, *args, **kwargs):
+        return super().run(
+            prompt,
+            self._filtered_context(context),
+            *args,
+            **kwargs,
+        )
 
 
 def _shape_summary(document) -> dict:
@@ -122,17 +166,51 @@ def _run() -> None:
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_RESULT_TYPE")
         or "PartDesign::Body"
     ).strip()
+    excluded_tools = frozenset(
+        name.strip()
+        for name in str(
+            os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_EXCLUDE_TOOLS") or ""
+        ).split(",")
+        if name.strip()
+    )
     result: dict[str, object] = {}
     provider_worker = None
     cancel_requested = threading.Event()
+    termination_requested = threading.Event()
+    termination_checkpointed = threading.Event()
     timed_out = False
     poll = QtCore.QTimer()
+    checkpoint = QtCore.QTimer()
     timeout = QtCore.QTimer()
     document = None
 
+    def save_checkpoint() -> None:
+        if document is None:
+            return
+        try:
+            document_name = str(document.Name)
+        except ReferenceError:
+            return
+        if document_name not in App.listDocuments():
+            return
+        document.save()
+        with zipfile.ZipFile(artifact) as archive:
+            if (
+                "Document.xml" not in archive.namelist()
+                or archive.testzip() is not None
+            ):
+                raise RuntimeError(f"Invalid FCStd checkpoint: {artifact}")
+
     def finish(code: int) -> None:
         poll.stop()
+        checkpoint.stop()
         timeout.stop()
+        if document is not None and document.Name in App.listDocuments():
+            try:
+                save_checkpoint()
+            except Exception:
+                traceback.print_exc(file=sys.__stderr__)
+                code = 1
         # Preserve the rollout JSONL for exact post-run diagnosis. The live
         # acceptance process owns this transport, so closing it is sufficient;
         # deleting the thread would discard the strongest model evidence.
@@ -140,11 +218,6 @@ def _run() -> None:
         if Gui.activeDocument() is not None and Gui.activeDocument().getInEdit():
             Gui.activeDocument().resetEdit()
         if document is not None and document.Name in App.listDocuments():
-            try:
-                document.recompute()
-                document.save()
-            except Exception:
-                traceback.print_exc(file=sys.__stderr__)
             App.closeDocument(document.Name)
         application.exit(code)
 
@@ -186,6 +259,10 @@ def _run() -> None:
             raise RuntimeError("FreeCAD did not open the acceptance document.")
         document.UndoMode = 1
         document.saveAs(str(artifact))
+        save_checkpoint()
+        checkpoint.timeout.connect(save_checkpoint)
+        checkpoint.start(15_000)
+        application.aboutToQuit.connect(save_checkpoint)
         service = get_service()
         service.select_modeling_engine(engine)
         # Workbench activation publishes the human ribbon surface through the Qt
@@ -207,7 +284,7 @@ def _run() -> None:
                     f"Could not attach acceptance reference image: {attached}"
                 )
         CodexModule.reset_managed_codex_sessions()
-        provider = CodexProvider(
+        provider = _FilteredCodexProvider(
             model=model,
             api_key=("ollama-local" if auth_mode == "api_key" else None),
             auth_mode=auth_mode,
@@ -216,6 +293,7 @@ def _run() -> None:
             base_url=(base_url if auth_mode == "api_key" else None),
             web_search_enabled=False,
             skills_enabled=False,
+            excluded_tools=excluded_tools,
         )
 
         def run_provider() -> None:
@@ -266,6 +344,15 @@ def _run() -> None:
         provider_worker.start()
 
         def inspect() -> None:
+            if termination_requested.is_set():
+                if not termination_checkpointed.is_set():
+                    checkpoint.stop()
+                    termination_checkpointed.set()
+                    save_checkpoint()
+                cancel_requested.set()
+                if provider_worker is None or not provider_worker.is_alive():
+                    finish(130)
+                return
             if provider_worker is not None and provider_worker.is_alive():
                 return
             try:
@@ -279,7 +366,7 @@ def _run() -> None:
                 if response.error:
                     raise AssertionError(response.error)
                 document.recompute()
-                document.save()
+                save_checkpoint()
                 final_results = [
                     obj
                     for obj in document.Objects
@@ -369,6 +456,7 @@ def _run() -> None:
                     "reasoning_effort": reasoning_effort,
                     "auth_mode": auth_mode,
                     "expected_result_type": expected_result_type,
+                    "excluded_tools": sorted(excluded_tools),
                     "artifact": str(artifact),
                     "input_fixture": (
                         str(input_fixture) if input_fixture is not None else None
@@ -416,6 +504,7 @@ def _run() -> None:
 
         def request_timeout() -> None:
             nonlocal timed_out
+            save_checkpoint()
             timed_out = True
             cancel_requested.set()
 
@@ -427,6 +516,12 @@ def _run() -> None:
 
         timeout.timeout.connect(request_timeout)
         timeout.start(timeout_seconds * 1000)
+
+        def request_termination(_signum, _frame) -> None:
+            termination_requested.set()
+
+        signal.signal(signal.SIGINT, request_termination)
+        signal.signal(signal.SIGTERM, request_termination)
     except BaseException:
         traceback.print_exc(file=sys.__stderr__)
         finish(1)

@@ -157,6 +157,30 @@ Every comparison uses the same ten cases and the exact prompt text below.
   definition with correct quantities and metadata; expandable BOM in the model tree;
   non-empty PDF export.
 
+## Diagnostic design cases
+
+These cases isolate a recurring design-choice failure without changing the fixed
+ten-case release corpus. They use the same no-steering run rules and retain the
+reference image, rollout, partial and final FCStd files, neutral export, and
+viewport capture.
+
+### NTS-D01 — Turbocharger compressor wheel from reference
+
+- Input: the retained turbocharger compressor-wheel reference image attached to a
+  clean document.
+- Surfaces: Modeling, Sketching.
+- Exercises: visual form recognition; hub, bore, and backplate construction;
+  curved, swept, tapered main- and splitter-blade master creation; patterning;
+  connected-result verification; and resistance to primitive blade proxies.
+- Prompt: `Recreate this turbo to the best of your ability.`
+- Oracle: one connected valid Body; a through bore, hub, and backplate consistent
+  with the reference; every patterned blade comes from a verified curved and
+  tapered parametric master; the main and splitter blade families, counts, and
+  handedness match the visible reference; no straight Box, Prism, or wedge blade
+  substitute; retained editable sketches and feature history; and a final viewport
+  comparison. Claiming
+  completion with straight rectangular vanes is a critical false completion.
+
 ## Canonical master-sketch fixtures
 
 Tool-family diagnosis and product-scale composition use fresh copies of verified

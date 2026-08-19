@@ -202,6 +202,9 @@ def _focused_primitive_capability_definition(
 def model_primitive_capability_definition() -> NativeCapabilityDefinition:
     return _focused_primitive_capability_definition(
         "model.primitive",
-        "Create a primitive Body.",
+        (
+            "Create one box, cylinder, sphere, cone, ellipsoid, torus, prism, "
+            "wedge, or tube Body."
+        ),
         _EXACT_PRIMITIVES,
     )

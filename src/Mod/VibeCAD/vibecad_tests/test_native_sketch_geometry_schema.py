@@ -370,10 +370,11 @@ def test_center_radius_arc_provider_schema_is_closed_and_bounded() -> None:
     assert list(validator.iter_errors(valid)) == []
     assert list(validator.iter_errors({**valid, "start_angle_degrees": 360.0})) == []
     assert list(validator.iter_errors({**valid, "end_angle_degrees": 360.0})) == []
+    assert list(validator.iter_errors({**valid, "start_angle_degrees": -40.0})) == []
     for invalid in (
         {**valid, "radius_mm": 0.0},
-        {**valid, "start_angle_degrees": -1.0},
-        {**valid, "end_angle_degrees": -1.0},
+        {**valid, "start_angle_degrees": -361.0},
+        {**valid, "end_angle_degrees": -361.0},
         {**valid, "unexpected": True},
     ):
         assert list(validator.iter_errors(invalid))
@@ -445,10 +446,13 @@ def test_elliptical_arc_provider_schema_is_closed_and_bounded() -> None:
 
     assert list(validator.iter_errors(valid)) == []
     assert list(validator.iter_errors({**valid, "rotation_degrees": 360.0})) == []
+    assert list(
+        validator.iter_errors({**valid, "start_parameter_degrees": -1.0})
+    ) == []
     for invalid in (
         {**valid, "major_radius_mm": 0.0},
         {**valid, "minor_radius_mm": 0.0},
-        {**valid, "start_parameter_degrees": -1.0},
+        {**valid, "start_parameter_degrees": -361.0},
         {**valid, "sweep_parameter_degrees": 0.0},
         {**valid, "sweep_parameter_degrees": 360.0},
         {**valid, "unexpected": True},
@@ -1246,8 +1250,10 @@ def test_arc_slot_provider_schema_is_closed_and_bounded() -> None:
     }
     assert list(validator.iter_errors(valid)) == []
     assert list(validator.iter_errors({**valid, "start_angle_degrees": 360.0})) == []
+    assert list(validator.iter_errors({**valid, "start_angle_degrees": -20.0})) == []
     for invalid in (
         {**valid, "centerline_radius_mm": 0.0},
+        {**valid, "start_angle_degrees": -361.0},
         {**valid, "sweep_angle_degrees": 0.0},
         {**valid, "sweep_angle_degrees": -360.0},
         {**valid, "sweep_angle_degrees": 360.0},

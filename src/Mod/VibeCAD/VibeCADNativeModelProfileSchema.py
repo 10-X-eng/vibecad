@@ -135,6 +135,77 @@ def _extrude_extent() -> dict[str, Any]:
     }
 
 
+def _focused_side_termination() -> dict[str, Any]:
+    return {
+        "oneOf": [
+            _kind_with_optional(
+                "length",
+                {"length_mm": POSITIVE_MM_SCHEMA},
+                {"taper_degrees": _TAPER},
+            ),
+            _kind_with_optional(
+                "up_to_last",
+                {},
+                {"offset_mm": SIGNED_MM_SCHEMA},
+            ),
+            _kind_with_optional(
+                "up_to_first",
+                {},
+                {"offset_mm": SIGNED_MM_SCHEMA},
+            ),
+            _kind_with_optional(
+                "up_to_face",
+                {"target": _FACE},
+                {"offset_mm": SIGNED_MM_SCHEMA},
+            ),
+            _kind_with_optional(
+                "up_to_shape",
+                {"target": _SHAPE},
+                {"offset_mm": SIGNED_MM_SCHEMA},
+            ),
+        ]
+    }
+
+
+def _focused_extrude_extent() -> dict[str, Any]:
+    direction = {
+        "type": "string",
+        "enum": ["forward", "reverse", "symmetric"],
+    }
+    single_side = _focused_side_termination()["oneOf"]
+    return {
+        "oneOf": [
+            _kind_with_optional(
+                branch["properties"]["kind"]["const"],
+                {
+                    name: schema
+                    for name, schema in branch["properties"].items()
+                    if name != "kind" and name in branch["required"]
+                },
+                {
+                    **{
+                        name: schema
+                        for name, schema in branch["properties"].items()
+                        if name != "kind" and name not in branch["required"]
+                    },
+                    "direction": direction,
+                },
+            )
+            for branch in single_side
+        ]
+        + [
+            _kind_with_optional(
+                "two_sides",
+                {
+                    "side1": _focused_side_termination(),
+                    "side2": _focused_side_termination(),
+                },
+                {"reversed": {"type": "boolean"}},
+            )
+        ]
+    }
+
+
 def _extrude_direction() -> dict[str, Any]:
     return {
         "oneOf": [
@@ -339,73 +410,136 @@ def _body_combination() -> dict[str, Any]:
     )
 
 
-def model_profile_variants() -> tuple[NativeCapabilityVariant, ...]:
-    feature = {
-        "oneOf": [
-            parameters_schema(
-                {
-                    "kind": {"type": "string", "const": "extrude"},
-                    "direction": _extrude_direction(),
-                    "extent": _extrude_extent(),
+def _profile_feature_schemas() -> dict[str, dict[str, Any]]:
+    return {
+        "extrude": parameters_schema(
+            {
+                "kind": {"type": "string", "const": "extrude"},
+                "direction": _extrude_direction(),
+                "extent": _extrude_extent(),
+            },
+            ("kind", "direction", "extent"),
+        ),
+        "revolve": parameters_schema(
+            {
+                "kind": {"type": "string", "const": "revolve"},
+                "axis": _profile_axis(),
+                "extent": _revolve_extent(),
+            },
+            ("kind", "axis", "extent"),
+        ),
+        "loft": parameters_schema(
+            {
+                "kind": {"type": "string", "const": "loft"},
+                "sections": {
+                    "type": "array",
+                    "items": _PROFILE,
+                    "minItems": 1,
+                    "maxItems": 32,
                 },
-                ("kind", "direction", "extent"),
-            ),
-            parameters_schema(
-                {
-                    "kind": {"type": "string", "const": "revolve"},
-                    "axis": _profile_axis(),
-                    "extent": _revolve_extent(),
+                "ruled": {"type": "boolean"},
+                "closed": {"type": "boolean"},
+            },
+            ("kind", "sections", "ruled", "closed"),
+        ),
+        "sweep": parameters_schema(
+            {
+                "kind": {"type": "string", "const": "sweep"},
+                "path": _PATH,
+                "options": _sweep_options(),
+            },
+            ("kind", "path", "options"),
+        ),
+        "helix": parameters_schema(
+            {
+                "kind": {"type": "string", "const": "helix"},
+                "axis": _profile_axis(),
+                "parameters": _helix_definition(),
+                "left_handed": {"type": "boolean"},
+                "reversed": {"type": "boolean"},
+                "outside": {"type": "boolean"},
+                "tolerance": {
+                    "type": "number",
+                    "minimum": 0.1,
+                    "maximum": 1_000_000.0,
                 },
-                ("kind", "axis", "extent"),
+            },
+            (
+                "kind",
+                "axis",
+                "parameters",
+                "left_handed",
+                "reversed",
+                "outside",
+                "tolerance",
             ),
-            parameters_schema(
-                {
-                    "kind": {"type": "string", "const": "loft"},
-                    "sections": {
-                        "type": "array",
-                        "items": _PROFILE,
-                        "minItems": 1,
-                        "maxItems": 32,
-                    },
-                    "ruled": {"type": "boolean"},
-                    "closed": {"type": "boolean"},
-                },
-                ("kind", "sections", "ruled", "closed"),
-            ),
-            parameters_schema(
-                {
-                    "kind": {"type": "string", "const": "sweep"},
-                    "path": _PATH,
-                    "options": _sweep_options(),
-                },
-                ("kind", "path", "options"),
-            ),
-            parameters_schema(
-                {
-                    "kind": {"type": "string", "const": "helix"},
-                    "axis": _profile_axis(),
-                    "parameters": _helix_definition(),
-                    "left_handed": {"type": "boolean"},
-                    "reversed": {"type": "boolean"},
-                    "outside": {"type": "boolean"},
-                    "tolerance": {
-                        "type": "number",
-                        "minimum": 0.1,
-                        "maximum": 1_000_000.0,
-                    },
-                },
-                (
-                    "kind",
-                    "axis",
-                    "parameters",
-                    "left_handed",
-                    "reversed",
-                    "outside",
-                    "tolerance",
-                ),
-            ),
-        ]
+        ),
     }
+
+
+def focused_model_profile_variant(
+    kind: str,
+    action_id: str,
+) -> NativeCapabilityVariant:
+    """Return one direct, operation-specific profile feature contract."""
+
+    feature = _profile_feature_schemas().get(kind)
+    if feature is None:
+        raise ValueError(f"Unknown profile feature kind {kind!r}")
+    if kind == "extrude":
+        feature_properties = {
+            "extent": _focused_extrude_extent(),
+            "direction_axis": _AXIS,
+            "direction_vector": vector_schema(
+                minimum=-1_000_000.0,
+                maximum=1_000_000.0,
+            ),
+            "align_with_sketch_normal": {"type": "boolean"},
+        }
+        feature_required = ("extent",)
+    else:
+        feature_properties = {
+            name: schema
+            for name, schema in feature["properties"].items()
+            if name != "kind"
+        }
+        feature_required = tuple(
+            name for name in feature["required"] if name != "kind"
+        )
+    return NativeCapabilityVariant(
+        operation="create",
+        description=f"Create one {kind} Body feature.",
+        action_ids=frozenset({action_id}),
+        surface_ids=MODEL_SURFACE,
+        exact_target_type="DesignResult",
+        transaction_behavior="document",
+        background_required=False,
+        parameters=parameters_schema(
+            {
+                "label": LABEL_SCHEMA,
+                "profile": object_reference_schema(),
+                "profile_scope": {
+                    "type": "string",
+                    "enum": ["entire_sketch", "selected_internal_faces"],
+                },
+                "internal_faces": {
+                    "type": "array",
+                    "items": _PROFILE["properties"]["regions"]["items"],
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "uniqueItems": True,
+                },
+                **feature_properties,
+                "combine": _body_combination(),
+                "destination_component": object_reference_schema(),
+            },
+            ("label", "profile", "profile_scope", *feature_required),
+        ),
+    )
+
+
+def model_profile_variants() -> tuple[NativeCapabilityVariant, ...]:
+    feature = {"oneOf": list(_profile_feature_schemas().values())}
     return (
         NativeCapabilityVariant(
             operation="create",
