@@ -31,9 +31,11 @@ def write_preview(
     *,
     revision: str,
     proposals: list[dict[str, Any]],
+    native_revision: str | None = None,
 ) -> dict[str, Any]:
     record = {
         "revision": revision,
+        "native_revision": native_revision,
         "proposals": proposals,
         "consumed": False,
     }
@@ -56,7 +58,12 @@ def read_preview(doc: Any) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def consume_preview(doc: Any, current_revision: str) -> list[dict[str, Any]]:
+def consume_preview(
+    doc: Any,
+    current_revision: str,
+    *,
+    native_revision: str | None = None,
+) -> list[dict[str, Any]]:
     record = read_preview(doc)
     if record is None:
         raise PreviewError("missing")
@@ -64,9 +71,23 @@ def consume_preview(doc: Any, current_revision: str) -> list[dict[str, Any]]:
         raise PreviewError("already_consumed")
     if str(record.get("revision") or "") != str(current_revision):
         raise PreviewError("stale")
+    stored_native = record.get("native_revision")
+    if stored_native not in (None, "") and native_revision not in (None, ""):
+        if str(stored_native) != str(native_revision):
+            raise PreviewError("stale")
     record["consumed"] = True
     _store(doc, record)
     return list(record.get("proposals") or [])
+
+
+def discard_preview(doc: Any) -> dict[str, Any] | None:
+    record = read_preview(doc)
+    if record is None:
+        return None
+    record["consumed"] = True
+    record["rejected"] = True
+    _store(doc, record)
+    return record
 
 
 class PreviewError(RuntimeError):
