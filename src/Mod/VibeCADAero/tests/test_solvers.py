@@ -162,7 +162,7 @@ def test_missing_solver_error_names_bundled_python_pip():
     assert "python.exe" in message
 
 
-def test_build_airplane_grows_a_third_horizontal_tail_wing(monkeypatch):
+def _install_fake_asb(monkeypatch):
     import sys
     from types import SimpleNamespace
 
@@ -196,9 +196,29 @@ def test_build_airplane_grows_a_third_horizontal_tail_wing(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "aerosandbox", fake)
     monkeypatch.setattr(solvers, "require_backend", lambda *_args, **_kwargs: None)
+    return fake
 
+
+def test_build_airplane_tailless_doc_has_two_wings_only(monkeypatch):
+    _install_fake_asb(monkeypatch)
     cfg = config.resolve_geometry(None)
+    assert cfg.get("has_h_tail") is False
     plane = solvers.build_airplane(cfg, [[1.0, 0.0], [0.0, 0.07], [1.0, 0.0]])
+    names = [str(getattr(wing, "name", "")).lower() for wing in plane.wings]
+    assert names == ["lower wing", "upper wing"]
+    assert all("tail" not in name for name in names)
+    assert plane.fuselages
+
+
+def test_build_airplane_grows_a_third_horizontal_tail_wing(monkeypatch):
+    _install_fake_asb(monkeypatch)
+
+    values = dict(config.VOIDER_DEFAULTS)
+    values["tail_span_mm"] = 150.0
+    values["tail_chord_mm"] = 54.0
+    cfg = config.finalize(values)
+    plane = solvers.build_airplane(cfg, [[1.0, 0.0], [0.0, 0.07], [1.0, 0.0]])
+    assert cfg["has_h_tail"] is True
     assert len(plane.wings) == 3
     names = [str(getattr(wing, "name", "")).lower() for wing in plane.wings]
     assert names[0] == "lower wing"
@@ -220,38 +240,9 @@ def test_build_airplane_grows_a_third_horizontal_tail_wing(monkeypatch):
 
 
 def test_build_airplane_places_upper_wing_aft_from_named_bboxes(monkeypatch):
-    import sys
     from types import SimpleNamespace
 
-    class _Airfoil:
-        def __init__(self, coordinates=None):
-            self.coordinates = coordinates
-
-    class _Named:
-        def __init__(self, name="", **kwargs):
-            self.name = name
-            self.kwargs = kwargs
-
-    class _XSec:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    class _Airplane:
-        def __init__(self, name="", xyz_ref=None, wings=None, fuselages=None):
-            self.wings = list(wings or [])
-            self.fuselages = list(fuselages or [])
-            self.xyz_ref = xyz_ref
-
-    fake = SimpleNamespace(
-        Airfoil=_Airfoil,
-        Wing=_Named,
-        WingXSec=_XSec,
-        Fuselage=_Named,
-        FuselageXSec=_XSec,
-        Airplane=_Airplane,
-    )
-    monkeypatch.setitem(sys.modules, "aerosandbox", fake)
-    monkeypatch.setattr(solvers, "require_backend", lambda *_args, **_kwargs: None)
+    _install_fake_asb(monkeypatch)
 
     class _BoundBox:
         def __init__(self, x_min, x_max, y_min, y_max, z_min, z_max):
@@ -288,6 +279,9 @@ def test_build_airplane_places_upper_wing_aft_from_named_bboxes(monkeypatch):
     )
     cfg = config.resolve_geometry(doc)
     plane = solvers.build_airplane(cfg, [[1.0, 0.0], [0.0, 0.07], [1.0, 0.0]])
+    assert cfg["has_h_tail"] is True
+    assert len(plane.wings) == 3
+    assert "tail" in str(plane.wings[2].name).lower()
     upper_x = plane.wings[1].kwargs["xsecs"][0].kwargs["xyz_le"][0]
     assert upper_x > 0.0
     assert upper_x == pytest.approx(cfg["upper_le_x_m"])

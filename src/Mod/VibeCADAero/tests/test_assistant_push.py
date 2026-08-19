@@ -55,6 +55,7 @@ def test_report_result_appends_vibecad_turn_and_queues_aero_steering(
 
     monkeypatch.setattr(Commands, "_refresh_workspace", lambda: None)
     monkeypatch.setattr(Commands, "_dialog", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(Commands, "_is_assistant_run_active", lambda: True)
     monkeypatch.setattr(
         Commands,
         "_append_in_app_conversation",
@@ -69,7 +70,7 @@ def test_report_result_appends_vibecad_turn_and_queues_aero_steering(
         or {"ok": True},
     )
 
-    Commands._report_result(_result(), "Aero Analyze")
+    Commands._report_result(_result(), "Aero Analyze", start_designer=True)
 
     assert len(appended) == 1
     assert appended[0]["role"] == "VibeCAD"
@@ -77,7 +78,64 @@ def test_report_result_appends_vibecad_turn_and_queues_aero_steering(
     assert appended[0]["metadata"] == {"source": "aero"}
     assert "CL=1.516" in appended[0]["text"]
     assert "PITCH UNSTABLE" in appended[0]["text"]
-    assert steered == [{"text": appended[0]["text"], "source": "aero"}]
+    assert len(steered) == 1
+    assert steered[0]["source"] == "aero"
+    assert "aero.solve" in steered[0]["text"]
+    assert "not_airworthy" in steered[0]["text"]
+
+
+def test_report_result_does_not_queue_steering_when_assistant_run_inactive(
+    monkeypatch,
+) -> None:
+    appended: list[dict] = []
+    steered: list[dict] = []
+    started: list[str] = []
+
+    monkeypatch.setattr(Commands, "_refresh_workspace", lambda: None)
+    monkeypatch.setattr(Commands, "_dialog", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(Commands, "_is_assistant_run_active", lambda: False)
+    monkeypatch.setattr(
+        Commands, "_start_in_app_clanker", lambda prompt: started.append(prompt) or True
+    )
+    monkeypatch.setattr(
+        Commands,
+        "_append_in_app_conversation",
+        lambda role, text, **kwargs: appended.append(
+            {"role": role, "text": text, **kwargs}
+        ),
+    )
+    monkeypatch.setattr(
+        Commands,
+        "_queue_in_app_steering",
+        lambda text, source: steered.append({"text": text, "source": source})
+        or {"ok": True},
+    )
+
+    Commands._report_result(_result(), "Aero Analyze", start_designer=True)
+
+    assert len(appended) == 1
+    assert appended[0]["persist"] is True
+    assert "CL=1.516" in appended[0]["text"]
+    assert steered == []
+    assert len(started) == 1
+    assert "aero.solve" in started[0]
+
+
+def test_non_analyze_result_does_not_start_an_idle_designer(monkeypatch) -> None:
+    started: list[str] = []
+    monkeypatch.setattr(Commands, "_refresh_workspace", lambda: None)
+    monkeypatch.setattr(Commands, "_dialog", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(Commands, "_is_assistant_run_active", lambda: False)
+    monkeypatch.setattr(
+        Commands, "_start_in_app_clanker", lambda prompt: started.append(prompt) or True
+    )
+    monkeypatch.setattr(
+        Commands, "_append_in_app_conversation", lambda *_args, **_kwargs: True
+    )
+
+    Commands._report_result(_result(), "Aero Section")
+
+    assert started == []
 
 
 def test_failed_analyze_does_not_push_into_grok_chat(monkeypatch) -> None:
@@ -127,3 +185,16 @@ def test_append_and_steering_helpers_call_gui_and_service(monkeypatch) -> None:
 
     assert ("append", "VibeCAD", "CL=1.516", True, {"source": "aero"}) in calls
     assert ("steer", "CL=1.516", "aero") in calls
+
+
+def test_is_assistant_run_active_probes_vibecadgui(monkeypatch) -> None:
+    gui = ModuleType("VibeCADGui")
+    gui._is_assistant_run_active = lambda: True
+    monkeypatch.setitem(sys.modules, "VibeCADGui", gui)
+    assert Commands._is_assistant_run_active() is True
+
+    gui._is_assistant_run_active = lambda: False
+    assert Commands._is_assistant_run_active() is False
+
+    monkeypatch.setitem(sys.modules, "VibeCADGui", ModuleType("VibeCADGui"))
+    assert Commands._is_assistant_run_active() is False

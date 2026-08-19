@@ -655,6 +655,9 @@ KNOWN_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "VibeCADAero_VLM",
         "VibeCADAero_ExportJSBSim",
         "VibeCADAero_Report",
+        "VibeCADAero_ProposeRepairs",
+        "VibeCADAero_ApplyRepairs",
+        "VibeCADAero_FlightCard",
         "Std_Measure",
         "Std_MassProperties",
         "Inspection_VisualInspection",
@@ -695,6 +698,9 @@ OPTIONAL_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "VibeCADAero_VLM",
         "VibeCADAero_ExportJSBSim",
         "VibeCADAero_Report",
+        "VibeCADAero_ProposeRepairs",
+        "VibeCADAero_ApplyRepairs",
+        "VibeCADAero_FlightCard",
     ),
     "parameters": (),
     "aero": (),
@@ -812,11 +818,6 @@ _HUMAN_ONLY_COMMAND_IDS = frozenset(
         "FEM_Examples",
         "Sketcher_EditSketch",
         "Sketcher_CancelSketch",
-        "VibeCADAero_Analyze",
-        "VibeCADAero_Section",
-        "VibeCADAero_VLM",
-        "VibeCADAero_ExportJSBSim",
-        "VibeCADAero_Report",
     }
 )
 
@@ -869,6 +870,7 @@ _READ_COMMAND_IDS = frozenset(
         "Mesh_BoundingBox",
         "FEM_PostFilterLinearizedStresses",
         "TechDraw_ExtensionSelectLineAttributes",
+        "VibeCADAero_FlightCard",
     }
 )
 
@@ -884,6 +886,7 @@ _EXPORT_COMMAND_IDS = frozenset(
         "CAM_PostSelected",
         "Robot_ExportKukaCompact",
         "Robot_ExportKukaFull",
+        "VibeCADAero_ExportJSBSim",
     }
 )
 
@@ -1232,6 +1235,8 @@ _CAPABILITY_OVERRIDES.update(
     }
 )
 _CAPABILITY_OVERRIDES["TechDraw_DimensionRepair"] = "drawing.dimension_repair"
+_CAPABILITY_OVERRIDES["VibeCADAero_ExportJSBSim"] = "aero.export"
+_CAPABILITY_OVERRIDES["VibeCADAero_FlightCard"] = "aero.inspect"
 _CAPABILITY_OVERRIDES.update(
     {
         command_id: "sketch.draw_arc"
@@ -1368,6 +1373,10 @@ _CAPABILITY_OVERRIDES.update(
 )
 
 _OPERATION_VARIANT_OVERRIDES = {
+    "VibeCADAero_ExportJSBSim": "export_jsbsim",
+    "VibeCADAero_ProposeRepairs": "propose_repairs",
+    "VibeCADAero_ApplyRepairs": "apply_repairs",
+    "VibeCADAero_FlightCard": "flight_card",
     "Spreadsheet_CreateSheet": "create",
     "Spreadsheet_Import": "import_csv",
     "Spreadsheet_Export": "export_csv",

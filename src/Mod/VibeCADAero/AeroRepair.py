@@ -62,41 +62,49 @@ def propose_repairs(
     changes: list[dict[str, Any]] = []
     span_mm = float(cfg["span_mm"])
     chord_mm = float(cfg["chord_mm"])
+    has_h_tail = bool(
+        cfg.get("has_h_tail")
+        or (doc is not None and AeroConfig.find_named(doc, "h_tail") is not None)
+    )
     tail_span = float(cfg.get("tail_span_mm") or 0.30 * span_mm)
     tail_chord = float(cfg.get("tail_chord_mm") or 0.60 * chord_mm)
     boom_mm = float(cfg.get("boom_length_mm") or (cfg.get("boom_length_m") or BOOM_MIN_M) * 1000.0)
     stagger = float(cfg.get("stagger_c") or 1.15)
     xyz_c = _current_xyz_ref_c(cfg)
 
-    new_tail_span = min(span_mm * TAIL_SPAN_MAX_FRAC, tail_span * TAIL_SPAN_GROW)
-    if new_tail_span - tail_span > _MM_THRESHOLD:
-        changes.append(
-            _change(
-                "h_tail",
-                "tail_span_mm",
-                tail_span,
-                new_tail_span,
-                (
-                    f"Grew the horizontal tail span from {_mm(tail_span)} mm "
-                    f"to {_mm(new_tail_span)} mm."
-                ),
+    if has_h_tail:
+        new_tail_span = min(span_mm * TAIL_SPAN_MAX_FRAC, tail_span * TAIL_SPAN_GROW)
+        if new_tail_span - tail_span > _MM_THRESHOLD:
+            changes.append(
+                _change(
+                    "h_tail",
+                    "tail_span_mm",
+                    tail_span,
+                    new_tail_span,
+                    (
+                        f"Grew the horizontal tail span from {_mm(tail_span)} mm "
+                        f"to {_mm(new_tail_span)} mm."
+                    ),
+                )
             )
-        )
 
-    new_tail_chord = min(chord_mm * TAIL_CHORD_MAX_FRAC, tail_chord * TAIL_CHORD_GROW)
-    if new_tail_chord - tail_chord > _MM_THRESHOLD:
-        changes.append(
-            _change(
-                "h_tail",
-                "tail_chord_mm",
-                tail_chord,
-                new_tail_chord,
-                (
-                    f"Grew the horizontal tail chord from {_mm(tail_chord)} mm "
-                    f"to {_mm(new_tail_chord)} mm."
-                ),
-            )
+        new_tail_chord = min(
+            chord_mm * TAIL_CHORD_MAX_FRAC,
+            tail_chord * TAIL_CHORD_GROW,
         )
+        if new_tail_chord - tail_chord > _MM_THRESHOLD:
+            changes.append(
+                _change(
+                    "h_tail",
+                    "tail_chord_mm",
+                    tail_chord,
+                    new_tail_chord,
+                    (
+                        f"Grew the horizontal tail chord from {_mm(tail_chord)} mm "
+                        f"to {_mm(new_tail_chord)} mm."
+                    ),
+                )
+            )
 
     boom_cap = chord_mm * BOOM_MAX_CHORD_MULT
     new_boom = min(boom_cap, max(BOOM_MIN_M * 1000.0, boom_mm * BOOM_GROW))
@@ -297,10 +305,10 @@ def _scale_part(
     center: tuple[float, float, float],
 ) -> bool:
     changed = _try_freecad_scale(obj, sx, sy, sz, center)
-    bbox = _bbox_of(obj)
-    if bbox is not None:
-        _scale_bbox(bbox, sx, sy, sz, center)
-        changed = True
+    if not changed:
+        bbox = _bbox_of(obj)
+        if bbox is not None:
+            changed = _scale_bbox(bbox, sx, sy, sz, center)
     if hasattr(obj, "Length") and abs(sx - 1.0) > _UNIT_THRESHOLD:
         try:
             obj.Length = float(obj.Length) * sx
@@ -345,7 +353,7 @@ def _scale_bbox(
     sy: float,
     sz: float,
     center: tuple[float, float, float],
-) -> None:
+) -> bool:
     cx, cy, cz = center
 
     def _edge(vmin: float, vmax: float, origin: float, scale: float) -> tuple[float, float]:
@@ -354,12 +362,13 @@ def _scale_bbox(
     xmin, xmax = _edge(float(bbox.XMin), float(bbox.XMax), cx, sx)
     ymin, ymax = _edge(float(bbox.YMin), float(bbox.YMax), cy, sy)
     zmin, zmax = _edge(float(bbox.ZMin), float(bbox.ZMax), cz, sz)
-    bbox.XMin, bbox.XMax = xmin, xmax
-    bbox.YMin, bbox.YMax = ymin, ymax
-    bbox.ZMin, bbox.ZMax = zmin, zmax
-    bbox.XLength = abs(xmax - xmin)
-    bbox.YLength = abs(ymax - ymin)
-    bbox.ZLength = abs(zmax - zmin)
+    try:
+        bbox.XMin, bbox.XMax = xmin, xmax
+        bbox.YMin, bbox.YMax = ymin, ymax
+        bbox.ZMin, bbox.ZMax = zmin, zmax
+    except Exception:
+        return False
+    return True
 
 
 def _translate(obj: Any, dx: float, dy: float, dz: float) -> bool:

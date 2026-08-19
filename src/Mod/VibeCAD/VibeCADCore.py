@@ -141,12 +141,12 @@ def downscale_reference_image(
         result["image_size"] = [width, height]
         long_edge = max(width, height)
         # The project store owns the user's reference, not a provider-specific
-        # thumbnail.  Keep a compact source byte-for-byte; re-encoding an
-        # optimized line drawing as a full-color PNG can make it much larger
-        # while destroying the small dimensions the model needs to read.
-        # Provider payload construction applies its own runtime size/edge
-        # limits without degrading the durable reference.
-        if original_bytes <= max_bytes:
+        # thumbnail.  Keep a compact already-small-edge source byte-for-byte;
+        # re-encoding an optimized line drawing as a full-color PNG can make
+        # it much larger while destroying the small dimensions the model
+        # needs to read. Compact files whose long edge exceeds max_edge still
+        # need a resize so later provider payloads stay within limits.
+        if original_bytes <= max_bytes and long_edge <= max_edge:
             return result
 
         encode_format = _REFERENCE_ENCODE_FORMATS.get(

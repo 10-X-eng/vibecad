@@ -36,6 +36,36 @@ def worker_executable() -> Path:
     )
 
 
+def fallback_command() -> tuple[Path, Path]:
+    """Return the bundled FreeCADCmd and Python fallback runner."""
+
+    import FreeCAD as App
+
+    home = Path(str(App.getHomePath())).resolve()
+    command_names = (
+        ("FreeCADCmd.exe", "freecadcmd.exe")
+        if sys.platform == "win32"
+        else ("FreeCADCmd", "freecadcmd")
+    )
+    directories = (home / "bin", home, home.parent / "MacOS")
+    command = next(
+        (
+            directory / name
+            for directory in directories
+            for name in command_names
+            if (directory / name).is_file()
+        ),
+        None,
+    )
+    runner = Path(__file__).resolve().with_name("VibeCADGeometryFallbackRunner.py")
+    if command is None or not runner.is_file():
+        raise RuntimeError(
+            "The isolated VibeCAD geometry fallback is missing. "
+            "Rebuild or reinstall VibeCAD."
+        )
+    return command, runner
+
+
 def validate_shape(
     shape: Any,
     *,
@@ -141,7 +171,101 @@ def execute_job(
     cancellation_check: Callable[[], bool] | None = None,
     deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
 ) -> dict[str, Any]:
-    executable = worker_executable()
+    try:
+        executable = worker_executable()
+    except RuntimeError as exc:
+        if "geometry worker is missing" not in str(exc):
+            raise
+        return _execute_job_fallback_process(
+            request_path,
+            result_path,
+            cancellation_check=cancellation_check,
+            deadline_seconds=deadline_seconds,
+        )
+    try:
+        return _execute_job_isolated(
+            executable,
+            request_path,
+            result_path,
+            cancellation_check=cancellation_check,
+            deadline_seconds=deadline_seconds,
+        )
+    except FileNotFoundError:
+        return _execute_job_fallback_process(
+            request_path,
+            result_path,
+            cancellation_check=cancellation_check,
+            deadline_seconds=deadline_seconds,
+        )
+
+
+def _execute_job_in_process(
+    request_path: str | Path,
+    result_path: str | Path,
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+) -> dict[str, Any]:
+    """Compatibility entry point; fallback work is now process-isolated."""
+
+    return _execute_job_fallback_process(
+        request_path,
+        result_path,
+        cancellation_check=cancellation_check,
+        deadline_seconds=deadline_seconds,
+    )
+
+
+def _execute_job_fallback_process(
+    request_path: str | Path,
+    result_path: str | Path,
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+) -> dict[str, Any]:
+    executable, runner = fallback_command()
+    request = str(Path(request_path))
+    console_command = (
+        "import runpy,sys;"
+        f"sys.argv=[{json.dumps(str(runner))},{json.dumps(request)}];"
+        f"runpy.run_path({json.dumps(str(runner))},run_name='__main__')\n"
+    )
+    return _execute_job_command(
+        [str(executable), "-c"],
+        result_path,
+        cancellation_check=cancellation_check,
+        deadline_seconds=deadline_seconds,
+        execution_mode="isolated_freecadcmd_fallback",
+        stdin_text=console_command,
+    )
+
+
+def _execute_job_isolated(
+    executable: Path,
+    request_path: str | Path,
+    result_path: str | Path,
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+) -> dict[str, Any]:
+    return _execute_job_command(
+        [str(executable), str(Path(request_path))],
+        result_path,
+        cancellation_check=cancellation_check,
+        deadline_seconds=deadline_seconds,
+        execution_mode="isolated_geometry_worker",
+    )
+
+
+def _execute_job_command(
+    command: list[str],
+    result_path: str | Path,
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+    execution_mode: str,
+    stdin_text: str | None = None,
+) -> dict[str, Any]:
     creation_flags = (
         int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if sys.platform == "win32"
@@ -149,8 +273,8 @@ def execute_job(
     )
     started = time.monotonic()
     process = subprocess.Popen(
-        [str(executable), str(Path(request_path))],
-        stdin=subprocess.DEVNULL,
+        command,
+        stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -159,6 +283,17 @@ def execute_job(
         start_new_session=sys.platform != "win32",
         creationflags=creation_flags,
     )
+    if stdin_text is not None:
+        stream = getattr(process, "stdin", None)
+        if stream is None:
+            _terminate_process(process)
+            raise RuntimeError("The isolated geometry console has no input stream.")
+        try:
+            stream.write(stdin_text)
+            stream.flush()
+        finally:
+            stream.close()
+            process.stdin = None
     cancelled = False
     timed_out = False
     deadline = started + max(0.1, float(deadline_seconds)) + 2.0
@@ -241,6 +376,7 @@ def execute_job(
             "elapsed_seconds": elapsed,
         }
     result.setdefault("elapsed_seconds", elapsed)
+    result["execution_mode"] = execution_mode
     if process.returncode != 0 and result.get("ok"):
         result.update(
             {

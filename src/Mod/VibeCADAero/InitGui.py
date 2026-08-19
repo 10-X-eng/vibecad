@@ -25,6 +25,9 @@ class VibeCADAeroWorkbench(Workbench):
             "VibeCADAero_VLM",
             "VibeCADAero_ExportJSBSim",
             "VibeCADAero_Report",
+            "VibeCADAero_ProposeRepairs",
+            "VibeCADAero_ApplyRepairs",
+            "VibeCADAero_FlightCard",
         ]
         self.appendToolbar("Aero", commands)
         self.appendMenu("Aero", commands)

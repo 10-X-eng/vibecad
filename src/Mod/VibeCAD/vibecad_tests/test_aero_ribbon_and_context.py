@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import zipfile
 
 from VibeCADAeroContext import document_aero_summary
 from VibeCADCore import VibeCADService
@@ -32,6 +33,9 @@ def test_aero_surface_id_is_registered() -> None:
         "VibeCADAero_VLM",
         "VibeCADAero_ExportJSBSim",
         "VibeCADAero_Report",
+        "VibeCADAero_ProposeRepairs",
+        "VibeCADAero_ApplyRepairs",
+        "VibeCADAero_FlightCard",
     ):
         assert command in KNOWN_ACTIONS_BY_SURFACE["aero"]
         assert command in OPTIONAL_ACTIONS_BY_SURFACE["model"]
@@ -88,6 +92,9 @@ def _aero_manifest() -> dict[str, object]:
                     action("VibeCADAero_VLM", "VLM"),
                     action("VibeCADAero_ExportJSBSim", "JSBSim"),
                     action("VibeCADAero_Report", "Report"),
+                    action("VibeCADAero_ProposeRepairs", "Propose"),
+                    action("VibeCADAero_ApplyRepairs", "Apply"),
+                    action("VibeCADAero_FlightCard", "Card"),
                 ],
             },
             {
@@ -113,13 +120,71 @@ def test_aero_surface_classifies_without_unknown_actions() -> None:
         for plan in plans
         if plan.classification.human_only
     }
-    assert {
+    aero_tools = {
         "VibeCADAero_Analyze",
         "VibeCADAero_Section",
         "VibeCADAero_VLM",
         "VibeCADAero_ExportJSBSim",
         "VibeCADAero_Report",
-    } <= human
+        "VibeCADAero_ProposeRepairs",
+        "VibeCADAero_ApplyRepairs",
+        "VibeCADAero_FlightCard",
+    }
+    assert human.isdisjoint(aero_tools)
+    variants = {
+        plan.command_id: plan.operation_variant
+        for plan in plans
+        if plan.command_id in aero_tools
+    }
+    assert variants["VibeCADAero_Analyze"] == "analyze"
+    assert variants["VibeCADAero_ExportJSBSim"] == "export_jsbsim"
+    assert variants["VibeCADAero_FlightCard"] == "flight_card"
+    assert {
+        plan.capability_family
+        for plan in plans
+        if plan.command_id in aero_tools
+    } == {"aero.solve", "aero.export", "aero.inspect"}
+
+
+def test_aero_native_surface_exposes_solve_export_inspect() -> None:
+    from collections import defaultdict
+
+    from VibeCADNativeAeroBindings import register_aero_solve_capability_implementation
+    from VibeCADNativeAeroRuntime import NativeAeroRuntime
+    from VibeCADNativeAeroSchema import register_aero_solve_capability_definition
+    from VibeCADNativeCapabilityRegistry import NativeCapabilityRegistry
+
+    surface = RibbonSurface.from_manifest(_aero_manifest(), revision=1)
+    plans = classify_native_surface(surface)
+    family_classes: dict[str, set[str]] = defaultdict(set)
+    for plan in plans:
+        classification = plan.classification
+        if classification.human_only or classification.parent_only:
+            continue
+        if classification.export:
+            primary = "export"
+        elif classification.read:
+            primary = "read"
+        elif classification.view:
+            primary = "view"
+        elif classification.mutation:
+            primary = "mutation"
+        else:
+            primary = "none"
+        family_classes[plan.capability_family].add(primary)
+    mixed = {name: values for name, values in family_classes.items() if len(values) != 1}
+    assert mixed == {}
+    assert "aero.solve" in family_classes
+    assert "aero.export" in family_classes
+    assert "aero.inspect" in family_classes
+    registry = NativeCapabilityRegistry()
+    register_aero_solve_capability_definition(registry)
+    register_aero_solve_capability_implementation(registry)
+    assert registry.definition("aero.solve") is not None
+    assert registry.definition("aero.export") is not None
+    assert registry.definition("aero.inspect") is not None
+    assert registry.implementation("aero.solve") is not None
+    _ = NativeAeroRuntime
 
 
 def test_python_surface_list_includes_aero() -> None:
@@ -306,6 +371,7 @@ def test_provider_context_summary_includes_aero_when_report_exists() -> None:
     context = service.provider_context_summary()
     assert "aero" in context
     assert context["aero"]["available"] is True
+    assert context["aero"]["claim_ceiling"] == "not_airworthy"
     assert context["aero"]["vehicle_type"] == "multirotor"
     assert context["aero"]["CL"] == 0.77
     assert context["aero"]["source"] == "NeuralFoil"
@@ -498,3 +564,174 @@ def test_session_and_provider_allowlists_keep_aero(monkeypatch) -> None:
     assert payload["active_state"]["aero"]["PitchUnstable"] is True
     assert "aero" not in (payload["active_state"].get("document") or {})
     assert "human_steering" not in encoded
+
+
+def test_aero_bindings_forward_the_exact_native_ticket(monkeypatch) -> None:
+    import VibeCADNativeAeroBindings as bindings
+
+    ticket = object()
+    seen: list[tuple[str, object]] = []
+
+    class _Runtime:
+        def solve(self, arguments, *, ticket):
+            seen.append((str(arguments["operation"]), ticket))
+            return {"operation": arguments["operation"]}
+
+        def export(self, arguments, *, ticket):
+            seen.append(("export", ticket))
+            return {"operation": "export"}
+
+        def inspect(self, arguments, *, ticket):
+            seen.append(("inspect", ticket))
+            return {"operation": "inspect"}
+
+    runtime = _Runtime()
+    monkeypatch.setattr(bindings, "_require_runtime", lambda _call: runtime)
+    call = SimpleNamespace(arguments={"operation": "section"}, ticket=ticket)
+
+    bindings._solve(call)
+    bindings._export(call)
+    bindings._inspect(call)
+
+    assert seen == [("section", ticket), ("export", ticket), ("inspect", ticket)]
+
+
+def test_native_aero_solve_uses_guarded_mutation_runner(monkeypatch) -> None:
+    import VibeCADAero
+    import VibeCADNativeAeroRuntime as runtime_module
+    from VibeCADNativeState import NativeCallTicket
+
+    document = SimpleNamespace(Uid="doc-aero", Objects=[])
+
+    class _State:
+        def current_revision(self, _uid):
+            return 4
+
+    class _Context:
+        def __init__(self):
+            self.document = document
+            self.document_uid = document.Uid
+            self.state = _State()
+            self.authorize_output = None
+
+        def guard(self):
+            return None
+
+    context = _Context()
+    monkeypatch.setattr(runtime_module, "NativeRuntimeContext", _Context)
+    monkeypatch.setattr(
+        VibeCADAero,
+        "run_section",
+        lambda doc: {"ok": True, "source": "test", "document": doc.Uid},
+    )
+    calls: list[dict] = []
+
+    def run_mutation(ctx, **kwargs):
+        calls.append(kwargs)
+        draft = kwargs["mutate"](ctx.document)
+        return dict(kwargs["verify"](ctx.document, draft))
+
+    monkeypatch.setattr(
+        runtime_module,
+        "run_immediate_mutation",
+        run_mutation,
+        raising=False,
+    )
+    ticket = NativeCallTicket("doc-aero", "aero.solve", 4, "aero-token")
+    runtime = runtime_module.NativeAeroRuntime(context)
+
+    result = runtime.solve({"operation": "section"}, ticket=ticket)
+
+    assert result["source"] == "test"
+    assert len(calls) == 1
+    assert calls[0]["ticket"] is ticket
+    assert calls[0]["transaction_name"] == "Aero Section"
+
+
+def test_native_aero_export_requires_human_authorization_and_writes_one_zip(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import AeroJSBSim
+    import VibeCADAero
+    import VibeCADNativeAeroRuntime as runtime_module
+    from VibeCADNativeOutput import authorize_native_output_path
+    from VibeCADNativeState import NativeCallTicket
+
+    document = SimpleNamespace(Uid="doc-aero", Objects=[])
+    requests = []
+
+    class _State:
+        def current_revision(self, _uid):
+            return 2
+
+    class _Context:
+        def __init__(self):
+            self.document = document
+            self.document_uid = document.Uid
+            self.state = _State()
+            self.authorize_output = self._authorize
+
+        def guard(self):
+            return None
+
+        def _authorize(self, request):
+            requests.append(request)
+            return authorize_native_output_path(
+                request,
+                tmp_path / "vibecad_aero_jsbsim.zip",
+            )
+
+    def fake_write(_payload, *, output_dir, load_fn=None):
+        root = Path(output_dir)
+        aircraft = root / "vibecad_aero"
+        engine = root / "engine"
+        aircraft.mkdir(parents=True)
+        engine.mkdir(parents=True)
+        fdm = aircraft / "vibecad_aero.xml"
+        electric = engine / "electric.xml"
+        direct = engine / "direct.xml"
+        fdm.write_text("<fdm_config/>", encoding="utf-8")
+        electric.write_text("<electric_engine/>", encoding="utf-8")
+        direct.write_text("<direct/>", encoding="utf-8")
+        return {
+            "fdm_path": str(fdm),
+            "engine_path": str(electric),
+            "thruster_path": str(direct),
+            "model": "vibecad_aero",
+            "loaded": False,
+            "boot_error": "not loaded during export",
+        }
+
+    context = _Context()
+    monkeypatch.setattr(runtime_module, "NativeRuntimeContext", _Context)
+    monkeypatch.setattr(
+        VibeCADAero,
+        "prepare_jsbsim_payload",
+        lambda doc: {"source": "test", "document": doc.Uid},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        VibeCADAero,
+        "export_jsbsim",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Native export must not use the unguarded public writer")
+        ),
+    )
+    monkeypatch.setattr(AeroJSBSim, "write_plant", fake_write)
+    ticket = NativeCallTicket("doc-aero", "aero.export", 2, "export-token")
+    runtime = runtime_module.NativeAeroRuntime(context)
+
+    result = runtime.export({}, ticket=ticket)
+
+    assert len(requests) == 1
+    assert requests[0].allowed_suffixes == (".zip",)
+    output = tmp_path / "vibecad_aero_jsbsim.zip"
+    assert output.is_file()
+    with zipfile.ZipFile(output) as archive:
+        assert set(archive.namelist()) == {
+            "vibecad_aero/vibecad_aero.xml",
+            "engine/electric.xml",
+            "engine/direct.xml",
+        }
+    assert result["output"]["file_name"] == output.name

@@ -1382,6 +1382,88 @@ def test_vibecad_bootstrap_helpers_survive_freecad_exec_namespace(monkeypatch) -
     assert any("catalog unavailable" in warning for warning in warnings)
 
 
+def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> None:
+    """The deferred callback must import VibeCADGui in its own body.
+
+    FreeCAD exec()s InitGui.py with separate globals and locals. A module-level
+    import is not visible to nested functions, so removing the local import
+    raises NameError and the server never starts.
+    """
+
+    class ParameterGroup:
+        def GetString(self, _name: str, default: str) -> str:
+            return default
+
+        def SetString(self, _name: str, _value: str) -> None:
+            pass
+
+        def GetBool(self, _name: str, default: bool) -> bool:
+            return default
+
+        def SetBool(self, _name: str, _value: bool) -> None:
+            pass
+
+    started: list[dict] = []
+    warnings: list[str] = []
+    dispatch = object()
+    app = SimpleNamespace(
+        Console=SimpleNamespace(PrintWarning=warnings.append),
+        ParamGet=lambda _path: ParameterGroup(),
+    )
+    qt_core = SimpleNamespace(
+        QTimer=SimpleNamespace(singleShot=lambda _delay, _callback: None)
+    )
+    qt_widgets = SimpleNamespace(
+        QApplication=SimpleNamespace(instance=lambda: None)
+    )
+    monkeypatch.setitem(sys.modules, "FreeCAD", app)
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide",
+        SimpleNamespace(QtCore=qt_core, QtWidgets=qt_widgets),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADGui",
+        SimpleNamespace(
+            ensure_commands_registered=lambda: None,
+            _dispatch_to_document_thread=dispatch,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAgentControl",
+        SimpleNamespace(
+            ensure_server_started=lambda **kwargs: started.append(kwargs),
+            shutdown_server=lambda **_kwargs: None,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADFasteners",
+        SimpleNamespace(require_available=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADFastenersGui",
+        SimpleNamespace(ensure_commands_registered=lambda: None),
+    )
+
+    init_gui = ROOT / "src/Mod/VibeCAD/InitGui.py"
+    loader_globals = {"App": app}
+    loader_locals = {}
+    exec(
+        compile(init_gui.read_bytes(), str(init_gui), "exec"),
+        loader_globals,
+        loader_locals,
+    )
+
+    loader_locals["_setup_agent_control"]()
+
+    assert started == [{"document_thread_dispatch": dispatch}]
+    assert not any("failed to start" in warning for warning in warnings)
+
+
 def test_vibecad_bootstrap_migrates_removed_bim_preferences(monkeypatch) -> None:
     class ParameterGroup:
         def __init__(self, values=None) -> None:

@@ -63,11 +63,18 @@ def document_aero_summary(doc: Any | None) -> dict[str, Any]:
     )
     summary: dict[str, Any] = {
         "available": bool(solved),
+        "evidence_state": "model_unqualified" if solved else "evidence_waiting",
+        "claim_ceiling": "not_airworthy",
+        "not_airworthy": True,
         "vehicle_type": _vehicle_type(config, report),
         "airfoil": _airfoil(config, report),
         "geometry": _geometry(config if config is not None else report),
         "geometry_source": geometry_source,
         "jsbsim_path": _jsbsim_path(doc, report),
+        "hover_source": _clip(
+            getattr(report, "HoverSource", None) or "momentum-theory" if report is not None else "",
+            _MAX_TEXT,
+        ),
     }
     assistant = _assistant_json(doc, report)
     if assistant:
@@ -97,6 +104,8 @@ def document_aero_summary(doc: Any | None) -> dict[str, Any]:
 
 def _assistant_json(doc: Any, report: Any | None) -> dict[str, Any]:
     raw = _assistant_json_source(getattr(doc, "AeroAssistantJson", None))
+    if raw in (None, ""):
+        raw = _assistant_json_source(getattr(doc, "AeroAssistantJsonText", None))
     if raw in (None, ""):
         obj = _named(doc, "AeroAssistantJson")
         if obj is not None:
@@ -147,6 +156,37 @@ def _parse_assistant_json(raw: Any) -> dict[str, Any]:
     source = _clip(payload.get("source") or "", _MAX_TEXT)
     if source:
         result["source"] = source
+    hover_source = _clip(payload.get("hover_source") or "", _MAX_TEXT)
+    if hover_source:
+        result["hover_source"] = hover_source
+    result["claim_ceiling"] = _clip(
+        payload.get("claim_ceiling") or "not_airworthy", _MAX_TEXT
+    )
+    result["evidence_state"] = _clip(
+        payload.get("evidence_state") or "model_unqualified", _MAX_TEXT
+    )
+    result["not_airworthy"] = True
+    card = payload.get("flight_card")
+    if isinstance(card, dict):
+        trimmed: dict[str, Any] = {}
+        for key in (
+            "mass_kg",
+            "wing_loading_n_m2",
+            "disk_loading_n_m2",
+            "thrust_to_weight",
+            "hover_margin_tw",
+            "tail_volume_coeff",
+            "static_margin_c",
+            "endurance_hover_min",
+            "pitch_stable",
+            "used_mass_source",
+        ):
+            if key in card:
+                trimmed[key] = card[key]
+        if card.get("mass") and isinstance(card["mass"], dict):
+            trimmed["used_mass_source"] = card["mass"].get("used_mass_source")
+        if trimmed:
+            result["flight_card"] = trimmed
     corrections = _bounded_corrections(payload.get("corrections"))
     if not corrections:
         corrections = _bounded_corrections(payload.get("Corrections"))

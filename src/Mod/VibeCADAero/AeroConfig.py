@@ -24,9 +24,13 @@ VOIDER_DEFAULTS: dict[str, Any] = {
     "thrust_to_weight": 1.9,
     "cruise_prop_eta": 0.65,
     "vehicle_type": DEFAULT_VEHICLE_TYPE,
+    "battery_wh": None,
+    "airframe_density_kg_m3": 80.0,
+    "cad_mass_complete": False,
 }
 
 _STRING_KEYS = ("airfoil", "vehicle_type")
+_BOOL_KEYS = ("cad_mass_complete",)
 _WRITE_KEYS = (
     "span_mm",
     "chord_mm",
@@ -46,6 +50,9 @@ _WRITE_KEYS = (
     "tail_span_mm",
     "tail_chord_mm",
     "xyz_ref_c",
+    "battery_wh",
+    "airframe_density_kg_m3",
+    "cad_mass_complete",
 )
 
 _PARAM_KEYS = (
@@ -67,6 +74,9 @@ _PARAM_KEYS = (
     "tail_chord_mm",
     "xyz_ref_c",
     "cg_x_m",
+    "battery_wh",
+    "airframe_density_kg_m3",
+    "cad_mass_complete",
 )
 
 _REPAIR_KEYS = (
@@ -96,6 +106,8 @@ def resolve_geometry(doc: Any | None = None) -> dict[str, Any]:
     values["vehicle_type"] = DEFAULT_VEHICLE_TYPE
     if doc is None:
         return finalize(values)
+    if find_named(doc, "h_tail") is not None:
+        values["has_h_tail"] = True
 
     aero = find_named(doc, "AeroConfig")
     if aero is not None and _has_any_param(aero):
@@ -159,12 +171,19 @@ def finalize(values: dict[str, Any]) -> dict[str, Any]:
     )
     if not boom_mm:
         cfg["boom_length_mm"] = cfg["boom_length_m"] * 1000.0
-    if not cfg.get("tail_span_mm"):
-        cfg["tail_span_mm"] = 0.30 * float(cfg["span_mm"])
-    if not cfg.get("tail_chord_mm"):
-        cfg["tail_chord_mm"] = 0.60 * float(cfg["chord_mm"])
-    cfg["tail_span_m"] = float(cfg["tail_span_mm"]) / 1000.0
-    cfg["tail_chord_m"] = float(cfg["tail_chord_mm"]) / 1000.0
+    explicit_tail = values.get("tail_span_mm") or values.get("tail_chord_mm")
+    has_h_tail = bool(cfg.get("has_h_tail") or explicit_tail)
+    cfg["has_h_tail"] = has_h_tail
+    if has_h_tail:
+        if not cfg.get("tail_span_mm"):
+            cfg["tail_span_mm"] = 0.30 * float(cfg["span_mm"])
+        if not cfg.get("tail_chord_mm"):
+            cfg["tail_chord_mm"] = 0.60 * float(cfg["chord_mm"])
+        cfg["tail_span_m"] = float(cfg["tail_span_mm"]) / 1000.0
+        cfg["tail_chord_m"] = float(cfg["tail_chord_mm"]) / 1000.0
+    else:
+        cfg["tail_span_m"] = 0.0
+        cfg["tail_chord_m"] = 0.0
     if cfg.get("xyz_ref_c") is not None:
         xyz_c = float(cfg["xyz_ref_c"])
     elif cfg.get("cg_x_m") is not None and chord_m:
@@ -441,6 +460,8 @@ def _merge_params(values: dict[str, Any], obj: Any) -> None:
             continue
         if key in _STRING_KEYS:
             values[key] = str(raw)
+        elif key in _BOOL_KEYS:
+            values[key] = bool(raw)
         else:
             values[key] = float(raw)
     vehicle = getattr(obj, "vehicle_type", None)
@@ -458,11 +479,21 @@ def _merge_params(values: dict[str, Any], obj: Any) -> None:
 def _set_param(obj: Any, key: str, value: Any) -> None:
     if value is None:
         return
-    stored = str(value) if key in _STRING_KEYS else float(value)
+    if key in _STRING_KEYS:
+        stored = str(value)
+    elif key in _BOOL_KEYS:
+        stored = bool(value)
+    else:
+        stored = float(value)
     if not hasattr(obj, key):
         adder = getattr(obj, "addProperty", None)
         if callable(adder):
-            typ = "App::PropertyString" if key in _STRING_KEYS else "App::PropertyFloat"
+            if key in _STRING_KEYS:
+                typ = "App::PropertyString"
+            elif key in _BOOL_KEYS:
+                typ = "App::PropertyBool"
+            else:
+                typ = "App::PropertyFloat"
             try:
                 adder(typ, key, "Aero", key)
             except Exception:

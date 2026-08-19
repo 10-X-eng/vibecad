@@ -473,7 +473,9 @@ def complete_geometry_read(
             },
             "geometry": dict(facts),
             "execution": {
-                "mode": "isolated_geometry_worker",
+                "mode": str(
+                    execution.get("execution_mode") or "isolated_geometry_worker"
+                ),
                 "elapsed_seconds": execution.get("elapsed_seconds"),
                 "worker_elapsed_ms": execution.get("elapsed_ms"),
             },

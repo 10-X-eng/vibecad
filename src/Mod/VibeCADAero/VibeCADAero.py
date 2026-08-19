@@ -1,31 +1,41 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Public Aero helper for workbench commands and agent-control ``/v1/run``.
+"""Public Aero helper for ribbon commands and Native ``aero.solve`` tools.
 
-Example from Grok Bot (no SendKeys)::
-
-    import VibeCADAero
-    result = VibeCADAero.run_analyze(App.ActiveDocument)
+Analyze does not move CAD. Repair is propose/apply. JSBSim and Report use
+the last solve. Agent-control should call these functions, not raw exec
+that bypasses the stamps.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import AeroAirfoil
 import AeroConfig
+import AeroFlightCard
 import AeroJSBSim
+import AeroMass
+import AeroPreview
 import AeroRepair
 import AeroResults
 import AeroSolvers
+import AeroStamp
 from AeroSolvers import AeroDependencyError
 
 __all__ = [
     "AeroDependencyError",
+    "apply_repairs",
     "export_jsbsim",
+    "reject_repairs",
+    "flight_card",
+    "prepare_jsbsim_payload",
+    "propose_repairs",
     "run_analyze",
     "run_section",
     "run_vlm",
+    "write_last_report",
     "write_report",
 ]
 
@@ -36,9 +46,9 @@ def run_analyze(
     spreadsheet: bool = False,
     markdown: bool = False,
     export_plant: bool = False,
-    repair: bool = True,
+    repair: bool = False,
 ) -> dict[str, Any]:
-    """Run section + 3D + hover, optionally repair pitch-unstable geometry, and write ``AeroReport``."""
+    """Run section + 3D + hover and write ``AeroReport``. Does not repair CAD."""
 
     return _run(
         doc,
@@ -59,19 +69,45 @@ def run_vlm(doc: Any | None = None) -> dict[str, Any]:
     return _run(doc, run_section_solve=False, run_vlm_solve=True, repair=False)
 
 
-def export_jsbsim(doc: Any | None = None, results: dict[str, Any] | None = None) -> dict[str, Any]:
+def prepare_jsbsim_payload(
+    doc: Any | None = None,
+    results: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Resolve JSBSim input without writing files or mutating the document."""
+
     document = _require_doc(doc)
-    payload = results or _results_from_report(document)
+    payload = results if results is not None else _results_from_report(document)
     if payload is None:
-        solved = run_analyze(document)
-        if not solved.get("ok"):
-            return solved
-        payload = solved
-    else:
-        _merge_resolved_plant_geometry(payload, document)
+        return None
+    _merge_resolved_plant_geometry(payload, document)
+    return payload
+
+
+def export_jsbsim(
+    doc: Any | None = None,
+    results: dict[str, Any] | None = None,
+    *,
+    output_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    document = _require_doc(doc)
+    payload = prepare_jsbsim_payload(document, results)
+    if payload is None:
+        return {
+            "ok": False,
+            "error": "No AeroReport. Run Analyze before exporting JSBSim.",
+            **AeroStamp.stamp(
+                state=AeroStamp.STATE_WAITING,
+                ceiling=AeroStamp.CEILING_NOT_AIRWORTHY,
+                method="jsbsim",
+            ),
+        }
     written = AeroJSBSim.write_plant(
         payload,
-        output_dir=AeroJSBSim.default_output_dir(document),
+        output_dir=(
+            output_dir
+            if output_dir is not None
+            else AeroJSBSim.default_output_dir(document)
+        ),
     )
     AeroResults.write_report(
         document,
@@ -79,11 +115,205 @@ def export_jsbsim(doc: Any | None = None, results: dict[str, Any] | None = None)
         jsbsim_path=written["fdm_path"],
         jsbsim_boot_error=written.get("boot_error") or "",
     )
-    return {"ok": True, **written, **{k: payload.get(k) for k in ("CL", "CD", "source")}}
+    return {
+        "ok": True,
+        **written,
+        **{k: payload.get(k) for k in ("CL", "CD", "source")},
+        **AeroStamp.analysis_stamp(payload.get("source")),
+    }
+
+
+def write_last_report(
+    doc: Any | None = None,
+    *,
+    spreadsheet: bool = True,
+    markdown: bool = True,
+) -> dict[str, Any]:
+    document = _require_doc(doc)
+    payload = _results_from_report(document)
+    if payload is None:
+        return {
+            "ok": False,
+            "error": "No AeroReport. Run Analyze before writing a report.",
+            **AeroStamp.stamp(
+                state=AeroStamp.STATE_WAITING,
+                ceiling=AeroStamp.CEILING_NOT_AIRWORTHY,
+                method="report",
+            ),
+        }
+    AeroResults.write_report(
+        document,
+        payload,
+        spreadsheet=spreadsheet,
+        markdown=markdown,
+    )
+    return {"ok": True, **payload, **AeroStamp.analysis_stamp(payload.get("source"))}
 
 
 def write_report(doc: Any, payload: dict[str, Any], **kwargs: Any) -> Any:
     return AeroResults.write_report(doc, payload, **kwargs)
+
+
+def propose_repairs(
+    doc: Any | None = None,
+    *,
+    native_revision: str | None = None,
+) -> dict[str, Any]:
+    document = _require_doc(doc)
+    payload = _results_from_report(document)
+    if payload is None:
+        return {
+            "ok": False,
+            "error": "No AeroReport. Run Analyze before proposing repairs.",
+            **AeroStamp.stamp(
+                state=AeroStamp.STATE_WAITING,
+                ceiling=AeroStamp.CEILING_NOT_AIRWORTHY,
+                method="repair_preview",
+            ),
+        }
+    cfg = AeroConfig.resolve_geometry(document)
+    proposals = AeroRepair.propose_repairs(cfg, payload, document)
+    revision = AeroPreview.geometry_revision(document, cfg)
+    AeroPreview.write_preview(
+        document,
+        revision=revision,
+        proposals=proposals,
+        native_revision=native_revision,
+    )
+    return {
+        "ok": True,
+        "revision": revision,
+        "native_revision": native_revision,
+        "proposals": proposals,
+        "count": len(proposals),
+        **AeroStamp.stamp(
+            state=AeroStamp.STATE_UNQUALIFIED,
+            ceiling=AeroStamp.CEILING_NOT_AIRWORTHY,
+            method="repair_preview",
+        ),
+    }
+
+
+def apply_repairs(
+    doc: Any | None = None,
+    *,
+    native_revision: str | None = None,
+    manage_transaction: bool = True,
+) -> dict[str, Any]:
+    document = _require_doc(doc)
+    cfg = AeroConfig.resolve_geometry(document)
+    revision = AeroPreview.geometry_revision(document, cfg)
+    try:
+        proposals = AeroPreview.validate_preview(
+            document, revision, native_revision=native_revision
+        )
+    except AeroPreview.PreviewError as exc:
+        return _repair_apply_rejected(exc.reason)
+
+    owns_transaction = False
+    if manage_transaction and _transaction_is_active(document):
+        return _repair_apply_rejected("transaction_active")
+    try:
+        if manage_transaction and _can_manage_transaction(document):
+            document.openTransaction("Apply Aero Repairs")
+            owns_transaction = True
+        landed = AeroRepair.apply_repairs(document, cfg, proposals)
+        if proposals and not landed:
+            raise RuntimeError("The repair preview did not change configuration or CAD.")
+        recompute = getattr(document, "recompute", None)
+        if callable(recompute):
+            outcome = recompute()
+            if outcome is False:
+                raise RuntimeError("The repaired Aero document failed to recompute.")
+        AeroPreview.mark_preview_consumed(
+            document,
+            revision,
+            native_revision=native_revision,
+        )
+        if owns_transaction:
+            document.commitTransaction()
+            owns_transaction = False
+    except Exception:
+        if owns_transaction:
+            try:
+                document.abortTransaction()
+            except Exception:
+                return _repair_apply_rejected("rollback_failed")
+        return _repair_apply_rejected("apply_failed")
+    return {
+        "ok": True,
+        "landed": landed,
+        "count": len(landed),
+        "revision_before": revision,
+        **AeroStamp.stamp(
+            state=AeroStamp.STATE_PASS,
+            ceiling=AeroStamp.CEILING_GEOMETRY_APPLIED,
+            method="repair_apply",
+        ),
+    }
+
+
+def _repair_apply_rejected(reason: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": f"Repair apply rejected: {reason}",
+        **AeroStamp.stamp(
+            state=AeroStamp.STATE_REJECTED,
+            ceiling=AeroStamp.CEILING_GEOMETRY_APPLIED,
+            method="repair_apply",
+            extra={"reason": reason},
+        ),
+    }
+
+
+def _transaction_is_active(document: Any) -> bool:
+    booked = getattr(document, "getBookedTransactionID", None)
+    try:
+        booked_id = int(booked() or 0) if callable(booked) else 0
+    except Exception:
+        booked_id = 0
+    return bool(getattr(document, "HasPendingTransaction", False) or booked_id)
+
+
+def _can_manage_transaction(document: Any) -> bool:
+    return all(
+        callable(getattr(document, name, None))
+        for name in ("openTransaction", "commitTransaction", "abortTransaction")
+    )
+
+
+def reject_repairs(doc: Any | None = None) -> dict[str, Any]:
+    document = _require_doc(doc)
+    discarded = AeroPreview.discard_preview(document)
+    if discarded is None:
+        return {
+            "ok": False,
+            "error": "No repair preview to reject.",
+            **AeroStamp.stamp(
+                state=AeroStamp.STATE_REJECTED,
+                ceiling=AeroStamp.CEILING_GEOMETRY_APPLIED,
+                method="repair_reject",
+                extra={"reason": "missing"},
+            ),
+        }
+    return {
+        "ok": True,
+        "rejected": True,
+        **AeroStamp.stamp(
+            state=AeroStamp.STATE_REJECTED,
+            ceiling=AeroStamp.CEILING_GEOMETRY_APPLIED,
+            method="repair_reject",
+        ),
+    }
+
+
+def flight_card(doc: Any | None = None) -> dict[str, Any]:
+    document = _require_doc(doc)
+    cfg = AeroConfig.resolve_geometry(document)
+    results = _results_from_report(document)
+    mass = AeroMass.measure_document(document, cfg)
+    card = AeroFlightCard.build_card(cfg, results, mass)
+    return {"ok": True, **card}
 
 
 def _run(
@@ -136,6 +366,10 @@ def _run(
         payload["user_message"] = AeroRepair.format_user_message(
             changes, payload, repair_passes
         )
+        mass = AeroMass.measure_document(document, cfg)
+        payload["mass"] = mass
+        payload["flight_card"] = AeroFlightCard.build_card(cfg, payload, mass)
+        payload.update(AeroStamp.analysis_stamp(payload.get("source")))
         jsbsim_path = None
         boot = ""
         if export_plant:
@@ -163,9 +397,25 @@ def _run(
             "jsbsim_boot_error": boot,
         }
     except AeroDependencyError as exc:
-        return {"ok": False, "error": str(exc)}
+        return {
+            "ok": False,
+            "error": str(exc),
+            **AeroStamp.stamp(
+                state=AeroStamp.STATE_UNAVAILABLE,
+                ceiling=AeroStamp.CEILING_NOT_AIRWORTHY,
+                method="missing_backend",
+            ),
+        }
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {
+            "ok": False,
+            "error": str(exc),
+            **AeroStamp.stamp(
+                state=AeroStamp.STATE_FAILED,
+                ceiling=AeroStamp.CEILING_NOT_AIRWORTHY,
+                method="exception",
+            ),
+        }
 
 
 def _positive_cmalpha(payload: dict[str, Any]) -> bool:
@@ -223,6 +473,8 @@ def _ensure_aeroconfig(doc: Any, cfg: dict[str, Any]) -> Any | None:
         "xyz_ref_c",
         "thrust_to_weight",
         "vehicle_type",
+        "battery_wh",
+        "airframe_density_kg_m3",
     ):
         if not hasattr(obj, key):
             try:

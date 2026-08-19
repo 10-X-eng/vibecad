@@ -41,10 +41,10 @@ class _Doc:
         return None
 
 
-def test_run_analyze_defaults_to_repair_true():
+def test_run_analyze_defaults_to_repair_false():
     import inspect
 
-    assert inspect.signature(VibeCADAero.run_analyze).parameters["repair"].default is True
+    assert inspect.signature(VibeCADAero.run_analyze).parameters["repair"].default is False
     assert inspect.signature(VibeCADAero.run_section).parameters.get("repair") is None
     source = Path(__file__).resolve().parents[1].joinpath("VibeCADAero.py").read_text(
         encoding="utf-8"
@@ -78,8 +78,10 @@ def test_run_analyze_writes_report_with_injected_solvers(monkeypatch, tmp_path):
         lambda name: ([[1.0, 0.0], [0.0, 0.07], [1.0, 0.0]], "bundled:e63"),
     )
     doc = _Doc()
-    result = VibeCADAero.run_analyze(doc)
+    result = VibeCADAero.run_analyze(doc, repair=False)
     assert result["ok"] is True
+    assert result["claim_ceiling"] == "not_airworthy"
+    assert result["not_airworthy"] is True
     assert result["CL"] == 0.77
     assert doc.getObject("AeroReport") is not None
     assert result["source"] == "NeuralFoil"
@@ -88,7 +90,7 @@ def test_run_analyze_writes_report_with_injected_solvers(monkeypatch, tmp_path):
     assert "user_message" in result
     assert doc.getObject("AeroAssistantJson") is not None
     assert "Pitch stable" in result["corrections"][0]
-    assert "0.77" in str(getattr(doc, "AeroAssistantJson", ""))
+    assert "0.77" in doc.getObject("AeroAssistantJson").Text
 
 
 def test_run_analyze_repairs_when_pitch_unstable(monkeypatch):
@@ -120,7 +122,7 @@ def test_run_analyze_repairs_when_pitch_unstable(monkeypatch):
         lambda name: ([[1.0, 0.0], [0.0, 0.07], [1.0, 0.0]], "bundled:e63"),
     )
     doc = _Doc()
-    result = VibeCADAero.run_analyze(doc)
+    result = VibeCADAero.run_analyze(doc, repair=True)
     assert result["ok"] is True
     assert calls["n"] == 2
     assert result["PitchUnstable"] is False
@@ -130,8 +132,210 @@ def test_run_analyze_repairs_when_pitch_unstable(monkeypatch):
     report = doc.getObject("AeroReport")
     assert report.RepairPasses == 1
     assert report.Corrections
-    assert getattr(doc, "AeroAssistantJson", "")
+    assert "0.77" in doc.getObject("AeroAssistantJson").Text
     assert "tail" in result["user_message"].lower() or "boom" in result["user_message"].lower()
+
+
+def test_default_analyze_does_not_repair_unstable_geometry(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_analyze(cfg, **_kwargs):
+        calls["n"] += 1
+        return {
+            "CL": 0.77,
+            "CD": 0.03,
+            "CM": -0.02,
+            "CLalpha": 4.8,
+            "Cmalpha": 0.6,
+            "Re": 40000.0,
+            "V_loaf": 7.1,
+            "P_hover": 17.0,
+            "P_cruise": 3.5,
+            "source": "VLM",
+            "PitchUnstable": True,
+            "hover": {"source": "momentum-theory"},
+            "geometry_source": cfg["geometry_source"],
+            "airfoil": cfg["airfoil"],
+        }
+
+    monkeypatch.setattr("AeroSolvers.analyze", fake_analyze)
+    monkeypatch.setattr(
+        "AeroAirfoil.load_airfoil_coordinates",
+        lambda name: ([[1.0, 0.0], [0.0, 0.07], [1.0, 0.0]], "bundled:e63"),
+    )
+    result = VibeCADAero.run_analyze(_Doc())
+    assert result["ok"] is True
+    assert calls["n"] == 1
+    assert result["RepairPasses"] == 0
+    assert result["changes"] == []
+
+
+def test_export_jsbsim_without_report_does_not_solve():
+    result = VibeCADAero.export_jsbsim(_Doc())
+    assert result["ok"] is False
+    assert result["evidence_state"] == "evidence_waiting"
+    assert "Analyze" in result["error"]
+
+
+def test_write_last_report_without_solve_waits():
+    result = VibeCADAero.write_last_report(_Doc())
+    assert result["ok"] is False
+    assert result["evidence_state"] == "evidence_waiting"
+
+
+def test_apply_repairs_without_preview_is_rejected():
+    result = VibeCADAero.apply_repairs(_Doc())
+    assert result["ok"] is False
+    assert result["evidence_state"] == "rejected"
+    assert result["reason"] == "missing"
+
+
+def test_repair_preview_revision_changes_when_named_cad_moves():
+    import AeroConfig
+    import AeroPreview
+
+    class _Box:
+        XMin, XMax = 0.0, 90.0
+        YMin, YMax = -250.0, 250.0
+        ZMin, ZMax = 0.0, 8.0
+        XLength, YLength, ZLength = 90.0, 500.0, 8.0
+
+    wing = _Obj("lower_wing")
+    wing.Shape = type(
+        "Shape",
+        (),
+        {
+            "BoundBox": _Box(),
+            "ShapeType": "Solid",
+            "Solids": [object()],
+            "Faces": [object()] * 6,
+            "Edges": [object()] * 12,
+            "Vertexes": [object()] * 8,
+        },
+    )()
+    wing.Placement = type(
+        "Placement",
+        (),
+        {
+            "Base": type("Base", (), {"x": 0.0, "y": 0.0, "z": 0.0})(),
+            "Rotation": type(
+                "Rotation",
+                (),
+                {
+                    "Angle": 0.0,
+                    "Axis": type("Axis", (), {"x": 0.0, "y": 0.0, "z": 1.0})(),
+                },
+            )(),
+        },
+    )()
+    doc = _Doc()
+    doc.Objects.append(wing)
+    doc._by_name[wing.Name] = wing
+    cfg = AeroConfig.resolve_geometry(doc)
+
+    before = AeroPreview.geometry_revision(doc, cfg)
+    wing.Placement.Base.x = 12.5
+    after = AeroPreview.geometry_revision(doc, cfg)
+
+    assert after != before
+
+
+def test_preview_native_revision_must_match_even_when_caller_omits_it():
+    import AeroPreview
+
+    doc = type("Doc", (), {"getObject": lambda self, _name: None})()
+    AeroPreview.write_preview(
+        doc,
+        revision="geometry-1",
+        native_revision="native-7",
+        proposals=[],
+    )
+
+    try:
+        AeroPreview.consume_preview(doc, "geometry-1", native_revision=None)
+    except AeroPreview.PreviewError as exc:
+        assert exc.reason == "stale"
+    else:
+        raise AssertionError("expected a one-sided Native revision mismatch to be stale")
+
+
+def test_failed_repair_apply_aborts_cad_and_keeps_preview_reusable(monkeypatch):
+    import AeroConfig
+    import AeroPreview
+    import AeroRepair
+
+    class _Text(_Obj):
+        def __init__(self, name):
+            super().__init__(name)
+            self.Text = ""
+
+    class _TransactionalDoc(_Doc):
+        def __init__(self):
+            super().__init__()
+            self.Marker = "before"
+            self.HasPendingTransaction = False
+            self.aborts = 0
+            self.commits = 0
+            self._snapshot = None
+
+        def addObject(self, typ, name):
+            obj = _Text(name) if typ == "App::TextDocument" else _Obj(name)
+            obj.TypeId = typ
+            self.Objects.append(obj)
+            self._by_name[name] = obj
+            return obj
+
+        def getBookedTransactionID(self):
+            return 1 if self.HasPendingTransaction else 0
+
+        def openTransaction(self, _name):
+            assert not self.HasPendingTransaction
+            preview = self.getObject(AeroPreview.PREVIEW_NAME)
+            self._snapshot = (self.Marker, preview.Text if preview else None)
+            self.HasPendingTransaction = True
+
+        def commitTransaction(self):
+            self.commits += 1
+            self.HasPendingTransaction = False
+
+        def abortTransaction(self):
+            self.aborts += 1
+            self.Marker = self._snapshot[0]
+            preview = self.getObject(AeroPreview.PREVIEW_NAME)
+            if preview is not None:
+                preview.Text = self._snapshot[1]
+            self.HasPendingTransaction = False
+
+    doc = _TransactionalDoc()
+    cfg = AeroConfig.resolve_geometry(doc)
+    revision = AeroPreview.geometry_revision(doc, cfg)
+    AeroPreview.write_preview(
+        doc,
+        revision=revision,
+        proposals=[
+            {
+                "part": "boom",
+                "field": "boom_length_mm",
+                "before": 315.0,
+                "after": 350.0,
+                "sentence": "Lengthened the boom.",
+            }
+        ],
+    )
+
+    def fail_after_partial_change(document, _cfg, _proposals):
+        document.Marker = "partially changed"
+        raise RuntimeError("injected repair failure")
+
+    monkeypatch.setattr(AeroRepair, "apply_repairs", fail_after_partial_change)
+    result = VibeCADAero.apply_repairs(doc)
+
+    assert result["ok"] is False
+    assert result["reason"] == "apply_failed"
+    assert doc.Marker == "before"
+    assert doc.aborts == 1
+    assert doc.commits == 0
+    assert AeroPreview.read_preview(doc)["consumed"] is False
 
 
 def test_run_section_and_vlm_stay_report_only(monkeypatch):

@@ -102,6 +102,9 @@ def test_public_helper_is_import_path_for_agent_control():
     assert "def run_section" in source
     assert "def run_vlm" in source
     assert "def export_jsbsim" in source
+    assert "def write_last_report" in source
+    assert "def propose_repairs" in source
+    assert "def flight_card" in source
 
 
 def test_cmake_installs_mod_vibecadaero():
@@ -116,7 +119,10 @@ def test_cmake_installs_mod_vibecadaero():
     assert "AeroIcons.py" in cmake
     assert "AeroCommandLoader.py" in cmake
     assert "AeroRepair.py" in cmake
+    assert "AeroFlightCard.py" in cmake
+    assert "AeroMass.py" in cmake
     assert "test_repair.py" in cmake
+    assert "test_flight_card.py" in cmake
 
 
 def test_requirements_pin_bundled_aero_runtime_without_numpy_2():

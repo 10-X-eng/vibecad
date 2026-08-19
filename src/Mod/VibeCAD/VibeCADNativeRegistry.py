@@ -240,6 +240,10 @@ from VibeCADNativeMeshExportBindings import (
     register_mesh_export_capability_implementation,
 )
 from VibeCADNativeMeshExportSchema import register_mesh_export_capability_definition
+from VibeCADNativeAeroBindings import (
+    register_aero_solve_capability_implementation,
+)
+from VibeCADNativeAeroSchema import register_aero_solve_capability_definition
 from VibeCADNativeBackgroundBindings import (
     register_native_background_capability_implementation,
 )
@@ -708,6 +712,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_analyze_visualization_capability_implementation(registry)
     register_native_background_capability_definition(registry)
     register_native_background_capability_implementation(registry)
+    register_aero_solve_capability_definition(registry)
+    register_aero_solve_capability_implementation(registry)
     register_mesh_convert_capability_definition(registry)
     register_mesh_convert_capability_implementation(registry)
     register_mesh_io_capability_definition(registry)
