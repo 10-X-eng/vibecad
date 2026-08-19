@@ -143,7 +143,12 @@ def _start_in_app_clanker(prompt: str) -> bool:
         return False
 
 
-def _push_analyze_to_in_app_grok(result: dict[str, Any], title: str) -> str:
+def _push_analyze_to_in_app_grok(
+    result: dict[str, Any],
+    title: str,
+    *,
+    start_designer: bool = True,
+) -> str:
     """Send Analyze to in-app Grok: start a turn, or steer if one is running."""
 
     text = format_analyze_report(result, title)
@@ -156,17 +161,26 @@ def _push_analyze_to_in_app_grok(result: dict[str, Any], title: str) -> str:
     prompt = _designer_prompt(result, title, text)
     if _is_assistant_run_active():
         _queue_in_app_steering(prompt, "aero")
-    else:
+    elif start_designer:
         _start_in_app_clanker(prompt)
     return text
 
 
-def _report_result(result: dict[str, Any], title: str) -> None:
+def _report_result(
+    result: dict[str, Any],
+    title: str,
+    *,
+    start_designer: bool = False,
+) -> None:
     _refresh_workspace()
     if not result.get("ok"):
         _dialog(title, result.get("error") or "Aero solve failed.")
         return
-    text = _push_analyze_to_in_app_grok(result, title)
+    text = _push_analyze_to_in_app_grok(
+        result,
+        title,
+        start_designer=start_designer,
+    )
     _dialog(title, text, kind="info")
 
 
@@ -184,7 +198,11 @@ class VibeCADAero_Analyze(_AeroCommand):
         }
 
     def Activated(self) -> None:
-        _report_result(VibeCADAero.run_analyze(_active_doc(), repair=False), "Aero Analyze")
+        _report_result(
+            VibeCADAero.run_analyze(_active_doc(), repair=False),
+            "Aero Analyze",
+            start_designer=True,
+        )
 
 
 class VibeCADAero_Section(_AeroCommand):

@@ -331,7 +331,10 @@ def _read_output(path: Path, maximum_bytes: int) -> tuple[int, str]:
                 NATIVE_OUTPUT_FAILED,
                 "The generated output is empty.",
             )
-        os.fsync(descriptor)
+        # Windows rejects fsync on read-only handles. POSIX accepts it, so keep
+        # the durability barrier where the descriptor semantics allow one.
+        if os.name != "nt":
+            os.fsync(descriptor)
     finally:
         os.close(descriptor)
     return size, digest.hexdigest()

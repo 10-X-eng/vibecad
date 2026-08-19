@@ -28,6 +28,7 @@ set(VibeCAD_Scripts
     VibeCADGrokAuth.py
     VibeCADGeometry.py
     VibeCADGeometryFallback.py
+    VibeCADGeometryFallbackRunner.py
     VibeCADGeometryInspection.py
     VibeCADPlacementInspection.py
     VibeCADGui.py

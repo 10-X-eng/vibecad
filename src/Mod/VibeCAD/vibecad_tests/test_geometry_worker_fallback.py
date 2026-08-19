@@ -362,8 +362,43 @@ def test_cmake_installs_geometry_fallback_with_other_scripts() -> None:
     )
     geometry = cmake.index("VibeCADGeometry.py")
     fallback = cmake.index("VibeCADGeometryFallback.py")
+    runner = cmake.index("VibeCADGeometryFallbackRunner.py")
     inspection = cmake.index("VibeCADGeometryInspection.py")
-    assert geometry < fallback < inspection
+    assert geometry < fallback < runner < inspection
+
+
+def test_freecadcmd_runner_stamps_isolated_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADGeometryFallbackRunner as runner
+
+    result_path = tmp_path / "result.json"
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schema": "vibecad-geometry-job-v1",
+                "operation": "validate_brep",
+                "result_path": str(result_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runner,
+        "execute_request",
+        lambda _request: {
+            "ok": False,
+            "failure_stage": "in_process_fallback",
+        },
+    )
+
+    result = runner.run(request_path)
+
+    assert result["execution_mode"] == "isolated_freecadcmd_fallback"
+    assert result["failure_stage"] == "fallback_process"
+    assert json.loads(result_path.read_text(encoding="utf-8")) == result
 
 
 def test_worker_executable_still_raises_when_binary_is_missing(
@@ -388,37 +423,143 @@ def test_worker_executable_still_raises_when_binary_is_missing(
         geometry.worker_executable()
 
 
-def test_execute_job_falls_back_when_worker_binary_is_missing(
+def test_execute_job_uses_isolated_freecadcmd_fallback_when_worker_is_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import VibeCADGeometry as geometry
-    import VibeCADGeometryFallback as fallback
 
     request_path, result_path = _inspect_request(tmp_path)
+    command = tmp_path / "FreeCADCmd"
+    runner = tmp_path / "VibeCADGeometryFallbackRunner.py"
     popen_calls: list[object] = []
+
+    class _Input:
+        def __init__(self):
+            self.text = ""
+
+        def write(self, value):
+            self.text += value
+
+        def flush(self):
+            return None
+
+        def close(self):
+            return None
+
+    class _Process:
+        returncode = 0
+
+        def __init__(self):
+            self.input_stream = _Input()
+            self.stdin = self.input_stream
+
+        def poll(self) -> int:
+            return 0
+
+        def communicate(self) -> tuple[str, str]:
+            return ("", "")
+
+    process = _Process()
+
+    def popen(args, **kwargs):
+        popen_calls.append((args, kwargs))
+        result_path.write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "operation": "inspect_brep",
+                    "geometry": {"solids": 1, "faces": 6, "edges": 12},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return process
+
     monkeypatch.setattr(geometry, "worker_executable", _missing_worker)
     monkeypatch.setattr(
-        geometry.subprocess,
-        "Popen",
-        lambda *args, **kwargs: popen_calls.append((args, kwargs)),
+        geometry,
+        "fallback_command",
+        lambda: (command, runner),
+        raising=False,
     )
-    monkeypatch.setattr(fallback, "load_brep", lambda _path: _box_shape())
+    monkeypatch.setattr(geometry.subprocess, "Popen", popen)
 
     result = geometry.execute_job(request_path, result_path)
 
-    assert popen_calls == []
+    assert len(popen_calls) == 1
+    assert popen_calls[0][0] == [str(command), "-c"]
+    assert str(runner).replace("\\", "\\\\") in process.input_stream.text
+    assert str(request_path).replace("\\", "\\\\") in process.input_stream.text
     assert result["ok"] is True
     assert result["operation"] == "inspect_brep"
-    assert result["execution_mode"] == "in_process_part"
-    geometry_facts = result["geometry"]
-    assert geometry_facts["solids"] == 1
-    assert geometry_facts["faces"] == 6
-    assert geometry_facts["edges"] == 12
-    assert geometry_facts["bounds_mm"]["size"] == [10.0, 20.0, 30.0]
-    assert geometry_facts["volume_mm3"] == 6000.0
-    assert geometry_facts["area_mm2"] == 2200.0
-    assert geometry_facts["query_results"] == []
+    assert result["execution_mode"] == "isolated_freecadcmd_fallback"
+
+
+def test_freecadcmd_fallback_can_be_cancelled_while_geometry_is_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADGeometry as geometry
+
+    request_path, result_path = _inspect_request(tmp_path)
+    command = tmp_path / "FreeCADCmd"
+    runner = tmp_path / "VibeCADGeometryFallbackRunner.py"
+
+    class _Process:
+        returncode = -1
+        pid = 123
+        terminated = False
+
+        class _Input:
+            def write(self, _value):
+                return None
+
+            def flush(self):
+                return None
+
+            def close(self):
+                return None
+
+        def __init__(self):
+            self.stdin = self._Input()
+
+        def poll(self):
+            return self.returncode if self.terminated else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            self.terminated = True
+            return self.returncode
+
+        def kill(self):
+            self.terminated = True
+
+        def communicate(self):
+            return ("", "")
+
+    process = _Process()
+    monkeypatch.setattr(geometry, "worker_executable", _missing_worker)
+    monkeypatch.setattr(
+        geometry,
+        "fallback_command",
+        lambda: (command, runner),
+        raising=False,
+    )
+    monkeypatch.setattr(geometry.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    result = geometry.execute_job(
+        request_path,
+        result_path,
+        cancellation_check=lambda: True,
+    )
+
+    assert result["ok"] is False
+    assert result["failure_code"] == "RUN_CANCELLED"
+    assert result["failure_stage"] == "external_process"
+    assert process.terminated is True
 
 
 def test_execute_job_uses_isolated_worker_when_binary_exists(
@@ -604,6 +745,15 @@ def test_complete_geometry_read_succeeds_when_worker_binary_is_missing(
     monkeypatch.setattr(geometry, "worker_executable", _missing_worker)
     monkeypatch.setattr(fallback, "load_brep", lambda _path: _box_shape())
 
+    def run_fallback(request_path, result_path, **_kwargs):
+        request = json.loads(Path(request_path).read_text(encoding="utf-8"))
+        result = fallback.execute_request(request)
+        result["execution_mode"] = "isolated_freecadcmd_fallback"
+        Path(result_path).write_text(json.dumps(result), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(geometry, "_execute_job_fallback_process", run_fallback)
+
     result = complete_geometry_read(
         {
             "artifact_directory": str(artifact_directory),
@@ -629,7 +779,7 @@ def test_complete_geometry_read_succeeds_when_worker_binary_is_missing(
 
     assert result["ok"] is True
     assert result["tool"] == "vibescript.read_geometry"
-    assert result["execution"]["mode"] == "in_process_part"
+    assert result["execution"]["mode"] == "isolated_freecadcmd_fallback"
     facts = result["geometry"]
     assert facts["solids"] == 1
     assert facts["faces"] == 6

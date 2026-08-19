@@ -36,6 +36,36 @@ def worker_executable() -> Path:
     )
 
 
+def fallback_command() -> tuple[Path, Path]:
+    """Return the bundled FreeCADCmd and Python fallback runner."""
+
+    import FreeCAD as App
+
+    home = Path(str(App.getHomePath())).resolve()
+    command_names = (
+        ("FreeCADCmd.exe", "freecadcmd.exe")
+        if sys.platform == "win32"
+        else ("FreeCADCmd", "freecadcmd")
+    )
+    directories = (home / "bin", home, home.parent / "MacOS")
+    command = next(
+        (
+            directory / name
+            for directory in directories
+            for name in command_names
+            if (directory / name).is_file()
+        ),
+        None,
+    )
+    runner = Path(__file__).resolve().with_name("VibeCADGeometryFallbackRunner.py")
+    if command is None or not runner.is_file():
+        raise RuntimeError(
+            "The isolated VibeCAD geometry fallback is missing. "
+            "Rebuild or reinstall VibeCAD."
+        )
+    return command, runner
+
+
 def validate_shape(
     shape: Any,
     *,
@@ -146,7 +176,7 @@ def execute_job(
     except RuntimeError as exc:
         if "geometry worker is missing" not in str(exc):
             raise
-        return _execute_job_in_process(
+        return _execute_job_fallback_process(
             request_path,
             result_path,
             cancellation_check=cancellation_check,
@@ -161,7 +191,7 @@ def execute_job(
             deadline_seconds=deadline_seconds,
         )
     except FileNotFoundError:
-        return _execute_job_in_process(
+        return _execute_job_fallback_process(
             request_path,
             result_path,
             cancellation_check=cancellation_check,
@@ -176,63 +206,38 @@ def _execute_job_in_process(
     cancellation_check: Callable[[], bool] | None = None,
     deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
 ) -> dict[str, Any]:
-    from VibeCADGeometryFallback import execute_request
+    """Compatibility entry point; fallback work is now process-isolated."""
 
-    started = time.monotonic()
-    if cancellation_check is not None and cancellation_check():
-        return {
-            "ok": False,
-            "failure_code": "RUN_CANCELLED",
-            "failure_stage": "in_process_fallback",
-            "error": "The in-process geometry operation was stopped by the user.",
-            "execution_mode": "in_process_part",
-            "elapsed_seconds": round(time.monotonic() - started, 6),
-        }
-    try:
-        request = json.loads(Path(request_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        return {
-            "ok": False,
-            "failure_code": "GEOMETRY_WORKER_REQUEST_INVALID",
-            "failure_stage": "in_process_fallback",
-            "error": f"Could not read the geometry request: {exc}",
-            "execution_mode": "in_process_part",
-            "elapsed_seconds": round(time.monotonic() - started, 6),
-        }
-    if not isinstance(request, dict):
-        return {
-            "ok": False,
-            "failure_code": "GEOMETRY_WORKER_REQUEST_INVALID",
-            "failure_stage": "in_process_fallback",
-            "error": "The geometry request is not an object.",
-            "execution_mode": "in_process_part",
-            "elapsed_seconds": round(time.monotonic() - started, 6),
-        }
-    result = execute_request(request)
-    elapsed = round(time.monotonic() - started, 6)
-    result.setdefault("elapsed_seconds", elapsed)
-    if (
-        elapsed > max(0.1, float(deadline_seconds))
-        and result.get("ok") is True
-    ):
-        return {
-            "ok": False,
-            "failure_code": "GEOMETRY_DEADLINE_EXCEEDED",
-            "failure_stage": "in_process_fallback",
-            "error": (
-                f"The in-process geometry operation exceeded {deadline_seconds:.1f} seconds."
-            ),
-            "execution_mode": "in_process_part",
-            "elapsed_seconds": elapsed,
-        }
-    try:
-        Path(result_path).write_text(
-            json.dumps(result, ensure_ascii=True, indent=2, default=str) + "\n",
-            encoding="utf-8",
-        )
-    except OSError:
-        pass
-    return result
+    return _execute_job_fallback_process(
+        request_path,
+        result_path,
+        cancellation_check=cancellation_check,
+        deadline_seconds=deadline_seconds,
+    )
+
+
+def _execute_job_fallback_process(
+    request_path: str | Path,
+    result_path: str | Path,
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+) -> dict[str, Any]:
+    executable, runner = fallback_command()
+    request = str(Path(request_path))
+    console_command = (
+        "import runpy,sys;"
+        f"sys.argv=[{json.dumps(str(runner))},{json.dumps(request)}];"
+        f"runpy.run_path({json.dumps(str(runner))},run_name='__main__')\n"
+    )
+    return _execute_job_command(
+        [str(executable), "-c"],
+        result_path,
+        cancellation_check=cancellation_check,
+        deadline_seconds=deadline_seconds,
+        execution_mode="isolated_freecadcmd_fallback",
+        stdin_text=console_command,
+    )
 
 
 def _execute_job_isolated(
@@ -243,6 +248,24 @@ def _execute_job_isolated(
     cancellation_check: Callable[[], bool] | None = None,
     deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
 ) -> dict[str, Any]:
+    return _execute_job_command(
+        [str(executable), str(Path(request_path))],
+        result_path,
+        cancellation_check=cancellation_check,
+        deadline_seconds=deadline_seconds,
+        execution_mode="isolated_geometry_worker",
+    )
+
+
+def _execute_job_command(
+    command: list[str],
+    result_path: str | Path,
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+    execution_mode: str,
+    stdin_text: str | None = None,
+) -> dict[str, Any]:
     creation_flags = (
         int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if sys.platform == "win32"
@@ -250,8 +273,8 @@ def _execute_job_isolated(
     )
     started = time.monotonic()
     process = subprocess.Popen(
-        [str(executable), str(Path(request_path))],
-        stdin=subprocess.DEVNULL,
+        command,
+        stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -260,6 +283,17 @@ def _execute_job_isolated(
         start_new_session=sys.platform != "win32",
         creationflags=creation_flags,
     )
+    if stdin_text is not None:
+        stream = getattr(process, "stdin", None)
+        if stream is None:
+            _terminate_process(process)
+            raise RuntimeError("The isolated geometry console has no input stream.")
+        try:
+            stream.write(stdin_text)
+            stream.flush()
+        finally:
+            stream.close()
+            process.stdin = None
     cancelled = False
     timed_out = False
     deadline = started + max(0.1, float(deadline_seconds)) + 2.0
@@ -342,7 +376,7 @@ def _execute_job_isolated(
             "elapsed_seconds": elapsed,
         }
     result.setdefault("elapsed_seconds", elapsed)
-    result.setdefault("execution_mode", "isolated_geometry_worker")
+    result["execution_mode"] = execution_mode
     if process.returncode != 0 and result.get("ok"):
         result.update(
             {

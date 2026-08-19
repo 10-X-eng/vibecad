@@ -19,15 +19,24 @@ from VibeCADNativeCapabilityRegistry import (
 
 
 def _solve(call: Any) -> Mapping[str, Any]:
-    return _require_runtime(call).solve(_require_arguments(call))
+    return _require_runtime(call).solve(
+        _require_arguments(call),
+        ticket=call.ticket,
+    )
 
 
 def _export(call: Any) -> Mapping[str, Any]:
-    return _require_runtime(call).export(_require_arguments(call))
+    return _require_runtime(call).export(
+        _require_arguments(call),
+        ticket=call.ticket,
+    )
 
 
 def _inspect(call: Any) -> Mapping[str, Any]:
-    return _require_runtime(call).inspect(_require_arguments(call))
+    return _require_runtime(call).inspect(
+        _require_arguments(call),
+        ticket=call.ticket,
+    )
 
 
 def _require_runtime(call: Any) -> NativeAeroRuntime:

@@ -67,3 +67,58 @@ def test_mass_without_shapes_stays_declared() -> None:
     assert measured["used_mass_source"] == "declared_auw"
     assert measured["claim_ceiling"] == "mass_declared"
     assert measured["evidence_state"] == "evidence_waiting"
+
+
+def test_partial_cad_mass_is_reported_but_not_used_as_total() -> None:
+    class _Shape:
+        Volume = 1000.0
+        CenterOfMass = type("Center", (), {"x": 5.0, "y": 0.0, "z": 0.0})()
+
+    part = type(
+        "Part",
+        (),
+        {"Name": "lower_wing", "Label": "lower_wing", "Shape": _Shape()},
+    )()
+
+    class _Doc:
+        Objects = [part]
+
+        def getObject(self, name):
+            return part if name == "lower_wing" else None
+
+    cfg = AeroConfig.finalize(dict(AeroConfig.VOIDER_DEFAULTS))
+    measured = AeroMass.measure_document(_Doc(), cfg)
+
+    assert measured["cad_mass_kg"] is not None
+    assert measured["cad_mass_complete"] is False
+    assert measured["used_mass_kg"] == measured["declared_mass_kg"]
+    assert measured["used_mass_source"] == "declared_auw"
+    assert measured["claim_ceiling"] == "mass_declared"
+
+
+def test_explicitly_complete_cad_mass_can_be_used_as_total() -> None:
+    class _Shape:
+        Volume = 1000.0
+        CenterOfMass = type("Center", (), {"x": 5.0, "y": 0.0, "z": 0.0})()
+
+    part = type(
+        "Part",
+        (),
+        {"Name": "lower_wing", "Label": "lower_wing", "Shape": _Shape()},
+    )()
+
+    class _Doc:
+        Objects = [part]
+
+        def getObject(self, name):
+            return part if name == "lower_wing" else None
+
+    cfg = AeroConfig.finalize(
+        {**AeroConfig.VOIDER_DEFAULTS, "cad_mass_complete": True}
+    )
+    measured = AeroMass.measure_document(_Doc(), cfg)
+
+    assert measured["cad_mass_complete"] is True
+    assert measured["used_mass_kg"] == measured["cad_mass_kg"]
+    assert measured["used_mass_source"] == "cad_volume"
+    assert measured["claim_ceiling"] == "mass_from_cad"

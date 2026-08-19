@@ -26,9 +26,11 @@ VOIDER_DEFAULTS: dict[str, Any] = {
     "vehicle_type": DEFAULT_VEHICLE_TYPE,
     "battery_wh": None,
     "airframe_density_kg_m3": 80.0,
+    "cad_mass_complete": False,
 }
 
 _STRING_KEYS = ("airfoil", "vehicle_type")
+_BOOL_KEYS = ("cad_mass_complete",)
 _WRITE_KEYS = (
     "span_mm",
     "chord_mm",
@@ -50,6 +52,7 @@ _WRITE_KEYS = (
     "xyz_ref_c",
     "battery_wh",
     "airframe_density_kg_m3",
+    "cad_mass_complete",
 )
 
 _PARAM_KEYS = (
@@ -73,6 +76,7 @@ _PARAM_KEYS = (
     "cg_x_m",
     "battery_wh",
     "airframe_density_kg_m3",
+    "cad_mass_complete",
 )
 
 _REPAIR_KEYS = (
@@ -456,6 +460,8 @@ def _merge_params(values: dict[str, Any], obj: Any) -> None:
             continue
         if key in _STRING_KEYS:
             values[key] = str(raw)
+        elif key in _BOOL_KEYS:
+            values[key] = bool(raw)
         else:
             values[key] = float(raw)
     vehicle = getattr(obj, "vehicle_type", None)
@@ -473,11 +479,21 @@ def _merge_params(values: dict[str, Any], obj: Any) -> None:
 def _set_param(obj: Any, key: str, value: Any) -> None:
     if value is None:
         return
-    stored = str(value) if key in _STRING_KEYS else float(value)
+    if key in _STRING_KEYS:
+        stored = str(value)
+    elif key in _BOOL_KEYS:
+        stored = bool(value)
+    else:
+        stored = float(value)
     if not hasattr(obj, key):
         adder = getattr(obj, "addProperty", None)
         if callable(adder):
-            typ = "App::PropertyString" if key in _STRING_KEYS else "App::PropertyFloat"
+            if key in _STRING_KEYS:
+                typ = "App::PropertyString"
+            elif key in _BOOL_KEYS:
+                typ = "App::PropertyBool"
+            else:
+                typ = "App::PropertyFloat"
             try:
                 adder(typ, key, "Aero", key)
             except Exception:

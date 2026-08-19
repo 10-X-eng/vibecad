@@ -9,6 +9,7 @@ that bypasses the stamps.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import AeroAirfoil
@@ -29,6 +30,7 @@ __all__ = [
     "export_jsbsim",
     "reject_repairs",
     "flight_card",
+    "prepare_jsbsim_payload",
     "propose_repairs",
     "run_analyze",
     "run_section",
@@ -67,9 +69,28 @@ def run_vlm(doc: Any | None = None) -> dict[str, Any]:
     return _run(doc, run_section_solve=False, run_vlm_solve=True, repair=False)
 
 
-def export_jsbsim(doc: Any | None = None, results: dict[str, Any] | None = None) -> dict[str, Any]:
+def prepare_jsbsim_payload(
+    doc: Any | None = None,
+    results: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Resolve JSBSim input without writing files or mutating the document."""
+
     document = _require_doc(doc)
-    payload = results or _results_from_report(document)
+    payload = results if results is not None else _results_from_report(document)
+    if payload is None:
+        return None
+    _merge_resolved_plant_geometry(payload, document)
+    return payload
+
+
+def export_jsbsim(
+    doc: Any | None = None,
+    results: dict[str, Any] | None = None,
+    *,
+    output_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    document = _require_doc(doc)
+    payload = prepare_jsbsim_payload(document, results)
     if payload is None:
         return {
             "ok": False,
@@ -80,10 +101,13 @@ def export_jsbsim(doc: Any | None = None, results: dict[str, Any] | None = None)
                 method="jsbsim",
             ),
         }
-    _merge_resolved_plant_geometry(payload, document)
     written = AeroJSBSim.write_plant(
         payload,
-        output_dir=AeroJSBSim.default_output_dir(document),
+        output_dir=(
+            output_dir
+            if output_dir is not None
+            else AeroJSBSim.default_output_dir(document)
+        ),
     )
     AeroResults.write_report(
         document,
@@ -174,26 +198,48 @@ def apply_repairs(
     doc: Any | None = None,
     *,
     native_revision: str | None = None,
+    manage_transaction: bool = True,
 ) -> dict[str, Any]:
     document = _require_doc(doc)
     cfg = AeroConfig.resolve_geometry(document)
     revision = AeroPreview.geometry_revision(document, cfg)
     try:
-        proposals = AeroPreview.consume_preview(
+        proposals = AeroPreview.validate_preview(
             document, revision, native_revision=native_revision
         )
     except AeroPreview.PreviewError as exc:
-        return {
-            "ok": False,
-            "error": f"Repair apply rejected: {exc.reason}",
-            **AeroStamp.stamp(
-                state=AeroStamp.STATE_REJECTED,
-                ceiling=AeroStamp.CEILING_GEOMETRY_APPLIED,
-                method="repair_apply",
-                extra={"reason": exc.reason},
-            ),
-        }
-    landed = AeroRepair.apply_repairs(document, cfg, proposals)
+        return _repair_apply_rejected(exc.reason)
+
+    owns_transaction = False
+    if manage_transaction and _transaction_is_active(document):
+        return _repair_apply_rejected("transaction_active")
+    try:
+        if manage_transaction and _can_manage_transaction(document):
+            document.openTransaction("Apply Aero Repairs")
+            owns_transaction = True
+        landed = AeroRepair.apply_repairs(document, cfg, proposals)
+        if proposals and not landed:
+            raise RuntimeError("The repair preview did not change configuration or CAD.")
+        recompute = getattr(document, "recompute", None)
+        if callable(recompute):
+            outcome = recompute()
+            if outcome is False:
+                raise RuntimeError("The repaired Aero document failed to recompute.")
+        AeroPreview.mark_preview_consumed(
+            document,
+            revision,
+            native_revision=native_revision,
+        )
+        if owns_transaction:
+            document.commitTransaction()
+            owns_transaction = False
+    except Exception:
+        if owns_transaction:
+            try:
+                document.abortTransaction()
+            except Exception:
+                return _repair_apply_rejected("rollback_failed")
+        return _repair_apply_rejected("apply_failed")
     return {
         "ok": True,
         "landed": landed,
@@ -205,6 +251,35 @@ def apply_repairs(
             method="repair_apply",
         ),
     }
+
+
+def _repair_apply_rejected(reason: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": f"Repair apply rejected: {reason}",
+        **AeroStamp.stamp(
+            state=AeroStamp.STATE_REJECTED,
+            ceiling=AeroStamp.CEILING_GEOMETRY_APPLIED,
+            method="repair_apply",
+            extra={"reason": reason},
+        ),
+    }
+
+
+def _transaction_is_active(document: Any) -> bool:
+    booked = getattr(document, "getBookedTransactionID", None)
+    try:
+        booked_id = int(booked() or 0) if callable(booked) else 0
+    except Exception:
+        booked_id = 0
+    return bool(getattr(document, "HasPendingTransaction", False) or booked_id)
+
+
+def _can_manage_transaction(document: Any) -> bool:
+    return all(
+        callable(getattr(document, name, None))
+        for name in ("openTransaction", "commitTransaction", "abortTransaction")
+    )
 
 
 def reject_repairs(doc: Any | None = None) -> dict[str, Any]:

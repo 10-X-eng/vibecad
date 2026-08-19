@@ -62,41 +62,49 @@ def propose_repairs(
     changes: list[dict[str, Any]] = []
     span_mm = float(cfg["span_mm"])
     chord_mm = float(cfg["chord_mm"])
+    has_h_tail = bool(
+        cfg.get("has_h_tail")
+        or (doc is not None and AeroConfig.find_named(doc, "h_tail") is not None)
+    )
     tail_span = float(cfg.get("tail_span_mm") or 0.30 * span_mm)
     tail_chord = float(cfg.get("tail_chord_mm") or 0.60 * chord_mm)
     boom_mm = float(cfg.get("boom_length_mm") or (cfg.get("boom_length_m") or BOOM_MIN_M) * 1000.0)
     stagger = float(cfg.get("stagger_c") or 1.15)
     xyz_c = _current_xyz_ref_c(cfg)
 
-    new_tail_span = min(span_mm * TAIL_SPAN_MAX_FRAC, tail_span * TAIL_SPAN_GROW)
-    if new_tail_span - tail_span > _MM_THRESHOLD:
-        changes.append(
-            _change(
-                "h_tail",
-                "tail_span_mm",
-                tail_span,
-                new_tail_span,
-                (
-                    f"Grew the horizontal tail span from {_mm(tail_span)} mm "
-                    f"to {_mm(new_tail_span)} mm."
-                ),
+    if has_h_tail:
+        new_tail_span = min(span_mm * TAIL_SPAN_MAX_FRAC, tail_span * TAIL_SPAN_GROW)
+        if new_tail_span - tail_span > _MM_THRESHOLD:
+            changes.append(
+                _change(
+                    "h_tail",
+                    "tail_span_mm",
+                    tail_span,
+                    new_tail_span,
+                    (
+                        f"Grew the horizontal tail span from {_mm(tail_span)} mm "
+                        f"to {_mm(new_tail_span)} mm."
+                    ),
+                )
             )
-        )
 
-    new_tail_chord = min(chord_mm * TAIL_CHORD_MAX_FRAC, tail_chord * TAIL_CHORD_GROW)
-    if new_tail_chord - tail_chord > _MM_THRESHOLD:
-        changes.append(
-            _change(
-                "h_tail",
-                "tail_chord_mm",
-                tail_chord,
-                new_tail_chord,
-                (
-                    f"Grew the horizontal tail chord from {_mm(tail_chord)} mm "
-                    f"to {_mm(new_tail_chord)} mm."
-                ),
-            )
+        new_tail_chord = min(
+            chord_mm * TAIL_CHORD_MAX_FRAC,
+            tail_chord * TAIL_CHORD_GROW,
         )
+        if new_tail_chord - tail_chord > _MM_THRESHOLD:
+            changes.append(
+                _change(
+                    "h_tail",
+                    "tail_chord_mm",
+                    tail_chord,
+                    new_tail_chord,
+                    (
+                        f"Grew the horizontal tail chord from {_mm(tail_chord)} mm "
+                        f"to {_mm(new_tail_chord)} mm."
+                    ),
+                )
+            )
 
     boom_cap = chord_mm * BOOM_MAX_CHORD_MULT
     new_boom = min(boom_cap, max(BOOM_MIN_M * 1000.0, boom_mm * BOOM_GROW))

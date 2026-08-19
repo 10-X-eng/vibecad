@@ -67,6 +67,7 @@ def measure_document(
 
     cad_kg = sum(item["mass_g"] for item in parts) / 1000.0
     cad_available = bool(parts)
+    cad_mass_complete = bool(cfg.get("cad_mass_complete")) and cad_available
     cg_m = None
     if cad_available and cad_kg > 0.0:
         cg_m = [value / cad_kg for value in moment]
@@ -74,7 +75,7 @@ def measure_document(
     if cad_available:
         delta_g = (cad_kg * 1000.0) - declared_g
 
-    if cad_available:
+    if cad_mass_complete:
         stamp = AeroStamp.stamp(
             state=AeroStamp.STATE_UNQUALIFIED,
             ceiling=AeroStamp.CEILING_MASS_FROM_CAD,
@@ -98,8 +99,10 @@ def measure_document(
         "volume_m3": volume_m3 if cad_available else None,
         "cg_m": cg_m,
         "parts": parts,
-        "used_mass_kg": cad_kg if cad_available else declared_kg,
-        "used_mass_source": "cad_volume" if cad_available else "declared_auw",
+        "cad_mass_complete": cad_mass_complete,
+        "cad_mass_partial": cad_available and not cad_mass_complete,
+        "used_mass_kg": cad_kg if cad_mass_complete else declared_kg,
+        "used_mass_source": "cad_volume" if cad_mass_complete else "declared_auw",
         **stamp,
     }
 

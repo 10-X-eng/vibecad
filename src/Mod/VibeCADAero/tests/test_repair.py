@@ -95,6 +95,7 @@ def test_propose_empty_when_pitch_stable():
 
 def test_propose_grows_tail_boom_moves_cg_and_nudge_upper_wing():
     cfg = config.resolve_geometry(None)
+    cfg["has_h_tail"] = True
     proposed = repair.propose_repairs(
         cfg,
         {"PitchUnstable": True, "Cmalpha": 0.8},
@@ -127,6 +128,7 @@ def test_propose_grows_tail_boom_moves_cg_and_nudge_upper_wing():
 
 def test_propose_respects_hard_bounds():
     cfg = config.resolve_geometry(None)
+    cfg["has_h_tail"] = True
     cfg["tail_span_mm"] = cfg["span_mm"] * repair.TAIL_SPAN_MAX_FRAC
     cfg["tail_chord_mm"] = cfg["chord_mm"] * repair.TAIL_CHORD_MAX_FRAC
     cfg["boom_length_mm"] = cfg["chord_mm"] * repair.BOOM_MAX_CHORD_MULT
@@ -151,6 +153,7 @@ def test_apply_writes_aeroconfig_and_moves_mock_cad():
     upper = parts[1]
     doc = _Doc(list(parts))
     cfg = config.resolve_geometry(None)
+    cfg["has_h_tail"] = True
     proposed = repair.propose_repairs(cfg, {"PitchUnstable": True, "Cmalpha": 0.5}, doc=doc)
     landed = repair.apply_repairs(doc, cfg, proposed)
     assert landed
@@ -172,7 +175,7 @@ def test_apply_writes_aeroconfig_and_moves_mock_cad():
     assert abs(resolved["xyz_ref"][0] - resolved["xyz_ref_c"] * resolved["chord_m"]) < 1e-9
 
 
-def test_apply_without_cad_parts_still_lands_config():
+def test_apply_without_cad_parts_still_lands_non_tail_config():
     doc = _Doc()
     cfg = config.resolve_geometry(None)
     proposed = repair.propose_repairs(cfg, {"PitchUnstable": True, "Cmalpha": 0.4})
@@ -180,8 +183,26 @@ def test_apply_without_cad_parts_still_lands_config():
     assert landed
     assert any(item.get("config") for item in landed)
     aero = doc.getObject("AeroConfig")
-    assert float(getattr(aero, "tail_span_mm")) > 0.0
     assert float(getattr(aero, "boom_length_mm")) > 0.0
+
+
+def test_tailless_repair_does_not_invent_a_solver_only_tail():
+    doc = _Doc()
+    cfg = config.resolve_geometry(doc)
+    assert cfg["has_h_tail"] is False
+
+    proposed = repair.propose_repairs(
+        cfg,
+        {"PitchUnstable": True, "Cmalpha": 0.4},
+        doc=doc,
+    )
+    fields = {item["field"] for item in proposed}
+    assert "tail_span_mm" not in fields
+    assert "tail_chord_mm" not in fields
+
+    landed = repair.apply_repairs(doc, cfg, proposed)
+    assert landed
+    assert config.resolve_geometry(doc)["has_h_tail"] is False
 
 
 class _GetterOnlyBoundBox:

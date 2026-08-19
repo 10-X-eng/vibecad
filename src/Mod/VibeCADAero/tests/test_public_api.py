@@ -190,6 +190,154 @@ def test_apply_repairs_without_preview_is_rejected():
     assert result["reason"] == "missing"
 
 
+def test_repair_preview_revision_changes_when_named_cad_moves():
+    import AeroConfig
+    import AeroPreview
+
+    class _Box:
+        XMin, XMax = 0.0, 90.0
+        YMin, YMax = -250.0, 250.0
+        ZMin, ZMax = 0.0, 8.0
+        XLength, YLength, ZLength = 90.0, 500.0, 8.0
+
+    wing = _Obj("lower_wing")
+    wing.Shape = type(
+        "Shape",
+        (),
+        {
+            "BoundBox": _Box(),
+            "ShapeType": "Solid",
+            "Solids": [object()],
+            "Faces": [object()] * 6,
+            "Edges": [object()] * 12,
+            "Vertexes": [object()] * 8,
+        },
+    )()
+    wing.Placement = type(
+        "Placement",
+        (),
+        {
+            "Base": type("Base", (), {"x": 0.0, "y": 0.0, "z": 0.0})(),
+            "Rotation": type(
+                "Rotation",
+                (),
+                {
+                    "Angle": 0.0,
+                    "Axis": type("Axis", (), {"x": 0.0, "y": 0.0, "z": 1.0})(),
+                },
+            )(),
+        },
+    )()
+    doc = _Doc()
+    doc.Objects.append(wing)
+    doc._by_name[wing.Name] = wing
+    cfg = AeroConfig.resolve_geometry(doc)
+
+    before = AeroPreview.geometry_revision(doc, cfg)
+    wing.Placement.Base.x = 12.5
+    after = AeroPreview.geometry_revision(doc, cfg)
+
+    assert after != before
+
+
+def test_preview_native_revision_must_match_even_when_caller_omits_it():
+    import AeroPreview
+
+    doc = type("Doc", (), {"getObject": lambda self, _name: None})()
+    AeroPreview.write_preview(
+        doc,
+        revision="geometry-1",
+        native_revision="native-7",
+        proposals=[],
+    )
+
+    try:
+        AeroPreview.consume_preview(doc, "geometry-1", native_revision=None)
+    except AeroPreview.PreviewError as exc:
+        assert exc.reason == "stale"
+    else:
+        raise AssertionError("expected a one-sided Native revision mismatch to be stale")
+
+
+def test_failed_repair_apply_aborts_cad_and_keeps_preview_reusable(monkeypatch):
+    import AeroConfig
+    import AeroPreview
+    import AeroRepair
+
+    class _Text(_Obj):
+        def __init__(self, name):
+            super().__init__(name)
+            self.Text = ""
+
+    class _TransactionalDoc(_Doc):
+        def __init__(self):
+            super().__init__()
+            self.Marker = "before"
+            self.HasPendingTransaction = False
+            self.aborts = 0
+            self.commits = 0
+            self._snapshot = None
+
+        def addObject(self, typ, name):
+            obj = _Text(name) if typ == "App::TextDocument" else _Obj(name)
+            obj.TypeId = typ
+            self.Objects.append(obj)
+            self._by_name[name] = obj
+            return obj
+
+        def getBookedTransactionID(self):
+            return 1 if self.HasPendingTransaction else 0
+
+        def openTransaction(self, _name):
+            assert not self.HasPendingTransaction
+            preview = self.getObject(AeroPreview.PREVIEW_NAME)
+            self._snapshot = (self.Marker, preview.Text if preview else None)
+            self.HasPendingTransaction = True
+
+        def commitTransaction(self):
+            self.commits += 1
+            self.HasPendingTransaction = False
+
+        def abortTransaction(self):
+            self.aborts += 1
+            self.Marker = self._snapshot[0]
+            preview = self.getObject(AeroPreview.PREVIEW_NAME)
+            if preview is not None:
+                preview.Text = self._snapshot[1]
+            self.HasPendingTransaction = False
+
+    doc = _TransactionalDoc()
+    cfg = AeroConfig.resolve_geometry(doc)
+    revision = AeroPreview.geometry_revision(doc, cfg)
+    AeroPreview.write_preview(
+        doc,
+        revision=revision,
+        proposals=[
+            {
+                "part": "boom",
+                "field": "boom_length_mm",
+                "before": 315.0,
+                "after": 350.0,
+                "sentence": "Lengthened the boom.",
+            }
+        ],
+    )
+
+    def fail_after_partial_change(document, _cfg, _proposals):
+        document.Marker = "partially changed"
+        raise RuntimeError("injected repair failure")
+
+    monkeypatch.setattr(AeroRepair, "apply_repairs", fail_after_partial_change)
+    result = VibeCADAero.apply_repairs(doc)
+
+    assert result["ok"] is False
+    assert result["reason"] == "apply_failed"
+    assert doc.Marker == "before"
+    assert doc.aborts == 1
+    assert doc.commits == 0
+    assert AeroPreview.read_preview(doc)["consumed"] is False
+
+
 def test_run_section_and_vlm_stay_report_only(monkeypatch):
     calls = {"n": 0}
 
