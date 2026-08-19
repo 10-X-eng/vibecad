@@ -13,6 +13,13 @@ from VibeCADNativeCapabilityRegistry import (
 )
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeModelFeatureRuntime import NativeModelFeatureRuntime
+from VibeCADNativeState import (
+    NATIVE_PREVIEW_CONSUMED,
+    NATIVE_PREVIEW_MISSING,
+    NativeRevisionConflict,
+    NativeStateError,
+)
+from VibeCADNativeTargets import document_uid
 
 
 _FOCUSED_PROFILE_FEATURE_KINDS = {
@@ -336,6 +343,46 @@ def _focused_extrude_definition(arguments: Mapping[str, Any]) -> dict[str, Any]:
     return {"kind": "extrude", "direction": direction, "extent": extent}
 
 
+def _maybe_preview_or_apply_extrude(
+    runtime: NativeModelFeatureRuntime,
+    arguments: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    stage = str(arguments.get("stage") or "propose").strip()
+    if stage == "apply":
+        return None
+    if stage != "propose":
+        raise NativeModelError("model.extrude stage must be propose or apply.")
+    uid = document_uid(runtime._context.document)
+    return runtime._context.state.propose_mutation_preview(
+        uid,
+        capability_name="model.extrude",
+        arguments=arguments,
+    )
+
+
+def _extrude_apply_arguments(
+    runtime: NativeModelFeatureRuntime,
+    arguments: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    stage = str(arguments.get("stage") or "propose").strip()
+    if stage != "apply":
+        return arguments
+    preview_id = str(arguments.get("preview_id") or "").strip()
+    if not preview_id:
+        raise NativeModelError("model.extrude apply needs preview_id.")
+    uid = document_uid(runtime._context.document)
+    try:
+        return runtime._context.state.consume_mutation_preview(
+            uid,
+            preview_id,
+            capability_name="model.extrude",
+        )
+    except NativeRevisionConflict:
+        raise
+    except NativeStateError as exc:
+        raise NativeModelError(str(exc)) from exc
+
+
 def _focused_feature(kind: str):
     def execute(call: Any) -> Mapping[str, Any]:
         runtime = getattr(call, "runtime", None)
@@ -344,6 +391,11 @@ def _focused_feature(kind: str):
             raise TypeError("A Model feature call requires its exact runtime.")
         if not isinstance(arguments, Mapping):
             raise TypeError("A Model feature call requires argument data.")
+        if kind == "extrude":
+            previewed = _maybe_preview_or_apply_extrude(runtime, arguments)
+            if previewed is not None:
+                return previewed
+            arguments = _extrude_apply_arguments(runtime, arguments)
         profile = dict(arguments["profile"])
         profile_scope = str(arguments["profile_scope"])
         internal_faces = arguments.get("internal_faces")
@@ -379,6 +431,8 @@ def _focused_feature(kind: str):
             "internal_faces",
             "combine",
             "destination_component",
+            "stage",
+            "preview_id",
         }
         feature = (
             _focused_extrude_definition(arguments)

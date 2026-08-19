@@ -532,6 +532,21 @@ def focused_model_profile_variant(
                 **feature_properties,
                 "combine": _body_combination(),
                 "destination_component": object_reference_schema(),
+                **(
+                    {
+                        "stage": {
+                            "type": "string",
+                            "enum": ["propose", "apply"],
+                        },
+                        "preview_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64,
+                        },
+                    }
+                    if kind == "extrude"
+                    else {}
+                ),
             },
             ("label", "profile", "profile_scope", *feature_required),
         ),

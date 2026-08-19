@@ -417,3 +417,68 @@ def test_state_module_has_no_ui_activation_or_tool_execution_api() -> None:
         for name in public_names
         for fragment in forbidden
     )
+
+
+def test_extrude_preview_does_not_change_revision() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.extrude",
+        arguments={"label": "Pad", "stage": "propose"},
+    )
+    assert preview["applied"] is False
+    assert preview["evidence_state"] == "evidence_waiting"
+    assert preview["expected_revision"] == 0
+    assert store.current_revision("doc-1") == 0
+
+
+def test_extrude_apply_is_stale_after_structural_change() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.extrude",
+        arguments={"label": "Pad"},
+    )
+    store.note_structural_change("doc-1")
+    with pytest.raises(NativeRevisionConflict) as caught:
+        store.consume_mutation_preview(
+            "doc-1",
+            preview["preview_id"],
+            capability_name="model.extrude",
+        )
+    assert caught.value.failure()["error_code"] == NATIVE_REVISION_CONFLICT
+
+
+def test_extrude_apply_once_then_consumed() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.extrude",
+        arguments={"label": "Pad", "profile_scope": "entire_sketch"},
+    )
+    stored = store.consume_mutation_preview(
+        "doc-1",
+        preview["preview_id"],
+        capability_name="model.extrude",
+    )
+    assert stored["label"] == "Pad"
+    assert "stage" not in stored
+    with pytest.raises(NativeStateError, match="NATIVE_PREVIEW_CONSUMED"):
+        store.consume_mutation_preview(
+            "doc-1",
+            preview["preview_id"],
+            capability_name="model.extrude",
+        )
+
+
+def test_preview_rejects_other_families() -> None:
+    store = NativeDocumentStateStore()
+    with pytest.raises(NativeStateError, match="model.extrude"):
+        store.propose_mutation_preview(
+            "doc-1",
+            capability_name="model.revolve",
+            arguments={"label": "Rev"},
+        )

@@ -21,6 +21,9 @@ DEFAULT_RECEIPT_LIMIT = 32
 MAX_VERIFIED_RESULT_JSON_BYTES = 32 * 1024
 NATIVE_REVISION_CONFLICT = "NATIVE_REVISION_CONFLICT"
 NATIVE_AUTHORITY_CONFLICT = "NATIVE_AUTHORITY_CONFLICT"
+NATIVE_PREVIEW_MISSING = "NATIVE_PREVIEW_MISSING"
+NATIVE_PREVIEW_CONSUMED = "NATIVE_PREVIEW_CONSUMED"
+NATIVE_PREVIEW_FAMILY = "model.extrude"
 NATIVE_STATE_SCHEMA = "vibecad-native-state-v1"
 
 PRESENTATION_PROPERTY_NAMES = frozenset(
@@ -211,6 +214,7 @@ class _DocumentRecord:
     authorized_tokens: set[str] = field(default_factory=set)
     mutation_observer_token: str | None = None
     mutation_observer_events: int = 0
+    previews: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _canonical_verified_result(result: Mapping[str, Any]) -> str:
@@ -352,6 +356,75 @@ class NativeDocumentStateStore:
             expected_revision=revision,
             idempotency_token=secrets.token_hex(16),
         )
+
+    def propose_mutation_preview(
+        self,
+        document_uid: str,
+        *,
+        capability_name: str,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Record one model.extrude proposal. Does not mutate CAD."""
+
+        uid = _required_text(document_uid, "document UID")
+        capability = _required_text(capability_name, "capability name")
+        if capability != NATIVE_PREVIEW_FAMILY:
+            raise NativeStateError(
+                f"Native preview is only authorized for {NATIVE_PREVIEW_FAMILY}."
+            )
+        if not isinstance(arguments, Mapping):
+            raise NativeStateError("Native preview arguments must be an object.")
+        payload = {
+            name: value
+            for name, value in arguments.items()
+            if name not in {"stage", "preview_id"}
+        }
+        preview_id = secrets.token_hex(16)
+        with self._lock:
+            record = self._records.setdefault(uid, _DocumentRecord())
+            record.previews[preview_id] = {
+                "preview_id": preview_id,
+                "capability_name": capability,
+                "expected_revision": record.revision,
+                "arguments": dict(payload),
+                "consumed": False,
+            }
+            expected_revision = record.revision
+        return {
+            "preview_id": preview_id,
+            "capability": capability,
+            "expected_revision": expected_revision,
+            "applied": False,
+            "evidence_state": "evidence_waiting",
+            "claim_ceiling": "geometry_applied",
+        }
+
+    def consume_mutation_preview(
+        self,
+        document_uid: str,
+        preview_id: str,
+        *,
+        capability_name: str,
+    ) -> dict[str, Any]:
+        """Return stored arguments if revision still matches. One-shot."""
+
+        uid = _required_text(document_uid, "document UID")
+        token = _required_text(preview_id, "preview id")
+        capability = _required_text(capability_name, "capability name")
+        with self._lock:
+            record = self._records.setdefault(uid, _DocumentRecord())
+            preview = record.previews.get(token)
+            if preview is None:
+                raise NativeStateError(NATIVE_PREVIEW_MISSING)
+            if preview.get("consumed"):
+                raise NativeStateError(NATIVE_PREVIEW_CONSUMED)
+            if preview.get("capability_name") != capability:
+                raise NativeStateError(NATIVE_PREVIEW_MISSING)
+            expected = int(preview["expected_revision"])
+            if record.revision != expected:
+                raise NativeRevisionConflict(expected, record.revision)
+            preview["consumed"] = True
+            return dict(preview["arguments"])
 
     def authorize_mutation(
         self,
