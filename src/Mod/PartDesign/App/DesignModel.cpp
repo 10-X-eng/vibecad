@@ -975,6 +975,10 @@ void DesignModel::setOperationTargets(
             throw Base::RuntimeError("Every target Body must have one distinct persistent identity");
         }
         auto* input = designBodyStateBefore(body, &operation);
+        if (input && !freecad_cast<DesignBodyState*>(input)
+            && !findDesignBodyPublication(body)) {
+            input = initializeLegacyBodyState(*body, *input);
+        }
         if (!input) {
             throw Base::ValueError("Every target Body must contain a solid at this History position");
         }

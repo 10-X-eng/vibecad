@@ -123,15 +123,51 @@ def test_inspect_runtime_maps_object_and_subelement_targets_without_labels(
     assert runtime.inspect(
         {
             "operation": "element",
-            "target": {"object_name": "Box", "subelement": "Edge1"},
+            "targets": [{"object_name": "Box", "subelement": "Edge1"}],
         }
     )["shape_type"] == "Edge"
     assert runtime.inspect(
-        {"operation": "validity", "target": {"object_name": "Box"}}
+        {"operation": "validity", "targets": [{"object_name": "Box"}]}
     )["valid"] is True
     assert all(value[0] is document for value in observed)
     assert observed[0][1].subelement == "Edge1"
     assert observed[1][1].object_name == "Box"
+
+
+def test_mass_properties_uses_one_canonical_targets_list(
+    monkeypatch,
+) -> None:
+    runtime, _state, document = _runtime()
+    observed = []
+    monkeypatch.setattr(
+        runtime_module,
+        "mass_properties",
+        lambda target_document, targets: observed.append((target_document, targets))
+        or {"volume_mm3": 1.0},
+    )
+
+    assert runtime.inspect(
+        {
+            "operation": "mass_properties",
+            "targets": [
+                {"object_name": "Body"},
+                {"object_name": "ToolBody"},
+            ],
+        }
+    ) == {"volume_mm3": 1.0}
+    assert [target.object_name for target in observed[0][1]] == [
+        "Body",
+        "ToolBody",
+    ]
+    assert all(item[0] is document for item in observed)
+
+    with pytest.raises(NativeArgumentError, match="do not match"):
+        runtime.inspect(
+            {
+                "operation": "mass_properties",
+                "target": {"object_name": "Body"},
+            }
+        )
 
 
 def test_save_runtime_uses_guarded_existing_path_only(monkeypatch) -> None:

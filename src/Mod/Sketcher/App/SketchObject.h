@@ -759,6 +759,8 @@ public:
      * means the requested human Fillet form cannot create geometry. */
     std::unique_ptr<SketchObject>
     diagnoseFillet(int geoId, PointPos pos, bool preserveCorner = true) const;
+    std::unique_ptr<SketchObject>
+    diagnoseFillet(int geoId, PointPos pos, double radius, bool preserveCorner) const;
     std::unique_ptr<SketchObject> diagnoseFillet(
         int geoId1,
         int geoId2,
@@ -766,17 +768,35 @@ public:
         const Base::Vector3d& refPnt2,
         bool preserveCorner = true
     ) const;
+    std::unique_ptr<SketchObject> diagnoseFillet(
+        int geoId1,
+        int geoId2,
+        const Base::Vector3d& refPnt1,
+        const Base::Vector3d& refPnt2,
+        double radius,
+        bool preserveCorner
+    ) const;
     /** Build and solve the exact final state produced by the human Chamfer command on an isolated
      * Sketch clone. The live Sketch, its solver, and its document are not changed. A null result
      * means the requested human Chamfer form cannot create geometry. */
     std::unique_ptr<SketchObject>
     diagnoseChamfer(int geoId, PointPos pos, bool preserveCorner = true) const;
+    std::unique_ptr<SketchObject>
+    diagnoseChamfer(int geoId, PointPos pos, double distance, bool preserveCorner) const;
     std::unique_ptr<SketchObject> diagnoseChamfer(
         int geoId1,
         int geoId2,
         const Base::Vector3d& refPnt1,
         const Base::Vector3d& refPnt2,
         bool preserveCorner = true
+    ) const;
+    std::unique_ptr<SketchObject> diagnoseChamfer(
+        int geoId1,
+        int geoId2,
+        const Base::Vector3d& refPnt1,
+        const Base::Vector3d& refPnt2,
+        double distance,
+        bool preserveCorner
     ) const;
 
     /// trim a curve
@@ -1611,6 +1631,7 @@ private:
     std::unique_ptr<SketchObject> diagnoseFilletOrChamfer(
         int geoId,
         PointPos pos,
+        double requestedRadius,
         bool preserveCorner,
         bool chamfer
     ) const;
@@ -1619,6 +1640,7 @@ private:
         int geoId2,
         const Base::Vector3d& refPnt1,
         const Base::Vector3d& refPnt2,
+        double requestedRadius,
         bool preserveCorner,
         bool chamfer
     ) const;

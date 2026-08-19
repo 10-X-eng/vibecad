@@ -344,10 +344,7 @@ _SURFACE_GEOMETRY = {
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 63,
-                    "description": (
-                        "Treat this many Faces at the end of the ordered items as "
-                        "exact avoidance regions. At least one earlier Face must remain."
-                    ),
+                    "description": "Trailing ordered Faces treated as avoidance regions.",
                 },
                 "avoid_internal_features": {"type": "boolean"},
             },
@@ -367,11 +364,7 @@ _WATERLINE_GEOMETRY = {
                 "kind": {
                     "type": "string",
                     "const": "entire_job",
-                    "description": (
-                        "Machine every model in the exact Job. Drop-cutter and "
-                        "experimental Waterline algorithms require this geometry "
-                        "mode; adaptive also supports it."
-                    ),
+                    "description": "Machine every model in the exact Job.",
                 }
             },
             ("kind",),
@@ -381,10 +374,7 @@ _WATERLINE_GEOMETRY = {
                 "kind": {
                     "type": "string",
                     "const": "faces",
-                    "description": (
-                        "Machine ordered exact Faces. This geometry mode is supported "
-                        "only by the adaptive Waterline algorithm."
-                    ),
+                    "description": "Machine ordered exact Faces with adaptive Waterline.",
                 },
                 "items": {
                     "type": "array",
@@ -402,10 +392,7 @@ _WATERLINE_GEOMETRY = {
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 63,
-                    "description": (
-                        "Treat this many Faces at the end of the ordered items as "
-                        "exact avoidance regions. At least one earlier Face must remain."
-                    ),
+                    "description": "Trailing ordered Faces treated as avoidance regions.",
                 },
                 "avoid_internal_features": {"type": "boolean"},
             },
@@ -654,7 +641,7 @@ _WATERLINE_CLEARING = {
                 "kind": {
                     "type": "string",
                     "const": "waterline_only",
-                    "description": "Cut only the constant-Z boundary contours.",
+                    "description": "Cut constant-Z boundary contours.",
                 }
             },
             ("kind",),
@@ -801,11 +788,7 @@ _ROTARY_SURFACE_GEOMETRY = {
                 "kind": {
                     "type": "string",
                     "const": "entire_job",
-                    "description": (
-                        "Machine the sole model in the exact CAM Job. Rotary Surface "
-                        "rejects Jobs with multiple models because the shipped engine "
-                        "uses only the first."
-                    ),
+                    "description": "Machine the exact CAM Job model.",
                 }
             },
             ("kind",),
@@ -959,10 +942,7 @@ _ROTARY_SURFACE_SETTINGS = _closed(
             "type": "number",
             "minimum": 0.001,
             "maximum": 10_000_000.0,
-            "description": (
-                "Required centerline-safe effective feed ceiling; no zero sentinel "
-                "or hidden rapid-rate fallback is used."
-            ),
+            "description": "Centerline-safe effective feed ceiling.",
         },
         "mesh": _closed(
             {
@@ -2006,12 +1986,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="rotary_surface",
-                description=(
-                    "Create one bounded four-axis Rotary Surface path for the sole "
-                    "exact Job model or ordered exact Faces. Validate its machine "
-                    "axis, cylindrical stock, controller, feed ceiling, and workload "
-                    "before mutation; no task panel is opened."
-                ),
+                description="Create a bounded four-axis Rotary Surface toolpath.",
                 action_ids=frozenset({"CAM_RotarySurface"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type=(
@@ -2428,12 +2403,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="array",
-                description=(
-                    "Create one parametric source-preserving Array from ordered exact "
-                    "Job toolpaths. Linear-1D, Linear-2D, Polar, and exact Points "
-                    "patterns are separate closed choices; optional jitter is seeded "
-                    "and generated work is bounded before mutation."
-                ),
+                description="Create a parametric Array from ordered exact Job toolpaths.",
                 action_ids=frozenset({"CAM_Array"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type=(
@@ -2445,12 +2415,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="simple_copy",
-                description=(
-                    "Flatten one through 64 ordered exact Job toolpaths, including "
-                    "their placements, into one source-preserving non-parametric "
-                    "Custom operation. Sources must share one controller and coolant "
-                    "mode; no source links or task panel are retained."
-                ),
+                description="Flatten ordered exact Job toolpaths into one Custom operation.",
                 action_ids=frozenset({"CAM_SimpleCopy"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobPlacedToolpathFlatteningSet",

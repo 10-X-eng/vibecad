@@ -47,7 +47,7 @@ _FIELDS = frozenset(
         "sketch",
         "expected_geometry_count",
         "expected_constraint_count",
-        "geometry_indices",
+        "geometry_ids",
     }
 )
 
@@ -55,7 +55,7 @@ _FIELDS = frozenset(
 @dataclass(frozen=True, slots=True)
 class SketchDeleteGeometrySpec:
     target: ActiveSketchTargetSpec
-    geometry_indices: tuple[int, ...]
+    geometry_ids: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,16 +72,16 @@ class PreparedSketchDeleteGeometry:
     solver_issues: tuple[tuple[int, ...], ...]
 
 
-def _geometry_indices(value: Any) -> tuple[int, ...]:
+def _geometry_ids(value: Any) -> tuple[int, ...]:
     if (
         not isinstance(value, list)
         or not 1 <= len(value) <= MAX_DELETE_GEOMETRY
-        or any(type(index) is not int or not 0 <= index <= 999_999 for index in value)
+        or any(type(item) is not int or not 0 <= item <= 999_999 for item in value)
         or len(set(value)) != len(value)
     ):
         raise NativeSketchError(
-            f"{LABEL} geometry_indices must contain one through "
-            f"{MAX_DELETE_GEOMETRY} unique nonnegative indices."
+            f"{LABEL} geometry_ids must contain one through "
+            f"{MAX_DELETE_GEOMETRY} unique nonnegative IDs."
         )
     return tuple(sorted(value))
 
@@ -99,8 +99,18 @@ def prepare_sketch_delete_geometry(
             expected_geometry_count=value["expected_geometry_count"],
             expected_constraint_count=value["expected_constraint_count"],
         ),
-        _geometry_indices(value["geometry_indices"]),
+        _geometry_ids(value["geometry_ids"]),
     )
+
+
+def _geometry_id_map(records: tuple[str, ...]) -> dict[int, int]:
+    result: dict[int, int] = {}
+    for index, record in enumerate(records):
+        geometry_id = json.loads(record).get("geometry_id")
+        if type(geometry_id) is not int or geometry_id < 0 or geometry_id in result:
+            raise NativeSketchError(f"{LABEL} stable geometry identity is unavailable.")
+        result[geometry_id] = index
+    return result
 
 
 def _records(
@@ -177,23 +187,29 @@ def preflight_sketch_delete_geometry(
         raise TypeError("spec must be a SketchDeleteGeometrySpec")
     target = preflight_active_sketch(context, spec.target)
     geometry, constraints, external = _records(target.sketch, spec)
-    if spec.geometry_indices[-1] >= len(geometry):
-        raise NativeSketchError(f"{LABEL} target is outside the active Sketch.")
+    geometry_ids = _geometry_id_map(geometry)
+    missing = [item for item in spec.geometry_ids if item not in geometry_ids]
+    if missing:
+        raise NativeSketchError(
+            f"{LABEL} geometry_ids {missing} do not exist; available geometry_ids "
+            f"are {sorted(geometry_ids)} (geometry_count {len(geometry)})."
+        )
 
     handles, members = _group_roles(target.sketch)
-    selected = set(spec.geometry_indices)
+    selected = {geometry_ids[item] for item in spec.geometry_ids}
+    ids_by_index = {index: geometry_id for geometry_id, index in geometry_ids.items()}
     grouped_members = selected & set(members)
     if grouped_members:
         member = min(grouped_members)
         raise NativeSketchError(
-            f"Sketch geometry {member} belongs to group handle {members[member]}; "
-            "delete that handle instead."
+            f"Sketch geometry_id {ids_by_index[member]} belongs to group handle "
+            f"geometry_id {ids_by_index[members[member]]}; delete that handle instead."
         )
     for index in selected:
         if "internal_type" in json.loads(geometry[index]):
             raise NativeSketchError(
-                f"Sketch geometry {index} is internal helper geometry; delete its "
-                "owning curve instead."
+                f"Sketch geometry_id {ids_by_index[index]} is internal helper geometry; "
+                "delete its owning curve instead."
             )
 
     deletion = set(selected)
@@ -362,7 +378,7 @@ def verify_sketch_delete_geometry(
         sketch,
         {
             "operation": "delete_geometry",
-            "requested_geometry_indices": list(prepared.spec.geometry_indices),
+            "requested_geometry_ids": list(prepared.spec.geometry_ids),
             "deleted_geometry_count": len(deleted_geometry),
             "deleted_constraint_count": len(deleted_constraints),
         },

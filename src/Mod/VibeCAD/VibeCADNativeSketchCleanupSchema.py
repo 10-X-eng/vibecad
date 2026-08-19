@@ -121,7 +121,7 @@ def _extend_parameters() -> dict:
 def _delete_parameters() -> dict:
     return _active_sketch_parameters(
         {
-            "geometry_indices": {
+            "geometry_ids": {
                 "type": "array",
                 "items": {
                     "type": "integer",
@@ -133,7 +133,7 @@ def _delete_parameters() -> dict:
                 "uniqueItems": True,
             },
         },
-        ("geometry_indices",),
+        ("geometry_ids",),
         external_count=False,
     )
 
@@ -191,7 +191,10 @@ def sketch_cleanup_capability_definitions() -> tuple[NativeCapabilityDefinition,
         variants=(
             NativeCapabilityVariant(
                 operation="delete_geometry",
-                description="Delete one through sixty-four exact ungrouped geometry elements.",
+                description=(
+                    "Delete one through sixty-four elements by the stable geometry_id "
+                    "returned by Sketch tools and inspection."
+                ),
                 action_ids=frozenset({"SketchEditDeleteGeometry"}),
                 surface_ids=frozenset({"sketch.edit"}),
                 exact_target_type="ActiveSketchExactGeometryDeletionAndExpectedState",

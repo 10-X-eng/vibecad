@@ -22,9 +22,11 @@ from VibeCADCore import get_service
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeModelStructureSchema import (
+    model_revolution_sketch_capability_definition,
     model_structure_capability_definitions,
 )
 from VibeCADNativeSketchSetupSchema import sketch_setup_capability_definition
+from VibeCADNativeSketchState import serialize_sketch_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
@@ -119,7 +121,10 @@ def _run() -> None:
             active_surface_id=lambda: "model",
             edit_or_task_active=lambda: False,
         )
-        definitions = model_structure_capability_definitions()
+        definitions = (
+            *model_structure_capability_definitions(),
+            model_revolution_sketch_capability_definition(),
+        )
         turn = _turn(definitions)
         registry = build_native_capability_registry()
         debug_events = []
@@ -157,21 +162,11 @@ def _run() -> None:
             _process_events()
             assert all(document.getObject(name) is not None for name in names)
 
-        before_invalid = tuple(obj.Name for obj in document.Objects)
-        invalid = native_call(
-            "model.structure",
-            {"operation": "new_body", "label": "Missing explicit parent"},
-            succeeds=False,
-        )
-        assert invalid["error_code"] == "NATIVE_ARGUMENTS_INVALID"
-        assert tuple(obj.Name for obj in document.Objects) == before_invalid
-
         component_result = native_call(
             "model.structure",
             {
                 "operation": "new_component",
                 "label": "Bracket Component",
-                "parent_component": None,
             },
         )
         component_name = component_result["component"]["object_name"]
@@ -198,13 +193,9 @@ def _run() -> None:
         sketch_result = native_call(
             "model.sketch",
             {
-                "operation": "new_sketch",
+                "operation": "create_on_base_plane",
                 "label": "Bracket Profile",
-                "support": {
-                    "kind": "base_plane",
-                    "plane": "XY",
-                    "offset_mm": 0.0,
-                },
+                "plane": "XY",
             },
         )
         sketch_name = sketch_result["sketch"]["object_name"]
@@ -213,10 +204,68 @@ def _run() -> None:
         assert sketch.getParentGeoFeatureGroup() is None
         assert sketch_result["entered_edit_mode"] is False
         assert sketch_result["next_step"] == {
-            "human_action": "open_created_sketch"
+            "tool": "sketch.open",
+            "arguments": {
+                "operation": "open",
+                "sketch": {"object_name": sketch_name},
+            },
         }
         assert Gui.activeDocument().getInEdit() is None
         PartDesign.validateDesign(sketch)
+
+        revolution_sketch_result = native_call(
+            "model.revolution_sketch",
+            {
+                "operation": "create",
+                "label": "Z Axis Turned Profile",
+                "axis": {"kind": "global_axis", "axis": "Z"},
+            },
+        )
+        revolution_sketch = document.getObject(
+            revolution_sketch_result["sketch"]["object_name"]
+        )
+        assert revolution_sketch_result["support"] == {
+            "kind": "base_plane",
+            "plane": "XZ",
+            "offset_mm": 0.0,
+            "reverse_normal": True,
+        }
+        assert revolution_sketch_result["global_axis"] == "Z"
+        assert revolution_sketch_result["revolution_axis"] == {
+            "object_name": revolution_sketch.Name,
+            "subelements": ["V_Axis"],
+        }
+        assert revolution_sketch_result["profile_coordinates"] == {
+            "axial": "y_mm",
+            "radius": "x_mm >= 0",
+            "axis": "x_mm = 0",
+        }
+        assert revolution_sketch_result["profile_intent"] == {
+            "kind": "axisymmetric",
+            "global_axis": "Z",
+            "sketch_axis": "V_Axis",
+            "axial": "y_mm",
+            "radius": "x_mm >= 0",
+            "axis": "x_mm = 0",
+        }
+        assert serialize_sketch_state(revolution_sketch)["profile_intent"] == (
+            revolution_sketch_result["profile_intent"]
+        )
+        local_vertical = revolution_sketch.Placement.Rotation.multVec(
+            App.Vector(0.0, 1.0, 0.0)
+        )
+        assert local_vertical.dot(App.Vector(0.0, 0.0, 1.0)) > 1.0 - 1.0e-9
+        profile_plane = serialize_sketch_state(revolution_sketch)["profile"][
+            "support_plane"
+        ]
+        assert profile_plane == {
+            "space": "global",
+            "origin_mm": [0.0, 0.0, 0.0],
+            "x_direction": [1.0, 0.0, 0.0],
+            "y_direction": [0.0, 0.0, 1.0],
+            "normal": [0.0, -1.0, 0.0],
+        }
+        PartDesign.validateDesign(revolution_sketch)
 
         readiness = native_call(
             "sketch.validate",
@@ -235,14 +284,11 @@ def _run() -> None:
         face_sketch_result = native_call(
             "model.sketch",
             {
-                "operation": "new_sketch",
+                "operation": "create_on_face",
                 "label": "Face Supported Profile",
-                "support": {
-                    "kind": "planar_face",
-                    "target": {
-                        "object_name": source_body.Name,
-                        "subelement": "Face6",
-                    },
+                "target": {
+                    "object_name": source_body.Name,
+                    "subelement": "Face6",
                 },
             },
         )

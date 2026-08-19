@@ -167,6 +167,32 @@ def _density(obj: Any) -> tuple[float, str]:
     return density, "shape_material"
 
 
+def _volume_center(shape: Any, volume: float) -> list[float]:
+    """Return an exact volume center for solids and solid-bearing Compounds."""
+
+    if volume <= 0.0:
+        return [0.0, 0.0, 0.0]
+    center = getattr(shape, "CenterOfMass", None)
+    if center is not None:
+        return _vector(center)
+    solids = list(getattr(shape, "Solids", []) or [])
+    weighted = [0.0, 0.0, 0.0]
+    solid_volume = 0.0
+    for solid in solids:
+        item_volume = abs(float(getattr(solid, "Volume", 0.0) or 0.0))
+        if item_volume <= 0.0:
+            continue
+        item_center = _vector(getattr(solid, "CenterOfMass", None))
+        solid_volume += item_volume
+        for index in range(3):
+            weighted[index] += item_center[index] * item_volume
+    if solid_volume <= 0.0:
+        raise NativeMeasureError(
+            "A solid-bearing mass-property target has no readable volume center."
+        )
+    return [value / solid_volume for value in weighted]
+
+
 def mass_properties(
     document: Any,
     targets: tuple[NativeObjectRef, ...],
@@ -191,7 +217,7 @@ def mass_properties(
         area = abs(float(getattr(shape, "Area", 0.0) or 0.0))
         density, density_source = _density(obj)
         mass = volume * density
-        center = _vector(shape.CenterOfMass)
+        center = _volume_center(shape, volume)
         total_volume += volume
         total_area += area
         total_mass += mass

@@ -35,4 +35,5 @@ def prepare_sketch_fillet_target(
         document_uid,
         value,
         label=LABEL,
+        size_field="radius_mm",
     )

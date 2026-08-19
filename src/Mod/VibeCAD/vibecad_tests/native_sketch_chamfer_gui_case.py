@@ -28,6 +28,7 @@ def _arguments(sketch: Any, *, geometry_count: int = 2) -> dict[str, object]:
             "geometry_index": 0,
             "position": "end",
         },
+        "distance_mm": 2.0,
         "preserve_corner": True,
     }
 

@@ -74,10 +74,7 @@ _REQUEST = {
 def manufacture_camotics_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MANUFACTURE_CAMOTICS_CAPABILITY_NAME,
-        description=(
-            "Inspect or open one exact ordered CAM program with the optional "
-            "CAMotics runtime; never accepts a provider path or executable."
-        ),
+        description="Inspect or open one exact ordered CAM program with CAMotics.",
         primary_classification="view",
         variants=(
             NativeCapabilityVariant(

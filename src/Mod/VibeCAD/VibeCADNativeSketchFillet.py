@@ -55,6 +55,7 @@ def _diagnose(sketch: Any, spec: SketchFilletSpec) -> Any:
             return diagnose(
                 spec.selection.geometry_index,
                 spec.selection.position_code,
+                spec.requested_size_mm,
                 spec.preserve_corner,
             )
         import FreeCAD as App
@@ -65,6 +66,7 @@ def _diagnose(sketch: Any, spec: SketchFilletSpec) -> Any:
             second.geometry_index,
             App.Vector(*first.reference_point_mm, 0.0),
             App.Vector(*second.reference_point_mm, 0.0),
+            spec.requested_size_mm,
             spec.preserve_corner,
         )
     except Exception as exc:

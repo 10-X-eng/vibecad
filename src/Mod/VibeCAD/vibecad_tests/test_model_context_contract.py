@@ -554,7 +554,7 @@ def test_conversation_history_read_is_scoped_to_the_selected_thread(
     }
 
 
-def test_run_prompt_includes_active_thread_history_exactly_once(
+def test_unsaved_run_prompt_reaches_provider_and_includes_active_thread_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     current = "What was the last question I asked?"
@@ -571,8 +571,12 @@ def test_run_prompt_includes_active_thread_history_exactly_once(
             self.other_thread_text = "This belongs to a different conversation."
             self.persisted_conversation_ids: list[str | None] = []
 
-        def document_persistence_state(self):
-            return {"enabled": True}
+        def assistant_document_state(self):
+            return {
+                "enabled": True,
+                "turn_enabled": True,
+                "saved": False,
+            }
 
         def active_workbench_name(self):
             return "AssemblyWorkbench"

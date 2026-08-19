@@ -18,7 +18,10 @@ from PySide import QtCore, QtWidgets
 
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
-from VibeCADNativeCapabilityRegistry import NativeProviderSurface
+from VibeCADNativeCapabilityRegistry import (
+    NativeProviderSurface,
+    provider_visible_native_schema,
+)
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeModelFeatureSchema import model_feature_capability_definition
 from VibeCADNativeRegistry import build_native_capability_registry
@@ -43,31 +46,23 @@ def _elements(name, *subelements):
     return {"object_name": name, "subelements": list(subelements)}
 
 
-def _new_body_result():
+def _axis(name, subelement):
     return {
-        "mode": "new_body",
-        "targets": [],
-        "destination_component": None,
+        "kind": "subelement",
+        "object_name": name,
+        "subelement": subelement,
     }
 
 
-def _provider_arguments(arguments):
-    values = dict(arguments)
-    internal_operation = str(values.pop("operation"))
-    shared = {
-        name: values.pop(name)
-        for name in ("label", "profile", "result")
-        if name in values
-    }
-    if internal_operation == "design_helix" and "definition" in values:
-        values["parameters"] = values.pop("definition")
+def _combine(kind, body):
+    return {"kind": kind, "bodies": [{"object_name": body.Name}]}
+
+
+def _feature_call(label, profile, kind, **feature):
     return {
-        "operation": "profile",
-        **shared,
-        "definition": {
-            "kind": internal_operation.removeprefix("design_"),
-            **values,
-        },
+        "label": label,
+        "profile": profile,
+        "feature": {"kind": kind, **feature},
     }
 
 
@@ -119,31 +114,31 @@ def _shape_body(document, name, shape):
 
 def _result_mode_bodies(document):
     factories = {
-        "design_extrude": lambda: Part.makeBox(
+        "extrude": lambda: Part.makeBox(
             10,
             10,
             12,
             App.Vector(-5, -5, -1),
         ),
-        "design_revolve": lambda: Part.makeCylinder(
+        "revolve": lambda: Part.makeCylinder(
             3,
             8,
             App.Vector(0, -4, 0),
             App.Vector(0, 1, 0),
         ),
-        "design_loft": lambda: Part.makeBox(
+        "loft": lambda: Part.makeBox(
             8,
             8,
             10,
             App.Vector(-4, -4, -1),
         ),
-        "design_sweep": lambda: Part.makeCylinder(
+        "sweep": lambda: Part.makeCylinder(
             2,
             10,
             App.Vector(0, 0, -1),
             App.Vector(0, 0, 1),
         ),
-        "design_helix": lambda: Part.makeBox(
+        "helix": lambda: Part.makeBox(
             12,
             16,
             12,
@@ -154,7 +149,7 @@ def _result_mode_bodies(document):
         operation: {
             mode: _shape_body(
                 document,
-                f"{operation.removeprefix('design_').title()}{mode.title()}Body",
+                f"{operation.title()}{mode.title()}Body",
                 factory(),
             )
             for mode in ("join", "cut", "intersect")
@@ -261,7 +256,7 @@ def _turn(definition):
     variants = tuple(
         variant
         for variant in definition.variants
-        if variant.operation == "profile"
+        if variant.operation == "create"
     )
     surface = NativeProviderSurface(
         snapshot=NativeSurfaceSnapshot(
@@ -276,7 +271,11 @@ def _turn(definition):
         unavailable_reason="",
         tool_names=(definition.name,),
         schemas=(
-            definition.provider_schema(tuple(variant.operation for variant in variants)),
+            provider_visible_native_schema(
+                definition.provider_schema(
+                    tuple(variant.operation for variant in variants)
+                )
+            ),
         ),
         human_only_action_ids=(),
         missing_definition_names=(),
@@ -289,212 +288,186 @@ def _turn(definition):
 def _basic_calls(inputs):
     return (
         {
-            "operation": "design_extrude",
             "label": "Gate Extrude",
             "profile": _profile(inputs["extrude"].Name),
-            "result": _new_body_result(),
-            "direction": {"kind": "sketch_normal"},
-            "extent": {
-                "kind": "one_side",
-                "sides": [
-                    {
-                        "kind": "length",
-                        "length_mm": 10.0,
-                        "taper_degrees": 0.0,
-                    }
-                ],
-                "reversed": False,
+            "feature": {
+                "kind": "extrude",
+                "direction": {"kind": "sketch_normal"},
+                "extent": {
+                    "kind": "one_side",
+                    "sides": [
+                        {
+                            "kind": "length",
+                            "length_mm": 10.0,
+                            "taper_degrees": 0.0,
+                        }
+                    ],
+                },
             },
         },
         {
-            "operation": "design_revolve",
             "label": "Gate Revolve",
             "profile": _profile(inputs["revolve"].Name),
-            "result": _new_body_result(),
-            "axis": _elements(inputs["revolve"].Name, "V_Axis"),
-            "extent": {
-                "kind": "angle",
-                "angle_degrees": 360.0,
-                "symmetric": False,
-                "reversed": False,
+            "feature": {
+                "kind": "revolve",
+                "axis": {"kind": "global_axis", "axis": "Y"},
+                "extent": {"kind": "angle", "angle_degrees": 360.0},
             },
         },
         {
-            "operation": "design_loft",
             "label": "Gate Loft",
             "profile": _profile(inputs["loft_lower"].Name),
-            "result": _new_body_result(),
-            "sections": [_profile(inputs["loft_upper"].Name)],
-            "ruled": False,
-            "closed": False,
+            "feature": {
+                "kind": "loft",
+                "sections": [_profile(inputs["loft_upper"].Name)],
+                "ruled": False,
+                "closed": False,
+            },
         },
         {
-            "operation": "design_sweep",
             "label": "Gate Sweep",
             "profile": _profile(inputs["sweep"].Name),
-            "result": _new_body_result(),
-            "path": _elements(inputs["path"].Name, "Edge1"),
-            "options": {
-                "spine_tangent": False,
-                "orientation": {"kind": "standard"},
-                "transition": "transformed",
-                "transformation": "constant",
-                "sections": [],
+            "feature": {
+                "kind": "sweep",
+                "path": _elements(inputs["path"].Name, "Edge1"),
+                "options": {
+                    "spine_tangent": False,
+                    "orientation": {"kind": "standard"},
+                    "transition": "transformed",
+                    "transformation": {"kind": "constant"},
+                },
             },
         },
         {
-            "operation": "design_helix",
             "label": "Gate Helix",
             "profile": _profile(inputs["helix"].Name),
-            "result": _new_body_result(),
-            "axis": _elements(inputs["helix"].Name, "V_Axis"),
-            "definition": {
-                "kind": "pitch_height_angle",
-                "pitch_mm": 3.0,
-                "height_mm": 9.0,
-                "angle_degrees": 0.0,
+            "feature": {
+                "kind": "helix",
+                "axis": {"kind": "global_axis", "axis": "Y"},
+                "parameters": {
+                    "kind": "pitch_height_angle",
+                    "pitch_mm": 3.0,
+                    "height_mm": 9.0,
+                    "angle_degrees": 0.0,
+                },
+                "left_handed": False,
+                "reversed": False,
+                "outside": False,
+                "tolerance": 0.1,
             },
-            "left_handed": False,
-            "reversed": False,
-            "outside": False,
-            "tolerance": 0.1,
         },
     )
 
 
 def _advanced_calls(inputs):
-    extrude_base = {
-        "profile": _profile(inputs["extrude"].Name),
-        "result": _new_body_result(),
-    }
-    revolve_base = {
-        "profile": _profile(inputs["revolve"].Name),
-        "result": _new_body_result(),
-        "axis": _elements(inputs["revolve"].Name, "V_Axis"),
-    }
-    sweep_base = {
-        "profile": _profile(inputs["sweep"].Name),
-        "result": _new_body_result(),
-        "path": _elements(inputs["path"].Name, "Edge1"),
-    }
-    helix_base = {
-        "profile": _profile(inputs["helix"].Name),
-        "result": _new_body_result(),
-        "axis": _elements(inputs["helix"].Name, "V_Axis"),
-        "outside": False,
-        "tolerance": 0.1,
-    }
     return (
-        {
-            "operation": "design_extrude",
-            "label": "Gate Two-Sided Custom Extrude",
-            **extrude_base,
-            "direction": {
+        _feature_call(
+            "Gate Two-Sided Custom Extrude",
+            _profile(inputs["extrude"].Name),
+            "extrude",
+            direction={
                 "kind": "custom_vector",
                 "vector": {"x": 0.0, "y": 0.0, "z": 1.0},
                 "along_sketch_normal": True,
             },
-            "extent": {
+            extent={
                 "kind": "two_sides",
                 "sides": [
                     {"kind": "length", "length_mm": 6.0, "taper_degrees": 2.0},
                     {"kind": "length", "length_mm": 4.0, "taper_degrees": 0.0},
                 ],
-                "reversed": False,
             },
-        },
-        {
-            "operation": "design_extrude",
-            "label": "Gate Symmetric Reference Extrude",
-            **extrude_base,
-            "direction": {
+        ),
+        _feature_call(
+            "Gate Symmetric Reference Extrude",
+            _profile(inputs["extrude"].Name),
+            "extrude",
+            direction={
                 "kind": "reference_axis",
                 "target": _elements(inputs["extrude"].Name, "N_Axis"),
                 "along_sketch_normal": True,
             },
-            "extent": {
+            extent={
                 "kind": "symmetric",
                 "sides": [
                     {"kind": "length", "length_mm": 8.0, "taper_degrees": 0.0}
                 ],
-                "reversed": False,
             },
-        },
-        {
-            "operation": "design_revolve",
-            "label": "Gate Symmetric Revolve",
-            **revolve_base,
-            "extent": {
+        ),
+        _feature_call(
+            "Gate Symmetric Revolve",
+            _profile(inputs["revolve"].Name),
+            "revolve",
+            axis=_axis(inputs["revolve"].Name, "V_Axis"),
+            extent={
                 "kind": "angle",
                 "angle_degrees": 180.0,
-                "symmetric": True,
-                "reversed": False,
+                "direction": "symmetric",
             },
-        },
-        {
-            "operation": "design_revolve",
-            "label": "Gate Two-Angle Revolve",
-            **revolve_base,
-            "extent": {
+        ),
+        _feature_call(
+            "Gate Two-Angle Revolve",
+            _profile(inputs["revolve"].Name),
+            "revolve",
+            axis=_axis(inputs["revolve"].Name, "V_Axis"),
+            extent={
                 "kind": "two_angles",
                 "angle1_degrees": 120.0,
                 "angle2_degrees": 120.0,
-                "reversed": False,
             },
-        },
-        {
-            "operation": "design_loft",
-            "label": "Gate Ruled Loft",
-            "profile": _profile(inputs["loft_lower"].Name),
-            "result": _new_body_result(),
-            "sections": [_profile(inputs["loft_upper"].Name)],
-            "ruled": True,
-            "closed": False,
-        },
-        {
-            "operation": "design_loft",
-            "label": "Gate Closed Loft",
-            "profile": _profile(inputs["loft_lower"].Name),
-            "result": _new_body_result(),
-            "sections": [
+        ),
+        _feature_call(
+            "Gate Ruled Loft",
+            _profile(inputs["loft_lower"].Name),
+            "loft",
+            sections=[_profile(inputs["loft_upper"].Name)],
+            ruled=True,
+            closed=False,
+        ),
+        _feature_call(
+            "Gate Closed Loft",
+            _profile(inputs["loft_lower"].Name),
+            "loft",
+            sections=[
                 _profile(inputs["loft_upper"].Name),
                 _profile(inputs["loft_third"].Name),
             ],
-            "ruled": False,
-            "closed": True,
-        },
-        {
-            "operation": "design_sweep",
-            "label": "Gate Fixed Linear Sweep",
-            **sweep_base,
-            "options": {
+            ruled=False,
+            closed=True,
+        ),
+        _feature_call(
+            "Gate Fixed Linear Sweep",
+            _profile(inputs["sweep"].Name),
+            "sweep",
+            path=_elements(inputs["path"].Name, "Edge1"),
+            options={
                 "spine_tangent": False,
                 "orientation": {"kind": "fixed"},
                 "transition": "right_corner",
-                "transformation": "linear",
-                "sections": [],
+                "transformation": {"kind": "linear"},
             },
-        },
-        {
-            "operation": "design_sweep",
-            "label": "Gate Binormal S Sweep",
-            **sweep_base,
-            "options": {
+        ),
+        _feature_call(
+            "Gate Binormal S Sweep",
+            _profile(inputs["sweep"].Name),
+            "sweep",
+            path=_elements(inputs["path"].Name, "Edge1"),
+            options={
                 "spine_tangent": False,
                 "orientation": {
                     "kind": "binormal",
                     "vector": {"x": 1.0, "y": 0.0, "z": 0.0},
                 },
                 "transition": "round_corner",
-                "transformation": "s_shape",
-                "sections": [],
+                "transformation": {"kind": "s_shape"},
             },
-        },
-        {
-            "operation": "design_sweep",
-            "label": "Gate Auxiliary Interpolation Sweep",
-            **sweep_base,
-            "options": {
+        ),
+        _feature_call(
+            "Gate Auxiliary Interpolation Sweep",
+            _profile(inputs["sweep"].Name),
+            "sweep",
+            path=_elements(inputs["path"].Name, "Edge1"),
+            options={
                 "spine_tangent": False,
                 "orientation": {
                     "kind": "auxiliary",
@@ -503,64 +476,75 @@ def _advanced_calls(inputs):
                     "curvilinear": True,
                 },
                 "transition": "transformed",
-                "transformation": "interpolation",
-                "sections": [],
+                "transformation": {"kind": "interpolation"},
             },
-        },
-        {
-            "operation": "design_sweep",
-            "label": "Gate Multisection Sweep",
-            **sweep_base,
-            "options": {
+        ),
+        _feature_call(
+            "Gate Multisection Sweep",
+            _profile(inputs["sweep"].Name),
+            "sweep",
+            path=_elements(inputs["path"].Name, "Edge1"),
+            options={
                 "spine_tangent": False,
                 "orientation": {"kind": "frenet"},
                 "transition": "transformed",
-                "transformation": "multisection",
-                "sections": [
-                    _profile(inputs["sweep_middle"].Name),
-                    _profile(inputs["sweep_end"].Name),
-                ],
+                "transformation": {
+                    "kind": "multisection",
+                    "sections": [
+                        _profile(inputs["sweep_middle"].Name),
+                        _profile(inputs["sweep_end"].Name),
+                    ],
+                },
             },
-        },
-        {
-            "operation": "design_helix",
-            "label": "Gate Pitch-Turns Helix",
-            **helix_base,
-            "definition": {
+        ),
+        _feature_call(
+            "Gate Pitch-Turns Helix",
+            _profile(inputs["helix"].Name),
+            "helix",
+            axis=_axis(inputs["helix"].Name, "V_Axis"),
+            parameters={
                 "kind": "pitch_turns_angle",
                 "pitch_mm": 3.0,
                 "turns": 3.0,
                 "angle_degrees": 0.0,
             },
-            "left_handed": True,
-            "reversed": False,
-        },
-        {
-            "operation": "design_helix",
-            "label": "Gate Height-Turns Helix",
-            **helix_base,
-            "definition": {
+            left_handed=True,
+            reversed=False,
+            outside=False,
+            tolerance=0.1,
+        ),
+        _feature_call(
+            "Gate Height-Turns Helix",
+            _profile(inputs["helix"].Name),
+            "helix",
+            axis=_axis(inputs["helix"].Name, "V_Axis"),
+            parameters={
                 "kind": "height_turns_angle",
                 "height_mm": 9.0,
                 "turns": 3.0,
                 "angle_degrees": 0.0,
             },
-            "left_handed": False,
-            "reversed": True,
-        },
-        {
-            "operation": "design_helix",
-            "label": "Gate Growth Helix",
-            **helix_base,
-            "definition": {
+            left_handed=False,
+            reversed=True,
+            outside=False,
+            tolerance=0.1,
+        ),
+        _feature_call(
+            "Gate Growth Helix",
+            _profile(inputs["helix"].Name),
+            "helix",
+            axis=_axis(inputs["helix"].Name, "V_Axis"),
+            parameters={
                 "kind": "height_turns_growth",
                 "height_mm": 9.0,
                 "turns": 3.0,
                 "growth_mm": 0.0,
             },
-            "left_handed": False,
-            "reversed": False,
-        },
+            left_handed=False,
+            reversed=False,
+            outside=False,
+            tolerance=0.1,
+        ),
     )
 
 
@@ -568,44 +552,39 @@ def _termination_calls(inputs):
     profile = _profile(inputs["limit_profile"].Name)
     direction = {"kind": "sketch_normal"}
 
-    def result(mode, body=None):
-        return {
-            "mode": mode,
-            "targets": [] if body is None else [{"object_name": body.Name}],
-            "destination_component": None,
-        }
-
     def extrude(
         label,
         side,
-        result_spec,
         *,
+        combine=None,
         reversed_value=False,
         profile_spec=profile,
     ):
-        return {
-            "operation": "design_extrude",
-            "label": label,
-            "profile": profile_spec,
-            "result": result_spec,
-            "direction": direction,
-            "extent": {
+        result = _feature_call(
+            label,
+            profile_spec,
+            "extrude",
+            direction=direction,
+            extent={
                 "kind": "one_side",
                 "sides": [side],
                 "reversed": reversed_value,
             },
-        }
+        )
+        if combine is not None:
+            result["combine"] = combine
+        return result
 
     return (
         extrude(
             "Gate Up-To-First Extrude",
             {"kind": "up_to_first", "offset_mm": 0.0},
-            result("join", inputs["first_body"]),
+            combine=_combine("join", inputs["first_body"]),
         ),
         extrude(
             "Gate Up-To-Last Extrude",
             {"kind": "up_to_last", "offset_mm": 0.0},
-            result("join", inputs["last_body"]),
+            combine=_combine("join", inputs["last_body"]),
         ),
         extrude(
             "Gate Up-To-Face Extrude",
@@ -617,7 +596,6 @@ def _termination_calls(inputs):
                 ),
                 "offset_mm": 0.0,
             },
-            result("new_body"),
         ),
         extrude(
             "Gate Up-To-Shape Extrude",
@@ -629,15 +607,13 @@ def _termination_calls(inputs):
                 ),
                 "offset_mm": 0.0,
             },
-            result("new_body"),
         ),
-        {
-            "operation": "design_extrude",
-            "label": "Gate Reversed Extrude",
-            "profile": _profile(inputs["extrude"].Name),
-            "result": result("new_body"),
-            "direction": direction,
-            "extent": {
+        _feature_call(
+            "Gate Reversed Extrude",
+            _profile(inputs["extrude"].Name),
+            "extrude",
+            direction=direction,
+            extent={
                 "kind": "one_side",
                 "sides": [
                     {
@@ -648,70 +624,67 @@ def _termination_calls(inputs):
                 ],
                 "reversed": True,
             },
-        },
-        {
-            "operation": "design_revolve",
-            "label": "Gate Reversed Revolve",
-            "profile": _profile(inputs["revolve"].Name),
-            "result": result("new_body"),
-            "axis": _elements(inputs["revolve"].Name, "V_Axis"),
-            "extent": {
+        ),
+        _feature_call(
+            "Gate Reversed Revolve",
+            _profile(inputs["revolve"].Name),
+            "revolve",
+            axis=_axis(inputs["revolve"].Name, "V_Axis"),
+            extent={
                 "kind": "angle",
                 "angle_degrees": 90.0,
-                "symmetric": False,
-                "reversed": True,
+                "direction": "reverse",
             },
+        ),
+        {
+            **_feature_call(
+                "Gate Up-To-First Revolve",
+                _profile(inputs["revolve"].Name),
+                "revolve",
+                axis=_axis(inputs["revolve"].Name, "V_Axis"),
+                extent={"kind": "up_to_first"},
+            ),
+            "combine": _combine("join", inputs["revolve_first_body"]),
         },
         {
-            "operation": "design_revolve",
-            "label": "Gate Up-To-First Revolve",
-            "profile": _profile(inputs["revolve"].Name),
-            "result": result("join", inputs["revolve_first_body"]),
-            "axis": _elements(inputs["revolve"].Name, "V_Axis"),
-            "extent": {"kind": "up_to_first", "reversed": False},
+            **_feature_call(
+                "Gate Up-To-Last Revolve",
+                _profile(inputs["revolve"].Name),
+                "revolve",
+                axis=_axis(inputs["revolve"].Name, "V_Axis"),
+                extent={"kind": "up_to_last"},
+            ),
+            "combine": _combine("join", inputs["revolve_last_body"]),
         },
         {
-            "operation": "design_revolve",
-            "label": "Gate Up-To-Last Revolve",
-            "profile": _profile(inputs["revolve"].Name),
-            "result": result("join", inputs["revolve_last_body"]),
-            "axis": _elements(inputs["revolve"].Name, "V_Axis"),
-            "extent": {"kind": "up_to_last"},
-        },
-        {
-            "operation": "design_revolve",
-            "label": "Gate Up-To-Face Revolve",
-            "profile": _profile(inputs["revolve"].Name),
-            "result": result("join", inputs["revolve_face_body"]),
-            "axis": _elements(inputs["revolve"].Name, "V_Axis"),
-            "extent": {
-                "kind": "up_to_face",
-                "target": _elements(
-                    inputs["revolve_face_body"].Name,
-                    inputs["revolve_limit_face"],
-                ),
-                "reversed": False,
-            },
+            **_feature_call(
+                "Gate Up-To-Face Revolve",
+                _profile(inputs["revolve"].Name),
+                "revolve",
+                axis=_axis(inputs["revolve"].Name, "V_Axis"),
+                extent={
+                    "kind": "up_to_face",
+                    "target": _elements(
+                        inputs["revolve_face_body"].Name,
+                        inputs["revolve_limit_face"],
+                    ),
+                },
+            ),
+            "combine": _combine("join", inputs["revolve_face_body"]),
         },
     )
 
 
 def _result_mode_calls(inputs):
-    basic_by_operation = {
-        call["operation"]: call
-        for call in _basic_calls(inputs)
+    basic_by_kind = {
+        call["feature"]["kind"]: call for call in _basic_calls(inputs)
     }
     calls = []
-    for operation, bodies in inputs["result_mode_bodies"].items():
+    for kind, bodies in inputs["result_mode_bodies"].items():
         for mode, body in bodies.items():
-            arguments = json.loads(json.dumps(basic_by_operation[operation]))
-            feature = operation.removeprefix("design_").title()
-            arguments["label"] = f"Gate {feature} {mode.title()}"
-            arguments["result"] = {
-                "mode": mode,
-                "targets": [{"object_name": body.Name}],
-                "destination_component": None,
-            }
+            arguments = json.loads(json.dumps(basic_by_kind[kind]))
+            arguments["label"] = f"Gate {kind.title()} {mode.title()}"
+            arguments["combine"] = _combine(mode, body)
             calls.append(arguments)
     return tuple(calls)
 
@@ -744,6 +717,7 @@ def _run() -> None:
         )
         definition = model_feature_capability_definition()
         turn = _turn(definition)
+        debug_events = []
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state,
@@ -752,19 +726,23 @@ def _run() -> None:
             runtimes=build_native_runtime_bindings(context, turn.tool_names),
             reauthorize_turn=lambda: None,
             active_document=lambda: App.ActiveDocument,
+            debug_sink=debug_events.append,
         )
         call_number = 0
 
         def native_call(arguments, *, succeeds=True):
             nonlocal call_number
             call_number += 1
-            provider_arguments = _provider_arguments(arguments)
             response = dispatcher.call(
                 "model.feature",
-                json.dumps(provider_arguments, separators=(",", ":")),
+                json.dumps(arguments, separators=(",", ":")),
                 f"model-profile-call-{call_number}",
             )
-            assert response.get("ok") is succeeds, (arguments, response)
+            assert response.get("ok") is succeeds, (
+                arguments,
+                response,
+                debug_events[-1:] if not response.get("ok") else [],
+            )
             return response
 
         before = tuple(obj.Name for obj in document.Objects)
@@ -818,7 +796,8 @@ def _run() -> None:
 
         for arguments in _termination_calls(inputs):
             response = native_call(arguments)
-            assert response["result_mode"] == arguments["result"]["mode"]
+            expected_mode = arguments.get("combine", {}).get("kind", "new_body")
+            assert response["result_mode"] == expected_mode
             assert response["bodies"][0]["solid_count"] == 1
             operation_name = response["operation"]["object_name"]
             body_name = response["bodies"][0]["body"]["object_name"]
@@ -836,8 +815,8 @@ def _run() -> None:
 
         for arguments in _result_mode_calls(inputs):
             response = native_call(arguments)
-            mode = arguments["result"]["mode"]
-            target_name = arguments["result"]["targets"][0]["object_name"]
+            mode = arguments["combine"]["kind"]
+            target_name = arguments["combine"]["bodies"][0]["object_name"]
             assert response["result_mode"] == mode
             assert response["bodies"][0]["body"]["object_name"] == target_name
             assert response["bodies"][0]["solid_count"] == 1
@@ -857,15 +836,18 @@ def _run() -> None:
             )
 
         before = tuple(obj.Name for obj in document.Objects)
-        invalid_loft = dict(_basic_calls(inputs)[2])
-        invalid_loft["closed"] = True
+        invalid_loft = json.loads(json.dumps(_basic_calls(inputs)[2]))
+        invalid_loft["feature"]["closed"] = True
         invalid_closed = native_call(invalid_loft, succeeds=False)
         assert invalid_closed["error_code"] == "NATIVE_MODEL_INVALID"
         assert tuple(obj.Name for obj in document.Objects) == before
         assert document.HasPendingTransaction is False
 
-        invalid_sweep = dict(_basic_calls(inputs)[3])
-        invalid_sweep["path"] = _elements(inputs["extrude"].Name, "Edge999")
+        invalid_sweep = json.loads(json.dumps(_basic_calls(inputs)[3]))
+        invalid_sweep["feature"]["path"] = _elements(
+            inputs["extrude"].Name,
+            "Edge999",
+        )
         invalid_path = native_call(invalid_sweep, succeeds=False)
         assert invalid_path["error_code"] == "NATIVE_TARGET_INVALID"
         assert tuple(obj.Name for obj in document.Objects) == before

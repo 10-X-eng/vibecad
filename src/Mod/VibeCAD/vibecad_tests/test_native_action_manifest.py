@@ -28,7 +28,7 @@ EXPECTED_DEFAULT_COUNTS = {
     "drawing": 107,
     "manufacture": 59,
     "mesh": 60,
-    "model": 75,
+    "model": 70,
     "parameters": 24,
     "sketch.edit": 105,
     "sketch.setup": 15,
@@ -76,7 +76,7 @@ def test_default_inventory_has_exact_proven_counts_without_duplicates() -> None:
     unique_ids = set().union(
         *(set(command_ids) for command_ids in KNOWN_ACTIONS_BY_SURFACE.values())
     )
-    assert len(unique_ids) == DEFAULT_UNIQUE_ACTION_COUNT == 541
+    assert len(unique_ids) == DEFAULT_UNIQUE_ACTION_COUNT == 536
     all_known_ids = unique_ids | set().union(
         *(set(command_ids) for command_ids in OPTIONAL_ACTIONS_BY_SURFACE.values())
     )
@@ -394,7 +394,10 @@ def test_model_composites_map_to_all_and_only_their_exact_leaf_variants() -> Non
         for child_id in child_ids
     } == {
         **{
-            child_id: ("model.feature", "primitive")
+            child_id: (
+                "model.primitive",
+                child_id.removeprefix("PartDesign::Design").lower(),
+            )
             for child_id in EXPECTED_MODEL_COMPOSITES["PartDesign_DesignPrimitive"]
         },
         "Part_Offset": ("model.part", "offset_3d"),
@@ -442,8 +445,8 @@ def test_classifier_preserves_live_order_and_records_every_contract_field() -> N
     assert plans[0].transaction_behavior == "none"
     assert plans[1].parent_command_id == "PartDesign_DesignPrimitive"
     assert plans[1].classification.mutation is True
-    assert plans[1].capability_family == "model.feature"
-    assert plans[1].operation_variant == "primitive"
+    assert plans[1].capability_family == "model.primitive"
+    assert plans[1].operation_variant == "box"
     assert plans[1].implementation_status == "planned"
     assert plans[-1].classification.read is True
     assert plans[-1].capability_family == "inspect.query"
@@ -485,7 +488,7 @@ def test_provider_families_exclude_parent_only_actions_and_preserve_order() -> N
     plans = classify_native_surface(_surface())
 
     assert planned_provider_capability_families(plans) == (
-        "model.feature",
+        "model.primitive",
         "inspect.query",
     )
 
@@ -670,7 +673,7 @@ def test_hole_is_a_focused_model_capability_instead_of_a_generic_feature() -> No
     assert plan.operation_variant == "hole"
 
 
-def test_profile_actions_share_one_compact_typed_provider_variant() -> None:
+def test_extrude_has_one_exact_provider_capability() -> None:
     manifest = {
         "schema_version": 1,
         "surface_id": "model",
@@ -691,8 +694,33 @@ def test_profile_actions_share_one_compact_typed_provider_variant() -> None:
 
     plan = classify_native_surface(RibbonSurface.from_manifest(manifest, revision=1))[0]
 
-    assert plan.capability_family == "model.feature"
-    assert plan.operation_variant == "profile"
+    assert plan.capability_family == "model.extrude"
+    assert plan.operation_variant == "create"
+
+
+def test_revolve_has_one_exact_provider_capability() -> None:
+    manifest = {
+        "schema_version": 1,
+        "surface_id": "model",
+        "groups": [
+            {
+                "label": "Solids",
+                "actions": [
+                    {
+                        "command_id": "PartDesign_DesignRevolve",
+                        "kind": "command",
+                        "label": "Revolve",
+                        "available": True,
+                    }
+                ],
+            }
+        ],
+    }
+
+    plan = classify_native_surface(RibbonSurface.from_manifest(manifest, revision=1))[0]
+
+    assert plan.capability_family == "model.revolve"
+    assert plan.operation_variant == "create"
 
 
 def test_standalone_part_primitives_use_a_focused_part_capability() -> None:
@@ -743,81 +771,6 @@ def test_part_builder_uses_the_same_focused_part_capability() -> None:
 
     assert plan.capability_family == "model.part"
     assert plan.operation_variant == "builder"
-
-
-def test_part_extrude_uses_the_focused_part_capability() -> None:
-    manifest = {
-        "schema_version": 1,
-        "surface_id": "model",
-        "groups": [
-            {
-                "label": "Solids",
-                "actions": [
-                    {
-                        "command_id": "Part_Extrude",
-                        "kind": "command",
-                        "label": "Extrude",
-                        "available": True,
-                    }
-                ],
-            }
-        ],
-    }
-
-    plan = classify_native_surface(RibbonSurface.from_manifest(manifest, revision=1))[0]
-
-    assert plan.capability_family == "model.part"
-    assert plan.operation_variant == "extrude"
-
-
-def test_part_revolve_uses_the_focused_part_capability() -> None:
-    manifest = {
-        "schema_version": 1,
-        "surface_id": "model",
-        "groups": [
-            {
-                "label": "Solids",
-                "actions": [
-                    {
-                        "command_id": "Part_Revolve",
-                        "kind": "command",
-                        "label": "Revolve",
-                        "available": True,
-                    }
-                ],
-            }
-        ],
-    }
-
-    plan = classify_native_surface(RibbonSurface.from_manifest(manifest, revision=1))[0]
-
-    assert plan.capability_family == "model.part"
-    assert plan.operation_variant == "revolve"
-
-
-def test_part_mirror_uses_the_focused_part_capability() -> None:
-    manifest = {
-        "schema_version": 1,
-        "surface_id": "model",
-        "groups": [
-            {
-                "label": "Transform",
-                "actions": [
-                    {
-                        "command_id": "Part_Mirror",
-                        "kind": "command",
-                        "label": "Mirror",
-                        "available": True,
-                    }
-                ],
-            }
-        ],
-    }
-
-    plan = classify_native_surface(RibbonSurface.from_manifest(manifest, revision=1))[0]
-
-    assert plan.capability_family == "model.part"
-    assert plan.operation_variant == "mirror"
 
 
 def test_make_face_uses_the_focused_part_capability() -> None:

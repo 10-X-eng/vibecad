@@ -19,7 +19,6 @@ from VibeCADNativeSketchGeometryValues import (
     sketch_point_2d,
     sketch_positive_length,
     sketch_start_angle_degrees,
-    sketch_sweep_angle_degrees,
 )
 from VibeCADNativeSketchInsertion import (
     PreparedSketchInsertion,
@@ -43,7 +42,7 @@ _ARC_FIELDS = frozenset(
         "center_mm",
         "radius_mm",
         "start_angle_degrees",
-        "sweep_angle_degrees",
+        "end_angle_degrees",
     }
 )
 
@@ -54,7 +53,11 @@ class SketchArcSpec:
     center_mm: tuple[float, float]
     radius_mm: float
     start_angle_degrees: float
-    sweep_angle_degrees: float
+    end_angle_degrees: float
+
+    @property
+    def sweep_angle_degrees(self) -> float:
+        return (self.end_angle_degrees - self.start_angle_degrees) % 360.0
 
     @property
     def first_parameter(self) -> float:
@@ -77,6 +80,19 @@ class PreparedSketchArc:
 def prepare_sketch_arc(document_uid: str, value: Mapping[str, Any]) -> SketchArcSpec:
     if not isinstance(value, Mapping) or set(value) != _ARC_FIELDS:
         raise NativeSketchError("A Sketch Arc definition has incorrect fields.")
+    start_angle = sketch_start_angle_degrees(
+        value["start_angle_degrees"],
+        "Arc start_angle_degrees",
+    )
+    end_angle = sketch_start_angle_degrees(
+        value["end_angle_degrees"],
+        "Arc end_angle_degrees",
+    )
+    if (end_angle - start_angle) % 360.0 <= 1.0e-9:
+        raise NativeSketchError(
+            "Sketch Arc start_angle_degrees and end_angle_degrees must differ; "
+            "use a Circle for 360 degrees."
+        )
     return SketchArcSpec(
         prepare_active_sketch_target(
             document_uid,
@@ -86,14 +102,8 @@ def prepare_sketch_arc(document_uid: str, value: Mapping[str, Any]) -> SketchArc
         ),
         sketch_point_2d(value["center_mm"], "Arc center_mm"),
         sketch_positive_length(value["radius_mm"], "Arc radius_mm"),
-        sketch_start_angle_degrees(
-            value["start_angle_degrees"],
-            "Arc start_angle_degrees",
-        ),
-        sketch_sweep_angle_degrees(
-            value["sweep_angle_degrees"],
-            "Arc sweep_angle_degrees",
-        ),
+        start_angle,
+        end_angle,
     )
 
 

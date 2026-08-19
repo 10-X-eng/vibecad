@@ -23,6 +23,7 @@ from VibeCADProvider import (
     CodexProvider,
     OfflineProvider,
     ProviderUnavailable,
+    _model_visible_context,
     provider_tool_schema_digest,
 )
 from VibeCADIntentMemoryCompiler import compile_intent_memory_update
@@ -888,7 +889,8 @@ def _turn_start_tool_surface(
             f"({schema_json_bytes} bytes)."
         )
     if not schemas:
-        raise ValueError("The turn-start provider surface has no tools.")
+        reason = resolution.unavailable_reason if resolution is not None else ""
+        raise ValueError(reason or "The turn-start provider surface has no tools.")
     if any(not isinstance(schema, dict) for schema in schemas):
         raise ValueError("Every turn-start provider tool schema must be an object.")
     names = [str(schema.get("name") or "").strip() for schema in schemas]
@@ -1125,9 +1127,6 @@ def _capture_context_for_provider(
 ) -> dict[str, Any]:
     clean_interaction_mode = normalize_interaction_mode(interaction_mode)
     raw_context = service.provider_context_summary()
-    # Treat the session boundary as the final model-context allowlist. This
-    # prevents any service implementation from accidentally reintroducing broad
-    # CAD or domain snapshots.
     allowed_turn_facts = (
         "document",
         "selection",
@@ -1142,20 +1141,13 @@ def _capture_context_for_provider(
     native_provider_surface = None
     native_engine = str(service.modeling_engine() or "").strip().lower() == "native"
     if native_engine:
-        try:
-            from VibeCADNativeProviderContext import (
-                resolve_production_native_surface,
-            )
+        from VibeCADNativeProviderContext import resolve_production_native_surface
 
-            _native_registry, native_provider_surface = (
-                resolve_production_native_surface()
-            )
-            resolution = modeling_surface_from_native_provider(
-                workbench,
-                native_provider_surface,
-            )
-        except Exception:
-            resolution = resolve_service_surface(service, workbench)
+        _native_registry, native_provider_surface = resolve_production_native_surface()
+        resolution = modeling_surface_from_native_provider(
+            workbench,
+            native_provider_surface,
+        )
     else:
         resolution = resolve_service_surface(service, workbench)
     context["workbench"] = workbench
@@ -1243,21 +1235,11 @@ def _capture_context_for_provider(
         codex_thread_schemas = []
     context["provider_tool_schemas"] = schemas
     context["_vibecad_interaction_mode"] = clean_interaction_mode
-    try:
-        turn_surface = _turn_start_tool_surface(
-            workbench, schemas, resolution=resolution
-        )
-    except ValueError as exc:
-        if service.provider_name() not in {"openai", "chatgpt", "grok"}:
-            raise
-        context["provider_tool_surface"] = {
-            "kind": "unavailable",
-            "frozen": True,
-            "workbench": str(workbench or ""),
-            "reason": str(exc),
-        }
-    else:
-        context["provider_tool_surface"] = turn_surface
+    context["provider_tool_surface"] = _turn_start_tool_surface(
+        workbench,
+        schemas,
+        resolution=resolution,
+    )
     if codex_thread_schemas:
         context["_vibecad_codex_thread_surface"] = {
             "provider_tool_schemas": codex_thread_schemas,
@@ -1535,6 +1517,18 @@ def _provider_component_inventory_payload(
 
 
 def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
+    modeling_surface = context.get("modeling_surface")
+    if (
+        isinstance(modeling_surface, Mapping)
+        and str(modeling_surface.get("engine") or "").strip().lower() == "native"
+    ):
+        result = _model_visible_context(context)
+        result.pop("view_screenshot", None)
+        result.pop("reference_images", None)
+        aero = context.get("aero")
+        if aero not in (None, "", [], {}):
+            result["aero"] = aero
+        return result
     # Final first-prompt allowlist. This dict is serialized as
     # VIBECAD_CONTEXT_JSON. Aero is a sibling of document/selection, not a
     # field on provider_turn_document_summary, and it is not delivered by
@@ -5161,15 +5155,22 @@ def _run_session_turn(
         document_thread_dispatch,
         get_service,
     )
-    persistence = _on_document_thread(
+    document_state = _on_document_thread(
         document_thread_dispatch,
-        active_service.document_persistence_state,
+        active_service.assistant_document_state,
     )
-    if not persistence.get("enabled"):
+    if not document_state.get("enabled"):
         raise RuntimeError(
             str(
-                persistence.get("message")
-                or "Save the active document to enable VibeCAD."
+                document_state.get("message")
+                or "Create or open a document to use VibeCAD."
+            )
+        )
+    if not document_state.get("turn_enabled", True):
+        raise RuntimeError(
+            str(
+                document_state.get("message")
+                or "Choose Native or VibeScript to begin."
             )
         )
     turn_conversation_id: str | None = None
@@ -5567,6 +5568,86 @@ def run_sketch_close_continuation(
         output_authorization_callback=output_authorization_callback,
         input_authorization_callback=input_authorization_callback,
         session_trigger=clean_event,
+        persist_input_as_user=False,
+        prompt_section="CURRENT_SESSION_EVENT",
+        document_thread_dispatch=document_thread_dispatch,
+        interaction_mode="build",
+    )
+
+
+def run_native_surface_continuation(
+    event: dict[str, Any],
+    service: VibeCADService | None = None,
+    prefer_online: bool = True,
+    provider: BaseProvider | None = None,
+    progress_callback: ProgressCallback | None = None,
+    cancellation_check: CancellationCheck | None = None,
+    steering_check: SteeringCheck | None = None,
+    question_callback: QuestionCallback | None = None,
+    output_authorization_callback: NativeOutputAuthorizer | None = None,
+    input_authorization_callback: NativeInputAuthorizer | None = None,
+    document_thread_dispatch: DocumentThreadDispatch | None = None,
+) -> VibeCADResponse:
+    if not isinstance(event, dict):
+        raise ValueError("CAD continuation event must be an object.")
+    event_type = str(event.get("type") or "").strip()
+    expected_fields = {
+        "type",
+        "document_uid",
+        "document_name",
+        "surface_id",
+        "workspace",
+    }
+    if event_type == "cad_edit_started":
+        expected_fields.add("edit_object_name")
+    if set(event) != expected_fields:
+        raise ValueError(
+            "CAD continuation event requires exactly: "
+            + ", ".join(sorted(expected_fields))
+            + "."
+        )
+    if event_type not in {"cad_workspace_changed", "cad_edit_started"}:
+        raise ValueError(
+            "CAD continuation event type must be cad_workspace_changed or "
+            "cad_edit_started."
+        )
+    clean_event = {
+        "type": event_type,
+        "document_uid": str(event.get("document_uid") or "").strip(),
+        "document_name": str(event.get("document_name") or "").strip(),
+        "surface_id": str(event.get("surface_id") or "").strip(),
+        "workspace": str(event.get("workspace") or "").strip(),
+    }
+    if event_type == "cad_edit_started":
+        clean_event["edit_object_name"] = str(
+            event.get("edit_object_name") or ""
+        ).strip()
+    missing = [key for key, value in clean_event.items() if not value]
+    if missing:
+        raise ValueError(
+            "CAD continuation event is missing: "
+            + ", ".join(sorted(missing))
+            + "."
+        )
+    if event_type == "cad_edit_started" and clean_event["surface_id"] != "sketch.edit":
+        raise ValueError("A CAD edit-start continuation requires sketch.edit.")
+    workspace = clean_event["workspace"].replace("_", " ").capitalize()
+    prompt = (
+        f"{workspace} work is now available. Continue the current design from its "
+        "existing document state. Do not repeat completed operations."
+    )
+    return _run_session_turn(
+        prompt,
+        service=service,
+        prefer_online=prefer_online,
+        provider=provider,
+        progress_callback=progress_callback,
+        cancellation_check=cancellation_check,
+        steering_check=steering_check,
+        question_callback=question_callback,
+        output_authorization_callback=output_authorization_callback,
+        input_authorization_callback=input_authorization_callback,
+        session_trigger={"workspace": clean_event["workspace"]},
         persist_input_as_user=False,
         prompt_section="CURRENT_SESSION_EVENT",
         document_thread_dispatch=document_thread_dispatch,

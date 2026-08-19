@@ -95,10 +95,7 @@ def analyze_presentation_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="set_post_auto_recompute",
-                description=(
-                    "Set immediate post-pipeline recompute only when the exact current "
-                    "preference still matches the turn-start value."
-                ),
+                description="Set immediate post-pipeline recompute from an exact preference state.",
                 action_ids=frozenset({"FEM_PostApplyChanges"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="FemPostAutoRecomputePreferenceState",

@@ -16,7 +16,7 @@ from VibeCADNativeSketchTargets import (
 
 
 MAX_EXTERNAL_SKETCH_GEOMETRY = 1_000_000
-_FIELDS = frozenset(
+_BASE_FIELDS = frozenset(
     {
         "sketch",
         "expected_geometry_count",
@@ -59,6 +59,7 @@ class SketchCurveEditSpec:
     target: ActiveSketchTargetSpec
     expected_external_geometry_count: int
     selection: SketchCurveEditCorner | SketchCurveEditPair
+    requested_size_mm: float
     preserve_corner: bool
 
     @property
@@ -147,15 +148,27 @@ def _external_count(value: Any) -> int:
     return value
 
 
+def _positive_size(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise NativeSketchError(f"{label} must be a positive millimeter value.")
+    result = float(value)
+    if not math.isfinite(result) or not 0.0 < result <= 1_000_000.0:
+        raise NativeSketchError(f"{label} must be greater than 0 and at most 1000000 mm.")
+    return result
+
+
 def prepare_sketch_curve_edit_target(
     document_uid: str,
     value: Mapping[str, Any],
     *,
     label: str,
+    size_field: str,
 ) -> SketchCurveEditSpec:
     if not isinstance(label, str) or not label:
         raise TypeError("label must be a nonempty string")
-    if not isinstance(value, Mapping) or set(value) != _FIELDS:
+    if not isinstance(size_field, str) or not size_field:
+        raise TypeError("size_field must be a nonempty string")
+    if not isinstance(value, Mapping) or set(value) != {*_BASE_FIELDS, size_field}:
         raise NativeSketchError(f"A {label} definition has incorrect fields.")
     preserve = value["preserve_corner"]
     if type(preserve) is not bool:
@@ -169,5 +182,6 @@ def prepare_sketch_curve_edit_target(
         ),
         _external_count(value["expected_external_geometry_count"]),
         _selection(value["target"], label),
+        _positive_size(value[size_field], f"{label} {size_field}"),
         preserve,
     )

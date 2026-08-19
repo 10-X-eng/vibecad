@@ -199,7 +199,7 @@ def test_each_surface_builds_only_its_live_domain(
         monkeypatch.setattr(
             sketch_snapshot_module,
             "build_sketch_snapshot",
-            lambda _document, _surface_id: {
+            lambda _document, _surface_id, *, selection=None: {
                 "kind": "sketch",
                 "context": "edit",
                 "revision": "sketch-v1:" + ("a" * 64),
@@ -315,6 +315,52 @@ def test_model_snapshot_exposes_meshes_needed_by_model_surface_tools() -> None:
             "facets": 12,
             "visible": False,
         }
+    ]
+
+
+def test_model_snapshot_exposes_exact_sketch_feature_readiness(monkeypatch) -> None:
+    document = _document()
+    sketch = document.getObject("Sketch")
+    observed = []
+    monkeypatch.setattr(
+        model_snapshot_module,
+        "sketch_readiness",
+        lambda exact_document, exact_target: observed.append(
+            (exact_document, dict(exact_target))
+        )
+        or {
+            "fully_constrained": False,
+            "profile": {
+                "wire_count": 2,
+                "closed_wire_count": 2,
+                "open_wire_count": 0,
+            },
+            "valid": True,
+            "surface_feature_ready": True,
+            "solid_feature_ready": True,
+        },
+        raising=False,
+    )
+
+    sketch.ViewObject = SimpleNamespace(Visibility=True)
+    summary = model_snapshot_module._sketch_summary(sketch)
+    assert summary["fully_constrained"] is False
+    assert summary["profile"] == {
+        "wire_count": 2,
+        "closed_wire_count": 2,
+        "open_wire_count": 0,
+    }
+    assert summary["valid"] is True
+    assert summary["surface_feature_ready"] is True
+    assert summary["solid_feature_ready"] is True
+    assert observed == [
+        (
+            document,
+            {
+                "document_uid": document.Uid,
+                "object_name": sketch.Name,
+            },
+        )
     ]
 
 

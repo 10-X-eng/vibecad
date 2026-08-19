@@ -33,27 +33,6 @@ def _builder_schema_parts():
     return definition, schema, branch, branch["properties"]["definition"]
 
 
-def _extrude_schema_parts():
-    definition = model_part_capability_definition()
-    schema = definition.provider_schema(("extrude",))
-    branch = schema["parameters"]["oneOf"][0]
-    return definition, schema, branch, branch["properties"]["definition"]
-
-
-def _revolve_schema_parts():
-    definition = model_part_capability_definition()
-    schema = definition.provider_schema(("revolve",))
-    branch = schema["parameters"]["oneOf"][0]
-    return definition, schema, branch, branch["properties"]["definition"]
-
-
-def _mirror_schema_parts():
-    definition = model_part_capability_definition()
-    schema = definition.provider_schema(("mirror",))
-    branch = schema["parameters"]["oneOf"][0]
-    return definition, schema, branch, branch["properties"]["definition"]
-
-
 def _make_face_schema_parts():
     definition = model_part_capability_definition()
     schema = definition.provider_schema(("make_face",))
@@ -64,20 +43,6 @@ def _make_face_schema_parts():
 def _ruled_surface_schema_parts():
     definition = model_part_capability_definition()
     schema = definition.provider_schema(("ruled_surface",))
-    branch = schema["parameters"]["oneOf"][0]
-    return definition, schema, branch, branch["properties"]["definition"]
-
-
-def _loft_schema_parts():
-    definition = model_part_capability_definition()
-    schema = definition.provider_schema(("loft",))
-    branch = schema["parameters"]["oneOf"][0]
-    return definition, schema, branch, branch["properties"]["definition"]
-
-
-def _sweep_schema_parts():
-    definition = model_part_capability_definition()
-    schema = definition.provider_schema(("sweep",))
     branch = schema["parameters"]["oneOf"][0]
     return definition, schema, branch, branch["properties"]["definition"]
 
@@ -135,7 +100,13 @@ def test_part_primitive_contract_matches_every_live_creation_choice() -> None:
     definition, _schema, branch, primitive = _schema_parts()
 
     assert definition.name == "model.part"
+    assert definition.description == (
+        "Create standalone curves, surfaces, compounds, and repairs."
+    )
     assert branch["properties"]["operation"]["const"] == "primitive"
+    assert definition.variants[0].description == (
+        "Create a plane, curve, point, or regular polygon."
+    )
     assert tuple(primitive["properties"]["kind"]["enum"]) == EXPECTED_KINDS
     variant = definition.variants[0]
     assert variant.action_ids == frozenset({"Part_Primitives"})
@@ -147,7 +118,7 @@ def test_part_primitive_contract_matches_every_live_creation_choice() -> None:
 def test_part_primitive_requires_explicit_label_placement_and_closed_definition() -> None:
     _definition, _schema, branch, primitive = _schema_parts()
 
-    assert branch["required"] == ["operation", "label", "placement", "definition"]
+    assert branch["required"] == ["label", "placement", "definition"]
     assert branch["additionalProperties"] is False
     assert primitive["required"] == ["kind"]
     assert primitive["additionalProperties"] is False
@@ -199,7 +170,7 @@ def test_part_builder_contract_matches_every_live_shape_builder_choice() -> None
 def test_part_builder_schema_is_closed_bounded_and_exposes_every_real_control() -> None:
     _definition, schema, branch, builder = _builder_schema_parts()
 
-    assert branch["required"] == ["operation", "label", "definition"]
+    assert branch["required"] == ["label", "definition"]
     assert branch["additionalProperties"] is False
     assert builder["required"] == ["kind"]
     assert builder["additionalProperties"] is False
@@ -228,164 +199,16 @@ def test_part_builder_schema_is_closed_bounded_and_exposes_every_real_control() 
     assert len(encoded) < 1_500
 
 
-def test_part_extrude_contract_matches_the_live_retained_dialog() -> None:
-    definition, _schema, branch, extrude = _extrude_schema_parts()
-
-    assert branch["properties"]["operation"]["const"] == "extrude"
-    variant = definition.variants[2]
-    assert variant.action_ids == frozenset({"Part_Extrude"})
-    assert variant.exact_target_type == "ExactCurrentShapeSources"
-    assert variant.transaction_behavior == "document"
-    assert variant.background_required is False
-    assert extrude["required"] == [
-        "sources",
-        "direction",
-        "length_along_mm",
-        "length_against_mm",
-        "symmetric",
-        "reversed",
-        "taper_along_degrees",
-        "taper_against_degrees",
-        "solid",
-    ]
-    assert extrude["additionalProperties"] is False
-    assert extrude["properties"]["direction"]["properties"]["kind"]["enum"] == [
-        "normal",
-        "custom",
-        "edge",
-    ]
-
-
-def test_part_extrude_targets_are_exact_bounded_and_schema_stays_compact() -> None:
-    _definition, schema, _branch, extrude = _extrude_schema_parts()
-
-    sources = extrude["properties"]["sources"]
-    assert (sources["minItems"], sources["maxItems"], sources["uniqueItems"]) == (
-        1,
-        32,
-        True,
-    )
-    direction = extrude["properties"]["direction"]
-    assert direction["required"] == ["kind"]
-    assert direction["additionalProperties"] is False
-    edge = direction["properties"]["edge"]
-    assert edge["required"] == ["object_name", "subelement"]
-    assert edge["properties"]["subelement"]["pattern"] == r"^Edge[1-9][0-9]*$"
-    encoded = json.dumps(
-        schema,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    assert len(encoded) < 3_000
-
-
-def test_part_revolve_contract_matches_the_live_retained_dialog() -> None:
-    definition, _schema, branch, revolve = _revolve_schema_parts()
-
-    assert branch["properties"]["operation"]["const"] == "revolve"
-    variant = definition.variants[3]
-    assert variant.action_ids == frozenset({"Part_Revolve"})
-    assert variant.exact_target_type == "ExactCurrentShapeSourcesAndAxis"
-    assert variant.transaction_behavior == "document"
-    assert variant.background_required is False
-    assert revolve["required"] == [
-        "sources",
-        "axis",
-        "angle_degrees",
-        "symmetric",
-        "solid",
-    ]
-    assert revolve["additionalProperties"] is False
-
-
-def test_part_revolve_targets_and_axis_are_closed_bounded_and_compact() -> None:
-    _definition, schema, _branch, revolve = _revolve_schema_parts()
-
-    sources = revolve["properties"]["sources"]
-    assert (sources["minItems"], sources["maxItems"], sources["uniqueItems"]) == (
-        1,
-        32,
-        True,
-    )
-    axis = revolve["properties"]["axis"]
-    assert axis["required"] == ["kind"]
-    assert axis["additionalProperties"] is False
-    assert axis["properties"]["kind"]["enum"] == ["custom", "edge"]
-    reference = axis["properties"]["reference"]
-    assert reference["required"] == ["object_name"]
-    assert reference["additionalProperties"] is False
-    assert reference["properties"]["subelement"]["pattern"] == r"^Edge[1-9][0-9]*$"
-    assert revolve["properties"]["angle_degrees"] == {
-        "type": "number",
-        "minimum": -360.0,
-        "maximum": 360.0,
-    }
-    encoded = json.dumps(
-        schema,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    assert len(encoded) < 2_500
-
-
-def test_part_mirror_contract_matches_every_live_task_control() -> None:
-    definition, _schema, branch, mirror = _mirror_schema_parts()
-
-    assert branch["properties"]["operation"]["const"] == "mirror"
-    variant = definition.variants[4]
-    assert variant.action_ids == frozenset({"Part_Mirror"})
-    assert variant.exact_target_type == "ExactCurrentShapeSourcesAndMirrorPlane"
-    assert variant.transaction_behavior == "document"
-    assert variant.background_required is False
-    assert mirror["required"] == ["sources", "plane"]
-    assert mirror["additionalProperties"] is False
-    plane = mirror["properties"]["plane"]
-    standard, referenced = plane["oneOf"]
-    assert standard["required"] == ["kind"]
-    assert standard["additionalProperties"] is False
-    assert standard["properties"]["kind"]["enum"] == ["xy", "xz", "yz"]
-    assert referenced["required"] == ["kind", "reference"]
-    assert referenced["properties"]["kind"]["const"] == "reference"
-
-
-def test_part_mirror_targets_and_reference_are_closed_bounded_and_compact() -> None:
-    _definition, schema, _branch, mirror = _mirror_schema_parts()
-
-    sources = mirror["properties"]["sources"]
-    assert (sources["minItems"], sources["maxItems"], sources["uniqueItems"]) == (
-        1,
-        32,
-        True,
-    )
-    reference = mirror["properties"]["plane"]["oneOf"][1]["properties"][
-        "reference"
-    ]
-    assert reference["required"] == ["object_name"]
-    assert reference["additionalProperties"] is False
-    assert reference["properties"]["subelement"]["pattern"] == (
-        r"^(?:Face|Edge)[1-9][0-9]*$"
-    )
-    encoded = json.dumps(
-        schema,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    assert len(encoded) < 2_000
-
-
 def test_make_face_contract_matches_the_live_immediate_command() -> None:
     definition, _schema, branch, make_face = _make_face_schema_parts()
 
     assert branch["properties"]["operation"]["const"] == "make_face"
-    variant = definition.variants[5]
+    variant = definition.variants[2]
     assert variant.action_ids == frozenset({"Part_MakeFace"})
     assert variant.exact_target_type == "ExactCurrentClosedWireSources"
     assert variant.transaction_behavior == "document"
     assert variant.background_required is False
-    assert branch["required"] == ["operation", "label", "definition"]
+    assert branch["required"] == ["label", "definition"]
     assert branch["additionalProperties"] is False
     assert make_face["required"] == ["sources"]
     assert make_face["additionalProperties"] is False
@@ -417,12 +240,12 @@ def test_ruled_surface_contract_matches_the_live_immediate_command() -> None:
     definition, _schema, branch, ruled = _ruled_surface_schema_parts()
 
     assert branch["properties"]["operation"]["const"] == "ruled_surface"
-    variant = definition.variants[6]
+    variant = definition.variants[3]
     assert variant.action_ids == frozenset({"Part_RuledSurface"})
     assert variant.exact_target_type == "TwoExactCurrentEdgesOrWires"
     assert variant.transaction_behavior == "document"
     assert variant.background_required is False
-    assert branch["required"] == ["operation", "label", "definition"]
+    assert branch["required"] == ["label", "definition"]
     assert ruled["required"] == ["curves"]
     assert ruled["additionalProperties"] is False
 
@@ -451,106 +274,16 @@ def test_ruled_surface_requires_two_exact_whole_or_subelement_curves() -> None:
     assert len(encoded) < 1_300
 
 
-def test_part_loft_contract_matches_every_live_task_control() -> None:
-    definition, _schema, branch, loft = _loft_schema_parts()
-
-    assert branch["properties"]["operation"]["const"] == "loft"
-    variant = definition.variants[7]
-    assert variant.action_ids == frozenset({"Part_Loft"})
-    assert variant.exact_target_type == "OrderedExactCurrentLoftProfiles"
-    assert variant.transaction_behavior == "document"
-    assert variant.background_required is False
-    assert branch["required"] == ["operation", "label", "definition"]
-    assert branch["additionalProperties"] is False
-    assert loft["required"] == ["profiles", "solid", "ruled", "closed"]
-    assert loft["additionalProperties"] is False
-    assert set(loft["properties"]) == {"profiles", "solid", "ruled", "closed"}
-
-
-def test_part_loft_profiles_are_ordered_exact_bounded_and_compact() -> None:
-    _definition, schema, _branch, loft = _loft_schema_parts()
-
-    profiles = loft["properties"]["profiles"]
-    assert (profiles["minItems"], profiles["maxItems"], profiles["uniqueItems"]) == (
-        2,
-        32,
-        True,
-    )
-    item = profiles["items"]
-    assert item["required"] == ["object_name"]
-    assert item["additionalProperties"] is False
-    assert item["properties"]["subelement"]["pattern"] == (
-        r"^(?:Vertex|Edge|Wire|Face)[1-9][0-9]*$"
-    )
-    encoded = json.dumps(
-        schema,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    assert len(encoded) < 1_500
-
-
-def test_part_sweep_contract_matches_every_live_task_control() -> None:
-    definition, _schema, branch, sweep = _sweep_schema_parts()
-
-    assert branch["properties"]["operation"]["const"] == "sweep"
-    variant = definition.variants[8]
-    assert variant.action_ids == frozenset({"Part_Sweep"})
-    assert variant.exact_target_type == "OrderedExactCurrentSweepProfilesAndPath"
-    assert variant.transaction_behavior == "document"
-    assert variant.background_required is False
-    assert branch["required"] == ["operation", "label", "definition"]
-    assert branch["additionalProperties"] is False
-    assert sweep["required"] == ["profiles", "path", "solid", "frenet"]
-    assert sweep["additionalProperties"] is False
-    assert set(sweep["properties"]) == {"profiles", "path", "solid", "frenet"}
-
-
-def test_part_sweep_targets_are_exact_bounded_and_compact() -> None:
-    _definition, schema, _branch, sweep = _sweep_schema_parts()
-
-    profiles = sweep["properties"]["profiles"]
-    assert (profiles["minItems"], profiles["maxItems"], profiles["uniqueItems"]) == (
-        1,
-        32,
-        True,
-    )
-    profile = profiles["items"]
-    assert profile["required"] == ["object_name"]
-    assert profile["additionalProperties"] is False
-    assert profile["properties"]["subelement"]["pattern"] == (
-        r"^(?:Vertex|Edge|Wire|Face)[1-9][0-9]*$"
-    )
-    path = sweep["properties"]["path"]
-    assert path["required"] == ["object_name"]
-    assert path["additionalProperties"] is False
-    subelements = path["properties"]["subelements"]
-    assert (
-        subelements["minItems"],
-        subelements["maxItems"],
-        subelements["uniqueItems"],
-    ) == (1, 64, True)
-    assert subelements["items"]["pattern"] == r"^Edge[1-9][0-9]*$"
-    encoded = json.dumps(
-        schema,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    assert len(encoded) < 1_900
-
-
 def test_part_cross_sections_contract_matches_every_live_task_control() -> None:
     definition, _schema, branch, cross_sections = _cross_sections_schema_parts()
 
     assert branch["properties"]["operation"]["const"] == "cross_sections"
-    variant = definition.variants[9]
+    variant = definition.variants[4]
     assert variant.action_ids == frozenset({"Part_CrossSections"})
     assert variant.exact_target_type == "ExactCurrentShapesAndPlaneSeries"
     assert variant.transaction_behavior == "document"
     assert variant.background_required is False
-    assert branch["required"] == ["operation", "label", "definition"]
+    assert branch["required"] == ["label", "definition"]
     assert cross_sections["required"] == ["sources", "plane", "distribution"]
     assert cross_sections["additionalProperties"] is False
     assert set(cross_sections["properties"]) == {
@@ -607,12 +340,12 @@ def test_part_3d_offset_contract_matches_every_live_result_control() -> None:
     definition, _schema, branch, offset = _offset_schema_parts()
 
     assert branch["properties"]["operation"]["const"] == "offset_3d"
-    variant = definition.variants[10]
+    variant = definition.variants[5]
     assert variant.action_ids == frozenset({"Part_Offset"})
     assert variant.exact_target_type == "ExactCurrentWholeShape"
     assert variant.transaction_behavior == "document"
     assert variant.background_required is False
-    assert branch["required"] == ["operation", "label", "definition"]
+    assert branch["required"] == ["label", "definition"]
     assert offset["required"] == [
         "source",
         "value_mm",
@@ -660,7 +393,7 @@ def test_part_2d_offset_contract_matches_its_narrower_live_task_controls() -> No
     definition, schema, branch, offset = _offset_2d_schema_parts()
 
     assert branch["properties"]["operation"]["const"] == "offset_2d"
-    variant = definition.variants[11]
+    variant = definition.variants[6]
     assert variant.action_ids == frozenset({"Part_Offset2D"})
     assert variant.exact_target_type == "ExactCurrentWholePlanarShape"
     assert variant.transaction_behavior == "document"
@@ -694,7 +427,7 @@ def test_part_projection_contract_matches_the_live_retained_task() -> None:
     definition, schema, branch, projection = _projection_schema_parts()
 
     assert branch["properties"]["operation"]["const"] == "project_surface"
-    variant = definition.variants[12]
+    variant = definition.variants[7]
     assert variant.action_ids == frozenset({"Part_ProjectionOnSurface"})
     assert variant.exact_target_type == "ExactCurrentProjectionGeometry"
     assert variant.transaction_behavior == "document"
@@ -757,7 +490,7 @@ def test_part_compound_contract_is_ordered_exact_closed_and_compact() -> None:
     definition, schema, branch, compound = _compound_schema_parts()
 
     assert branch["properties"]["operation"]["const"] == "compound"
-    variant = definition.variants[13]
+    variant = definition.variants[8]
     assert variant.action_ids == frozenset({"Part_Compound"})
     assert variant.exact_target_type == "ExactCurrentWholeShapes"
     assert variant.transaction_behavior == "document"
@@ -785,7 +518,7 @@ def test_part_compound_filter_contract_covers_every_durable_native_mode() -> Non
     definition, schema, branch, filter_definition = _compound_filter_schema_parts()
 
     assert branch["properties"]["operation"]["const"] == "compound_filter"
-    variant = definition.variants[14]
+    variant = definition.variants[9]
     assert variant.action_ids == frozenset({"Part_CompoundFilter"})
     assert variant.exact_target_type == "ExactCurrentCompoundAndStencil?"
     assert variant.transaction_behavior == "document"
@@ -836,12 +569,12 @@ def test_part_defeature_contract_is_exact_closed_bounded_and_compact() -> None:
     definition, schema, branch, defeature = _defeature_schema_parts()
 
     assert branch["properties"]["operation"]["const"] == "defeature"
-    variant = definition.variants[15]
+    variant = definition.variants[10]
     assert variant.action_ids == frozenset({"Part_Defeaturing"})
     assert variant.exact_target_type == "ExactCurrentShapesAndFaces"
     assert variant.transaction_behavior == "document"
     assert variant.background_required is False
-    assert branch["required"] == ["operation", "label", "definition"]
+    assert branch["required"] == ["label", "definition"]
     assert defeature["required"] == ["sources"]
     assert defeature["additionalProperties"] is False
     sources = defeature["properties"]["sources"]

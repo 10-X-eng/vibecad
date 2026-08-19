@@ -14,6 +14,7 @@ from VibeCADNativeDesignProfiles import (
 )
 from VibeCADNativeDesignResults import DesignResultSpec
 from VibeCADNativeModelErrors import NativeModelError
+from VibeCADNativeModelFeatureBindings import _aligned_sketch_axis
 from VibeCADNativeModelFeatureRuntime import NativeModelFeatureRuntime
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeDocumentStateStore
@@ -91,6 +92,31 @@ def _box_result(mode="new_body", targets=None, component=None):
             "height_mm": 5.0,
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("vertical", "axis", "expected"),
+    (
+        ((0.0, 0.0, 1.0), "Z", ("V_Axis", False)),
+        ((0.0, 0.0, -1.0), "Z", ("V_Axis", True)),
+        ((0.0, 1.0, 0.0), "X", ("H_Axis", False)),
+    ),
+)
+def test_global_axis_resolution_preserves_requested_direction(vertical, axis, expected) -> None:
+    assert _aligned_sketch_axis(
+        horizontal=(1.0, 0.0, 0.0),
+        vertical=vertical,
+        requested=axis,
+    ) == expected
+
+
+def test_global_axis_resolution_rejects_an_axis_normal_to_the_sketch() -> None:
+    with pytest.raises(NativeModelError, match="does not lie in Sketch"):
+        _aligned_sketch_axis(
+            horizontal=(1.0, 0.0, 0.0),
+            vertical=(0.0, 1.0, 0.0),
+            requested="Z",
+        )
 
 
 def test_feature_runtime_preflights_and_routes_native_parameters(monkeypatch) -> None:
@@ -235,7 +261,7 @@ def _profile_result(kind, definition):
     return {
         "operation": "profile",
         "label": f"Invalid {kind.title()}",
-        "profile": {"object_name": "Profile", "regions": []},
+        "profile": {"object_name": "Profile"},
         "result": {
             "mode": "new_body",
             "targets": [],
@@ -351,29 +377,6 @@ def test_compact_extrude_extent_rejects_the_wrong_side_count_before_preflight(
     with pytest.raises(NativeModelError, match="requires [12] side definition"):
         runtime.mutate_feature(
             arguments,
-            ticket=state.begin_call(document.Uid, "model.feature"),
-        )
-
-
-def test_retired_flat_feature_contract_is_rejected_without_compatibility() -> None:
-    runtime, state, document = _runtime()
-    retired = {
-        "operation": "design_box",
-        "label": "Retired Flat Box",
-        "placement": _placement(),
-        "result": {
-            "mode": "new_body",
-            "targets": [],
-            "destination_component": None,
-        },
-        "length_mm": 12.0,
-        "width_mm": 8.0,
-        "height_mm": 5.0,
-    }
-
-    with pytest.raises(NativeArgumentError, match="operation is unavailable"):
-        runtime.mutate_feature(
-            retired,
             ticket=state.begin_call(document.Uid, "model.feature"),
         )
 

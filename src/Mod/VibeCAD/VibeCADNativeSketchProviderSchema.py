@@ -44,7 +44,7 @@ DRAW_OPERATIONS = (
     "create3_point_ellipse",
     "create_rectangle",
     "create_center_rectangle",
-    "create_oblong",
+    "create_rounded_rectangle",
     "create_triangle",
     "create_square",
     "create_pentagon",
@@ -60,13 +60,12 @@ DRAW_OPERATIONS = (
     "create_periodic_b_spline_by_interpolation",
     "create_text",
 )
-LINE_DRAW_OPERATIONS = (
-    "create_point",
-    "create_line",
-    "create_polyline",
-)
+POINT_DRAW_OPERATIONS = ("create_point",)
+LINE_DRAW_OPERATIONS = ("create_line", "create_polyline")
 ARC_DRAW_OPERATIONS = (
     "create_arc",
+)
+CONIC_ARC_DRAW_OPERATIONS = (
     "create_arc_of_ellipse",
     "create_arc_of_hyperbola",
     "create_arc_of_parabola",
@@ -76,14 +75,7 @@ CIRCLE_DRAW_OPERATIONS = (
     "create_circle",
     "create3_point_circle",
 )
-ELLIPSE_DRAW_OPERATIONS = (
-    "create_ellipse",
-    "create3_point_ellipse",
-)
-PROFILE_DRAW_OPERATIONS = (
-    "create_rectangle",
-    "create_center_rectangle",
-    "create_oblong",
+POLYGON_DRAW_OPERATIONS = (
     "create_triangle",
     "create_square",
     "create_pentagon",
@@ -91,6 +83,8 @@ PROFILE_DRAW_OPERATIONS = (
     "create_heptagon",
     "create_octagon",
     "create_regular_polygon",
+)
+SLOT_DRAW_OPERATIONS = (
     "create_slot",
     "create_arc_slot",
 )
@@ -102,18 +96,20 @@ SPLINE_DRAW_OPERATIONS = (
 )
 TEXT_DRAW_OPERATIONS = ("create_text",)
 CONSTRAIN_OPERATIONS = (
-    "constrain_coincident",
     "constrain_horizontal_vertical",
     "constrain_horizontal",
     "constrain_vertical",
     "constrain_parallel",
-    "constrain_perpendicular",
-    "constrain_tangent",
     "constrain_equal",
-    "constrain_symmetric",
     "constrain_block",
     "constrain_group",
 )
+FOCUSED_CONSTRAINT_OPERATIONS = {
+    "sketch.coincident": "constrain_coincident",
+    "sketch.perpendicular": "constrain_perpendicular",
+    "sketch.tangent": "constrain_tangent",
+    "sketch.symmetric": "constrain_symmetric",
+}
 DIMENSION_OPERATIONS = (
     "infer_dimension",
     "constrain_distance_x",
@@ -146,12 +142,19 @@ EDIT_CONSTRAINT_OPERATIONS = (
 
 GEOMETRY_CAPABILITY_NAMES = frozenset(
     {
+        "sketch.draw_point",
         "sketch.draw_line",
         "sketch.draw_arc",
+        "sketch.draw_conic_arc",
         "sketch.draw_three_point_arc",
         "sketch.draw_circle",
         "sketch.draw_ellipse",
-        "sketch.draw_profile",
+        "sketch.draw_three_point_ellipse",
+        "sketch.draw_rectangle",
+        "sketch.draw_center_rectangle",
+        "sketch.draw_rounded_rectangle",
+        "sketch.draw_polygon",
+        "sketch.draw_slot",
         "sketch.draw_spline",
         "sketch.draw_text",
         "sketch.transform",
@@ -166,7 +169,12 @@ GEOMETRY_CAPABILITY_NAMES = frozenset(
     }
 )
 CONSTRAINT_CAPABILITY_NAMES = frozenset(
-    {"sketch.constrain", "sketch.dimension", "sketch.edit"}
+    {
+        "sketch.constrain",
+        "sketch.dimension",
+        "sketch.edit",
+        *FOCUSED_CONSTRAINT_OPERATIONS,
+    }
 )
 SKETCH_PROVIDER_CAPABILITY_NAMES = frozenset(
     {
@@ -176,6 +184,7 @@ SKETCH_PROVIDER_CAPABILITY_NAMES = frozenset(
         "sketch.inspect",
         "sketch.presentation",
         "sketch.control",
+        "sketch.finish",
     }
 )
 
@@ -394,12 +403,14 @@ def _definition(
     variants: Iterable[NativeCapabilityVariant],
     *,
     classification: str = "mutation",
+    preserve_operation_branches: bool = False,
 ) -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=name,
         description=description,
         primary_classification=classification,
         variants=_harmonize_variants(variants),
+        preserve_operation_branches=preserve_operation_branches,
     )
 
 
@@ -424,6 +435,7 @@ def sketch_provider_capability_definitions() -> tuple[NativeCapabilityDefinition
         background_required=False,
         parameters=parameters_schema(
             {
+                "revision": deepcopy(SKETCH_REVISION_SCHEMA),
                 "geometry_offset": {
                     "type": "integer",
                     "minimum": 0,
@@ -457,14 +469,28 @@ def sketch_provider_capability_definitions() -> tuple[NativeCapabilityDefinition
     inspect_variants = (inspect_read, *inspect_source.variants)
     definitions = (
         _definition(
+            "sketch.draw_point",
+            "Draw one Point at position_mm.",
+            (geometry[name] for name in POINT_DRAW_OPERATIONS),
+        ),
+        _definition(
             "sketch.draw_line",
-            "Draw an exact point, line segment, or connected polyline.",
+            "Draw a Line or Polyline.",
             (geometry[name] for name in LINE_DRAW_OPERATIONS),
+            preserve_operation_branches=True,
         ),
         _definition(
             "sketch.draw_arc",
-            "Draw an exact center-defined circular or conic arc.",
+            (
+                "Draw one counterclockwise circular arc from start_angle_degrees "
+                "to end_angle_degrees."
+            ),
             (geometry[name] for name in ARC_DRAW_OPERATIONS),
+        ),
+        _definition(
+            "sketch.draw_conic_arc",
+            "Draw one elliptical, hyperbolic, or parabolic arc.",
+            (geometry[name] for name in CONIC_ARC_DRAW_OPERATIONS),
         ),
         _definition(
             "sketch.draw_three_point_arc",
@@ -481,13 +507,38 @@ def sketch_provider_capability_definitions() -> tuple[NativeCapabilityDefinition
         ),
         _definition(
             "sketch.draw_ellipse",
-            "Draw an exact center-defined or three-point ellipse.",
-            (geometry[name] for name in ELLIPSE_DRAW_OPERATIONS),
+            "Draw one ellipse from its center, major radius, and minor radius.",
+            (geometry["create_ellipse"],),
         ),
         _definition(
-            "sketch.draw_profile",
-            "Draw an exact standard closed profile, polygon, or slot.",
-            (geometry[name] for name in PROFILE_DRAW_OPERATIONS),
+            "sketch.draw_three_point_ellipse",
+            "Draw one ellipse from two major-axis endpoints and one rim point.",
+            (geometry["create3_point_ellipse"],),
+        ),
+        _definition(
+            "sketch.draw_rectangle",
+            "Draw one axis-aligned rectangle from opposite corners.",
+            (geometry["create_rectangle"],),
+        ),
+        _definition(
+            "sketch.draw_center_rectangle",
+            "Draw one axis-aligned rectangle from its center and one corner.",
+            (geometry["create_center_rectangle"],),
+        ),
+        _definition(
+            "sketch.draw_rounded_rectangle",
+            "Draw one rounded rectangle from opposite corners and a corner radius.",
+            (geometry["create_rounded_rectangle"],),
+        ),
+        _definition(
+            "sketch.draw_polygon",
+            "Draw one regular polygon from its center and one corner.",
+            (geometry[name] for name in POLYGON_DRAW_OPERATIONS),
+        ),
+        _definition(
+            "sketch.draw_slot",
+            "Draw one straight or circular-arc slot.",
+            (geometry[name] for name in SLOT_DRAW_OPERATIONS),
         ),
         _definition(
             "sketch.draw_spline",
@@ -499,8 +550,36 @@ def sketch_provider_capability_definitions() -> tuple[NativeCapabilityDefinition
             "Draw one exact Sketch text geometry.",
             (geometry[name] for name in TEXT_DRAW_OPERATIONS),
         ),
-        _definition("sketch.constrain", "Apply geometric Sketch constraints.", (constraint[name] for name in CONSTRAIN_OPERATIONS)),
-        _definition("sketch.dimension", "Apply dimensional Sketch constraints.", (constraint[name] for name in DIMENSION_OPERATIONS)),
+        _definition(
+            "sketch.constrain",
+            "Apply geometric Sketch constraints.",
+            (constraint[name] for name in CONSTRAIN_OPERATIONS),
+        ),
+        _definition(
+            "sketch.coincident",
+            "Join two points, put a point on a curve, or align two conic centers.",
+            (constraint[FOCUSED_CONSTRAINT_OPERATIONS["sketch.coincident"]],),
+        ),
+        _definition(
+            "sketch.perpendicular",
+            "Constrain exact lines or curves perpendicular.",
+            (constraint[FOCUSED_CONSTRAINT_OPERATIONS["sketch.perpendicular"]],),
+        ),
+        _definition(
+            "sketch.tangent",
+            "Constrain exact curves tangent.",
+            (constraint[FOCUSED_CONSTRAINT_OPERATIONS["sketch.tangent"]],),
+        ),
+        _definition(
+            "sketch.symmetric",
+            "Constrain points or curve endpoints symmetric about a line, axis, or point.",
+            (constraint[FOCUSED_CONSTRAINT_OPERATIONS["sketch.symmetric"]],),
+        ),
+        _definition(
+            "sketch.dimension",
+            "Apply dimensional Sketch constraints.",
+            (constraint[name] for name in DIMENSION_OPERATIONS),
+        ),
         _definition("sketch.transform", "Transform exact Sketch geometry.", (geometry[name] for name in TRANSFORM_OPERATIONS)),
         _definition(
             "sketch.edit",
@@ -516,9 +595,21 @@ def sketch_provider_capability_definitions() -> tuple[NativeCapabilityDefinition
         _definition("sketch.extend", "Extend one exact Sketch curve.", (cleanup["extend"],)),
         _definition("sketch.delete", "Delete exact Sketch geometry.", (cleanup["delete_geometry"],)),
         _definition("sketch.batch", "Create primitive geometry and constraints atomically.", sketch_batch_capability_definition().variants),
-        _definition("sketch.inspect", "Read the human-opened Sketch and exact relationships.", inspect_variants, classification="read"),
+        _definition("sketch.inspect", "Read the active Sketch and its relationships.", inspect_variants, classification="read"),
         _definition("sketch.presentation", "Control Sketch presentation.", sketch_presentation_capability_definition().variants, classification="view"),
-        _definition("sketch.control", "Finish the human-opened Sketch session.", sketch_control_capability_definition().variants),
+        _definition(
+            "sketch.control",
+            (
+                "Finish editing the active Sketch. End this turn after success; "
+                "modeling continues automatically."
+            ),
+            sketch_control_capability_definition().variants,
+        ),
+        _definition(
+            "sketch.finish",
+            "Finish the active Sketch and continue modeling automatically.",
+            sketch_control_capability_definition().variants,
+        ),
     )
     if {definition.name for definition in definitions} != SKETCH_PROVIDER_CAPABILITY_NAMES:
         raise RuntimeError("The Native Sketch provider definition set is incomplete.")
@@ -531,7 +622,7 @@ def register_sketch_provider_capability_definitions(
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
     for definition in sketch_provider_capability_definitions():
-        if definition.name == "sketch.batch":
+        if definition.name in {"sketch.batch", "sketch.finish"}:
             registry.register_shared_definition(definition)
         else:
             registry.register_definition(definition)

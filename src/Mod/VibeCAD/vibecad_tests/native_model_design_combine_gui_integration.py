@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import sys
 import tempfile
@@ -76,6 +77,30 @@ def _box_arguments(
     }
 
 
+def _cylinder_arguments(
+    label: str,
+    *,
+    radius: float,
+    height: float,
+) -> dict[str, object]:
+    return {
+        "operation": "primitive",
+        "label": label,
+        "placement": _placement(0.0, 0.0, 0.0),
+        "result": {
+            "mode": "new_body",
+            "targets": [],
+            "destination_component": None,
+        },
+        "definition": {
+            "kind": "cylinder",
+            "radius_mm": radius,
+            "height_mm": height,
+            "sweep_degrees": 360.0,
+        },
+    }
+
+
 def _combine_arguments(
     label: str,
     mode: str,
@@ -89,7 +114,7 @@ def _combine_arguments(
         "label": label,
         "definition": {
             "mode": mode,
-            "result_body": {"object_name": result_body},
+            "source_body": {"object_name": result_body},
             "tool_bodies": [
                 {"object_name": object_name} for object_name in tool_bodies
             ],
@@ -146,7 +171,7 @@ def _placement_signature(value) -> tuple[float, ...]:
 def _shape_signature(shape) -> tuple[object, ...]:
     if shape is None or shape.isNull():
         return ("Null",)
-    bounds = shape.BoundBox
+    bounds = shape.optimalBoundingBox(False, False)
     return (
         str(shape.ShapeType),
         len(shape.Vertexes),
@@ -335,7 +360,9 @@ def _run() -> None:
             active_surface_id=lambda: "model",
             edit_or_task_active=lambda: False,
         )
-        structure, _sketch, _validation = model_structure_capability_definitions()
+        structure, _sketch, _open_sketch, _validation = (
+            model_structure_capability_definitions()
+        )
         definitions = (
             model_feature_capability_definition(),
             structure,
@@ -373,6 +400,13 @@ def _run() -> None:
                     size=size,
                     component=component,
                 ),
+            )
+            return document.getObject(response["bodies"][0]["body"]["object_name"])
+
+        def new_cylinder(label, radius, height):
+            response = native_call(
+                "model.feature",
+                _cylinder_arguments(label, radius=radius, height=height),
             )
             return document.getObject(response["bodies"][0]["body"]["object_name"])
 
@@ -549,6 +583,31 @@ def _run() -> None:
             expected_volume=936.0,
         )
 
+        # Curved coincident faces must not make a valid annular cut look stale.
+        annular_result = new_cylinder("Annular Result", 40.0, 12.0)
+        annular_tool = new_cylinder("Annular Tool", 16.0, 12.0)
+        annular_prior = (_current_state(annular_result), _current_state(annular_tool))
+        annular_response = native_call(
+            "model.boolean",
+            _combine_arguments(
+                "Native Annular Cut",
+                "cut",
+                annular_result.Name,
+                (annular_tool.Name,),
+                keep_tools=False,
+            ),
+        )
+        annular_operation = _assert_combine(
+            document,
+            annular_response,
+            mode="cut",
+            result_body=annular_result,
+            tool_bodies=(annular_tool,),
+            prior_states=annular_prior,
+            keep_tools=False,
+            expected_volume=math.pi * (40.0**2 - 16.0**2) * 12.0,
+        )
+
         common_result = new_box("Intersect Result", (120, 0, 0), (10, 10, 10))
         common_tool = new_box("Intersect Tool", (125, 0, 0), (10, 10, 10))
         common_prior = (_current_state(common_result), _current_state(common_tool))
@@ -696,9 +755,8 @@ def _run() -> None:
 
         disjoint_result = new_box("Disjoint Result", (220, 0, 0), (4, 4, 4))
         disjoint_tool = new_box("Disjoint Tool", (240, 0, 0), (4, 4, 4))
-        disjoint_before = (_body_signature(disjoint_result), _body_signature(disjoint_tool))
-        before = tuple(obj.Name for obj in document.Objects)
-        disjoint_failure = native_call(
+        disjoint_prior = (_current_state(disjoint_result), _current_state(disjoint_tool))
+        disjoint_response = native_call(
             "model.boolean",
             _combine_arguments(
                 "Disjoint Join",
@@ -707,12 +765,18 @@ def _run() -> None:
                 (disjoint_tool.Name,),
                 keep_tools=False,
             ),
-            succeeds=False,
         )
-        assert disjoint_failure["error_code"] == "NATIVE_MODEL_INVALID"
-        assert tuple(obj.Name for obj in document.Objects) == before
-        assert (_body_signature(disjoint_result), _body_signature(disjoint_tool)) == disjoint_before
-        assert document.HasPendingTransaction is False
+        disjoint_operation = _assert_combine(
+            document,
+            disjoint_response,
+            mode="join",
+            result_body=disjoint_result,
+            tool_bodies=(disjoint_tool,),
+            prior_states=disjoint_prior,
+            keep_tools=False,
+            expected_volume=128.0,
+        )
+        assert len(disjoint_result.Shape.Solids) == 2
 
         # A target changed after preflight is rejected and fully rolled back.
         stale_result = new_box("Stale Result", (260, 0, 0), (6, 6, 6))
@@ -778,8 +842,10 @@ def _run() -> None:
             _record(join_operation, (join_result, join_tool)),
             _record(kept_operation, (kept_result, kept_tool_a, kept_tool_b)),
             _record(cut_operation, (cut_result, cut_tool)),
+            _record(annular_operation, (annular_result, annular_tool)),
             _record(common_operation, (common_result, common_tool)),
             _record(framed_operation, (framed_result, framed_tool)),
+            _record(disjoint_operation, (disjoint_result, disjoint_tool)),
         )
         for record in records:
             operation = document.getObject(record["name"])
@@ -813,8 +879,14 @@ def _run() -> None:
             assert list(operation.OutputPreviousInputIndices) == record["previous_indices"]
             assert list(operation.OutputPresence) == record["presence"]
             assert [_shape_signature(shape) for shape in operation.OutputShapes] == record["output_shapes"]
-            assert operation.PreviewShape.isNull()
             assert "Transient" in operation.getPropertyStatus("PreviewShape")
+            expected_preview = operation.OutputShapes[0].copy()
+            expected_preview.Placement = operation.OutputFrames[0].multiply(
+                expected_preview.Placement
+            )
+            assert _shape_signature(operation.PreviewShape) == _shape_signature(
+                expected_preview
+            )
             for body_name, body_id, shape in zip(
                 record["body_names"],
                 record["body_ids"],

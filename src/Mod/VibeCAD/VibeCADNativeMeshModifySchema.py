@@ -71,10 +71,7 @@ _POINT_SELECTION = {
                 "kind": {"type": "string", "const": "point_ranges"},
                 "ranges": {
                     "type": "array",
-                    "description": (
-                        "Inclusive zero-based ranges; ranges must not overlap and may "
-                        "expand to at most 250000 points in total."
-                    ),
+                    "description": "Inclusive nonoverlapping zero-based point ranges.",
                     "items": {
                         "type": "object",
                         "properties": {

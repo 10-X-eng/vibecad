@@ -286,6 +286,7 @@ public:
 
     /** @name coin node access*/
     SoSeparator* getRootEditNode();
+    SoGroup* getConstraintRootNode();
     //@}
 
     /** @name update coin colors*/
@@ -305,6 +306,10 @@ public:
     void updateElementSizeParameters();
 
 private:
+    PreselectionResult detectConstraintIconPreselection(
+        const SoPickedPointList& points,
+        const SbVec2s& cursorPos
+    );
     PreselectionResult detectConstraintPreselection(
         const SoPickedPointList& points,
         const SbVec2s& cursorPos

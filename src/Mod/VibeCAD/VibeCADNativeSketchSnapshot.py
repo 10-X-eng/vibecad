@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from VibeCADNativeSketchRevision import sketch_revision
+from VibeCADNativeSketchSelection import semantic_sketch_selection
 from VibeCADNativeSketchState import serialize_sketch_state
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
@@ -98,7 +99,12 @@ def _detailed_state(sketch: Any) -> dict[str, Any]:
     return {**_summary(sketch), **serialize_sketch_state(sketch)}
 
 
-def build_sketch_snapshot(document: Any, surface_id: str) -> dict[str, Any]:
+def build_sketch_snapshot(
+    document: Any,
+    surface_id: str,
+    *,
+    selection: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     sketches = objects_of_type(document, "Sketcher::SketchObject")
     active = _active_edit_sketch(document)
     result: dict[str, Any] = {
@@ -109,6 +115,9 @@ def build_sketch_snapshot(document: Any, surface_id: str) -> dict[str, Any]:
     if active is not None:
         result["revision"] = sketch_revision(active)
         result["active_sketch"] = _detailed_state(active)
+        user_selection = semantic_sketch_selection(active, selection)
+        if user_selection is not None:
+            result["user_selection"] = user_selection
         result["source_sketches"] = [
             _summary(value) for value in sketches if value is not active
         ][:MAX_SKETCHES]

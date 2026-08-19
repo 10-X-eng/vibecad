@@ -159,10 +159,7 @@ def _parameters(kind: str) -> dict:
 def drawing_hatch_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=DRAWING_HATCH_CAPABILITY_NAME,
-        description=(
-            "Apply durable image or PAT hatches to exact projected faces; custom files "
-            "are selected only by the human and paths are never provider-visible."
-        ),
+        description="Apply durable image or PAT hatches to exact projected faces.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
@@ -227,10 +224,7 @@ def drawing_hatch_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="read_defaults",
-                description=(
-                    "Read the configured path-free image pattern summary, PAT catalog, "
-                    "and default styles before choosing a hatch request."
-                ),
+                description="Read configured image patterns, PAT catalog, and default styles.",
                 action_ids=_ALL_ACTIONS,
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type="ConfiguredDrawingHatchDefaultsAndPatCatalog",

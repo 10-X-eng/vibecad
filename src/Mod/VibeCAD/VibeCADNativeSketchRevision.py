@@ -28,7 +28,7 @@ SKETCH_REVISION_SCHEMA = {
     "type": "string",
     "pattern": "^sketch-v1:[0-9a-f]{64}$",
     "maxLength": 74,
-    "description": "Exact revision returned by sketch.inspect or the preceding Sketch tool.",
+    "description": "Revision from sketch.inspect or the prior Sketch tool.",
 }
 
 

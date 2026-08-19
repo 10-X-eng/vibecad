@@ -14,11 +14,7 @@ PATH_OPERATION_LABEL_SCHEMA = {
     "minLength": 1,
     "maxLength": 160,
     "pattern": r"^(?=[\x20-\x27\x2A-\x7E]*[\x21-\x27\x2A-\x7E])[\x20-\x27\x2A-\x7E]+$",
-    "description": (
-        "Printable ASCII path-operation label with no parentheses, line breaks, "
-        "or control characters. Surrounding spaces are removed. CAM may append "
-        "digits when it must make the document label unique."
-    ),
+    "description": "Trimmed printable ASCII path-operation label without parentheses.",
 }
 
 

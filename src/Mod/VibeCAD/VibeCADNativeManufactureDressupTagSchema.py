@@ -95,10 +95,7 @@ _TAG_LOCATION = _closed(
         },
         "enabled": {
             "type": "boolean",
-            "description": (
-                "Explicit durable state. Disabled entries remain editable positions but "
-                "do not alter the toolpath."
-            ),
+            "description": "Explicit durable tag state.",
         },
     },
     ("x_mm", "y_mm", "enabled"),
@@ -112,10 +109,7 @@ _EXPLICIT = _closed(
             "items": _TAG_LOCATION,
             "minItems": 1,
             "maxItems": 256,
-            "description": (
-                "Ordered XY locations on the bottom cutting path. At least one entry "
-                "must be enabled."
-            ),
+            "description": "Ordered enabled or disabled XY tag locations.",
         },
     },
     ("kind", "shape", "tags"),
@@ -134,10 +128,7 @@ _AUTOMATIC = _closed(
             "type": "integer",
             "minimum": 1,
             "maximum": 64,
-            "description": (
-                "Maximum count assigned to the longest bottom wire; shorter wires scale "
-                "down but never below minimum_per_wire."
-            ),
+            "description": "Maximum tag count for the longest bottom wire.",
         },
     },
     ("kind", "shape", "minimum_per_wire", "maximum_for_longest_wire"),

@@ -1023,7 +1023,6 @@ void StatefulLabel::setState(QString state)
         }
         // else the stylesheet sets our appearance: make sure it recalculates the appearance:
         this->setStyleSheet(QString());
-        this->setStyle(qApp->style());
         this->style()->unpolish(this);
         this->style()->polish(this);
     }

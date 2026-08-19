@@ -38,10 +38,7 @@ _COUNT = {"type": "integer", "minimum": 0, "maximum": 256}
 def assembly_export_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ASSEMBLY_EXPORT_CAPABILITY_NAME,
-        description=(
-            "Export the exact human-active Assembly only after VibeCAD asks "
-            "the human to authorize one destination. Never accepts a path from AI."
-        ),
+        description="Export the exact human-active Assembly to a human-authorized destination.",
         primary_classification="export",
         variants=(
             NativeCapabilityVariant(

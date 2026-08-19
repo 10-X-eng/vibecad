@@ -1020,91 +1020,90 @@ def test_vibecad_ships_exactly_two_constrained_appearance_profiles() -> None:
     assert schemas["Light"] == schemas["Dark"]
 
 
-def test_vibecad_sketcher_profiles_use_clear_semantic_palettes() -> None:
-    profile_values = {
-        "Light": {
-            "primary": 0x000000FF,
-            "unconstrained": 0x0000FFFF,
-            "auxiliary": 0xA08200FF,
-            "constraint": 0x919191FF,
-            "invalid": 0xE03131FF,
-        },
-        "Dark": {
-            "primary": 0xF1F3F5FF,
-            "unconstrained": 0x4DABF7FF,
-            "auxiliary": 0xFCC419FF,
-            "constraint": 0xADB5BDFF,
-            "invalid": 0xFF6B6BFF,
-        },
-    }
-
-    for mode, palette in profile_values.items():
-        profile = ET.parse(ROOT / f"src/Gui/Themes/{mode}.cfg").getroot()
-        preferences = profile.find(
-            "./FCParamGroup[@Name='Root']/FCParamGroup[@Name='BaseApp']"
-            "/FCParamGroup[@Name='Preferences']"
-        )
-        assert preferences is not None
-        view = preferences.find("./FCParamGroup[@Name='View']")
-        sketch_view = preferences.find(
-            "./FCParamGroup[@Name='Mod']/FCParamGroup[@Name='Sketcher']"
-            "/FCParamGroup[@Name='View']"
-        )
-        assert view is not None
-        assert sketch_view is not None
-        view_values = {
-            item.get("Name"): int(item.get("Value", "0")) for item in view
-        }
-        sketch_values = {
-            item.get("Name"): int(item.get("Value", "0")) for item in sketch_view
-        }
-
-        for key in (
-            "SketchEdgeColor",
-            "SketchVertexColor",
-            "FullyConstrainedColor",
-            "FullyConstraintElementColor",
-        ):
-            assert view_values[key] == palette["primary"]
-        for key in ("EditedEdgeColor", "EditedVertexColor"):
-            assert view_values[key] == palette["unconstrained"]
-        for key in (
-            "ConstructionColor",
-            "ExternalColor",
-            "ExternalDefiningColor",
-            "InternalAlignedGeoColor",
-            "FullyConstraintConstructionElementColor",
-            "FullyConstraintInternalAlignmentColor",
-            "FullyConstraintConstructionPointColor",
-        ):
-            assert view_values[key] == palette["auxiliary"]
-        for key in (
-            "ConstrainedIcoColor",
-            "NonDrivingConstrDimColor",
-            "ConstrainedDimColor",
-            "ExprBasedConstrDimColor",
-            "DeactivatedConstrDimColor",
-        ):
-            assert view_values[key] == palette["constraint"]
-        for key in ("CreateLineColor", "CursorTextColor", "CursorCrosshairColor"):
-            assert view_values[key] == palette["primary"]
-        assert view_values["InvalidSketchColor"] == palette["invalid"]
-        assert view_values["DefaultShapePointSize"] == 3
-        assert view_values["MarkerSize"] == 5
-        for key in (
-            "EdgeWidth",
-            "ConstructionWidth",
-            "InternalWidth",
-            "ExternalWidth",
-            "ExternalDefiningWidth",
-        ):
-            assert sketch_values[key] == 1
-
-
 def test_vibecad_does_not_expose_the_legacy_workbench_preferences_page() -> None:
     resource = _source("src/Gui/resource.cpp")
 
     assert "PrefPageProducer<DlgSettingsWorkbenchesImp>" not in resource
+
+
+def test_dark_theme_uses_onshape_style_sketcher_color_roles() -> None:
+    root = ET.parse(ROOT / "src/Gui/Themes/Dark.cfg").getroot()
+
+    def values_at(*names: str) -> dict[str, int]:
+        group = root
+        for name in names:
+            group = next(
+                child
+                for child in group
+                if child.tag == "FCParamGroup" and child.get("Name") == name
+            )
+        return {
+            child.get("Name", ""): int(child.get("Value", "0"))
+            for child in group
+            if child.tag == "FCUInt"
+        }
+
+    view = values_at("Root", "BaseApp", "Preferences", "View")
+    expected_view_colors = {
+        "SketchEdgeColor": "ADB5BD",
+        "SketchVertexColor": "ADB5BD",
+        "EditedEdgeColor": "4DABF7",
+        "EditedVertexColor": "4DABF7",
+        "ConstructionColor": "74C0FC",
+        "ExternalColor": "DA77F2",
+        "InvalidSketchColor": "FF6B6B",
+        "FullyConstrainedColor": "F1F3F5",
+        "InternalAlignedGeoColor": "74C0FC",
+        "FullyConstraintElementColor": "F1F3F5",
+        "FullyConstraintConstructionElementColor": "CED4DA",
+        "FullyConstraintInternalAlignmentColor": "CED4DA",
+        "FullyConstraintConstructionPointColor": "F1F3F5",
+        "ConstrainedIcoColor": "FF6B6B",
+        "NonDrivingConstrDimColor": "ADB5BD",
+        "ConstrainedDimColor": "FF6B6B",
+        "ExprBasedConstrDimColor": "FFA94D",
+        "DeactivatedConstrDimColor": "868E96",
+        "CursorTextColor": "DEE2E6",
+        "CursorCrosshairColor": "F1F3F5",
+        "CreateLineColor": "4DABF7",
+        "HighlightColor": "FFE066",
+        "SelectionColor": "FCC419",
+        "PreselectionSelectedColor": "FFD43B",
+    }
+    assert {
+        key: value
+        for key, value in view.items()
+        if key in expected_view_colors
+    } == {
+        key: int(rgb + "FF", 16) for key, rgb in expected_view_colors.items()
+    }
+
+    sketcher_grid = values_at(
+        "Root", "BaseApp", "Preferences", "Mod", "Sketcher", "General"
+    )
+    assert sketcher_grid["GridLineColor"] == int("343A40FF", 16)
+    assert sketcher_grid["GridDivLineColor"] == int("495057FF", 16)
+
+    sketcher_view = next(
+        group
+        for group in root.iter("FCParamGroup")
+        if group.get("Name") == "View"
+        and any(child.get("Name") == "EdgePattern" for child in group)
+    )
+    sketcher_view_values = {
+        child.get("Name", ""): int(child.get("Value", "0"))
+        for child in sketcher_view
+    }
+    assert sketcher_view_values["SelectionWidthIncrease"] == 1
+
+    light_root = ET.parse(ROOT / "src/Gui/Themes/Light.cfg").getroot()
+    light_sketcher_view = light_root.find(".//FCParamGroup[@Name='Sketcher']/FCParamGroup[@Name='View']")
+    assert light_sketcher_view is not None
+    light_sketcher_view_values = {
+        child.attrib["Name"]: int(child.attrib["Value"])
+        for child in light_sketcher_view
+    }
+    assert light_sketcher_view_values["SelectionWidthIncrease"] == 1
 
 
 def test_vibecad_removes_theme_and_preference_pack_escape_hatches() -> None:

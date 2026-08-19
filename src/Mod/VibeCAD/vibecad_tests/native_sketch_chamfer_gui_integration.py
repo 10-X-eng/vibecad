@@ -24,19 +24,19 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
-from VibeCADNativeSketchGeometryBindings import SKETCH_GEOMETRY_CAPABILITY_NAME
+from VibeCADNativeSketchRevision import sketch_revision
 from VibeCADNativeSketchState import (
     serialize_sketch_constraint,
     serialize_sketch_geometry,
 )
 from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
+from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
 from vibecad_tests.native_sketch_chamfer_gui_case import verify_reopened_chamfer
 from vibecad_tests.native_sketch_geometry_gui_support import (
     edit_boundary,
     process_events,
-    provider_turn,
 )
 
 
@@ -44,29 +44,24 @@ def _phase(name: str) -> None:
     os.write(2, f"VIBECAD_NATIVE_SKETCH_CHAMFER_PHASE {name}\n".encode("ascii"))
 
 
-def _corner_arguments(sketch, *, expected_geometry_count: int = 2) -> dict:
+def _corner_arguments(revision: str) -> dict:
     return {
         "operation": "create_chamfer",
-        "sketch": {"object_name": sketch.Name},
-        "expected_geometry_count": expected_geometry_count,
-        "expected_constraint_count": int(sketch.ConstraintCount),
-        "expected_external_geometry_count": 0,
+        "revision": revision,
         "target": {
             "form": "corner",
             "geometry_index": 0,
             "position": "end",
         },
+        "distance_mm": 2.0,
         "preserve_corner": True,
     }
 
 
-def _pair_arguments(sketch) -> dict:
+def _pair_arguments(revision: str) -> dict:
     return {
         "operation": "create_chamfer",
-        "sketch": {"object_name": sketch.Name},
-        "expected_geometry_count": 2,
-        "expected_constraint_count": 0,
-        "expected_external_geometry_count": 0,
+        "revision": revision,
         "target": {
             "form": "curve_pair",
             "curves": [
@@ -80,6 +75,7 @@ def _pair_arguments(sketch) -> dict:
                 },
             ],
         },
+        "distance_mm": 2.0,
         "preserve_corner": False,
     }
 
@@ -179,11 +175,9 @@ def _run() -> None:
         production = resolve_native_provider_surface(
             live_surface, build_native_capability_registry()
         )
-        assert production.available is False
-        assert "Sketcher_CreateChamfer" not in production.missing_action_ids
-        assert SKETCH_GEOMETRY_CAPABILITY_NAME in (
-            production.incomplete_definition_names
-        )
+        assert production.available is True
+        assert production.missing_action_ids == ()
+        assert production.incomplete_definition_names == ()
         _phase("surface")
 
         service = get_service()
@@ -206,12 +200,16 @@ def _run() -> None:
             edit_or_task_active=lambda: active_edit_object() is not None,
         )
 
+        registry = build_native_capability_registry()
+
         def dispatcher_for(surface):
-            turn = provider_turn(surface)
+            provider = resolve_native_provider_surface(surface, registry)
+            assert provider.available is True
+            turn = NativeTurnSnapshot.from_provider_surface(provider)
             return NativeTurnDispatcher(
                 document=document,
                 state=state,
-                registry=build_native_capability_registry(),
+                registry=registry,
                 turn=turn,
                 runtimes=build_native_runtime_bindings(context, turn.tool_names),
                 reauthorize_turn=reauthorize,
@@ -223,7 +221,7 @@ def _run() -> None:
 
         def native_call(arguments, *, succeeds=True, call_id="chamfer-call"):
             response = dispatcher.call(
-                SKETCH_GEOMETRY_CAPABILITY_NAME,
+                "sketch.chamfer",
                 json.dumps(arguments, separators=(",", ":")),
                 call_id,
             )
@@ -236,9 +234,9 @@ def _run() -> None:
             int(corner_sketch.ConstraintCount),
             int(document.UndoCount),
         )
-        diagnosis = corner_sketch.diagnoseChamfer(0, 2, True)
+        diagnosis = corner_sketch.diagnoseChamfer(0, 2, 2.0, True)
         assert diagnosis["accepted"] is True
-        assert diagnosis["radius_mm"] > 0.0
+        assert diagnosis["radius_mm"] == 2.0
         assert diagnosis["support_arc_geometry_index"] == 2
         assert diagnosis["corner_geometry_index"] == 3
         assert diagnosis["chamfer_geometry_index"] == 4
@@ -247,19 +245,11 @@ def _run() -> None:
             int(corner_sketch.ConstraintCount),
             int(document.UndoCount),
         )
-        stale = native_call(
-            _corner_arguments(corner_sketch, expected_geometry_count=3),
-            succeeds=False,
-            call_id="chamfer-stale",
-        )
-        assert stale["error_code"] == "NATIVE_SKETCH_INVALID", stale
-        assert int(document.UndoCount) == 0
-
         Gui.Selection.clearSelection(document.Name)
         Gui.Selection.addSelection(document.Name, corner_sketch.Name, "Edge2")
         process_events(8)
         selected = _selection(document)
-        response = native_call(_corner_arguments(corner_sketch))
+        response = native_call(_corner_arguments(sketch_revision(corner_sketch)))
         assert response["operation"] == "create_chamfer"
         assert response["form"] == "corner"
         assert response["geometry_count"] == 5
@@ -305,6 +295,7 @@ def _run() -> None:
             1,
             App.Vector(18, 0),
             App.Vector(20, 2),
+            2.0,
             False,
         )
         assert pair_diagnosis["corner_geometry_index"] is None
@@ -318,7 +309,7 @@ def _run() -> None:
         Gui.Selection.addSelection(document.Name, pair_sketch.Name, "Edge1")
         pair_selection = _selection(document)
         pair_response = native_call(
-            _pair_arguments(pair_sketch),
+            _pair_arguments(sketch_revision(pair_sketch)),
             call_id="chamfer-pair",
         )
         assert pair_response["form"] == "curve_pair"

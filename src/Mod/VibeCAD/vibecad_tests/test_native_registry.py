@@ -204,6 +204,7 @@ from VibeCADNativeSketchBatchBindings import SKETCH_BATCH_CAPABILITY_NAME
 from VibeCADNativeSketchProviderSchema import (
     SKETCH_PROVIDER_CAPABILITY_NAMES,
 )
+from VibeCADNativeWorkspaceBindings import WORKSPACE_CAPABILITY_NAME
 
 
 def test_production_registry_has_every_finished_contract_and_binding() -> None:
@@ -212,12 +213,17 @@ def test_production_registry_has_every_finished_contract_and_binding() -> None:
     assert registry.shared_definition_names == (
         NATIVE_BACKGROUND_CAPABILITY_NAME,
         *COMMON_NATIVE_CAPABILITY_NAMES,
+        WORKSPACE_CAPABILITY_NAME,
+        "parameters.read",
         "model.catalog",
+        "model.revolution_sketch",
         *MODEL_HISTORY_CAPABILITY_NAMES,
         SKETCH_BATCH_CAPABILITY_NAME,
+        "sketch.finish",
     )
     expected = (
         *COMMON_NATIVE_CAPABILITY_NAMES,
+        WORKSPACE_CAPABILITY_NAME,
         ANALYZE_CONNECTION_CAPABILITY_NAME,
         ANALYZE_ELECTROMAGNETIC_CAPABILITY_NAME,
         ANALYZE_FLUID_CAPABILITY_NAME,

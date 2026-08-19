@@ -30,6 +30,12 @@ _FACE_NAME = {
     "type": "string",
     "maxLength": 32,
     "pattern": r"^Face[1-9][0-9]*$",
+    "examples": ["Face1"],
+}
+_BASE_PLANE = {
+    "type": "string",
+    "enum": ["XY", "XZ", "YZ"],
+    "description": "Contained axes: XY=X/Y, XZ=X/Z, YZ=Y/Z.",
 }
 _SUBELEMENT_NAME = {
     "type": "string",
@@ -54,6 +60,16 @@ def _object_ref() -> dict[str, Any]:
     return _parameters({"object_name": _OBJECT_NAME}, ("object_name",))
 
 
+def _global_axis() -> dict[str, Any]:
+    return _parameters(
+        {
+            "kind": {"type": "string", "const": "global_axis"},
+            "axis": {"type": "string", "enum": ["X", "Y", "Z"]},
+        },
+        ("kind", "axis"),
+    )
+
+
 def _nullable_object_ref() -> dict[str, Any]:
     return {"oneOf": [_object_ref(), {"type": "null"}]}
 
@@ -74,48 +90,6 @@ def _binder_reference() -> dict[str, Any]:
     )
 
 
-def _sketch_support() -> dict[str, Any]:
-    return {
-        "oneOf": [
-            _parameters(
-                {
-                    "kind": {"type": "string", "const": "base_plane"},
-                    "plane": {
-                        "type": "string",
-                        "enum": ["XY", "XZ", "YZ"],
-                    },
-                    "offset_mm": {
-                        "type": "number",
-                        "minimum": -1_000_000.0,
-                        "maximum": 1_000_000.0,
-                    },
-                },
-                ("kind", "plane", "offset_mm"),
-            ),
-            _parameters(
-                {
-                    "kind": {"type": "string", "const": "datum_plane"},
-                    "target": _object_ref(),
-                },
-                ("kind", "target"),
-            ),
-            _parameters(
-                {
-                    "kind": {"type": "string", "const": "planar_face"},
-                    "target": _parameters(
-                        {
-                            "object_name": _OBJECT_NAME,
-                            "subelement": _FACE_NAME,
-                        },
-                        ("object_name", "subelement"),
-                    ),
-                },
-                ("kind", "target"),
-            ),
-        ]
-    }
-
-
 def _variant(
     operation: str,
     description: str,
@@ -125,6 +99,7 @@ def _variant(
     exact_target_type: str | None,
     transaction_behavior: str,
     surface_ids: frozenset[str] = MODEL_SURFACE,
+    provider_supplemental: bool = False,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
@@ -135,13 +110,14 @@ def _variant(
         transaction_behavior=transaction_behavior,
         background_required=False,
         parameters=parameters,
+        provider_supplemental=provider_supplemental,
     )
 
 
 def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
     structure = NativeCapabilityDefinition(
         name="model.structure",
-        description="Create exact Design components, Bodies, references, and Body clones.",
+        description="Create Model structure.",
         primary_classification="mutation",
         variants=(
             _variant(
@@ -150,7 +126,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
                 "PartDesign_NewComponent",
                 _parameters(
                     {"label": _LABEL, "parent_component": _nullable_object_ref()},
-                    ("label", "parent_component"),
+                    ("label",),
                 ),
                 exact_target_type="PartDesign::Component?",
                 transaction_behavior="document",
@@ -161,7 +137,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
                 "PartDesign_NewBody",
                 _parameters(
                     {"label": _LABEL, "component": _nullable_object_ref()},
-                    ("label", "component"),
+                    ("label",),
                 ),
                 exact_target_type="PartDesign::Component?",
                 transaction_behavior="document",
@@ -210,7 +186,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
                         "source": _object_ref(),
                         "destination_component": _nullable_object_ref(),
                     },
-                    ("label", "source", "destination_component"),
+                    ("label", "source"),
                 ),
                 exact_target_type="ReusableMultiSolidDefinitionAndComponent?",
                 transaction_behavior="document",
@@ -219,26 +195,86 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
     )
     sketch = NativeCapabilityDefinition(
         name="model.sketch",
-        description="Create one global reusable Sketch without entering Sketch edit mode.",
+        description="Create a planar Sketch.",
         primary_classification="mutation",
         variants=(
             _variant(
-                "new_sketch",
-                "Create one empty reusable Sketch on an explicit base plane, datum, or face.",
+                "create_on_base_plane",
+                "Create a Sketch on global XY, XZ, or YZ; offset defaults to 0 mm.",
                 "Sketcher_NewSketch",
                 _parameters(
-                    {"label": _LABEL, "support": _sketch_support()},
-                    ("label", "support"),
+                    {
+                        "label": _LABEL,
+                        "plane": _BASE_PLANE,
+                        "offset_mm": {
+                            "type": "number",
+                            "minimum": -1_000_000.0,
+                            "maximum": 1_000_000.0,
+                            "default": 0.0,
+                        },
+                    },
+                    ("label", "plane"),
                 ),
-                exact_target_type="SketchSupport",
+                exact_target_type="BasePlane",
                 transaction_behavior="document",
+                surface_ids=REUSABLE_SKETCH_SURFACES,
+            ),
+            _variant(
+                "create_on_face",
+                "Create a Sketch attached to one planar face.",
+                "Sketcher_NewSketch",
+                _parameters(
+                    {
+                        "label": _LABEL,
+                        "target": _parameters(
+                            {
+                                "object_name": _OBJECT_NAME,
+                                "subelement": _FACE_NAME,
+                            },
+                            ("object_name", "subelement"),
+                        ),
+                    },
+                    ("label", "target"),
+                ),
+                exact_target_type="PlanarFace",
+                transaction_behavior="document",
+                surface_ids=REUSABLE_SKETCH_SURFACES,
+                provider_supplemental=True,
+            ),
+            _variant(
+                "create_on_datum_plane",
+                "Create a Sketch attached to one datum plane.",
+                "Sketcher_NewSketch",
+                _parameters(
+                    {"label": _LABEL, "target": _object_ref()},
+                    ("label", "target"),
+                ),
+                exact_target_type="PartDesign::Plane",
+                transaction_behavior="document",
+                surface_ids=REUSABLE_SKETCH_SURFACES,
+                provider_supplemental=True,
+            ),
+        ),
+    )
+    open_sketch = NativeCapabilityDefinition(
+        name="sketch.open",
+        description="Open a Sketch.",
+        primary_classification="mutation",
+        variants=(
+            _variant(
+                "open",
+                "Open the exact Sketch.",
+                "Sketcher_EditSketch",
+                _parameters({"sketch": _object_ref()}, ("sketch",)),
+                exact_target_type="Sketcher::SketchObject",
+                transaction_behavior="edit_control",
                 surface_ids=REUSABLE_SKETCH_SURFACES,
             ),
         ),
     )
     validation = NativeCapabilityDefinition(
         name="sketch.validate",
-        description="Read exact reusable Sketch readiness without editing or repairing it.",
+        description="Check whether a Sketch is reusable.",
         primary_classification="read",
         variants=(
             _variant(
@@ -252,7 +288,32 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
             ),
         ),
     )
-    return structure, sketch, validation
+    return structure, sketch, open_sketch, validation
+
+
+def model_revolution_sketch_capability_definition() -> NativeCapabilityDefinition:
+    return NativeCapabilityDefinition(
+        name="model.revolution_sketch",
+        description="Create an axisymmetric profile Sketch.",
+        primary_classification="mutation",
+        variants=(
+            _variant(
+                "create",
+                "Align a Sketch axis to X, Y, or Z and return its axial and radial coordinates.",
+                "Sketcher_NewSketch",
+                _parameters(
+                    {
+                        "label": _LABEL,
+                        "axis": _global_axis(),
+                    },
+                    ("label", "axis"),
+                ),
+                exact_target_type="GlobalAxis",
+                transaction_behavior="document",
+                surface_ids=REUSABLE_SKETCH_SURFACES,
+            ),
+        ),
+    )
 
 
 def register_model_structure_capability_definitions(
@@ -262,3 +323,6 @@ def register_model_structure_capability_definitions(
         raise TypeError("registry must be a NativeCapabilityRegistry")
     for definition in model_structure_capability_definitions():
         registry.register_definition(definition)
+    registry.register_shared_definition(
+        model_revolution_sketch_capability_definition()
+    )

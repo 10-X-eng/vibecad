@@ -109,10 +109,7 @@ def drawing_presentation_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="set_frame_visibility",
-                description=(
-                    "Show or hide view frames and vertices explicitly on one exact, "
-                    "human-active Drawing page. View Frames Visibility must be Manual."
-                ),
+                description="Set frame and vertex visibility on one active Drawing page.",
                 action_ids=frozenset(
                     {"TechDraw_ToggleFrame", "TechDrawContextToggleFrames"}
                 ),
@@ -127,9 +124,7 @@ def drawing_presentation_capability_definition() -> NativeCapabilityDefinition:
                         "page": _FRAME_PAGE,
                         "visible": {
                             "type": "boolean",
-                            "description": (
-                                "Explicit desired visibility; never a toggle."
-                            ),
+                            "description": "Explicit desired visibility.",
                         },
                     },
                     ("page", "visible"),
@@ -151,7 +146,7 @@ def drawing_presentation_capability_definition() -> NativeCapabilityDefinition:
                         "page": _GRID_PAGE,
                         "visible": {
                             "type": "boolean",
-                            "description": "Explicit desired visibility; never a toggle.",
+                            "description": "Explicit desired visibility.",
                         },
                     },
                     ("page", "visible"),
@@ -175,7 +170,7 @@ def drawing_presentation_capability_definition() -> NativeCapabilityDefinition:
                         "view": _VIEW,
                         "visible": {
                             "type": "boolean",
-                            "description": "Explicit desired visibility; never a toggle.",
+                            "description": "Explicit desired visibility.",
                         },
                     },
                     ("view", "visible"),

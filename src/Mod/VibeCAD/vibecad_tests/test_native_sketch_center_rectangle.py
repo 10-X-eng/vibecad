@@ -58,12 +58,13 @@ def test_center_rectangle_matches_human_geometry(center_rectangle_host) -> None:
         [8.0, 5.0, 0.0],
         [-4.0, 5.0, 0.0],
     ]
-    assert [item["index"] for item in result["geometries"]] == [1, 2, 3, 4]
-    assert result["center_geometry"]["index"] == 5
-    assert result["center_geometry"]["type_id"] == "Part::GeomPoint"
-    assert result["center_geometry"]["construction"] is True
-    assert result["center_geometry"]["position_mm"] == [2.0, 1.0, 0.0]
-    assert [item["type"] for item in result["constraints"]] == [
+    assert [item["geometry_index"] for item in result["geometry_refs"]] == [1, 2, 3, 4]
+    assert result["construction_geometry_refs"][0]["geometry_index"] == 5
+    assert result["construction_geometry_refs"][0]["kind"] == "point"
+    assert result["construction_geometry_refs"][0]["construction"] is True
+    assert result["construction_geometry_refs"][0]["geometry_id"] >= 0
+    assert result["center_mm"] == [2.0, 1.0, 0.0]
+    assert [item["type"] for item in result["constraint_refs"]] == [
         "Coincident",
         "Coincident",
         "Coincident",
@@ -74,16 +75,12 @@ def test_center_rectangle_matches_human_geometry(center_rectangle_host) -> None:
         "Vertical",
         "Symmetric",
     ]
-    assert result["constraints"][-1]["references"] == [
-        {"slot": 1, "geometry_index": 3, "position": 1},
-        {"slot": 2, "geometry_index": 1, "position": 1},
-        {"slot": 3, "geometry_index": 5, "position": 1},
-    ]
     assert set(result) == {
         "sketch",
-        "geometries",
-        "center_geometry",
-        "constraints",
+        "geometry_refs",
+        "construction_geometry_refs",
+        "constraint_refs",
+        "center_mm",
         "corners_mm",
         "segment_count",
         "closed",

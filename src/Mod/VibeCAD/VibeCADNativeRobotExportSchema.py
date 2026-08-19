@@ -45,10 +45,7 @@ def _exact_source_parameters() -> dict[str, object]:
 def robot_export_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ROBOT_EXPORT_CAPABILITY_NAME,
-        description=(
-            "Render an exact Robot trajectory as bounded KUKA KRL and publish "
-            "it only to human-authorized output destinations."
-        ),
+        description="Export an exact Robot trajectory as bounded KUKA KRL.",
         primary_classification="export",
         variants=(
             NativeCapabilityVariant(

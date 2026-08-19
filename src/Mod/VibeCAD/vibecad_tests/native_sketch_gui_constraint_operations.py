@@ -17,7 +17,7 @@ ROLLING_SKETCH_OPERATION_NAMES = (
     "create3_point_ellipse",
     "create_rectangle",
     "create_center_rectangle",
-    "create_oblong",
+    "create_rounded_rectangle",
     "create_triangle",
     "create_square",
     "create_pentagon",

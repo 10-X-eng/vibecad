@@ -278,7 +278,9 @@ class TestAuthoringModeDefaults:
     def test_settings_have_no_vibescript_availability_toggle(self) -> None:
         import VibeCADPreferences as prefs
 
-        assert not hasattr(prefs.VibeCADSettings(), "vibescript_enabled")
+        settings = prefs.VibeCADSettings()
+        assert not hasattr(settings, "vibescript_enabled")
+        assert settings.new_document_authoring_mode == "ask"
 
     def test_removed_vibescript_toggle_is_not_written_or_reset(
         self, monkeypatch: pytest.MonkeyPatch
@@ -289,8 +291,10 @@ class TestAuthoringModeDefaults:
         monkeypatch.setattr(prefs, "preferences", lambda: stored)
         prefs.save_settings(prefs.VibeCADSettings())
         assert "VibeScriptEnabled" not in stored.values
+        assert stored.values["NewDocumentAuthoringMode"] == "ask"
         prefs.reset_settings()
         assert "VibeScriptEnabled" not in stored.values
+        assert "NewDocumentAuthoringMode" not in stored.values
 
     def test_default_engine_is_vibescript(self) -> None:
         from VibeCADProject import DEFAULT_MODELING_ENGINE, MODELING_ENGINES

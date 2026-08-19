@@ -61,8 +61,8 @@ class NativeRevisionConflict(NativeStateError):
 
     def __init__(self, expected_revision: int, current_revision: int) -> None:
         super().__init__(
-            "The document changed after this Native operation was prepared. "
-            "Read the current ribbon state and retry in a new call."
+            "The document changed after this operation was prepared. "
+            "Read its current state and retry."
         )
         self.expected_revision = int(expected_revision)
         self.current_revision = int(current_revision)

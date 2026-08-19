@@ -61,7 +61,7 @@ def _combine_arguments():
         "label": "Exact Combine",
         "definition": {
             "mode": "join",
-            "result_body": {"object_name": "ResultBody"},
+            "source_body": {"object_name": "ResultBody"},
             "tool_bodies": [
                 {"object_name": "ToolBodyA"},
                 {"object_name": "ToolBodyB"},
@@ -345,7 +345,7 @@ def test_design_split_definition_failures_precede_preflight_and_transaction(
         (
             {
                 "mode": "union",
-                "result_body": {"object_name": "ResultBody"},
+                "source_body": {"object_name": "ResultBody"},
                 "tool_bodies": [{"object_name": "ToolBody"}],
                 "keep_tools": False,
             },
@@ -354,7 +354,7 @@ def test_design_split_definition_failures_precede_preflight_and_transaction(
         (
             {
                 "mode": "cut",
-                "result_body": {"object_name": "ResultBody"},
+                "source_body": {"object_name": "ResultBody"},
                 "tool_bodies": [],
                 "keep_tools": False,
             },
@@ -363,7 +363,7 @@ def test_design_split_definition_failures_precede_preflight_and_transaction(
         (
             {
                 "mode": "intersect",
-                "result_body": {"object_name": "SameBody"},
+                "source_body": {"object_name": "SameBody"},
                 "tool_bodies": [{"object_name": "SameBody"}],
                 "keep_tools": False,
             },
@@ -372,7 +372,7 @@ def test_design_split_definition_failures_precede_preflight_and_transaction(
         (
             {
                 "mode": "join",
-                "result_body": {"object_name": "ResultBody"},
+                "source_body": {"object_name": "ResultBody"},
                 "tool_bodies": [{"object_name": "ToolBody"}],
                 "keep_tools": 1,
             },
@@ -381,7 +381,7 @@ def test_design_split_definition_failures_precede_preflight_and_transaction(
         (
             {
                 "mode": "join",
-                "result_body": {"object_name": "ResultBody"},
+                "source_body": {"object_name": "ResultBody"},
                 "tool_bodies": [{"object_name": "ToolBody"}],
                 "keep_tools": False,
                 "refine": True,

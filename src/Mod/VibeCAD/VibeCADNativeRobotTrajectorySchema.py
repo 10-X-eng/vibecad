@@ -123,11 +123,7 @@ def robot_trajectory_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="insert_position_waypoint",
-                description=(
-                    "Append one LIN waypoint at an explicit world-space point "
-                    "using the frozen orientation, displacement, and motion "
-                    "defaults; this does not control mouse preselection."
-                ),
+                description="Append one LIN waypoint at an explicit world-space point.",
                 action_ids=frozenset({"Robot_InsertWaypointPreselect"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="ActiveDocumentTrajectoryAndWorldPoint",

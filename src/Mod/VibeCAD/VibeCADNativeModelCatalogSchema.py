@@ -38,7 +38,7 @@ def model_catalog_capability_definition() -> NativeCapabilityDefinition:
     }
     return NativeCapabilityDefinition(
         name="model.catalog",
-        description="Read bounded live catalogs needed by Model operations.",
+        description="Read fastener catalogs.",
         primary_classification="read",
         variants=(
             NativeCapabilityVariant(

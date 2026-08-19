@@ -16,6 +16,32 @@ from VibeCADNativeTargets import (
 )
 
 
+_PROFILE_INTENT_KEYS = (
+    "kind",
+    "global_axis",
+    "sketch_axis",
+    "axial",
+    "radius",
+    "axis",
+)
+
+
+def _profile_intent(value: Mapping[str, Any] | None) -> dict[str, str]:
+    if value is None:
+        return {}
+    if set(value) != set(_PROFILE_INTENT_KEYS):
+        raise NativeModelError("A Sketch profile intent is incomplete.")
+    result = {key: str(value[key] or "").strip() for key in _PROFILE_INTENT_KEYS}
+    if (
+        not all(result.values())
+        or result["kind"] != "axisymmetric"
+        or result["global_axis"] not in {"X", "Y", "Z"}
+        or result["sketch_axis"] not in {"H_Axis", "V_Axis"}
+    ):
+        raise NativeModelError("A Sketch profile intent is invalid.")
+    return result
+
+
 def _support_summary(value: Any) -> list[dict[str, Any]]:
     result = []
     for obj, subelements in list(value or []):
@@ -158,10 +184,18 @@ def configure_reusable_sketch_support(
     if kind == "base_plane":
         plane = str(support["plane"])
         offset = float(support["offset_mm"])
+        reverse_normal = bool(support.get("reverse_normal", False))
         sketch.AttachmentSupport = None
         sketch.MapMode = "Deactivated"
-        sketch.Placement = reusable_sketch_base_plane_placement(plane, offset)
-        return {"kind": kind, "plane": plane, "offset_mm": offset}
+        sketch.Placement = reusable_sketch_base_plane_placement(
+            plane,
+            offset,
+            reverse_normal=reverse_normal,
+        )
+        result = {"kind": kind, "plane": plane, "offset_mm": offset}
+        if reverse_normal:
+            result["reverse_normal"] = True
+        return result
 
     target = support.get("target")
     if not isinstance(target, Mapping):
@@ -210,21 +244,37 @@ def create_reusable_sketch(
     *,
     label: str,
     support: Mapping[str, Any],
+    profile_intent: Mapping[str, Any] | None = None,
 ) -> NativeMutationDraft:
     import PartDesign
 
+    intent = _profile_intent(profile_intent)
     sketch = document.addObject("Sketcher::SketchObject", "Sketch")
     if sketch is None or not sketch.isDerivedFrom("Sketcher::SketchObject"):
         raise NativeModelError("The Sketch factory returned the wrong object type.")
     sketch.Label = label
     PartDesign.initializeDesignDefinition(sketch)
+    if intent:
+        sketch.addProperty(
+            "App::PropertyMap",
+            "VibeCADProfileIntent",
+            "VibeCAD",
+            "Parametric profile coordinates.",
+            locked=True,
+        )
+        sketch.VibeCADProfileIntent = intent
+        sketch.setEditorMode("VibeCADProfileIntent", 2)
     support_result = configure_reusable_sketch_support(document, sketch, support)
     document.recompute([sketch], True, True)
     if not sketch.isValid():
         raise NativeModelError("The empty reusable Sketch is not valid on its support.")
     PartDesign.finalizeDesignDefinition(sketch)
     return NativeMutationDraft(
-        value={"sketch": sketch, "support": support_result},
+        value={
+            "sketch": sketch,
+            "support": support_result,
+            "profile_intent": intent,
+        },
         recompute_targets=(sketch,),
         created=(object_identity(sketch),),
     )
@@ -234,6 +284,7 @@ def verify_reusable_sketch(document: Any, draft: NativeMutationDraft) -> dict[st
     import PartDesign
 
     sketch = draft.value["sketch"]
+    profile_intent = dict(draft.value.get("profile_intent") or {})
     timeline = document.getObject("VibeCADTimeline")
     operations = list(getattr(timeline, "Operations", []) or [])
     if (
@@ -247,11 +298,24 @@ def verify_reusable_sketch(document: Any, draft: NativeMutationDraft) -> dict[st
         or operations.count(sketch) != 1
     ):
         raise NativeModelError("The reusable Sketch failed its Design-history postcondition.")
+    if profile_intent and dict(getattr(sketch, "VibeCADProfileIntent", {}) or {}) != (
+        profile_intent
+    ):
+        raise NativeModelError("The reusable Sketch lost its profile intent.")
     PartDesign.validateDesign(sketch)
-    return {
+    result = {
         "sketch": object_reference(sketch),
         "support": draft.value["support"],
         "entered_edit_mode": False,
         "geometry_count": 0,
-        "next_step": {"human_action": "open_created_sketch"},
+        "next_step": {
+            "tool": "sketch.open",
+            "arguments": {
+                "operation": "open",
+                "sketch": {"object_name": str(sketch.Name)},
+            },
+        },
     }
+    if profile_intent:
+        result["profile_intent"] = profile_intent
+    return result

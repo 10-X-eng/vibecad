@@ -78,11 +78,7 @@ def manufacture_simulation_result_capability_definition() -> (
                             "minItems": 1,
                             "maxItems": 64,
                             "uniqueItems": True,
-                            "description": (
-                                "Distinct exact operations in their current Job order; "
-                                "every operation must be active, generated, and usable at "
-                                "the current History position."
-                            ),
+                            "description": "Active generated operations in current Job order.",
                         },
                         "quality": {
                             "type": "integer",

@@ -532,7 +532,21 @@ def test_session_and_provider_allowlists_keep_aero(monkeypatch) -> None:
         def provider_name(self):
             return "grok"
 
-    monkeypatch.setattr(session, "provider_tool_schemas", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        session,
+        "provider_tool_schemas",
+        lambda *_args, **_kwargs: [
+            {
+                "name": "vibescript.read_source",
+                "description": "Read the active VibeScript source.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            }
+        ],
+    )
     monkeypatch.setattr(
         session,
         "_capture_editable_sources_for_workbench",

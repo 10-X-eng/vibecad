@@ -485,3 +485,11 @@ def test_modify_is_internal_only_and_cannot_leak_into_selectable_result_schema()
                 "destination_component": None,
             },
         )
+
+
+def test_new_body_result_accepts_the_natural_minimal_form() -> None:
+    result = result_spec_from_mapping("document-a", {"mode": "new_body"})
+
+    assert result.mode == "new_body"
+    assert result.target_refs == ()
+    assert result.destination_component_ref is None

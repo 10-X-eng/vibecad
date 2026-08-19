@@ -135,6 +135,10 @@ public:
     //@}
 
     std::set<int> detectPreselectionConstr(const SoPickedPoint* Point, const SbVec2s& cursorScreenPos);
+    std::set<int> detectPreselectionConstrIcon(
+        const SoPickedPoint* Point,
+        const SbVec2s& cursorScreenPos
+    );
     std::set<int> detectPreselectionConstr(
         const SbVec2s& cursorScreenPos,
         Base::Vector3d* pickedPoint = nullptr

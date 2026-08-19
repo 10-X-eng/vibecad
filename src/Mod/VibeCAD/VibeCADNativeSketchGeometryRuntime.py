@@ -309,7 +309,7 @@ _OUTER_FIELDS = {
             "center_mm",
             "radius_mm",
             "start_angle_degrees",
-            "sweep_angle_degrees",
+            "end_angle_degrees",
         }
     ),
     "create3_point_arc": frozenset(
@@ -418,14 +418,14 @@ _OUTER_FIELDS = {
             "corner_mm",
         }
     ),
-    "create_oblong": frozenset(
+    "create_rounded_rectangle": frozenset(
         {
             "sketch",
             "expected_geometry_count",
             "expected_constraint_count",
             "first_corner_mm",
             "opposite_corner_mm",
-            "radius_mm",
+            "corner_radius_mm",
         }
     ),
     "create_triangle": frozenset(
@@ -576,6 +576,7 @@ _OUTER_FIELDS = {
             "expected_constraint_count",
             "expected_external_geometry_count",
             "target",
+            "radius_mm",
             "preserve_corner",
         }
     ),
@@ -586,6 +587,7 @@ _OUTER_FIELDS = {
             "expected_constraint_count",
             "expected_external_geometry_count",
             "target",
+            "distance_mm",
             "preserve_corner",
         }
     ),
@@ -621,7 +623,7 @@ _OUTER_FIELDS = {
             "sketch",
             "expected_geometry_count",
             "expected_constraint_count",
-            "geometry_indices",
+            "geometry_ids",
         }
     ),
     "project_external_geometry": _EXTERNAL_OPERATION_FIELDS,
@@ -745,12 +747,12 @@ _OPERATIONS = {
         verify_sketch_center_rectangle,
         "Create Native Sketch Center Rectangle",
     ),
-    "create_oblong": (
+    "create_rounded_rectangle": (
         prepare_sketch_oblong,
         preflight_sketch_oblong,
         create_sketch_oblong,
         verify_sketch_oblong,
-        "Create Native Sketch Oblong",
+        "Create Native Sketch Rounded Rectangle",
     ),
     "create_triangle": (
         prepare_sketch_triangle,
@@ -943,7 +945,13 @@ class NativeSketchGeometryRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _OUTER_FIELDS)
+        normalized_arguments = dict(arguments)
+        if normalized_arguments.get("operation") == "create_ellipse":
+            normalized_arguments.setdefault("rotation_degrees", 0.0)
+        operation, values = strict_variant_arguments(
+            normalized_arguments,
+            _OUTER_FIELDS,
+        )
         handlers = _OPERATIONS.get(operation)
         if handlers is None:
             raise NativeSketchError("That Sketch geometry operation is unavailable.")

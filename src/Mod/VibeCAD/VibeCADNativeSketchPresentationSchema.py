@@ -83,7 +83,7 @@ def _alignment_parameters() -> dict:
 def sketch_presentation_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="sketch.presentation",
-        description="Set exact presentation state in the human-opened Sketch.",
+        description="Set presentation state in the active Sketch.",
         primary_classification="view",
         variants=(
             NativeCapabilityVariant(

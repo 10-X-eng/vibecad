@@ -44,6 +44,8 @@ CONVERSATION_THREAD_SCHEMA = "vibecad-conversation-thread-v1"
 DEFAULT_CONVERSATION_TITLE = "New conversation"
 MODELING_ENGINES = AUTHORING_MODES
 DEFAULT_MODELING_ENGINE = DEFAULT_AUTHORING_MODE
+AUTHORING_MODE_META_KEY = "VibeCAD.AuthoringMode"
+NATIVE_AUTHORITY_META_KEY = "VibeCAD.NativeAuthorityState"
 
 
 def now_iso() -> str:
@@ -125,9 +127,13 @@ def _active_document_info() -> dict[str, Any]:
 
 def _project_id_for_scope(scope: dict[str, Any], session_id: str) -> str:
     file_path = scope.get("file_path")
-    source = (
-        str(Path(str(file_path)).expanduser().resolve()) if file_path else session_id
-    )
+    document_uid = str(scope.get("uid") or "").strip()
+    if file_path:
+        source = str(Path(str(file_path)).expanduser().resolve())
+    elif document_uid:
+        source = f"unsaved:{document_uid}"
+    else:
+        source = session_id
     return hashlib.sha1(source.encode("utf-8")).hexdigest()[:16]
 
 
@@ -142,6 +148,17 @@ def project_root_for_document_file(file_path: str | Path) -> Path:
     source = str(cad_path.resolve())
     project_id = hashlib.sha1(source.encode("utf-8")).hexdigest()[:16]
     folder_name = f"{slugify(cad_path.stem)}-{project_id[:8]}"
+    return vibecad_data_dir() / "projects" / folder_name
+
+
+def project_root_for_unsaved_document(document_uid: str) -> Path:
+    """Isolated temporary project folder for one unsaved CAD document."""
+
+    uid = str(document_uid or "").strip()
+    if not uid:
+        raise RuntimeError("An unsaved VibeCAD document requires a stable Uid.")
+    project_id = hashlib.sha1(f"unsaved:{uid}".encode("utf-8")).hexdigest()[:16]
+    folder_name = f"unsaved-{project_id[:8]}"
     return vibecad_data_dir() / "projects" / folder_name
 
 
@@ -765,6 +782,9 @@ class VibeCADProjectStore:
             cad_path = Path(str(doc["file_path"])).expanduser()
             folder_name = f"{slugify(cad_path.stem)}-{project_id[:8]}"
             root = project_root_for_document_file(cad_path)
+        elif doc.get("uid"):
+            folder_name = f"{slugify(str(label))}-{project_id[:8]}"
+            root = project_root_for_unsaved_document(str(doc["uid"]))
         else:
             folder_name = f"{slugify(str(label))}-{project_id[:8]}"
             root = vibecad_data_dir() / "projects" / folder_name
@@ -874,6 +894,16 @@ class VibeCADProjectStore:
         )
 
     def _read_persisted_modeling_engine(self, _path: Path) -> str:
+        try:
+            import FreeCAD as App
+
+            document = getattr(App, "ActiveDocument", None)
+            metadata = dict(getattr(document, "Meta", {}) or {})
+            embedded = str(metadata.get(AUTHORING_MODE_META_KEY) or "").strip()
+            if embedded:
+                return normalize_authoring_mode(embedded)
+        except ImportError:
+            pass
         return normalize_authoring_mode(
             self.load_manifest().get("modeling_engine")
         )

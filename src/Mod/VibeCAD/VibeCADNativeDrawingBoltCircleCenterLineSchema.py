@@ -88,12 +88,7 @@ def drawing_bolt_circle_center_line_capability_definition() -> (
         variants=(
             NativeCapabilityVariant(
                 operation="create",
-                description=(
-                    "Derive the pattern from the first three ordered hash-pinned "
-                    "hole centers, then add one host-styled radial mark per hole. "
-                    "Report whether all centers lie on the pattern without "
-                    "rejecting extra off-pattern holes the human command accepts."
-                ),
+                description="Create radial center marks for an ordered projected hole pattern.",
                 action_ids=_ACTION,
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type=(
@@ -110,11 +105,7 @@ def drawing_bolt_circle_center_line_capability_definition() -> (
                             "items": _HOLE,
                             "minItems": MIN_DRAWING_BOLT_CIRCLE_TARGETS,
                             "maxItems": MAX_DRAWING_BOLT_CIRCLE_TARGETS,
-                            "description": (
-                                "Three to 32 unique projected circular holes in "
-                                "requested result order. The first three centers "
-                                "define the pattern circle."
-                            ),
+                            "description": "Ordered projected circular holes defining the pattern circle.",
                         },
                     },
                     ("page", "view", "holes"),

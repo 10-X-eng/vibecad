@@ -1,8 +1,10 @@
 # VibeCAD authoring modes
 
 VibeCAD offers two separate AI authoring systems. The human selects the system
-in the Assistant header and selects the working domain with the VibeCAD ribbon.
-The AI cannot change either selection.
+in the Assistant header and selects the initial working domain with the VibeCAD
+ribbon. The AI cannot change authoring systems. Native may move to another CAD
+work domain between provider turns while completing the current build obligation;
+the human can stop or redirect that work at any time.
 
 ## Native
 
@@ -20,8 +22,9 @@ compact multi-operation schema. Expensive mesh, solver, CAM, Drawing, and file
 operations prepare work away from the UI thread and reauthorize the document
 before commit.
 
-A human ribbon change invalidates the current turn. The next turn receives the
-new ribbon's tools. Native never exposes a workbench-switch command.
+A ribbon change invalidates the old surface. Whether the human changes the ribbon
+or Native requests the next kind of CAD work, the next provider turn receives a
+newly frozen surface containing only that ribbon's tools.
 
 ## VibeScript
 
@@ -37,10 +40,11 @@ requires an explicit human decision and regeneration from source.
 
 ## External MCP control
 
-External MCP control uses the same already-selected authoring mode and frozen
-ribbon surface as the built-in assistant. `vibecad.read_workbench` is
-informational. No MCP operation can switch a workbench, ribbon, or authoring
-mode. A human switch invalidates the old tool surface between turns.
+External MCP control uses the same selected authoring mode and frozen ribbon
+surface as the built-in assistant. `vibecad.read_workbench` is informational.
+Native CAD work may change only through the published between-turn transition;
+authoring mode remains a human choice. Any transition invalidates the old tool
+surface before the next turn.
 
 ## Migration from the retired Native surface
 

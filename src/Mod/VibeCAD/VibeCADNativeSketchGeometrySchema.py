@@ -23,6 +23,13 @@ from VibeCADNativeSketchInternalAlignmentSchema import (
 from VibeCADNativeSketchTransformSchema import sketch_transform_variants
 
 
+SIGNED_ANGLE_DEGREES_SCHEMA = {
+    "type": "number",
+    "minimum": -360.0,
+    "maximum": 360.0,
+}
+
+
 def _point_parameters() -> dict:
     return _geometry_parameters(
         {
@@ -67,7 +74,7 @@ def _geometry_parameters(properties: dict, required: tuple[str, ...]) -> dict:
     )
 
 
-def _fillet_chamfer_parameters() -> dict:
+def _fillet_chamfer_parameters(size_field: str) -> dict:
     curve = parameters_schema(
         {
             "geometry_index": {
@@ -115,11 +122,20 @@ def _fillet_chamfer_parameters() -> dict:
                 "maximum": 1_000_000,
             },
             "target": target,
+            size_field: {
+                **POSITIVE_MM_SCHEMA,
+                "description": (
+                    "Fillet radius in millimeters."
+                    if size_field == "radius_mm"
+                    else "Equal-leg Chamfer distance in millimeters."
+                ),
+            },
             "preserve_corner": {"type": "boolean"},
         },
         (
             "expected_external_geometry_count",
             "target",
+            size_field,
             "preserve_corner",
         ),
     )
@@ -140,6 +156,13 @@ def _polyline_parameters() -> dict:
                 "items": _point_2d_schema(),
                 "minItems": 2,
                 "maxItems": 65,
+                "examples": [
+                    [
+                        {"x": 0.0, "y": 0.0},
+                        {"x": 10.0, "y": 0.0},
+                        {"x": 10.0, "y": 10.0},
+                    ]
+                ],
             },
             "closed": {"type": "boolean"},
         },
@@ -152,22 +175,17 @@ def _arc_parameters() -> dict:
         {
             "center_mm": _point_2d_schema(),
             "radius_mm": POSITIVE_MM_SCHEMA,
-            "start_angle_degrees": {
-                "type": "number",
-                "minimum": 0.0,
-                "exclusiveMaximum": 360.0,
-            },
-            "sweep_angle_degrees": {
-                "type": "number",
-                "exclusiveMinimum": 0.0,
-                "exclusiveMaximum": 360.0,
+            "start_angle_degrees": SIGNED_ANGLE_DEGREES_SCHEMA,
+            "end_angle_degrees": {
+                **SIGNED_ANGLE_DEGREES_SCHEMA,
+                "description": "Distinct counterclockwise arc end angle.",
             },
         },
         (
             "center_mm",
             "radius_mm",
             "start_angle_degrees",
-            "sweep_angle_degrees",
+            "end_angle_degrees",
         ),
     )
 
@@ -184,11 +202,7 @@ def _three_point_arc_parameters() -> dict:
 
 
 def _elliptical_arc_parameters() -> dict:
-    angle = {
-        "type": "number",
-        "minimum": 0.0,
-        "exclusiveMaximum": 360.0,
-    }
+    angle = SIGNED_ANGLE_DEGREES_SCHEMA
     sweep = {
         "type": "number",
         "exclusiveMinimum": 0.0,
@@ -221,11 +235,7 @@ def _hyperbolic_arc_parameters() -> dict:
             "center_mm": _point_2d_schema(),
             "major_radius_mm": POSITIVE_MM_SCHEMA,
             "minor_radius_mm": POSITIVE_MM_SCHEMA,
-            "rotation_degrees": {
-                "type": "number",
-                "minimum": 0.0,
-                "exclusiveMaximum": 360.0,
-            },
+            "rotation_degrees": SIGNED_ANGLE_DEGREES_SCHEMA,
             "start_parameter": parameter,
             "end_parameter": parameter,
         },
@@ -245,11 +255,7 @@ def _parabolic_arc_parameters() -> dict:
         {
             "vertex_mm": _point_2d_schema(),
             "focal_length_mm": POSITIVE_MM_SCHEMA,
-            "rotation_degrees": {
-                "type": "number",
-                "minimum": 0.0,
-                "exclusiveMaximum": 360.0,
-            },
+            "rotation_degrees": SIGNED_ANGLE_DEGREES_SCHEMA,
             "start_parameter_mm": SIGNED_MM_SCHEMA,
             "end_parameter_mm": SIGNED_MM_SCHEMA,
         },
@@ -291,12 +297,11 @@ def _ellipse_parameters() -> dict:
             "major_radius_mm": POSITIVE_MM_SCHEMA,
             "minor_radius_mm": POSITIVE_MM_SCHEMA,
             "rotation_degrees": {
-                "type": "number",
-                "minimum": 0.0,
-                "exclusiveMaximum": 360.0,
+                **SIGNED_ANGLE_DEGREES_SCHEMA,
+                "default": 0.0,
             },
         },
-        ("center_mm", "major_radius_mm", "minor_radius_mm", "rotation_degrees"),
+        ("center_mm", "major_radius_mm", "minor_radius_mm"),
     )
 
 
@@ -331,14 +336,14 @@ def _center_rectangle_parameters() -> dict:
     )
 
 
-def _oblong_parameters() -> dict:
+def _rounded_rectangle_parameters() -> dict:
     return _geometry_parameters(
         {
             "first_corner_mm": _point_2d_schema(),
             "opposite_corner_mm": _point_2d_schema(),
-            "radius_mm": POSITIVE_MM_SCHEMA,
+            "corner_radius_mm": POSITIVE_MM_SCHEMA,
         },
-        ("first_corner_mm", "opposite_corner_mm", "radius_mm"),
+        ("first_corner_mm", "opposite_corner_mm", "corner_radius_mm"),
     )
 
 
@@ -397,11 +402,7 @@ def _arc_slot_parameters() -> dict:
         {
             "center_mm": _point_2d_schema(),
             "centerline_radius_mm": POSITIVE_MM_SCHEMA,
-            "start_angle_degrees": {
-                "type": "number",
-                "minimum": 0.0,
-                "exclusiveMaximum": 360.0,
-            },
+            "start_angle_degrees": SIGNED_ANGLE_DEGREES_SCHEMA,
             "sweep_angle_degrees": signed_sweep,
             "slot_radius_mm": POSITIVE_MM_SCHEMA,
         },
@@ -516,7 +517,7 @@ def _construction_parameters() -> dict:
 def sketch_geometry_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="sketch.geometry",
-        description="Mutate exact geometry in the one human-opened Sketch.",
+        description="Edit geometry in the active Sketch.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
@@ -660,14 +661,17 @@ def sketch_geometry_capability_definition() -> NativeCapabilityDefinition:
                 parameters=_center_rectangle_parameters(),
             ),
             NativeCapabilityVariant(
-                operation="create_oblong",
-                description="Create one rounded Rectangle from corners and radius.",
+                operation="create_rounded_rectangle",
+                description=(
+                    "Create one axis-aligned rounded Rectangle from opposite corners "
+                    "and a corner radius."
+                ),
                 action_ids=frozenset({"Sketcher_CreateOblong"}),
                 surface_ids=frozenset({"sketch.edit"}),
                 exact_target_type="ActiveSketchAndExpectedStateCounts",
                 transaction_behavior="document",
                 background_required=False,
-                parameters=_oblong_parameters(),
+                parameters=_rounded_rectangle_parameters(),
             ),
             NativeCapabilityVariant(
                 operation="create_triangle",
@@ -834,7 +838,7 @@ def sketch_geometry_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type="ActiveSketchExactFilletTargetAndExpectedState",
                 transaction_behavior="document",
                 background_required=False,
-                parameters=_fillet_chamfer_parameters(),
+                parameters=_fillet_chamfer_parameters("radius_mm"),
             ),
             NativeCapabilityVariant(
                 operation="create_chamfer",
@@ -847,7 +851,7 @@ def sketch_geometry_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type="ActiveSketchExactChamferTargetAndExpectedState",
                 transaction_behavior="document",
                 background_required=False,
-                parameters=_fillet_chamfer_parameters(),
+                parameters=_fillet_chamfer_parameters("distance_mm"),
             ),
             NativeCapabilityVariant(
                 operation="project_external_geometry",

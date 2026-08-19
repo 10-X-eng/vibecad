@@ -19,7 +19,6 @@ from VibeCADNativeDesignSchema import (
     SIGNED_MM_SCHEMA,
     parameters_schema,
     placement_schema,
-    vector_schema,
 )
 
 
@@ -41,30 +40,15 @@ _ELEMENT_NAME = {
     "maxLength": 64,
     "pattern": r"^(?:Vertex|Edge|Face)[1-9][0-9]*$",
 }
-_EDGE_NAME = {
-    "type": "string",
-    "maxLength": 64,
-    "pattern": r"^Edge[1-9][0-9]*$",
-}
 _FACE_NAME = {
     "type": "string",
     "maxLength": 64,
     "pattern": r"^Face[1-9][0-9]*$",
 }
-_MIRROR_REFERENCE_NAME = {
-    "type": "string",
-    "maxLength": 64,
-    "pattern": r"^(?:Face|Edge)[1-9][0-9]*$",
-}
 _CURVE_NAME = {
     "type": "string",
     "maxLength": 64,
     "pattern": r"^(?:Edge|Wire)[1-9][0-9]*$",
-}
-_LOFT_PROFILE_NAME = {
-    "type": "string",
-    "maxLength": 64,
-    "pattern": r"^(?:Vertex|Edge|Wire|Face)[1-9][0-9]*$",
 }
 _CROSS_SECTION_ELEMENT_NAME = {
     "type": "string",
@@ -158,165 +142,6 @@ def _builder_definition() -> dict[str, Any]:
     )
 
 
-def _extrude_definition() -> dict[str, Any]:
-    source = parameters_schema(
-        {"object_name": OBJECT_NAME_SCHEMA},
-        ("object_name",),
-    )
-    edge = parameters_schema(
-        {
-            "object_name": OBJECT_NAME_SCHEMA,
-            "subelement": _EDGE_NAME,
-        },
-        ("object_name", "subelement"),
-    )
-    direction = parameters_schema(
-        {
-            "kind": {
-                "type": "string",
-                "enum": ["normal", "custom", "edge"],
-            },
-            "vector": vector_schema(
-                minimum=-1_000_000.0,
-                maximum=1_000_000.0,
-            ),
-            "edge": edge,
-        },
-        ("kind",),
-    )
-    return parameters_schema(
-        {
-            "sources": {
-                "type": "array",
-                "items": source,
-                "minItems": 1,
-                "maxItems": 32,
-                "uniqueItems": True,
-            },
-            "direction": direction,
-            "length_along_mm": SIGNED_MM_SCHEMA,
-            "length_against_mm": SIGNED_MM_SCHEMA,
-            "symmetric": {"type": "boolean"},
-            "reversed": {"type": "boolean"},
-            "taper_along_degrees": _TAPER_ANGLE,
-            "taper_against_degrees": _TAPER_ANGLE,
-            "solid": {"type": "boolean"},
-        },
-        (
-            "sources",
-            "direction",
-            "length_along_mm",
-            "length_against_mm",
-            "symmetric",
-            "reversed",
-            "taper_along_degrees",
-            "taper_against_degrees",
-            "solid",
-        ),
-    )
-
-
-def _revolve_definition() -> dict[str, Any]:
-    source = parameters_schema(
-        {"object_name": OBJECT_NAME_SCHEMA},
-        ("object_name",),
-    )
-    axis_reference = parameters_schema(
-        {
-            "object_name": OBJECT_NAME_SCHEMA,
-            "subelement": _EDGE_NAME,
-        },
-        ("object_name",),
-    )
-    axis = parameters_schema(
-        {
-            "kind": {"type": "string", "enum": ["custom", "edge"]},
-            "base_mm": vector_schema(
-                minimum=-1_000_000.0,
-                maximum=1_000_000.0,
-            ),
-            "direction": vector_schema(
-                minimum=-1_000_000.0,
-                maximum=1_000_000.0,
-            ),
-            "reference": axis_reference,
-        },
-        ("kind",),
-    )
-    return parameters_schema(
-        {
-            "sources": {
-                "type": "array",
-                "items": source,
-                "minItems": 1,
-                "maxItems": 32,
-                "uniqueItems": True,
-            },
-            "axis": axis,
-            "angle_degrees": {
-                "type": "number",
-                "minimum": -360.0,
-                "maximum": 360.0,
-            },
-            "symmetric": {"type": "boolean"},
-            "solid": {"type": "boolean"},
-        },
-        ("sources", "axis", "angle_degrees", "symmetric", "solid"),
-    )
-
-
-def _mirror_definition() -> dict[str, Any]:
-    source = parameters_schema(
-        {"object_name": OBJECT_NAME_SCHEMA},
-        ("object_name",),
-    )
-    reference = parameters_schema(
-        {
-            "object_name": OBJECT_NAME_SCHEMA,
-            "subelement": _MIRROR_REFERENCE_NAME,
-        },
-        ("object_name",),
-    )
-    base = vector_schema(
-        minimum=-1_000_000.0,
-        maximum=1_000_000.0,
-    )
-    plane = {
-        "oneOf": [
-            parameters_schema(
-                {
-                    "kind": {
-                        "type": "string",
-                        "enum": ["xy", "xz", "yz"],
-                    },
-                    "base_mm": base,
-                },
-                ("kind",),
-            ),
-            parameters_schema(
-                {
-                    "kind": {"type": "string", "const": "reference"},
-                    "reference": reference,
-                },
-                ("kind", "reference"),
-            ),
-        ]
-    }
-    return parameters_schema(
-        {
-            "sources": {
-                "type": "array",
-                "items": source,
-                "minItems": 1,
-                "maxItems": 32,
-                "uniqueItems": True,
-            },
-            "plane": plane,
-        },
-        ("sources", "plane"),
-    )
-
-
 def _make_face_definition() -> dict[str, Any]:
     source = parameters_schema(
         {"object_name": OBJECT_NAME_SCHEMA},
@@ -355,69 +180,6 @@ def _ruled_surface_definition() -> dict[str, Any]:
             }
         },
         ("curves",),
-    )
-
-
-def _loft_definition() -> dict[str, Any]:
-    profile = parameters_schema(
-        {
-            "object_name": OBJECT_NAME_SCHEMA,
-            "subelement": _LOFT_PROFILE_NAME,
-        },
-        ("object_name",),
-    )
-    return parameters_schema(
-        {
-            "profiles": {
-                "type": "array",
-                "items": profile,
-                "minItems": 2,
-                "maxItems": 32,
-                "uniqueItems": True,
-            },
-            "solid": {"type": "boolean"},
-            "ruled": {"type": "boolean"},
-            "closed": {"type": "boolean"},
-        },
-        ("profiles", "solid", "ruled", "closed"),
-    )
-
-
-def _sweep_definition() -> dict[str, Any]:
-    profile = parameters_schema(
-        {
-            "object_name": OBJECT_NAME_SCHEMA,
-            "subelement": _LOFT_PROFILE_NAME,
-        },
-        ("object_name",),
-    )
-    path = parameters_schema(
-        {
-            "object_name": OBJECT_NAME_SCHEMA,
-            "subelements": {
-                "type": "array",
-                "items": _EDGE_NAME,
-                "minItems": 1,
-                "maxItems": 64,
-                "uniqueItems": True,
-            },
-        },
-        ("object_name",),
-    )
-    return parameters_schema(
-        {
-            "profiles": {
-                "type": "array",
-                "items": profile,
-                "minItems": 1,
-                "maxItems": 32,
-                "uniqueItems": True,
-            },
-            "path": path,
-            "solid": {"type": "boolean"},
-            "frenet": {"type": "boolean"},
-        },
-        ("profiles", "path", "solid", "frenet"),
     )
 
 
@@ -611,8 +373,8 @@ def _compound_filter_definition() -> dict[str, Any]:
         ("source", "mode"),
     )
     schema["description"] = (
-        "Mode fields: specific_items selectors/invert; collision stencil/invert; windows "
-        "stencil/window_percent/maximum/invert."
+        "specific_items: selectors,invert; collision: stencil,invert; "
+        "windows: stencil,window_percent,maximum,invert."
     )
     return schema
 
@@ -653,12 +415,12 @@ def model_part_capability_definition() -> NativeCapabilityDefinition:
     }
     return NativeCapabilityDefinition(
         name="model.part",
-        description="Create standalone Part results from explicit exact definitions.",
+        description="Create standalone curves, surfaces, compounds, and repairs.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="primitive",
-                description="Create one placed standalone Part primitive.",
+                description="Create a plane, curve, point, or regular polygon.",
                 action_ids=frozenset({"Part_Primitives"}),
                 surface_ids=_MODEL_SURFACE,
                 exact_target_type="NewPartPrimitive",
@@ -668,10 +430,7 @@ def model_part_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="builder",
-                description=(
-                    "Build an Edge, Wire, Face, Shell, or Solid from exact current "
-                    "shape inputs; the selected kind determines its required fields."
-                ),
+                description="Build an Edge, Wire, Face, Shell, or Solid from exact shapes.",
                 action_ids=frozenset({"Part_Builder"}),
                 surface_ids=_MODEL_SURFACE,
                 exact_target_type="ExactShapeInputs",
@@ -683,60 +442,8 @@ def model_part_capability_definition() -> NativeCapabilityDefinition:
                 ),
             ),
             NativeCapabilityVariant(
-                operation="extrude",
-                description=(
-                    "Extrude exact current Part shapes with the live direction, "
-                    "length, taper, symmetry, reversal, and solid controls."
-                ),
-                action_ids=frozenset({"Part_Extrude"}),
-                surface_ids=_MODEL_SURFACE,
-                exact_target_type="ExactCurrentShapeSources",
-                transaction_behavior="document",
-                background_required=False,
-                parameters=parameters_schema(
-                    {"label": LABEL_SCHEMA, "definition": _extrude_definition()},
-                    ("label", "definition"),
-                ),
-            ),
-            NativeCapabilityVariant(
-                operation="revolve",
-                description=(
-                    "Revolve exact current Part shapes about a custom axis or "
-                    "exact line/circular edge with signed angle, symmetry, and "
-                    "solid controls."
-                ),
-                action_ids=frozenset({"Part_Revolve"}),
-                surface_ids=_MODEL_SURFACE,
-                exact_target_type="ExactCurrentShapeSourcesAndAxis",
-                transaction_behavior="document",
-                background_required=False,
-                parameters=parameters_schema(
-                    {"label": LABEL_SCHEMA, "definition": _revolve_definition()},
-                    ("label", "definition"),
-                ),
-            ),
-            NativeCapabilityVariant(
-                operation="mirror",
-                description=(
-                    "Mirror exact current Part shapes across an XY, XZ, or YZ "
-                    "plane at an explicit base, or one exact plane reference."
-                ),
-                action_ids=frozenset({"Part_Mirror"}),
-                surface_ids=_MODEL_SURFACE,
-                exact_target_type="ExactCurrentShapeSourcesAndMirrorPlane",
-                transaction_behavior="document",
-                background_required=False,
-                parameters=parameters_schema(
-                    {"label": LABEL_SCHEMA, "definition": _mirror_definition()},
-                    ("label", "definition"),
-                ),
-            ),
-            NativeCapabilityVariant(
                 operation="make_face",
-                description=(
-                    "Create one parametric face from exact current objects whose "
-                    "wires are all closed and which contain no existing faces."
-                ),
+                description="Create a parametric face from exact closed wires.",
                 action_ids=frozenset({"Part_MakeFace"}),
                 surface_ids=_MODEL_SURFACE,
                 exact_target_type="ExactCurrentClosedWireSources",
@@ -760,37 +467,6 @@ def model_part_capability_definition() -> NativeCapabilityDefinition:
                         "label": LABEL_SCHEMA,
                         "definition": _ruled_surface_definition(),
                     },
-                    ("label", "definition"),
-                ),
-            ),
-            NativeCapabilityVariant(
-                operation="loft",
-                description=(
-                    "Create a standalone Part Loft through ordered exact vertex, "
-                    "edge, wire, or face profiles."
-                ),
-                action_ids=frozenset({"Part_Loft"}),
-                surface_ids=_MODEL_SURFACE,
-                exact_target_type="OrderedExactCurrentLoftProfiles",
-                transaction_behavior="document",
-                background_required=False,
-                parameters=parameters_schema(
-                    {"label": LABEL_SCHEMA, "definition": _loft_definition()},
-                    ("label", "definition"),
-                ),
-            ),
-            NativeCapabilityVariant(
-                operation="sweep",
-                description=(
-                    "Sweep ordered exact profiles along one exact connected path."
-                ),
-                action_ids=frozenset({"Part_Sweep"}),
-                surface_ids=_MODEL_SURFACE,
-                exact_target_type="OrderedExactCurrentSweepProfilesAndPath",
-                transaction_behavior="document",
-                background_required=False,
-                parameters=parameters_schema(
-                    {"label": LABEL_SCHEMA, "definition": _sweep_definition()},
                     ("label", "definition"),
                 ),
             ),

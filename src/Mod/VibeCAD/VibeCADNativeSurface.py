@@ -104,8 +104,8 @@ class NativeSurfaceChanged(RuntimeError):
         current: NativeSurfaceSnapshot,
     ) -> None:
         super().__init__(
-            "The active VibeCAD tool surface changed after this turn started. "
-            "Resume from the current ribbon in a new turn."
+            "The available CAD tools changed after this turn started. "
+            "Continue in a new turn."
         )
         self.expected = expected
         self.current = current

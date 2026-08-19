@@ -11,6 +11,7 @@ import secrets
 from typing import Any, Callable, Mapping
 
 from VibeCADNativeDispatch import NativeDispatchError, NativeTurnDispatcher
+from VibeCADNativeCapabilityRegistry import provider_visible_native_schema
 from VibeCADNativeInput import NativeInputAuthorizer
 from VibeCADNativeOutput import NativeOutputAuthorizer
 from VibeCADNativeRegistry import build_native_capability_registry
@@ -82,11 +83,23 @@ def _validate_expected_turn(
             "The frozen Native schemas are not JSON.",
         ) from exc
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    visible_turn_schemas = [
+        provider_visible_native_schema(schema) for schema in turn.provider_schemas
+    ]
+    visible_turn_encoded = json.dumps(
+        visible_turn_schemas,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    visible_turn_digest = hashlib.sha256(
+        visible_turn_encoded.encode("utf-8")
+    ).hexdigest()
     if (
         expected_names != turn.tool_names
         or expected_surface.get("schema_count") != len(expected_schemas)
         or expected_surface.get("schema_sha256") != digest
-        or digest != turn.schema_sha256
+        or digest not in {turn.schema_sha256, visible_turn_digest}
         or str(expected_surface.get("domain") or "") != turn.surface.surface_id
         or str(expected_surface.get("surface_id") or "")
         != turn.surface.modeling_surface_id

@@ -915,31 +915,6 @@ class TestConsolidatedPartTools(unittest.TestCase):
         self._assert_body_result(tube)
         self.assertGreater(len(tube.Shape.Solids), 0)
 
-    def test_extrude_revolve_mirror_and_scale_task_commands(self):
-        extrusion_profile = self._wire("ExtrusionProfile")
-        self._select(extrusion_profile)
-        Gui.runCommand("Part_Extrude", 0)
-        self._accept_task_dialog()
-        self._assert_body_result(self.document.ActiveObject)
-
-        revolution_profile = self._wire("RevolutionProfile", x=15.0)
-        self._select(revolution_profile)
-        Gui.runCommand("Part_Revolve", 0)
-        self._accept_task_dialog()
-        self._assert_body_result(self.document.ActiveObject)
-
-        mirror_source = self._box("MirrorSource", x=30.0)
-        self._select(mirror_source)
-        Gui.runCommand("Part_Mirror", 0)
-        self._accept_task_dialog()
-        self._assert_body_result(self.document.ActiveObject)
-
-        scale_source = self._box("ScaleSource", x=50.0)
-        self._select(scale_source)
-        Gui.runCommand("Part_Scale", 0)
-        self._accept_task_dialog()
-        self._assert_body_result(self.document.ActiveObject)
-
     def _exercise_edge_task_command(self, command_name):
         source = self._box(f"{command_name}Source")
         Gui.Selection.clearSelection()
@@ -1898,43 +1873,6 @@ class TestConsolidatedPartTools(unittest.TestCase):
             defeatured,
             [defeature_source],
         )
-
-    def test_loft_and_sweep_commands_create_valid_body_results(self):
-        loft_lower = self._wire("LoftLower")
-        loft_lower.Label = "Loft Lower Profile"
-        loft_upper = self._wire("LoftUpper")
-        loft_upper.Label = "Loft Upper Profile"
-        loft_upper.Placement.Base.y = 10.0
-        self.document.recompute()
-
-        Gui.runCommand("Part_Loft", 0)
-        self._choose_action_selector_items([loft_lower.Label, loft_upper.Label])
-        self._accept_task_dialog()
-        self._assert_body_result(self.document.ActiveObject)
-
-        sweep_profile = self._wire("SweepProfile", x=20.0)
-        sweep_profile.Label = "Sweep Profile"
-        sweep_path = self.document.addObject("Part::Feature", "SweepPath")
-        sweep_path.Label = "Sweep Path"
-        sweep_path.Shape = Part.makeLine(App.Vector(22, 0, 0), App.Vector(22, 15, 0))
-        self.document.recompute()
-
-        Gui.runCommand("Part_Sweep", 0)
-        self._choose_action_selector_items([sweep_profile.Label])
-        path_button = next(
-            (
-                button
-                for button in Gui.getMainWindow().findChildren(QtGui.QPushButton)
-                if button.objectName() == "buttonPath" and button.isVisible()
-            ),
-            None,
-        )
-        self.assertIsNotNone(path_button)
-        path_button.click()
-        Gui.Selection.addSelection(sweep_path)
-        path_button.click()
-        self._accept_task_dialog()
-        self._assert_document_root_result(self.document.ActiveObject)
 
     def test_cross_sections_command_creates_valid_body_result(self):
         source = self._box("CrossSectionSource")

@@ -67,10 +67,8 @@ set(PartDesign_TestScripts
     PartDesignTests/TestModelTreeBrowser.py
     PartDesignTests/TestNativeRibbonTools.py
     PartDesignTests/TestNativeTaskContract.py
-    PartDesignTests/TestPartMultiInputRibbonTools.py
     PartDesignTests/TestPartDesignTaskLifecycle.py
     PartDesignTests/TestPythonFeatureTasks.py
-    PartDesignTests/TestPartSingleInputRibbonTools.py
     PartDesignTests/TestRetainedPartDialogs.py
     PartDesignTests/TestRibbonInspectView.py
     PartDesignTests/TestVibeScriptPresentation.py

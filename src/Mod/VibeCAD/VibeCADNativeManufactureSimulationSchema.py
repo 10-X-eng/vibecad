@@ -75,10 +75,7 @@ def manufacture_simulation_capability_definition() -> NativeCapabilityDefinition
                             "minItems": 1,
                             "maxItems": 64,
                             "uniqueItems": True,
-                            "description": (
-                                "Exact operation targets in their current Job order; "
-                                "every target must be active and have a generated path."
-                            ),
+                            "description": "Active generated operations in current Job order.",
                         },
                         "quality": {
                             "type": "integer",

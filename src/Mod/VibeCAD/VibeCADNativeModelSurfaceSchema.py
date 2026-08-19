@@ -248,7 +248,7 @@ def _blend_curve_definition() -> dict[str, Any]:
 def model_surface_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="model.surface",
-        description="Create retained surface geometry.",
+        description="Create surfaces and curves.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

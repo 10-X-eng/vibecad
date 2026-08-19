@@ -15,6 +15,8 @@ from VibeCADNativeSketchInsertion import (
     PreparedSketchInsertion,
     preflight_sketch_insertion,
     require_unchanged_sketch_insertion,
+    sketch_constraint_refs,
+    sketch_geometry_refs,
     sketch_geometry_result,
     verify_sketch_append,
 )
@@ -140,8 +142,8 @@ def verify_sketch_rectangle(document: Any, draft: NativeMutationDraft) -> dict[s
     return sketch_geometry_result(
         sketch,
         {
-            "geometries": geometries,
-            "constraints": constraints,
+            "geometry_refs": sketch_geometry_refs(geometries),
+            "constraint_refs": sketch_constraint_refs(constraints),
             "corners_mm": [
                 [x, y, 0.0] for x, y in spec.boundary.corners_mm
             ],

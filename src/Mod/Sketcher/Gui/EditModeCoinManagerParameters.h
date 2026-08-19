@@ -76,6 +76,7 @@ struct DrawingParameters
     const float zMidLines = 0.006f;    // Height used for in-the-middle rendered lines
     const float zHighLines = 0.007f;   // Height used for on top rendered lines
     const float zHighLine = 0.008f;    // Height for highlighted lines (selected/preselected)
+    const float zSelectedLine = 0.009f;  // Height for the selected-line emphasis overlay
     const float zConstr = 0.004f;      // Height for rendering constraints
     const float zRootPoint = 0.010f;   // Height used for rendering the root point
     const float zLowPoints = 0.011f;   // Height used for bottom rendered points
@@ -146,6 +147,7 @@ struct DrawingParameters
     int InternalWidth = 1;          // width of internal edges
     int ExternalWidth = 1;          // width of external edges
     int ExternalDefiningWidth = 1;  // width of external defining edges
+    int SelectionWidthIncrease = 0;  // extra width applied only to selected edges
 
     unsigned int CurvePattern = 0b1111111111111111;             // pattern of normal edges
     unsigned int ConstructionPattern = 0b1111110011111100;      // pattern of construction edges
@@ -429,6 +431,15 @@ struct EditModeScenegraphNodes
     SoDrawStyle* CurvesExternalDrawStyle;
     SoDrawStyle* CurvesExternalDefiningDrawStyle;
     SoDrawStyle* HiddenCurvesDrawStyle;
+
+    /** @name Selected curve emphasis overlay*/
+    //@{
+    SmSwitchboard* SelectedCurvesGroup;
+    std::vector<std::vector<SoMaterial*>> SelectedCurvesMaterials;
+    std::vector<std::vector<SoCoordinate3*>> SelectedCurvesCoordinate;
+    std::vector<std::vector<SoLineSet*>> SelectedCurveSet;
+    std::vector<SoDrawStyle*> SelectedCurvesDrawStyle;
+    //@}
     //@}
 
     /** @name Axes nodes*/
@@ -475,6 +486,7 @@ struct EditModeScenegraphNodes
     /** @name Constraint nodes*/
     //@{
     SmSwitchboard* constrGroup;
+    SoGroup* constrAnnotation;
     SoPickStyle* constrGrpSelect;
     SoDrawStyle* ConstraintDrawStyle;
     //@}

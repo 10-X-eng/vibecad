@@ -2,8 +2,8 @@
 
 VibeCAD ships Part Design as its one general 3D modeling workbench. The old
 Part workbench is not registered. The Part geometry kernel, `Part::` document
-types, Python modules, and compatibility command/tool identifiers remain
-installed because Part Design and existing FCStd files depend on them.
+types, Python modules, and view providers remain installed because Part Design
+and existing FCStd files depend on them.
 
 ## One tool per modeling intent
 
@@ -26,9 +26,11 @@ and polygon. Duplicate Part box, cylinder, cone, sphere, ellipsoid, torus,
 prism, and wedge creation remains available only while editing an existing
 legacy object.
 
-Old command identifiers remain registered for macros and saved integrations,
-but redundant commands are absent from the shipped menu and toolbars. The UI
-contains one top-level **Part Design** menu and no **Part Tools** menu.
+The duplicate `Part_Extrude`, `Part_Revolve`, `Part_Loft`, `Part_Sweep`,
+`Part_Mirror`, and `Part_Scale` creation commands are not registered. The UI
+contains one top-level **Part Design** menu and no **Part Tools** menu. Legacy
+objects created by older documents still load and display through their retained
+document types and view providers.
 
 ## Body ownership and transactions
 
@@ -97,30 +99,27 @@ Ownership and dependency are separate concepts in the model tree:
 
 ## AI-native contract
 
-The active Part Design native pack advertises one semantic operation per
-intent: `model.extrude`, `model.revolve`, `model.loft`, `model.sweep`,
-`model.helix`, `model.mirror`, `model.boolean`, `model.fillet`,
-`model.chamfer`, and `model.thickness`, plus canonical inspection and the
-non-overlapping structural Part Design tools.
+The active Native pack advertises one semantic operation per intent.
+`model.primitive` creates solid Body primitives. `model.extrude`,
+`model.revolve`, `model.loft`, `model.sweep`, and `model.helix` expose focused
+Sketch-profile contracts backed by the shared feature runtime. `model.dressup`
+owns Fillet, Chamfer, Draft, and Thickness, while `model.transform` owns Mirror,
+Linear Pattern, Circular Pattern, and Scale. `model.boolean` owns Body
+composition, split, and section operations. Exact inspection and the
+non-overlapping construction, surface, repair, fastener, history, and structure
+tools complete the surface.
 
-Material-forming tools require explicit `add_material` or `remove_material`
-intent. Extrude, revolve, loft, and sweep also accept explicit `new_solid` or
-`new_surface` intent when the retained Part implementation is the correct
-standalone-geometry path. `Pad`, `Pocket`, and `Groove` do not appear in the
-provider-facing vocabulary. Historical `part.*`, `partdesign.*`, and VibeScript
-`pad`/`pocket`/`groove` entry points remain callable for saved integrations but
-are enumerated as compatibility-only and are never advertised beside the
-canonical operations.
+The provider does not advertise Pad, Pocket, Groove, or standalone Part feature
+duplicates. Each focused profile request exposes only its operation-specific
+fields. Omitting `combine` creates a new Body; `join`, `cut`, and `intersect`
+combine the result with named Bodies. Global and subelement axes use the same
+typed representation throughout Modeling.
 
-Dispatch never silently drops an option. Standalone revolve maps `midplane`
-to the native Part `Symmetric` property. Body transforms accept ordinary Part
-results in whole-shape mode; feature-delta mode deliberately requires a
-`PartDesign::FeatureAddSub` source and reports how to select whole-shape mode
-otherwise. Options that have no equivalent in a selected standalone Part
-implementation, such as extrusion refinement, fail with an explicit contract
-error instead of appearing to succeed.
+Dispatch validates the frozen provider-visible schema and never silently drops
+an option. Runtime diagnostics identify the exact invalid field or target while
+transactions preserve the document on failure.
 
-The Part Design VibeScript pack exposes the same consolidated kernel surface.
+The Part Design VibeScript pack exposes the same consolidated modeling intent.
 Sketch curves keep the short `line`, `arc`, `circle`, `ellipse`, and `bspline`
 names; spatial curves use explicit `*_3d` names. Primitives, topology
 construction, standalone surfaces, boolean and section operations, patterns,
@@ -151,13 +150,14 @@ Body to fake a single solid. Each strand or component is built with
 stitching unless a deliberate boolean union actually produces one connected
 valid solid.
 
-## Compatibility and rollback
+## Legacy document support
 
 Existing `Part::` object types and serialized properties are unchanged, and
 legacy FCStd files are not rewritten merely by opening them. Existing root
 objects stay at root until an explicit move or a new transaction produces a
 legally adoptable graph. Saved `PartWorkbench` preferences resolve to Part
-Design.
+Design. This document-loading support does not reintroduce the removed creation
+commands or duplicate AI tools.
 
 Keep an untouched copy before saving a mixed Body for use with an older build.
 Older builds understand the retained Part objects but may reject an ordinary

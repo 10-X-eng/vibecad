@@ -305,10 +305,30 @@ class SketchObject(Part2DObject):
     @overload
     def diagnoseFillet(
         self,
+        geometryIndex: int,
+        pointPosition: int,
+        radius: float,
+        preserveCorner: bool,
+        /,
+    ) -> dict: ...
+    @overload
+    def diagnoseFillet(
+        self,
         firstGeometryIndex: int,
         secondGeometryIndex: int,
         firstReferencePoint: Vector,
         secondReferencePoint: Vector,
+        preserveCorner: bool,
+        /,
+    ) -> dict: ...
+    @overload
+    def diagnoseFillet(
+        self,
+        firstGeometryIndex: int,
+        secondGeometryIndex: int,
+        firstReferencePoint: Vector,
+        secondReferencePoint: Vector,
+        radius: float,
         preserveCorner: bool,
         /,
     ) -> dict: ...
@@ -327,10 +347,30 @@ class SketchObject(Part2DObject):
     @overload
     def diagnoseChamfer(
         self,
+        geometryIndex: int,
+        pointPosition: int,
+        distance: float,
+        preserveCorner: bool,
+        /,
+    ) -> dict: ...
+    @overload
+    def diagnoseChamfer(
+        self,
         firstGeometryIndex: int,
         secondGeometryIndex: int,
         firstReferencePoint: Vector,
         secondReferencePoint: Vector,
+        preserveCorner: bool,
+        /,
+    ) -> dict: ...
+    @overload
+    def diagnoseChamfer(
+        self,
+        firstGeometryIndex: int,
+        secondGeometryIndex: int,
+        firstReferencePoint: Vector,
+        secondReferencePoint: Vector,
+        distance: float,
         preserveCorner: bool,
         /,
     ) -> dict: ...

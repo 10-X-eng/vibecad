@@ -35,4 +35,5 @@ def prepare_sketch_chamfer_target(
         document_uid,
         value,
         label=LABEL,
+        size_field="distance_mm",
     )

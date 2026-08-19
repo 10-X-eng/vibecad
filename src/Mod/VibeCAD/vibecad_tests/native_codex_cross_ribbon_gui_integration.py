@@ -26,7 +26,7 @@ from VibeCADSession import run_prompt
 
 
 _SURFACES = (
-    ("model", "PartDesignWorkbench", "model.feature"),
+    ("model", "PartDesignWorkbench", "model.extrude"),
     ("assemble", "AssemblyWorkbench", "assembly.structure"),
     ("mesh", "MeshWorkbench", "mesh.modify"),
     ("analyze", "FemWorkbench", "analyze.model"),
@@ -123,12 +123,11 @@ class _CrossRibbonCodexClient:
                     content_items = bridge_result["contentItems"]
                     payload = json.loads(content_items[0]["text"])
                     assert payload["ok"] is True, payload
-                    state_after = payload["vibecad_state_after"]
-                    active_domain = state_after["active_domain"]
-                    assert active_domain["surface_id"] == surface_id, payload
+                    assert "vibecad_state_after" not in payload, payload
+                    assert payload["surface_id"] == surface_id, payload
                     type(self).observations[surface_id] = {
                         "tools": self._thread_tools[thread_id],
-                        "state_surface": active_domain["surface_id"],
+                        "state_surface": payload["surface_id"],
                         "callback_thread": threading.get_ident(),
                     }
                 except BaseException as exc:

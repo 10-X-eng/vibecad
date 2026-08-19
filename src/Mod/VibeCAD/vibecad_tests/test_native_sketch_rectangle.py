@@ -58,8 +58,9 @@ def test_rectangle_matches_positive_diagonal_human_geometry(rectangle_host) -> N
         [6.0, 5.0, 0.0],
         [-8.0, 5.0, 0.0],
     ]
-    assert [item["index"] for item in result["geometries"]] == [1, 2, 3, 4]
-    assert [item["type"] for item in result["constraints"]] == [
+    assert [item["geometry_index"] for item in result["geometry_refs"]] == [1, 2, 3, 4]
+    assert [item["kind"] for item in result["geometry_refs"]] == ["line"] * 4
+    assert [item["type"] for item in result["constraint_refs"]] == [
         "Coincident",
         "Coincident",
         "Coincident",
@@ -68,35 +69,11 @@ def test_rectangle_matches_positive_diagonal_human_geometry(rectangle_host) -> N
         "Vertical",
         "Horizontal",
         "Vertical",
-    ]
-    assert [item["references"] for item in result["constraints"][:4]] == [
-        [
-            {"slot": 1, "geometry_index": 1, "position": 2},
-            {"slot": 2, "geometry_index": 2, "position": 1},
-        ],
-        [
-            {"slot": 1, "geometry_index": 2, "position": 2},
-            {"slot": 2, "geometry_index": 3, "position": 1},
-        ],
-        [
-            {"slot": 1, "geometry_index": 3, "position": 2},
-            {"slot": 2, "geometry_index": 4, "position": 1},
-        ],
-        [
-            {"slot": 1, "geometry_index": 4, "position": 2},
-            {"slot": 2, "geometry_index": 1, "position": 1},
-        ],
-    ]
-    assert [item["references"] for item in result["constraints"][4:]] == [
-        [{"slot": 1, "geometry_index": 1}],
-        [{"slot": 1, "geometry_index": 2}],
-        [{"slot": 1, "geometry_index": 3}],
-        [{"slot": 1, "geometry_index": 4}],
     ]
     assert set(result) == {
         "sketch",
-        "geometries",
-        "constraints",
+        "geometry_refs",
+        "constraint_refs",
         "corners_mm",
         "segment_count",
         "closed",
@@ -125,7 +102,7 @@ def test_rectangle_matches_negative_diagonal_human_order(rectangle_host) -> None
         [6.0, -3.0, 0.0],
         [6.0, 5.0, 0.0],
     ]
-    assert [item["type"] for item in result["constraints"][4:]] == [
+    assert [item["type"] for item in result["constraint_refs"][4:]] == [
         "Vertical",
         "Horizontal",
         "Vertical",

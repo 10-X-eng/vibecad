@@ -80,7 +80,7 @@ _ACTIVE_TARGET = _closed(
         },
         "active": {
             "type": "boolean",
-            "description": "Explicit desired state; this operation never performs a blind toggle.",
+            "description": "Explicit desired active state.",
         },
     },
     ("object_name", "expected_active", "active"),
@@ -133,10 +133,7 @@ def manufacture_modify_capability_definition() -> NativeCapabilityDefinition:
                             "items": _ACTIVE_TARGET,
                             "minItems": 1,
                             "maxItems": 64,
-                            "description": (
-                                "Distinct operation-group entries from the exact Job; "
-                                "all entries sharing one dress-up base must be included."
-                            ),
+                            "description": "Complete operation groups from the exact Job.",
                         },
                     },
                     ("job", "targets"),
@@ -230,11 +227,7 @@ def manufacture_modify_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="lead_in_out_dressup",
-                description=(
-                    "Replace one exact current Job operation with entry and exit motion. "
-                    "Each side is one closed shipped-style request with only its meaningful "
-                    "parameters."
-                ),
+                description="Add explicit entry and exit motion to one Job operation.",
                 action_ids=frozenset({"CAM_DressupLeadInOut"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type=(
@@ -294,9 +287,7 @@ def manufacture_modify_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="tag_dressup",
                 description=(
-                    "Replace one exact current Job operation with editable holding tags. "
-                    "Use exact locations, deterministic automatic distribution, or map "
-                    "the enabled positions and shape from one exact Tag dress-up."
+                    "Add editable holding tags by location, distribution, or mapped dress-up."
                 ),
                 action_ids=frozenset({"CAM_DressupTag"}),
                 surface_ids=frozenset({"manufacture"}),

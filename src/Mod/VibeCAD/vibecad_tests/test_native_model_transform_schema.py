@@ -49,7 +49,8 @@ def test_transform_contract_uses_one_compact_typed_pattern_variant() -> None:
             "PartDesign_DesignCircularPattern",
         }
     )
-    assert branch["required"] == ["operation", "label", "source", "definition"]
+    assert branch["required"] == ["label", "source", "definition"]
+    assert branch["properties"]["operation"]["const"] == "pattern"
     assert branch["additionalProperties"] is False
     sources = branch["properties"]["source"]["oneOf"]
     assert [item["properties"]["kind"]["const"] for item in sources] == [
@@ -66,6 +67,21 @@ def test_transform_contract_uses_one_compact_typed_pattern_variant() -> None:
     ]
 
 
+def test_provider_transform_definition_names_fields_for_each_kind() -> None:
+    definition = model_transform_capability_definition()
+    compact = definition.provider_schema(("pattern", "scale"))["parameters"]
+    fields = compact["properties"]["definition"]["description"]
+
+    for expected in (
+        "mirror=plane",
+        "linear=direction,spacing_mm,occurrences,centered",
+        "circular=axis,angle_degrees,occurrences,reversed",
+        "uniform=factor,center_mm",
+        "non_uniform=x_factor,y_factor,z_factor,center_mm",
+    ):
+        assert expected in fields
+
+
 def test_scale_contract_matches_the_fixed_modify_task_controls() -> None:
     definition = model_transform_capability_definition()
     branch = definition.provider_schema(("scale",))["parameters"]["oneOf"][0]
@@ -73,7 +89,8 @@ def test_scale_contract_matches_the_fixed_modify_task_controls() -> None:
 
     assert variant.action_ids == frozenset({"PartDesign_Scale"})
     assert variant.exact_target_type == "Body[] + ScaleDefinition"
-    assert branch["required"] == ["operation", "label", "targets", "definition"]
+    assert branch["required"] == ["label", "targets", "definition"]
+    assert branch["properties"]["operation"]["const"] == "scale"
     assert branch["additionalProperties"] is False
     assert branch["properties"]["targets"]["minItems"] == 1
     assert branch["properties"]["targets"]["maxItems"] == 16
@@ -189,11 +206,13 @@ def test_circular_contract_matches_every_current_task_control() -> None:
         "reversed",
     ]
     assert [item["properties"]["kind"]["const"] for item in axes] == [
+        "global_axis",
         "explicit",
         "object",
         "subelement",
     ]
-    assert axes[0]["required"] == ["kind", "origin_mm", "direction"]
+    assert axes[0]["required"] == ["kind", "axis"]
+    assert axes[1]["required"] == ["kind", "origin_mm", "direction"]
     assert circular["properties"]["angle_degrees"] == {
         "type": "number",
         "exclusiveMinimum": 0.0,
@@ -204,7 +223,7 @@ def test_circular_contract_matches_every_current_task_control() -> None:
         "minimum": 2,
         "maximum": 10000,
     }
-    assert axes[2]["properties"]["subelement"]["pattern"] == (
+    assert axes[3]["properties"]["subelement"]["pattern"] == (
         r"^(?:H_Axis|V_Axis|N_Axis|Axis[0-9]+|Edge[1-9][0-9]*)$"
     )
 

@@ -32,7 +32,12 @@ from VibeCADRibbonSurface import RibbonSurface, SURFACE_IDS
 
 
 MAX_NATIVE_TOOLS_PER_SURFACE = 28
-MAX_NATIVE_TOOLS_BY_SURFACE = {"analyze": 32, "drawing": 40}
+MAX_NATIVE_TOOLS_BY_SURFACE = {
+    "analyze": 32,
+    "drawing": 41,
+    "model": 32,
+    "sketch.edit": 39,
+}
 MAX_NATIVE_SCHEMAS_JSON_BYTES = 64 * 1024
 # Analyze owns more than one hundred semantically distinct human actions across
 # structural, thermal, fluid, electromagnetic, meshing, solver, and post domains.
@@ -132,8 +137,8 @@ def _operation_field_map(
     operations: tuple[str, ...],
     branches: tuple[Mapping[str, Any], ...],
 ) -> str:
-    grouped: dict[tuple[tuple[str, ...], tuple[str, ...]], list[str]] = {}
-    for operation, branch in zip(operations, branches, strict=True):
+    branch_fields = []
+    for branch in branches:
         properties = tuple(
             name for name in branch["properties"] if name != "operation"
         )
@@ -143,6 +148,33 @@ def _operation_field_map(
             if name != "operation"
         )
         optional = tuple(name for name in properties if name not in required)
+        branch_fields.append((required, optional))
+    field_groups = set(branch_fields)
+    common_required: tuple[str, ...] = ()
+    common_optional: tuple[str, ...] = ()
+    if len(field_groups) > 1:
+        common_required = tuple(
+            name
+            for name in branch_fields[0][0]
+            if all(name in required for required, _optional in branch_fields[1:])
+        )
+        common_optional = tuple(
+            name
+            for name in branch_fields[0][1]
+            if all(name in optional for _required, optional in branch_fields[1:])
+        )
+    grouped: dict[tuple[tuple[str, ...], tuple[str, ...]], list[str]] = {}
+    for operation, (required, optional) in zip(
+        operations,
+        branch_fields,
+        strict=True,
+    ):
+        required = tuple(
+            name for name in required if name not in common_required
+        )
+        optional = tuple(
+            name for name in optional if name not in common_optional
+        )
         grouped.setdefault((required, optional), []).append(operation)
     groups = list(grouped.items())
     dominant: tuple[tuple[str, ...], tuple[str, ...]] | None = None
@@ -152,7 +184,7 @@ def _operation_field_map(
             dominant = candidate[0]
             groups = [item for item in groups if item[0] != dominant]
             groups.append(candidate)
-    entries = []
+    rendered: dict[str, dict[str, Any]] = {}
     for (required, optional), group_operations in groups:
         fields = ",".join(required) if required else "none"
         if optional:
@@ -161,29 +193,25 @@ def _operation_field_map(
                 if len(optional) <= 4
                 else "+schema options"
             )
-        if len(groups) == 1:
+        record = rendered.setdefault(
+            fields,
+            {"operations": [], "dominant": False, "group_count": 0},
+        )
+        record["operations"].extend(group_operations)
+        record["dominant"] = record["dominant"] or dominant == (required, optional)
+        record["group_count"] += 1
+    entries = []
+    # The enclosing object already marks fields shared by every operation as
+    # required or optional. Repeating them in the discriminator wastes provider
+    # context and makes the operation-specific map harder to scan.
+    for fields, record in rendered.items():
+        if len(rendered) == 1:
             entries.append(fields)
-        elif dominant == (required, optional):
+        elif record["dominant"] and record["group_count"] == 1:
             entries.append(f"otherwise={fields}")
         else:
-            entries.append(f"{'|'.join(group_operations)}={fields}")
+            entries.append(f"{'|'.join(record['operations'])}={fields}")
     return "Fields: " + "; ".join(entries) + "."
-
-
-def _exact_target_prerequisites(
-    operations: tuple[str, ...],
-    variants: Mapping[str, "NativeCapabilityVariant"],
-) -> str:
-    targeted = tuple(
-        operation
-        for operation in operations
-        if str(variants[operation].exact_target_type or "").strip()
-    )
-    if not targeted:
-        return ""
-    if len(targeted) == len(operations):
-        return " Requires the exact current-document targets and state hashes shown."
-    return " Operations with target fields require exact current-document state."
 
 
 def _serialized_schema(value: Mapping[str, Any]) -> str:
@@ -193,6 +221,32 @@ def _serialized_schema(value: Mapping[str, Any]) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def provider_visible_native_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Publish one compact provider schema while retaining exact dispatch validation."""
+
+    projected = json.loads(_serialized_schema(schema))
+    parameters = projected.get("parameters")
+    branches = parameters.get("oneOf") if isinstance(parameters, Mapping) else None
+    if (
+        isinstance(branches, list)
+        and len(branches) == 1
+        and isinstance(branches[0], dict)
+    ):
+        branch = branches[0]
+        properties = branch.get("properties")
+        required = branch.get("required", [])
+        operation = (
+            properties.get("operation") if isinstance(properties, dict) else None
+        )
+        if (
+            isinstance(operation, Mapping)
+            and "const" in operation
+            and "operation" not in required
+        ):
+            properties.pop("operation", None)
+    return _compact_nested_provider_unions(projected)
 
 
 def _unique_schema_options(
@@ -358,8 +412,18 @@ def _compact_schema_options(
             {"type": "string", "enum": string_values},
             fallback,
         )
+    labels = [_kind_labels(option) for option in unique]
+    kinded = (
+        _compact_closed_object_options(
+            tuple("/".join(label) for label in labels if label is not None),
+            tuple(unique),
+        )
+        if all(labels)
+        else None
+    )
     candidate = (
-        _numeric_union(unique)
+        kinded
+        or _numeric_union(unique)
         or _unlabelled_closed_object_union(unique)
         or _array_union(unique)
     )
@@ -606,7 +670,7 @@ class NativeCapabilityVariant:
             )
         object.__setattr__(self, "_parameters_json", _canonical_schema(self.parameters))
 
-    def provider_parameters(self) -> dict[str, Any]:
+    def provider_parameters(self, *, require_operation: bool = True) -> dict[str, Any]:
         parameters = json.loads(self._parameters_json)
         properties = dict(parameters["properties"])
         properties["operation"] = {
@@ -614,10 +678,12 @@ class NativeCapabilityVariant:
             "const": self.operation,
         }
         parameters["properties"] = {"operation": properties.pop("operation"), **properties}
-        parameters["required"] = [
-            "operation",
-            *[name for name in parameters.get("required", []) if name != "operation"],
+        required = [
+            name for name in parameters.get("required", []) if name != "operation"
         ]
+        parameters["required"] = (
+            ["operation", *required] if require_operation else required
+        )
         return parameters
 
 
@@ -668,18 +734,14 @@ class NativeCapabilityDefinition:
             )
         ordered = tuple(dict.fromkeys(required_operations))
         branches = tuple(
-            variants[operation].provider_parameters() for operation in ordered
+            variants[operation].provider_parameters(
+                require_operation=len(ordered) != 1,
+            )
+            for operation in ordered
         )
-        operation_summary = ", ".join(ordered)
-        prerequisite_summary = _exact_target_prerequisites(ordered, variants)
         return {
             "name": self.name,
-            "description": (
-                f"{self.description}{prerequisite_summary} "
-                f"Operations: {operation_summary}."
-                if len(ordered) > 1
-                else f"{self.description}{prerequisite_summary}"
-            ),
+            "description": self.description,
             "parameters": (
                 {"oneOf": list(branches)}
                 if len(branches) == 1 or self.preserve_operation_branches
@@ -1016,9 +1078,10 @@ def resolve_native_provider_surface(
             surface.surface_id,
             MAX_NATIVE_SCHEMAS_JSON_BYTES,
         )
+        provider_schemas = [provider_visible_native_schema(schema) for schema in schemas]
         schema_bytes = len(
             json.dumps(
-                schemas,
+                provider_schemas,
                 ensure_ascii=True,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -1049,6 +1112,7 @@ def resolve_native_provider_surface(
                 f"Native surface schemas use {schema_bytes} bytes; limit is "
                 f"{schema_limit}. Largest families: {largest}."
             )
+        schemas = provider_schemas
     else:
         schemas = []
 

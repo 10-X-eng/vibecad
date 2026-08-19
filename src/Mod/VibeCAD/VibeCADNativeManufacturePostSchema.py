@@ -35,19 +35,12 @@ _EXACT_TARGET = {
 def manufacture_post_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MANUFACTURE_POST_CAPABILITY_NAME,
-        description=(
-            "Generate the configured machine program for one exact CAM Job in an "
-            "isolated process, then publish every output only to paths chosen by the human."
-        ),
+        description="Generate one exact CAM Job's machine program to human-authorized outputs.",
         primary_classification="export",
         variants=(
             NativeCapabilityVariant(
                 operation="complete_job",
-                description=(
-                    "Post every current active operation in the exact Job using its "
-                    "host-configured modern postprocessor; the provider cannot choose "
-                    "a processor, executable, option, or output path."
-                ),
+                description="Post every current active operation with the configured processor.",
                 action_ids=frozenset({"CAM_Post"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobAndHumanAuthorizedPostOutputs",
@@ -62,11 +55,7 @@ def manufacture_post_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="selected_operations",
-                description=(
-                    "Post one exact ordered subset of current active Job operations "
-                    "using the host-configured modern postprocessor; the provider "
-                    "cannot choose a processor, executable, option, or output path."
-                ),
+                description="Post an ordered subset of current active Job operations.",
                 action_ids=frozenset({"CAM_PostSelected"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type=(

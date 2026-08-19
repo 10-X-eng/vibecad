@@ -76,10 +76,7 @@ _DIMENSIONS = {
     "maxItems": MAX_DRAWING_DIMENSION_TEXT_TARGETS,
     "uniqueItems": True,
     "items": _DIMENSION,
-    "description": (
-        "Ordered, unique Drawing dimensions on the exact page. The entire batch "
-        "is rejected if any target is stale or inapplicable."
-    ),
+    "description": "Ordered applicable Drawing dimensions on one exact page.",
 }
 
 

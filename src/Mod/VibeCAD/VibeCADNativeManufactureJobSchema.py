@@ -47,10 +47,7 @@ _MODEL_INPUT = _closed(
         "target": _MODEL_TARGET,
         "replace_in_history": {
             "type": "boolean",
-            "description": (
-                "Use the job_create_replaces_in_history value published for "
-                "this model at turn start. A mismatch is rejected as stale."
-            ),
+            "description": "Turn-start Job replacement policy for this model.",
         },
     },
     ("target", "replace_in_history"),

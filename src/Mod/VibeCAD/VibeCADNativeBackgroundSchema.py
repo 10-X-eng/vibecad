@@ -45,10 +45,7 @@ def native_background_capability_definition() -> NativeCapabilityDefinition:
     )
     return NativeCapabilityDefinition(
         name=NATIVE_BACKGROUND_CAPABILITY_NAME,
-        description=(
-            "Inspect or cancel one exact long-running job created on this Native "
-            "document; never blocks waiting for completion."
-        ),
+        description="Inspect or cancel one exact long-running document job.",
         primary_classification="read",
         variants=variants,
     )

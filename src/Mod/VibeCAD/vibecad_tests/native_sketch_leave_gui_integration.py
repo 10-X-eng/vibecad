@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 import tempfile
 import traceback
+from types import SimpleNamespace
+from unittest import mock
 
 import FreeCAD as App
 import FreeCADGui as Gui
@@ -25,6 +27,7 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
 from VibeCADNativeSessionFactory import NativeSessionExecution
 from VibeCADNativeSketchControlBindings import SKETCH_CONTROL_CAPABILITY_NAME
+from VibeCADNativeSketchRevision import sketch_revision
 from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
@@ -54,13 +57,83 @@ def _run() -> None:
         main_window = Gui.getMainWindow()
         controller = main_window.findChild(QtCore.QObject, "VibeCADRibbonController")
         assert controller is not None
-        assert Gui.activeDocument().setEdit(sketch.Name)
+        registry = build_native_capability_registry()
+        service = get_service()
+        service.select_modeling_engine("native")
+        model_surface = read_active_ribbon_surface(controller)
+        assert model_surface.surface_id == "model"
+        model_provider = resolve_native_provider_surface(model_surface, registry)
+        assert "sketch.open" in model_provider.tool_names
+        model_frozen = NativeSurfaceSnapshot.from_surface(model_surface)
+        model_turn = NativeTurnSnapshot.from_provider_surface(model_provider)
+        open_ledger = NativeAssistantUndoLedger()
+        open_ledger.begin_run("native-sketch-open-gui")
+
+        def reauthorize_model() -> None:
+            require_frozen_native_surface(model_frozen, controller)
+
+        model_context = NativeRuntimeContext(
+            service=service,
+            document=document,
+            state=service.native_document_state_store(),
+            undo_ledger=open_ledger,
+            reauthorize_turn=reauthorize_model,
+            active_document=lambda: App.ActiveDocument,
+            active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
+            edit_or_task_active=lambda: active_edit_object() is not None,
+            document_thread_dispatch=lambda operation: operation(),
+        )
+        model_dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=model_context.state,
+            registry=registry,
+            turn=model_turn,
+            runtimes=build_native_runtime_bindings(
+                model_context,
+                model_turn.tool_names,
+            ),
+            reauthorize_turn=reauthorize_model,
+            active_document=lambda: App.ActiveDocument,
+        )
+        opened = model_dispatcher.call(
+            "sketch.open",
+            json.dumps(
+                {"operation": "open", "sketch": {"object_name": sketch.Name}},
+                separators=(",", ":"),
+            ),
+            "native-sketch-open",
+        )
+        assert opened.get("ok") is True, opened
+        assert opened["edit_mode"] == "open"
+        assert opened["next_surface"] == "sketch.edit"
+        assert opened["next_turn_required"] is True
+        open_ledger.end_run("native-sketch-open-gui")
         process_events(24)
         live_surface = read_active_ribbon_surface(controller)
         assert live_surface.surface_id == "sketch.edit"
         assert active_edit_object() is sketch
+        continuation = VibeGui._native_surface_continuation_event(
+            SimpleNamespace(
+                error=None,
+                tool_trace=[{"tool_name": "sketch.open", "result": opened}],
+            )
+        )
+        assert continuation is not None
+        launched = []
+        with mock.patch.multiple(
+            VibeGui,
+            _internal_agent_allowed=lambda: True,
+            _is_assistant_run_active=lambda: False,
+            _is_intent_memory_rebuild_active=lambda: False,
+            _find_dock=lambda: object(),
+            _assistant_panel_is_built=lambda _dock: True,
+            _execute_assistant_run=lambda _dock, _service, **kwargs: launched.append(
+                kwargs
+            ),
+        ):
+            VibeGui._start_native_surface_continuation(continuation)
+        assert launched == [{"continuation_event": continuation}]
 
-        registry = build_native_capability_registry()
         provider = resolve_native_provider_surface(live_surface, registry)
         assert provider.available is True, provider.debug_summary()
         assert SKETCH_CONTROL_CAPABILITY_NAME in provider.tool_names
@@ -71,8 +144,6 @@ def _run() -> None:
         frozen_surface = NativeSurfaceSnapshot.from_surface(live_surface)
         turn = NativeTurnSnapshot.from_provider_surface(provider)
 
-        service = get_service()
-        service.select_modeling_engine("native")
         state = service.native_document_state_store()
         ledger = NativeAssistantUndoLedger()
         run_id = "native-sketch-leave-gui"
@@ -90,6 +161,7 @@ def _run() -> None:
             active_document=lambda: App.ActiveDocument,
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: active_edit_object() is not None,
+            document_thread_dispatch=lambda operation: operation(),
         )
         dispatcher = NativeTurnDispatcher(
             document=document,
@@ -158,25 +230,21 @@ def _run() -> None:
             json.dumps(
                 {
                     "operation": "leave",
-                    "sketch": {"object_name": sketch.Name},
-                    "expected_geometry_count": int(sketch.GeometryCount) + 1,
-                    "expected_constraint_count": int(sketch.ConstraintCount),
+                    "revision": "sketch-v1:" + ("0" * 64),
                 },
                 separators=(",", ":"),
             ),
             "native-sketch-leave-stale",
         )
         assert stale.get("ok") is False, stale
-        assert stale["error_code"] == "NATIVE_SKETCH_INVALID"
+        assert stale["error_code"] == "NATIVE_SKETCH_REVISION_CONFLICT", stale
         assert active_edit_object() is sketch
         response = runner(
             SKETCH_CONTROL_CAPABILITY_NAME,
             json.dumps(
                 {
                     "operation": "leave",
-                    "sketch": {"object_name": sketch.Name},
-                    "expected_geometry_count": int(sketch.GeometryCount),
-                    "expected_constraint_count": int(sketch.ConstraintCount),
+                    "revision": sketch_revision(sketch),
                 },
                 separators=(",", ":"),
             ),
@@ -216,7 +284,7 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_SKETCH_LEAVE_GUI_OK "
-            "save-hidden leave-exact turn-invalidated save-restored",
+            "open-exact save-hidden leave-exact turn-invalidated save-restored",
             flush=True,
         )
         exit_code = 0

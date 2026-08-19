@@ -359,7 +359,9 @@ def _run() -> None:
             active_surface_id=lambda: "model",
             edit_or_task_active=lambda: False,
         )
-        structure, _sketch, _validation = model_structure_capability_definitions()
+        structure, _sketch, _open_sketch, _validation = (
+            model_structure_capability_definitions()
+        )
         definitions = (
             model_feature_capability_definition(),
             structure,

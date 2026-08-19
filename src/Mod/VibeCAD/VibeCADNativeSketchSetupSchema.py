@@ -122,10 +122,7 @@ def sketch_setup_capability_definition() -> NativeCapabilityDefinition:
         variants=(
             _variant(
                 "map_sketch",
-                (
-                    "Set one exact reusable Sketch support to a base plane, datum "
-                    "plane, or planar History face; the Sketch must not be open for edit."
-                ),
+                "Map one closed reusable Sketch to a plane or planar History face.",
                 "Sketcher_MapSketch",
                 _parameters(
                     {"target": _object_ref(), "support": _support()},
@@ -135,10 +132,7 @@ def sketch_setup_capability_definition() -> NativeCapabilityDefinition:
             ),
             _variant(
                 "reorient_sketch",
-                (
-                    "Detach one exact reusable Sketch and place it on an explicit "
-                    "global plane; the Sketch must not be open for edit."
-                ),
+                "Place one closed reusable Sketch on an explicit global plane.",
                 "Sketcher_ReorientSketch",
                 _parameters(
                     {
@@ -160,10 +154,7 @@ def sketch_setup_capability_definition() -> NativeCapabilityDefinition:
             ),
             _variant(
                 "merge_sketches",
-                (
-                    "Create one reusable Sketch from two to sixteen exact Sketches. "
-                    "Sources must have no external geometry and remain unchanged."
-                ),
+                "Merge reusable Sketches with self-contained geometry.",
                 "Sketcher_MergeSketches",
                 _parameters(
                     {"sources": _sources(minimum=2), "label": _LABEL},
@@ -173,10 +164,7 @@ def sketch_setup_capability_definition() -> NativeCapabilityDefinition:
             ),
             _variant(
                 "mirror_sketch",
-                (
-                    "Create one independently identified mirrored reusable Sketch per "
-                    "exact source. Sources must have no external geometry."
-                ),
+                "Create a mirrored reusable Sketch from each self-contained source.",
                 "Sketcher_MirrorSketch",
                 _parameters(
                     {

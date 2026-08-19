@@ -42,6 +42,7 @@ class _Document:
 
     def __init__(self):
         self.obj = _Object(self)
+        self.Objects = [self.obj]
 
     def getObject(self, name: str):
         return self.obj if name == self.obj.Name else None
@@ -85,6 +86,42 @@ def test_wrong_document_and_type_fail_with_exact_target() -> None:
     assert wrong_type.value.failure()["accepted_types"] == ["Mesh::Feature"]
 
 
+def test_missing_typed_target_returns_exact_current_candidates() -> None:
+    document = _Document()
+
+    with pytest.raises(NativeTargetError) as missing:
+        resolve_object(
+            document,
+            NativeObjectRef("document-a", "InventedName"),
+            expected_types=("Part::Feature",),
+        )
+
+    assert missing.value.failure()["candidates"] == [
+        {
+            "document_uid": "document-a",
+            "object_name": "Box",
+            "type_id": "PartDesign::Feature",
+        }
+    ]
+
+
+def test_wrong_type_target_returns_accepted_type_candidates() -> None:
+    document = _Document()
+    body = _Object(document, "Body", "PartDesign::Body")
+    document.Objects.append(body)
+
+    with pytest.raises(NativeTargetError) as wrong_type:
+        resolve_object(
+            document,
+            NativeObjectRef("document-a", "Box"),
+            expected_types=("PartDesign::Body",),
+        )
+
+    assert [
+        item["object_name"] for item in wrong_type.value.failure()["candidates"]
+    ] == ["Body"]
+
+
 def test_subelement_reference_is_strict_and_resolved_on_live_shape() -> None:
     document = _Document()
     target = NativeElementRef(NativeObjectRef("document-a", "Box"), "Face1")
@@ -125,3 +162,21 @@ def test_current_selection_is_exact_bounded_and_ordered(monkeypatch) -> None:
     ]
     assert result["items"][0]["subelements"] == ["Face1", "Edge1"]
     assert result["truncated"] is True
+
+
+def test_current_selection_reports_subelement_truncation(monkeypatch) -> None:
+    document = _Document()
+    selection = SimpleNamespace(
+        getSelectionEx=lambda _name: [
+            SimpleNamespace(
+                Object=document.obj,
+                SubElementNames=["Edge1", "Edge2", "Edge3"],
+            )
+        ]
+    )
+    monkeypatch.setattr(targets_module, "MAX_SELECTION_SUBELEMENTS", 2)
+
+    result = read_current_selection(document, selection)
+
+    assert result["items"][0]["subelements"] == ["Edge1", "Edge2"]
+    assert result["items"][0]["subelements_truncated"] is True

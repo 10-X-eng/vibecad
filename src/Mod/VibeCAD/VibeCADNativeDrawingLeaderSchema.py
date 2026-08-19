@@ -134,11 +134,7 @@ def _create_parameters() -> dict:
                 "minItems": 2,
                 "maxItems": MAX_DRAWING_LEADER_POINTS,
                 "items": deepcopy(_POINT),
-                "description": (
-                    "Ordered absolute paper-space points from arrow tip to tail. "
-                    "Every point must lie within the exact page and consecutive "
-                    "points must differ."
-                ),
+                "description": "Ordered distinct paper-space points from arrow tip to tail.",
             },
             "label": {
                 "type": "string",

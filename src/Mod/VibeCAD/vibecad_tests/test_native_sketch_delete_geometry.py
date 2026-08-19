@@ -31,7 +31,7 @@ def _values(**updates) -> dict[str, object]:
         "sketch": {"object_name": "Sketch"},
         "expected_geometry_count": 3,
         "expected_constraint_count": 0,
-        "geometry_indices": [1],
+        "geometry_ids": [101],
     }
     values.update(updates)
     return values
@@ -88,31 +88,34 @@ def test_delete_geometry_rejects_open_unbounded_or_stale_targets(monkeypatch) ->
     document, sketch, context = _host(monkeypatch)
     for values in (
         {**_values(), "unexpected": True},
-        {**_values(), "geometry_indices": []},
-        {**_values(), "geometry_indices": [1, 1]},
-        {**_values(), "geometry_indices": [-1]},
-        {**_values(), "geometry_indices": list(range(65))},
+        {**_values(), "geometry_ids": []},
+        {**_values(), "geometry_ids": [101, 101]},
+        {**_values(), "geometry_ids": [-1]},
+        {**_values(), "geometry_ids": list(range(65))},
     ):
         with pytest.raises(NativeSketchError):
             prepare_sketch_delete_geometry(document.Uid, values)
 
-    with pytest.raises(NativeSketchError, match="outside"):
+    with pytest.raises(
+        NativeSketchError,
+        match=r"geometry_ids \[999\].*available geometry_ids are \[100, 101, 102\]",
+    ):
         preflight_sketch_delete_geometry(
             context,
             prepare_sketch_delete_geometry(
                 document.Uid,
-                _values(geometry_indices=[3]),
+                _values(geometry_ids=[999]),
             ),
         )
 def test_delete_geometry_requires_group_handle_and_owning_curve(monkeypatch) -> None:
     document, sketch, context = _host(monkeypatch)
     sketch.addConstraint(FakeConstraint("Group", [2, 0, 0, 0, 1, 0]))
-    with pytest.raises(NativeSketchError, match="group handle 2"):
+    with pytest.raises(NativeSketchError, match="group handle geometry_id 102"):
         preflight_sketch_delete_geometry(
             context,
             prepare_sketch_delete_geometry(
                 document.Uid,
-                _values(expected_constraint_count=1, geometry_indices=[1]),
+                _values(expected_constraint_count=1, geometry_ids=[101]),
             ),
         )
 
@@ -141,7 +144,7 @@ def test_delete_geometry_executes_and_verifies_exact_identity(monkeypatch) -> No
 
     assert calls == [((1,), True)]
     assert result["operation"] == "delete_geometry"
-    assert result["requested_geometry_indices"] == [1]
+    assert result["requested_geometry_ids"] == [101]
     assert result["deleted_geometry_count"] == 1
     assert result["deleted_constraint_count"] == 0
     assert result["geometry_count"] == 2

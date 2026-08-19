@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import traceback
+from types import SimpleNamespace
 
 import FreeCAD as App
 import FreeCADGui as Gui
@@ -100,7 +101,7 @@ def _run() -> None:
             **provider.debug_summary(),
             "coverage_gaps": _coverage_gaps(surface, registry),
         }
-        assert len(provider.tool_names) <= 28
+        assert len(provider.tool_names) <= 39
         schema_bytes = len(
             json.dumps(
                 provider.schemas,
@@ -117,15 +118,26 @@ def _run() -> None:
         } & set(provider.tool_names)
         required = {
             "sketch.inspect",
+            "sketch.draw_point",
             "sketch.draw_line",
             "sketch.draw_arc",
             "sketch.draw_three_point_arc",
             "sketch.draw_circle",
             "sketch.draw_ellipse",
-            "sketch.draw_profile",
+            "sketch.draw_three_point_ellipse",
+            "sketch.draw_rectangle",
+            "sketch.draw_center_rectangle",
+            "sketch.draw_rounded_rectangle",
+            "sketch.draw_polygon",
+            "sketch.draw_slot",
+            "sketch.draw_conic_arc",
             "sketch.draw_spline",
             "sketch.draw_text",
             "sketch.constrain",
+            "sketch.coincident",
+            "sketch.perpendicular",
+            "sketch.tangent",
+            "sketch.symmetric",
             "sketch.dimension",
             "sketch.transform",
             "sketch.edit",
@@ -138,6 +150,7 @@ def _run() -> None:
             "sketch.external",
             "sketch.batch",
             "sketch.control",
+            "sketch.finish",
         }
         assert required <= set(provider.tool_names)
         batch_schema = _operation_schema(provider, "sketch.batch", "create")
@@ -174,6 +187,7 @@ def _run() -> None:
             edit_or_task_active=lambda: active_edit_object() is not None,
         )
         turn = NativeTurnSnapshot.from_provider_surface(provider)
+        debug_events = []
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state,
@@ -182,6 +196,7 @@ def _run() -> None:
             runtimes=build_native_runtime_bindings(context, turn.tool_names),
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
+            debug_sink=debug_events.append,
         )
 
         call_number = 0
@@ -335,7 +350,7 @@ def _run() -> None:
         )
         assert overlap_second.get("ok") is True, overlap_second
         coincidence = call(
-            "sketch.constrain",
+            "sketch.coincident",
             {
                 "operation": "constrain_coincident",
                 "revision": overlap_second["revision"],
@@ -346,7 +361,7 @@ def _run() -> None:
                 },
             },
         )
-        assert coincidence.get("ok") is True, coincidence
+        assert coincidence.get("ok") is True, {"result": coincidence, "debug": debug_events}
         assert int(sketch.ConstraintCount) == 30
         assert str(sketch.Constraints[-1].Type) == "Coincident"
 
@@ -358,7 +373,7 @@ def _run() -> None:
                 "center_mm": {"x": 120.0, "y": 20.0},
                 "radius_mm": 10.0,
                 "start_angle_degrees": 0.0,
-                "sweep_angle_degrees": 180.0,
+                "end_angle_degrees": 180.0,
             },
         )
         assert semicircle.get("ok") is True, semicircle
@@ -433,7 +448,7 @@ def _run() -> None:
             {
                 "operation": "delete_geometry",
                 "revision": radius["revision"],
-                "geometry_indices": [30],
+                "geometry_ids": [overlap_second["geometry_ref"]["geometry_id"]],
             },
         )
         assert deleted.get("ok") is True, deleted
@@ -441,13 +456,45 @@ def _run() -> None:
         assert int(sketch.GeometryCount) == 31
         assert int(sketch.ConstraintCount) == 30
 
+        ellipse = call(
+            "sketch.draw_ellipse",
+            {
+                "operation": "create_ellipse",
+                "revision": leave_revision,
+                "center_mm": {"x": 160.0, "y": 20.0},
+                "major_radius_mm": 12.0,
+                "minor_radius_mm": 6.0,
+            },
+        )
+        assert ellipse.get("ok") is True, ellipse
+        assert ellipse.get("geometry_ref", {}).get("kind") == "ellipse", ellipse
+        assert "geometry" not in ellipse
+        assert "receipt" not in ellipse
+        assert "sketch" not in ellipse
+        assert set(ellipse.get("profile", {})) == {
+            "closed",
+            "face_buildable",
+            "closed_wire_count",
+            "open_wire_count",
+        }
+        leave_revision = ellipse["revision"]
+
         left = call(
-            "sketch.control",
+            "sketch.finish",
             {"operation": "leave", "revision": leave_revision},
         )
         assert left.get("ok") is True, left
         assert left.get("next_turn_required") is True, left
         assert active_edit_object() is None
+        continuation = VibeGui._native_surface_continuation_event(
+            SimpleNamespace(
+                error=None,
+                tool_trace=[{"tool_name": "sketch.finish", "result": left}],
+            )
+        )
+        assert continuation is not None, left
+        assert continuation["workspace"] == "modeling", continuation
+        assert continuation["surface_id"] == "model", continuation
 
         print(
             "VIBECAD_NATIVE_SKETCH_PROVIDER_SURFACE_GUI_OK "

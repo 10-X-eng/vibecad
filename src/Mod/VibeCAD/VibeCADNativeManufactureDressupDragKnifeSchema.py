@@ -66,10 +66,7 @@ DRAG_KNIFE_DRESSUP_PARAMETERS_SCHEMA = _closed(
             "type": "number",
             "minimum": 0.0,
             "maximum": 100.0,
-            "description": (
-                "Absolute Z height used while rotating the blade at compensated "
-                "corners; it must be above every compensated cutting depth."
-            ),
+            "description": "Blade-pivot rotation height above compensated cuts.",
         },
     },
     (

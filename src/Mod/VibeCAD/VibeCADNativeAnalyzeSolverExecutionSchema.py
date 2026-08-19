@@ -18,19 +18,12 @@ ANALYZE_SOLVER_EXECUTION_CAPABILITY_NAME = "analyze.solver_execution"
 def analyze_solver_execution_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ANALYZE_SOLVER_EXECUTION_CAPABILITY_NAME,
-        description=(
-            "Freeze one exact FEM solver input, run its external backend with bounded "
-            "progress and cancellation, then publish verified results only if the "
-            "document is still exact."
-        ),
+        description="Run one frozen FEM solver input and publish verified results.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="run",
-                description=(
-                    "Run one exact supported FEM solver without blocking the UI; use "
-                    "native.job for status or cancellation."
-                ),
+                description="Run one exact supported FEM solver as a cancellable job.",
                 action_ids=frozenset({"FEM_SolverRun"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactFemSolverAnalysisHistoryAndInputArtifacts",

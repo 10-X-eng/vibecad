@@ -19,6 +19,8 @@ from VibeCADNativeSketchInsertion import (
     PreparedSketchInsertion,
     preflight_sketch_insertion,
     require_unchanged_sketch_insertion,
+    sketch_constraint_refs,
+    sketch_geometry_refs,
     sketch_geometry_result,
     verify_sketch_append,
 )
@@ -219,9 +221,10 @@ def verify_sketch_center_rectangle(
     return sketch_geometry_result(
         sketch,
         {
-            "geometries": geometries,
-            "center_geometry": center_geometry,
-            "constraints": [*constraints, symmetry],
+            "geometry_refs": sketch_geometry_refs(geometries),
+            "construction_geometry_refs": sketch_geometry_refs((center_geometry,)),
+            "constraint_refs": sketch_constraint_refs((*constraints, symmetry)),
+            "center_mm": [*spec.center_mm, 0.0],
             "corners_mm": [
                 [x, y, 0.0] for x, y in spec.boundary.corners_mm
             ],

@@ -21,24 +21,6 @@ from VibeCADNativePartBuilder import (
     prepare_part_builder,
     verify_part_builder_shape,
 )
-from VibeCADNativePartExtrude import (
-    create_part_extrude,
-    preflight_part_extrude,
-    prepare_part_extrude,
-    verify_part_extrude,
-)
-from VibeCADNativePartRevolve import (
-    create_part_revolve,
-    preflight_part_revolve,
-    prepare_part_revolve,
-    verify_part_revolve,
-)
-from VibeCADNativePartMirror import (
-    create_part_mirror,
-    preflight_part_mirror,
-    prepare_part_mirror,
-    verify_part_mirror,
-)
 from VibeCADNativePartMakeFace import (
     create_part_make_face,
     preflight_part_make_face,
@@ -50,18 +32,6 @@ from VibeCADNativePartRuledSurface import (
     preflight_part_ruled_surface,
     prepare_part_ruled_surface,
     verify_part_ruled_surface,
-)
-from VibeCADNativePartLoft import (
-    create_part_loft,
-    preflight_part_loft,
-    prepare_part_loft,
-    verify_part_loft,
-)
-from VibeCADNativePartSweep import (
-    create_part_sweep,
-    preflight_part_sweep,
-    prepare_part_sweep,
-    verify_part_sweep,
 )
 from VibeCADNativePartCrossSections import (
     create_part_cross_sections,
@@ -109,13 +79,8 @@ from VibeCADNativeState import NativeCallTicket
 _OUTER_FIELDS = {
     "primitive": frozenset({"label", "placement", "definition"}),
     "builder": frozenset({"label", "definition"}),
-    "extrude": frozenset({"label", "definition"}),
-    "revolve": frozenset({"label", "definition"}),
-    "mirror": frozenset({"label", "definition"}),
     "make_face": frozenset({"label", "definition"}),
     "ruled_surface": frozenset({"label", "definition"}),
-    "loft": frozenset({"label", "definition"}),
-    "sweep": frozenset({"label", "definition"}),
     "cross_sections": frozenset({"label", "definition"}),
     "offset_3d": frozenset({"label", "definition"}),
     "offset_2d": frozenset({"label", "definition"}),
@@ -176,60 +141,6 @@ class NativeModelPartRuntime:
                 ),
                 verify=verify_part_builder_shape,
             )
-        if operation == "extrude":
-            spec = prepare_part_extrude(
-                self._context.document_uid,
-                values["definition"],
-            )
-            self._context.guard()
-            prepared = preflight_part_extrude(self._context.document, spec)
-            return run_immediate_mutation(
-                self._context,
-                ticket=ticket,
-                transaction_name="Create Native Part Extrude",
-                mutate=lambda document: create_part_extrude(
-                    document,
-                    label=label,
-                    prepared=prepared,
-                ),
-                verify=verify_part_extrude,
-            )
-        if operation == "revolve":
-            spec = prepare_part_revolve(
-                self._context.document_uid,
-                values["definition"],
-            )
-            self._context.guard()
-            prepared = preflight_part_revolve(self._context.document, spec)
-            return run_immediate_mutation(
-                self._context,
-                ticket=ticket,
-                transaction_name="Create Native Part Revolve",
-                mutate=lambda document: create_part_revolve(
-                    document,
-                    label=label,
-                    prepared=prepared,
-                ),
-                verify=verify_part_revolve,
-            )
-        if operation == "mirror":
-            spec = prepare_part_mirror(
-                self._context.document_uid,
-                values["definition"],
-            )
-            self._context.guard()
-            prepared = preflight_part_mirror(self._context.document, spec)
-            return run_immediate_mutation(
-                self._context,
-                ticket=ticket,
-                transaction_name="Create Native Part Mirror",
-                mutate=lambda document: create_part_mirror(
-                    document,
-                    label=label,
-                    prepared=prepared,
-                ),
-                verify=verify_part_mirror,
-            )
         if operation == "make_face":
             spec = prepare_part_make_face(
                 self._context.document_uid,
@@ -265,42 +176,6 @@ class NativeModelPartRuntime:
                     prepared=prepared,
                 ),
                 verify=verify_part_ruled_surface,
-            )
-        if operation == "loft":
-            spec = prepare_part_loft(
-                self._context.document_uid,
-                values["definition"],
-            )
-            self._context.guard()
-            prepared = preflight_part_loft(self._context.document, spec)
-            return run_immediate_mutation(
-                self._context,
-                ticket=ticket,
-                transaction_name="Create Native Part Loft",
-                mutate=lambda document: create_part_loft(
-                    document,
-                    label=label,
-                    prepared=prepared,
-                ),
-                verify=verify_part_loft,
-            )
-        if operation == "sweep":
-            spec = prepare_part_sweep(
-                self._context.document_uid,
-                values["definition"],
-            )
-            self._context.guard()
-            prepared = preflight_part_sweep(self._context.document, spec)
-            return run_immediate_mutation(
-                self._context,
-                ticket=ticket,
-                transaction_name="Create Native Part Sweep",
-                mutate=lambda document: create_part_sweep(
-                    document,
-                    label=label,
-                    prepared=prepared,
-                ),
-                verify=verify_part_sweep,
             )
         if operation == "cross_sections":
             spec = prepare_part_cross_sections(

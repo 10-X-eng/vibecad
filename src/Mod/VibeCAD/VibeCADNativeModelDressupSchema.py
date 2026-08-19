@@ -195,7 +195,7 @@ def model_dressup_capability_definition() -> NativeCapabilityDefinition:
     )
     return NativeCapabilityDefinition(
         name="model.dressup",
-        description="Apply exact native finishing operations to explicit Body states.",
+        description="Finish Body faces and edges.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

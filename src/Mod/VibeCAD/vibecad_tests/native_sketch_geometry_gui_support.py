@@ -426,7 +426,7 @@ def arc_arguments(
         "center_mm": {"x": center[0], "y": center[1]},
         "radius_mm": radius,
         "start_angle_degrees": start_degrees,
-        "sweep_angle_degrees": sweep_degrees,
+        "end_angle_degrees": (start_degrees + sweep_degrees) % 360.0,
     }
 
 
@@ -639,7 +639,7 @@ def center_rectangle_arguments(
     }
 
 
-def oblong_arguments(
+def rounded_rectangle_arguments(
     sketch,
     *,
     geometry_count: int,
@@ -648,7 +648,7 @@ def oblong_arguments(
     radius: float,
 ) -> dict:
     return {
-        "operation": "create_oblong",
+        "operation": "create_rounded_rectangle",
         "sketch": {"object_name": sketch.Name},
         "expected_geometry_count": geometry_count,
         "expected_constraint_count": int(sketch.ConstraintCount),
@@ -657,7 +657,7 @@ def oblong_arguments(
             "x": opposite_corner[0],
             "y": opposite_corner[1],
         },
-        "radius_mm": radius,
+        "corner_radius_mm": radius,
     }
 
 

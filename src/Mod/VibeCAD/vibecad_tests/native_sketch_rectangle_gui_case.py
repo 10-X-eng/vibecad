@@ -55,16 +55,12 @@ def exercise_rectangle_case(
         [-18.0, 10.0, 0.0],
         [-18.0, 22.0, 0.0],
     ]
-    geometries = response["geometries"]
-    assert [item["index"] for item in geometries] == [31, 32, 33, 34]
-    assert [item["start_mm"] for item in geometries] == response["corners_mm"]
-    assert [item["end_mm"] for item in geometries] == [
-        *response["corners_mm"][1:],
-        response["corners_mm"][0],
-    ]
-    constraints = response["constraints"]
-    assert [item["index"] for item in constraints] == list(range(19, 27))
-    assert [item["type"] for item in constraints] == [
+    geometry_refs = response["geometry_refs"]
+    assert [item["geometry_index"] for item in geometry_refs] == [31, 32, 33, 34]
+    assert [item["kind"] for item in geometry_refs] == ["line"] * 4
+    constraint_refs = response["constraint_refs"]
+    assert [item["constraint_index"] for item in constraint_refs] == list(range(19, 27))
+    assert [item["type"] for item in constraint_refs] == [
         "Coincident",
         "Coincident",
         "Coincident",
@@ -73,24 +69,6 @@ def exercise_rectangle_case(
         "Horizontal",
         "Vertical",
         "Horizontal",
-    ]
-    assert [item["references"] for item in constraints[:4]] == [
-        [
-            {"slot": 1, "geometry_index": 31, "position": 2},
-            {"slot": 2, "geometry_index": 32, "position": 1},
-        ],
-        [
-            {"slot": 1, "geometry_index": 32, "position": 2},
-            {"slot": 2, "geometry_index": 33, "position": 1},
-        ],
-        [
-            {"slot": 1, "geometry_index": 33, "position": 2},
-            {"slot": 2, "geometry_index": 34, "position": 1},
-        ],
-        [
-            {"slot": 1, "geometry_index": 34, "position": 2},
-            {"slot": 2, "geometry_index": 31, "position": 1},
-        ],
     ]
     assert int(document.UndoCount) == undo_before + 1
     assert document.UndoNames[0] == "Create Native Sketch Rectangle"
@@ -103,8 +81,12 @@ def exercise_rectangle_case(
     assert (int(sketch.GeometryCount), int(sketch.ConstraintCount)) == (35, 27)
     assert edit_boundary(document, sketch, controller) == boundary
     return {
-        "geometries": geometries,
-        "constraints": constraints,
+        "geometries": [
+            serialize_sketch_geometry(sketch, index) for index in range(31, 35)
+        ],
+        "constraints": [
+            serialize_sketch_constraint(sketch, index) for index in range(19, 27)
+        ],
     }
 
 
@@ -158,16 +140,16 @@ def exercise_center_rectangle_case(
         [16.0, 34.0, 0.0],
         [4.0, 34.0, 0.0],
     ]
-    geometries = response["geometries"]
-    assert [item["index"] for item in geometries] == [35, 36, 37, 38]
-    center_geometry = response["center_geometry"]
-    assert center_geometry["index"] == 39
-    assert center_geometry["type_id"] == "Part::GeomPoint"
-    assert center_geometry["construction"] is True
-    assert center_geometry["position_mm"] == [10.0, 30.0, 0.0]
-    constraints = response["constraints"]
-    assert [item["index"] for item in constraints] == list(range(27, 36))
-    assert [item["type"] for item in constraints] == [
+    geometry_refs = response["geometry_refs"]
+    assert [item["geometry_index"] for item in geometry_refs] == [35, 36, 37, 38]
+    center_geometry_refs = response["construction_geometry_refs"]
+    assert center_geometry_refs[0]["geometry_index"] == 39
+    assert center_geometry_refs[0]["kind"] == "point"
+    assert center_geometry_refs[0]["construction"] is True
+    assert response["center_mm"] == [10.0, 30.0, 0.0]
+    constraint_refs = response["constraint_refs"]
+    assert [item["constraint_index"] for item in constraint_refs] == list(range(27, 36))
+    assert [item["type"] for item in constraint_refs] == [
         "Coincident",
         "Coincident",
         "Coincident",
@@ -177,11 +159,6 @@ def exercise_center_rectangle_case(
         "Horizontal",
         "Vertical",
         "Symmetric",
-    ]
-    assert constraints[-1]["references"] == [
-        {"slot": 1, "geometry_index": 37, "position": 1},
-        {"slot": 2, "geometry_index": 35, "position": 1},
-        {"slot": 3, "geometry_index": 39, "position": 1},
     ]
     assert int(document.UndoCount) == undo_before + 1
     assert document.UndoNames[0] == "Create Native Sketch Center Rectangle"
@@ -194,9 +171,13 @@ def exercise_center_rectangle_case(
     assert (int(sketch.GeometryCount), int(sketch.ConstraintCount)) == (40, 36)
     assert edit_boundary(document, sketch, controller) == boundary
     return {
-        "geometries": geometries,
-        "center_geometry": center_geometry,
-        "constraints": constraints,
+        "geometries": [
+            serialize_sketch_geometry(sketch, index) for index in range(35, 39)
+        ],
+        "center_geometry": serialize_sketch_geometry(sketch, 39),
+        "constraints": [
+            serialize_sketch_constraint(sketch, index) for index in range(27, 36)
+        ],
     }
 
 

@@ -16,7 +16,6 @@ from VibeCADNativeSketchGeometryValues import (
     sketch_point_2d,
     sketch_positive_length,
     sketch_start_angle_degrees,
-    sketch_sweep_angle_degrees,
 )
 from VibeCADNativeSketchLimits import (
     MAX_SKETCH_BATCH_CONSTRAINTS,
@@ -165,8 +164,22 @@ def _geometry_spec(value: Any, offset: int) -> SketchBatchGeometrySpec:
         "center_mm",
         "radius_mm",
         "start_angle_degrees",
-        "sweep_angle_degrees",
+        "end_angle_degrees",
     }:
+        start_angle = sketch_start_angle_degrees(
+            value["start_angle_degrees"],
+            f"batch {local_ref} Arc start_angle_degrees",
+        )
+        end_angle = sketch_start_angle_degrees(
+            value["end_angle_degrees"],
+            f"batch {local_ref} Arc end_angle_degrees",
+        )
+        sweep_angle = (end_angle - start_angle) % 360.0
+        if sweep_angle <= 1.0e-9:
+            raise NativeSketchError(
+                f"Sketch batch {local_ref} Arc start_angle_degrees and "
+                "end_angle_degrees must differ; use a Circle for 360 degrees."
+            )
         return SketchBatchGeometrySpec(
             local_ref,
             kind,
@@ -175,14 +188,8 @@ def _geometry_spec(value: Any, offset: int) -> SketchBatchGeometrySpec:
             radius_mm=sketch_positive_length(
                 value["radius_mm"], f"batch {local_ref} Arc radius_mm"
             ),
-            start_angle_degrees=sketch_start_angle_degrees(
-                value["start_angle_degrees"],
-                f"batch {local_ref} Arc start_angle_degrees",
-            ),
-            sweep_angle_degrees=sketch_sweep_angle_degrees(
-                value["sweep_angle_degrees"],
-                f"batch {local_ref} Arc sweep_angle_degrees",
-            ),
+            start_angle_degrees=start_angle,
+            sweep_angle_degrees=sweep_angle,
         )
     raise NativeSketchError(
         f"Sketch batch geometry {local_ref} has fields inconsistent with kind "

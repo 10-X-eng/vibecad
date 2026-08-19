@@ -225,36 +225,36 @@ def analyze_mesh_capability_definition() -> NativeCapabilityDefinition:
         variants=(
             _variant(
                 "create_gmsh",
-                "Create a Gmsh definition for one exact active shape; does not run Gmsh.",
+                "Create a Gmsh definition for one exact active shape.",
                 "FEM_MeshGmshFromShape",
                 _create(_GMSH_SETTINGS),
             ),
             _variant(
                 "create_netgen",
-                "Create a Netgen definition for one exact active face or solid; does not mesh it.",
+                "Create a Netgen definition for one exact active face or solid.",
                 "FEM_MeshNetgenFromShape",
                 _create(_NETGEN_SETTINGS),
             ),
             _variant(
                 "update_gmsh",
-                "Edit one exact Gmsh definition and clear generated data only when invalidated.",
+                "Edit one exact Gmsh definition and invalidate affected generated data.",
                 "VibeCAD_AnalyzeUpdateGmshMesh",
                 _update(_GMSH_SETTINGS),
             ),
             _variant(
                 "update_netgen",
-                "Edit one exact Netgen definition and clear generated data only when invalidated.",
+                "Edit one exact Netgen definition and invalidate affected generated data.",
                 "VibeCAD_AnalyzeUpdateNetgenMesh",
                 _update(_NETGEN_SETTINGS),
             ),
             _generation_variant(
                 "generate_gmsh",
-                "Run Gmsh off-thread from one frozen definition and commit only an exact verified artifact.",
+                "Generate a verified Gmsh artifact from one frozen definition.",
                 "VibeCAD_AnalyzeGenerateGmshMesh",
             ),
             _generation_variant(
                 "generate_netgen",
-                "Run Netgen off-thread from one frozen definition and commit only an exact verified artifact.",
+                "Generate a verified Netgen artifact from one frozen definition.",
                 "VibeCAD_AnalyzeGenerateNetgenMesh",
             ),
         ),

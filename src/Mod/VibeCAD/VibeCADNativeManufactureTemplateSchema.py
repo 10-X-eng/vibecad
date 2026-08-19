@@ -66,10 +66,7 @@ _SETUP_SHEET = {
             },
             "maxItems": 64,
             "uniqueItems": True,
-            "description": (
-                "Current SetupSheet operation-type names to include; use the "
-                "available values returned by a validation error."
-            ),
+            "description": "Current SetupSheet operation-type names to include.",
         },
     },
     "required": [
@@ -86,10 +83,7 @@ _SETUP_SHEET = {
 def manufacture_template_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MANUFACTURE_TEMPLATE_CAPABILITY_NAME,
-        description=(
-            "Serialize one exact CAM Job as a reusable version-1 template and "
-            "publish it only to a path chosen by the human."
-        ),
+        description="Export one exact CAM Job as a reusable template.",
         primary_classification="export",
         variants=(
             NativeCapabilityVariant(

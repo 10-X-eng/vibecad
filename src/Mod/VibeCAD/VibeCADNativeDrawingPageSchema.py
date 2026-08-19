@@ -68,11 +68,7 @@ _FIELD_UPDATE = _closed(
 def drawing_page_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=DRAWING_PAGE_CAPABILITY_NAME,
-        description=(
-            "Create or redraw one exact Drawing page, edit bounded SVG "
-            "template fields, or set its persistent update policy; custom "
-            "templates are chosen only by the human."
-        ),
+        description="Create, redraw, edit, or set the update policy of one Drawing page.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
@@ -154,7 +150,7 @@ def drawing_page_capability_definition() -> NativeCapabilityDefinition:
                         "page": _PAGE_TARGET,
                         "keep_updated": {
                             "type": "boolean",
-                            "description": "Explicit desired state; never a toggle.",
+                            "description": "Explicit desired update state.",
                         },
                     },
                     ("page", "keep_updated"),

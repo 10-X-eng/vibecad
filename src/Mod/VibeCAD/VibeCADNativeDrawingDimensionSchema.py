@@ -81,11 +81,7 @@ _LABEL = {
     "type": "string",
     "minLength": 1,
     "maxLength": 160,
-    "description": (
-        "Preferred document label. FreeCAD may replace or append a trailing "
-        "numeric suffix when the label must be unique; the result reports the "
-        "exact assigned label."
-    ),
+    "description": "Preferred document label; the result reports the assigned label.",
 }
 _LABEL_POSITION = _closed(
     {
@@ -324,10 +320,7 @@ def _radial_parameters() -> dict:
             "edge": _EDGE,
             "allow_approximate": {
                 "type": "boolean",
-                "description": (
-                    "Must be true to accept an ellipse or circle-like B-spline. "
-                    "Exact circles do not require approximation."
-                ),
+                "description": "Enable ellipse or circle-like B-spline approximation.",
             },
         },
         (*_COMMON_REQUIRED, "edge", "allow_approximate"),
@@ -484,10 +477,7 @@ def drawing_dimension_capability_definition() -> NativeCapabilityDefinition:
                                 "y_axis_true_length",
                                 "z_axis_true_length",
                             ],
-                            "description": (
-                                "The value mode observed before mutation. Native refuses "
-                                "the call if current axis classification differs."
-                            ),
+                            "description": "The value mode observed at turn start.",
                         },
                     },
                     (

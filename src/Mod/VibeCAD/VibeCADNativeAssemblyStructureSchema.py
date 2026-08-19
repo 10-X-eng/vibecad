@@ -311,10 +311,7 @@ def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="solve_assembly",
-                description=(
-                    "Run the native solver for the exact human-active Assembly "
-                    "and verify every bounded placement before commit."
-                ),
+                description="Solve the exact human-active Assembly and verify every placement.",
                 action_ids=frozenset({"Assembly_SolveAssembly"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="HumanActiveAssemblyAndExactSolverState",

@@ -89,6 +89,17 @@ def _axis_from_mapping(
     if not isinstance(value, Mapping) or "kind" not in value:
         raise NativeModelError("A Design Circular Pattern axis is invalid.")
     kind = str(value["kind"])
+    if kind == "global_axis":
+        if set(value) != {"kind", "axis"}:
+            raise NativeModelError("A global Circular Pattern axis is invalid.")
+        direction = {
+            "X": (1.0, 0.0, 0.0),
+            "Y": (0.0, 1.0, 0.0),
+            "Z": (0.0, 0.0, 1.0),
+        }.get(str(value["axis"]))
+        if direction is None:
+            raise NativeModelError("A global Circular Pattern axis is invalid.")
+        return DesignCircularAxisSpec(kind, (0.0, 0.0, 0.0), direction)
     if kind == "explicit":
         if set(value) != {"kind", "origin_mm", "direction"}:
             raise NativeModelError("An explicit Circular Pattern axis is invalid.")

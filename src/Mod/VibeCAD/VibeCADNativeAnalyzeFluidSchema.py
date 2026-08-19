@@ -113,7 +113,7 @@ _COMPONENTS = {
     },
     "minProperties": 1,
     "additionalProperties": False,
-    "description": "Only specified axes are constrained; omitted axes remain unspecified.",
+    "description": "Explicit constrained axes.",
 }
 _CONSTRAINTS = {
     "initial_flow_velocity": _closed({"components": _COMPONENTS}, ("components",)),

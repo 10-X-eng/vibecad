@@ -22,9 +22,10 @@ def test_leave_schema_is_closed_bounded_and_exact() -> None:
     }
 
     assert definition.primary_classification == "mutation"
-    assert definition.variants[0].action_ids == {"Sketcher_LeaveSketch"}
-    assert definition.variants[0].surface_ids == {"sketch.edit"}
-    assert definition.variants[0].transaction_behavior == "edit_control"
+    leave = next(item for item in definition.variants if item.operation == "leave")
+    assert leave.action_ids == {"Sketcher_LeaveSketch"}
+    assert leave.surface_ids == {"sketch.edit"}
+    assert leave.transaction_behavior == "edit_control"
     assert list(validator.iter_errors(valid)) == []
     for missing in tuple(key for key in valid if key != "operation"):
         invalid = dict(valid)

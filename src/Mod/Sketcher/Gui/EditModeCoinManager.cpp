@@ -151,10 +151,11 @@ struct GeometryScreenPreselector
 
     bool detectNearbyPointPreselection(
         const SbVec2s& cursorPos,
-        SketcherGui::EditModeCoinManager::PreselectionResult& result
+        SketcherGui::EditModeCoinManager::PreselectionResult& result,
+        float& bestDistanceSquared
     )
     {
-        float bestDistanceSquared = std::numeric_limits<float>::max();
+        bestDistanceSquared = std::numeric_limits<float>::max();
         bool found = false;
 
         for (int layerIndex = 0; layerIndex < geometryLayerParameters.getCoinLayerCount();
@@ -199,10 +200,11 @@ struct GeometryScreenPreselector
 
     bool detectNearbyCurvePreselection(
         const SbVec2s& cursorPos,
-        SketcherGui::EditModeCoinManager::PreselectionResult& result
+        SketcherGui::EditModeCoinManager::PreselectionResult& result,
+        float& bestDistanceSquared
     )
     {
-        float bestDistanceSquared = std::numeric_limits<float>::max();
+        bestDistanceSquared = std::numeric_limits<float>::max();
         bool found = false;
         SbVec2f cursorPoint(static_cast<float>(cursorPos[0]), static_cast<float>(cursorPos[1]));
 
@@ -250,19 +252,25 @@ struct GeometryScreenPreselector
 
                     float bestCurveDistanceSquared = std::numeric_limits<float>::max();
                     int bestSegmentStart = -1;
+                    SbVec2f segmentStart = projectToScreen(curveValues[vertexOffset]);
+                    SbVec2f bestSegmentStartScreen;
+                    SbVec2f bestSegmentEndScreen;
                     for (int segmentIndex = 0; segmentIndex < vertexCount - 1; ++segmentIndex) {
                         int currentVertexIndex = vertexOffset + segmentIndex;
-                        SbVec2f segmentStart = projectToScreen(curveValues[currentVertexIndex]);
                         SbVec2f segmentEnd = projectToScreen(curveValues[currentVertexIndex + 1]);
                         float distanceSquared
                             = distanceSquaredToSegment(cursorPoint, segmentStart, segmentEnd);
                         if (distanceSquared > curveHitRadiusSquared
                             || distanceSquared >= bestCurveDistanceSquared) {
+                            segmentStart = segmentEnd;
                             continue;
                         }
 
                         bestCurveDistanceSquared = distanceSquared;
                         bestSegmentStart = currentVertexIndex;
+                        bestSegmentStartScreen = segmentStart;
+                        bestSegmentEndScreen = segmentEnd;
+                        segmentStart = segmentEnd;
                     }
 
                     vertexOffset += vertexCount;
@@ -273,16 +281,14 @@ struct GeometryScreenPreselector
                     int geoIndex = coinMapping.getCurveGeoId(curveIndex, layerIndex, subLayerIndex);
                     const SbVec3f& startPoint = curveValues[bestSegmentStart];
                     const SbVec3f& endPoint = curveValues[bestSegmentStart + 1];
-                    SbVec2f startScreen = projectToScreen(startPoint);
-                    SbVec2f endScreen = projectToScreen(endPoint);
 
-                    float segmentX = endScreen[0] - startScreen[0];
-                    float segmentY = endScreen[1] - startScreen[1];
+                    float segmentX = bestSegmentEndScreen[0] - bestSegmentStartScreen[0];
+                    float segmentY = bestSegmentEndScreen[1] - bestSegmentStartScreen[1];
                     float segmentLengthSquared = segmentX * segmentX + segmentY * segmentY;
                     float interpolation = 0.0F;
                     if (segmentLengthSquared > std::numeric_limits<float>::epsilon()) {
-                        interpolation = ((cursorPoint[0] - startScreen[0]) * segmentX
-                                         + (cursorPoint[1] - startScreen[1]) * segmentY)
+                        interpolation = ((cursorPoint[0] - bestSegmentStartScreen[0]) * segmentX
+                                         + (cursorPoint[1] - bestSegmentStartScreen[1]) * segmentY)
                             / segmentLengthSquared;
                         interpolation = std::clamp(interpolation, 0.0F, 1.0F);
                     }
@@ -510,6 +516,10 @@ void EditModeCoinManager::ParameterObserver::initParameters()
          [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
              updateWidth(drawingParameters.ExternalDefiningWidth, param, 2);
          }},
+        {"SelectionWidthIncrease",
+         [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
+             updateWidth(drawingParameters.SelectionWidthIncrease, param, 0);
+         }},
         {"EdgePattern",
          [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
              updatePattern(drawingParameters.CurvePattern, param, 0b1111111111111111);
@@ -601,6 +611,10 @@ void EditModeCoinManager::ParameterObserver::initParameters()
         {"SelectionColor",
          [this, drawingParameters = Client.drawingParameters](const std::string& param) {
              updateColor(drawingParameters.SelectColor, param);
+         }},
+        {"PreselectionSelectedColor",
+         [this, drawingParameters = Client.drawingParameters](const std::string& param) {
+             updateColor(drawingParameters.PreselectSelectedColor, param);
          }},
         {"CursorTextColor",
          [this, drawingParameters = Client.drawingParameters](const std::string& param) {
@@ -1093,15 +1107,6 @@ EditModeCoinManager::PreselectionResult EditModeCoinManager::detectConstraintPre
 )
 {
     PreselectionResult result;
-    Base::Vector3d pickedPoint;
-
-    result.ConstrIndices
-        = pEditModeConstraintCoinManager->detectPreselectionConstr(cursorPos, &pickedPoint);
-    if (!result.ConstrIndices.empty()) {
-        result.Kind = PreselectionResult::HitKind::Constraint;
-        result.setPickedPoint(pickedPoint);
-        return result;
-    }
 
     for (int i = 0; i < points.getLength(); ++i) {
         SoPickedPoint* point = points[i];
@@ -1111,6 +1116,33 @@ EditModeCoinManager::PreselectionResult EditModeCoinManager::detectConstraintPre
 
         result.ConstrIndices
             = pEditModeConstraintCoinManager->detectPreselectionConstr(point, cursorPos);
+        if (result.ConstrIndices.empty()) {
+            continue;
+        }
+
+        result.Kind = PreselectionResult::HitKind::Constraint;
+        result.setPickedPoint(point);
+        return result;
+    }
+
+    return result;
+}
+
+EditModeCoinManager::PreselectionResult EditModeCoinManager::detectConstraintIconPreselection(
+    const SoPickedPointList& points,
+    const SbVec2s& cursorPos
+)
+{
+    PreselectionResult result;
+
+    for (int i = 0; i < points.getLength(); ++i) {
+        SoPickedPoint* point = points[i];
+        if (!point) {
+            continue;
+        }
+
+        result.ConstrIndices
+            = pEditModeConstraintCoinManager->detectPreselectionConstrIcon(point, cursorPos);
         if (result.ConstrIndices.empty()) {
             continue;
         }
@@ -1263,9 +1295,11 @@ bool EditModeCoinManager::detectGeometryPreselection(
 )
 {
     const GeoList geolist = ViewProviderSketchCoinAttorney::getGeoList(viewProvider);
-    auto projectToScreen = [this](const SbVec3f& point) {
-        return ViewProviderSketchCoinAttorney::getScreenCoordinates(viewProvider, point);
-    };
+    auto projectToScreen
+        = ViewProviderSketchCoinAttorney::getScreenCoordinateProjector(viewProvider);
+    if (!projectToScreen) {
+        return false;
+    }
     Base::Placement sketchPlacement = ViewProviderSketchCoinAttorney::getEditingPlacement(viewProvider);
 
     GeometryScreenPreselector screenPreselector {
@@ -1278,19 +1312,36 @@ bool EditModeCoinManager::detectGeometryPreselection(
         sketchPlacement
     };
 
-    if (detectPointPreselection(points, result)) {
-        return true;
-    }
-
     if (screenPreselector.detectHoveredPointPreselection(hoveredPointIndex, cursorPos, result)) {
         return true;
     }
 
-    if (screenPreselector.detectNearbyPointPreselection(cursorPos, result)) {
+    PreselectionResult pointResult;
+    PreselectionResult curveResult;
+    float pointDistanceSquared = std::numeric_limits<float>::max();
+    float curveDistanceSquared = std::numeric_limits<float>::max();
+    bool pointFound = screenPreselector.detectNearbyPointPreselection(
+        cursorPos,
+        pointResult,
+        pointDistanceSquared
+    );
+    bool curveFound = screenPreselector.detectNearbyCurvePreselection(
+        cursorPos,
+        curveResult,
+        curveDistanceSquared
+    );
+
+    if (pointFound && (!curveFound || pointDistanceSquared <= curveDistanceSquared)) {
+        result = pointResult;
         return true;
     }
 
-    if (screenPreselector.detectNearbyCurvePreselection(cursorPos, result)) {
+    if (curveFound) {
+        result = curveResult;
+        return true;
+    }
+
+    if (detectPointPreselection(points, result)) {
         return true;
     }
 
@@ -1371,12 +1422,17 @@ EditModeCoinManager::PreselectionResult EditModeCoinManager::detectPreselection(
 {
     PreselectionResult result;
 
-    result = detectConstraintPreselection(points, cursorPos);
+    result = detectConstraintIconPreselection(points, cursorPos);
     if (result.hasWinner()) {
         return result;
     }
 
     if (detectGeometryPreselection(points, cursorPos, hoveredPointIndex, result)) {
+        return result;
+    }
+
+    result = detectConstraintPreselection(points, cursorPos);
+    if (result.hasWinner()) {
         return result;
     }
 
@@ -1875,6 +1931,26 @@ void EditModeCoinManager::updateInventorWidths()
         * drawingParameters.pixelScalingFactor;
     editModeScenegraphNodes.CurvesExternalDefiningDrawStyle->lineWidth
         = drawingParameters.ExternalDefiningWidth * drawingParameters.pixelScalingFactor;
+
+    for (int t = 0; t < geometryLayerParameters.getSubLayerCount(); ++t) {
+        int baseWidth = drawingParameters.CurveWidth;
+        if (geometryLayerParameters.isConstructionSubLayer(t)) {
+            baseWidth = drawingParameters.ConstructionWidth;
+        }
+        else if (geometryLayerParameters.isInternalSubLayer(t)) {
+            baseWidth = drawingParameters.InternalWidth;
+        }
+        else if (geometryLayerParameters.isExternalSubLayer(t)) {
+            baseWidth = drawingParameters.ExternalWidth;
+        }
+        else if (geometryLayerParameters.isExternalDefiningSubLayer(t)) {
+            baseWidth = drawingParameters.ExternalDefiningWidth;
+        }
+
+        editModeScenegraphNodes.SelectedCurvesDrawStyle[t]->lineWidth
+            = (baseWidth + std::max(0, drawingParameters.SelectionWidthIncrease))
+            * drawingParameters.pixelScalingFactor;
+    }
 }
 
 void EditModeCoinManager::updateInventorPatterns()
@@ -1886,6 +1962,23 @@ void EditModeCoinManager::updateInventorPatterns()
     editModeScenegraphNodes.CurvesExternalDrawStyle->linePattern = drawingParameters.ExternalPattern;
     editModeScenegraphNodes.CurvesExternalDefiningDrawStyle->linePattern
         = drawingParameters.ExternalDefiningPattern;
+
+    for (int t = 0; t < geometryLayerParameters.getSubLayerCount(); ++t) {
+        unsigned int pattern = drawingParameters.CurvePattern;
+        if (geometryLayerParameters.isConstructionSubLayer(t)) {
+            pattern = drawingParameters.ConstructionPattern;
+        }
+        else if (geometryLayerParameters.isInternalSubLayer(t)) {
+            pattern = drawingParameters.InternalPattern;
+        }
+        else if (geometryLayerParameters.isExternalSubLayer(t)) {
+            pattern = drawingParameters.ExternalPattern;
+        }
+        else if (geometryLayerParameters.isExternalDefiningSubLayer(t)) {
+            pattern = drawingParameters.ExternalDefiningPattern;
+        }
+        editModeScenegraphNodes.SelectedCurvesDrawStyle[t]->linePattern = pattern;
+    }
 }
 
 void EditModeCoinManager::updateInventorColors()
@@ -1900,4 +1993,9 @@ void EditModeCoinManager::updateInventorColors()
 SoSeparator* EditModeCoinManager::getRootEditNode()
 {
     return editModeScenegraphNodes.EditRoot;
+}
+
+SoGroup* EditModeCoinManager::getConstraintRootNode()
+{
+    return editModeScenegraphNodes.constrAnnotation;
 }

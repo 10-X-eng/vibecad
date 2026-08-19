@@ -2023,13 +2023,11 @@ class PartDesignDomainAPI:
         refine: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Create a loft through 2-64 ordered sections.
+        """Loft through 2-64 ordered sections with changing cross-sections.
 
-        Use this only when the intended cross-section genuinely changes between
-        sections. For a constant cross-section, use api.extrude.
-        Use api.sketch sections for planar profiles. operation selects add_material,
+        api.sketch defines planar profiles. operation selects add_material,
         remove_material, new_solid, or new_surface; remove_material requires base.
-        Direct wire sections are valid only for standalone nonplanar topology.
+        Direct wire sections define standalone nonplanar topology.
         """
 
         if not isinstance(sections, (list, tuple)) or not 2 <= len(sections) <= 64:

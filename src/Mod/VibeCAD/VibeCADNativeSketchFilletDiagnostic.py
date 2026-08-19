@@ -233,6 +233,13 @@ def parse_sketch_fillet_diagnostic(
     radius_mm = float(radius)
     if not math.isfinite(radius_mm) or radius_mm <= 0.0:
         raise NativeSketchError(f"{LABEL} feasibility returned a non-positive radius.")
+    if not math.isclose(
+        radius_mm,
+        spec.requested_size_mm,
+        rel_tol=1.0e-10,
+        abs_tol=1.0e-10,
+    ):
+        raise NativeSketchError(f"{LABEL} feasibility returned a different radius.")
     trimmed = result["trimmed"]
     construction = result["construction"]
     if type(trimmed) is not bool or type(construction) is not bool:

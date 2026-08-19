@@ -50,25 +50,13 @@ def object_reference_schema() -> dict[str, Any]:
     )
 
 
-def design_result_schema() -> dict[str, Any]:
+def global_axis_schema() -> dict[str, Any]:
     return parameters_schema(
         {
-            "mode": {
-                "type": "string",
-                "enum": ["new_body", "join", "cut", "intersect"],
-            },
-            "targets": {
-                "type": "array",
-                "items": object_reference_schema(),
-                "minItems": 0,
-                "maxItems": 16,
-                "uniqueItems": True,
-            },
-            "destination_component": {
-                "oneOf": [object_reference_schema(), {"type": "null"}],
-            },
+            "kind": {"type": "string", "const": "global_axis"},
+            "axis": {"type": "string", "enum": ["X", "Y", "Z"]},
         },
-        ("mode", "targets", "destination_component"),
+        ("kind", "axis"),
     )
 
 
@@ -81,9 +69,12 @@ def vector_schema(*, minimum: float, maximum: float) -> dict[str, Any]:
 
 
 def placement_schema() -> dict[str, Any]:
+    axis = vector_schema(minimum=-1.0, maximum=1.0)
+    axis["description"] = "Non-zero rotation axis."
+    axis["examples"] = [{"x": 0.0, "y": 0.0, "z": 1.0}]
     rotation = parameters_schema(
         {
-            "axis": vector_schema(minimum=-1.0, maximum=1.0),
+            "axis": axis,
             "angle_degrees": {
                 "type": "number",
                 "minimum": -360.0,
@@ -111,6 +102,7 @@ def design_link_schema(
     minimum: int,
     maximum: int,
 ) -> dict[str, Any]:
+    required = ("object_name", field) if minimum else ("object_name",)
     return parameters_schema(
         {
             "object_name": OBJECT_NAME_SCHEMA,
@@ -126,5 +118,5 @@ def design_link_schema(
                 "uniqueItems": True,
             },
         },
-        ("object_name", field),
+        required,
     )

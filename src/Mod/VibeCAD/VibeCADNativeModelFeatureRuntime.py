@@ -75,6 +75,57 @@ class NativeModelFeatureRuntime:
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
 
+    def profile_destination_component(
+        self,
+        profile: Mapping[str, Any],
+    ) -> dict[str, str] | None:
+        """Return the Component already owning a reusable profile, if any."""
+        object_name = str(profile.get("object_name") or "").strip()
+        source = self._context.document.getObject(object_name) if object_name else None
+        current = source
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if str(getattr(current, "TypeId", "")) == "PartDesign::Component":
+                return {"object_name": str(current.Name)}
+            parent_getter = getattr(current, "getParentGeoFeatureGroup", None)
+            current = parent_getter() if callable(parent_getter) else None
+        return None
+
+    def profile_global_axes(
+        self,
+        profile: Mapping[str, Any],
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """Return the reusable Sketch's horizontal and vertical global directions."""
+        object_name = str(profile.get("object_name") or "").strip()
+        sketch = self._context.document.getObject(object_name) if object_name else None
+        if sketch is None:
+            raise NativeModelError(f"Sketch '{object_name}' does not exist.")
+        derived = getattr(sketch, "isDerivedFrom", None)
+        if not callable(derived) or not derived("Sketcher::SketchObject"):
+            raise NativeModelError(f"'{object_name}' is not a Sketch.")
+        placement_getter = getattr(sketch, "getGlobalPlacement", None)
+        placement = placement_getter() if callable(placement_getter) else None
+        rotation = getattr(placement, "Rotation", None)
+        matrix_getter = getattr(rotation, "toMatrix", None)
+        if not callable(matrix_getter):
+            raise NativeModelError(f"Sketch '{object_name}' has no global placement.")
+        matrix = matrix_getter()
+        try:
+            horizontal = tuple(
+                float(getattr(matrix, name))
+                for name in ("A11", "A21", "A31")
+            )
+            vertical = tuple(
+                float(getattr(matrix, name))
+                for name in ("A12", "A22", "A32")
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise NativeModelError(
+                f"Sketch '{object_name}' has an invalid global placement."
+            ) from exc
+        return horizontal, vertical
+
     def mutate_feature(
         self,
         arguments: Mapping[str, Any],

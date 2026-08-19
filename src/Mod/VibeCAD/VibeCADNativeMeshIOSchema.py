@@ -118,10 +118,7 @@ _SOLID = {
 def mesh_io_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MESH_IO_CAPABILITY_NAME,
-        description=(
-            "Create parametric regular meshes or ask the human for one mesh file "
-            "and load it away from the UI thread. AI never supplies a path."
-        ),
+        description="Create regular meshes or load one human-selected mesh file.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

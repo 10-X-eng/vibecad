@@ -80,7 +80,7 @@ def standard_fastener_definition_schema() -> dict[str, Any]:
 def model_fastener_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="model.fastener",
-        description="Create or modify standard fasteners.",
+        description="Create or edit fasteners.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

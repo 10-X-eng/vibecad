@@ -340,7 +340,9 @@ def _run() -> None:
             active_surface_id=lambda: "model",
             edit_or_task_active=lambda: False,
         )
-        structure, sketch, _validation = model_structure_capability_definitions()
+        structure, sketch, _open_sketch, _validation = (
+            model_structure_capability_definitions()
+        )
         definitions = (
             model_feature_capability_definition(),
             structure,
@@ -482,9 +484,10 @@ def _run() -> None:
         sketch_response = native_call(
             "model.sketch",
             {
-                "operation": "new_sketch",
+                "operation": "create_on_base_plane",
                 "label": "Circular Axis Sketch",
-                "support": {"kind": "base_plane", "plane": "XY", "offset_mm": 0.0},
+                "plane": "XY",
+                "offset_mm": 0.0,
             },
         )
         sketch_name = sketch_response["sketch"]["object_name"]

@@ -69,6 +69,21 @@ def _element_ref() -> dict[str, Any]:
     }
 
 
+def _targets(
+    item: dict[str, Any],
+    *,
+    minimum: int,
+    maximum: int,
+) -> dict[str, Any]:
+    return {
+        "type": "array",
+        "items": item,
+        "minItems": minimum,
+        "maxItems": maximum,
+        "uniqueItems": True,
+    }
+
+
 def _drawing_projected_view_ref() -> dict[str, Any]:
     return {
         "type": "object",
@@ -108,12 +123,12 @@ def _variant(
 def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
     state = NativeCapabilityDefinition(
         name="state.read",
-        description="Read concise live state owned by the current Native ribbon.",
+        description="Read document state.",
         primary_classification="read",
         variants=(
             _variant(
                 "active",
-                "Read the active ribbon domain, revision, and bounded working set.",
+                "Read the current CAD work, revision, and bounded working set.",
                 ("VibeCAD_NativeReadState",),
             ),
             _variant(
@@ -125,7 +140,7 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
     )
     view = NativeCapabilityDefinition(
         name="view.control",
-        description="Control or capture the active view without changing model structure.",
+        description="Control or capture the active view.",
         primary_classification="view",
         variants=(
             _variant(
@@ -152,10 +167,7 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
             ),
             _variant(
                 "set_object_visibility",
-                (
-                    "Show or hide exact scene-bearing model objects. Use state.read first; "
-                    "this does not alter geometry or History ownership."
-                ),
+                "Set exact model-object visibility.",
                 ("VibeCAD_NativeSetObjectVisibility",),
                 parameters=_parameters(
                     {
@@ -204,14 +216,14 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
             ),
             _variant(
                 "capture_active_sketch",
-                "Capture a bounded image framed around the human-opened sketch.",
+                "Capture a bounded image framed around the active Sketch.",
                 ("VibeCAD_NativeCaptureView",),
             ),
         ),
     )
     inspect = NativeCapabilityDefinition(
         name="inspect.query",
-        description="Measure or inspect exact live geometry with explicit units.",
+        description="Inspect geometry.",
         primary_classification="read",
         variants=(
             _variant(
@@ -219,8 +231,8 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                 "Measure the shortest distance between two exact elements in mm.",
                 ("Std_Measure",),
                 parameters=_parameters(
-                    {"first": _element_ref(), "second": _element_ref()},
-                    ("first", "second"),
+                    {"targets": _targets(_element_ref(), minimum=2, maximum=2)},
+                    ("targets",),
                 ),
                 exact_target_type="SubelementPair",
             ),
@@ -229,8 +241,8 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                 "Measure the angle between exact edge tangents or face normals in degrees.",
                 ("Std_Measure",),
                 parameters=_parameters(
-                    {"first": _element_ref(), "second": _element_ref()},
-                    ("first", "second"),
+                    {"targets": _targets(_element_ref(), minimum=2, maximum=2)},
+                    ("targets",),
                 ),
                 exact_target_type="EdgeOrFacePair",
             ),
@@ -238,47 +250,51 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                 "radius",
                 "Measure one exact circular edge or cylindrical face radius in mm.",
                 ("Std_Measure",),
-                parameters=_parameters({"target": _element_ref()}, ("target",)),
+                parameters=_parameters(
+                    {"targets": _targets(_element_ref(), minimum=1, maximum=1)},
+                    ("targets",),
+                ),
                 exact_target_type="EdgeOrFace",
             ),
             _variant(
                 "mass_properties",
-                "Read bounded volume, area, density, mass, and centers for exact objects.",
+                "Read volume, area, mass, and centers.",
                 ("Std_MassProperties",),
                 parameters=_parameters(
                     {
-                        "targets": {
-                            "type": "array",
-                            "items": _object_ref(),
-                            "minItems": 1,
-                            "maxItems": 16,
-                            "uniqueItems": True,
-                        }
+                        "targets": _targets(
+                            _object_ref(),
+                            minimum=1,
+                            maximum=16,
+                        )
                     },
                     ("targets",),
                 ),
                 exact_target_type="PartFeature[]",
             ),
             _variant(
-                "visual_result",
-                "Read bounded statistics from one exact visual-inspection result.",
+                "inspection_result",
+                "Read statistics from one Inspection result.",
                 ("Inspection_VisualInspection",),
-                parameters=_parameters({"target": _object_ref()}, ("target",)),
+                parameters=_parameters(
+                    {"targets": _targets(_object_ref(), minimum=1, maximum=1)},
+                    ("targets",),
+                ),
                 exact_target_type="Inspection::Feature",
             ),
             _variant(
                 "element",
                 "Read concise geometry for one exact subelement.",
                 ("Inspection_InspectElement",),
-                parameters=_parameters({"target": _element_ref()}, ("target",)),
+                parameters=_parameters(
+                    {"targets": _targets(_element_ref(), minimum=1, maximum=1)},
+                    ("targets",),
+                ),
                 exact_target_type="Subelement",
             ),
             _variant(
                 "drawing_projected_geometry",
-                (
-                    "Read up to 48 exact Edge0, Vertex0, or Face0 elements from one "
-                    "Drawing view. Use an empty prior hash only at offset zero."
-                ),
+                "Read a bounded page of exact projected Drawing elements.",
                 ("VibeCAD_DrawingInspectProjectedGeometry",),
                 parameters=_parameters(
                     {
@@ -315,19 +331,22 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                 "validity",
                 "Check topology counts and validity for one exact Part object.",
                 ("Part_CheckGeometry",),
-                parameters=_parameters({"target": _object_ref()}, ("target",)),
+                parameters=_parameters(
+                    {"targets": _targets(_object_ref(), minimum=1, maximum=1)},
+                    ("targets",),
+                ),
                 exact_target_type="Part::Feature",
             ),
         ),
     )
     save = NativeCapabilityDefinition(
         name="document.save",
-        description="Save the exact active document to its existing file path.",
+        description="Save the document.",
         primary_classification="export",
         variants=(
             _variant(
                 "existing_path",
-                "Save only after the human has chosen a file path with Save As.",
+                "Save at the document's existing human-chosen path.",
                 ("Std_Save",),
                 transaction_behavior="none",
                 surface_ids=DOCUMENT_SAVE_SURFACES,
@@ -336,12 +355,12 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
     )
     undo = NativeCapabilityDefinition(
         name="document.undo",
-        description="Undo only the latest exact operation from this assistant run.",
+        description="Undo the latest unchanged assistant operation.",
         primary_classification="mutation",
         variants=(
             _variant(
                 "assistant_local",
-                "Undo the latest assistant-owned history entry; never undo human history.",
+                "Undo the latest unchanged assistant-owned history entry.",
                 ("Std_Undo",),
                 transaction_behavior="history",
             ),

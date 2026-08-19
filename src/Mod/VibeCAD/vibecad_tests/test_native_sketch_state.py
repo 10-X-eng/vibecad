@@ -303,6 +303,45 @@ def test_exact_sketch_state_reads_geometry_constraints_and_context() -> None:
     assert result["solver"]["redundant_constraints"] == [2]
 
 
+def test_profile_plane_reports_effective_global_sketch_axes() -> None:
+    document = _Document()
+    sketch, _support = _sketch(document)
+    half_sqrt_two = 2.0 ** -0.5
+    sketch.getGlobalPlacement = lambda: SimpleNamespace(
+        Base=_vector(0, 0, 0),
+        Rotation=SimpleNamespace(
+            Q=(half_sqrt_two, 0.0, 0.0, half_sqrt_two)
+        ),
+    )
+
+    result = serialize_sketch_state(sketch)
+
+    assert result["profile"]["support_plane"] == {
+        "space": "global",
+        "origin_mm": [0.0, 0.0, 0.0],
+        "x_direction": [1.0, 0.0, 0.0],
+        "y_direction": [0.0, 0.0, 1.0],
+        "normal": [0.0, -1.0, 0.0],
+    }
+
+
+def test_sketch_state_preserves_axisymmetric_profile_intent() -> None:
+    document = _Document()
+    sketch, _support = _sketch(document)
+    sketch.VibeCADProfileIntent = {
+        "kind": "axisymmetric",
+        "global_axis": "Z",
+        "sketch_axis": "V_Axis",
+        "axial": "y_mm",
+        "radius": "x_mm >= 0",
+        "axis": "x_mm = 0",
+    }
+
+    result = serialize_sketch_state(sketch)
+
+    assert result["profile_intent"] == sketch.VibeCADProfileIntent
+
+
 def test_large_sketch_state_truncates_explicitly_below_snapshot_limit(
     monkeypatch,
 ) -> None:
@@ -370,6 +409,98 @@ def test_setup_snapshot_keeps_non_active_sketches_as_summaries(monkeypatch) -> N
     assert result["sketches"][0]["supports"][0]["object_name"] == "Support"
     assert "geometry" not in result["sketches"][0]
     assert "constraints" not in result["sketches"][0]
+
+
+def test_edit_snapshot_translates_human_selection_to_exact_tool_targets(
+    monkeypatch,
+) -> None:
+    document = _Document()
+    sketch, _support = _sketch(document)
+    sketch.getGeoVertexIndex = lambda vertex: {
+        0: (0, 1),
+        1: (0, 2),
+        2: (1, 2),
+    }.get(vertex, (-2000, 0))
+    monkeypatch.setattr(
+        sketch_snapshot_module,
+        "_active_edit_sketch",
+        lambda _document: sketch,
+    )
+    selection = {
+        "document_uid": document.Uid,
+        "selected_count": 1,
+        "items": [
+            {
+                "object": {
+                    "document_uid": document.Uid,
+                    "object_name": sketch.Name,
+                    "type_id": sketch.TypeId,
+                },
+                "subelements": [
+                    ";g1000.eEdge1",
+                    ";g1001v2.vVertex3",
+                    ";e2000.ExternalEdge1",
+                    ";H_Axis.H_Axis",
+                    ";V_Axis.V_Axis",
+                    ";RootPoint.RootPoint",
+                    "Constraint2",
+                    "Constraint2",
+                ],
+            }
+        ],
+    }
+
+    result = sketch_snapshot_module.build_sketch_snapshot(
+        document,
+        "sketch.edit",
+        selection=selection,
+    )
+
+    assert result["user_selection"] == {
+        "meaning": "Exact turn-start targets for 'this', 'these', or 'selected'.",
+        "elements": [
+            {"geometry_index": 0, "position": "whole"},
+            {"geometry_index": 1, "position": "end"},
+            {"geometry_index": -3, "position": "whole"},
+            {"geometry_index": -1, "position": "whole"},
+            {"geometry_index": -2, "position": "whole"},
+            {"geometry_index": -1, "position": "start"},
+        ],
+        "constraints": [{"constraint_index": 1}],
+    }
+
+
+def test_edit_snapshot_omits_semantic_selection_for_another_object(
+    monkeypatch,
+) -> None:
+    document = _Document()
+    sketch, support = _sketch(document)
+    monkeypatch.setattr(
+        sketch_snapshot_module,
+        "_active_edit_sketch",
+        lambda _document: sketch,
+    )
+
+    result = sketch_snapshot_module.build_sketch_snapshot(
+        document,
+        "sketch.edit",
+        selection={
+            "document_uid": document.Uid,
+            "selected_count": 1,
+            "items": [
+                {
+                    "object": {
+                        "document_uid": document.Uid,
+                        "object_name": support.Name,
+                        "type_id": support.TypeId,
+                    },
+                    "subelements": ["Edge1"],
+                }
+            ],
+        },
+    )
+
+    assert "user_selection" not in result
 
 
 def test_edit_snapshot_exposes_bounded_carbon_copy_source_summaries(

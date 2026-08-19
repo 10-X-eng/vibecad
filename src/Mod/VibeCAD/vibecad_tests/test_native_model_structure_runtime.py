@@ -203,30 +203,33 @@ def test_separate_preflights_exact_targets_before_routing_mutation(monkeypatch) 
     assert draft.prepared is prepared
 
 
-def test_separate_requires_explicit_nullable_destination_before_preflight(
+def test_separate_defaults_omitted_destination_to_design_root(
     monkeypatch,
 ) -> None:
     runtime, state, document = _runtime()
+    observed = {}
     monkeypatch.setattr(
         runtime_module,
         "preflight_design_separate",
-        lambda *_args: pytest.fail("preflight started"),
+        lambda _document, spec: observed.setdefault("spec", spec) or object(),
     )
     monkeypatch.setattr(
         runtime_module,
         "run_immediate_mutation",
-        lambda *_args, **_kwargs: pytest.fail("mutation started"),
+        lambda *_args, **_kwargs: {"routed": True},
     )
 
-    with pytest.raises(NativeArgumentError, match="do not match"):
-        runtime.mutate_structure(
-            {
-                "operation": "separate",
-                "label": "Incomplete Separate",
-                "source": {"object_name": "SourceBody"},
-            },
-            ticket=state.begin_call(document.Uid, "model.structure"),
-        )
+    result = runtime.mutate_structure(
+        {
+            "operation": "separate",
+            "label": "Root Separate",
+            "source": {"object_name": "SourceBody"},
+        },
+        ticket=state.begin_call(document.Uid, "model.structure"),
+    )
+
+    assert result == {"routed": True}
+    assert observed["spec"].destination_component_ref is None
 
 
 def test_sketch_readiness_is_read_only_and_exact(monkeypatch) -> None:
@@ -250,3 +253,57 @@ def test_sketch_readiness_is_read_only_and_exact(monkeypatch) -> None:
         }
     ) == {"valid": True}
     assert observed == [(document, "Sketch")]
+
+
+def test_revolution_sketch_returns_axial_and_radial_profile_coordinates(
+    monkeypatch,
+) -> None:
+    runtime, state, document = _runtime()
+    captured = {}
+
+    def run_immediate(_context, **kwargs):
+        captured.update(kwargs)
+        return {
+            "sketch": {"object_name": "TurnedProfile"},
+            "support": {
+                "kind": "base_plane",
+                "plane": "XZ",
+                "offset_mm": 0.0,
+                "reverse_normal": True,
+            },
+        }
+
+    monkeypatch.setattr(
+        runtime_module,
+        "run_immediate_mutation",
+        run_immediate,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "create_reusable_sketch",
+        lambda _document, **kwargs: captured.update(create_kwargs=kwargs),
+    )
+
+    result = runtime.create_sketch(
+        {
+            "operation": "create_revolution",
+            "label": "Turned Profile",
+            "axis": "Z",
+        },
+        ticket=state.begin_call(document.Uid, "model.revolution_sketch"),
+    )
+
+    assert result["profile_coordinates"] == {
+        "axial": "y_mm",
+        "radius": "x_mm >= 0",
+        "axis": "x_mm = 0",
+    }
+    captured["mutate"](document)
+    assert captured["create_kwargs"]["profile_intent"] == {
+        "kind": "axisymmetric",
+        "global_axis": "Z",
+        "sketch_axis": "V_Axis",
+        "axial": "y_mm",
+        "radius": "x_mm >= 0",
+        "axis": "x_mm = 0",
+    }

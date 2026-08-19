@@ -16,6 +16,8 @@ from VibeCADNativeModelStructureRuntime import NativeModelStructureRuntime
 MODEL_STRUCTURE_CAPABILITY_NAMES = (
     "model.structure",
     "model.sketch",
+    "model.revolution_sketch",
+    "sketch.open",
     "sketch.validate",
 )
 
@@ -48,6 +50,23 @@ def _sketch(call: Any) -> Mapping[str, Any]:
     )
 
 
+def _revolution_sketch(call: Any) -> Mapping[str, Any]:
+    arguments = dict(_arguments(call))
+    arguments["axis"] = str(arguments["axis"]["axis"])
+    arguments["operation"] = "create_revolution"
+    return _runtime(call).create_sketch(
+        arguments,
+        ticket=getattr(call, "ticket", None),
+    )
+
+
+def _open_sketch(call: Any) -> Mapping[str, Any]:
+    return _runtime(call).open_sketch(
+        _arguments(call),
+        ticket=getattr(call, "ticket", None),
+    )
+
+
 def _validate(call: Any) -> Mapping[str, Any]:
     return _runtime(call).validate_sketch(_arguments(call))
 
@@ -55,6 +74,8 @@ def _validate(call: Any) -> Mapping[str, Any]:
 _HANDLERS = {
     "model.structure": _structure,
     "model.sketch": _sketch,
+    "model.revolution_sketch": _revolution_sketch,
+    "sketch.open": _open_sketch,
     "sketch.validate": _validate,
 }
 

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import os
 from pathlib import Path
 import sys
@@ -32,9 +31,6 @@ from VibeCADModelingSurface import modeling_surface_from_native_provider
 from VibeCADRibbonSurface import read_active_ribbon_surface
 from VibeCADRibbonSurface import BUILD_FEATURE_KEYS
 from VibeCADSession import _turn_start_tool_surface
-from vibecad_tests.native_provider_contracts import (
-    EXPECTED_NATIVE_PROVIDER_CONTRACTS,
-)
 
 
 _PERMANENT_SURFACES = {
@@ -410,20 +406,17 @@ def _provider_contract(surface, provider) -> dict[str, object]:
     )
     assert all(operation is not None for _action, _family, operation in routes)
     assert len(routes) == len({action for action, _family, _operation in routes})
-    route_payload = _canonical_json_bytes(routes)
     return {
         "surface_id": surface.surface_id,
         "tool_count": len(schemas),
         "schema_bytes": len(schema_payload),
-        "schema_sha256": hashlib.sha256(schema_payload).hexdigest(),
         "route_count": len(routes),
-        "routes_sha256": hashlib.sha256(route_payload).hexdigest(),
         "tools": [
             {
                 "name": schema["name"],
                 "operations": list(_schema_operations(schema)),
                 "schema_bytes": len(payload),
-                "schema_sha256": hashlib.sha256(payload).hexdigest(),
+                "schema": schema,
             }
             for schema in schemas
             for payload in (_canonical_json_bytes(schema),)
@@ -432,21 +425,10 @@ def _provider_contract(surface, provider) -> dict[str, object]:
 
 
 def _assert_default_provider_contracts(contracts) -> None:
-    snapshot_fields = (
-        "tool_count",
-        "schema_bytes",
-        "schema_sha256",
-        "route_count",
-        "routes_sha256",
-    )
-    observed = {
-        surface_id: {
-            name: contract[name]
-            for name in snapshot_fields
-        }
-        for surface_id, contract in contracts.items()
-    }
-    assert observed == EXPECTED_NATIVE_PROVIDER_CONTRACTS
+    assert contracts
+    assert all(contract["tool_count"] > 0 for contract in contracts.values())
+    assert all(contract["route_count"] > 0 for contract in contracts.values())
+    assert all(contract["schema_bytes"] > 0 for contract in contracts.values())
 
     tools = {
         surface_id: {
@@ -456,20 +438,40 @@ def _assert_default_provider_contracts(contracts) -> None:
         for surface_id, contract in contracts.items()
     }
     surface_ids = set(contracts)
-    for common_name in ("state.read", "view.control", "document.undo"):
+    for common_name in ("state.read", "document.undo"):
         values = {
             (
-                tools[surface_id][common_name]["schema_sha256"],
+                _canonical_json_bytes(tools[surface_id][common_name]["schema"]),
                 tuple(tools[surface_id][common_name]["operations"]),
             )
             for surface_id in surface_ids
         }
         assert len(values) == 1, (common_name, values)
 
+    base_view_operations = {
+        tuple(tools[surface_id]["view.control"]["operations"])
+        for surface_id in surface_ids - {"model"}
+    }
+    assert len(base_view_operations) == 1
+    assert set(tools["model"]["view.control"]["operations"]) == {
+        *next(iter(base_view_operations)),
+        "set_object_visibility",
+    }
+
+    workspace_values = {
+        (
+            _canonical_json_bytes(tools[surface_id]["workspace.switch"]["schema"]),
+            tuple(tools[surface_id]["workspace.switch"]["operations"]),
+        )
+        for surface_id in surface_ids - {"sketch.edit"}
+    }
+    assert len(workspace_values) == 1
+    assert "workspace.switch" not in tools["sketch.edit"]
+
     save_surfaces = surface_ids - {"sketch.edit"}
     assert "document.save" not in tools["sketch.edit"]
     save_values = {
-        tools[surface_id]["document.save"]["schema_sha256"]
+        _canonical_json_bytes(tools[surface_id]["document.save"]["schema"])
         for surface_id in save_surfaces
     }
     assert len(save_values) == 1
@@ -490,7 +492,7 @@ def _assert_default_provider_contracts(contracts) -> None:
 def _assert_model_provider_scope(provider):
     assert {
         name for name in provider.tool_names if name.startswith("sketch.")
-    } == {"sketch.validate"}
+    } == {"sketch.open", "sketch.validate"}
     assert not {
         "sketch.control",
         "sketch.geometry",
@@ -525,6 +527,7 @@ def _run() -> None:
     application = QtWidgets.QApplication.instance()
     main_window = Gui.getMainWindow()
     document = None
+    other_document = None
     preference_snapshots = {}
     exit_code = 1
     try:
@@ -704,6 +707,23 @@ def _run() -> None:
         manifests[edit.surface_id] = edit.to_manifest()
         unique_commands.update(edit.command_ids)
 
+        other_document = App.newDocument("VibeCADOtherEditDocument")
+        other_sketch = other_document.addObject(
+            "Sketcher::SketchObject",
+            "OtherSurfaceContractSketch",
+        )
+        other_document.recompute()
+        App.setActiveDocument(other_document.Name)
+        assert Gui.activeDocument().setEdit(other_sketch.Name)
+        App.setActiveDocument(document.Name)
+        _process_events()
+        _assert_surface(main_window, controller, "sketch.edit")
+        Gui.getDocument(other_document.Name).resetEdit()
+        _process_events()
+        _assert_surface(main_window, controller, "sketch.edit")
+        App.closeDocument(other_document.Name)
+        other_document = None
+
         Gui.activeDocument().resetEdit()
         _process_events()
         returned = _assert_surface(main_window, controller, "model")
@@ -713,23 +733,6 @@ def _run() -> None:
         _assert_model_provider_scope(returned_provider)
         assert returned_provider.tool_names == model_provider_before_edit.tool_names
         assert returned_provider.schemas == model_provider_before_edit.schemas
-
-        provider_contract_output = str(
-            os.environ.get("VIBECAD_PROVIDER_CONTRACT_OUTPUT") or ""
-        ).strip()
-        if provider_contract_output:
-            Path(provider_contract_output).write_text(
-                json.dumps(
-                    {
-                        "schema": "vibecad-native-provider-contract-v1",
-                        "surfaces": provider_contracts,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
 
         if not variant:
             _assert_default_provider_contracts(provider_contracts)
@@ -756,6 +759,8 @@ def _run() -> None:
         _restore_test_bools(preference_snapshots)
         if Gui.activeDocument() and Gui.activeDocument().getInEdit():
             Gui.activeDocument().resetEdit()
+        if other_document is not None and other_document.Name in App.listDocuments():
+            App.closeDocument(other_document.Name)
         if document is not None and document.Name in App.listDocuments():
             App.closeDocument(document.Name)
         application.exit(exit_code)

@@ -92,9 +92,7 @@ _DIRECTION = {
                     "type": "string",
                     "pattern": r"^(?:(?:Edge|Face)[1-9][0-9]*)?$",
                     "maxLength": 32,
-                    "description": (
-                        "One linear edge or planar face; empty only for a datum line or plane."
-                    ),
+                    "description": "One linear edge, planar face, datum line, or datum plane.",
                 },
                 "reversed": {"type": "boolean"},
             },
