@@ -297,10 +297,10 @@ def _scale_part(
     center: tuple[float, float, float],
 ) -> bool:
     changed = _try_freecad_scale(obj, sx, sy, sz, center)
-    bbox = _bbox_of(obj)
-    if bbox is not None:
-        _scale_bbox(bbox, sx, sy, sz, center)
-        changed = True
+    if not changed:
+        bbox = _bbox_of(obj)
+        if bbox is not None:
+            changed = _scale_bbox(bbox, sx, sy, sz, center)
     if hasattr(obj, "Length") and abs(sx - 1.0) > _UNIT_THRESHOLD:
         try:
             obj.Length = float(obj.Length) * sx
@@ -345,7 +345,7 @@ def _scale_bbox(
     sy: float,
     sz: float,
     center: tuple[float, float, float],
-) -> None:
+) -> bool:
     cx, cy, cz = center
 
     def _edge(vmin: float, vmax: float, origin: float, scale: float) -> tuple[float, float]:
@@ -354,12 +354,13 @@ def _scale_bbox(
     xmin, xmax = _edge(float(bbox.XMin), float(bbox.XMax), cx, sx)
     ymin, ymax = _edge(float(bbox.YMin), float(bbox.YMax), cy, sy)
     zmin, zmax = _edge(float(bbox.ZMin), float(bbox.ZMax), cz, sz)
-    bbox.XMin, bbox.XMax = xmin, xmax
-    bbox.YMin, bbox.YMax = ymin, ymax
-    bbox.ZMin, bbox.ZMax = zmin, zmax
-    bbox.XLength = abs(xmax - xmin)
-    bbox.YLength = abs(ymax - ymin)
-    bbox.ZLength = abs(zmax - zmin)
+    try:
+        bbox.XMin, bbox.XMax = xmin, xmax
+        bbox.YMin, bbox.YMax = ymin, ymax
+        bbox.ZMin, bbox.ZMax = zmin, zmax
+    except Exception:
+        return False
+    return True
 
 
 def _translate(obj: Any, dx: float, dy: float, dz: float) -> bool:
