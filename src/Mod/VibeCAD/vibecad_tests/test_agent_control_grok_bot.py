@@ -49,6 +49,8 @@ def test_write_agent_brief_creates_readable_brief_with_connection() -> None:
         "/v1/native",
         "/v1/aero",
         "NATIVE_AUTHORITY_CHANGED",
+        "provider_tool_surface",
+        "native_state",
     ):
         assert route in text
     assert "CAD" in text
@@ -319,50 +321,66 @@ def test_prompt_command_starts_in_app_build_turn(monkeypatch) -> None:
     assert started == ["fillet the selected edge"]
 
 
-def test_context_command_returns_provider_summary(monkeypatch) -> None:
-    summary = {
+def test_context_command_returns_frozen_catalog_and_native_state(monkeypatch) -> None:
+    captured = {
         "workbench": "PartDesignWorkbench",
-        "document": {"name": "Box"},
-        "selection": {"selection_count": 0, "selection": []},
+        "modeling_surface": {"engine": "native", "domain": "model", "available": True},
+        "native_state": {
+            "structural_revision": 4,
+            "last_receipt": {"claim_ceiling": "geometry_applied"},
+        },
+        "intent": [{"text": "2 mm wall", "status": "active"}],
+        "provider_tool_surface": {
+            "kind": "turn_start_snapshot",
+            "tool_names": ["inspect.query", "document.undo"],
+            "schema_sha256": "abc",
+        },
+        "provider_tool_schemas": [
+            {"name": "inspect.query", "parameters": {"properties": {"operation": {}}}}
+        ],
+        "_vibecad_debug": {"must": "not leak"},
     }
-
-    class _Service:
-        def provider_context_summary(self):
-            return summary
-
+    monkeypatch.setattr(agent, "_gui", lambda: object())
     monkeypatch.setitem(
         sys.modules,
         "VibeCADCore",
-        SimpleNamespace(get_service=lambda: _Service()),
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADSession",
+        SimpleNamespace(_capture_context_for_provider=lambda *_args, **_kwargs: captured),
     )
     payload = agent.context_command()
     assert payload["ok"] is True
-    assert payload["context"] == summary
+    context = payload["context"]
+    assert context["native_state"]["structural_revision"] == 4
+    assert context["native_state"]["last_receipt"]["claim_ceiling"] == "geometry_applied"
+    assert "inspect.query" in context["provider_tool_surface"]["tool_names"]
+    assert context["provider_tool_schemas"][0]["name"] == "inspect.query"
+    assert context["intent"][0]["text"] == "2 mm wall"
+    assert "_vibecad_debug" not in context
 
 
 def test_context_command_returns_intent_when_dispositions_exist(monkeypatch) -> None:
-    import sys
-
-    intent = [{"text": "2 mm wall", "status": "active"}]
-    summary = {
+    captured = {
         "workbench": "PartDesignWorkbench",
-        "document": {"name": "Box"},
-        "selection": {"selection_count": 0, "selection": []},
-        "intent": intent,
+        "intent": [{"text": "2 mm wall", "status": "active"}],
+        "provider_tool_surface": {"tool_names": ["inspect.query"]},
     }
-
-    class _Service:
-        def provider_context_summary(self):
-            return summary
-
+    monkeypatch.setattr(agent, "_gui", lambda: object())
     monkeypatch.setitem(
         sys.modules,
         "VibeCADCore",
-        SimpleNamespace(get_service=lambda: _Service()),
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADSession",
+        SimpleNamespace(_capture_context_for_provider=lambda *_args, **_kwargs: captured),
     )
     payload = agent.context_command()
     assert payload["ok"] is True
-    assert payload["context"]["intent"] == intent
     assert payload["context"]["intent"][0] == {
         "text": "2 mm wall",
         "status": "active",
@@ -370,15 +388,7 @@ def test_context_command_returns_intent_when_dispositions_exist(monkeypatch) -> 
 
 
 def test_context_command_handles_missing_gui(monkeypatch) -> None:
-    def _unavailable():
-        raise RuntimeError("FreeCADGui is unavailable")
-
     monkeypatch.setattr(agent, "_gui", lambda: None)
-    monkeypatch.setitem(
-        sys.modules,
-        "VibeCADCore",
-        SimpleNamespace(get_service=_unavailable),
-    )
     payload = agent.context_command()
     assert payload["ok"] is False
     assert payload["failure_code"] == "GUI_REQUIRED"
