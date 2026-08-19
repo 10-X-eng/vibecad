@@ -1126,15 +1126,17 @@ def _capture_context_for_provider(
     prepared_component_catalog: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     clean_interaction_mode = normalize_interaction_mode(interaction_mode)
+    raw_context = service.provider_context_summary()
+    allowed_turn_facts = (
+        "document",
+        "selection",
+        "view_screenshot",
+        "reference_images",
+        "aero",
+    )
     context = {
-        "document": service.provider_turn_document_summary(),
-        "selection": service.provider_turn_selection_summary(),
-        "view_screenshot": service.view_screenshot_summary(),
-        "reference_images": service.provider_reference_image_attachments(),
+        key: raw_context[key] for key in allowed_turn_facts if key in raw_context
     }
-    aero = service.provider_context_summary().get("aero")
-    if aero not in (None, "", [], {}):
-        context["aero"] = aero
     workbench = service.active_workbench_name()
     native_provider_surface = None
     native_engine = str(service.modeling_engine() or "").strip().lower() == "native"
