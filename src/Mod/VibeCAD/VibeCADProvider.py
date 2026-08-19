@@ -2294,7 +2294,10 @@ def _without_native_internal_ids(value: Any) -> Any:
 def _model_visible_native_context(context: Mapping[str, Any]) -> dict[str, Any]:
     snapshot = context.get("native_state")
     if not isinstance(snapshot, Mapping):
-        return {}
+        if "intent" not in context:
+            return {}
+        intent = context["intent"]
+        return {"intent": _json_safe(intent if isinstance(intent, list) else [])}
     from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
 
     surface_id = str(snapshot.get("surface_id") or "")
@@ -2307,7 +2310,7 @@ def _model_visible_native_context(context: Mapping[str, Any]) -> dict[str, Any]:
     )
     state = {
         name: _without_native_internal_ids(snapshot[name])
-        for name in ("revision", "domain", "working_set", "selection")
+        for name in ("revision", "domain", "working_set", "selection", "last_receipt")
         if name in snapshot and snapshot[name] not in (None, "", [], {})
     }
     result: dict[str, Any] = {"work": work, "state": state}
@@ -2316,6 +2319,9 @@ def _model_visible_native_context(context: Mapping[str, Any]) -> dict[str, Any]:
     for name in ("view_screenshot", "reference_images"):
         if name in context and context[name] not in (None, "", [], {}):
             result[name] = _json_safe(context[name])
+    if "intent" in context:
+        intent = context["intent"]
+        result["intent"] = _json_safe(intent if isinstance(intent, list) else [])
     return result
 
 

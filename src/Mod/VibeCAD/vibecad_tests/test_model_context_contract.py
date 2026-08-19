@@ -441,7 +441,21 @@ def test_session_capture_keeps_intent_with_reference_images_and_aero(
         def provider_name(self):
             return "grok"
 
-    monkeypatch.setattr(session, "provider_tool_schemas", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        session,
+        "provider_tool_schemas",
+        lambda *_args, **_kwargs: [
+            {
+                "name": "vibescript.read_source",
+                "description": "Read the active VibeScript source.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            }
+        ],
+    )
     monkeypatch.setattr(
         session,
         "_capture_editable_sources_for_workbench",
@@ -577,17 +591,20 @@ def test_turn_start_native_state_includes_last_receipt_ceiling() -> None:
     }
 
     state = session._provider_state_payload(context)
-    assert state["native_state"]["last_receipt"]["claim_ceiling"] == "geometry_applied"
-    assert state["native_state"]["last_receipt"]["evidence_state"] == "pass"
-    assert state["native_state"]["last_receipt"]["capability"] == "model.pad"
+    # Native engine uses the work/state packet; last receipt stays in that state.
+    receipt = state["state"]["last_receipt"]
+    assert receipt["claim_ceiling"] == "geometry_applied"
+    assert receipt["evidence_state"] == "pass"
+    assert receipt["capability"] == "model.pad"
+    assert "native_state" not in state
     assert state["intent"] == dispositions
     assert state["aero"] == aero
     assert "intent_memory" not in state
 
     payload, _conversation, remainder = _prompt_payload("Continue.", context)
     active = payload["active_state"]
-    assert active["native_state"]["last_receipt"]["claim_ceiling"] == "geometry_applied"
-    assert active["native_state"]["last_receipt"]["evidence_state"] == "pass"
+    assert active["state"]["last_receipt"]["claim_ceiling"] == "geometry_applied"
+    assert active["state"]["last_receipt"]["evidence_state"] == "pass"
     assert active["intent"] == dispositions
     assert active["aero"] == aero
     serialized = json.dumps(payload)

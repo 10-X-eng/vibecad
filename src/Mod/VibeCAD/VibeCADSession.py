@@ -1529,6 +1529,10 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
         aero = context.get("aero")
         if aero not in (None, "", [], {}):
             result["aero"] = aero
+        if "intent" in context:
+            result["intent"] = (
+                context["intent"] if isinstance(context["intent"], list) else []
+            )
         return result
     # Final first-prompt allowlist. This dict is serialized as
     # VIBECAD_CONTEXT_JSON. Aero is a sibling of document/selection, not a
