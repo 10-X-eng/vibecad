@@ -212,19 +212,9 @@ def create_live_native_session_execution(
     """Freeze the current ribbon once and build the same dispatcher in-app Grok uses.
 
     Grok Bot has no provider turn snapshot. The live freeze *is* the contract.
+    Authority and document gates stay in create_native_session_execution.
     """
 
-    if str(service.modeling_engine() or "").strip().lower() != "native":
-        raise NativeDispatchError(
-            "NATIVE_AUTHORITY_CHANGED",
-            "The document is no longer under Native authority.",
-        )
-    document = service._active_document()
-    if document is None:
-        raise NativeDispatchError(
-            "NATIVE_DOCUMENT_CHANGED",
-            "No exact active Native document is available.",
-        )
     selected_registry = registry or build_native_capability_registry()
     turn = freeze_native_turn(controller, selected_registry)
     return create_native_session_execution(
