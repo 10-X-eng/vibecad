@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -37,9 +38,18 @@ def test_write_agent_brief_creates_readable_brief_with_connection() -> None:
     text = path.read_text(encoding="utf-8")
     assert "http://127.0.0.1:8766" in text
     assert str(agent.token_path()) in text
-    # The brief documents the routes an agent needs.
-    for route in ("/v1/status", "/v1/open", "/v1/run", "/v1/aero"):
+    # The brief documents the routes an agent needs. CAD uses /v1/context
+    # and /v1/prompt; /v1/run stays available for non-Aero Python.
+    for route in (
+        "/v1/status",
+        "/v1/open",
+        "/v1/run",
+        "/v1/context",
+        "/v1/prompt",
+        "/v1/aero",
+    ):
         assert route in text
+    assert "CAD" in text
 
 
 def test_write_agent_brief_honors_explicit_port() -> None:
@@ -92,6 +102,121 @@ def test_aero_http_routes_are_registered(monkeypatch) -> None:
         "POST", "/v1/aero", {"operation": "analyze"}
     )
     assert payload["arguments"]["operation"] == "analyze"
+
+
+def test_context_and_prompt_http_routes_are_registered(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent,
+        "dispatch",
+        lambda command, arguments=None: {
+            "ok": True,
+            "command": command,
+            "arguments": dict(arguments or {}),
+        },
+    )
+    status, payload = agent.handle_http_request("GET", "/v1/context", {})
+    assert status == 200
+    assert payload["command"] == "context"
+    status, payload = agent.handle_http_request(
+        "POST", "/v1/prompt", {"text": "fillet the selected edge"}
+    )
+    assert status == 200
+    assert payload["command"] == "prompt"
+    assert payload["arguments"]["text"] == "fillet the selected edge"
+
+
+def test_prompt_command_requires_text() -> None:
+    payload = agent.prompt_command({"text": "  "})
+    assert payload["ok"] is False
+    assert payload["failure_code"] == "PROMPT_TEXT_REQUIRED"
+
+
+def test_prompt_command_requires_gui(monkeypatch) -> None:
+    monkeypatch.setattr(agent, "_gui", lambda: None)
+    payload = agent.prompt_command({"text": "fillet the selected edge"})
+    assert payload["ok"] is False
+    assert payload["failure_code"] == "GUI_REQUIRED"
+
+
+def test_prompt_command_starts_in_app_build_turn(monkeypatch) -> None:
+    started: list[str] = []
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADGui",
+        SimpleNamespace(
+            start_assistant_turn=lambda text, **_kwargs: started.append(text) or True
+        ),
+    )
+    payload = agent.prompt_command({"text": "fillet the selected edge"})
+    assert payload["ok"] is True
+    assert payload["started"] is True
+    assert started == ["fillet the selected edge"]
+
+
+def test_context_command_returns_provider_summary(monkeypatch) -> None:
+    summary = {
+        "workbench": "PartDesignWorkbench",
+        "document": {"name": "Box"},
+        "selection": {"selection_count": 0, "selection": []},
+    }
+
+    class _Service:
+        def provider_context_summary(self):
+            return summary
+
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: _Service()),
+    )
+    payload = agent.context_command()
+    assert payload["ok"] is True
+    assert payload["context"] == summary
+
+
+def test_context_command_returns_intent_when_dispositions_exist(monkeypatch) -> None:
+    import sys
+
+    intent = [{"text": "2 mm wall", "status": "active"}]
+    summary = {
+        "workbench": "PartDesignWorkbench",
+        "document": {"name": "Box"},
+        "selection": {"selection_count": 0, "selection": []},
+        "intent": intent,
+    }
+
+    class _Service:
+        def provider_context_summary(self):
+            return summary
+
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: _Service()),
+    )
+    payload = agent.context_command()
+    assert payload["ok"] is True
+    assert payload["context"]["intent"] == intent
+    assert payload["context"]["intent"][0] == {
+        "text": "2 mm wall",
+        "status": "active",
+    }
+
+
+def test_context_command_handles_missing_gui(monkeypatch) -> None:
+    def _unavailable():
+        raise RuntimeError("FreeCADGui is unavailable")
+
+    monkeypatch.setattr(agent, "_gui", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=_unavailable),
+    )
+    payload = agent.context_command()
+    assert payload["ok"] is False
+    assert payload["failure_code"] == "GUI_REQUIRED"
 
 
 def test_windows_default_candidates_target_grok_bot_desktop(monkeypatch) -> None:

@@ -229,6 +229,33 @@ def test_view_attachment_is_one_shot_and_identity_guarded() -> None:
     assert service.view_screenshot_summary() == {"captured": False, "path": None}
 
 
+def test_view_screenshot_summary_labels_captured_pixels_presentation_only() -> None:
+    from VibeCADCore import VibeCADService
+
+    service = object.__new__(VibeCADService)
+    service._last_view_screenshot = {
+        "captured": True,
+        "path": "/project/screenshots/current.png",
+        "pending_attachment": True,
+    }
+
+    summary = service.view_screenshot_summary()
+
+    assert summary["captured"] is True
+    assert summary["path"] == "/project/screenshots/current.png"
+    assert summary["pending_attachment"] is True
+    assert summary["presentation_only"] is True
+    assert summary["artifact_class"] == "presentation"
+    assert summary["claim_ceiling"] == "not_measured"
+    assert "presentation_only" not in service._last_view_screenshot
+
+    service._last_view_screenshot = None
+    empty = service.view_screenshot_summary()
+    assert empty == {"captured": False, "path": None}
+    assert "presentation_only" not in empty
+    assert "claim_ceiling" not in empty
+
+
 class _UnsetPreferences:
     def GetBool(self, name: str, default: bool = False) -> bool:
         return default

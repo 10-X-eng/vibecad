@@ -1133,6 +1133,7 @@ def _capture_context_for_provider(
         "view_screenshot",
         "reference_images",
         "aero",
+        "intent",
     )
     context = {
         key: raw_context[key] for key in allowed_turn_facts if key in raw_context
@@ -1528,6 +1529,10 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
         aero = context.get("aero")
         if aero not in (None, "", [], {}):
             result["aero"] = aero
+        if "intent" in context:
+            result["intent"] = (
+                context["intent"] if isinstance(context["intent"], list) else []
+            )
         return result
     # Final first-prompt allowlist. This dict is serialized as
     # VIBECAD_CONTEXT_JSON. Aero is a sibling of document/selection, not a
@@ -1542,12 +1547,18 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
         "editable_sources",
         "available_components",
         "aero",
+        "intent",
     )
-    result = {
-        key: context[key]
-        for key in keys
-        if key in context and context[key] not in (None, "", [], {})
-    }
+    result = {}
+    for key in keys:
+        if key not in context:
+            continue
+        value = context[key]
+        if key == "intent":
+            result[key] = value if isinstance(value, list) else []
+            continue
+        if value not in (None, "", [], {}):
+            result[key] = value
     editable_sources = result.get("editable_sources")
     if isinstance(editable_sources, Mapping):
         result["editable_sources"] = _provider_editable_sources_payload(

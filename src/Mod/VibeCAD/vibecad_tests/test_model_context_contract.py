@@ -10,7 +10,14 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from VibeCADCore import VibeCADService
+from VibeCADCore import (
+    MAX_PROVIDER_INTENT_DISPOSITIONS,
+    MAX_PROVIDER_RECEIPT_FIELD_CHARS,
+    MAX_PROVIDER_RECEIPT_IDENTITIES,
+    VibeCADService,
+    provider_intent_disposition_list,
+    provider_last_native_receipt,
+)
 from VibeCADProject import VibeCADConversationStore, _validated_conversation_turns
 import VibeCADProvider as provider
 import VibeCADSession as session
@@ -148,6 +155,568 @@ def test_first_prompt_context_json_includes_toplevel_aero() -> None:
     assert conversation["turns"] == []
     assert remainder == "CURRENT_USER_MESSAGE\nContinue."
     assert "human_steering" not in json.dumps(payload)
+
+
+def _constraint_memory() -> dict:
+    return {
+        "schema": "vibecad-intent-memory-v1",
+        "revision": "rev-must-not-leak",
+        "entries": [
+            {
+                "id": "keep-halves",
+                "category": "constraint",
+                "statement": "Keep the two-handle-half architecture.",
+                "authority": "user_explicit",
+                "source_turn_ids": ["a" * 32],
+                "status": "active",
+            },
+            {
+                "id": "hole-note",
+                "category": "requirement",
+                "statement": "Mounting hole is 6 mm.",
+                "authority": "user_confirmed",
+                "source_turn_ids": ["b" * 32],
+                "status": "active",
+            },
+            {
+                "id": "old-single-piece",
+                "category": "constraint",
+                "statement": "Use a single-piece handle.",
+                "authority": "model_assumption",
+                "source_turn_ids": ["c" * 32],
+                "status": "superseded",
+            },
+        ],
+    }
+
+
+def test_turn_start_context_includes_intent_dispositions() -> None:
+    """Constraints stay visible as a short {text, status} list, not raw memory."""
+
+    memory = _constraint_memory()
+    dispositions = provider_intent_disposition_list(memory)
+    assert dispositions == [
+        {"text": "Keep the two-handle-half architecture.", "status": "active"},
+        {"text": "Mounting hole is 6 mm.", "status": "active"},
+        {"text": "Use a single-piece handle.", "status": "superseded"},
+    ]
+    assert provider_intent_disposition_list({"entries": []}) == []
+    assert provider_intent_disposition_list(None) == []
+
+    oversized = {
+        "entries": [
+            {
+                "statement": f"constraint-{index} " + ("x" * 400),
+                "status": "active",
+            }
+            for index in range(MAX_PROVIDER_INTENT_DISPOSITIONS + 8)
+        ]
+    }
+    bounded = provider_intent_disposition_list(oversized)
+    assert len(bounded) == MAX_PROVIDER_INTENT_DISPOSITIONS + 8
+    assert all(set(item) == {"text", "status"} for item in bounded)
+    assert all(len(item["text"]) < 400 for item in bounded)
+
+    service = object.__new__(VibeCADService)
+    service.active_workbench_name = lambda: "AssemblyWorkbench"
+    service.modeling_engine = lambda: "vibescript"
+    service.provider_turn_document_summary = lambda: _active_state()["document"]
+    service.provider_turn_selection_summary = lambda: _active_state()["selection"]
+    service.view_screenshot_summary = lambda: {"captured": False}
+    service.provider_reference_image_attachments = lambda: {
+        "count": 0,
+        "images": [],
+    }
+    service.aero_summary = lambda: {"available": False}
+    service.intent_memory = lambda: memory
+
+    context = service.provider_context_summary()
+    assert context["intent"] == dispositions
+    assert "rev-must-not-leak" not in json.dumps(context["intent"])
+    assert "source_turn_ids" not in json.dumps(context["intent"])
+
+    service.intent_memory = lambda: {"entries": []}
+    assert service.provider_context_summary()["intent"] == []
+
+    aero = {"available": True, "CL": 1.516}
+    references = {"count": 1, "images": [{"id": "ref-1", "name": "ref.png"}]}
+    payload_context = {
+        **_active_state(),
+        "intent": dispositions,
+        "aero": aero,
+        "reference_images": references,
+        "intent_memory": {"must": "not leak"},
+    }
+    state = session._provider_state_payload(payload_context)
+    assert state["intent"] == dispositions
+    assert state["aero"] == aero
+    assert "intent_memory" not in state
+    payload, _conversation, _remainder = _prompt_payload("Continue.", payload_context)
+    assert payload["active_state"]["intent"] == dispositions
+    assert payload["active_state"]["aero"] == aero
+    serialized = json.dumps(payload)
+    assert "must not leak" not in serialized
+    assert "intent_memory" not in serialized
+    assert "rev-must-not-leak" not in serialized
+
+    empty_intent_context = {**_active_state(), "intent": []}
+    empty_state = session._provider_state_payload(empty_intent_context)
+    assert empty_state["intent"] == []
+    empty_payload, _conversation, _remainder = _prompt_payload(
+        "Continue.", empty_intent_context
+    )
+    assert empty_payload["active_state"]["intent"] == []
+
+
+def test_active_user_explicit_wall_survives_superseded_truncation() -> None:
+    """A live '2 mm wall' stays in the turn-start list when superseded fill it."""
+
+    wall = {
+        "id": "wall-thickness",
+        "category": "constraint",
+        "statement": "2 mm wall",
+        "authority": "user_explicit",
+        "source_turn_ids": ["d" * 32],
+        "status": "active",
+    }
+    memory = {
+        "entries": [
+            {
+                "id": f"old-{index}",
+                "category": "constraint",
+                "statement": f"obsolete constraint {index}",
+                "authority": "model_assumption",
+                "status": "superseded",
+            }
+            for index in range(20)
+        ]
+        + [wall]
+    }
+
+    dispositions = provider_intent_disposition_list(memory)
+    assert {"text": "2 mm wall", "status": "active"} in dispositions
+    assert dispositions[0] == {"text": "2 mm wall", "status": "active"}
+    assert len(dispositions) == MAX_PROVIDER_INTENT_DISPOSITIONS
+    assert all(
+        item["status"] == "superseded" for item in dispositions[1:]
+    )
+
+    crowded = {
+        "entries": [
+            {
+                "id": f"other-active-{index}",
+                "category": "constraint",
+                "statement": f"other active {index}",
+                "authority": "model_assumption",
+                "status": "active",
+            }
+            for index in range(MAX_PROVIDER_INTENT_DISPOSITIONS)
+        ]
+        + [wall]
+    }
+    crowded_list = provider_intent_disposition_list(crowded)
+    assert {"text": "2 mm wall", "status": "active"} in crowded_list
+    assert crowded_list[0] == {"text": "2 mm wall", "status": "active"}
+
+    service = object.__new__(VibeCADService)
+    service.active_workbench_name = lambda: "AssemblyWorkbench"
+    service.modeling_engine = lambda: "vibescript"
+    service.provider_turn_document_summary = lambda: _active_state()["document"]
+    service.provider_turn_selection_summary = lambda: _active_state()["selection"]
+    service.view_screenshot_summary = lambda: {"captured": False}
+    service.provider_reference_image_attachments = lambda: {
+        "count": 0,
+        "images": [],
+    }
+    service.aero_summary = lambda: {"available": False}
+    service.intent_memory = lambda: memory
+
+    context = service.provider_context_summary()
+    assert {"text": "2 mm wall", "status": "active"} in context["intent"]
+    assert context["intent"][0]["text"] == "2 mm wall"
+    visible = provider._model_visible_context(context)
+    assert visible["intent"][0]["text"] == "2 mm wall"
+
+
+def test_all_active_constraints_survive_the_turn_cap() -> None:
+    memory = {
+        "entries": [
+            {
+                "id": f"active-{index}",
+                "statement": f"active constraint {index}",
+                "status": "active",
+                "authority": "user_confirmed",
+            }
+            for index in range(MAX_PROVIDER_INTENT_DISPOSITIONS + 5)
+        ]
+    }
+    dispositions = provider_intent_disposition_list(memory)
+    assert len(dispositions) == MAX_PROVIDER_INTENT_DISPOSITIONS + 5
+    assert all(item["status"] == "active" for item in dispositions)
+
+
+def test_intent_store_failure_does_not_look_like_no_constraints() -> None:
+    service = object.__new__(VibeCADService)
+
+    def _raise() -> dict:
+        raise RuntimeError("intent store down")
+
+    service.intent_memory = _raise
+    dispositions = service.provider_intent_dispositions()
+    assert dispositions
+    assert dispositions[0]["status"] == "evidence_waiting"
+    assert "do not assume constraints were dropped" in dispositions[0]["text"]
+    state = session._provider_state_payload({"intent": dispositions})
+    assert state["intent"] == dispositions
+
+
+def test_turn_context_screenshot_is_presentation_only_not_measured() -> None:
+    service = object.__new__(VibeCADService)
+    service.active_workbench_name = lambda: "AssemblyWorkbench"
+    service.modeling_engine = lambda: "vibescript"
+    service.provider_turn_document_summary = lambda: _active_state()["document"]
+    service.provider_turn_selection_summary = lambda: _active_state()["selection"]
+    service._last_view_screenshot = {
+        "captured": True,
+        "path": "/project/screenshots/current.png",
+        "pending_attachment": True,
+    }
+    service.provider_reference_image_attachments = lambda: {
+        "count": 0,
+        "images": [],
+    }
+    service.aero_summary = lambda: {"available": False}
+    service.intent_memory = lambda: _constraint_memory()
+
+    context = service.provider_context_summary()
+    screenshot = context["view_screenshot"]
+    assert screenshot["captured"] is True
+    assert screenshot["path"] == "/project/screenshots/current.png"
+    assert screenshot["presentation_only"] is True
+    assert screenshot["artifact_class"] == "presentation"
+    assert screenshot["claim_ceiling"] == "not_measured"
+    assert context["intent"] == [
+        {"text": "Keep the two-handle-half architecture.", "status": "active"},
+        {"text": "Mounting hole is 6 mm.", "status": "active"},
+        {"text": "Use a single-piece handle.", "status": "superseded"},
+    ]
+
+    visible = provider._model_visible_context(context)
+    assert visible["view_screenshot"]["presentation_only"] is True
+    assert visible["view_screenshot"]["claim_ceiling"] == "not_measured"
+    assert visible["intent"] == context["intent"]
+
+
+def test_session_capture_keeps_intent_with_reference_images_and_aero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispositions = [
+        {"text": "Keep the two-handle-half architecture.", "status": "active"},
+    ]
+    aero = {"available": True, "CL": 0.77}
+    references = {"count": 1, "images": [{"id": "ref-1", "name": "ref.png"}]}
+
+    class _Service:
+        def provider_context_summary(self):
+            return {
+                "document": {"name": "Mechanism", "uid": "doc-1", "object_count": 2},
+                "selection": {"selection_count": 0, "selection": []},
+                "view_screenshot": {"captured": False},
+                "reference_images": references,
+                "aero": aero,
+                "intent": dispositions,
+                "cad_state": {"must": "not leak"},
+                "intent_memory": {"must": "not leak"},
+            }
+
+        def active_workbench_name(self):
+            return "PartWorkbench"
+
+        def modeling_engine(self):
+            return "vibescript"
+
+        def provider_debug_config(self):
+            return {"enabled": False}
+
+        def provider_name(self):
+            return "grok"
+
+    monkeypatch.setattr(
+        session,
+        "provider_tool_schemas",
+        lambda *_args, **_kwargs: [
+            {
+                "name": "vibescript.read_source",
+                "description": "Read the active VibeScript source.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        session,
+        "_capture_editable_sources_for_workbench",
+        lambda *_args, **_kwargs: {"sources": []},
+    )
+
+    context = session._capture_context_for_provider(_Service())
+    assert context["intent"] == dispositions
+    assert context["aero"] == aero
+    assert context["reference_images"] == references
+    assert "cad_state" not in context
+    assert "intent_memory" not in context
+
+    state = session._provider_state_payload(context)
+    assert state["intent"] == dispositions
+    assert state["aero"] == aero
+
+
+def _receipt_summary(
+    capability: str,
+    *,
+    revision_before: int = 0,
+    revision_after: int = 1,
+    created: list[dict[str, str]] | None = None,
+    extra: dict | None = None,
+) -> dict:
+    payload = {
+        "capability": capability,
+        "revision_before": revision_before,
+        "revision_after": revision_after,
+        "claim_ceiling": "geometry_applied",
+        "evidence_state": "pass",
+        "created": list(created or []),
+        "changed": [],
+        "deleted": [],
+        "replaced": [],
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def test_provider_last_native_receipt_is_the_bounded_ceiling_summary() -> None:
+    """Turn-start Grok only gets the last receipt, with honesty fields kept."""
+
+    created = [
+        {
+            "document_uid": "doc-1",
+            "object_name": f"Pad{index}",
+            "type_id": "PartDesign::Pad",
+            "secret": "must not leak",
+        }
+        for index in range(MAX_PROVIDER_RECEIPT_IDENTITIES + 4)
+    ]
+    oversized = "x" * (MAX_PROVIDER_RECEIPT_FIELD_CHARS + 40)
+    last = _receipt_summary(
+        oversized,
+        revision_before=4,
+        revision_after=5,
+        created=created,
+        extra={"verified_result": {"ok": True, "blob": "must not leak"}},
+    )
+    last.pop("claim_ceiling")
+    last.pop("evidence_state")
+    native_state = {
+        "document_uid": "doc-1",
+        "structural_revision": 5,
+        "recent_receipts": [
+            _receipt_summary("model.sketch", revision_after=1),
+            last,
+        ],
+    }
+
+    bounded = provider_last_native_receipt(native_state)
+
+    assert bounded is not None
+    assert bounded["capability"] == oversized[:MAX_PROVIDER_RECEIPT_FIELD_CHARS]
+    assert bounded["revision_before"] == 4
+    assert bounded["revision_after"] == 5
+    assert bounded["claim_ceiling"] == "geometry_applied"
+    assert bounded["evidence_state"] == "pass"
+    assert len(bounded["created"]) == MAX_PROVIDER_RECEIPT_IDENTITIES
+    assert bounded["created"][0]["object_name"] == "Pad0"
+    assert "secret" not in json.dumps(bounded)
+    assert "verified_result" not in bounded
+    assert "must not leak" not in json.dumps(bounded)
+    assert provider_last_native_receipt({"recent_receipts": []}) is None
+    assert provider_last_native_receipt(None) is None
+
+
+def test_turn_start_native_state_includes_last_receipt_ceiling() -> None:
+    """VIBECAD_CONTEXT_JSON must carry the last Native receipt ceiling."""
+
+    last_receipt = provider_last_native_receipt(
+        {
+            "recent_receipts": [
+                _receipt_summary("model.sketch"),
+                _receipt_summary(
+                    "model.pad",
+                    revision_before=1,
+                    revision_after=2,
+                    created=[
+                        {
+                            "document_uid": "doc-1",
+                            "object_name": "Pad",
+                            "type_id": "PartDesign::Pad",
+                        }
+                    ],
+                ),
+            ]
+        }
+    )
+    dispositions = [{"text": "2 mm wall", "status": "active"}]
+    aero = {"available": False, "claim_ceiling": "not_airworthy"}
+    context = {
+        "workbench": "PartDesignWorkbench",
+        "modeling_surface": {
+            "workbench": "PartDesignWorkbench",
+            "engine": "native",
+            "domain": "model",
+            "surface_id": "vibecad/surface/native/model",
+            "available": True,
+        },
+        "native_state": {
+            "surface_id": "model",
+            "structural_revision": 2,
+            "last_receipt": last_receipt,
+        },
+        "intent": dispositions,
+        "aero": aero,
+        "cad_state": {"must": "not leak"},
+        "intent_memory": {"must": "not leak"},
+    }
+
+    state = session._provider_state_payload(context)
+    # Native engine uses the work/state packet; last receipt stays in that state.
+    receipt = state["state"]["last_receipt"]
+    assert receipt["claim_ceiling"] == "geometry_applied"
+    assert receipt["evidence_state"] == "pass"
+    assert receipt["capability"] == "model.pad"
+    assert "native_state" not in state
+    assert state["intent"] == dispositions
+    assert state["aero"] == aero
+    assert "intent_memory" not in state
+
+    payload, _conversation, remainder = _prompt_payload("Continue.", context)
+    active = payload["active_state"]
+    assert active["state"]["last_receipt"]["claim_ceiling"] == "geometry_applied"
+    assert active["state"]["last_receipt"]["evidence_state"] == "pass"
+    assert active["intent"] == dispositions
+    assert active["aero"] == aero
+    serialized = json.dumps(payload)
+    assert "must not leak" not in serialized
+    assert remainder == "CURRENT_USER_MESSAGE\nContinue."
+
+
+def test_native_active_snapshot_attaches_last_receipt_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADNativeSnapshot as snapshot_mod
+    import VibeCADRibbonSurface as ribbon_mod
+
+    last = _receipt_summary(
+        "model.pad",
+        revision_before=1,
+        revision_after=2,
+        created=[
+            {
+                "document_uid": "doc-1",
+                "object_name": "Pad",
+                "type_id": "PartDesign::Pad",
+            }
+        ],
+        extra={"verified_result": {"must": "not leak"}},
+    )
+    native_state = {
+        "document_uid": "doc-1",
+        "structural_revision": 2,
+        "recent_receipts": [_receipt_summary("model.sketch"), last],
+    }
+
+    monkeypatch.setattr(
+        ribbon_mod,
+        "read_active_ribbon_surface",
+        lambda: SimpleNamespace(surface_id="model"),
+    )
+    monkeypatch.setattr(
+        snapshot_mod,
+        "build_active_snapshot",
+        lambda _document, surface_id, state, **_kwargs: {
+            "surface_id": surface_id,
+            "structural_revision": state.get("structural_revision"),
+            "domain": {"kind": "model"},
+            "working_set": [],
+        },
+    )
+
+    service = object.__new__(VibeCADService)
+    service.modeling_engine = lambda: "native"
+    service._active_document = lambda: SimpleNamespace(Uid="doc-1", Name="Doc")
+    service.native_document_state = lambda: native_state
+
+    snapshot = service.native_active_snapshot()
+    assert snapshot["last_receipt"]["capability"] == "model.pad"
+    assert snapshot["last_receipt"]["claim_ceiling"] == "geometry_applied"
+    assert snapshot["last_receipt"]["evidence_state"] == "pass"
+    assert "verified_result" not in snapshot["last_receipt"]
+    assert "must not leak" not in json.dumps(snapshot["last_receipt"])
+
+    service.native_document_state = lambda: {
+        "document_uid": "doc-1",
+        "structural_revision": 0,
+        "recent_receipts": [],
+    }
+    assert "last_receipt" not in service.native_active_snapshot()
+
+
+def test_session_payload_keeps_native_last_receipt_with_intent() -> None:
+    last_receipt = provider_last_native_receipt(
+        {
+            "recent_receipts": [
+                _receipt_summary(
+                    "model.pad",
+                    revision_before=1,
+                    revision_after=2,
+                    created=[
+                        {
+                            "document_uid": "doc-1",
+                            "object_name": "Pad",
+                            "type_id": "PartDesign::Pad",
+                        }
+                    ],
+                )
+            ]
+        }
+    )
+    dispositions = [{"text": "2 mm wall", "status": "active"}]
+    aero = {"available": True, "CL": 0.77}
+    references = {"count": 1, "images": [{"id": "ref-1", "name": "ref.png"}]}
+    context = {
+        **_active_state(),
+        "intent": dispositions,
+        "aero": aero,
+        "reference_images": references,
+        "native_state": {
+            "surface_id": "model",
+            "structural_revision": 2,
+            "last_receipt": last_receipt,
+        },
+        "cad_state": {"must": "not leak"},
+    }
+    state = session._provider_state_payload(context)
+    assert state["native_state"]["last_receipt"]["claim_ceiling"] == "geometry_applied"
+    assert state["intent"] == dispositions
+    assert state["aero"] == aero
+    assert "cad_state" not in state
+    payload, _conversation, _remainder = _prompt_payload("Continue.", context)
+    assert payload["active_state"]["native_state"]["last_receipt"][
+        "claim_ceiling"
+    ] == "geometry_applied"
+    assert payload["active_state"]["intent"] == dispositions
 
 
 def test_turn_history_is_supplied_separately_from_model_state_packet() -> None:

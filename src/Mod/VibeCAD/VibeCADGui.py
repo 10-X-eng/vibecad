@@ -3005,8 +3005,8 @@ def _arm_sketch_close_continuation() -> dict[str, str] | None:
     return _sketch_close_continuation_controller.arm(event)
 
 
-def start_aero_designer_turn(prompt: str) -> bool:
-    """Start an in-app Grok Build turn from an Aero Analyze result."""
+def start_assistant_turn(prompt: str, *, source: str = "prompt") -> bool:
+    """Start an in-app Grok Build turn from a prompt."""
 
     clean = str(prompt or "").strip()
     if not clean:
@@ -3020,10 +3020,11 @@ def start_aero_designer_turn(prompt: str) -> bool:
     persistence = service.document_persistence_state()
     if not persistence.get("enabled"):
         return False
+    origin = str(source or "prompt").strip() or "prompt"
     if _is_assistant_run_active():
-        queued = service.queue_steering_message(clean, source="aero")
+        queued = service.queue_steering_message(clean, source=origin)
         return bool(queued.get("ok"))
-    _append_conversation("User", clean, persist=True, metadata={"source": "aero"})
+    _append_conversation("User", clean, persist=True, metadata={"source": origin})
     _execute_assistant_run(
         dock,
         service,
@@ -3031,6 +3032,12 @@ def start_aero_designer_turn(prompt: str) -> bool:
         interaction_mode="build",
     )
     return True
+
+
+def start_aero_designer_turn(prompt: str) -> bool:
+    """Start an in-app Grok Build turn from an Aero Analyze result."""
+
+    return start_assistant_turn(prompt, source="aero")
 
 
 def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:

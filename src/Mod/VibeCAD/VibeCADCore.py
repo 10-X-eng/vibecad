@@ -62,6 +62,10 @@ MAX_PROVIDER_SELECTION_BYTES = 4096
 MAX_PROVIDER_SELECTION_ITEMS = 32
 MAX_PROVIDER_SELECTION_SUBELEMENTS = 64
 MAX_PROVIDER_SELECTION_FIELD_CHARS = 1024
+MAX_PROVIDER_INTENT_DISPOSITIONS = 12
+MAX_PROVIDER_INTENT_DISPOSITION_CHARS = 160
+MAX_PROVIDER_RECEIPT_IDENTITIES = 8
+MAX_PROVIDER_RECEIPT_FIELD_CHARS = 160
 REFERENCE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_REFERENCE_IMAGES = 6
 REFERENCE_IMAGE_MAX_EDGE = 1568
@@ -77,6 +81,112 @@ _PRIVATE_SCRIPTED_ROLES = frozenset(
     {"implementation", "publication_target", "parameters"}
 )
 _CONVERSATION_WRITE_LOCK = threading.RLock()
+
+
+def provider_intent_disposition_list(memory: Any) -> list[dict[str, str]]:
+    """Return a short {text, status} list from stored Intent Memory notes.
+
+    Active entries are listed first so truncation cannot drop live constraints.
+    User-explicit active statements are never skipped in favor of other rows.
+    """
+
+    if not isinstance(memory, dict):
+        return []
+    raw_entries = memory.get("entries")
+    if not isinstance(raw_entries, list):
+        return []
+    user_explicit_active: list[dict[str, str]] = []
+    other_active: list[dict[str, str]] = []
+    rest: list[dict[str, str]] = []
+    for item in raw_entries:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("statement") or item.get("text") or "").strip()
+        if not text:
+            continue
+        status = str(item.get("status") or "active").strip() or "active"
+        if len(text) > MAX_PROVIDER_INTENT_DISPOSITION_CHARS:
+            text = text[:MAX_PROVIDER_INTENT_DISPOSITION_CHARS]
+        payload = {"text": text, "status": status}
+        authority = str(item.get("authority") or "").strip()
+        if status == "active" and authority == "user_explicit":
+            user_explicit_active.append(payload)
+        elif status == "active":
+            other_active.append(payload)
+        else:
+            rest.append(payload)
+    actives = user_explicit_active + other_active
+    if len(actives) >= MAX_PROVIDER_INTENT_DISPOSITIONS:
+        return actives
+    room = MAX_PROVIDER_INTENT_DISPOSITIONS - len(actives)
+    return actives + rest[:room]
+
+
+def _clip_provider_receipt_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) > MAX_PROVIDER_RECEIPT_FIELD_CHARS:
+        return text[:MAX_PROVIDER_RECEIPT_FIELD_CHARS]
+    return text
+
+
+def _bounded_native_receipt_identities(values: Any) -> list[dict[str, str]]:
+    if not isinstance(values, list):
+        return []
+    result: list[dict[str, str]] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        identity: dict[str, str] = {}
+        for key in ("document_uid", "object_name", "type_id"):
+            text = _clip_provider_receipt_text(item.get(key))
+            if text:
+                identity[key] = text
+        if identity:
+            result.append(identity)
+        if len(result) >= MAX_PROVIDER_RECEIPT_IDENTITIES:
+            break
+    return result
+
+
+def provider_last_native_receipt(native_state: Any) -> dict[str, Any] | None:
+    """Return the last Native receipt summary Grok may see at turn start.
+
+    Only honesty-bearing receipt fields are copied. Identity lists stay
+    bounded so a large mutation cannot inflate turn-start context.
+    """
+
+    if not isinstance(native_state, dict):
+        return None
+    receipts = native_state.get("recent_receipts")
+    if not isinstance(receipts, list) or not receipts:
+        return None
+    raw = receipts[-1]
+    if not isinstance(raw, dict):
+        return None
+    capability = _clip_provider_receipt_text(raw.get("capability"))
+    result: dict[str, Any] = {
+        "claim_ceiling": _clip_provider_receipt_text(
+            raw.get("claim_ceiling") or "geometry_applied"
+        )
+        or "geometry_applied",
+        "evidence_state": _clip_provider_receipt_text(
+            raw.get("evidence_state") or "pass"
+        )
+        or "pass",
+        "created": _bounded_native_receipt_identities(raw.get("created")),
+        "changed": _bounded_native_receipt_identities(raw.get("changed")),
+        "deleted": _bounded_native_receipt_identities(raw.get("deleted")),
+        "replaced": _bounded_native_receipt_identities(raw.get("replaced")),
+    }
+    if capability:
+        result["capability"] = capability
+    for key in ("revision_before", "revision_after"):
+        value = raw.get(key)
+        if type(value) is int:
+            result[key] = value
+    return result
+
+
 _MAX_VIBESCRIPT_REFERENCE_CACHE_ENTRIES = 8
 _MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES = 256 * 1024 * 1024
 
@@ -752,12 +862,17 @@ class VibeCADService:
                 str(document.Uid),
                 capability_prefix="analyze.solver_execution",
             )
-        return build_active_snapshot(
+        native_state = self.native_document_state()
+        snapshot = build_active_snapshot(
             document,
             surface.surface_id,
-            self.native_document_state(),
+            native_state,
             background_job=background_job,
         )
+        last_receipt = provider_last_native_receipt(native_state)
+        if last_receipt is not None:
+            snapshot["last_receipt"] = last_receipt
+        return snapshot
 
     def close_native_document_state(self, document_uid: str) -> None:
         uid = str(document_uid or "").strip()
@@ -1837,7 +1952,13 @@ class VibeCADService:
     def view_screenshot_summary(self) -> dict[str, Any]:
         if self._last_view_screenshot is None:
             return {"captured": False, "path": None}
-        return dict(self._last_view_screenshot)
+        summary = dict(self._last_view_screenshot)
+        if summary.get("captured"):
+            # Viewport pixels are presentation evidence, not measurements.
+            summary["presentation_only"] = True
+            summary["artifact_class"] = "presentation"
+            summary["claim_ceiling"] = "not_measured"
+        return summary
 
     def consume_view_screenshot_attachment(
         self, screenshot: dict[str, Any] | None
@@ -4168,6 +4289,20 @@ class VibeCADService:
     def intent_memory(self) -> dict[str, Any]:
         return self._project_store.intent_memory()
 
+    def provider_intent_dispositions(self) -> list[dict[str, str]]:
+        """Bounded notes/constraints for turn-start context; never the raw memory."""
+
+        try:
+            memory = self.intent_memory()
+        except Exception:
+            return [
+                {
+                    "text": "Intent Memory unavailable; do not assume constraints were dropped.",
+                    "status": "evidence_waiting",
+                }
+            ]
+        return provider_intent_disposition_list(memory)
+
     def intent_memory_snapshot(self) -> dict[str, Any]:
         memory = self.intent_memory()
         histories = self._project_store.conversation_histories()
@@ -5420,6 +5555,7 @@ class VibeCADService:
             "view_screenshot": self.view_screenshot_summary(),
             "reference_images": self.provider_reference_image_attachments(),
             "aero": self.aero_summary(),
+            "intent": self.provider_intent_dispositions(),
         }
 
     def _register_core_tools(self) -> None:
