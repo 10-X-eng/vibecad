@@ -222,6 +222,14 @@ def test_native_command_rejects_invalid_arguments_type() -> None:
     assert payload["failure_code"] == "NATIVE_ARGUMENTS_INVALID"
 
 
+def test_native_command_rejects_non_object_arguments() -> None:
+    payload = agent.native_command(
+        {"capability": "inspect.query", "arguments": ["not-an-object"]}
+    )
+    assert payload["ok"] is False
+    assert payload["failure_code"] == "NATIVE_ARGUMENTS_INVALID"
+
+
 def test_native_command_passes_operation_into_arguments_json(monkeypatch) -> None:
     calls: list[tuple[str, str, str]] = []
 
