@@ -255,11 +255,73 @@ def test_aeroconfig_without_tail_fields_seeds_named_h_tail_and_boom():
     assert abs(resolved["tail_chord_mm"] - 60.0) < 1.0
 
 
-def test_finalize_defaults_include_tail_and_boom_sizes():
+def test_finalize_defaults_include_boom_but_do_not_invent_tail():
     resolved = config.resolve_geometry(None)
-    assert abs(resolved["tail_span_m"] - 0.3 * 0.5) < 1e-9
-    assert abs(resolved["tail_chord_m"] - 0.6 * 0.09) < 1e-9
+    assert resolved.get("has_h_tail") is False
+    assert not resolved.get("tail_span_mm")
+    assert not resolved.get("tail_chord_mm")
+    assert float(resolved.get("tail_span_m") or 0.0) == 0.0
+    assert float(resolved.get("tail_chord_m") or 0.0) == 0.0
     assert abs(resolved["boom_length_m"] - max(0.25, 3.5 * 0.09)) < 1e-9
+
+
+def test_boom_without_h_tail_does_not_invent_tail_sizes():
+    lower = SimpleNamespace(
+        Name="lower_wing",
+        Label="lower_wing",
+        Shape=_Shape(_BoundBox(0.0, 90.0, -250.0, 250.0, 0.0, 8.0)),
+    )
+    boom = SimpleNamespace(
+        Name="boom",
+        Label="boom",
+        Shape=_Shape(_BoundBox(-280.0, 20.0, -4.0, 4.0, 60.0, 68.0)),
+    )
+    doc = _Doc(objects=[lower, boom])
+    resolved = config.resolve_geometry(doc)
+    assert resolved.get("has_h_tail") is False
+    assert not resolved.get("tail_span_mm")
+    assert not resolved.get("tail_chord_mm")
+    assert abs(resolved["boom_length_mm"] - 300.0) < 1.0
+
+
+def test_named_h_tail_sets_has_h_tail_and_keeps_measured_sizes():
+    lower = SimpleNamespace(
+        Name="lower_wing",
+        Label="lower_wing",
+        Shape=_Shape(_BoundBox(0.0, 90.0, -250.0, 250.0, 0.0, 8.0)),
+    )
+    tail = SimpleNamespace(
+        Name="h_tail",
+        Label="h_tail",
+        Shape=_Shape(_BoundBox(-310.0, -250.0, -80.0, 80.0, 60.0, 66.0)),
+    )
+    doc = _Doc(objects=[lower, tail])
+    resolved = config.resolve_geometry(doc)
+    assert resolved["has_h_tail"] is True
+    assert abs(resolved["tail_span_mm"] - 160.0) < 1.0
+    assert abs(resolved["tail_chord_mm"] - 60.0) < 1.0
+
+
+def test_explicit_tail_sizes_on_aeroconfig_set_has_h_tail():
+    aero = SimpleNamespace(
+        Name="AeroConfig",
+        Label="AeroConfig",
+        span_mm=500.0,
+        chord_mm=90.0,
+        gap_c=1.4,
+        stagger_c=1.15,
+        decalage_deg=2.0,
+        auw_g=149.6,
+        airfoil="e63",
+        alpha_deg=4.0,
+        tail_span_mm=180.0,
+        tail_chord_mm=62.0,
+    )
+    doc = _Doc(objects=[aero])
+    resolved = config.resolve_geometry(doc)
+    assert resolved["has_h_tail"] is True
+    assert abs(resolved["tail_span_mm"] - 180.0) < 1e-9
+    assert abs(resolved["tail_chord_mm"] - 62.0) < 1e-9
 
 
 def test_finalize_honors_xyz_ref_c():

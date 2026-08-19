@@ -96,6 +96,8 @@ def resolve_geometry(doc: Any | None = None) -> dict[str, Any]:
     values["vehicle_type"] = DEFAULT_VEHICLE_TYPE
     if doc is None:
         return finalize(values)
+    if find_named(doc, "h_tail") is not None:
+        values["has_h_tail"] = True
 
     aero = find_named(doc, "AeroConfig")
     if aero is not None and _has_any_param(aero):
@@ -159,12 +161,19 @@ def finalize(values: dict[str, Any]) -> dict[str, Any]:
     )
     if not boom_mm:
         cfg["boom_length_mm"] = cfg["boom_length_m"] * 1000.0
-    if not cfg.get("tail_span_mm"):
-        cfg["tail_span_mm"] = 0.30 * float(cfg["span_mm"])
-    if not cfg.get("tail_chord_mm"):
-        cfg["tail_chord_mm"] = 0.60 * float(cfg["chord_mm"])
-    cfg["tail_span_m"] = float(cfg["tail_span_mm"]) / 1000.0
-    cfg["tail_chord_m"] = float(cfg["tail_chord_mm"]) / 1000.0
+    explicit_tail = values.get("tail_span_mm") or values.get("tail_chord_mm")
+    has_h_tail = bool(cfg.get("has_h_tail") or explicit_tail)
+    cfg["has_h_tail"] = has_h_tail
+    if has_h_tail:
+        if not cfg.get("tail_span_mm"):
+            cfg["tail_span_mm"] = 0.30 * float(cfg["span_mm"])
+        if not cfg.get("tail_chord_mm"):
+            cfg["tail_chord_mm"] = 0.60 * float(cfg["chord_mm"])
+        cfg["tail_span_m"] = float(cfg["tail_span_mm"]) / 1000.0
+        cfg["tail_chord_m"] = float(cfg["tail_chord_mm"]) / 1000.0
+    else:
+        cfg["tail_span_m"] = 0.0
+        cfg["tail_chord_m"] = 0.0
     if cfg.get("xyz_ref_c") is not None:
         xyz_c = float(cfg["xyz_ref_c"])
     elif cfg.get("cg_x_m") is not None and chord_m:

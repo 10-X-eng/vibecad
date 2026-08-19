@@ -323,9 +323,6 @@ def build_airplane(cfg: dict[str, Any], coords: list[list[float]]) -> Any:
     import AeroAirfoil
 
     foil = asb.Airfoil(coordinates=_as_array(coords))
-    tail_foil = asb.Airfoil(
-        coordinates=_as_array(AeroAirfoil.naca4_coordinates(0.0, 0.0, 8.0))
-    )
     span = float(cfg["span_m"])
     chord = float(cfg["chord_m"])
     gap = float(cfg["gap_m"])
@@ -363,11 +360,6 @@ def build_airplane(cfg: dict[str, Any], coords: list[list[float]]) -> Any:
         ],
     )
     boom_length = float(cfg.get("boom_length_m") or max(0.25, 3.5 * chord))
-    tail_span = float(cfg.get("tail_span_m") or 0.30 * span)
-    tail_chord = float(cfg.get("tail_chord_m") or 0.60 * chord)
-    tail_x = float(
-        cfg["tail_le_x_m"] if cfg.get("tail_le_x_m") is not None else boom_length
-    )
     boom_x0 = float(cfg["boom_x0_m"] if cfg.get("boom_x0_m") is not None else -0.02)
     boom_x1 = float(cfg["boom_x1_m"] if cfg.get("boom_x1_m") is not None else boom_length)
     boom = asb.Fuselage(
@@ -380,28 +372,39 @@ def build_airplane(cfg: dict[str, Any], coords: list[list[float]]) -> Any:
             ),
         ],
     )
-    h_tail = asb.Wing(
-        name="h_tail",
-        symmetric=True,
-        xsecs=[
-            asb.WingXSec(
-                xyz_le=[tail_x, 0.0, gap / 2.0],
-                chord=tail_chord,
-                twist=0.0,
-                airfoil=tail_foil,
-            ),
-            asb.WingXSec(
-                xyz_le=[tail_x, tail_span / 2.0, gap / 2.0],
-                chord=tail_chord,
-                twist=0.0,
-                airfoil=tail_foil,
-            ),
-        ],
-    )
+    wings = [lower, upper]
+    if cfg.get("has_h_tail"):
+        tail_foil = asb.Airfoil(
+            coordinates=_as_array(AeroAirfoil.naca4_coordinates(0.0, 0.0, 8.0))
+        )
+        tail_span = float(cfg.get("tail_span_m") or 0.30 * span)
+        tail_chord = float(cfg.get("tail_chord_m") or 0.60 * chord)
+        tail_x = float(
+            cfg["tail_le_x_m"] if cfg.get("tail_le_x_m") is not None else boom_length
+        )
+        h_tail = asb.Wing(
+            name="h_tail",
+            symmetric=True,
+            xsecs=[
+                asb.WingXSec(
+                    xyz_le=[tail_x, 0.0, gap / 2.0],
+                    chord=tail_chord,
+                    twist=0.0,
+                    airfoil=tail_foil,
+                ),
+                asb.WingXSec(
+                    xyz_le=[tail_x, tail_span / 2.0, gap / 2.0],
+                    chord=tail_chord,
+                    twist=0.0,
+                    airfoil=tail_foil,
+                ),
+            ],
+        )
+        wings.append(h_tail)
     return asb.Airplane(
         name="VibeCADAero",
         xyz_ref=list(cfg.get("xyz_ref") or [0.25 * chord, 0.0, gap / 2.0]),
-        wings=[lower, upper, h_tail],
+        wings=wings,
         fuselages=[boom],
     )
 
