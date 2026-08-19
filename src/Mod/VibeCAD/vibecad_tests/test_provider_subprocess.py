@@ -549,6 +549,41 @@ def _vibescript_mode_context(
     }
 
 
+def test_system_instructions_encode_multi_view_visual_protocol() -> None:
+    text = provider.VIBECAD_SYSTEM_INSTRUCTIONS
+    assert "core.set_view" in text
+    assert "core.capture_view_screenshot" in text
+    assert "isometric" in text
+    assert "front" in text
+    assert "top" in text
+    assert "one random view is not enough" in text
+    assert "Pixels never invent" in text
+    assert "presentation_only" in text
+    assert "needs_measurement" in text
+    assert "unchanged" in text
+    assert "tessellation" in text
+    assert "STEP" in text
+    assert "STL" in text
+    assert "export quality" in text
+
+
+def test_provider_instructions_stay_within_deterministic_byte_limit() -> None:
+    empty = provider._provider_instructions({})
+    assert empty == provider.VIBECAD_SYSTEM_INSTRUCTIONS
+    assert (
+        len(empty.encode("utf-8")) <= provider.MAX_PROVIDER_INSTRUCTIONS_BYTES
+    )
+    for context in (
+        _vibescript_mode_context(),
+        _vibescript_mode_context("AssemblyWorkbench", "assembly"),
+    ):
+        instructions = provider._provider_instructions(context)
+        assert (
+            len(instructions.encode("utf-8"))
+            <= provider.MAX_PROVIDER_INSTRUCTIONS_BYTES
+        )
+
+
 def test_instructions_include_vibescript_guidance_only_in_vibescript_mode() -> None:
     context = _vibescript_mode_context()
     guidance = provider._vibescript_authoring_instruction(context)

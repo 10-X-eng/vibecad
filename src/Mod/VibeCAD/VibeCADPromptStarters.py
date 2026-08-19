@@ -300,8 +300,25 @@ Evaluate:
 Known priorities or constraints:
 - [requirements that outweigh cost or simplicity]
 
-Return prioritized findings, evidence from the current geometry, and specific proposed
+        Return prioritized findings, evidence from the current geometry, and specific proposed
 changes. Wait for authorization before changing the model.
+""",
+    },
+    {
+        "id": "builtin:visual-review",
+        "name": "Check how this looks from all sides",
+        "category": "Review",
+        "content": """
+Review the current model's appearance from multiple views. Do not modify it during this review.
+
+Focus:
+- [what should look right: silhouette, symmetry, holes, fillets, interferences, or overall form]
+
+Capture isometric, front, and top; fit each view. Cite the view. Tag findings presentation_only vs needs_measurement. Do not invent dimensions, clearance, or fit from pixels, and do not claim STEP/STL/export quality from a screenshot.
+
+If a later capture of the same view is unchanged (faceting, clipping, lighting), stop retrying that view; change tessellation, display, or section, or measure.
+
+Return what is visibly wrong, which view shows it, and whether measurement is required. Wait for authorization before changing the model.
 """,
     },
 )
