@@ -197,3 +197,53 @@ def create_native_session_execution(
         debug_sink=debug_sink,
     )
     return NativeSessionExecution(dispatcher, turn, undo, run_id)
+
+
+def create_live_native_session_execution(
+    *,
+    service: Any,
+    debug_sink: Callable[[Mapping[str, Any]], None] | None = None,
+    registry: Any | None = None,
+    controller: Any | None = None,
+    output_authorizer: NativeOutputAuthorizer | None = None,
+    input_authorizer: NativeInputAuthorizer | None = None,
+    document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None = None,
+) -> NativeSessionExecution:
+    """Freeze the current ribbon once and build the same dispatcher in-app Grok uses.
+
+    Grok Bot has no provider turn snapshot. The live freeze *is* the contract.
+    """
+
+    if str(service.modeling_engine() or "").strip().lower() != "native":
+        raise NativeDispatchError(
+            "NATIVE_AUTHORITY_CHANGED",
+            "The document is no longer under Native authority.",
+        )
+    document = service._active_document()
+    if document is None:
+        raise NativeDispatchError(
+            "NATIVE_DOCUMENT_CHANGED",
+            "No exact active Native document is available.",
+        )
+    selected_registry = registry or build_native_capability_registry()
+    turn = freeze_native_turn(controller, selected_registry)
+    return create_native_session_execution(
+        service=service,
+        expected_surface={
+            "kind": "turn_start_snapshot",
+            "frozen": True,
+            "engine": "native",
+            "tool_names": list(turn.tool_names),
+            "schema_count": len(turn.provider_schemas),
+            "schema_sha256": turn.schema_sha256,
+            "domain": turn.surface.surface_id,
+            "surface_id": turn.surface.modeling_surface_id,
+        },
+        expected_schemas=[dict(schema) for schema in turn.provider_schemas],
+        debug_sink=debug_sink,
+        registry=selected_registry,
+        controller=controller,
+        output_authorizer=output_authorizer,
+        input_authorizer=input_authorizer,
+        document_thread_dispatch=document_thread_dispatch,
+    )

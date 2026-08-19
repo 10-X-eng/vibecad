@@ -49,6 +49,7 @@ COMMANDS = (
     "aero",
     "context",
     "prompt",
+    "native",
 )
 
 _server_lock = threading.RLock()
@@ -169,13 +170,16 @@ channel. Use it to drive VibeCAD without clicking menus.
 | POST | `/v1/run`         | `{{"python":"..."}}` or `{{"script":"..."}}` (+ optional `path`, `recompute`) | Run against the active document |
 | GET  | `/v1/context`     |                                   | Same turn-start CAD facts as in-app Grok |
 | POST | `/v1/prompt`      | `{{"text":"..."}}`                | Start an in-app Build turn (same path as in-app Grok) |
+| POST | `/v1/native`      | `{{"capability":"inspect.query","arguments":{{"operation":"..."}}}}` | Same Native dispatcher as in-app Grok |
 | GET  | `/v1/aero`        |                                   | Flight card + AeroReport stamps |
 | POST | `/v1/aero`        | `{{"operation":"analyze"}}` (also section, vlm, export_jsbsim, report, propose_repairs, apply_repairs, reject_repairs, flight_card) | Same Aero wrapper as in-app Grok |
 | POST | `/v1/preferences` |                                   | Show VibeCAD Preferences |
 
-Use `/v1/context` and `/v1/prompt` for CAD. Use `/v1/aero` for aerodynamics.
-Do not `exec` Analyze or `apply_repairs` through `/v1/run`. `/v1/run` remains
-for non-Aero Python.
+Use `/v1/native` to mutate or inspect CAD with the same Native dispatcher
+as in-app Grok (receipts and claim ceilings included). Use `/v1/aero` for
+aerodynamics. Use `/v1/context` and `/v1/prompt` to read facts or start a
+chat turn. Do not `exec` CAD or Aero through `/v1/run`. `/v1/run` remains
+for non-CAD Python.
 
 `run` executes Python in the VibeCAD process with `App`/`FreeCAD` (and
 `Gui`/`FreeCADGui` when the GUI is up). Assign `result` or `__result__` to
@@ -183,7 +187,9 @@ return a JSON value. Stdout, stderr, and exceptions come back in the payload.
 
 CAD path for Grok Bot (same quality as in-app Grok):
 1. GET `/v1/context` for the turn-start CAD facts.
-2. POST `/v1/prompt` `{{"text":"..."}}` to start an in-app Build turn.
+2. POST `/v1/native` with a ribbon capability and arguments (same dispatcher).
+3. POST `/v1/prompt` `{{"text":"..."}}` to start an in-app Build turn if you
+   need the chat loop.
 
 Peak Aero loop for Grok Bot (same quality as in-app Grok):
 1. GET `/v1/aero` for the stamped flight card.
@@ -199,6 +205,9 @@ Peak Aero loop for Grok Bot (same quality as in-app Grok):
 TOKEN="$(cat '{token_path}')"
 curl -s -H "Authorization: Bearer $TOKEN" {base_url}/v1/status
 curl -s -H "Authorization: Bearer $TOKEN" {base_url}/v1/context
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
+  -d '{{"capability":"inspect.query","arguments":{{"operation":"geometry_validity"}}}}' \\
+  {base_url}/v1/native
 curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
   -d '{{"text":"fillet the selected edge"}}' \\
   {base_url}/v1/prompt
@@ -731,6 +740,69 @@ def prompt_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"ok": True, "started": True}
 
 
+def native_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run one Native capability through the same dispatcher as in-app Grok."""
+
+    args = dict(arguments or {})
+    tool = str(args.get("capability") or args.get("tool") or "").strip()
+    if not tool:
+        return failure(
+            "NATIVE_TOOL_REQUIRED",
+            'Pass JSON {"capability":"inspect.query","arguments":{...}}.',
+            stage="schema",
+        )
+    extra = args.get("arguments")
+    if extra is None:
+        extra = {}
+    if not isinstance(extra, dict):
+        return failure(
+            "NATIVE_ARGUMENTS_INVALID",
+            "Native arguments must be a JSON object.",
+            stage="schema",
+        )
+    payload_args = dict(extra)
+    operation = args.get("operation")
+    if operation not in (None, "") and "operation" not in payload_args:
+        payload_args["operation"] = operation
+    if _gui() is None:
+        return failure(
+            "GUI_REQUIRED",
+            "POST /v1/native requires the running VibeCAD GUI.",
+            stage="precondition",
+        )
+    try:
+        from VibeCADCore import get_service
+        from VibeCADNativeDispatch import NativeDispatchError
+        from VibeCADNativeSessionFactory import create_live_native_session_execution
+    except Exception as exc:
+        return failure("NATIVE_UNAVAILABLE", str(exc), stage="precondition")
+    execution = None
+    try:
+        service = get_service()
+        execution = create_live_native_session_execution(service=service)
+        encoded = json.dumps(payload_args, ensure_ascii=True, separators=(",", ":"))
+        call_id = str(args.get("call_id") or secrets.token_hex(16))
+        result = execution.dispatcher.call(tool, encoded, call_id)
+    except NativeDispatchError as exc:
+        code = str(getattr(exc, "code", "") or "NATIVE_DISPATCH")
+        return failure(code, str(exc), stage="precondition")
+    except Exception as exc:
+        return failure("NATIVE_UNAVAILABLE", str(exc), stage="precondition")
+    finally:
+        if execution is not None:
+            try:
+                execution.close()
+            except Exception:
+                pass
+    if not isinstance(result, dict):
+        return failure(
+            "NATIVE_RESULT_INVALID",
+            "Native dispatcher returned a non-object result.",
+            stage="internal",
+        )
+    return result
+
+
 def show_preferences() -> dict[str, Any]:
     gui = _gui()
     show = getattr(gui, "showPreferencesByName", None) if gui is not None else None
@@ -776,6 +848,8 @@ def dispatch(command: str, arguments: dict[str, Any] | None = None) -> dict[str,
         return _on_document_thread(context_command)
     if action == "prompt":
         return _on_document_thread(lambda: prompt_command(args))
+    if action == "native":
+        return _on_document_thread(lambda: native_command(args))
     return _on_document_thread(show_preferences)
 
 
@@ -838,6 +912,8 @@ def handle_http_request(
         return 200, dispatch("context")
     if method == "POST" and route in {"/v1/prompt", "/prompt"}:
         return 200, dispatch("prompt", payload)
+    if method == "POST" and route in {"/v1/native", "/native"}:
+        return 200, dispatch("native", payload)
     if method == "GET" and route in {"/v1/aero", "/aero"}:
         return 200, dispatch("aero", {"operation": "context"})
     if method == "POST" and route in {"/v1/aero", "/aero"}:

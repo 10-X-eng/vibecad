@@ -46,6 +46,7 @@ def test_write_agent_brief_creates_readable_brief_with_connection() -> None:
         "/v1/run",
         "/v1/context",
         "/v1/prompt",
+        "/v1/native",
         "/v1/aero",
     ):
         assert route in text
@@ -123,6 +124,156 @@ def test_context_and_prompt_http_routes_are_registered(monkeypatch) -> None:
     assert status == 200
     assert payload["command"] == "prompt"
     assert payload["arguments"]["text"] == "fillet the selected edge"
+
+
+def test_native_http_route_is_registered(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent,
+        "dispatch",
+        lambda command, arguments=None: {
+            "ok": True,
+            "command": command,
+            "arguments": dict(arguments or {}),
+        },
+    )
+    status, payload = agent.handle_http_request(
+        "POST",
+        "/v1/native",
+        {"capability": "inspect.query", "arguments": {"operation": "geometry_validity"}},
+    )
+    assert status == 200
+    assert payload["command"] == "native"
+    assert payload["arguments"]["capability"] == "inspect.query"
+
+
+def test_native_command_requires_capability() -> None:
+    payload = agent.native_command({})
+    assert payload["ok"] is False
+    assert payload["failure_code"] == "NATIVE_TOOL_REQUIRED"
+
+
+def test_native_command_requires_gui(monkeypatch) -> None:
+    monkeypatch.setattr(agent, "_gui", lambda: None)
+    payload = agent.native_command({"capability": "inspect.query"})
+    assert payload["ok"] is False
+    assert payload["failure_code"] == "GUI_REQUIRED"
+
+
+def test_native_command_calls_live_dispatcher(monkeypatch) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    class _Dispatcher:
+        def call(self, tool_name, arguments_json, provider_call_id):
+            calls.append((tool_name, arguments_json, provider_call_id))
+            return {
+                "ok": True,
+                "claim_ceiling": "geometry_applied",
+                "evidence_state": "pass",
+            }
+
+    class _Execution:
+        dispatcher = _Dispatcher()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeDispatch",
+        SimpleNamespace(
+            NativeDispatchError=type(
+                "NativeDispatchError",
+                (Exception,),
+                {"code": "NATIVE_DISPATCH"},
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeSessionFactory",
+        SimpleNamespace(
+            create_live_native_session_execution=lambda **_kwargs: _Execution()
+        ),
+    )
+    payload = agent.native_command(
+        {
+            "capability": "inspect.query",
+            "arguments": {"operation": "geometry_validity"},
+            "call_id": "call-1",
+        }
+    )
+    assert payload["ok"] is True
+    assert payload["claim_ceiling"] == "geometry_applied"
+    assert calls[0][0] == "inspect.query"
+    assert '"operation":"geometry_validity"' in calls[0][1]
+
+
+def test_native_command_rejects_invalid_arguments_type() -> None:
+    payload = agent.native_command(
+        {"capability": "inspect.query", "arguments": "not-an-object"}
+    )
+    assert payload["ok"] is False
+    assert payload["failure_code"] == "NATIVE_ARGUMENTS_INVALID"
+
+
+def test_native_command_passes_operation_into_arguments_json(monkeypatch) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    class _Dispatcher:
+        def call(self, tool_name, arguments_json, provider_call_id):
+            calls.append((tool_name, arguments_json, provider_call_id))
+            return {"ok": True}
+
+    class _Execution:
+        dispatcher = _Dispatcher()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeDispatch",
+        SimpleNamespace(
+            NativeDispatchError=type(
+                "NativeDispatchError",
+                (Exception,),
+                {"code": "NATIVE_DISPATCH"},
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeSessionFactory",
+        SimpleNamespace(
+            create_live_native_session_execution=lambda **_kwargs: _Execution()
+        ),
+    )
+    payload = agent.native_command(
+        {
+            "capability": "inspect.query",
+            "operation": "geometry_validity",
+            "call_id": "call-2",
+        }
+    )
+    assert payload["ok"] is True
+    assert calls[0][0] == "inspect.query"
+    assert '"operation":"geometry_validity"' in calls[0][1]
+
+
+def test_dispatch_native_is_in_commands() -> None:
+    assert "native" in agent.COMMANDS
 
 
 def test_prompt_command_requires_text() -> None:
