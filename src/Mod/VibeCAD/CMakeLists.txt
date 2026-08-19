@@ -1395,6 +1395,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_native_input.py
         vibecad_tests/test_grok_oauth.py
         vibecad_tests/test_agent_control.py
+        vibecad_tests/test_agent_control_grok_bot.py
         vibecad_tests/test_native_robot_setup.py
         vibecad_tests/test_native_robot_motion.py
         vibecad_tests/test_native_robot_export.py

@@ -21,6 +21,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import socket
 import sys
 import threading
@@ -35,6 +36,8 @@ AGENT_PORT_ENV = "VIBECAD_AGENT_PORT"
 AGENT_HOME_ENV = "VIBECAD_AGENT_HOME"
 TOKEN_FILENAME = "token"
 ENDPOINT_FILENAME = "endpoint.json"
+AGENT_BRIEF_FILENAME = "AGENTS.md"
+GROK_BOT_CMD_ENV = "VIBECAD_GROK_BOT_CMD"
 TOKEN_BYTES = 32
 MAX_BODY_BYTES = 1_048_576
 COMMANDS = ("status", "documents", "open", "run", "preferences")
@@ -129,6 +132,133 @@ def load_endpoint() -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def brief_path() -> Path:
+    return agent_home() / AGENT_BRIEF_FILENAME
+
+
+_AGENT_BRIEF_TEMPLATE = """# VibeCAD control brief for Grok Bot
+
+VibeCAD is running on this machine and exposes a local, loopback-only control
+channel. Use it to drive VibeCAD without clicking menus.
+
+## Connect
+
+- Base URL: `{base_url}` (127.0.0.1 only)
+- Auth: send header `Authorization: Bearer <token>`
+- Token file: `{token_path}` (read the file contents; never prompt a human)
+- Endpoint file (host/port/base_url/token_path): `{endpoint_path}`
+
+## Routes (all require the bearer token)
+
+| Method | Path | Body | Result |
+| --- | --- | --- | --- |
+| GET  | `/v1/status`      |                                   | Provider, auth (no secrets), documents, endpoint |
+| GET  | `/v1/documents`   |                                   | Open documents |
+| POST | `/v1/open`        | `{{"path":"..."}}`                | Open/activate a document |
+| POST | `/v1/run`         | `{{"python":"..."}}` or `{{"script":"..."}}` (+ optional `path`, `recompute`) | Run against the active document |
+| POST | `/v1/preferences` |                                   | Show VibeCAD Preferences |
+
+`run` executes Python in the VibeCAD process with `App`/`FreeCAD` (and
+`Gui`/`FreeCADGui` when the GUI is up). Assign `result` or `__result__` to
+return a JSON value. Stdout, stderr, and exceptions come back in the payload.
+
+## Example
+
+```bash
+TOKEN="$(cat '{token_path}')"
+curl -s -H "Authorization: Bearer $TOKEN" {base_url}/v1/status
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
+  -d '{{"python":"result = App.ActiveDocument and App.ActiveDocument.Name"}}' \\
+  {base_url}/v1/run
+```
+
+## Rules
+
+- Loopback only; do not expose this port off the machine.
+- Never type passwords or OAuth codes. Sign-in stays in VibeCAD Preferences.
+- Do not enable MCP; it disables the in-app Assistant.
+"""
+
+
+def write_agent_brief(*, host: str = AGENT_HOST, port: int | None = None) -> Path:
+    """Write an AGENTS.md brief telling a local agent how to drive VibeCAD.
+
+    The brief is written next to the token/endpoint files so a desktop agent
+    such as Grok Bot can read the connection details and the available routes.
+    """
+
+    resolved_port = int(port or _bound_port or configured_port())
+    base_url = f"http://{host}:{resolved_port}"
+    path = brief_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = _AGENT_BRIEF_TEMPLATE.format(
+        base_url=base_url,
+        token_path=str(token_path()),
+        endpoint_path=str(endpoint_path()),
+    )
+    path.write_text(content, encoding="utf-8")
+    _restrict_file(path)
+    return path
+
+
+def _resolve_command(candidate: str) -> str | None:
+    if not candidate or not candidate.strip():
+        return None
+    candidate = candidate.strip()
+    direct = Path(candidate).expanduser()
+    if direct.is_file():
+        return str(direct)
+    found = shutil.which(candidate)
+    if found:
+        return found
+    return None
+
+
+def _default_grok_bot_candidates() -> list[str]:
+    """Well-known locations for the Grok Bot desktop app.
+
+    Deliberately narrow: the Grok Bot desktop app is ``Grok Bot.exe`` under
+    ``Program Files`` on Windows. We do not probe bare names like ``grok``
+    because that resolves to the separate Grok Build CLI (``grok.exe``), which
+    is a different tool and must not be launched here.
+    """
+
+    candidates: list[str] = []
+    if sys.platform == "win32":
+        program_files = os.environ.get("ProgramFiles", "") or r"C:\Program Files"
+        candidates.append(program_files.rstrip("\\") + r"\Grok Bot\Grok Bot.exe")
+        literal = r"C:\Program Files\Grok Bot\Grok Bot.exe"
+        if literal not in candidates:
+            candidates.append(literal)
+    elif sys.platform == "darwin":
+        candidates.append("/Applications/Grok Bot.app/Contents/MacOS/Grok Bot")
+    else:
+        candidates.extend(["grok-bot", "grokbot"])
+    return candidates
+
+
+def detect_grok_bot_command(explicit: str = "") -> str | None:
+    """Resolve a runnable Grok Bot command, or None when none is found.
+
+    Resolution order: an explicit path/command, the ``VIBECAD_GROK_BOT_CMD``
+    environment variable, then common executable names and per-OS install
+    locations. Returns an absolute path (or a name found on ``PATH``).
+    """
+
+    ordered: list[str] = []
+    if explicit and explicit.strip():
+        ordered.append(explicit.strip())
+    env_cmd = os.environ.get(GROK_BOT_CMD_ENV, "").strip()
+    if env_cmd:
+        ordered.append(env_cmd)
+    ordered.extend(_default_grok_bot_candidates())
+    for candidate in ordered:
+        resolved = _resolve_command(candidate)
+        if resolved:
+            return resolved
+    return None
 
 
 def failure(
