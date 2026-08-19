@@ -26,7 +26,7 @@ import socket
 import sys
 import threading
 import traceback
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 
@@ -168,7 +168,7 @@ channel. Use it to drive VibeCAD without clicking menus.
 | GET  | `/v1/documents`   |                                   | Open documents |
 | POST | `/v1/open`        | `{{"path":"..."}}`                | Open/activate a document |
 | POST | `/v1/run`         | `{{"python":"..."}}` or `{{"script":"..."}}` (+ optional `path`, `recompute`) | Run against the active document |
-| GET  | `/v1/context`     |                                   | Same turn-start CAD facts as in-app Grok |
+| GET  | `/v1/context`     |                                   | Frozen ribbon catalog + native_state (same freeze as in-app Grok) |
 | POST | `/v1/prompt`      | `{{"text":"..."}}`                | Start an in-app Build turn (same path as in-app Grok) |
 | POST | `/v1/native`      | `{{"capability":"inspect.query","arguments":{{"operation":"..."}}}}` | Same Native dispatcher as in-app Grok |
 | GET  | `/v1/aero`        |                                   | Flight card + AeroReport stamps |
@@ -187,8 +187,9 @@ for non-CAD Python.
 return a JSON value. Stdout, stderr, and exceptions come back in the payload.
 
 CAD path for Grok Bot (same quality as in-app Grok):
-1. GET `/v1/context` for the turn-start CAD facts.
-2. POST `/v1/native` with a ribbon capability and arguments (same dispatcher).
+1. GET `/v1/context` for the frozen ribbon (`provider_tool_surface.tool_names`,
+   `provider_tool_schemas`) and `native_state`. Do not invent capability names.
+2. POST `/v1/native` using a name from that freeze (same dispatcher).
 3. POST `/v1/prompt` `{{"text":"..."}}` to start an in-app Build turn if you
    need the chat loop.
 
@@ -207,7 +208,7 @@ TOKEN="$(cat '{token_path}')"
 curl -s -H "Authorization: Bearer $TOKEN" {base_url}/v1/status
 curl -s -H "Authorization: Bearer $TOKEN" {base_url}/v1/context
 curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
-  -d '{{"capability":"inspect.query","arguments":{{"operation":"geometry_validity"}}}}' \\
+  -d '{{"capability":"inspect.query","arguments":{{"operation":"validity"}}}}' \\
   {base_url}/v1/native
 curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
   -d '{{"text":"fillet the selected edge"}}' \\
@@ -685,24 +686,56 @@ def aero_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     return runner()
 
 
-def context_command() -> dict[str, Any]:
-    """Same turn-start CAD facts the in-app Grok provider receives."""
+_BOT_TURN_KEYS = (
+    "workbench",
+    "modeling_surface",
+    "native_state",
+    "document",
+    "selection",
+    "view_screenshot",
+    "reference_images",
+    "aero",
+    "intent",
+    "provider_tool_surface",
+    "provider_tool_schemas",
+    "editable_sources",
+)
 
+
+def _bot_turn_packet(captured: Mapping[str, Any]) -> dict[str, Any]:
+    """Same freeze packet in-app Grok gets, without private _vibecad_* keys."""
+
+    packet: dict[str, Any] = {}
+    for key in _BOT_TURN_KEYS:
+        if key not in captured:
+            continue
+        value = captured[key]
+        if key == "intent":
+            packet[key] = value if isinstance(value, list) else []
+            continue
+        if value not in (None, "", [], {}):
+            packet[key] = value
+    return packet
+
+
+def context_command() -> dict[str, Any]:
+    """Same frozen ribbon catalog and native_state as in-app Grok."""
+
+    if _gui() is None:
+        return failure(
+            "GUI_REQUIRED",
+            "Reading CAD context requires the running VibeCAD GUI. "
+            "Start VibeCAD.exe and call GET /v1/context from Grok Bot.",
+            stage="precondition",
+        )
     try:
         from VibeCADCore import get_service
+        from VibeCADSession import _capture_context_for_provider
 
-        summary = get_service().provider_context_summary()
+        captured = _capture_context_for_provider(get_service())
     except Exception as exc:
-        if _gui() is None:
-            return failure(
-                "GUI_REQUIRED",
-                "Reading CAD context requires the running VibeCAD GUI. "
-                "Start VibeCAD.exe and call GET /v1/context from Grok Bot.",
-                stage="precondition",
-                error_detail=str(exc),
-            )
         return failure("CONTEXT_UNAVAILABLE", str(exc), stage="precondition")
-    return {"ok": True, "context": _json_safe(summary)}
+    return {"ok": True, "context": _json_safe(_bot_turn_packet(captured))}
 
 
 def prompt_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
