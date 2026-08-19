@@ -300,7 +300,7 @@ Evaluate:
 Known priorities or constraints:
 - [requirements that outweigh cost or simplicity]
 
-        Return prioritized findings, evidence from the current geometry, and specific proposed
+Return prioritized findings, evidence from the current geometry, and specific proposed
 changes. Wait for authorization before changing the model.
 """,
     },

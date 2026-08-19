@@ -12,10 +12,13 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 import VibeCADAgentControl as agent
+import VibeCADPreferences as prefs
 
 
 @pytest.fixture(autouse=True)
@@ -78,3 +81,64 @@ def test_windows_default_candidates_target_grok_bot_desktop(monkeypatch) -> None
     # Never probe the bare Grok Build CLI (grok.exe) or a plain "grok" name.
     assert "grok" not in candidates
     assert not any(c.endswith(r"\grok.exe") for c in candidates)
+
+
+def test_copy_grok_bot_connection_includes_brief_path(monkeypatch) -> None:
+    copied: dict[str, str] = {}
+
+    class _Clipboard:
+        def setText(self, text: str) -> None:
+            copied["text"] = text
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "PySide",
+        SimpleNamespace(
+            QtWidgets=SimpleNamespace(
+                QApplication=SimpleNamespace(clipboard=lambda: _Clipboard())
+            )
+        ),
+    )
+    page = SimpleNamespace(
+        _grok_bot_connection={
+            "base_url": "http://127.0.0.1:8766",
+            "token": "secret-token",
+            "token_path": "/tmp/token",
+            "endpoint_path": "/v1",
+            "brief_path": "/tmp/agent-home/AGENTS.md",
+        },
+        grok_bot_status=SimpleNamespace(
+            setText=lambda text: copied.setdefault("status", text)
+        ),
+    )
+
+    prefs.VibeCADPreferencesPage._copy_grok_bot_connection(page)
+
+    assert "brief_path: /tmp/agent-home/AGENTS.md" in copied["text"]
+    assert "base_url: http://127.0.0.1:8766" in copied["text"]
+    assert copied["status"].startswith("copied")
+
+
+def test_save_settings_persists_grok_bot_command(monkeypatch) -> None:
+    stored: dict[str, Any] = {}
+
+    class _Pref:
+        def SetString(self, key: str, value: str) -> None:
+            stored[key] = value
+
+    monkeypatch.setattr(prefs, "preferences", lambda: _Pref())
+    monkeypatch.setattr(prefs, "save_settings", lambda _settings: None)
+    monkeypatch.setattr(
+        prefs.App,
+        "Console",
+        SimpleNamespace(PrintWarning=lambda _message: None),
+        raising=False,
+    )
+    page = SimpleNamespace(
+        grok_bot_command=SimpleNamespace(text=lambda: " /opt/Grok Bot "),
+        _current_settings=lambda: object(),
+    )
+
+    prefs.VibeCADPreferencesPage.saveSettings(page)
+
+    assert stored["GrokBotCommand"] == "/opt/Grok Bot"
