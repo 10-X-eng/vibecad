@@ -1693,6 +1693,9 @@ def _run():
                     "VibeCADAero_VLM",
                     "VibeCADAero_ExportJSBSim",
                     "VibeCADAero_Report",
+                    "VibeCADAero_ProposeRepairs",
+                    "VibeCADAero_ApplyRepairs",
+                    "VibeCADAero_FlightCard",
                 }
                 aero_screenshot_path = os.environ.get(
                     "VIBECAD_RIBBON_AERO_SCREENSHOT"

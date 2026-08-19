@@ -103,6 +103,18 @@ def _queue_in_app_steering(text: str, source: str = "aero") -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
+def _is_assistant_run_active() -> bool:
+    """Probe the in-app Grok run without inventing a new global."""
+
+    try:
+        import VibeCADGui
+
+        probe = getattr(VibeCADGui, "_is_assistant_run_active", None)
+        return bool(probe()) if callable(probe) else False
+    except Exception:
+        return False
+
+
 def _push_analyze_to_in_app_grok(result: dict[str, Any], title: str) -> str:
     """Persist Analyze as a VibeCAD/assistant turn and steer an in-flight Grok run."""
 
@@ -113,7 +125,8 @@ def _push_analyze_to_in_app_grok(result: dict[str, Any], title: str) -> str:
         persist=True,
         metadata={"source": "aero"},
     )
-    _queue_in_app_steering(text, "aero")
+    if _is_assistant_run_active():
+        _queue_in_app_steering(text, "aero")
     return text
 
 
@@ -136,11 +149,11 @@ class VibeCADAero_Analyze(_AeroCommand):
         return {
             "Pixmap": _ICON,
             "MenuText": "Analyze",
-            "ToolTip": "Run NeuralFoil + AeroSandbox + momentum hover, repair pitch-unstable geometry, and write AeroReport",
+            "ToolTip": "Solve section+3D+hover and write AeroReport. Does not move CAD.",
         }
 
     def Activated(self) -> None:
-        _report_result(VibeCADAero.run_analyze(_active_doc()), "Aero Analyze")
+        _report_result(VibeCADAero.run_analyze(_active_doc(), repair=False), "Aero Analyze")
 
 
 class VibeCADAero_Section(_AeroCommand):
@@ -172,8 +185,11 @@ class VibeCADAero_ExportJSBSim(_AeroCommand):
         return {
             "Pixmap": _ICON,
             "MenuText": "Export JSBSim plant",
-            "ToolTip": "Write a 6DOF JSBSim XML plant and store the path on the document",
+            "ToolTip": "Write a 6DOF JSBSim XML plant from the last AeroReport",
         }
+
+    def IsActive(self) -> bool:
+        return _has_report()
 
     def Activated(self) -> None:
         result = VibeCADAero.export_jsbsim(_active_doc())
@@ -192,16 +208,66 @@ class VibeCADAero_Report(_AeroCommand):
         return {
             "Pixmap": _ICON,
             "MenuText": "Write report",
-            "ToolTip": "Write markdown and spreadsheet report objects from the last solve",
+            "ToolTip": "Write markdown and spreadsheet from the last solve. Does not re-solve.",
+        }
+
+    def IsActive(self) -> bool:
+        return _has_report()
+
+    def Activated(self) -> None:
+        _report_result(VibeCADAero.write_last_report(_active_doc()), "Aero Report")
+
+
+class VibeCADAero_ProposeRepairs(_AeroCommand):
+    def GetResources(self) -> dict[str, str]:
+        return {
+            "Pixmap": _ICON,
+            "MenuText": "Propose repairs",
+            "ToolTip": "Preview bounded pitch-stability CAD changes. Does not apply them.",
+        }
+
+    def IsActive(self) -> bool:
+        return _has_report()
+
+    def Activated(self) -> None:
+        _report_result(VibeCADAero.propose_repairs(_active_doc()), "Aero Propose repairs")
+
+
+class VibeCADAero_ApplyRepairs(_AeroCommand):
+    def GetResources(self) -> dict[str, str]:
+        return {
+            "Pixmap": _ICON,
+            "MenuText": "Apply repairs",
+            "ToolTip": "Apply the current repair preview if the document has not changed.",
+        }
+
+    def IsActive(self) -> bool:
+        return _has_report()
+
+    def Activated(self) -> None:
+        _report_result(VibeCADAero.apply_repairs(_active_doc()), "Aero Apply repairs")
+
+
+class VibeCADAero_FlightCard(_AeroCommand):
+    def GetResources(self) -> dict[str, str]:
+        return {
+            "Pixmap": _ICON,
+            "MenuText": "Flight card",
+            "ToolTip": "Mass, loading, hover margin, tail volume, endurance estimate. Not airworthy.",
         }
 
     def Activated(self) -> None:
-        result = VibeCADAero.run_analyze(
-            _active_doc(),
-            spreadsheet=True,
-            markdown=True,
-        )
-        _report_result(result, "Aero Report")
+        _report_result(VibeCADAero.flight_card(_active_doc()), "Aero Flight card")
+
+
+def _has_report() -> bool:
+    try:
+        import FreeCAD
+
+        doc = FreeCAD.ActiveDocument
+        return bool(doc is not None and doc.getObject("AeroReport") is not None)
+    except Exception:
+        return False
 
 
 def register_commands(gui: Any | None = None) -> None:
@@ -218,6 +284,9 @@ def register_commands(gui: Any | None = None) -> None:
     add_command("VibeCADAero_VLM", VibeCADAero_VLM())
     add_command("VibeCADAero_ExportJSBSim", VibeCADAero_ExportJSBSim())
     add_command("VibeCADAero_Report", VibeCADAero_Report())
+    add_command("VibeCADAero_ProposeRepairs", VibeCADAero_ProposeRepairs())
+    add_command("VibeCADAero_ApplyRepairs", VibeCADAero_ApplyRepairs())
+    add_command("VibeCADAero_FlightCard", VibeCADAero_FlightCard())
 
 
 register_commands()

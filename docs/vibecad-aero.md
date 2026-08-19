@@ -30,7 +30,7 @@ Modify, Inspect, Fasteners, Surface, Connect) plus an **Aero** group
 
 | Command | What it does |
 | --- | --- |
-| Analyze | Section + 3D + hover, writes `AeroReport` on the active document. Defaults to `repair=True`: if the solve is pitch-unstable (`Cmα > 0`), Analyze applies bounded CAD/config repairs and re-solves up to two times |
+| Analyze | Section + 3D + hover, writes `AeroReport` on the active document. Defaults to `repair=False` (observe only). Pass `repair=True` to apply bounded CAD/config repairs when the solve is pitch-unstable (`Cmα > 0`) and re-solve up to two times |
 | Section / NeuralFoil | 2D viscous section only (`model_size="large"`) |
 | 3D / AeroSandbox | VortexLatticeMethod (8×6) + AeroBuildup |
 | Export JSBSim plant | Writes XML and stores `JSBSimPlantPath` |
@@ -94,9 +94,12 @@ CLα, Cmα, Re, V_loaf, P_hover, P_cruise, source, and a pitch-unstable flag
 when Cmα > 0. Coefficient source order is AeroBuildup, else VLM, else
 NeuralFoil.
 
-The AeroSandbox airplane includes the biplane plus an `h_tail` sized from
-`tail_span_m` / `tail_chord_m` / `boom_length_m`. Those sizes are seeded
-from named `h_tail` and `boom` objects when present. AeroSandbox +X is aft.
+The AeroSandbox airplane includes the biplane, plus an `h_tail` only when
+a named `h_tail` exists or `tail_span_mm` / `tail_chord_mm` were actually
+written on `AeroConfig` / requested. `finalize` does not invent those
+sizes for a tailless document. Boom length may still default independently.
+When a tail is present, sizes come from `tail_span_m` / `tail_chord_m` /
+`boom_length_m`, seeded from named `h_tail` and `boom` objects. AeroSandbox +X is aft.
 Named-part bounding boxes are mapped into that frame (the live voider has
 CAD +X toward the nose), so the upper wing is placed at **+stagger** (aft
 of the lower wing), not as a canard. The HTail uses a symmetric
@@ -106,7 +109,7 @@ NACA 0008 section; the main wings stay on the configured airfoil (E63).
 missing tail plus a CG aft of the aero center is why a canard / wings-only
 solve stays pitch-unstable.
 
-When Analyze sees `PitchUnstable` / `Cmα > 0`, it proposes bounded repairs
+When Analyze is called with `repair=True` and sees `PitchUnstable` / `Cmα > 0`, it proposes bounded repairs
 to both `AeroConfig` and live named parts: more horizontal-tail volume,
 more tail arm / boom length, and CG / `avionics_pod` / `camera_bay` toward
 the nose. Optional extra **aft** stagger is allowed. Analyze does not shove

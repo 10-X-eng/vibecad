@@ -19,6 +19,10 @@ AERO_BUTTONS = (
     ("Section", "VibeCADAero_Section"),
     ("3D VLM", "VibeCADAero_VLM"),
     ("JSBSim", "VibeCADAero_ExportJSBSim"),
+    ("Report", "VibeCADAero_Report"),
+    ("Propose", "VibeCADAero_ProposeRepairs"),
+    ("Apply", "VibeCADAero_ApplyRepairs"),
+    ("Card", "VibeCADAero_FlightCard"),
 )
 _INSTALLED_PROPERTY = "_vibecadAeroRibbonInstalled"
 

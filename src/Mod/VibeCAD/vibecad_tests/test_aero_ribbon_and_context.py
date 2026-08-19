@@ -32,6 +32,9 @@ def test_aero_surface_id_is_registered() -> None:
         "VibeCADAero_VLM",
         "VibeCADAero_ExportJSBSim",
         "VibeCADAero_Report",
+        "VibeCADAero_ProposeRepairs",
+        "VibeCADAero_ApplyRepairs",
+        "VibeCADAero_FlightCard",
     ):
         assert command in KNOWN_ACTIONS_BY_SURFACE["aero"]
         assert command in OPTIONAL_ACTIONS_BY_SURFACE["model"]
@@ -88,6 +91,9 @@ def _aero_manifest() -> dict[str, object]:
                     action("VibeCADAero_VLM", "VLM"),
                     action("VibeCADAero_ExportJSBSim", "JSBSim"),
                     action("VibeCADAero_Report", "Report"),
+                    action("VibeCADAero_ProposeRepairs", "Propose"),
+                    action("VibeCADAero_ApplyRepairs", "Apply"),
+                    action("VibeCADAero_FlightCard", "Card"),
                 ],
             },
             {
@@ -113,13 +119,25 @@ def test_aero_surface_classifies_without_unknown_actions() -> None:
         for plan in plans
         if plan.classification.human_only
     }
-    assert {
+    aero_tools = {
         "VibeCADAero_Analyze",
         "VibeCADAero_Section",
         "VibeCADAero_VLM",
         "VibeCADAero_ExportJSBSim",
         "VibeCADAero_Report",
-    } <= human
+        "VibeCADAero_ProposeRepairs",
+        "VibeCADAero_ApplyRepairs",
+        "VibeCADAero_FlightCard",
+    }
+    assert human.isdisjoint(aero_tools)
+    variants = {
+        plan.command_id: plan.operation_variant
+        for plan in plans
+        if plan.command_id in aero_tools
+    }
+    assert variants["VibeCADAero_Analyze"] == "analyze"
+    assert variants["VibeCADAero_ExportJSBSim"] == "export_jsbsim"
+    assert variants["VibeCADAero_FlightCard"] == "flight_card"
 
 
 def test_python_surface_list_includes_aero() -> None:
@@ -306,6 +324,7 @@ def test_provider_context_summary_includes_aero_when_report_exists() -> None:
     context = service.provider_context_summary()
     assert "aero" in context
     assert context["aero"]["available"] is True
+    assert context["aero"]["claim_ceiling"] == "not_airworthy"
     assert context["aero"]["vehicle_type"] == "multirotor"
     assert context["aero"]["CL"] == 0.77
     assert context["aero"]["source"] == "NeuralFoil"
