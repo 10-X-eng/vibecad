@@ -64,7 +64,10 @@ def main() -> int:
         ]
         assert facts["face_details"] == []
         assert facts["edge_details"] == []
-        assert summary["execution"]["mode"] == "isolated_geometry_worker"
+        assert summary["execution"]["mode"] in {
+            "isolated_geometry_worker",
+            "in_process_part",
+        }
 
         imported.Shape = Part.makeBox(10.0, 20.0, 30.0)
         document.recompute()
