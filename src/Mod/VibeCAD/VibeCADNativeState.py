@@ -173,12 +173,16 @@ class NativeOperationReceipt:
     changed: tuple[NativeObjectIdentity, ...]
     deleted: tuple[NativeObjectIdentity, ...]
     replaced: tuple[NativeObjectIdentity, ...]
+    claim_ceiling: str = "geometry_applied"
+    evidence_state: str = "pass"
 
     def summary(self) -> dict[str, Any]:
         return {
             "capability": self.capability_name,
             "revision_before": self.revision_before,
             "revision_after": self.revision_after,
+            "claim_ceiling": self.claim_ceiling,
+            "evidence_state": self.evidence_state,
             "created": [item.summary() for item in self.created],
             "changed": [item.summary() for item in self.changed],
             "deleted": [item.summary() for item in self.deleted],

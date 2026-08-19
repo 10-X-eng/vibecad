@@ -40,7 +40,16 @@ AGENT_BRIEF_FILENAME = "AGENTS.md"
 GROK_BOT_CMD_ENV = "VIBECAD_GROK_BOT_CMD"
 TOKEN_BYTES = 32
 MAX_BODY_BYTES = 1_048_576
-COMMANDS = ("status", "documents", "open", "run", "preferences", "aero")
+COMMANDS = (
+    "status",
+    "documents",
+    "open",
+    "run",
+    "preferences",
+    "aero",
+    "context",
+    "prompt",
+)
 
 _server_lock = threading.RLock()
 _server: ThreadingHTTPServer | None = None
@@ -158,16 +167,23 @@ channel. Use it to drive VibeCAD without clicking menus.
 | GET  | `/v1/documents`   |                                   | Open documents |
 | POST | `/v1/open`        | `{{"path":"..."}}`                | Open/activate a document |
 | POST | `/v1/run`         | `{{"python":"..."}}` or `{{"script":"..."}}` (+ optional `path`, `recompute`) | Run against the active document |
+| GET  | `/v1/context`     |                                   | Same turn-start CAD facts as in-app Grok |
+| POST | `/v1/prompt`      | `{{"text":"..."}}`                | Start an in-app Build turn (same path as in-app Grok) |
 | GET  | `/v1/aero`        |                                   | Flight card + AeroReport stamps |
 | POST | `/v1/aero`        | `{{"operation":"analyze"}}` (also section, vlm, export_jsbsim, report, propose_repairs, apply_repairs, reject_repairs, flight_card) | Same Aero wrapper as in-app Grok |
 | POST | `/v1/preferences` |                                   | Show VibeCAD Preferences |
 
-Use `/v1/aero` for aerodynamics. Do not `exec` Analyze or `apply_repairs`
-through `/v1/run`. `/v1/run` remains for non-Aero Python.
+Use `/v1/context` and `/v1/prompt` for CAD. Use `/v1/aero` for aerodynamics.
+Do not `exec` Analyze or `apply_repairs` through `/v1/run`. `/v1/run` remains
+for non-Aero Python.
 
 `run` executes Python in the VibeCAD process with `App`/`FreeCAD` (and
 `Gui`/`FreeCADGui` when the GUI is up). Assign `result` or `__result__` to
 return a JSON value. Stdout, stderr, and exceptions come back in the payload.
+
+CAD path for Grok Bot (same quality as in-app Grok):
+1. GET `/v1/context` for the turn-start CAD facts.
+2. POST `/v1/prompt` `{{"text":"..."}}` to start an in-app Build turn.
 
 Peak Aero loop for Grok Bot (same quality as in-app Grok):
 1. GET `/v1/aero` for the stamped flight card.
@@ -182,6 +198,10 @@ Peak Aero loop for Grok Bot (same quality as in-app Grok):
 ```bash
 TOKEN="$(cat '{token_path}')"
 curl -s -H "Authorization: Bearer $TOKEN" {base_url}/v1/status
+curl -s -H "Authorization: Bearer $TOKEN" {base_url}/v1/context
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
+  -d '{{"text":"fillet the selected edge"}}' \\
+  {base_url}/v1/prompt
 curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
   -d '{{"python":"result = App.ActiveDocument and App.ActiveDocument.Name"}}' \\
   {base_url}/v1/run
@@ -655,6 +675,62 @@ def aero_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     return runner()
 
 
+def context_command() -> dict[str, Any]:
+    """Same turn-start CAD facts the in-app Grok provider receives."""
+
+    try:
+        from VibeCADCore import get_service
+
+        summary = get_service().provider_context_summary()
+    except Exception as exc:
+        if _gui() is None:
+            return failure(
+                "GUI_REQUIRED",
+                "Reading CAD context requires the running VibeCAD GUI. "
+                "Start VibeCAD.exe and call GET /v1/context from Grok Bot.",
+                stage="precondition",
+                error_detail=str(exc),
+            )
+        return failure("CONTEXT_UNAVAILABLE", str(exc), stage="precondition")
+    return {"ok": True, "context": _json_safe(summary)}
+
+
+def prompt_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Start an in-app Grok Build turn with the same path as the Assistant."""
+
+    text = str((arguments or {}).get("text") or "").strip()
+    if not text:
+        return failure(
+            "PROMPT_TEXT_REQUIRED",
+            'Pass JSON {"text":"..."} to start an in-app Build turn.',
+            stage="schema",
+        )
+    if _gui() is None:
+        return failure(
+            "GUI_REQUIRED",
+            "Starting an in-app Build turn requires the running VibeCAD GUI. "
+            "Start VibeCAD.exe and call POST /v1/prompt from Grok Bot.",
+            stage="precondition",
+        )
+    try:
+        import VibeCADGui
+
+        starter = getattr(VibeCADGui, "start_assistant_turn", None)
+        if not callable(starter):
+            starter = getattr(VibeCADGui, "start_aero_designer_turn", None)
+        started = bool(starter(text)) if callable(starter) else False
+    except Exception as exc:
+        return failure("PROMPT_UNAVAILABLE", str(exc), stage="precondition")
+    if not started:
+        return failure(
+            "PROMPT_NOT_STARTED",
+            "VibeCAD could not start an in-app Build turn. Open the Assistant "
+            "panel and save the active document first.",
+            stage="precondition",
+        )
+    return {"ok": True, "started": True}
+
+
 def show_preferences() -> dict[str, Any]:
     gui = _gui()
     show = getattr(gui, "showPreferencesByName", None) if gui is not None else None
@@ -696,6 +772,10 @@ def dispatch(command: str, arguments: dict[str, Any] | None = None) -> dict[str,
         )
     if action == "aero":
         return _on_document_thread(lambda: aero_command(args))
+    if action == "context":
+        return _on_document_thread(context_command)
+    if action == "prompt":
+        return _on_document_thread(lambda: prompt_command(args))
     return _on_document_thread(show_preferences)
 
 
@@ -754,6 +834,10 @@ def handle_http_request(
         return 200, dispatch("open", payload)
     if method == "POST" and route in {"/v1/run", "/run"}:
         return 200, dispatch("run", payload)
+    if method == "GET" and route in {"/v1/context", "/context"}:
+        return 200, dispatch("context")
+    if method == "POST" and route in {"/v1/prompt", "/prompt"}:
+        return 200, dispatch("prompt", payload)
     if method == "GET" and route in {"/v1/aero", "/aero"}:
         return 200, dispatch("aero", {"operation": "context"})
     if method == "POST" and route in {"/v1/aero", "/aero"}:

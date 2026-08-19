@@ -13,6 +13,7 @@ from VibeCADNativeState import (
     NativeAuthorityConflict,
     NativeDocumentStateStore,
     NativeObjectIdentity,
+    NativeOperationReceipt,
     NativeRevisionConflict,
     NativeStateError,
     is_structural_property,
@@ -194,6 +195,42 @@ def test_receipt_records_exact_sorted_object_identities() -> None:
         },
         "recent_receipts": [receipt.summary()],
     }
+
+
+def test_receipt_stamps_geometry_applied_ceiling_by_default() -> None:
+    receipt = NativeOperationReceipt(
+        idempotency_token="a" * 32,
+        capability_name="model.feature",
+        revision_before=0,
+        revision_after=1,
+        created=(),
+        changed=(),
+        deleted=(),
+        replaced=(),
+    )
+
+    assert receipt.claim_ceiling == "geometry_applied"
+    assert receipt.evidence_state == "pass"
+    assert receipt.summary()["claim_ceiling"] == "geometry_applied"
+    assert receipt.summary()["evidence_state"] == "pass"
+
+
+def test_completed_mutation_receipt_carries_geometry_applied_ceiling() -> None:
+    store = NativeDocumentStateStore()
+    store.begin_native_authority("document-a")
+    ticket = store.begin_call("document-a", "model.feature")
+    store.authorize_mutation(ticket)
+    store.note_structural_change("document-a")
+    identity = NativeObjectIdentity("document-a", "Box", "PartDesign::Feature")
+
+    receipt = store.complete_mutation(ticket, {"ok": True}, created=(identity,))
+
+    assert receipt.claim_ceiling == "geometry_applied"
+    assert receipt.evidence_state == "pass"
+    summary = receipt.summary()
+    assert summary["claim_ceiling"] == "geometry_applied"
+    assert summary["evidence_state"] == "pass"
+    assert store.snapshot("document-a")["recent_receipts"] == [summary]
 
 
 def test_duplicate_or_conflicting_receipt_evidence_is_rejected() -> None:
