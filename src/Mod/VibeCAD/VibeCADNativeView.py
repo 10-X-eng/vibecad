@@ -273,6 +273,9 @@ def capture_screenshot(
             **({"size_px": image_size} if image_size is not None else {}),
         },
         "new_observation": bool(raw.get("new_observation", True)),
+        "presentation_only": True,
+        "artifact_class": "presentation",
+        "claim_ceiling": "not_measured",
     }
     if isinstance(target, Mapping) and target:
         result["target"] = dict(target)

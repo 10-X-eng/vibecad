@@ -322,6 +322,9 @@ def test_screenshot_wrapper_returns_only_bounded_verified_evidence(
         "captured": True,
         "image": {"mime_type": "image/png", "size_bytes": 3},
         "new_observation": True,
+        "presentation_only": True,
+        "artifact_class": "presentation",
+        "claim_ceiling": "not_measured",
         "visual_observation": {"mostly_blank": False},
         "_vibecad_image_attachment": {
             "path": str(artifact),

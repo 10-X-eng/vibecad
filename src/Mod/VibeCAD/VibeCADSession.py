@@ -1133,6 +1133,7 @@ def _capture_context_for_provider(
         "view_screenshot",
         "reference_images",
         "aero",
+        "intent",
     )
     context = {
         key: raw_context[key] for key in allowed_turn_facts if key in raw_context
@@ -1542,6 +1543,7 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
         "editable_sources",
         "available_components",
         "aero",
+        "intent",
     )
     result = {
         key: context[key]
