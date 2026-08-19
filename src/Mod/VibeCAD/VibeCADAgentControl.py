@@ -40,7 +40,7 @@ AGENT_BRIEF_FILENAME = "AGENTS.md"
 GROK_BOT_CMD_ENV = "VIBECAD_GROK_BOT_CMD"
 TOKEN_BYTES = 32
 MAX_BODY_BYTES = 1_048_576
-COMMANDS = ("status", "documents", "open", "run", "preferences")
+COMMANDS = ("status", "documents", "open", "run", "preferences", "aero")
 
 _server_lock = threading.RLock()
 _server: ThreadingHTTPServer | None = None
@@ -158,11 +158,24 @@ channel. Use it to drive VibeCAD without clicking menus.
 | GET  | `/v1/documents`   |                                   | Open documents |
 | POST | `/v1/open`        | `{{"path":"..."}}`                | Open/activate a document |
 | POST | `/v1/run`         | `{{"python":"..."}}` or `{{"script":"..."}}` (+ optional `path`, `recompute`) | Run against the active document |
+| GET  | `/v1/aero`        |                                   | Flight card + AeroReport stamps |
+| POST | `/v1/aero`        | `{{"operation":"analyze"}}` (also section, vlm, export_jsbsim, report, propose_repairs, apply_repairs, reject_repairs, flight_card) | Same Aero wrapper as in-app Grok |
 | POST | `/v1/preferences` |                                   | Show VibeCAD Preferences |
+
+Use `/v1/aero` for aerodynamics. Do not `exec` Analyze or `apply_repairs`
+through `/v1/run`. `/v1/run` remains for non-Aero Python.
 
 `run` executes Python in the VibeCAD process with `App`/`FreeCAD` (and
 `Gui`/`FreeCADGui` when the GUI is up). Assign `result` or `__result__` to
 return a JSON value. Stdout, stderr, and exceptions come back in the payload.
+
+Peak Aero loop for Grok Bot (same quality as in-app Grok):
+1. GET `/v1/aero` for the stamped flight card.
+2. POST `/v1/aero` `analyze` (does not move CAD).
+3. GET `/v1/aero` again. Do not invent mass, CL, or airworthiness.
+4. `propose_repairs` then `apply_repairs` only if the user wants CAD changes.
+5. Appearance claims still need isometric + front + top screenshots. Pixels
+   never prove aero numbers. Claim ceiling is always not_airworthy.
 
 ## Example
 
@@ -416,6 +429,15 @@ def _grok_account_snapshot() -> dict[str, Any]:
     }
 
 
+def _aero_status_snapshot() -> dict[str, Any]:
+    try:
+        from VibeCADAeroContext import document_aero_summary
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
+    document = getattr(_app(), "ActiveDocument", None)
+    return document_aero_summary(document)
+
+
 def report_status() -> dict[str, Any]:
     settings = _safe_settings()
     provider = (
@@ -448,6 +470,7 @@ def report_status() -> dict[str, Any]:
             or f"http://{AGENT_HOST}:{_bound_port or DEFAULT_AGENT_PORT}",
             "token_path": str(token_path()),
         },
+        "aero": _aero_status_snapshot(),
         "oauth_note": (
             "Grok uses real xAI OAuth at https://auth.x.ai. xAI does not publish "
             "a VibeCAD-specific OAuth app; VibeCAD reuses the official Grok CLI "
@@ -535,6 +558,13 @@ def run_script(
             "Pass python source or an absolute script path.",
             stage="schema",
         )
+    lowered = source.replace(" ", "")
+    if "apply_repairs(" in lowered or "repair=True" in lowered:
+        return failure(
+            "AERO_USE_V1_AERO",
+            "Aero CAD changes go through POST /v1/aero, not /v1/run exec.",
+            stage="schema",
+        )
     opened = None
     if path:
         opened = open_document(path)
@@ -586,6 +616,45 @@ def run_script(
     }
 
 
+def aero_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Same Aero wrapper the in-app Grok Native tools use."""
+
+    args = dict(arguments or {})
+    operation = str(args.get("operation") or "context").strip() or "context"
+    try:
+        import VibeCADAero
+        from VibeCADAeroContext import document_aero_summary
+    except Exception as exc:
+        return failure("AERO_UNAVAILABLE", str(exc), stage="precondition")
+    document = getattr(_app(), "ActiveDocument", None)
+    if operation == "context":
+        card = VibeCADAero.flight_card(document) if document is not None else {"ok": False}
+        return {
+            "ok": True,
+            "aero": document_aero_summary(document),
+            "flight_card": card if card.get("ok") else card,
+        }
+    runners = {
+        "analyze": lambda: VibeCADAero.run_analyze(document, repair=False),
+        "section": lambda: VibeCADAero.run_section(document),
+        "vlm": lambda: VibeCADAero.run_vlm(document),
+        "export_jsbsim": lambda: VibeCADAero.export_jsbsim(document),
+        "report": lambda: VibeCADAero.write_last_report(document),
+        "propose_repairs": lambda: VibeCADAero.propose_repairs(document),
+        "apply_repairs": lambda: VibeCADAero.apply_repairs(document),
+        "reject_repairs": lambda: VibeCADAero.reject_repairs(document),
+        "flight_card": lambda: VibeCADAero.flight_card(document),
+    }
+    runner = runners.get(operation)
+    if runner is None:
+        return failure(
+            "AERO_OPERATION_UNKNOWN",
+            f"Unknown Aero operation {operation!r}.",
+            stage="schema",
+        )
+    return runner()
+
+
 def show_preferences() -> dict[str, Any]:
     gui = _gui()
     show = getattr(gui, "showPreferencesByName", None) if gui is not None else None
@@ -625,6 +694,8 @@ def dispatch(command: str, arguments: dict[str, Any] | None = None) -> dict[str,
                 recompute=bool(args.get("recompute", True)),
             )
         )
+    if action == "aero":
+        return _on_document_thread(lambda: aero_command(args))
     return _on_document_thread(show_preferences)
 
 
@@ -683,6 +754,10 @@ def handle_http_request(
         return 200, dispatch("open", payload)
     if method == "POST" and route in {"/v1/run", "/run"}:
         return 200, dispatch("run", payload)
+    if method == "GET" and route in {"/v1/aero", "/aero"}:
+        return 200, dispatch("aero", {"operation": "context"})
+    if method == "POST" and route in {"/v1/aero", "/aero"}:
+        return 200, dispatch("aero", payload)
     if method == "POST" and route in {"/v1/preferences", "/preferences"}:
         return 200, dispatch("preferences")
     return 404, failure(

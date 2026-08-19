@@ -2905,6 +2905,34 @@ def _arm_sketch_close_continuation() -> dict[str, str] | None:
     return _sketch_close_continuation_controller.arm(event)
 
 
+def start_aero_designer_turn(prompt: str) -> bool:
+    """Start an in-app Grok Build turn from an Aero Analyze result."""
+
+    clean = str(prompt or "").strip()
+    if not clean:
+        return False
+    dock = _find_dock()
+    if dock is None or not _assistant_panel_is_built(dock):
+        return False
+    if not _internal_agent_allowed():
+        return False
+    service = get_service()
+    persistence = service.document_persistence_state()
+    if not persistence.get("enabled"):
+        return False
+    if _is_assistant_run_active():
+        queued = service.queue_steering_message(clean, source="aero")
+        return bool(queued.get("ok"))
+    _append_conversation("User", clean, persist=True, metadata={"source": "aero"})
+    _execute_assistant_run(
+        dock,
+        service,
+        prompt=clean,
+        interaction_mode="build",
+    )
+    return True
+
+
 def _execute_assistant_run(
     dock: Any,
     service: Any,

@@ -24,6 +24,8 @@ VOIDER_DEFAULTS: dict[str, Any] = {
     "thrust_to_weight": 1.9,
     "cruise_prop_eta": 0.65,
     "vehicle_type": DEFAULT_VEHICLE_TYPE,
+    "battery_wh": None,
+    "airframe_density_kg_m3": 80.0,
 }
 
 _STRING_KEYS = ("airfoil", "vehicle_type")
@@ -46,6 +48,8 @@ _WRITE_KEYS = (
     "tail_span_mm",
     "tail_chord_mm",
     "xyz_ref_c",
+    "battery_wh",
+    "airframe_density_kg_m3",
 )
 
 _PARAM_KEYS = (
@@ -67,6 +71,8 @@ _PARAM_KEYS = (
     "tail_chord_mm",
     "xyz_ref_c",
     "cg_x_m",
+    "battery_wh",
+    "airframe_density_kg_m3",
 )
 
 _REPAIR_KEYS = (

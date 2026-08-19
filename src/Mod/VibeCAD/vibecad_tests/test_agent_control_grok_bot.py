@@ -38,7 +38,7 @@ def test_write_agent_brief_creates_readable_brief_with_connection() -> None:
     assert "http://127.0.0.1:8766" in text
     assert str(agent.token_path()) in text
     # The brief documents the routes an agent needs.
-    for route in ("/v1/status", "/v1/open", "/v1/run"):
+    for route in ("/v1/status", "/v1/open", "/v1/run", "/v1/aero"):
         assert route in text
 
 
@@ -67,6 +67,31 @@ def test_detect_grok_bot_returns_none_when_missing(monkeypatch) -> None:
     # Empty PATH so the default candidate names cannot resolve.
     monkeypatch.setenv("PATH", "")
     assert agent.detect_grok_bot_command("/no/such/grok-bot/binary") is None
+
+
+def test_run_script_refuses_aero_repair_exec() -> None:
+    blocked = agent.run_script(python="import VibeCADAero\nVibeCADAero.run_analyze(App.ActiveDocument, repair=True)")
+    assert blocked["ok"] is False
+    assert blocked["failure_code"] == "AERO_USE_V1_AERO"
+
+
+def test_aero_http_routes_are_registered(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent,
+        "dispatch",
+        lambda command, arguments=None: {
+            "ok": True,
+            "command": command,
+            "arguments": dict(arguments or {}),
+        },
+    )
+    status, payload = agent.handle_http_request("GET", "/v1/aero", {})
+    assert status == 200
+    assert payload["command"] == "aero"
+    status, payload = agent.handle_http_request(
+        "POST", "/v1/aero", {"operation": "analyze"}
+    )
+    assert payload["arguments"]["operation"] == "analyze"
 
 
 def test_windows_default_candidates_target_grok_bot_desktop(monkeypatch) -> None:

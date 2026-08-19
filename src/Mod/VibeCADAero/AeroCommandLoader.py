@@ -16,6 +16,9 @@ COMMAND_IDS = (
     "VibeCADAero_VLM",
     "VibeCADAero_ExportJSBSim",
     "VibeCADAero_Report",
+    "VibeCADAero_ProposeRepairs",
+    "VibeCADAero_ApplyRepairs",
+    "VibeCADAero_FlightCard",
 )
 _COMMAND_MODULE_NAME = "_vibecad_aero_commands"
 

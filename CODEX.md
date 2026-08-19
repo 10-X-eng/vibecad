@@ -6,12 +6,13 @@ intent of the pull request is not reconstructed from the diff.
 ## What this PR is
 
 Follow-up to already-merged upstream PR #60 (Grok sign-in, agent control, Aero
-ribbon). This branch is the same 52-file delta that `halthinks/main` already
+ribbon). This branch is the same 55-file delta that `halthinks/main` already
 carries over `10-X-eng/main`, rebased onto current upstream `main` with
 checkpoint and merge commits squashed.
 
 It adds hardening, Connect Grok Bot, an in-process geometry-worker fallback,
-and the Codex review fixes already landed on the fork.
+the Codex review fixes already landed on the fork, and fork PR #12: an equal
+Aero designer for in-app Grok and Grok Bot.
 
 ## What this PR is not
 
@@ -56,13 +57,32 @@ This PR does **not** touch TextPCB.
 - Compact reference images still downscale when the long edge exceeds
   `max_edge`.
 - Fetch-models probes Ollama `/api/version` once.
+- Analyze feeds the in-app clanker: it starts a Build turn, or steers if one
+  is already running, with the flight card and the `not_airworthy` ceiling.
+- Grok Bot is first-class on the same Aero wrapper:
+  - `GET /v1/aero` returns stamped context plus the flight card.
+  - `POST /v1/aero` runs analyze / section / vlm / export / report /
+    propose / apply / reject / flight_card.
+  - `/v1/run` exec cannot apply Aero CAD via `repair=True` or
+    `apply_repairs(`; those go through `POST /v1/aero`.
+  - Status includes an `aero` snapshot.
+- Native families are split (`aero.solve` / `aero.export` / `aero.inspect`)
+  so Grok tools can actually call Analyze.
+- Tail volume waits unless `has_h_tail` is true. No invented tail volume
+  for a tailless document.
+- `battery_wh` persists on `AeroConfig`.
 
 ## Native Aero
 
-Airplane is on the Native tool list. A flight-card wrapper exists.
+Airplane is on the Native tool list. A flight-card wrapper exists. Native
+families are `aero.solve`, `aero.export`, and `aero.inspect`. Claim ceiling
+is always `not_airworthy`.
 
 Do not claim a finished Aero manual or a finished ribbon / tool tutorial.
 Those are later work.
+
+Fork PR #12 made in-app Grok and Grok Bot equal Aero designers. Do not
+treat `/v1/aero` as optional or tell Grok Bot to `exec` Analyze.
 
 ## Intentional non-goals (do not "fix" these)
 
@@ -88,12 +108,14 @@ Those are later work.
 | PR2 3797487304 one Ollama probe | On this PR |
 | PR2 3797487290 HTTP MCP | Left alone on purpose |
 | PR2 3797487295 Workbenches page | Left alone on purpose |
+| Fork PR #12 equal Aero designer | On this PR (`/v1/aero`, family split, honesty ceiling) |
 
 ## How to test
 
 ```
 python3 -m pytest -q \
   src/Mod/VibeCADAero/tests \
+  src/Mod/VibeCADAero/tests/test_honesty.py \
   src/Mod/VibeCAD/vibecad_tests/test_aero_ribbon_and_context.py \
   src/Mod/VibeCAD/vibecad_tests/test_aero_ribbon_install.py \
   src/Mod/VibeCAD/vibecad_tests/test_agent_control.py \
@@ -107,10 +129,16 @@ python3 -m pytest -q \
   src/Mod/VibeCAD/vibecad_tests/test_mcp_control_mode.py::test_connection_configuration_is_a_clean_stdio_launch_specification
 ```
 
+`src/Mod/VibeCADAero/tests` already collects `test_honesty.py`. It is listed
+again so reviewers do not skip the honesty payload.
+
 ## Additive / compatibility
 
-No public API removals. New optional `AeroAssistantJsonText`. Agent control
-is still `127.0.0.1` only. OpenAI / Anthropic paths are unchanged.
+No public API removals. New optional `AeroAssistantJsonText`. New Grok Bot
+routes `GET/POST /v1/aero` and Native families `aero.export` / `aero.inspect`
+are additive. Agent control is still `127.0.0.1` only. OpenAI / Anthropic
+paths are unchanged. `/v1/run` still runs non-Aero Python; it refuses Aero
+CAD mutation (`repair=True` / `apply_repairs(`).
 
 Repair default is now `False`. That **is** a default change versus current
 upstream `repair=True`. It is the Codex-requested opt-in: Analyze still
