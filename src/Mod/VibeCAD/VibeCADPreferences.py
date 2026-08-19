@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
+import sys
 import threading
 
 import FreeCAD as App
@@ -383,6 +385,7 @@ class VibeCADPreferencesPage:
         self._chatgpt_default_model = ""
         self._grok_login_session = None
         self._oauth_task_provider = ""
+        self._grok_bot_connection: dict[str, str] | None = None
 
         class _AsyncBridge(QtCore.QObject):
             event = QtCore.Signal(str, object)
@@ -613,6 +616,55 @@ class VibeCADPreferencesPage:
         grok_auth_layout.addWidget(self.grok_cancel_sign_in)
         grok_auth_layout.addWidget(self.grok_logout)
         layout.addRow("Grok account", self.grok_auth_row)
+
+        self.grok_bot_row = QtWidgets.QWidget(self.form)
+        grok_bot_layout = QtWidgets.QHBoxLayout(self.grok_bot_row)
+        grok_bot_layout.setContentsMargins(0, 0, 0, 0)
+        self.grok_bot_connect = QtWidgets.QPushButton("Connect Grok Bot", self.form)
+        self.grok_bot_connect.setObjectName("VibeCADPrefGrokBotConnect")
+        self.grok_bot_connect.setToolTip(
+            "Start the local control channel so Grok Bot can drive VibeCAD on "
+            "this machine. Loopback only (127.0.0.1) and token protected."
+        )
+        self.grok_bot_connect.clicked.connect(self._connect_grok_bot)
+        self.grok_bot_copy = QtWidgets.QPushButton("Copy connection", self.form)
+        self.grok_bot_copy.setObjectName("VibeCADPrefGrokBotCopy")
+        self.grok_bot_copy.setToolTip(
+            "Copy the loopback endpoint and access token so Grok Bot can connect."
+        )
+        self.grok_bot_copy.setEnabled(False)
+        self.grok_bot_copy.clicked.connect(self._copy_grok_bot_connection)
+        grok_bot_layout.addWidget(self.grok_bot_connect)
+        grok_bot_layout.addWidget(self.grok_bot_copy)
+        layout.addRow("Grok Bot", self.grok_bot_row)
+
+        self.grok_bot_app_row = QtWidgets.QWidget(self.form)
+        grok_bot_app_layout = QtWidgets.QHBoxLayout(self.grok_bot_app_row)
+        grok_bot_app_layout.setContentsMargins(0, 0, 0, 0)
+        self.grok_bot_command = QtWidgets.QLineEdit(self.form)
+        self.grok_bot_command.setObjectName("VibeCADPrefGrokBotCommand")
+        self.grok_bot_command.setPlaceholderText(
+            "Grok Bot app path (optional; auto-detected if left blank)"
+        )
+        self.grok_bot_command.setText(preferences().GetString("GrokBotCommand", ""))
+        grok_bot_browse = QtWidgets.QPushButton("Browse", self.form)
+        grok_bot_browse.setObjectName("VibeCADPrefGrokBotBrowse")
+        grok_bot_browse.clicked.connect(self._browse_grok_bot_command)
+        grok_bot_app_layout.addWidget(self.grok_bot_command)
+        grok_bot_app_layout.addWidget(grok_bot_browse)
+        layout.addRow("Grok Bot app", self.grok_bot_app_row)
+
+        self.grok_bot_status = QtWidgets.QLabel(
+            "not_connected | Click Connect Grok Bot to let Grok Bot control "
+            "this machine from Grok.",
+            self.form,
+        )
+        self.grok_bot_status.setObjectName("VibeCADPrefGrokBotStatus")
+        self.grok_bot_status.setWordWrap(True)
+        self.grok_bot_status.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse
+        )
+        layout.addRow("", self.grok_bot_status)
 
         self.status = QtWidgets.QLabel(self.form)
         self.status.setObjectName("VibeCADPrefAuthStatus")
@@ -949,6 +1001,201 @@ class VibeCADPreferencesPage:
         self.status.setText("sign_out_pending | Signing out of Grok / X...")
         self._run_chatgpt_task("logout", logout_account)
 
+    def _connect_grok_bot(self) -> None:
+        """Start the local control channel so Grok Bot can drive this machine.
+
+        VibeCAD already exposes a loopback control channel (see
+        ``docs/vibecad-agent-control.md``). This one-click action ensures that
+        server is running and surfaces the endpoint and access token a Grok Bot
+        agent needs to connect. Sign-in and any model calls stay in the normal
+        Grok provider flow; this only opens the local automation socket.
+        """
+
+        from PySide import QtWidgets
+
+        try:
+            import VibeCADAgentControl
+        except Exception as exc:  # pragma: no cover - defensive import guard
+            self._grok_bot_connection = None
+            self.grok_bot_copy.setEnabled(False)
+            self.grok_bot_status.setText(
+                f"error | VibeCAD agent control is unavailable: {exc}"
+            )
+            return
+
+        dispatch = None
+        try:
+            import VibeCADGui
+
+            dispatch = getattr(VibeCADGui, "_dispatch_to_document_thread", None)
+        except Exception:
+            dispatch = None
+
+        try:
+            if dispatch is not None:
+                VibeCADAgentControl.ensure_server_started(
+                    document_thread_dispatch=dispatch
+                )
+            else:
+                VibeCADAgentControl.ensure_server_started()
+            token = VibeCADAgentControl.load_or_create_token()
+            snapshot = VibeCADAgentControl.server_snapshot()
+        except Exception as exc:
+            self._grok_bot_connection = None
+            self.grok_bot_copy.setEnabled(False)
+            self.grok_bot_status.setText(
+                f"error | Could not start the Grok Bot control channel: {exc}"
+            )
+            return
+
+        base_url = snapshot.get("base_url") or (
+            f"http://{snapshot.get('host')}:{snapshot.get('port')}"
+        )
+        token_path = snapshot.get("token_path", "")
+        try:
+            endpoint_path = str(VibeCADAgentControl.endpoint_path())
+        except Exception:
+            endpoint_path = ""
+
+        if not (snapshot.get("running") and token):
+            self._grok_bot_connection = None
+            self.grok_bot_copy.setEnabled(False)
+            self.grok_bot_status.setText(
+                "error | The Grok Bot control channel did not start."
+            )
+            return
+
+        # Write the AGENTS.md brief Grok Bot reads to learn how to drive VibeCAD.
+        brief_path = ""
+        try:
+            brief_path = str(VibeCADAgentControl.write_agent_brief())
+        except Exception as exc:
+            self.grok_bot_status.setText(
+                f"warning | Control channel is up but the brief could not be "
+                f"written: {exc}"
+            )
+
+        self._grok_bot_connection = {
+            "base_url": base_url,
+            "token": token,
+            "token_path": token_path,
+            "endpoint_path": endpoint_path,
+            "brief_path": brief_path,
+        }
+        self.grok_bot_copy.setEnabled(True)
+
+        # Persist any explicit Grok Bot path, then try to launch it.
+        explicit = self.grok_bot_command.text().strip()
+        preferences().SetString("GrokBotCommand", explicit)
+        launched = False
+        launch_target = ""
+        launch_error = ""
+        try:
+            command = VibeCADAgentControl.detect_grok_bot_command(explicit)
+            if command:
+                launch_target = command
+                launched = self._launch_grok_bot(command, brief_path, base_url)
+        except Exception as exc:  # pragma: no cover - defensive launch guard
+            launch_error = str(exc)
+
+        if launched:
+            self.grok_bot_status.setText(
+                f"connected | Launched Grok Bot ({launch_target}). It can control "
+                f"this machine at {base_url}."
+            )
+            launch_line = f"Launched Grok Bot:\n{launch_target}\n\n"
+        else:
+            self.grok_bot_status.setText(
+                f"connected | Grok Bot can control this machine at {base_url}. "
+                "Grok Bot app was not found — set its path above or use Copy "
+                "connection."
+            )
+            if launch_error:
+                launch_line = f"Could not launch Grok Bot: {launch_error}\n\n"
+            else:
+                launch_line = (
+                    "Grok Bot app was not found automatically. Set its path in "
+                    "the 'Grok Bot app' field, or point Grok Bot at the brief "
+                    "below.\n\n"
+                )
+
+        QtWidgets.QMessageBox.information(
+            self.form,
+            "Grok Bot",
+            "This machine is ready for Grok Bot.\n\n"
+            f"{launch_line}"
+            f"Endpoint: {base_url}\n"
+            f"Token file: {token_path}\n"
+            f"Instructions (AGENTS.md): {brief_path or '(unavailable)'}\n\n"
+            "The channel is loopback only (127.0.0.1) and Grok Bot must send "
+            "the token. Use Copy connection to paste the details into Grok Bot.",
+        )
+
+    def _launch_grok_bot(
+        self, command: str, brief_path: str, base_url: str
+    ) -> bool:
+        """Start the external Grok Bot app, pointed at the VibeCAD brief."""
+
+        import subprocess
+
+        environment = dict(os.environ)
+        if brief_path:
+            environment["VIBECAD_AGENTS_FILE"] = brief_path
+        environment["VIBECAD_AGENT_ENDPOINT"] = base_url
+        args = [command]
+        if brief_path:
+            args.append(brief_path)
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+        subprocess.Popen(  # noqa: S603 - user-configured/auto-detected launcher
+            args,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=(sys.platform != "win32"),
+            creationflags=creationflags,
+        )
+        return True
+
+    def _browse_grok_bot_command(self) -> None:
+        from PySide import QtWidgets
+
+        selected, _filter = QtWidgets.QFileDialog.getOpenFileName(
+            self.form,
+            "Select the Grok Bot application",
+            self.grok_bot_command.text() or str(Path.home()),
+            "Executables (*);;All files (*)",
+        )
+        if selected:
+            self.grok_bot_command.setText(selected)
+            preferences().SetString("GrokBotCommand", selected.strip())
+
+    def _copy_grok_bot_connection(self) -> None:
+        from PySide import QtWidgets
+
+        connection = getattr(self, "_grok_bot_connection", None)
+        if not connection:
+            self.grok_bot_status.setText(
+                "not_connected | Click Connect Grok Bot first."
+            )
+            return
+        text = (
+            "VibeCAD agent control for Grok Bot\n"
+            f"base_url: {connection.get('base_url', '')}\n"
+            f"token: {connection.get('token', '')}\n"
+            f"token_path: {connection.get('token_path', '')}\n"
+            f"endpoint_path: {connection.get('endpoint_path', '')}\n"
+            f"brief_path: {connection.get('brief_path', '')}\n"
+        )
+        QtWidgets.QApplication.clipboard().setText(text)
+        self.grok_bot_status.setText(
+            "copied | Grok Bot connection details copied to the clipboard."
+        )
+
     def _set_combo_text(self, combo, text: str) -> None:
         index = combo.findText(text)
         if index >= 0:
@@ -1249,6 +1496,9 @@ class VibeCADPreferencesPage:
 
     def saveSettings(self) -> None:
         save_settings(self._current_settings())
+        preferences().SetString(
+            "GrokBotCommand", self.grok_bot_command.text().strip()
+        )
         try:
             import VibeCADGui
 

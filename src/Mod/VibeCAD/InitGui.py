@@ -233,6 +233,7 @@ try:
         try:
             from PySide import QtWidgets
             import VibeCADAgentControl
+            import VibeCADGui
 
             VibeCADAgentControl.ensure_server_started(
                 document_thread_dispatch=VibeCADGui._dispatch_to_document_thread,

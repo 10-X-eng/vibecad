@@ -18,7 +18,7 @@ from VibeCADPromptStarters import (
 
 
 def test_builtin_starters_capture_design_inputs_without_hidden_execution() -> None:
-    assert len(BUILTIN_PROMPT_STARTERS) == 8
+    assert len(BUILTIN_PROMPT_STARTERS) == 9
     assert {starter.category for starter in BUILTIN_PROMPT_STARTERS} == {
         "New Part",
         "Modify",
@@ -30,6 +30,37 @@ def test_builtin_starters_capture_design_inputs_without_hidden_execution() -> No
         "Review",
     }
     assert all("[" in starter.content for starter in BUILTIN_PROMPT_STARTERS)
+
+
+def test_manufacturing_review_return_line_is_flush_left() -> None:
+    starter = next(
+        item
+        for item in BUILTIN_PROMPT_STARTERS
+        if item.starter_id == "builtin:manufacturing-review"
+    )
+    return_lines = [
+        line
+        for line in starter.content.splitlines()
+        if line.lstrip().startswith("Return prioritized")
+    ]
+    assert return_lines, "manufacturing-review must ask for prioritized findings"
+    assert return_lines[0] == return_lines[0].lstrip()
+
+
+def test_visual_review_starter_requires_multi_view_inspection() -> None:
+    starter = next(
+        item
+        for item in BUILTIN_PROMPT_STARTERS
+        if item.starter_id == "builtin:visual-review"
+    )
+    assert starter.name == "Check how this looks from all sides"
+    assert starter.category == "Review"
+    assert "isometric" in starter.content
+    assert "front" in starter.content
+    assert "top" in starter.content
+    assert "presentation_only" in starter.content
+    assert "needs_measurement" in starter.content
+    assert "Do not modify" in starter.content
 
 
 def test_custom_starter_round_trip_preserves_identity_and_content(tmp_path) -> None:
