@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import AeroConfig as config
@@ -94,7 +95,6 @@ def test_propose_empty_when_pitch_stable():
 
 def test_propose_grows_tail_boom_moves_cg_and_nudge_upper_wing():
     cfg = config.resolve_geometry(None)
-    assert cfg["tail_span_mm"] > 0.0
     proposed = repair.propose_repairs(
         cfg,
         {"PitchUnstable": True, "Cmalpha": 0.8},
@@ -160,8 +160,10 @@ def test_apply_writes_aeroconfig_and_moves_mock_cad():
     assert float(aero.boom_length_mm) > 250.0
     assert float(aero.xyz_ref_c) < 0.25
     assert pod.Placement.Base.x > 60.0
-    assert tail.Shape.BoundBox.YLength > 160.0
-    assert boom.Shape.BoundBox.XLength > 300.0
+    tail_bb = tail.Shape.BoundBox
+    boom_bb = boom.Shape.BoundBox
+    assert abs(tail_bb.YMax - tail_bb.YMin) > 160.0
+    assert abs(boom_bb.XMax - boom_bb.XMin) > 300.0
     assert upper.Placement.Base.x < -103.5
     sentences = [item["sentence"] for item in landed]
     assert any("horizontal tail" in text.lower() or "tail span" in text.lower() for text in sentences)
@@ -180,6 +182,68 @@ def test_apply_without_cad_parts_still_lands_config():
     aero = doc.getObject("AeroConfig")
     assert float(getattr(aero, "tail_span_mm")) > 0.0
     assert float(getattr(aero, "boom_length_mm")) > 0.0
+
+
+class _GetterOnlyBoundBox:
+    def __init__(self, x_min, x_max, y_min, y_max, z_min, z_max):
+        self.XMin = x_min
+        self.XMax = x_max
+        self.YMin = y_min
+        self.YMax = y_max
+        self.ZMin = z_min
+        self.ZMax = z_max
+
+    @property
+    def XLength(self):
+        return abs(self.XMax - self.XMin)
+
+    @XLength.setter
+    def XLength(self, _value):
+        raise AttributeError("can't set attribute 'XLength'")
+
+    @property
+    def YLength(self):
+        return abs(self.YMax - self.YMin)
+
+    @YLength.setter
+    def YLength(self, _value):
+        raise AttributeError("can't set attribute 'YLength'")
+
+    @property
+    def ZLength(self):
+        return abs(self.ZMax - self.ZMin)
+
+    @ZLength.setter
+    def ZLength(self, _value):
+        raise AttributeError("can't set attribute 'ZLength'")
+
+
+def test_scale_bbox_does_not_assign_readonly_lengths():
+    bbox = _GetterOnlyBoundBox(0.0, 10.0, -5.0, 5.0, 0.0, 2.0)
+    repair._scale_bbox(bbox, 2.0, 1.5, 1.0, (0.0, 0.0, 0.0))
+    assert bbox.XMin == 0.0
+    assert bbox.XMax == 20.0
+    assert bbox.YMin == -7.5
+    assert bbox.YMax == 7.5
+    assert bbox.XLength == 20.0
+    assert bbox.YLength == 15.0
+    assert bbox.ZLength == 2.0
+
+
+def test_scale_part_succeeds_when_length_set_raises():
+    bbox = _GetterOnlyBoundBox(-280.0, 20.0, -4.0, 4.0, 60.0, 68.0)
+    obj = _Part("boom", bbox)
+    obj.Shape.BoundBox = bbox
+    ok = repair._scale_part(obj, 1.2, 1.0, 1.0, (-280.0, 0.0, 64.0))
+    assert ok is True
+    assert abs(bbox.XMax - bbox.XMin) > 300.0
+
+
+def test_repair_source_does_not_assign_bbox_lengths():
+    source = Path(repair.__file__).read_text(encoding="utf-8")
+    assert "bbox.XLength =" not in source
+    assert "bbox.YLength =" not in source
+    assert "bbox.ZLength =" not in source
 
 
 def test_user_message_lists_each_change():
