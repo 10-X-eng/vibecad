@@ -189,16 +189,12 @@ class NativeCommonRuntime:
         operation, values = strict_variant_arguments(
             arguments,
             {
-                "distance": frozenset({"first", "second"}),
-                "angle": frozenset({"first", "second"}),
-                "radius": frozenset({"target"}),
-                "mass_properties": (
-                    frozenset({"target"})
-                    if "target" in arguments and "targets" not in arguments
-                    else frozenset({"targets"})
-                ),
-                "inspection_result": frozenset({"target"}),
-                "element": frozenset({"target"}),
+                "distance": frozenset({"targets"}),
+                "angle": frozenset({"targets"}),
+                "radius": frozenset({"targets"}),
+                "mass_properties": frozenset({"targets"}),
+                "inspection_result": frozenset({"targets"}),
+                "element": frozenset({"targets"}),
                 "drawing_projected_geometry": frozenset(
                     {
                         "view",
@@ -207,40 +203,38 @@ class NativeCommonRuntime:
                         "expected_projection_state_sha256",
                     }
                 ),
-                "validity": frozenset({"target"}),
+                "validity": frozenset({"targets"}),
             },
         )
         self._guard(allow_owned_playback=True)
+        targets = list(values.get("targets") or [])
         if operation == "distance":
             return measure_distance(
                 self._document,
-                self._element(values["first"]),
-                self._element(values["second"]),
+                self._element(targets[0]),
+                self._element(targets[1]),
             )
         if operation == "angle":
             return measure_angle(
                 self._document,
-                self._element(values["first"]),
-                self._element(values["second"]),
+                self._element(targets[0]),
+                self._element(targets[1]),
             )
         if operation == "radius":
-            return measure_radius(self._document, self._element(values["target"]))
+            return measure_radius(self._document, self._element(targets[0]))
         if operation == "mass_properties":
-            raw_targets = (
-                [values["target"]]
-                if "target" in values
-                else list(values["targets"])
+            return mass_properties(
+                self._document,
+                tuple(self._object(value) for value in targets),
             )
-            targets = tuple(self._object(value) for value in raw_targets)
-            return mass_properties(self._document, targets)
         if operation == "element":
             return inspect_element(
                 self._document,
-                self._element(values["target"]),
+                self._element(targets[0]),
             )
         if operation == "drawing_projected_geometry":
             return self._drawing_projected_geometry(values)
-        target = self._object(values["target"])
+        target = self._object(targets[0])
         if operation == "inspection_result":
             return visual_inspection_result(self._document, target)
         return geometry_validity(self._document, target)

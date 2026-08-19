@@ -62,8 +62,21 @@ def _extrude_arguments(sketch_name: str, component_name: str):
     return {
         "label": "Bracket Base Extrude",
         "profile": {"object_name": sketch_name},
-        "length_mm": 8.0,
         "destination_component": {"object_name": component_name},
+        "feature": {
+            "kind": "extrude",
+            "direction": {"kind": "sketch_normal"},
+            "extent": {
+                "kind": "one_side",
+                "sides": [
+                    {
+                        "kind": "length",
+                        "length_mm": 8.0,
+                        "taper_degrees": 0.0,
+                    }
+                ],
+            },
+        },
     }
 
 
@@ -252,7 +265,7 @@ def _run() -> None:
 
         extrude_result = native_call(
             second_turn,
-            "model.extrude",
+            "model.feature",
             _extrude_arguments(base_sketch_name, component_name),
         )
         extrude_name = extrude_result["operation"]["object_name"]

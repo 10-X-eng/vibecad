@@ -227,13 +227,8 @@ _MODEL_GROUP_COMMANDS = (
         (
             "Part_Primitives",
             "Part_Builder",
-            "Part_Extrude",
-            "Part_Revolve",
-            "Part_Mirror",
             "Part_MakeFace",
             "Part_RuledSurface",
-            "Part_Loft",
-            "Part_Sweep",
             "Part_Section",
             "Part_CrossSections",
             "Part_CompOffset",

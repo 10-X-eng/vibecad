@@ -125,10 +125,7 @@ _REPLACEMENT = {
             ),
         ),
     ],
-    "description": (
-        "Choose the branch matching the selected dimension's reported repair_kind. "
-        "Repair never converts the dimension to another semantic kind."
-    ),
+    "description": "Repair settings matching the dimension's reported repair kind.",
 }
 
 

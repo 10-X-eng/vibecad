@@ -1100,6 +1100,7 @@ def resolve_native_provider_surface(
                 f"Native surface schemas use {schema_bytes} bytes; limit is "
                 f"{schema_limit}. Largest families: {largest}."
             )
+        schemas = provider_schemas
     else:
         schemas = []
 

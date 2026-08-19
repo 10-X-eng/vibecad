@@ -2405,6 +2405,35 @@ def _provider_tool_parameters(schema: dict[str, Any]) -> dict[str, Any]:
             and isinstance(branches[0], dict)
         ):
             parameters = branches[0]
+        elif (
+            isinstance(branches, list)
+            and len(branches) > 1
+            and all(
+                isinstance(branch, dict)
+                and branch.get("type") == "object"
+                and isinstance(branch.get("properties"), dict)
+                for branch in branches
+            )
+        ):
+            operations = [
+                branch["properties"].get("operation", {}).get("const")
+                for branch in branches
+            ]
+            if all(
+                isinstance(operation, str) and operation
+                for operation in operations
+            ):
+                parameters = {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": operations,
+                        }
+                    },
+                    "required": ["operation"],
+                    "oneOf": branches,
+                }
     if not isinstance(parameters, dict) or parameters.get("type") != "object":
         raise ValueError(f"Provider tool {schema.get('name')!r} has no object schema.")
     if not isinstance(parameters.get("properties"), dict):

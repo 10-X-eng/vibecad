@@ -2507,19 +2507,6 @@ class TestRetainedPartDialogs(unittest.TestCase):
                 ]
             ),
         )
-        _second_wire_body, second_wire = self._body_feature(
-            "CallerSecondWireBody",
-            "CallerSecondWire",
-            Part.makePolygon(
-                [
-                    App.Vector(0, 0, 8),
-                    App.Vector(5, 0, 8),
-                    App.Vector(5, 5, 8),
-                    App.Vector(0, 5, 8),
-                    App.Vector(0, 0, 8),
-                ]
-            ),
-        )
         probe = self.document.addObject(
             "Part::Feature",
             "CallerTransactionProbe",
@@ -2533,15 +2520,9 @@ class TestRetainedPartDialogs(unittest.TestCase):
             ("Part_Tube", 0, (solid,)),
             ("Part_Primitives", 0, (solid,)),
             ("Part_Builder", 0, (solid,)),
-            ("Part_Extrude", 0, (wire,)),
-            ("Part_Revolve", 0, (wire,)),
             ("Part_Fillet", 0, ((solid, "Edge1"),)),
             ("Part_Chamfer", 0, ((solid, "Edge1"),)),
             ("Part_Thickness", 0, ((solid, "Face1"),)),
-            ("Part_Mirror", 0, (solid,)),
-            ("Part_Scale", 0, (solid,)),
-            ("Part_Loft", 0, (wire, second_wire)),
-            ("Part_Sweep", 0, (wire, second_wire)),
             ("Part_CrossSections", 0, (solid,)),
             ("Part_Boolean", 0, (solid, second_solid)),
             ("Part_ProjectionOnSurface", 0, (solid,)),

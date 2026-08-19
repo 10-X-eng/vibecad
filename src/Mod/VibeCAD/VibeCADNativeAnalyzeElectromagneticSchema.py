@@ -237,7 +237,7 @@ _REFERENCE_SCHEMAS = {
     "current_density": _references(
         ("Solid", "Face"),
         allow_empty=True,
-        description="Exact solid/face assignments. An empty list is global only for Cartesian body current density.",
+        description="Exact solid or face assignments, with global Cartesian body current density support.",
     ),
     "magnetization": _references(
         ("Solid", "Face"),

@@ -700,10 +700,7 @@ def sketch_constraint_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="constrain_perpendicular",
-                description=(
-                    "Apply one exact Perpendicular form without inferred geometry; "
-                    "explicit via-point targets report any required support constraints."
-                ),
+                description="Apply an exact Perpendicular constraint form.",
                 action_ids=frozenset({"Sketcher_ConstrainPerpendicular"}),
                 surface_ids=frozenset({"sketch.edit"}),
                 exact_target_type="ActiveSketchExactPerpendicularForm",

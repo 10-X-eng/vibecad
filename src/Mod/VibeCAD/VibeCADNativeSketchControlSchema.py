@@ -46,10 +46,7 @@ def sketch_control_capability_definition() -> NativeCapabilityDefinition:
         variants=(
             NativeCapabilityVariant(
                 operation="leave",
-                description=(
-                    "Finish the active Sketch. End this turn after success; "
-                    "modeling continues automatically."
-                ),
+                description="Finish the active Sketch and continue with modeling tools.",
                 action_ids=frozenset({"Sketcher_LeaveSketch"}),
                 surface_ids=frozenset({"sketch.edit"}),
                 exact_target_type="ActiveSketchEditSession",

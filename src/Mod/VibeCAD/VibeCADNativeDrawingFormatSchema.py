@@ -79,10 +79,7 @@ def drawing_format_capability_definition() -> NativeCapabilityDefinition:
                         "dimension": _TARGET,
                         "format_spec": {
                             **_VALUE,
-                            "description": (
-                                "Complete replacement format. Use one numeric "
-                                "placeholder such as %f, %.2f, %g, %w, or %r."
-                            ),
+                            "description": "Replacement format with one numeric placeholder: %f, %.2f, %g, %w, or %r.",
                         },
                     },
                     ("dimension", "format_spec"),

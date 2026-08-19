@@ -60,6 +60,16 @@ def _object_ref() -> dict[str, Any]:
     return _parameters({"object_name": _OBJECT_NAME}, ("object_name",))
 
 
+def _global_axis() -> dict[str, Any]:
+    return _parameters(
+        {
+            "kind": {"type": "string", "const": "global_axis"},
+            "axis": {"type": "string", "enum": ["X", "Y", "Z"]},
+        },
+        ("kind", "axis"),
+    )
+
+
 def _nullable_object_ref() -> dict[str, Any]:
     return {"oneOf": [_object_ref(), {"type": "null"}]}
 
@@ -107,7 +117,7 @@ def _variant(
 def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
     structure = NativeCapabilityDefinition(
         name="model.structure",
-        description="Create components, Bodies, references, or clones.",
+        description="Create Model structure.",
         primary_classification="mutation",
         variants=(
             _variant(
@@ -185,7 +195,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
     )
     sketch = NativeCapabilityDefinition(
         name="model.sketch",
-        description="Create a planar Sketch. Open it before drawing.",
+        description="Create a planar Sketch.",
         primary_classification="mutation",
         variants=(
             _variant(
@@ -248,7 +258,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
     )
     open_sketch = NativeCapabilityDefinition(
         name="sketch.open",
-        description="Open a Sketch; continue next turn.",
+        description="Open a Sketch.",
         primary_classification="mutation",
         variants=(
             _variant(
@@ -284,7 +294,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
 def model_revolution_sketch_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="model.revolution_sketch",
-        description="Create a revolution-profile Sketch on X, Y, or Z.",
+        description="Create an axis-aligned Sketch.",
         primary_classification="mutation",
         variants=(
             _variant(
@@ -294,10 +304,7 @@ def model_revolution_sketch_capability_definition() -> NativeCapabilityDefinitio
                 _parameters(
                     {
                         "label": _LABEL,
-                        "axis": {
-                            "type": "string",
-                            "enum": ["X", "Y", "Z"],
-                        },
+                        "axis": _global_axis(),
                     },
                     ("label", "axis"),
                 ),

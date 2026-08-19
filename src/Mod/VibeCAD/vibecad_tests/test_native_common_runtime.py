@@ -123,18 +123,18 @@ def test_inspect_runtime_maps_object_and_subelement_targets_without_labels(
     assert runtime.inspect(
         {
             "operation": "element",
-            "target": {"object_name": "Box", "subelement": "Edge1"},
+            "targets": [{"object_name": "Box", "subelement": "Edge1"}],
         }
     )["shape_type"] == "Edge"
     assert runtime.inspect(
-        {"operation": "validity", "target": {"object_name": "Box"}}
+        {"operation": "validity", "targets": [{"object_name": "Box"}]}
     )["valid"] is True
     assert all(value[0] is document for value in observed)
     assert observed[0][1].subelement == "Edge1"
     assert observed[1][1].object_name == "Box"
 
 
-def test_mass_properties_accepts_one_target_or_the_existing_targets_list(
+def test_mass_properties_uses_one_canonical_targets_list(
     monkeypatch,
 ) -> None:
     runtime, _state, document = _runtime()
@@ -147,9 +147,6 @@ def test_mass_properties_accepts_one_target_or_the_existing_targets_list(
     )
 
     assert runtime.inspect(
-        {"operation": "mass_properties", "target": {"object_name": "Body"}}
-    ) == {"volume_mm3": 1.0}
-    assert runtime.inspect(
         {
             "operation": "mass_properties",
             "targets": [
@@ -158,8 +155,7 @@ def test_mass_properties_accepts_one_target_or_the_existing_targets_list(
             ],
         }
     ) == {"volume_mm3": 1.0}
-    assert [target.object_name for target in observed[0][1]] == ["Body"]
-    assert [target.object_name for target in observed[1][1]] == [
+    assert [target.object_name for target in observed[0][1]] == [
         "Body",
         "ToolBody",
     ]
@@ -170,7 +166,6 @@ def test_mass_properties_accepts_one_target_or_the_existing_targets_list(
             {
                 "operation": "mass_properties",
                 "target": {"object_name": "Body"},
-                "targets": [{"object_name": "Body"}],
             }
         )
 

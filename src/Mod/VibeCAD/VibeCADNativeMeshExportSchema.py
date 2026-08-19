@@ -38,10 +38,7 @@ _NONEMPTY_COUNT = {"type": "integer", "minimum": 1, "maximum": 2_147_483_647}
 def mesh_export_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MESH_EXPORT_CAPABILITY_NAME,
-        description=(
-            "Export one exact current-History Mesh or point cloud to a human-authorized "
-            "file in a background job. AI never supplies or receives a filesystem path."
-        ),
+        description="Export one exact current Mesh or point cloud to a human-authorized file.",
         primary_classification="export",
         variants=(
             NativeCapabilityVariant(

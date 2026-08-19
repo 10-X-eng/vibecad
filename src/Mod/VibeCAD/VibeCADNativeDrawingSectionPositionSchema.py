@@ -101,10 +101,7 @@ def drawing_section_position_capability_definition() -> NativeCapabilityDefiniti
         variants=(
             NativeCapabilityVariant(
                 operation="align_axis",
-                description=(
-                    "Align the section view horizontally or vertically to its "
-                    "hash-pinned base position; the axis is explicit, never inferred."
-                ),
+                description="Align the section view to an explicit base axis.",
                 action_ids=_ACTIONS,
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type="ExactDrawingSectionViewAndExplicitBaseAxis",

@@ -625,10 +625,7 @@ def sketch_transform_variants() -> tuple[NativeCapabilityVariant, ...]:
         ),
         NativeCapabilityVariant(
             operation="decrease_bspline_degree",
-            description=(
-                "Approximate one exact internal B-spline at one degree lower only "
-                "when its measured sampled deviation stays within an explicit limit."
-            ),
+            description="Approximate one B-spline at a lower degree within a deviation limit.",
             action_ids=frozenset({"Sketcher_BSplineDecreaseDegree"}),
             surface_ids=frozenset({"sketch.edit"}),
             exact_target_type=("ActiveSketchExactBSplineAndMaximumDeviation"),
@@ -651,10 +648,7 @@ def sketch_transform_variants() -> tuple[NativeCapabilityVariant, ...]:
         ),
         NativeCapabilityVariant(
             operation="decrease_bspline_knot_multiplicity",
-            description=(
-                "Decrease one exact zero-based B-spline knot multiplicity by one, "
-                "removing a multiplicity-one knot only within an explicit deviation limit."
-            ),
+            description="Decrease one B-spline knot multiplicity within a deviation limit.",
             action_ids=frozenset({"Sketcher_BSplineDecreaseKnotMultiplicity"}),
             surface_ids=frozenset({"sketch.edit"}),
             exact_target_type="ActiveSketchExactBSplineKnotAndMaximumDeviation",

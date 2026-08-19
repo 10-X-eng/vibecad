@@ -2426,11 +2426,6 @@ class TestNativeRibbonTools(unittest.TestCase):
     def test_retained_geometry_task_dialogs_cancel_or_close_exactly(self):
         anchor_body, _anchor_tip = self._new_body("TaskAnchorBody", solid=True)
         wire_body, _wire_tip = self._wire_body("TaskWireBody", x=20.0)
-        wire_body_2, _wire_tip_2 = self._wire_body(
-            "TaskWireBodyTwo",
-            x=20.0,
-            z=10.0,
-        )
         solid_body_2, _solid_tip_2 = self._new_body(
             "TaskSecondSolidBody",
             solid=True,
@@ -2444,15 +2439,6 @@ class TestNativeRibbonTools(unittest.TestCase):
             # Shape Builder creates zero or more shapes while it remains open;
             # its native terminal action is Close (a reject-role button).
             ("Part_Builder", (anchor_body,), True),
-            # These persistent Apply-capable dialogs use Close as their
-            # reject-role terminal action because earlier Apply operations
-            # cannot truthfully be presented as cancelable.
-            ("Part_Extrude", (wire_body,), True),
-            ("Part_Revolve", (wire_body,), False),
-            ("Part_Mirror", (anchor_body,), False),
-            ("Part_Scale", (anchor_body,), True),
-            ("Part_Loft", (wire_body, wire_body_2), False),
-            ("Part_Sweep", (wire_body,), False),
             ("Part_CrossSections", (anchor_body,), False),
             ("Part_Boolean", (anchor_body, solid_body_2), True),
             ("Part_ProjectionOnSurface", (anchor_body,), False),
@@ -2476,93 +2462,6 @@ class TestNativeRibbonTools(unittest.TestCase):
             (wire_body,),
             index=1,
         )
-
-    def test_apply_then_close_preserves_the_accepted_model_state(self):
-        for undo_enabled in (True, False):
-            with self.subTest(undo_enabled=undo_enabled):
-                self.document.UndoMode = undo_enabled
-                suffix = "Undo" if undo_enabled else "NoUndo"
-                body, source = self._new_body(
-                    f"ApplyThenClose{suffix}Body",
-                    solid=True,
-                )
-                self._activate_body(body)
-                original_names = {obj.Name for obj in self.document.Objects}
-
-                self.assertTrue(Gui.isCommandActive("Part_Scale"))
-                Gui.runCommand("Part_Scale", 0)
-                self._process_events(50)
-                self.assertTrue(Gui.Control.activeDialog())
-
-                scale = next(
-                    (
-                        widget
-                        for widget in Gui.getMainWindow().findChildren(
-                            QtGui.QDoubleSpinBox,
-                            "dsbUniformScale",
-                        )
-                        if widget.isVisible()
-                    ),
-                    None,
-                )
-                self.assertIsNotNone(scale)
-                scale.setValue(2.0)
-
-                apply_button = self._task_button(
-                    QtGui.QDialogButtonBox.Apply
-                )
-                self.assertIsNotNone(apply_button)
-                apply_button.click()
-                self._process_events(80)
-
-                self.assertTrue(Gui.Control.activeDialog())
-                self.assertFalse(self.document.HasPendingTransaction)
-                created = [
-                    obj
-                    for obj in self.document.Objects
-                    if obj.Name not in original_names
-                ]
-                self.assertEqual(len(created), 1)
-                result = created[0]
-                self.assertEqual(result.TypeId, "Part::Scale")
-                self.assertIsNone(result.getParentGeoFeatureGroup())
-                self.assertEqual(tuple(body.Group), (source,))
-                self.assertIs(body.Tip, source)
-                self.assertTrue(result.isValid(), result.getStatusString())
-                self.assertFalse(result.Shape.isNull())
-                self.assertTrue(result.Shape.isValid())
-                self.assertNotEqual(
-                    str(result.VibeCADDefinitionId),
-                    "",
-                )
-                self.assertEqual(
-                    str(result.DesignId),
-                    str(self.document.VibeCADTimeline.DesignId),
-                )
-                self.assertEqual(result.VibeCADTimelineRole, "operation")
-                self.assertEqual(
-                    list(self.document.VibeCADTimeline.Operations).count(
-                        result
-                    ),
-                    1,
-                )
-                self.assertFalse(body.ViewObject.Visibility)
-                self.assertTrue(result.ViewObject.Visibility)
-
-                close_button = self._task_button(
-                    QtGui.QDialogButtonBox.Close
-                )
-                self.assertIsNotNone(close_button)
-                close_button.click()
-                self._process_events(80)
-
-                self.assertFalse(Gui.Control.activeDialog())
-                self.assertFalse(self.document.HasPendingTransaction)
-                self.assertIs(self.document.getObject(result.Name), result)
-                self.assertEqual(tuple(body.Group), (source,))
-                self.assertIs(body.Tip, source)
-                self.assertFalse(body.ViewObject.Visibility)
-                self.assertTrue(result.ViewObject.Visibility)
 
     def test_cancel_restores_picked_position_after_selection_gates_are_removed(self):
         body, _source = self._new_body("PickedPositionBody", solid=True)

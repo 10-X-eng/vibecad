@@ -183,7 +183,7 @@ def manufacture_inspect_capability_definition() -> NativeCapabilityDefinition:
                         "query": {
                             "type": "string",
                             "maxLength": 80,
-                            "description": "Case-insensitive designation substring; use an empty string for all.",
+                            "description": "Case-insensitive designation substring; empty matches all.",
                         },
                         "offset": {"type": "integer", "minimum": 0, "maximum": 1000},
                         "page_size": {

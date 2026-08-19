@@ -87,11 +87,7 @@ def drawing_dimension_inference_capability_definition() -> NativeCapabilityDefin
                 },
                 "minItems": 1,
                 "maxItems": 64,
-                "description": (
-                    "Ordered unique exact projected elements. Inference creates only "
-                    "when exactly one semantic dimension is possible; otherwise the "
-                    "failure lists the direct capability and operation candidates."
-                ),
+                "description": "Ordered projected elements with unambiguous dimension semantics.",
             },
         },
         ("label", "page", "view", "label_position_in_view_mm", "elements"),
@@ -106,10 +102,7 @@ def drawing_dimension_inference_capability_definition() -> NativeCapabilityDefin
         variants=(
             NativeCapabilityVariant(
                 operation="infer",
-                description=(
-                    "Create the sole dimension implied by exact projected semantics, "
-                    "or refuse with precise direct-operation candidates."
-                ),
+                description="Create the dimension implied by exact projected semantics.",
                 action_ids=frozenset({"TechDraw_Dimension"}),
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type=(

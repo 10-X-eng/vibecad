@@ -94,7 +94,7 @@ _WIDTH = {
             ("mode", "value_mm"),
         ),
     ],
-    "description": "Use automatic wrapping or one explicit positive width in millimetres.",
+    "description": "Automatic wrapping or one positive width in millimetres.",
 }
 _COLOR = _closed(
     {
@@ -180,10 +180,7 @@ def drawing_rich_annotation_capability_definition() -> NativeCapabilityDefinitio
         variants=(
             NativeCapabilityVariant(
                 operation="create_plain_text",
-                description=(
-                    "Create a safely escaped plain-text annotation; use this unless "
-                    "rich formatting is specifically required."
-                ),
+                description="Create a safely escaped plain-text annotation.",
                 action_ids=_ACTIONS,
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type=(
@@ -195,10 +192,7 @@ def drawing_rich_annotation_capability_definition() -> NativeCapabilityDefinitio
             ),
             NativeCapabilityVariant(
                 operation="create_rich_text",
-                description=(
-                    "Create a bounded resource-free rich-text annotation from explicit "
-                    "safe HTML when formatted text is required."
-                ),
+                description="Create a bounded resource-free annotation from safe HTML.",
                 action_ids=_ACTIONS,
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type=(

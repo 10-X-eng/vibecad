@@ -27,6 +27,7 @@
 
 #include <QDockWidget>
 #include <QFileInfo>
+#include <QMessageBox>
 #include <QPointer>
 #include <QString>
 #include <BRepBuilderAPI_FindPlane.hxx>
@@ -68,21 +69,15 @@
 #include "BoxSelection.h"
 #include "CrossSections.h"
 #include "DlgBooleanOperation.h"
-#include "DlgExtrusion.h"
-#include "DlgScale.h"
 #include "DlgFilletEdges.h"
 #include "DlgPrimitives.h"
 #include "DlgProjectionOnSurface.h"
-#include "DlgRevolution.h"
-#include "Mirroring.h"
 #include "ModelingSelection.h"
 #include "SectionCutting.h"
 #include "TaskCheckGeometry.h"
-#include "TaskLoft.h"
 #include "TaskOffset.h"
 #include "TaskResultValidation.h"
 #include "TaskShapeBuilder.h"
-#include "TaskSweep.h"
 #include "ViewProvider.h"
 
 
@@ -230,9 +225,11 @@ CmdPartPrimitives::CmdPartPrimitives()
 {
     sAppModule = "Part";
     sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Primitive");
+    sMenuText = QT_TR_NOOP("Construction Geometry");
 
-    sToolTipText = QT_TR_NOOP("Creates solid geometric primitives parametrically");
+    sToolTipText = QT_TR_NOOP(
+        "Creates parametric planes, curves, points, lines, and polygons"
+    );
     sWhatsThis = "Part_Primitives";
     sStatusTip = sToolTipText;
     sPixmap = "Part_Primitives";
@@ -1883,69 +1880,6 @@ bool CmdPartBoolean::isActive()
 }
 
 //===========================================================================
-// Part_Extrude
-//===========================================================================
-DEF_STD_CMD_A(CmdPartExtrude)
-
-CmdPartExtrude::CmdPartExtrude()
-    : Command("Part_Extrude")
-{
-    sAppModule = "Part";
-    sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Extrude Standalone Shape");
-    sToolTipText = QT_TR_NOOP(
-        "Creates a standalone solid, shell, or surface by extruding the selected profile"
-    );
-    sWhatsThis = "Part_Extrude";
-    sStatusTip = sToolTipText;
-    sPixmap = "Part_Extrude";
-}
-
-void CmdPartExtrude::activated(int iMsg)
-{
-    Q_UNUSED(iMsg);
-    Gui::Control().showDialog(new PartGui::TaskExtrusion());
-}
-
-bool CmdPartExtrude::isActive()
-{
-    return hasActiveDocument()
-        && PartGui::canStartRetainedModelingTask(getDocument())
-        && !Gui::Control().activeDialog(getDocument());
-}
-
-//===========================================================================
-// Part_Scale
-//===========================================================================
-DEF_STD_CMD_A(CmdPartScale)
-
-CmdPartScale::CmdPartScale()
-    : Command("Part_Scale")
-{
-    sAppModule = "Part";
-    sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Scale");
-    sToolTipText = QT_TR_NOOP("Scales the selected shape");
-    sWhatsThis = "Part_Scale";
-    sStatusTip = sToolTipText;
-    sPixmap = "Part_Scale";
-}
-
-void CmdPartScale::activated(int iMsg)
-{
-    Q_UNUSED(iMsg);
-
-    Gui::Control().showDialog(new PartGui::TaskScale());
-}
-
-bool CmdPartScale::isActive()
-{
-    return hasActiveDocument()
-        && PartGui::canStartRetainedModelingTask(getDocument())
-        && !Gui::Control().activeDialog(getDocument());
-}
-
-//===========================================================================
 // Part_MakeFace
 //===========================================================================
 DEF_STD_CMD_A(CmdPartMakeFace)
@@ -2051,38 +1985,6 @@ bool CmdPartMakeFace::isActive()
 }
 
 //===========================================================================
-// Part_Revolve
-//===========================================================================
-DEF_STD_CMD_A(CmdPartRevolve)
-
-CmdPartRevolve::CmdPartRevolve()
-    : Command("Part_Revolve")
-{
-    sAppModule = "Part";
-    sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Revolve Standalone Shape");
-    sToolTipText = QT_TR_NOOP(
-        "Creates a standalone solid, shell, or surface by revolving the selected profile"
-    );
-    sWhatsThis = "Part_Revolve";
-    sStatusTip = sToolTipText;
-    sPixmap = "Part_Revolve";
-}
-
-void CmdPartRevolve::activated(int iMsg)
-{
-    Q_UNUSED(iMsg);
-    Gui::Control().showDialog(new PartGui::TaskRevolution());
-}
-
-bool CmdPartRevolve::isActive()
-{
-    return hasActiveDocument()
-        && PartGui::canStartRetainedModelingTask(getDocument())
-        && !Gui::Control().activeDialog(getDocument());
-}
-
-//===========================================================================
 // Part_Fillet
 //===========================================================================
 namespace
@@ -2167,36 +2069,6 @@ bool CmdPartChamfer::isActive()
 }
 
 //===========================================================================
-// Part_Mirror
-//===========================================================================
-DEF_STD_CMD_A(CmdPartMirror)
-
-CmdPartMirror::CmdPartMirror()
-    : Command("Part_Mirror")
-{
-    sAppModule = "Part";
-    sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Mirror Standalone Shape");
-    sToolTipText = QT_TR_NOOP("Creates a standalone mirrored result from the selected shape");
-    sWhatsThis = "Part_Mirror";
-    sStatusTip = sToolTipText;
-    sPixmap = "Part_Mirror";
-}
-
-void CmdPartMirror::activated(int iMsg)
-{
-    Q_UNUSED(iMsg);
-    Gui::Control().showDialog(new PartGui::TaskMirroring());
-}
-
-bool CmdPartMirror::isActive()
-{
-    return hasActiveDocument()
-        && PartGui::canStartRetainedModelingTask(getDocument())
-        && !Gui::Control().activeDialog(getDocument());
-}
-
-//===========================================================================
 // Part_CrossSections
 //===========================================================================
 DEF_STD_CMD_A(CmdPartCrossSections)
@@ -2265,72 +2137,6 @@ void CmdPartBuilder::activated(int iMsg)
 }
 
 bool CmdPartBuilder::isActive()
-{
-    return hasActiveDocument()
-        && PartGui::canStartRetainedModelingTask(getDocument())
-        && !Gui::Control().activeDialog(getDocument());
-}
-
-//===========================================================================
-// Part_Loft
-//===========================================================================
-
-DEF_STD_CMD_A(CmdPartLoft)
-
-CmdPartLoft::CmdPartLoft()
-    : Command("Part_Loft")
-{
-    sAppModule = "Part";
-    sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Loft Standalone Shape");
-    sToolTipText = QT_TR_NOOP(
-        "Creates a standalone solid, shell, or surface through the selected profiles"
-    );
-    sWhatsThis = "Part_Loft";
-    sStatusTip = sToolTipText;
-    sPixmap = "Part_Loft";
-}
-
-void CmdPartLoft::activated(int iMsg)
-{
-    Q_UNUSED(iMsg);
-    Gui::Control().showDialog(new PartGui::TaskLoft());
-}
-
-bool CmdPartLoft::isActive()
-{
-    return hasActiveDocument()
-        && PartGui::canStartRetainedModelingTask(getDocument())
-        && !Gui::Control().activeDialog(getDocument());
-}
-
-//===========================================================================
-// Part_Sweep
-//===========================================================================
-
-DEF_STD_CMD_A(CmdPartSweep)
-
-CmdPartSweep::CmdPartSweep()
-    : Command("Part_Sweep")
-{
-    sAppModule = "Part";
-    sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Sweep Standalone Shape");
-    sToolTipText = QT_TR_NOOP(
-        "Creates a standalone solid, shell, or surface by sweeping profiles along a path"
-    );
-    sWhatsThis = "Part_Sweep";
-    sStatusTip = sToolTipText;
-    sPixmap = "Part_Sweep";
-}
-
-void CmdPartSweep::activated(int iMsg)
-{
-    Q_UNUSED(iMsg);
-    Gui::Control().showDialog(new PartGui::TaskSweep());
-}
-
-bool CmdPartSweep::isActive()
 {
     return hasActiveDocument()
         && PartGui::canStartRetainedModelingTask(getDocument())
@@ -3401,11 +3207,7 @@ void CreatePartCommands()
     rcCmdMgr.addCommand(new CmdPartMakeSolid());
     rcCmdMgr.addCommand(new CmdPartReverseShape());
     rcCmdMgr.addCommand(new CmdPartBoolean());
-    rcCmdMgr.addCommand(new CmdPartExtrude());
-    rcCmdMgr.addCommand(new CmdPartScale());
     rcCmdMgr.addCommand(new CmdPartMakeFace());
-    rcCmdMgr.addCommand(new CmdPartMirror());
-    rcCmdMgr.addCommand(new CmdPartRevolve());
     rcCmdMgr.addCommand(new CmdPartCrossSections());
     rcCmdMgr.addCommand(new CmdPartFillet());
     rcCmdMgr.addCommand(new CmdPartChamfer());
@@ -3426,8 +3228,6 @@ void CreatePartCommands()
     rcCmdMgr.addCommand(new CmdShapeInfo());
     rcCmdMgr.addCommand(new CmdPartRuledSurface());
     rcCmdMgr.addCommand(new CmdPartBuilder());
-    rcCmdMgr.addCommand(new CmdPartLoft());
-    rcCmdMgr.addCommand(new CmdPartSweep());
     rcCmdMgr.addCommand(new CmdPartOffset());
     rcCmdMgr.addCommand(new CmdPartOffset2D());
     rcCmdMgr.addCommand(new CmdPartCompOffset());

@@ -456,13 +456,8 @@ KNOWN_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "PartDesign_DesignCircularPattern",
         "Part_Primitives",
         "Part_Builder",
-        "Part_Extrude",
-        "Part_Revolve",
-        "Part_Mirror",
         "Part_MakeFace",
         "Part_RuledSurface",
-        "Part_Loft",
-        "Part_Sweep",
         "Part_Section",
         "Part_CrossSections",
         "Part_CompOffset",
@@ -963,13 +958,8 @@ _CAPABILITY_OVERRIDES = {
     "PartDesign_Scale": "model.transform",
     "Part_Primitives": "model.part",
     "Part_Builder": "model.part",
-    "Part_Extrude": "model.part",
-    "Part_Revolve": "model.part",
-    "Part_Mirror": "model.part",
     "Part_MakeFace": "model.part",
     "Part_RuledSurface": "model.part",
-    "Part_Loft": "model.part",
-    "Part_Sweep": "model.part",
     "Part_Section": "model.boolean",
     "PartDesign_Combine": "model.boolean",
     "Part_CrossSections": "model.part",
@@ -1253,7 +1243,6 @@ _CAPABILITY_OVERRIDES.update(
     }
 )
 _CAPABILITY_OVERRIDES["Sketcher_Create3PointArc"] = "sketch.draw_three_point_arc"
-_CAPABILITY_OVERRIDES["PartDesign_DesignExtrude"] = "model.extrude"
 _CAPABILITY_OVERRIDES.update(
     {
         command_id: "model.primitive"
@@ -1270,8 +1259,6 @@ _CAPABILITY_OVERRIDES.update(
         )
     }
 )
-_CAPABILITY_OVERRIDES["PartDesign::DesignBox"] = "model.box"
-_CAPABILITY_OVERRIDES["PartDesign::DesignCylinder"] = "model.cylinder"
 _CAPABILITY_OVERRIDES.update(
     {
         command_id: "sketch.draw_circle"
@@ -1556,24 +1543,19 @@ _OPERATION_VARIANT_OVERRIDES = {
     "PartDesign::DesignPrism": "prism",
     "PartDesign::DesignWedge": "wedge",
     "PartDesign::DesignTube": "tube",
-    "PartDesign_DesignExtrude": "extrude",
-    "PartDesign_DesignRevolve": "profile",
-    "PartDesign_DesignLoft": "profile",
-    "PartDesign_DesignSweep": "profile",
-    "PartDesign_DesignHelix": "profile",
+    "PartDesign_DesignExtrude": "create",
+    "PartDesign_DesignRevolve": "create",
+    "PartDesign_DesignLoft": "create",
+    "PartDesign_DesignSweep": "create",
+    "PartDesign_DesignHelix": "create",
     "PartDesign_DesignMirror": "pattern",
     "PartDesign_DesignLinearPattern": "pattern",
     "PartDesign_DesignCircularPattern": "pattern",
     "PartDesign_Scale": "scale",
     "Part_Primitives": "primitive",
     "Part_Builder": "builder",
-    "Part_Extrude": "extrude",
-    "Part_Revolve": "revolve",
-    "Part_Mirror": "mirror",
     "Part_MakeFace": "make_face",
     "Part_RuledSurface": "ruled_surface",
-    "Part_Loft": "loft",
-    "Part_Sweep": "sweep",
     "Part_Section": "section",
     "PartDesign_Combine": "combine",
     "Part_CrossSections": "cross_sections",

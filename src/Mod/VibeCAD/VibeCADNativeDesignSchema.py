@@ -50,43 +50,14 @@ def object_reference_schema() -> dict[str, Any]:
     )
 
 
-def design_result_schema() -> dict[str, Any]:
-    targets = {
-        "type": "array",
-        "items": object_reference_schema(),
-        "minItems": 0,
-        "maxItems": 16,
-        "uniqueItems": True,
-    }
-    destination = {
-        "oneOf": [{"type": "null"}, object_reference_schema()],
-    }
-    new_body = parameters_schema(
+def global_axis_schema() -> dict[str, Any]:
+    return parameters_schema(
         {
-            "mode": {"type": "string", "const": "new_body"},
-            "targets": targets,
-            "destination_component": destination,
+            "kind": {"type": "string", "const": "global_axis"},
+            "axis": {"type": "string", "enum": ["X", "Y", "Z"]},
         },
-        ("mode",),
+        ("kind", "axis"),
     )
-    new_body["description"] = (
-        "new_body creates one Body; destination_component is optional."
-    )
-    existing_body = parameters_schema(
-        {
-            "mode": {
-                "type": "string",
-                "enum": ["join", "cut", "intersect"],
-            },
-            "targets": {**targets, "minItems": 1},
-            "destination_component": {"type": "null"},
-        },
-        ("mode", "targets"),
-    )
-    existing_body["description"] = (
-        "join, cut, or intersect exact existing Body targets."
-    )
-    return {"oneOf": [new_body, existing_body]}
 
 
 def vector_schema(*, minimum: float, maximum: float) -> dict[str, Any]:
@@ -131,6 +102,7 @@ def design_link_schema(
     minimum: int,
     maximum: int,
 ) -> dict[str, Any]:
+    required = ("object_name", field) if minimum else ("object_name",)
     return parameters_schema(
         {
             "object_name": OBJECT_NAME_SCHEMA,
@@ -146,5 +118,5 @@ def design_link_schema(
                 "uniqueItems": True,
             },
         },
-        ("object_name", field),
+        required,
     )

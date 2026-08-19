@@ -93,7 +93,7 @@ _PROPERTY = {
                     "minLength": 1,
                     "maxLength": 160,
                     "pattern": r"^(?=.*\S)[^\x00-\x1F\x7F]+$",
-                    "description": "Exact selected value; it must occur in options.",
+                    "description": "Exact selected option value.",
                 },
             },
             ("kind", "options", "selected"),
@@ -163,12 +163,7 @@ _DESTINATION = {
 def manufacture_property_bag_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MANUFACTURE_PROPERTY_BAG_CAPABILITY_NAME,
-        description=(
-            "Create the shipped CAM Property Bag atomically with a closed set of "
-            "typed initial properties and an optional exact Body destination. "
-            "File properties remain available in the human editor; the provider "
-            "cannot supply filesystem paths."
-        ),
+        description="Create a CAM Property Bag with typed properties and an optional Body.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
@@ -199,10 +194,7 @@ def manufacture_property_bag_capability_definition() -> NativeCapabilityDefiniti
                             "items": _PROPERTY_ITEM,
                             "minItems": 0,
                             "maxItems": 64,
-                            "description": (
-                                "Typed properties canonicalized by stable property name. "
-                                "Names must be unique without case ambiguity."
-                            ),
+                            "description": "Typed properties keyed by unique stable names.",
                         },
                     },
                     ("label", "destination_body", "properties"),

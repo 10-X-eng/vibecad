@@ -716,7 +716,6 @@ set(VibeCAD_Scripts
     VibeCADNativeModelFeatureBindings.py
     VibeCADNativeModelFeatureRuntime.py
     VibeCADNativeModelFeatureSchema.py
-    VibeCADNativeModelExtrudeSchema.py
     VibeCADNativeModelFastener.py
     VibeCADNativeModelFastenerAttachment.py
     VibeCADNativeModelFastenerBindings.py
@@ -753,13 +752,8 @@ set(VibeCAD_Scripts
     VibeCADNativePartPrimitives.py
     VibeCADNativePartBuilder.py
     VibeCADNativePartHistory.py
-    VibeCADNativePartExtrude.py
-    VibeCADNativePartRevolve.py
-    VibeCADNativePartMirror.py
     VibeCADNativePartMakeFace.py
     VibeCADNativePartRuledSurface.py
-    VibeCADNativePartLoft.py
-    VibeCADNativePartSweep.py
     VibeCADNativePartSection.py
     VibeCADNativePartCrossSections.py
     VibeCADNativePartOffset.py
@@ -1330,13 +1324,8 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_model_matching_fastener_hole_gui_integration.py
         vibecad_tests/native_model_part_primitives_gui_integration.py
         vibecad_tests/native_model_part_builder_gui_integration.py
-        vibecad_tests/native_model_part_extrude_gui_integration.py
-        vibecad_tests/native_model_part_revolve_gui_integration.py
-        vibecad_tests/native_model_part_mirror_gui_integration.py
         vibecad_tests/native_model_part_make_face_gui_integration.py
         vibecad_tests/native_model_part_ruled_surface_gui_integration.py
-        vibecad_tests/native_model_part_loft_gui_integration.py
-        vibecad_tests/native_model_part_sweep_gui_integration.py
         vibecad_tests/native_model_part_section_gui_integration.py
         vibecad_tests/native_model_part_cross_sections_gui_integration.py
         vibecad_tests/native_model_part_offset_gui_integration.py

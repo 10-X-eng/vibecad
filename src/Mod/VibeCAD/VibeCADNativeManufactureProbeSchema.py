@@ -91,11 +91,7 @@ _MOTION = _closed(
 def manufacture_probe_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MANUFACTURE_PROBE_CAPABILITY_NAME,
-        description=(
-            "Create a bounded stock-probing grid with one exact CAM Job and exact "
-            "probe Tool Controller. Output naming is automatic at postprocess time; "
-            "the provider cannot supply a filesystem path."
-        ),
+        description="Create a bounded stock-probing grid for one exact CAM Job.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

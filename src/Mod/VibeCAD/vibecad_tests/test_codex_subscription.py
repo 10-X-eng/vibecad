@@ -826,6 +826,39 @@ def test_codex_dynamic_tools_reject_malformed_or_extended_snapshots() -> None:
         provider._codex_dynamic_tool_surface(extended)
 
 
+def test_provider_projects_a_multi_variant_tool_to_an_object_root() -> None:
+    branches = [
+        {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "const": operation},
+                field: {"type": field_type},
+            },
+            "required": ["operation", field],
+            "additionalProperties": False,
+        }
+        for operation, field, field_type in (
+            ("first", "count", "integer"),
+            ("second", "name", "string"),
+        )
+    ]
+
+    parameters = provider._provider_tool_parameters(
+        {
+            "name": "model.example",
+            "parameters": {"oneOf": branches},
+        }
+    )
+
+    assert parameters["type"] == "object"
+    assert parameters["properties"]["operation"] == {
+        "type": "string",
+        "enum": ["first", "second"],
+    }
+    assert parameters["required"] == ["operation"]
+    assert parameters["oneOf"] == branches
+
+
 def test_tool_runner_revalidates_each_call_against_the_live_surface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

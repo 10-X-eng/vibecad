@@ -73,7 +73,7 @@ def _variant(
 def model_history_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="model.history",
-        description="Delete or suppress Model features.",
+        description="Delete or suppress features.",
         primary_classification="mutation",
         variants=(
             _variant(
@@ -109,7 +109,7 @@ def model_history_capability_definition() -> NativeCapabilityDefinition:
 def model_recompute_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="model.recompute",
-        description="Recompute and validate Design History.",
+        description="Recompute Design History.",
         primary_classification="mutation",
         variants=(
             _variant(

@@ -38,10 +38,7 @@ def workspace_capability_definition() -> NativeCapabilityDefinition:
         variants=(
             NativeCapabilityVariant(
                 operation="switch",
-                description=(
-                    "Switch to the work needed next. End this turn after success; "
-                    "work continues automatically with the requested tools."
-                ),
+                description="Switch to the requested CAD work for the next turn.",
                 action_ids=frozenset({"VibeCAD_NativeSwitchWorkspace"}),
                 surface_ids=frozenset(NATIVE_WORKSPACE_SURFACES),
                 exact_target_type=None,

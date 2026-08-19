@@ -12,7 +12,10 @@ from typing import Any, Callable, Mapping
 
 from jsonschema import Draft202012Validator
 
-from VibeCADNativeCapabilityRegistry import NativeCapabilityRegistry
+from VibeCADNativeCapabilityRegistry import (
+    NativeCapabilityRegistry,
+    provider_visible_native_schema,
+)
 from VibeCADNativeState import NativeCallTicket, NativeDocumentStateStore
 from VibeCADNativeTargets import document_uid
 from VibeCADNativeTurn import NativeTurnSnapshot
@@ -472,6 +475,27 @@ class NativeTurnDispatcher:
                 clean = str(value or "").strip()
                 if clean and clean not in frozen_operations:
                     frozen_operations.append(clean)
+
+        if not frozen_operations and definition is not None:
+            matching_operations = []
+            for candidate in definition.variants:
+                candidate_schema = provider_visible_native_schema(
+                    {
+                        "name": definition.name,
+                        "description": definition.description,
+                        "parameters": {
+                            "oneOf": [
+                                candidate.provider_parameters(
+                                    require_operation=False,
+                                )
+                            ]
+                        },
+                    }
+                )["parameters"]
+                if candidate_schema == parameters:
+                    matching_operations.append(candidate.operation)
+            if len(matching_operations) == 1:
+                frozen_operations.append(matching_operations[0])
 
         normalized = dict(arguments)
         operation = normalized.get("operation")

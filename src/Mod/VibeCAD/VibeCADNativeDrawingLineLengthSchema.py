@@ -155,10 +155,7 @@ def drawing_line_length_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="shorten",
-                description=(
-                    "Shorten both ends of one exact hash-pinned straight persistent "
-                    "line; delta must be less than half its current length."
-                ),
+                description="Shorten both ends of one exact persistent straight line.",
                 action_ids=_SHORTEN_ACTIONS,
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type=(

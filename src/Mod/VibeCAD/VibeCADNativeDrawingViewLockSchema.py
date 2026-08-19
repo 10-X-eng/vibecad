@@ -60,7 +60,7 @@ _CHANGE = _closed(
         "expected_view_lock_state_sha256": _SHA256,
         "locked": {
             "type": "boolean",
-            "description": "Explicit final lock state; this is never a toggle.",
+            "description": "Explicit final lock state.",
         },
     },
     ("object_name", "expected_view_lock_state_sha256", "locked"),

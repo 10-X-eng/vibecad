@@ -63,6 +63,12 @@ def _run() -> None:
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_ARTIFACT")
         or "/tmp/vibecad-ollama-acceptance.FCStd"
     ).expanduser().resolve()
+    input_raw = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_INPUT") or ""
+    ).strip()
+    input_fixture = (
+        Path(input_raw).expanduser().resolve() if input_raw else None
+    )
     reference_image_raw = str(
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_REFERENCE_IMAGE") or ""
     ).strip()
@@ -112,6 +118,10 @@ def _run() -> None:
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_MAX_FAILED_CALLS") or ""
     ).strip()
     maximum_failures = int(maximum_failures_raw) if maximum_failures_raw else None
+    expected_result_type = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_RESULT_TYPE")
+        or "PartDesign::Body"
+    ).strip()
     result: dict[str, object] = {}
     provider_worker = None
     cancel_requested = threading.Event()
@@ -149,6 +159,10 @@ def _run() -> None:
             raise RuntimeError(
                 "VIBECAD_OLLAMA_ACCEPTANCE_AUTH_MODE must be api_key or chatgpt."
             )
+        if input_fixture is not None and not input_fixture.is_file():
+            raise RuntimeError(
+                f"VIBECAD_OLLAMA_ACCEPTANCE_INPUT does not exist: {input_fixture}"
+            )
         artifact.parent.mkdir(parents=True, exist_ok=True)
         get_control_mode_controller().request_mcp_enabled(False)
         VibeGui._ensure_document_thread_invoker()
@@ -156,11 +170,20 @@ def _run() -> None:
         Gui.getMainWindow().resize(1440, 900)
         Gui.getMainWindow().show()
         Gui.activateWorkbench("PartDesignWorkbench")
-        document = App.newDocument(
-            "OllamaNativeAcceptance"
-            if engine == "native"
-            else "OllamaVibeScriptAcceptance"
-        )
+        if input_fixture is not None and input_fixture.suffix.lower() == ".fcstd":
+            document = App.openDocument(str(input_fixture))
+        else:
+            document = App.newDocument(
+                "OllamaNativeAcceptance"
+                if engine == "native"
+                else "OllamaVibeScriptAcceptance"
+            )
+            if input_fixture is not None:
+                import Import
+
+                Import.insert(str(input_fixture), document.Name)
+        if document is None:
+            raise RuntimeError("FreeCAD did not open the acceptance document.")
         document.UndoMode = 1
         document.saveAs(str(artifact))
         service = get_service()
@@ -257,21 +280,22 @@ def _run() -> None:
                     raise AssertionError(response.error)
                 document.recompute()
                 document.save()
-                final_bodies = [
+                final_results = [
                     obj
                     for obj in document.Objects
-                    if str(getattr(obj, "TypeId", "")) == "PartDesign::Body"
+                    if str(getattr(obj, "TypeId", "")) == expected_result_type
                     and getattr(obj, "Shape", None) is not None
                     and not obj.Shape.isNull()
                     and len(obj.Shape.Solids) == 1
                     and bool(getattr(getattr(obj, "ViewObject", None), "Visibility", True))
                 ]
-                if len(final_bodies) != 1:
+                if len(final_results) != 1:
                     raise AssertionError(
-                        "Live STEP acceptance requires exactly one visible solid Body; "
-                        f"found {[(obj.Name, obj.Label) for obj in final_bodies]}."
+                        "Live STEP acceptance requires exactly one visible solid "
+                        f"{expected_result_type}; found "
+                        f"{[(obj.Name, obj.Label) for obj in final_results]}."
                     )
-                final_shape = final_bodies[0].Shape
+                final_shape = final_results[0].Shape
                 if expected_volume is not None and not math.isclose(
                     float(final_shape.Volume),
                     expected_volume,
@@ -330,7 +354,7 @@ def _run() -> None:
                 import Part
 
                 step_artifact.parent.mkdir(parents=True, exist_ok=True)
-                Part.export(final_bodies, str(step_artifact))
+                Part.export(final_results, str(step_artifact))
                 if not step_artifact.is_file() or step_artifact.stat().st_size <= 0:
                     raise AssertionError("FreeCAD did not write the acceptance STEP file.")
                 view = Gui.activeDocument().activeView()
@@ -344,7 +368,11 @@ def _run() -> None:
                     "engine": engine,
                     "reasoning_effort": reasoning_effort,
                     "auth_mode": auth_mode,
+                    "expected_result_type": expected_result_type,
                     "artifact": str(artifact),
+                    "input_fixture": (
+                        str(input_fixture) if input_fixture is not None else None
+                    ),
                     "step": str(step_artifact),
                     "screenshot": str(screenshot),
                     "reference_image": (

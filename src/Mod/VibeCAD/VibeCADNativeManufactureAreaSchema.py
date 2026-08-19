@@ -77,10 +77,7 @@ _SUBELEMENT = _closed(
 )
 _GEOMETRY_TARGET = {
     "oneOf": [_WHOLE_SHAPE, _SUBELEMENT],
-    "description": (
-        "One exact current model candidate, either as its complete shape or one "
-        "FaceN/EdgeN subelement. Use state hashes from the Manufacture snapshot."
-    ),
+    "description": "One exact current model shape, FaceN, or EdgeN.",
 }
 
 

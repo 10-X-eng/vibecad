@@ -116,7 +116,7 @@ def _angled_length(
 _DISABLED = _closed(
     {"style": _style("disabled")},
     ("style",),
-    "Do not create this side's lead motion.",
+    "No lead motion on this side.",
 )
 _ARC = _angled_radius("arc")
 _ARC["properties"]["extend_mm"] = _EXTENSION
@@ -222,9 +222,7 @@ LEAD_IN_OUT_DRESSUP_PARAMETERS_SCHEMA = _closed(
         },
         "rapid_plunge": {
             "type": "boolean",
-            "description": (
-                "Use G0 for the final plunge to cutting depth; false uses the vertical feed."
-            ),
+            "description": "True selects G0; false selects vertical feed for the final plunge.",
         },
     },
     (

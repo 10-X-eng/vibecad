@@ -170,10 +170,7 @@ def _arc_parameters() -> dict:
                 "type": "number",
                 "minimum": 0.0,
                 "maximum": 360.0,
-                "description": (
-                    "Counterclockwise arc end angle; must differ from "
-                    "start_angle_degrees."
-                ),
+                "description": "Distinct counterclockwise arc end angle.",
             },
         },
         (

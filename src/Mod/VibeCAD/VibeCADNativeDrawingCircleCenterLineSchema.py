@@ -90,11 +90,7 @@ def drawing_circle_center_line_capability_definition() -> (
         variants=(
             NativeCapabilityVariant(
                 operation="create",
-                description=(
-                    "Create exactly two host-styled persistent cosmetic lines "
-                    "for each hash-pinned projected circular EdgeN. The current "
-                    "Drawing selection already provides every required hash."
-                ),
+                description="Create persistent center lines for projected circular edges.",
                 action_ids=_ACTION,
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type=(

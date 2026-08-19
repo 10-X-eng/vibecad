@@ -51,11 +51,7 @@ def _page_variant(
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
-        description=(
-            f"Ask the human for a {operation.upper()} destination, render one exact "
-            "current-History Drawing page through TechDraw, validate the generated "
-            "artifact, and publish it atomically. The AI never receives a path."
-        ),
+        description=f"Export one exact Drawing page as {operation.upper()} to a human-authorized destination.",
         action_ids=action_ids,
         surface_ids=frozenset({"drawing"}),
         exact_target_type="TechDraw::DrawPage",
@@ -68,11 +64,7 @@ def _page_variant(
 def drawing_export_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=DRAWING_EXPORT_CAPABILITY_NAME,
-        description=(
-            "Export one exact Drawing page as SVG, DXF, or PDF, or ask the human "
-            "to authorize Print All. Every operation is output-only, responsive, "
-            "current-History scoped, and path-free to the AI."
-        ),
+        description="Export or print one exact current Drawing page.",
         primary_classification="export",
         variants=(
             _page_variant(

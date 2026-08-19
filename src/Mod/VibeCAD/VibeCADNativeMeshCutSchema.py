@@ -57,10 +57,7 @@ _POINT = {
 }
 _POLYGON = {
     "type": "array",
-    "description": (
-        "Three to 256 ordered, coplanar vertices in document coordinates. "
-        "Do not repeat the first vertex at the end."
-    ),
+    "description": "Three to 256 ordered unique coplanar vertices in document coordinates.",
     "items": _POINT,
     "minItems": 3,
     "maxItems": 256,

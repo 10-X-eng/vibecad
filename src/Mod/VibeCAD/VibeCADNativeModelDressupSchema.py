@@ -195,7 +195,7 @@ def model_dressup_capability_definition() -> NativeCapabilityDefinition:
     )
     return NativeCapabilityDefinition(
         name="model.dressup",
-        description="Fillet, chamfer, shell, or draft Bodies.",
+        description="Finish Body faces and edges.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

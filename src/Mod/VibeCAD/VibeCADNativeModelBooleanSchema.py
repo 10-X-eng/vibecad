@@ -98,7 +98,7 @@ def _split_definition():
 def model_boolean_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="model.boolean",
-        description="Boolean bodies[].body.object_name; combine keeps source_body.",
+        description="Boolean or split Bodies.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

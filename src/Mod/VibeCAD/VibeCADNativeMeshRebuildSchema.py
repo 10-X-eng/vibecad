@@ -55,10 +55,7 @@ def mesh_rebuild_capability_definition() -> NativeCapabilityDefinition:
         variants=(
             NativeCapabilityVariant(
                 operation="poisson_reconstruction",
-                description=(
-                    "Reconstruct one exact point cloud with explicit bounded Poisson and "
-                    "normal-estimation settings. Requires PCL Surface support."
-                ),
+                description="Reconstruct one exact point cloud with PCL Poisson settings.",
                 action_ids=frozenset({"Reen_PoissonReconstruction"}),
                 surface_ids=frozenset({"mesh"}),
                 exact_target_type="CurrentHistoryPointCloud",

@@ -19,10 +19,8 @@ from . import TestMultiTransform
 from . import TestModelTreeBrowser
 from . import TestNativeRibbonTools
 from . import TestNativeTaskContract
-from . import TestPartMultiInputRibbonTools
 from . import TestPartDesignTaskLifecycle
 from . import TestPythonFeatureTasks
-from . import TestPartSingleInputRibbonTools
 from . import TestRibbonInspectView
 from . import TestPad
 from . import TestPipe

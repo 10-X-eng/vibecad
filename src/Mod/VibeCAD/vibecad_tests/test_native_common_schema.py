@@ -105,19 +105,24 @@ def test_exact_targets_and_arrays_are_bounded_in_final_common_schemas() -> None:
         ]["oneOf"][0]
         for operation in ("element", "mass_properties")
     }
-    element = inspect_branches["element"]["properties"]["target"]
+    element_targets = inspect_branches["element"]["properties"]["targets"]
+    assert (element_targets["minItems"], element_targets["maxItems"]) == (1, 1)
+    element = element_targets["items"]
     assert element["additionalProperties"] is False
     assert element["properties"]["subelement"]["pattern"].startswith("^")
     assert element["properties"]["object_name"]["maxLength"] == 128
-    targets = inspect_branches["mass_properties"]["properties"]["targets"]
-    assert (targets["minItems"], targets["maxItems"], targets["uniqueItems"]) == (
+    mass_targets = inspect_branches["mass_properties"]["properties"]["targets"]
+    assert (
+        mass_targets["minItems"],
+        mass_targets["maxItems"],
+        mass_targets["uniqueItems"],
+    ) == (
         1,
         16,
         True,
     )
-    target = inspect_branches["mass_properties"]["properties"]["target"]
-    assert target["required"] == ["object_name"]
-    assert set(target["properties"]) == {"object_name"}
+    assert mass_targets["items"]["required"] == ["object_name"]
+    assert set(mass_targets["items"]["properties"]) == {"object_name"}
     capture_branches = {
         "capture_objects": definitions["view.control"].provider_schema(
             ("capture_objects",)

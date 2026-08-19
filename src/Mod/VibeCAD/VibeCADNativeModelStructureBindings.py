@@ -52,6 +52,7 @@ def _sketch(call: Any) -> Mapping[str, Any]:
 
 def _revolution_sketch(call: Any) -> Mapping[str, Any]:
     arguments = dict(_arguments(call))
+    arguments["axis"] = str(arguments["axis"]["axis"])
     arguments["operation"] = "create_revolution"
     return _runtime(call).create_sketch(
         arguments,

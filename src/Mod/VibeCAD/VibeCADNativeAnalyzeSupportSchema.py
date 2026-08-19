@@ -71,7 +71,7 @@ def _references(kinds: tuple[str, ...]) -> dict:
         ),
         "minItems": 1,
         "maxItems": 64,
-        "description": "Exact current geometry; all subelements must use one common kind.",
+        "description": "Exact current geometry with one common subelement kind.",
     }
 
 

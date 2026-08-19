@@ -14,6 +14,7 @@ from VibeCADNativeCapabilityRegistry import (
 from VibeCADNativeDesignSchema import (
     LABEL_SCHEMA,
     OBJECT_NAME_SCHEMA,
+    global_axis_schema,
     object_reference_schema,
     parameters_schema,
     vector_schema,
@@ -107,6 +108,7 @@ def _linear_direction_schema() -> dict[str, Any]:
 def _circular_axis_schema() -> dict[str, Any]:
     return {
         "oneOf": [
+            global_axis_schema(),
             _kinded(
                 "explicit",
                 {
@@ -222,7 +224,7 @@ def model_transform_capability_definition() -> NativeCapabilityDefinition:
     )
     return NativeCapabilityDefinition(
         name="model.transform",
-        description="Scale or pattern Bodies and Design features.",
+        description="Pattern or scale Bodies.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(

@@ -18,11 +18,7 @@ DRAWING_LINE_DEFAULTS_OPERATIONS = ("read_current",)
 def drawing_line_defaults_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=DRAWING_LINE_DEFAULTS_CAPABILITY_NAME,
-        description=(
-            "Read the current application-session defaults shown by Select Line "
-            "Attributes, including the bounded style catalog and dimension "
-            "placement spacing; this never changes the document or GUI."
-        ),
+        description="Read current line styles and dimension placement defaults.",
         primary_classification="read",
         variants=(
             NativeCapabilityVariant(

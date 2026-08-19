@@ -954,7 +954,7 @@ QString presentationGroupTitle(const std::string& implementationTitle)
         {"Create and Remove Material", QT_TRANSLATE_NOOP("VibeCADRibbon", "Solids")},
         {"Finish Shape", QT_TRANSLATE_NOOP("VibeCADRibbon", "Finish")},
         {"Transform Features", QT_TRANSLATE_NOOP("VibeCADRibbon", "Transform")},
-        {"Standalone and Surface Geometry", QT_TRANSLATE_NOOP("VibeCADRibbon", "Geometry")},
+        {"Construction and Surface Geometry", QT_TRANSLATE_NOOP("VibeCADRibbon", "Geometry")},
         {"Boolean, Split, and Repair", QT_TRANSLATE_NOOP("VibeCADRibbon", "Modify")},
         {"Standard Components", QT_TRANSLATE_NOOP("VibeCADRibbon", "Fasteners")},
         {"Electromagnetic Boundary Conditions",

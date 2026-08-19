@@ -17501,15 +17501,11 @@ class PartDomainAdapter(DeclarativeDomainAdapter):
                     "project_profile_onto_target": "api.project",
                     "remove_redundant_boolean_splitters": "api.refine",
                     "redundancy_contract": (
-                        "Use only runtime_exports. api.helix(representation=...) is the one "
-                        "helix operation; api.project(mode=...) is the one projection "
-                        "operation; api.transform is the one translate/rotate/scale "
-                        "operation. Use one n-ary fuse, cut, common, or general_fuse call "
-                        "instead of avoidable chains. Boolean refine=True already removes "
-                        "splitters, so do not add api.refine unless a later operation created "
-                        "new redundant topology. There are no model-facing long-helix, "
-                        "parallel/perspective projection, translate, rotate, scale, add, "
-                        "update, or refresh aliases."
+                        "Canonical operations: api.helix(representation=...), "
+                        "api.project(mode=...), api.transform for translation/rotation/scale, "
+                        "and one n-ary api.fuse/api.cut/api.common/api.general_fuse. "
+                        "Boolean refine=True removes splitters; api.refine removes splitters "
+                        "introduced by later operations."
                     ),
                 },
                 "composition_contract": {
@@ -17827,10 +17823,9 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     ),
                     "publish": "api.body for one solid Body; api.publish for standalone topology",
                     "redundancy_contract": (
-                        "Use api.extrude for straight constant-cross-section; revolve for "
-                        "axial; sweep for paths; api.loft only when the cross-section itself "
-                        "genuinely changes. Do not use api.loft as a shortcut for "
-                        "sketch/extrude, draft, or chamfer. Use api.boolean to combine solids."
+                        "Straight constant cross-section: api.extrude. Axial: api.revolve. "
+                        "Path-guided: api.sweep. Changing cross-sections: api.loft. "
+                        "Edge finishing: api.draft or api.chamfer. Solid combinations: api.boolean."
                     ),
                 },
                 "semantic_interfaces": {

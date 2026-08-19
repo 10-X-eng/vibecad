@@ -50,11 +50,7 @@ def _parameters() -> dict:
 def manufacture_tool_output_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MANUFACTURE_TOOL_OUTPUT_CAPABILITY_NAME,
-        description=(
-            "Export one exact current CAM ToolBit through its native serializer only "
-            "after VibeCAD asks the human to authorize a destination. The AI chooses "
-            "a bounded format but never supplies or receives a filesystem path."
-        ),
+        description="Export one exact CAM ToolBit to a human-authorized destination.",
         primary_classification="export",
         variants=(
             NativeCapabilityVariant(

@@ -135,10 +135,7 @@ def mesh_points_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="structure",
-                description=(
-                    "Arrange one exact point cloud on an inferred X/Y grid. The explicit "
-                    "coordinate tolerance controls grouping and ambiguous cells are rejected."
-                ),
+                description="Arrange one exact point cloud on an inferred X/Y grid.",
                 action_ids=frozenset({"Points_Structure"}),
                 surface_ids=frozenset({"mesh"}),
                 exact_target_type="CurrentHistoryPointCloud",
@@ -187,10 +184,7 @@ def mesh_points_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="polygon_cut",
-                description=(
-                    "Keep points inside or outside an explicit coplanar model-space polygon "
-                    "prism, or retain both complementary results. Camera state is never used."
-                ),
+                description="Cut points with an explicit coplanar model-space polygon prism.",
                 action_ids=frozenset({"Points_PolyCut"}),
                 surface_ids=frozenset({"mesh"}),
                 exact_target_type="CurrentHistoryPointCloudAndModelPolygon",

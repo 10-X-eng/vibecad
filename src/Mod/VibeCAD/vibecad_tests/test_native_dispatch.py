@@ -12,6 +12,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeCapabilityVariant,
     NativeProviderSurface,
+    provider_visible_native_schema,
 )
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeState import NativeDocumentStateStore
@@ -63,7 +64,10 @@ def _dispatcher(handler, **overrides):
         "operations",
         tuple(variant.operation for variant in definition.variants),
     )
-    schemas = (definition.provider_schema(operations),)
+    schema = definition.provider_schema(operations)
+    if overrides.get("provider_visible", False):
+        schema = provider_visible_native_schema(schema)
+    schemas = (schema,)
     provider_surface = NativeProviderSurface(
         snapshot=NativeSurfaceSnapshot(
             surface_id="model",
@@ -105,6 +109,23 @@ def _dispatcher(handler, **overrides):
 
 def _arguments(value: int) -> str:
     return json.dumps({"operation": "read", "value": value})
+
+
+def test_dispatch_resolves_one_hidden_frozen_operation() -> None:
+    observed = []
+    dispatcher, _state, _debug = _dispatcher(
+        lambda call: observed.append(dict(call.arguments)) or {"value": 4},
+        provider_visible=True,
+    )
+
+    response = dispatcher.call(
+        "test.execute",
+        json.dumps({"value": 4}),
+        "hidden-operation-call",
+    )
+
+    assert response["ok"] is True
+    assert observed == [{"operation": "read", "value": 4}]
 
 
 def test_dispatch_injects_one_host_ticket_and_returns_concise_success() -> None:

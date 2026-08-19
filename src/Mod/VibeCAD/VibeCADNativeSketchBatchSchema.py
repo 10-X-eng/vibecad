@@ -76,10 +76,7 @@ def _geometry_item_schema() -> dict:
 
 def _point_ref_schema() -> dict:
     return {
-        "description": (
-            "Use exactly {origin:true} (optionally position:'point') for the "
-            "Sketch origin, or {geometry_ref,position} for request-local geometry."
-        ),
+        "description": "Sketch origin {origin:true} or request-local geometry endpoint.",
         "oneOf": [
             parameters_schema(
                 {
@@ -87,10 +84,7 @@ def _point_ref_schema() -> dict:
                     "position": {
                         "type": "string",
                         "const": "point",
-                        "description": (
-                            "Optional normalization accepted only with origin=true; "
-                            "omit it for the canonical origin reference."
-                        ),
+                        "description": "Canonical origin point normalization.",
                     },
                 },
                 ("origin",),

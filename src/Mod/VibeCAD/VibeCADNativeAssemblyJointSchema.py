@@ -126,12 +126,7 @@ def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
         variants=(
             NativeCapabilityVariant(
                 operation="set_grounded",
-                description=(
-                    "Ground or unground exact active Assembly components as one "
-                    "atomic desired-state operation without changing activation. "
-                    "Each expected_grounded value must be the current state and "
-                    "opposite the requested grounded value."
-                ),
+                description="Set exact active Assembly components' grounded state atomically.",
                 action_ids=frozenset({"Assembly_ToggleGrounded"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="HumanActiveAssemblyExactComponentsAndExpectedState",

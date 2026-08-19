@@ -54,10 +54,8 @@ from PartDesignTests.TestNativeTaskContract import (
     TestNativeTaskContract,
     TestNativeTaskSourceContract,
 )
-from PartDesignTests.TestPartMultiInputRibbonTools import TestPartMultiInputRibbonTools
 from PartDesignTests.TestPartDesignTaskLifecycle import TestPartDesignTaskLifecycle
 from PartDesignTests.TestPythonFeatureTasks import TestPythonFeatureTasks
-from PartDesignTests.TestPartSingleInputRibbonTools import TestPartSingleInputRibbonTools
 from PartDesignTests.TestRetainedPartDialogs import (
     TestModelingTaskAttemptSourceContract,
     TestRetainedPartDialogs,

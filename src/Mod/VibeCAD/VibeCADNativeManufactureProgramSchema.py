@@ -102,7 +102,7 @@ _CUSTOM_BLOCK = {
                     "items": _CUSTOM_PARAMETER,
                     "minItems": 0,
                     "maxItems": 16,
-                    "description": "Explicit parameters; each word may occur only once.",
+                    "description": "Explicit parameters with unique words.",
                 },
             },
             ("kind", "code", "parameters"),
@@ -138,11 +138,7 @@ def manufacture_program_capability_definition() -> NativeCapabilityDefinition:
         variants=(
             NativeCapabilityVariant(
                 operation="comment",
-                description=(
-                    "Append one source-preserving parenthetical comment at the exact "
-                    "document History marker. Comment text is printable ASCII and cannot "
-                    "contain parentheses, line breaks, or executable G-code."
-                ),
+                description="Append one printable parenthetical comment at the History marker.",
                 action_ids=frozenset({"CAM_Comment"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobAndProgramComment",
@@ -195,11 +191,7 @@ def manufacture_program_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="custom",
-                description=(
-                    "Create one Custom operation from 1-64 ordered blocks: explicit G/M "
-                    "codes with typed numeric parameters or safe comments. Raw lines, "
-                    "macros, variables, line numbers, and provider file paths are rejected."
-                ),
+                description="Create one Custom operation from structured G/M codes and comments.",
                 action_ids=frozenset({"CAM_Custom"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type=(
@@ -225,10 +217,7 @@ def manufacture_program_capability_definition() -> NativeCapabilityDefinition:
                             "items": _CUSTOM_BLOCK,
                             "minItems": 1,
                             "maxItems": 64,
-                            "description": (
-                                "Ordered Custom program blocks. Use command for machine "
-                                "codes and comment for non-executable annotations."
-                            ),
+                            "description": "Ordered command or comment program blocks.",
                         },
                     },
                     ("label", "job", "tool_controller", "coolant", "blocks"),

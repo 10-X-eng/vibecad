@@ -391,21 +391,12 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
             "prefer api.sketch and native Body features"
             not in exports[direct_name]["description"]
         )
-    assert (
-        "Use api.sketch sections for planar profiles" in exports["loft"]["description"]
-    )
+    assert "api.sketch defines planar profiles" in exports["loft"]["description"]
     assert "cross-section stays constant" in exports["extrude"]["description"]
-    assert (
-        "only when the intended cross-section genuinely changes"
-        in exports["loft"]["description"]
-    )
-    assert "constant cross-section, use api.extrude" in exports["loft"]["description"]
+    assert "changing cross-sections" in exports["loft"]["description"]
     operation_selection = description["operation_selection"]["redundancy_contract"]
-    assert "api.extrude for straight constant-cross-section" in operation_selection
-    assert "api.loft only when the cross-section itself genuinely changes" in (
-        operation_selection
-    )
-    assert "Do not use api.loft as a shortcut" in operation_selection
+    assert "Straight constant cross-section: api.extrude" in operation_selection
+    assert "Changing cross-sections: api.loft" in operation_selection
     assert "subtractive" not in exports["loft"]["signature"]
     assert "one connected solid" in exports["body"]["description"]
     assert "stable parametric Design Body" in exports["body"]["description"]

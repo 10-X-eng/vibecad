@@ -17,9 +17,6 @@ from VibeCADNativeModelFeatureRuntime import NativeModelFeatureRuntime
 
 MODEL_FEATURE_CAPABILITY_NAMES = (
     "model.feature",
-    "model.extrude",
-    "model.box",
-    "model.cylinder",
     "model.primitive",
 )
 
@@ -150,40 +147,32 @@ def _centered_primitive_placement(
     }
 
 
-def _extrude_runtime_arguments(
-    arguments: Mapping[str, Any],
+def _aligned_sketch_axis(
     *,
-    destination_component: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    return {
-        "operation": "profile",
-        "label": arguments["label"],
-        "profile": {**dict(arguments["profile"]), "regions": []},
-        "result": {
-            "mode": "new_body",
-            "targets": [],
-            "destination_component": (
-                dict(destination_component)
-                if destination_component is not None
-                else None
-            ),
-        },
-        "definition": {
-            "kind": "extrude",
-            "direction": {"kind": "sketch_normal"},
-            "extent": {
-                "kind": "one_side",
-                "sides": [
-                    {
-                        "kind": "length",
-                        "length_mm": float(arguments["length_mm"]),
-                        "taper_degrees": 0.0,
-                    }
-                ],
-                "reversed": False,
-            },
-        },
-    }
+    horizontal: tuple[float, float, float],
+    vertical: tuple[float, float, float],
+    requested: str,
+) -> tuple[str, bool]:
+    target = {
+        "X": (1.0, 0.0, 0.0),
+        "Y": (0.0, 1.0, 0.0),
+        "Z": (0.0, 0.0, 1.0),
+    }.get(requested)
+    if target is None:
+        raise NativeModelError("A revolution axis must be global X, Y, or Z.")
+    for name, direction in (("H_Axis", horizontal), ("V_Axis", vertical)):
+        magnitude = math.sqrt(sum(float(value) ** 2 for value in direction))
+        if not math.isfinite(magnitude) or magnitude < 1.0e-12:
+            raise NativeModelError("The Sketch has an invalid global placement.")
+        dot = sum(
+            float(value) * target[index] / magnitude
+            for index, value in enumerate(direction)
+        )
+        if abs(abs(dot) - 1.0) <= 1.0e-7:
+            return name, dot < 0.0
+    raise NativeModelError(
+        f"Global {requested} does not lie in Sketch; choose X, Y, or Z in its plane."
+    )
 
 
 def _feature(call: Any) -> Mapping[str, Any]:
@@ -193,7 +182,82 @@ def _feature(call: Any) -> Mapping[str, Any]:
         raise TypeError("A Model feature call requires its exact runtime.")
     if not isinstance(arguments, Mapping):
         raise TypeError("A Model feature call requires argument data.")
-    return runtime.mutate_feature(arguments, ticket=getattr(call, "ticket", None))
+    feature = dict(arguments["feature"])
+    operation = str(feature.pop("kind"))
+    profile = dict(arguments["profile"])
+    requested_combination = arguments.get("combine")
+    if requested_combination is None:
+        result = {
+            "mode": "new_body",
+            "targets": [],
+            "destination_component": arguments.get("destination_component"),
+        }
+    else:
+        result = {
+            "mode": requested_combination["kind"],
+            "targets": requested_combination["bodies"],
+            "destination_component": None,
+        }
+    if result["mode"] == "new_body" and result["destination_component"] is None:
+        destination = runtime.profile_destination_component(profile)
+        if destination is not None:
+            result["destination_component"] = destination
+    definition = feature
+    if operation == "extrude":
+        extent = dict(definition["extent"])
+        extent["reversed"] = bool(extent.pop("reversed", False))
+        definition["extent"] = extent
+    axis_reversed = False
+    axis = definition.get("axis")
+    if (
+        operation in {"revolve", "helix"}
+        and isinstance(axis, Mapping)
+        and axis.get("kind") == "global_axis"
+    ):
+        horizontal, vertical = runtime.profile_global_axes(profile)
+        axis_name, axis_reversed = _aligned_sketch_axis(
+            horizontal=horizontal,
+            vertical=vertical,
+            requested=str(axis["axis"]),
+        )
+        definition["axis"] = {
+            "object_name": str(profile["object_name"]),
+            "subelements": [axis_name],
+        }
+    elif operation in {"revolve", "helix"} and isinstance(axis, Mapping):
+        definition["axis"] = {
+            "object_name": str(axis["object_name"]),
+            "subelements": [str(axis["subelement"])],
+        }
+    if operation == "revolve":
+        extent = dict(definition["extent"])
+        kind = str(extent["kind"])
+        direction = str(extent.pop("direction", "forward"))
+        if axis_reversed and direction != "symmetric":
+            direction = "reverse" if direction == "forward" else "forward"
+        if kind == "angle":
+            extent["symmetric"] = direction == "symmetric"
+        if kind != "up_to_last":
+            extent["reversed"] = direction == "reverse"
+        definition["extent"] = extent
+    if operation == "helix" and axis_reversed:
+        definition["reversed"] = not bool(definition["reversed"])
+    if operation == "sweep":
+        options = dict(definition["options"])
+        transformation = dict(options["transformation"])
+        options["transformation"] = transformation.pop("kind")
+        options["sections"] = transformation.pop("sections", [])
+        definition["options"] = options
+    return runtime.mutate_feature(
+        {
+            "operation": "profile",
+            "label": arguments["label"],
+            "profile": profile,
+            "result": result,
+            "definition": {"kind": operation, **definition},
+        },
+        ticket=getattr(call, "ticket", None),
+    )
 
 
 def _primitive(call: Any) -> Mapping[str, Any]:
@@ -257,28 +321,6 @@ def _primitive(call: Any) -> Mapping[str, Any]:
     }
 
 
-def _extrude(call: Any) -> Mapping[str, Any]:
-    runtime = getattr(call, "runtime", None)
-    arguments = getattr(call, "arguments", None)
-    if not isinstance(runtime, NativeModelFeatureRuntime):
-        raise TypeError("A Model extrusion call requires its exact runtime.")
-    if not isinstance(arguments, Mapping):
-        raise TypeError("A Model extrusion call requires argument data.")
-    destination_component = arguments.get("destination_component")
-    if destination_component is None:
-        destination_component = runtime.profile_destination_component(
-            arguments["profile"]
-        )
-    runtime_arguments = _extrude_runtime_arguments(
-        arguments,
-        destination_component=destination_component,
-    )
-    return runtime.mutate_feature(
-        runtime_arguments,
-        ticket=getattr(call, "ticket", None),
-    )
-
-
 def register_model_feature_capability_implementation(
     registry: NativeCapabilityRegistry,
 ) -> None:
@@ -286,15 +328,6 @@ def register_model_feature_capability_implementation(
         raise TypeError("registry must be a NativeCapabilityRegistry")
     registry.register_implementation(
         NativeCapabilityImplementation("model.feature", _feature)
-    )
-    registry.register_implementation(
-        NativeCapabilityImplementation("model.extrude", _extrude)
-    )
-    registry.register_implementation(
-        NativeCapabilityImplementation("model.box", _primitive)
-    )
-    registry.register_implementation(
-        NativeCapabilityImplementation("model.cylinder", _primitive)
     )
     registry.register_implementation(
         NativeCapabilityImplementation("model.primitive", _primitive)
@@ -308,8 +341,5 @@ def model_feature_runtime_bindings(
         raise TypeError("runtime must be a NativeModelFeatureRuntime")
     return {
         "model.feature": runtime,
-        "model.extrude": runtime,
-        "model.box": runtime,
-        "model.cylinder": runtime,
         "model.primitive": runtime,
     }

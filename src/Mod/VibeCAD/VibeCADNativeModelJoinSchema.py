@@ -54,14 +54,14 @@ def model_join_capability_definition() -> NativeCapabilityDefinition:
     pair = _ordered_pair_definition()
     return NativeCapabilityDefinition(
         name="model.join",
-        description="Connect, embed, or cut out Part shapes.",
+        description="Join Part shapes.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="connect",
                 description=(
-                    "Connect ordered current shapes while preserving voids; one source "
-                    "is allowed only when it is a multi-child Compound."
+                    "Connect ordered current shapes while preserving voids, including "
+                    "a multi-child Compound source."
                 ),
                 action_ids=frozenset({"Part_JoinConnect"}),
                 surface_ids=_MODEL_SURFACE,

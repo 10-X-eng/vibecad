@@ -157,6 +157,81 @@ Every comparison uses the same ten cases and the exact prompt text below.
   definition with correct quantities and metadata; expandable BOM in the model tree;
   non-empty PDF export.
 
+## Canonical master-sketch fixtures
+
+Tool-family diagnosis and product-scale composition use fresh copies of verified
+seed documents. GPT-5.6 Sol may create a seed once, but an independent read-only
+oracle must accept it before it becomes a fixture. A seed contains named parameters,
+reference geometry, and one or more fully constrained master sketches; it contains
+no finished solid that answers the task.
+
+The master sketch is design input, not hidden tool steering. It establishes the
+authoritative envelope, stations, interfaces, and design datums that a mechanical
+engineer would normally provide. The tested model must still interpret that design,
+create the required secondary sketches, choose the 3D operations, preserve editable
+history, and verify the finished product. Fixture-generation prompts and traces are
+retained beside the fixture, but they are not included in the tested model's turn.
+
+Use small fixtures to isolate one Modeling decision, such as revolve, loft, sweep,
+or pocket. Use the product fixtures below only after those individual operations
+pass. This prevents a Sketch defect from being mislabeled as a 3D-tool defect while
+still testing the complete multi-sketch workflow separately.
+
+## Product composition suite
+
+These cases supplement the ten-case corpus. Their prompts remain unchanged between
+runs. They are milestone and release gates rather than substitutes for the smaller
+diagnostic cases.
+
+### NTS-C01 — Folding pocket knife
+
+- Input: verified `knife-master.FCStd` with a fully constrained side-layout sketch
+  defining the pivot axis, blade envelope, handle envelope, stop location, and
+  closed/open angular limits. It contains no solid geometry.
+- Surfaces: Parameters, Sketching, Modeling, Assembly, Drawing, BOM.
+- Exercises: interpreting a master layout; separate blade, liner, scale, spacer,
+  and pin sketches; extrusion, pocketing, edge treatment, repeated hardware,
+  component reuse, revolute motion, interference, drawing, and BOM.
+- Prompt: `Using the supplied master layout, design a manufacturable folding pocket knife. Create separate parametric blade, two liners, two handle scales, spacer, pivot, stop pin, and fastener components. The blade must have a through pivot bore, cutting bevel, rounded spine transition, and a positive stop in both open and closed positions. Assemble it with one intended blade rotation, no axial blade travel, and no interference through its permitted motion. Produce a mechanical drawing and BOM.`
+- Oracle: every requested component has editable feature history; the blade and
+  handle remain inside the master envelopes; axes and stops match the master
+  sketch; one rotational degree of freedom; no unintended interference across a
+  sampled motion range; drawing/BOM identities and quantities match the assembly.
+
+### NTS-C02 — Parametric base cabinet
+
+- Input: verified `cabinet-master.FCStd` with named width, depth, height, panel
+  thickness, reveal, toe-kick, shelf, and hinge datums plus front/side master
+  sketches. It contains no panel solids.
+- Surfaces: Parameters, Sketching, Modeling, Assembly, Drawing, BOM.
+- Exercises: master-driven panel geometry; repeated but independently identified
+  parts; dados, rabbets, bores, shelves, door clearances, fasteners, assembly,
+  parameter propagation, sheet layout, drawings, and BOM aggregation.
+- Prompt: `Build the cabinet defined by the supplied master layout. Create separate parametric side, bottom, top-rail, back, shelf, toe-kick, and door components with appropriate joinery and hardware bores. Assemble the cabinet, preserve the specified reveals and clearances, make the shelves adjustable, and verify that the door can open without interference. Then produce manufacturing drawings, a cut list, and an aggregated BOM.`
+- Oracle: final envelope and every panel thickness equal the master parameters;
+  joinery and bore locations agree at mating components; repeated shelves and
+  hardware have correct occurrence quantities; door motion clears the cabinet;
+  drawings, cut list, and expandable BOM agree with the assembly.
+
+### NTS-C03 — Two-spool high-bypass turbofan
+
+- Input: verified `turbofan-master.FCStd` with a fully constrained axial/radial
+  station sketch, shaft axes, flowpath boundaries, bearing stations, and named
+  engine parameters. It contains no casing, rotor, stator, or blade solids.
+- Surfaces: Parameters, Sketching, Modeling, Assembly, Analysis, Drawing, BOM.
+- Exercises: several revolved casing and shaft profiles; multiple disk and flowpath
+  sketches; lofted and swept airfoils; linear and polar patterns; two independently
+  rotating spools; stator and nacelle structure; clearances, interference, assembly
+  hierarchy, drawing, and BOM.
+- Prompt: `Using the supplied engine master layout, create a realistic parametric two-spool high-bypass turbofan. Model the complete nacelle and annular flowpath, hollow concentric shafts, fan, compressor and turbine disks, swept lofted fan blades, representative compressor and turbine rotor rows, stator rows, combustor liners, bearing supports, and exhaust structures. Assemble the static structure, low spool, and high spool with only their intended freedoms. Verify flowpath and shaft clearances, interference, overall dimensions, validity, and solid counts, then produce an assembly drawing and BOM.`
+- Oracle: all named master stations and envelopes are respected; casing and shaft
+  sections are valid annular solids; blade masters are true multi-section lofts and
+  patterns have requested occurrence counts; LP and HP axes are concentric with two
+  independent rotational freedoms; static structure is fixed; declared clearances
+  are positive; no unintended interference; document hierarchy, drawing, and BOM
+  match the modeled components. A retained reference image supports visual review,
+  but never overrides the geometry and assembly checks.
+
 ## Metrics
 
 Record these values per case and in aggregate:

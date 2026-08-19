@@ -64,7 +64,7 @@ namespace sp = std::placeholders;
     qApp->translate("Workbench", "Transform Features");
     qApp->translate("Workbench", "Finish Shape");
     qApp->translate("Workbench", "Reference Geometry");
-    qApp->translate("Workbench", "Standalone and Surface Geometry");
+    qApp->translate("Workbench", "Construction and Surface Geometry");
     qApp->translate("Workbench", "Convert and Repair");
     qApp->translate("Workbench", "Copy");
     qApp->translate("Workbench", "Boolean");
@@ -357,15 +357,13 @@ Gui::MenuItem* Workbench::setupMenuBar() const
                         << "VibeCAD_CreateMatchingFastenerHole"
                         << "VibeCAD_AttachStandardFastener";
 
-    // Part Design owns the stronger solid-feature implementations.  General
-    // Part commands remain here only for capabilities that do not have a Part
-    // Design equivalent: standalone/surface construction, copies, repair,
-    // split/join, and explicit BREP booleans.
+    // Part Design owns solid-feature construction and transforms.  General
+    // Part commands remain here only for construction and surface capabilities
+    // that do not have a Part Design equivalent.
     Gui::MenuItem* generalGeometry = new Gui::MenuItem;
-    generalGeometry->setCommand("Standalone and Surface Geometry");
-    *generalGeometry << "Part_Primitives" << "Part_Builder" << "Separator" << "Part_Extrude"
-                     << "Part_Revolve" << "Part_Mirror" << "Part_MakeFace"
-                     << "Part_RuledSurface" << "Part_Loft" << "Part_Sweep" << "Part_Section"
+    generalGeometry->setCommand("Construction and Surface Geometry");
+    *generalGeometry << "Part_Primitives" << "Part_Builder" << "Separator"
+                     << "Part_MakeFace" << "Part_RuledSurface" << "Part_Section"
                      << "Part_CrossSections" << "Part_Offset" << "Part_Offset2D"
                      << "Part_ProjectionOnSurface" << "Std_ToggleClipPlane";
 
@@ -469,11 +467,10 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
           << "PartDesign_DesignLinearPattern" << "PartDesign_DesignCircularPattern";
 
     part = new Gui::ToolBarItem(root);
-    part->setCommand("Standalone and Surface Geometry");
-    *part << "Part_Primitives" << "Part_Builder" << "Separator" << "Part_Extrude" << "Part_Revolve"
-          << "Part_Mirror" << "Part_MakeFace" << "Part_RuledSurface" << "Part_Loft"
-          << "Part_Sweep" << "Part_Section" << "Part_CrossSections" << "Part_CompOffset"
-          << "Part_ProjectionOnSurface";
+    part->setCommand("Construction and Surface Geometry");
+    *part << "Part_Primitives" << "Part_Builder" << "Separator" << "Part_MakeFace"
+          << "Part_RuledSurface" << "Part_Section" << "Part_CrossSections"
+          << "Part_CompOffset" << "Part_ProjectionOnSurface";
 
     part = new Gui::ToolBarItem(root);
     part->setCommand("Boolean, Split, and Repair");

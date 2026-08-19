@@ -49,9 +49,15 @@ def design_link_from_mapping(
     minimum: int,
     maximum: int,
 ) -> DesignLinkSpec:
-    if not isinstance(value, Mapping) or set(value) != {"object_name", field}:
+    allowed_fields = {"object_name", field}
+    if (
+        not isinstance(value, Mapping)
+        or "object_name" not in value
+        or not set(value) <= allowed_fields
+        or (minimum and field not in value)
+    ):
         raise NativeModelError("A Design geometry reference is invalid.")
-    raw = value[field]
+    raw = value.get(field, [])
     if not isinstance(raw, list) or not minimum <= len(raw) <= maximum:
         raise NativeModelError("A Design geometry reference has the wrong element count.")
     patterns = {
