@@ -1189,6 +1189,7 @@ class VibeCADPreferencesPage:
             f"token: {connection.get('token', '')}\n"
             f"token_path: {connection.get('token_path', '')}\n"
             f"endpoint_path: {connection.get('endpoint_path', '')}\n"
+            f"brief_path: {connection.get('brief_path', '')}\n"
         )
         QtWidgets.QApplication.clipboard().setText(text)
         self.grok_bot_status.setText(
@@ -1495,6 +1496,9 @@ class VibeCADPreferencesPage:
 
     def saveSettings(self) -> None:
         save_settings(self._current_settings())
+        preferences().SetString(
+            "GrokBotCommand", self.grok_bot_command.text().strip()
+        )
         try:
             import VibeCADGui
 

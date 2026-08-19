@@ -103,6 +103,18 @@ def _queue_in_app_steering(text: str, source: str = "aero") -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
+def _is_assistant_run_active() -> bool:
+    """Probe the in-app Grok run without inventing a new global."""
+
+    try:
+        import VibeCADGui
+
+        probe = getattr(VibeCADGui, "_is_assistant_run_active", None)
+        return bool(probe()) if callable(probe) else False
+    except Exception:
+        return False
+
+
 def _push_analyze_to_in_app_grok(result: dict[str, Any], title: str) -> str:
     """Persist Analyze as a VibeCAD/assistant turn and steer an in-flight Grok run."""
 
@@ -113,7 +125,8 @@ def _push_analyze_to_in_app_grok(result: dict[str, Any], title: str) -> str:
         persist=True,
         metadata={"source": "aero"},
     )
-    _queue_in_app_steering(text, "aero")
+    if _is_assistant_run_active():
+        _queue_in_app_steering(text, "aero")
     return text
 
 

@@ -111,24 +111,14 @@ def _running_model(
     return None
 
 
-def inspect_model(
+def detect_ollama_server(
     openai_base_url: str,
-    model: str,
     *,
-    preload: bool = False,
     timeout_seconds: float = DEFAULT_OLLAMA_PROBE_TIMEOUT_SECONDS,
-    load_timeout_seconds: float = DEFAULT_OLLAMA_LOAD_TIMEOUT_SECONDS,
     opener: Any | None = None,
 ) -> dict[str, Any]:
-    """Return Ollama metadata, or ``detected=False`` for another provider."""
+    """Probe ``/api/version`` once. Missing or non-Ollama hosts are not detected."""
 
-    clean_model = str(model or "").strip()
-    if not clean_model:
-        return {
-            "ok": False,
-            "detected": False,
-            "error": "Ollama inspection requires a model name.",
-        }
     try:
         api_base = native_api_base(openai_base_url)
         version_payload = _json_request(
@@ -142,6 +132,53 @@ def inspect_model(
     version = str(version_payload.get("version") or "").strip()
     if not version:
         return {"ok": False, "detected": False, "error": None}
+    return {
+        "ok": True,
+        "detected": True,
+        "server": "ollama",
+        "server_version": version,
+        "api_base": api_base,
+    }
+
+
+def inspect_model(
+    openai_base_url: str,
+    model: str,
+    *,
+    preload: bool = False,
+    timeout_seconds: float = DEFAULT_OLLAMA_PROBE_TIMEOUT_SECONDS,
+    load_timeout_seconds: float = DEFAULT_OLLAMA_LOAD_TIMEOUT_SECONDS,
+    opener: Any | None = None,
+    server_version: str | None = None,
+    api_base: str | None = None,
+) -> dict[str, Any]:
+    """Return Ollama metadata, or ``detected=False`` for another provider."""
+
+    clean_model = str(model or "").strip()
+    if not clean_model:
+        return {
+            "ok": False,
+            "detected": False,
+            "error": "Ollama inspection requires a model name.",
+        }
+    version = str(server_version or "").strip()
+    if not version:
+        detected = detect_ollama_server(
+            openai_base_url,
+            timeout_seconds=timeout_seconds,
+            opener=opener,
+        )
+        if not detected.get("detected"):
+            return {"ok": False, "detected": False, "error": None}
+        version = str(detected.get("server_version") or "").strip()
+        api_base = str(detected.get("api_base") or "") or api_base
+        if not version:
+            return {"ok": False, "detected": False, "error": None}
+    if not api_base:
+        try:
+            api_base = native_api_base(openai_base_url)
+        except ValueError:
+            return {"ok": False, "detected": False, "error": None}
     try:
         shown = _json_request(
             f"{api_base}/show",
@@ -224,20 +261,35 @@ def inspect_models(
     models: list[str],
     *,
     timeout_seconds: float = DEFAULT_OLLAMA_PROBE_TIMEOUT_SECONDS,
+    opener: Any | None = None,
 ) -> dict[str, Any]:
     """Inspect fetched Ollama models without loading them."""
 
+    if not models:
+        return {"detected": False, "models": {}}
+
+    detected_server = detect_ollama_server(
+        openai_base_url,
+        timeout_seconds=timeout_seconds,
+        opener=opener,
+    )
+    if not detected_server.get("detected"):
+        return {"detected": False, "models": {}}
+
+    version = str(detected_server.get("server_version") or "").strip()
+    api_base = str(detected_server.get("api_base") or "") or None
     details: dict[str, dict[str, Any]] = {}
-    detected = False
+    detected = True
     for model in models:
         inspected = inspect_model(
             openai_base_url,
             model,
             preload=False,
             timeout_seconds=timeout_seconds,
+            opener=opener,
+            server_version=version,
+            api_base=api_base,
         )
-        if inspected.get("detected"):
-            detected = True
         if inspected.get("ok"):
             details[model] = inspected
     return {"detected": detected, "models": details}

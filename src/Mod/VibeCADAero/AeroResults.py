@@ -361,7 +361,10 @@ def _write_assistant_json(doc: Any, assistant: dict[str, Any]) -> Any:
         obj.Text = encoded
     except Exception:
         obj = None
-    _set_doc_attr(doc, ASSISTANT_JSON_NAME, encoded)
+    # Never setattr doc.AeroAssistantJson: that name is the TextDocument
+    # (DocumentPy::setCustomAttributes). Keep a distinctly named string
+    # for readers that still want a document-level copy.
+    _set_doc_attr(doc, "AeroAssistantJsonText", encoded)
     return obj
 
 
@@ -422,11 +425,13 @@ def _get_or_create(doc: Any, typ: str, name: str) -> Any:
 def _set_doc_attr(doc: Any, name: str, value: Any) -> None:
     getter = getattr(doc, "getObject", None)
     named_object = getter(name) if callable(getter) else None
+    if named_object is not None:
+        return
     try:
         current = getattr(doc, name)
     except (AttributeError, RuntimeError):
         current = None
-    if named_object is not None and current is named_object:
+    if current is not None and getattr(current, "Name", None) == name:
         return
 
     adder = getattr(doc, "addProperty", None)

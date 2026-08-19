@@ -90,7 +90,7 @@ def test_run_analyze_writes_report_with_injected_solvers(monkeypatch, tmp_path):
     assert "user_message" in result
     assert doc.getObject("AeroAssistantJson") is not None
     assert "Pitch stable" in result["corrections"][0]
-    assert "0.77" in str(getattr(doc, "AeroAssistantJson", ""))
+    assert "0.77" in doc.getObject("AeroAssistantJson").Text
 
 
 def test_run_analyze_repairs_when_pitch_unstable(monkeypatch):
@@ -132,7 +132,7 @@ def test_run_analyze_repairs_when_pitch_unstable(monkeypatch):
     report = doc.getObject("AeroReport")
     assert report.RepairPasses == 1
     assert report.Corrections
-    assert getattr(doc, "AeroAssistantJson", "")
+    assert "0.77" in doc.getObject("AeroAssistantJson").Text
     assert "tail" in result["user_message"].lower() or "boom" in result["user_message"].lower()
 
 

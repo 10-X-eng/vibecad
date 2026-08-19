@@ -32,6 +32,21 @@ def test_builtin_starters_capture_design_inputs_without_hidden_execution() -> No
     assert all("[" in starter.content for starter in BUILTIN_PROMPT_STARTERS)
 
 
+def test_manufacturing_review_return_line_is_flush_left() -> None:
+    starter = next(
+        item
+        for item in BUILTIN_PROMPT_STARTERS
+        if item.starter_id == "builtin:manufacturing-review"
+    )
+    return_lines = [
+        line
+        for line in starter.content.splitlines()
+        if line.lstrip().startswith("Return prioritized")
+    ]
+    assert return_lines, "manufacturing-review must ask for prioritized findings"
+    assert return_lines[0] == return_lines[0].lstrip()
+
+
 def test_visual_review_starter_requires_multi_view_inspection() -> None:
     starter = next(
         item

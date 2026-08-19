@@ -105,6 +105,8 @@ def document_aero_summary(doc: Any | None) -> dict[str, Any]:
 def _assistant_json(doc: Any, report: Any | None) -> dict[str, Any]:
     raw = _assistant_json_source(getattr(doc, "AeroAssistantJson", None))
     if raw in (None, ""):
+        raw = _assistant_json_source(getattr(doc, "AeroAssistantJsonText", None))
+    if raw in (None, ""):
         obj = _named(doc, "AeroAssistantJson")
         if obj is not None:
             raw = _assistant_json_source(obj)
