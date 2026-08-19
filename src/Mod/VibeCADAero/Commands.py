@@ -115,8 +115,36 @@ def _is_assistant_run_active() -> bool:
         return False
 
 
+def _designer_prompt(result: dict[str, Any], title: str, text: str) -> str:
+    card = result.get("flight_card") or {}
+    return (
+        f"{text}\n\n"
+        "You are the VibeCAD Aero designer. Use aero.solve / aero.export / "
+        "aero.inspect tools. Do not invent mass, CL, or airworthiness. "
+        "Pixels never prove aero numbers. Capture isometric, front, and top "
+        "before claiming appearance. Claim ceiling: not_airworthy.\n"
+        f"flight_card.mass_kg={card.get('mass_kg')} "
+        f"hover_margin_tw={card.get('hover_margin_tw')} "
+        f"pitch_stable={card.get('pitch_stable')} "
+        f"has_h_tail={card.get('has_h_tail')} "
+        f"evidence_state={result.get('evidence_state')} "
+        f"claim_ceiling={result.get('claim_ceiling')}\n"
+        f"Title: {title}"
+    )
+
+
+def _start_in_app_clanker(prompt: str) -> bool:
+    try:
+        import VibeCADGui
+
+        starter = getattr(VibeCADGui, "start_aero_designer_turn", None)
+        return bool(starter(prompt)) if callable(starter) else False
+    except Exception:
+        return False
+
+
 def _push_analyze_to_in_app_grok(result: dict[str, Any], title: str) -> str:
-    """Persist Analyze as a VibeCAD/assistant turn and steer an in-flight Grok run."""
+    """Send Analyze to in-app Grok: start a turn, or steer if one is running."""
 
     text = format_analyze_report(result, title)
     _append_in_app_conversation(
@@ -125,8 +153,11 @@ def _push_analyze_to_in_app_grok(result: dict[str, Any], title: str) -> str:
         persist=True,
         metadata={"source": "aero"},
     )
+    prompt = _designer_prompt(result, title, text)
     if _is_assistant_run_active():
-        _queue_in_app_steering(text, "aero")
+        _queue_in_app_steering(prompt, "aero")
+    else:
+        _start_in_app_clanker(prompt)
     return text
 
 

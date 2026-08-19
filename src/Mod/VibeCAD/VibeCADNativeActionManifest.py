@@ -1235,6 +1235,8 @@ _CAPABILITY_OVERRIDES.update(
     }
 )
 _CAPABILITY_OVERRIDES["TechDraw_DimensionRepair"] = "drawing.dimension_repair"
+_CAPABILITY_OVERRIDES["VibeCADAero_ExportJSBSim"] = "aero.export"
+_CAPABILITY_OVERRIDES["VibeCADAero_FlightCard"] = "aero.inspect"
 _CAPABILITY_OVERRIDES.update(
     {
         command_id: "sketch.draw_arc"

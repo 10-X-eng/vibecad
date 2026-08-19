@@ -27,6 +27,7 @@ __all__ = [
     "AeroDependencyError",
     "apply_repairs",
     "export_jsbsim",
+    "reject_repairs",
     "flight_card",
     "propose_repairs",
     "run_analyze",
@@ -129,7 +130,11 @@ def write_report(doc: Any, payload: dict[str, Any], **kwargs: Any) -> Any:
     return AeroResults.write_report(doc, payload, **kwargs)
 
 
-def propose_repairs(doc: Any | None = None) -> dict[str, Any]:
+def propose_repairs(
+    doc: Any | None = None,
+    *,
+    native_revision: str | None = None,
+) -> dict[str, Any]:
     document = _require_doc(doc)
     payload = _results_from_report(document)
     if payload is None:
@@ -145,10 +150,16 @@ def propose_repairs(doc: Any | None = None) -> dict[str, Any]:
     cfg = AeroConfig.resolve_geometry(document)
     proposals = AeroRepair.propose_repairs(cfg, payload, document)
     revision = AeroPreview.geometry_revision(document, cfg)
-    AeroPreview.write_preview(document, revision=revision, proposals=proposals)
+    AeroPreview.write_preview(
+        document,
+        revision=revision,
+        proposals=proposals,
+        native_revision=native_revision,
+    )
     return {
         "ok": True,
         "revision": revision,
+        "native_revision": native_revision,
         "proposals": proposals,
         "count": len(proposals),
         **AeroStamp.stamp(
@@ -159,12 +170,18 @@ def propose_repairs(doc: Any | None = None) -> dict[str, Any]:
     }
 
 
-def apply_repairs(doc: Any | None = None) -> dict[str, Any]:
+def apply_repairs(
+    doc: Any | None = None,
+    *,
+    native_revision: str | None = None,
+) -> dict[str, Any]:
     document = _require_doc(doc)
     cfg = AeroConfig.resolve_geometry(document)
     revision = AeroPreview.geometry_revision(document, cfg)
     try:
-        proposals = AeroPreview.consume_preview(document, revision)
+        proposals = AeroPreview.consume_preview(
+            document, revision, native_revision=native_revision
+        )
     except AeroPreview.PreviewError as exc:
         return {
             "ok": False,
@@ -181,10 +198,36 @@ def apply_repairs(doc: Any | None = None) -> dict[str, Any]:
         "ok": True,
         "landed": landed,
         "count": len(landed),
+        "revision_before": revision,
         **AeroStamp.stamp(
             state=AeroStamp.STATE_PASS,
             ceiling=AeroStamp.CEILING_GEOMETRY_APPLIED,
             method="repair_apply",
+        ),
+    }
+
+
+def reject_repairs(doc: Any | None = None) -> dict[str, Any]:
+    document = _require_doc(doc)
+    discarded = AeroPreview.discard_preview(document)
+    if discarded is None:
+        return {
+            "ok": False,
+            "error": "No repair preview to reject.",
+            **AeroStamp.stamp(
+                state=AeroStamp.STATE_REJECTED,
+                ceiling=AeroStamp.CEILING_GEOMETRY_APPLIED,
+                method="repair_reject",
+                extra={"reason": "missing"},
+            ),
+        }
+    return {
+        "ok": True,
+        "rejected": True,
+        **AeroStamp.stamp(
+            state=AeroStamp.STATE_REJECTED,
+            ceiling=AeroStamp.CEILING_GEOMETRY_APPLIED,
+            method="repair_reject",
         ),
     }
 
@@ -355,6 +398,8 @@ def _ensure_aeroconfig(doc: Any, cfg: dict[str, Any]) -> Any | None:
         "xyz_ref_c",
         "thrust_to_weight",
         "vehicle_type",
+        "battery_wh",
+        "airframe_density_kg_m3",
     ):
         if not hasattr(obj, key):
             try:

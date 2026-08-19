@@ -36,7 +36,8 @@ def build_card(
     tail_s = float(cfg.get("tail_span_m") or 0.0) * float(cfg.get("tail_chord_m") or 0.0)
     tail_arm = float(cfg.get("boom_length_m") or 0.0)
     tail_volume = None
-    if area > 0.0 and chord > 0.0:
+    has_tail = bool(cfg.get("has_h_tail"))
+    if has_tail and area > 0.0 and chord > 0.0:
         tail_volume = (tail_s * tail_arm) / (area * chord)
 
     cl = _num((results or {}).get("CL"))
@@ -96,6 +97,7 @@ def build_card(
         "disk_loading_n_m2": disk_loading,
         "thrust_to_weight": t_w,
         "hover_margin_tw": hover_margin,
+        "has_h_tail": has_tail,
         "tail_volume_coeff": tail_volume,
         "static_margin_c": static_margin_c,
         "CL": cl,

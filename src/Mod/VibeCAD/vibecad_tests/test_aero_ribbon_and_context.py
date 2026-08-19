@@ -138,6 +138,52 @@ def test_aero_surface_classifies_without_unknown_actions() -> None:
     assert variants["VibeCADAero_Analyze"] == "analyze"
     assert variants["VibeCADAero_ExportJSBSim"] == "export_jsbsim"
     assert variants["VibeCADAero_FlightCard"] == "flight_card"
+    assert {
+        plan.capability_family
+        for plan in plans
+        if plan.command_id in aero_tools
+    } == {"aero.solve", "aero.export", "aero.inspect"}
+
+
+def test_aero_native_surface_exposes_solve_export_inspect() -> None:
+    from collections import defaultdict
+
+    from VibeCADNativeAeroBindings import register_aero_solve_capability_implementation
+    from VibeCADNativeAeroRuntime import NativeAeroRuntime
+    from VibeCADNativeAeroSchema import register_aero_solve_capability_definition
+    from VibeCADNativeCapabilityRegistry import NativeCapabilityRegistry
+
+    surface = RibbonSurface.from_manifest(_aero_manifest(), revision=1)
+    plans = classify_native_surface(surface)
+    family_classes: dict[str, set[str]] = defaultdict(set)
+    for plan in plans:
+        classification = plan.classification
+        if classification.human_only or classification.parent_only:
+            continue
+        if classification.export:
+            primary = "export"
+        elif classification.read:
+            primary = "read"
+        elif classification.view:
+            primary = "view"
+        elif classification.mutation:
+            primary = "mutation"
+        else:
+            primary = "none"
+        family_classes[plan.capability_family].add(primary)
+    mixed = {name: values for name, values in family_classes.items() if len(values) != 1}
+    assert mixed == {}
+    assert "aero.solve" in family_classes
+    assert "aero.export" in family_classes
+    assert "aero.inspect" in family_classes
+    registry = NativeCapabilityRegistry()
+    register_aero_solve_capability_definition(registry)
+    register_aero_solve_capability_implementation(registry)
+    assert registry.definition("aero.solve") is not None
+    assert registry.definition("aero.export") is not None
+    assert registry.definition("aero.inspect") is not None
+    assert registry.implementation("aero.solve") is not None
+    _ = NativeAeroRuntime
 
 
 def test_python_surface_list_includes_aero() -> None:
