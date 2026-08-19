@@ -22,7 +22,7 @@ from vibecad_tests.test_ribbon_surface import _manifest
 
 
 EXPECTED_DEFAULT_COUNTS = {
-    "aero": 13,
+    "aero": 16,
     "analyze": 104,
     "assemble": 53,
     "drawing": 107,
@@ -76,7 +76,7 @@ def test_default_inventory_has_exact_proven_counts_without_duplicates() -> None:
     unique_ids = set().union(
         *(set(command_ids) for command_ids in KNOWN_ACTIONS_BY_SURFACE.values())
     )
-    assert len(unique_ids) == DEFAULT_UNIQUE_ACTION_COUNT == 538
+    assert len(unique_ids) == DEFAULT_UNIQUE_ACTION_COUNT == 541
     all_known_ids = unique_ids | set().union(
         *(set(command_ids) for command_ids in OPTIONAL_ACTIONS_BY_SURFACE.values())
     )

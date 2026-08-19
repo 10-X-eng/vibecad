@@ -293,6 +293,10 @@ def assistant_payload(
     """Bounded JSON the signed-in in-app Grok turn can reuse."""
 
     corrections = corrections_for(payload)
+    hover = payload.get("hover") or {}
+    hover_source = ""
+    if isinstance(hover, dict):
+        hover_source = str(hover.get("source") or "")
     result: dict[str, Any] = {
         "CL": payload.get("CL"),
         "CD": payload.get("CD"),
@@ -301,11 +305,16 @@ def assistant_payload(
         "Cmalpha": payload.get("Cmalpha"),
         "PitchUnstable": bool(payload.get("PitchUnstable")),
         "source": payload.get("source"),
+        "hover_source": hover_source or "momentum-theory",
+        "evidence_state": payload.get("evidence_state") or "model_unqualified",
+        "claim_ceiling": payload.get("claim_ceiling") or "not_airworthy",
+        "not_airworthy": True,
         "corrections": corrections,
         "Corrections": corrections,
         "RepairPasses": int(payload.get("RepairPasses") or 0),
         "changes": payload.get("changes") or [],
         "user_message": payload.get("user_message") or "",
+        "flight_card": payload.get("flight_card") or {},
     }
     if jsbsim_path:
         result["jsbsim_path"] = jsbsim_path
@@ -328,6 +337,7 @@ def format_human_report(payload: dict[str, Any], title: str = "Aero Analyze") ->
         f"P_hover={payload.get('P_hover')} W (momentum-theory)",
         f"P_cruise={payload.get('P_cruise')} W (η=0.65)",
         f"Airfoil={payload.get('airfoil')} from {payload.get('airfoil_source')}",
+        "Claim ceiling: not_airworthy (not flight test, not CFD).",
     ]
     if payload.get("jsbsim_path"):
         lines.append(f"JSBSim: {payload['jsbsim_path']}")

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADNativeAeroBindings import aero_solve_runtime_bindings
+from VibeCADNativeAeroRuntime import NativeAeroRuntime
 from VibeCADNativeAnalyzeInspectBindings import analyze_inspect_runtime_bindings
 from VibeCADNativeAnalyzeInspectRuntime import NativeAnalyzeInspectRuntime
 from VibeCADNativeAnalyzeGeometryBindings import analyze_geometry_runtime_bindings
@@ -521,6 +523,7 @@ def build_native_runtime_bindings(
     robot_export = NativeRobotExportRuntime(context)
     robot_trajectory = NativeRobotTrajectoryRuntime(context)
     sketch_provider = NativeSketchProviderRuntime(context)
+    aero_solve = NativeAeroRuntime(context)
     available = {
         **analyze_model_runtime_bindings(analyze_model),
         **analyze_inspect_runtime_bindings(analyze_inspect),
@@ -546,6 +549,7 @@ def build_native_runtime_bindings(
         **analyze_post_runtime_bindings(analyze_post),
         **analyze_post_function_runtime_bindings(analyze_post_function),
         **analyze_visualization_runtime_bindings(analyze_visualization),
+        **aero_solve_runtime_bindings(aero_solve),
         **common_runtime_bindings(common),
         **native_background_runtime_bindings(background),
         **mesh_convert_runtime_bindings(mesh_convert),
