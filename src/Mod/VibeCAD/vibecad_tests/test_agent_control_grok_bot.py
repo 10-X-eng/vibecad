@@ -48,6 +48,7 @@ def test_write_agent_brief_creates_readable_brief_with_connection() -> None:
         "/v1/prompt",
         "/v1/native",
         "/v1/aero",
+        "NATIVE_AUTHORITY_CHANGED",
     ):
         assert route in text
     assert "CAD" in text
@@ -194,12 +195,16 @@ def test_native_command_calls_live_dispatcher(monkeypatch) -> None:
             )
         ),
     )
+    captured: dict = {}
+
+    def _create_live(**kwargs):
+        captured.update(kwargs)
+        return _Execution()
+
     monkeypatch.setitem(
         sys.modules,
         "VibeCADNativeSessionFactory",
-        SimpleNamespace(
-            create_live_native_session_execution=lambda **_kwargs: _Execution()
-        ),
+        SimpleNamespace(create_live_native_session_execution=_create_live),
     )
     payload = agent.native_command(
         {
@@ -212,6 +217,7 @@ def test_native_command_calls_live_dispatcher(monkeypatch) -> None:
     assert payload["claim_ceiling"] == "geometry_applied"
     assert calls[0][0] == "inspect.query"
     assert '"operation":"geometry_validity"' in calls[0][1]
+    assert captured["document_thread_dispatch"] is agent._on_document_thread
 
 
 def test_native_command_rejects_invalid_arguments_type() -> None:

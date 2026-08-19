@@ -176,8 +176,9 @@ channel. Use it to drive VibeCAD without clicking menus.
 | POST | `/v1/preferences` |                                   | Show VibeCAD Preferences |
 
 Use `/v1/native` to mutate or inspect CAD with the same Native dispatcher
-as in-app Grok (receipts and claim ceilings included). Use `/v1/aero` for
-aerodynamics. Use `/v1/context` and `/v1/prompt` to read facts or start a
+as in-app Grok (receipts and claim ceilings included). The document must
+be in Native modeling mode, not VibeScript, or you get
+`NATIVE_AUTHORITY_CHANGED`. Use `/v1/aero` for aerodynamics. Use `/v1/context` and `/v1/prompt` to read facts or start a
 chat turn. Do not `exec` CAD or Aero through `/v1/run`. `/v1/run` remains
 for non-CAD Python.
 
@@ -779,7 +780,10 @@ def native_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     execution = None
     try:
         service = get_service()
-        execution = create_live_native_session_execution(service=service)
+        execution = create_live_native_session_execution(
+            service=service,
+            document_thread_dispatch=_on_document_thread,
+        )
         encoded = json.dumps(payload_args, ensure_ascii=True, separators=(",", ":"))
         call_id = str(args.get("call_id") or secrets.token_hex(16))
         result = execution.dispatcher.call(tool, encoded, call_id)
