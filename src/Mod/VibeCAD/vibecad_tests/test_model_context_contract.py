@@ -213,7 +213,7 @@ def test_turn_start_context_includes_intent_dispositions() -> None:
         ]
     }
     bounded = provider_intent_disposition_list(oversized)
-    assert len(bounded) == MAX_PROVIDER_INTENT_DISPOSITIONS
+    assert len(bounded) == MAX_PROVIDER_INTENT_DISPOSITIONS + 8
     assert all(set(item) == {"text", "status"} for item in bounded)
     assert all(len(item["text"]) < 400 for item in bounded)
 
@@ -261,11 +261,11 @@ def test_turn_start_context_includes_intent_dispositions() -> None:
 
     empty_intent_context = {**_active_state(), "intent": []}
     empty_state = session._provider_state_payload(empty_intent_context)
-    assert "intent" not in empty_state
+    assert empty_state["intent"] == []
     empty_payload, _conversation, _remainder = _prompt_payload(
         "Continue.", empty_intent_context
     )
-    assert "intent" not in empty_payload["active_state"]
+    assert empty_payload["active_state"]["intent"] == []
 
 
 def test_active_user_explicit_wall_survives_superseded_truncation() -> None:
@@ -334,6 +334,25 @@ def test_active_user_explicit_wall_survives_superseded_truncation() -> None:
     context = service.provider_context_summary()
     assert {"text": "2 mm wall", "status": "active"} in context["intent"]
     assert context["intent"][0]["text"] == "2 mm wall"
+    visible = provider._model_visible_context(context)
+    assert visible["intent"][0]["text"] == "2 mm wall"
+
+
+def test_all_active_constraints_survive_the_turn_cap() -> None:
+    memory = {
+        "entries": [
+            {
+                "id": f"active-{index}",
+                "statement": f"active constraint {index}",
+                "status": "active",
+                "authority": "user_confirmed",
+            }
+            for index in range(MAX_PROVIDER_INTENT_DISPOSITIONS + 5)
+        ]
+    }
+    dispositions = provider_intent_disposition_list(memory)
+    assert len(dispositions) == MAX_PROVIDER_INTENT_DISPOSITIONS + 5
+    assert all(item["status"] == "active" for item in dispositions)
 
 
 def test_intent_store_failure_does_not_look_like_no_constraints() -> None:
@@ -385,6 +404,7 @@ def test_turn_context_screenshot_is_presentation_only_not_measured() -> None:
     visible = provider._model_visible_context(context)
     assert visible["view_screenshot"]["presentation_only"] is True
     assert visible["view_screenshot"]["claim_ceiling"] == "not_measured"
+    assert visible["intent"] == context["intent"]
 
 
 def test_session_capture_keeps_intent_with_reference_images_and_aero(

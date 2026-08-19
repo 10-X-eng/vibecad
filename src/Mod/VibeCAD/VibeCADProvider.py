@@ -2252,12 +2252,18 @@ def _model_visible_context(
         "view_screenshot",
         "reference_images",
         "aero",
+        "intent",
     )
-    result = {
-        key: _json_safe(context[key])
-        for key in sections
-        if key in context and context[key] not in (None, "", [], {})
-    }
+    result = {}
+    for key in sections:
+        if key not in context:
+            continue
+        value = context[key]
+        if key == "intent":
+            result[key] = _json_safe(value if isinstance(value, list) else [])
+            continue
+        if value not in (None, "", [], {}):
+            result[key] = _json_safe(value)
     editable = result.get("editable_sources")
     if isinstance(editable, dict):
         result["editable_sources"] = _provider_visible_editable_sources(editable)

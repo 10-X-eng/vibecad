@@ -286,6 +286,14 @@ def _update_entry(
     item["status"] = "active"
     item["superseded_by"] = []
     if existing is not None:
+        existing_authority = str(existing.get("authority") or "")
+        if existing_authority == "user_explicit" and item.get("authority") not in {
+            "user_explicit",
+            "user_confirmed",
+        }:
+            raise RuntimeError(
+                f"Intent Memory cannot downgrade user_explicit entry {item['id']}."
+            )
         item["created_at"] = existing["created_at"]
         item["source_turn_ids"] = list(
             dict.fromkeys(
@@ -384,6 +392,16 @@ def apply_memory_update(
                 f"{entry_id!r}, {superseded_by!r}."
             )
         item = current_entries[entry_id]
+        if str(item.get("authority") or "") == "user_explicit":
+            replacement = current_entries[superseded_by]
+            if str(replacement.get("authority") or "") not in {
+                "user_explicit",
+                "user_confirmed",
+            }:
+                raise RuntimeError(
+                    f"Intent Memory cannot supersede user_explicit entry {entry_id} "
+                    "without user authority."
+                )
         item["status"] = "superseded"
         item["superseded_by"] = [superseded_by]
         item["updated_at"] = now_iso()
