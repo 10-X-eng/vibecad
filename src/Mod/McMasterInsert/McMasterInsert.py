@@ -289,126 +289,163 @@ def _import_roots(created: list) -> list:
     return roots
 
 
-def _ensure_body(doc, obj):
-    tid = _type_id(obj)
-    if tid == "PartDesign::Body":
-        return obj
-    if tid == "PartDesign::Component":
-        return obj
+def _parent_of(obj):
     try:
-        parent = obj.getParentGeoFeatureGroup()
-        if parent is not None and _type_id(parent) == "PartDesign::Body":
-            return parent
+        return obj.getParentGeoFeatureGroup()
     except Exception:
-        pass
-    body = doc.addObject("PartDesign::Body", "Body")
-    _classify_structure(doc, body)
-    try:
-        body.addObject(obj)
-    except Exception:
-        pass
-    try:
-        if getattr(obj, "Shape", None) is not None:
-            body.Tip = obj
-    except Exception:
-        pass
-    return body
+        return None
 
 
-def _imported_bodies(doc, created: list) -> list:
-    bodies = []
-    seen = set()
-    for obj in created:
-        if obj is None or _is_origin_object(obj):
-            continue
-        body = None
-        tid = _type_id(obj)
-        if tid == "PartDesign::Body":
-            body = obj
-        elif tid == "PartDesign::Component":
-            continue
-        else:
-            try:
-                parent = obj.getParentGeoFeatureGroup()
-            except Exception:
-                parent = None
-            if parent is not None and _type_id(parent) == "PartDesign::Body":
-                body = parent
-            else:
-                body = _ensure_body(doc, obj)
-        if body is None or id(body) in seen:
-            continue
-        seen.add(id(body))
-        bodies.append(body)
-    return bodies
-
-
-def _component_only_holds(component, bodies: list) -> bool:
-    owned = [
-        child
-        for child in list(getattr(component, "Group", []) or [])
-        if not _is_origin_object(child)
-    ]
-    if not owned:
+def _adopt(container, obj) -> bool:
+    if obj is None or container is None or obj is container:
+        return False
+    current = _parent_of(obj)
+    if current is container:
         return True
-    imported = set(bodies)
-    return all(child in imported for child in owned)
+    if current is not None:
+        remover = getattr(current, "removeObject", None)
+        if callable(remover):
+            try:
+                remover(obj)
+            except Exception:
+                pass
+    try:
+        container.addObject(obj)
+    except Exception as exc:
+        App.Console.PrintWarning(
+            f"McMaster: {container.Name}.addObject({obj.Name}) failed: {exc}\n"
+        )
+        return _parent_of(obj) is container
+    return _parent_of(obj) is container
+
+
+def _shape_of(obj):
+    for candidate in (getattr(obj, "Tip", None), obj):
+        if candidate is None:
+            continue
+        shape = getattr(candidate, "Shape", None)
+        if shape is not None and not getattr(shape, "isNull", lambda: True)():
+            return candidate, shape
+    return None, None
+
+
+def _copy_into_body(body, source, part_number: str) -> bool:
+    _source_obj, shape = _shape_of(source)
+    if shape is None:
+        return False
+    feature = body.newObject(
+        "PartDesign::Feature",
+        _legal_object_name("Solid", part_number),
+    )
+    try:
+        feature.Shape = shape.copy() if hasattr(shape, "copy") else shape
+    except Exception:
+        feature.Shape = shape
+    try:
+        src_vo = getattr(_source_obj, "ViewObject", None)
+        dst_vo = getattr(feature, "ViewObject", None)
+        if src_vo is not None and dst_vo is not None and hasattr(src_vo, "DiffuseColor"):
+            dst_vo.DiffuseColor = src_vo.DiffuseColor
+    except Exception:
+        pass
+    try:
+        body.Tip = feature
+    except Exception:
+        pass
+    return True
+
+
+def _discard(doc, obj) -> None:
+    if obj is None:
+        return
+    try:
+        if getattr(obj, "ViewObject", None) is not None:
+            obj.ViewObject.Visibility = False
+    except Exception:
+        pass
+    try:
+        doc.removeObject(obj.Name)
+    except Exception:
+        pass
 
 
 def _promote_to_component(doc, created: list, part_number: str, source_path: Path):
+    """Always make a new PartDesign::Component and put the imported solid in it."""
     label = part_number or source_path.stem
-    created_components = [
-        obj for obj in created if _type_id(obj) == "PartDesign::Component"
-    ]
-    bodies = _imported_bodies(doc, created)
-
-    if len(created_components) == 1 and not bodies:
-        component = created_components[0]
-        _set_label(component, label)
-        return component
-
-    parents = []
-    for body in bodies:
-        try:
-            parent = body.getParentGeoFeatureGroup()
-        except Exception:
-            parent = None
-        if parent is not None and _type_id(parent) in (
-            "PartDesign::Component",
-            "App::Part",
-        ):
-            parents.append(parent)
-    unique_parents = []
-    seen = set()
-    for parent in parents:
-        if id(parent) in seen:
+    skip = set()
+    imported = []
+    for obj in created:
+        if obj is None or _is_origin_object(obj):
             continue
-        seen.add(id(parent))
-        unique_parents.append(parent)
+        if _type_id(obj) == "PartDesign::Component":
+            skip.add(obj)
+            continue
+        imported.append(obj)
 
-    component = None
-    if len(unique_parents) == 1 and _component_only_holds(unique_parents[0], bodies):
-        component = unique_parents[0]
-    elif len(created_components) == 1:
-        component = created_components[0]
-
-    if component is None:
-        component = doc.addObject(
-            "PartDesign::Component",
-            _legal_object_name("Component", part_number),
-        )
-        if component is None or _type_id(component) != "PartDesign::Component":
-            raise RuntimeError("VibeCAD did not create a PartDesign::Component")
-        _classify_structure(doc, component)
-
-    for body in bodies:
-        try:
-            if body.getParentGeoFeatureGroup() is not component:
-                component.addObject(body)
-        except Exception:
-            pass
-
+    component = doc.addObject(
+        "PartDesign::Component",
+        _legal_object_name("Component", part_number),
+    )
+    if component is None or _type_id(component) != "PartDesign::Component":
+        raise RuntimeError("VibeCAD did not create a PartDesign::Component")
+    _classify_structure(doc, component)
     _set_label(component, label)
+
+    placeholder = doc.addObject(
+        "PartDesign::Body",
+        _legal_object_name("Body", part_number),
+    )
+    _classify_structure(doc, placeholder)
+    if not _adopt(component, placeholder):
+        raise RuntimeError("could not add Body to Component")
+    _stamp_body(placeholder, part_number, source_path)
+
+    imported_bodies = [obj for obj in imported if _type_id(obj) == "PartDesign::Body"]
+    imported_other = [obj for obj in imported if _type_id(obj) != "PartDesign::Body"]
+    leftovers = []
+    kept_bodies = []
+
+    for obj in imported_bodies:
+        if _adopt(component, obj):
+            _stamp_body(obj, part_number, source_path)
+            kept_bodies.append(obj)
+        elif _copy_into_body(placeholder, obj, part_number):
+            leftovers.append(obj)
+        else:
+            App.Console.PrintWarning(f"McMaster: could not adopt body {obj.Name}\n")
+
+    if kept_bodies:
+        leftovers.append(placeholder)
+    else:
+        kept_bodies.append(placeholder)
+        for obj in imported_other:
+            if _parent_of(obj) in imported_bodies:
+                leftovers.append(obj)
+                continue
+            if _adopt(placeholder, obj):
+                try:
+                    placeholder.Tip = obj
+                except Exception:
+                    pass
+                _stamp_body(obj, part_number, source_path)
+            elif _copy_into_body(placeholder, obj, part_number):
+                leftovers.append(obj)
+
+    for obj in leftovers:
+        if obj not in (component,) and obj not in kept_bodies:
+            _discard(doc, obj)
+    for obj in skip:
+        if obj is not component and _component_is_empty(obj):
+            _discard(doc, obj)
+
+    owned_bodies = [
+        child
+        for child in list(getattr(component, "Group", []) or [])
+        if _type_id(child) == "PartDesign::Body"
+    ]
+    if not owned_bodies:
+        raise RuntimeError("imported geometry did not land inside the Component")
+
     try:
         import FreeCADGui as Gui
 
@@ -418,9 +455,19 @@ def _promote_to_component(doc, created: list, part_number: str, source_path: Pat
     except Exception:
         pass
     App.Console.PrintMessage(
-        f"McMaster: component {component.Name} Label={component.Label!r}\n"
+        f"McMaster: component {component.Name} Label={component.Label!r} "
+        f"bodies={[b.Name for b in owned_bodies]}\n"
     )
     return component
+
+
+def _component_is_empty(component) -> bool:
+    owned = [
+        child
+        for child in list(getattr(component, "Group", []) or [])
+        if not _is_origin_object(child)
+    ]
+    return not owned
 
 
 def _transform_target(objects: list):
