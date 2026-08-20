@@ -199,6 +199,55 @@ class NativeModelTransformRuntime:
             if name not in {"stage", "preview_id", "operation"}
         }
 
+    def _maybe_preview_mirror_pattern(
+        self, values: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage == "apply":
+            return None
+        if stage != "propose":
+            raise NativeModelError(
+                "model.transform mirror stage must be propose or apply."
+            )
+        return self._context.state.propose_mutation_preview(
+            self._context.document_uid,
+            capability_name="model.transform",
+            arguments={"operation": "pattern", **dict(values)},
+        )
+
+    def _mirror_apply_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage != "apply":
+            return {
+                name: value
+                for name, value in values.items()
+                if name not in {"stage", "preview_id"}
+            }
+        preview_id = str(values.get("preview_id") or "").strip()
+        if not preview_id:
+            raise NativeModelError("model.transform mirror apply needs preview_id.")
+        try:
+            stored = self._context.state.consume_mutation_preview(
+                self._context.document_uid,
+                preview_id,
+                capability_name="model.transform",
+            )
+        except NativeRevisionConflict:
+            raise
+        except NativeStateError as exc:
+            raise NativeModelError(str(exc)) from exc
+        definition = stored.get("definition")
+        stored_kind = ""
+        if isinstance(definition, Mapping):
+            stored_kind = str(definition.get("kind") or "")
+        if str(stored.get("operation") or "") != "pattern" or stored_kind != "mirror":
+            raise NativeModelError("preview_id is not a mirror preview.")
+        return {
+            name: value
+            for name, value in stored.items()
+            if name not in {"stage", "preview_id", "operation"}
+        }
+
     def mutate_transform(
         self,
         arguments: Mapping[str, Any],
@@ -259,6 +308,17 @@ class NativeModelTransformRuntime:
             if previewed is not None:
                 return previewed
             values = self._circular_apply_values(values)
+            definition = values.get("definition")
+            kind = (
+                str(definition.get("kind") or "")
+                if isinstance(definition, Mapping)
+                else ""
+            )
+        elif kind == "mirror":
+            previewed = self._maybe_preview_mirror_pattern(values)
+            if previewed is not None:
+                return previewed
+            values = self._mirror_apply_values(values)
             definition = values.get("definition")
             kind = (
                 str(definition.get("kind") or "")
