@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
+
+import pytest
 
 import VibeCADVibeScriptDomains as domains
 import VibeCADVibeScriptDomainRuntime as runtime
@@ -49,6 +52,18 @@ class _Service:
     @staticmethod
     def _active_document() -> _Document:
         return _Document()
+
+
+def _finish_delete_fixture(pack, trash: Path, program_id: str) -> dict:
+    return runtime.finish_delete(
+        {
+            "trash_directory": str(trash),
+            "program_id": program_id,
+            "pack": pack,
+            "arguments": {"reason": "Deleted from Model Code Editor"},
+        },
+        {"deleted_objects": []},
+    )
 
 
 def test_editor_program_index_never_captures_domain_geometry() -> None:
@@ -230,3 +245,129 @@ def test_editor_delete_lifecycle_accepts_a_failed_source_only_program(
         "artifacts_deleted": True,
     }
     assert not Path(prepared["trash_directory"]).exists()
+
+
+def test_editor_delete_lifecycle_tolerates_a_disappearing_trash_child(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack = domains.get_vibescript_pack("PartDesignWorkbench")
+    assert pack is not None
+    trash = tmp_path / ".trash" / f"{'2' * 32}-pending"
+    outputs = trash / "attempts" / "attempt-1" / "outputs"
+    outputs.mkdir(parents=True)
+    (outputs / "partdesign-native-history.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    real_rmtree = runtime.shutil.rmtree
+    cleanup_calls: list[str] = []
+
+    def racing_rmtree(path, *args, **kwargs) -> None:
+        cleanup_calls.append(str(path))
+        if len(cleanup_calls) == 1:
+            missing = outputs / "partdesign-native-history.json"
+            missing.unlink()
+            raise FileNotFoundError(3, "The system cannot find the path specified", missing)
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.shutil, "rmtree", racing_rmtree)
+
+    deleted = _finish_delete_fixture(pack, trash, "2" * 32)
+
+    assert deleted["artifacts_deleted"] is True
+    assert len(cleanup_calls) == 2
+    assert all(call.endswith(str(trash)) for call in cleanup_calls)
+    assert not trash.exists()
+
+
+def test_editor_delete_lifecycle_uses_extended_windows_cleanup_paths(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    if runtime.os.name != "nt":
+        pytest.skip("Windows extended-length path behavior")
+    pack = domains.get_vibescript_pack("PartDesignWorkbench")
+    assert pack is not None
+    trash = tmp_path / ".trash" / f"{'5' * 32}-pending"
+    trash.mkdir(parents=True)
+    long_child = (
+        trash
+        / "attempts"
+        / ("6" * 96)
+        / "outputs"
+        / "partdesign-native-history.json"
+    )
+    assert len(str(long_child)) > 260
+    real_rmtree = runtime.shutil.rmtree
+    cleanup_calls: list[str] = []
+
+    def long_path_sensitive_rmtree(path, *args, **kwargs) -> None:
+        cleanup_calls.append(str(path))
+        if not str(path).startswith("\\\\?\\"):
+            raise FileNotFoundError(3, "The system cannot find the path specified", long_child)
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.shutil, "rmtree", long_path_sensitive_rmtree)
+
+    deleted = _finish_delete_fixture(pack, trash, "5" * 32)
+
+    assert deleted["artifacts_deleted"] is True
+    assert cleanup_calls == [f"\\\\?\\{trash}"]
+    assert not trash.exists()
+
+
+def test_editor_delete_lifecycle_retries_a_transient_nonempty_directory(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack = domains.get_vibescript_pack("PartDesignWorkbench")
+    assert pack is not None
+    trash = tmp_path / ".trash" / f"{'4' * 32}-pending"
+    trash.mkdir(parents=True)
+    real_rmtree = runtime.shutil.rmtree
+    cleanup_calls: list[str] = []
+
+    def racing_rmtree(path, *args, **kwargs) -> None:
+        cleanup_calls.append(str(path))
+        if len(cleanup_calls) == 1:
+            raise OSError(errno.ENOTEMPTY, "The directory is not empty", path)
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.shutil, "rmtree", racing_rmtree)
+
+    deleted = _finish_delete_fixture(pack, trash, "4" * 32)
+
+    assert deleted["artifacts_deleted"] is True
+    assert len(cleanup_calls) == 2
+    assert all(call.endswith(str(trash)) for call in cleanup_calls)
+    assert not trash.exists()
+
+
+def test_editor_delete_lifecycle_preserves_real_cleanup_failures(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    pack = domains.get_vibescript_pack("PartDesignWorkbench")
+    assert pack is not None
+    trash = tmp_path / ".trash" / f"{'3' * 32}-pending"
+    trash.mkdir(parents=True)
+    denied = PermissionError(13, "Access is denied", trash / "locked.json")
+
+    def denied_rmtree(path, *args, **kwargs) -> None:
+        onerror = kwargs["onerror"]
+        onerror(
+            Path.unlink,
+            str(Path(path) / "locked.json"),
+            (PermissionError, denied, None),
+        )
+
+    monkeypatch.setattr(runtime.shutil, "rmtree", denied_rmtree)
+
+    try:
+        _finish_delete_fixture(pack, trash, "3" * 32)
+    except PermissionError as exc:
+        assert exc is denied
+    else:
+        raise AssertionError("A real artifact-cleanup failure was hidden")
+    assert trash.exists()
