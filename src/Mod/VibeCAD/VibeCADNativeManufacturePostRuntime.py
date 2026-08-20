@@ -154,7 +154,7 @@ class NativeManufacturePostRuntime:
                         strict=True,
                     )
                 ]
-            return result
+            return stamp_cam_post_unproven(result)
 
         try:
             snapshot = manager.submit(
@@ -176,11 +176,22 @@ class NativeManufacturePostRuntime:
         except Exception:
             cleanup_post(frozen)
             raise
-        return {
-            "job": _job_summary(snapshot),
-            "next": {
-                "tool": "native.job",
-                "operation": "status",
-                "job_id": str(snapshot.job_id),
-            },
-        }
+        return stamp_cam_post_unproven(
+            {
+                "job": _job_summary(snapshot),
+                "next": {
+                    "tool": "native.job",
+                    "operation": "status",
+                    "job_id": str(snapshot.job_id),
+                },
+            }
+        )
+
+
+def stamp_cam_post_unproven(payload: dict[str, Any]) -> dict[str, Any]:
+    """A posted CAM program is not a proven toolpath."""
+
+    payload["claim_ceiling"] = "not_proven_toolpath"
+    payload["proven_toolpath"] = False
+    payload["manufacturable"] = False
+    return payload
