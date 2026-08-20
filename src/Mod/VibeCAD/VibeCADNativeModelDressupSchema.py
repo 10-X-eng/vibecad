@@ -178,6 +178,15 @@ def model_dressup_capability_definition() -> NativeCapabilityDefinition:
             "neutral_plane": _reference_schema(r"^(Face|Edge)[1-9][0-9]*$"),
             "pull_direction": _reference_schema(r"^Edge[1-9][0-9]*$"),
             "reversed": {"type": "boolean"},
+            "stage": {
+                "type": "string",
+                "enum": ["propose", "apply"],
+            },
+            "preview_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
         },
         (
             "label",
