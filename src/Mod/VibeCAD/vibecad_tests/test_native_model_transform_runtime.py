@@ -418,8 +418,16 @@ def test_transform_runtime_preflights_then_routes_one_immediate_mutation(
         lambda context, **kwargs: captured.update(kwargs) or {"routed": True},
     )
 
-    result = runtime.mutate_transform(
+    preview = runtime.mutate_transform(
         _arguments(),
+        ticket=state.begin_call(document.Uid, "model.transform"),
+    )
+    assert preview["applied"] is False
+    apply_arguments = dict(_arguments())
+    apply_arguments["stage"] = "apply"
+    apply_arguments["preview_id"] = preview["preview_id"]
+    result = runtime.mutate_transform(
+        apply_arguments,
         ticket=state.begin_call(document.Uid, "model.transform"),
     )
 
@@ -471,9 +479,17 @@ def test_transform_preflight_rejects_stale_source_before_transaction(monkeypatch
         lambda *_args, **_kwargs: pytest.fail("mutation started"),
     )
 
+    preview = runtime.mutate_transform(
+        _arguments(),
+        ticket=state.begin_call(document.Uid, "model.transform"),
+    )
+    assert preview["applied"] is False
+    apply_arguments = dict(_arguments())
+    apply_arguments["stage"] = "apply"
+    apply_arguments["preview_id"] = preview["preview_id"]
     with pytest.raises(RuntimeError, match="no longer exists"):
         runtime.mutate_transform(
-            _arguments(),
+            apply_arguments,
             ticket=state.begin_call(document.Uid, "model.transform"),
         )
 

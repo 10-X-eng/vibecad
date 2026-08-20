@@ -484,6 +484,47 @@ def test_preview_rejects_other_families() -> None:
         )
 
 
+def test_transform_pattern_mirror_preview_propose_apply_and_stale() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.transform",
+        arguments={
+            "operation": "pattern",
+            "label": "Mirror",
+            "definition": {"kind": "mirror"},
+            "stage": "propose",
+        },
+    )
+    assert preview["applied"] is False
+    assert store.current_revision("doc-1") == 0
+    stored = store.consume_mutation_preview(
+        "doc-1",
+        preview["preview_id"],
+        capability_name="model.transform",
+    )
+    assert stored["operation"] == "pattern"
+    assert stored["definition"]["kind"] == "mirror"
+    store.ensure_document("doc-2")
+    stale = store.propose_mutation_preview(
+        "doc-2",
+        capability_name="model.transform",
+        arguments={
+            "operation": "pattern",
+            "label": "Mirror2",
+            "definition": {"kind": "mirror"},
+        },
+    )
+    store.note_structural_change("doc-2")
+    with pytest.raises(NativeRevisionConflict):
+        store.consume_mutation_preview(
+            "doc-2",
+            stale["preview_id"],
+            capability_name="model.transform",
+        )
+
+
 def test_transform_pattern_circular_preview_propose_apply_and_stale() -> None:
     store = NativeDocumentStateStore()
     store.ensure_document("doc-1")
