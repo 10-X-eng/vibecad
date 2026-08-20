@@ -203,8 +203,9 @@ CAD path for Grok Bot (same quality as in-app Grok):
 `model.extrude`, `model.revolve`, `model.helix`, `model.loft`,
 `model.sweep`, dressup fillet/chamfer/thickness/draft, boolean
 `cut`/`join`/`intersect`, transform `scale`, pattern
-`linear`/`circular`/`mirror`, and `model.hole` use `stage=propose` then
-`stage=apply` on `/v1/native`. Sketch still live-commits.
+`linear`/`circular`/`mirror`, `model.hole`, and history
+`delete_features` use `stage=propose` then `stage=apply` on `/v1/native`.
+Suppress and sketch still live-commit.
 
 Peak Aero loop for Grok Bot (same quality as in-app Grok):
 1. GET `/v1/aero` for the stamped flight card.
