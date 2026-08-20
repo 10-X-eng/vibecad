@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Mapping
 
 from VibeCADNativeTargets import (
     NativeElementRef,
@@ -22,6 +22,18 @@ DEFAULT_DENSITY_KG_PER_MM3 = 1.0e-6
 class NativeMeasureError(RuntimeError):
     def failure(self) -> dict[str, str]:
         return {"error_code": "NATIVE_MEASURE_FAILED", "message": str(self)}
+
+
+def evidence_satisfies_measure(payload: Mapping[str, Any] | None) -> bool:
+    """Pixels and presentation artifacts cannot satisfy a measure."""
+
+    if not isinstance(payload, Mapping):
+        return False
+    if payload.get("presentation_only") is True:
+        return False
+    if str(payload.get("artifact_class") or "") == "presentation":
+        return False
+    return str(payload.get("claim_ceiling") or "") == "measured"
 
 
 def _vector(value: Any) -> list[float]:

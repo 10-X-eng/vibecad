@@ -13,6 +13,7 @@ from VibeCADNativeInspect import (
     visual_inspection_result,
 )
 from VibeCADNativeMeasure import (
+    evidence_satisfies_measure,
     mass_properties,
     measure_angle,
     measure_distance,
@@ -124,6 +125,32 @@ def test_exact_distance_angle_and_radius_reads() -> None:
     assert angle["claim_ceiling"] == "measured"
     assert radius["radius_mm"] == 8.0
     assert radius["claim_ceiling"] == "measured"
+    assert evidence_satisfies_measure(distance) is True
+    assert evidence_satisfies_measure(angle) is True
+    assert evidence_satisfies_measure(radius) is True
+
+
+def test_screenshot_cannot_satisfy_measure() -> None:
+    screenshot = {
+        "captured": True,
+        "presentation_only": True,
+        "artifact_class": "presentation",
+        "claim_ceiling": "not_measured",
+        "path": r"C:\tmp\view.png",
+    }
+    pack_view = {
+        "view": "isometric",
+        "presentation_only": True,
+        "artifact_class": "presentation",
+        "claim_ceiling": "not_measured",
+    }
+    assert screenshot["claim_ceiling"] != "measured"
+    assert evidence_satisfies_measure(screenshot) is False
+    assert evidence_satisfies_measure(pack_view) is False
+    assert evidence_satisfies_measure(
+        {"claim_ceiling": "measured", "presentation_only": True}
+    ) is False
+    assert evidence_satisfies_measure({"claim_ceiling": "not_measured"}) is False
 
 
 def test_mass_properties_use_explicit_units_and_default_density() -> None:
