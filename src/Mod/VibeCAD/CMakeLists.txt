@@ -7,6 +7,8 @@ set(VibeCAD_Scripts
     VibeCADAgentControl.py
     VibeCADAeroContext.py
     VibeCADAeroRibbon.py
+    VibeCADNativePreviewRibbon.py
+    VibeCADNativePreviewCommands.py
     vibecad-agent.cmd
     VibeCADAuth.py
     VibeCADAuthoringMode.py
@@ -1565,6 +1567,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/ribbon_surface_gui_integration.py
         vibecad_tests/test_aero_ribbon_and_context.py
         vibecad_tests/test_aero_ribbon_install.py
+        vibecad_tests/test_native_preview_ribbon.py
     )
 endif()
 
