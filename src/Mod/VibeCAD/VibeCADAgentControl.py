@@ -50,6 +50,7 @@ COMMANDS = (
     "context",
     "prompt",
     "native",
+    "native_session",
     "screenshot",
 )
 
@@ -175,6 +176,7 @@ channel. Use it to drive VibeCAD without clicking menus.
 | GET  | `/v1/screenshot`  | optional `?capture=true`          | Capture viewport PNG path. Pixels are not measurements. |
 | POST | `/v1/prompt`      | `{{"text":"..."}}`                | Start an in-app Build turn (same path as in-app Grok) |
 | POST | `/v1/native`      | `{{"capability":"...","arguments":{{...}},"session_id":"..."}}` | Same Native dispatcher; reuse session_id until `{{"close":true,"session_id":"..."}}` |
+| GET  | `/v1/native/session` | optional `?session_id=...`     | Report the held Native session. Does not open a new turn. |
 | GET  | `/v1/aero`        |                                   | Flight card + AeroReport stamps |
 | POST | `/v1/aero`        | `{{"operation":"analyze"}}` (also section, vlm, export_jsbsim, report, propose_repairs, apply_repairs, reject_repairs, flight_card) | Same Aero wrapper as in-app Grok |
 | POST | `/v1/preferences` |                                   | Show VibeCAD Preferences |
@@ -198,7 +200,8 @@ CAD path for Grok Bot (same quality as in-app Grok):
    Pixels never prove dimensions, CL, or airworthiness (`claim_ceiling=not_measured`).
 3. POST `/v1/native` using a name from that freeze. Keep returning
    `session_id` on later calls so undo and the 256-call budget stay on one
-   Native turn. Close with `{{"close":true,"session_id":"..."}}`.
+   Native turn. GET `/v1/native/session` to inspect the held session without
+   opening a new turn. Close with `{{"close":true,"session_id":"..."}}`.
 4. POST `/v1/prompt` `{{"text":"..."}}` to start an in-app Build turn if you
    need the chat loop.
 `model.extrude`, `model.revolve`, `model.helix`, `model.loft`,
@@ -875,6 +878,60 @@ def prompt_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"ok": True, "started": True}
 
 
+def _summarize_native_session(session_id: str, execution: Any) -> dict[str, Any]:
+    dispatcher = getattr(execution, "dispatcher", None)
+    pending: list[Any] = []
+    try:
+        lister = getattr(dispatcher, "pending_previews", None)
+        if callable(lister):
+            pending = list(lister() or [])
+    except Exception:
+        pending = []
+    summary: dict[str, Any] = {
+        "ok": True,
+        "held": True,
+        "session_id": session_id,
+        "run_id": str(getattr(execution, "run_id", "") or ""),
+        "call_count": int(getattr(dispatcher, "call_count", 0) or 0),
+        "pending_previews": pending,
+    }
+    turn = getattr(execution, "turn", None)
+    turn_summary = getattr(turn, "summary", None)
+    if callable(turn_summary):
+        try:
+            summary["turn"] = dict(turn_summary())
+        except Exception:
+            pass
+    return summary
+
+
+def native_session_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Report held Native sessions. Does not create a turn."""
+
+    args = dict(arguments or {})
+    wanted = str(args.get("session_id") or "").strip()
+    with _native_sessions_lock:
+        held = dict(_native_sessions)
+    if wanted:
+        execution = held.get(wanted)
+        if execution is None:
+            return failure(
+                "NATIVE_SESSION_MISSING",
+                f"No held Native session {wanted}.",
+                stage="precondition",
+            )
+        return _summarize_native_session(wanted, execution)
+    sessions = [
+        _summarize_native_session(session_id, execution)
+        for session_id, execution in held.items()
+    ]
+    if not sessions:
+        return {"ok": True, "held": False, "sessions": []}
+    payload = dict(sessions[0]) if len(sessions) == 1 else {"ok": True, "held": True}
+    payload["sessions"] = sessions
+    return payload
+
+
 def _close_native_session(session_id: str) -> bool:
     with _native_sessions_lock:
         execution = _native_sessions.pop(session_id, None)
@@ -1035,6 +1092,8 @@ def dispatch(command: str, arguments: dict[str, Any] | None = None) -> dict[str,
         return _on_document_thread(lambda: prompt_command(args))
     if action == "native":
         return _on_document_thread(lambda: native_command(args))
+    if action == "native_session":
+        return _on_document_thread(lambda: native_session_command(args))
     if action == "screenshot":
         return _on_document_thread(lambda: screenshot_command(args))
     return _on_document_thread(show_preferences)
@@ -1106,6 +1165,10 @@ def handle_http_request(
         return 200, dispatch("screenshot", payload)
     if method == "POST" and route in {"/v1/prompt", "/prompt"}:
         return 200, dispatch("prompt", payload)
+    if method == "GET" and route in {"/v1/native/session", "/native/session"}:
+        query = parse_qs(parsed.query)
+        session_id = str((query.get("session_id") or [""])[0] or "").strip()
+        return 200, dispatch("native_session", {"session_id": session_id})
     if method == "POST" and route in {"/v1/native", "/native"}:
         return 200, dispatch("native", payload)
     if method == "GET" and route in {"/v1/aero", "/aero"}:
