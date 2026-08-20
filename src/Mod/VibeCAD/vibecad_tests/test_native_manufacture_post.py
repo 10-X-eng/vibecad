@@ -134,3 +134,13 @@ def test_output_requests_are_host_derived_bounded_basenames(tmp_path: Path) -> N
     assert request.allowed_suffixes == (".ngc",)
     assert request.maximum_bytes == Worker.MAX_POST_OUTPUT_BYTES
     assert not hasattr(request, "destination")
+
+
+def test_cam_post_is_not_a_proven_toolpath() -> None:
+    from VibeCADNativeManufacturePostRuntime import stamp_cam_post_unproven
+
+    stamped = stamp_cam_post_unproven({"outputs": [{"file_name": "job.ngc"}]})
+    assert stamped["claim_ceiling"] == "not_proven_toolpath"
+    assert stamped["proven_toolpath"] is False
+    assert stamped["manufacturable"] is False
+
