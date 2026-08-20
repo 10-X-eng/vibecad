@@ -27,7 +27,7 @@ import sys
 import threading
 import traceback
 from typing import Any, Callable, Mapping
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 AGENT_HOST = "127.0.0.1"
@@ -50,6 +50,7 @@ COMMANDS = (
     "context",
     "prompt",
     "native",
+    "screenshot",
 )
 
 _server_lock = threading.RLock()
@@ -168,7 +169,8 @@ channel. Use it to drive VibeCAD without clicking menus.
 | GET  | `/v1/documents`   |                                   | Open documents |
 | POST | `/v1/open`        | `{{"path":"..."}}`                | Open/activate a document |
 | POST | `/v1/run`         | `{{"python":"..."}}` or `{{"script":"..."}}` (+ optional `path`, `recompute`) | Run against the active document |
-| GET  | `/v1/context`     |                                   | Frozen ribbon catalog + native_state (same freeze as in-app Grok) |
+| GET  | `/v1/context`     |                                   | Frozen ribbon catalog + native_state + presentation screenshot path |
+| GET  | `/v1/screenshot`  | optional `?capture=true`          | Capture viewport PNG path. Pixels are not measurements. |
 | POST | `/v1/prompt`      | `{{"text":"..."}}`                | Start an in-app Build turn (same path as in-app Grok) |
 | POST | `/v1/native`      | `{{"capability":"inspect.query","arguments":{{"operation":"..."}}}}` | Same Native dispatcher as in-app Grok |
 | GET  | `/v1/aero`        |                                   | Flight card + AeroReport stamps |
@@ -189,8 +191,10 @@ return a JSON value. Stdout, stderr, and exceptions come back in the payload.
 CAD path for Grok Bot (same quality as in-app Grok):
 1. GET `/v1/context` for the frozen ribbon (`provider_tool_surface.tool_names`,
    `provider_tool_schemas`) and `native_state`. Do not invent capability names.
-2. POST `/v1/native` using a name from that freeze (same dispatcher).
-3. POST `/v1/prompt` `{{"text":"..."}}` to start an in-app Build turn if you
+2. GET `/v1/screenshot` for a presentation-only PNG path. Open that file.
+   Pixels never prove dimensions, CL, or airworthiness (`claim_ceiling=not_measured`).
+3. POST `/v1/native` using a name from that freeze (same dispatcher).
+4. POST `/v1/prompt` `{{"text":"..."}}` to start an in-app Build turn if you
    need the chat loop.
 
 Peak Aero loop for Grok Bot (same quality as in-app Grok):
@@ -207,6 +211,7 @@ Peak Aero loop for Grok Bot (same quality as in-app Grok):
 TOKEN="$(cat '{token_path}')"
 curl -s -H "Authorization: Bearer $TOKEN" {base_url}/v1/status
 curl -s -H "Authorization: Bearer $TOKEN" {base_url}/v1/context
+curl -s -H "Authorization: Bearer $TOKEN" {base_url}/v1/screenshot
 curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
   -d '{{"capability":"inspect.query","arguments":{{"operation":"validity"}}}}' \\
   {base_url}/v1/native
@@ -715,6 +720,16 @@ def _bot_turn_packet(captured: Mapping[str, Any]) -> dict[str, Any]:
             continue
         if value not in (None, "", [], {}):
             packet[key] = value
+    screenshot = packet.get("view_screenshot")
+    attachment = _presentation_attachment(screenshot if isinstance(screenshot, Mapping) else {})
+    if attachment is not None:
+        packet["attachments"] = [attachment]
+        if isinstance(screenshot, dict) and not screenshot.get("path"):
+            screenshot = dict(screenshot)
+            screenshot["path"] = attachment["path"]
+            screenshot["presentation_only"] = True
+            screenshot["claim_ceiling"] = "not_measured"
+            packet["view_screenshot"] = screenshot
     return packet
 
 
@@ -736,6 +751,76 @@ def context_command() -> dict[str, Any]:
     except Exception as exc:
         return failure("CONTEXT_UNAVAILABLE", str(exc), stage="precondition")
     return {"ok": True, "context": _json_safe(_bot_turn_packet(captured))}
+
+
+def _presentation_attachment(screenshot: Mapping[str, Any]) -> dict[str, Any] | None:
+    if not screenshot.get("captured"):
+        return None
+    path = str(screenshot.get("path") or "")
+    artifact = screenshot.get("artifact")
+    if not path and isinstance(artifact, Mapping):
+        path = str(artifact.get("path") or "")
+    inner = screenshot.get("_vibecad_image_attachment")
+    if not path and isinstance(inner, Mapping):
+        path = str(inner.get("path") or "")
+    if not path:
+        return None
+    return {
+        "path": path,
+        "mime_type": "image/png",
+        "presentation_only": True,
+        "artifact_class": "presentation",
+        "claim_ceiling": "not_measured",
+    }
+
+
+def screenshot_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Capture or return the last viewport PNG. Pixels are not measurements."""
+
+    args = dict(arguments or {})
+    capture = bool(args.get("capture", True))
+    if _gui() is None:
+        return failure(
+            "GUI_REQUIRED",
+            "Viewport screenshots require the running VibeCAD GUI.",
+            stage="precondition",
+        )
+    try:
+        from VibeCADCore import get_service
+
+        service = get_service()
+        if capture and callable(getattr(service, "capture_view_screenshot", None)):
+            captured = service.capture_view_screenshot()
+            if isinstance(captured, dict) and captured.get("ok") is False:
+                return failure(
+                    "SCREENSHOT_FAILED",
+                    str(captured.get("error") or "Viewport capture failed."),
+                    stage="native_call",
+                )
+        summary = service.view_screenshot_summary()
+        attachment = _presentation_attachment(summary if isinstance(summary, Mapping) else {})
+        consume = getattr(service, "consume_view_screenshot_attachment", None)
+        if attachment is not None and callable(consume):
+            consume({"captured": True, "path": attachment["path"]})
+    except Exception as exc:
+        return failure("SCREENSHOT_UNAVAILABLE", str(exc), stage="precondition")
+    if attachment is None:
+        return failure(
+            "SCREENSHOT_MISSING",
+            "No viewport screenshot is available. Retry GET /v1/screenshot.",
+            stage="precondition",
+        )
+    return {
+        "ok": True,
+        "screenshot": {
+            "captured": True,
+            "path": attachment["path"],
+            "presentation_only": True,
+            "artifact_class": "presentation",
+            "claim_ceiling": "not_measured",
+        },
+        "attachment": attachment,
+    }
 
 
 def prompt_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -887,6 +972,8 @@ def dispatch(command: str, arguments: dict[str, Any] | None = None) -> dict[str,
         return _on_document_thread(lambda: prompt_command(args))
     if action == "native":
         return _on_document_thread(lambda: native_command(args))
+    if action == "screenshot":
+        return _on_document_thread(lambda: screenshot_command(args))
     return _on_document_thread(show_preferences)
 
 
@@ -947,6 +1034,13 @@ def handle_http_request(
         return 200, dispatch("run", payload)
     if method == "GET" and route in {"/v1/context", "/context"}:
         return 200, dispatch("context")
+    if method == "GET" and route in {"/v1/screenshot", "/screenshot"}:
+        query = parse_qs(parsed.query)
+        capture_raw = str((query.get("capture") or ["true"])[0] or "true").strip().lower()
+        capture = capture_raw not in {"0", "false", "no"}
+        return 200, dispatch("screenshot", {"capture": capture})
+    if method == "POST" and route in {"/v1/screenshot", "/screenshot"}:
+        return 200, dispatch("screenshot", payload)
     if method == "POST" and route in {"/v1/prompt", "/prompt"}:
         return 200, dispatch("prompt", payload)
     if method == "POST" and route in {"/v1/native", "/native"}:

@@ -48,9 +48,11 @@ def test_write_agent_brief_creates_readable_brief_with_connection() -> None:
         "/v1/prompt",
         "/v1/native",
         "/v1/aero",
+        "/v1/screenshot",
         "NATIVE_AUTHORITY_CHANGED",
         "provider_tool_surface",
         "native_state",
+        "not_measured",
     ):
         assert route in text
     assert "CAD" in text
@@ -147,6 +149,81 @@ def test_native_http_route_is_registered(monkeypatch) -> None:
     assert status == 200
     assert payload["command"] == "native"
     assert payload["arguments"]["capability"] == "inspect.query"
+
+
+def test_screenshot_http_route_is_registered(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent,
+        "dispatch",
+        lambda command, arguments=None: {
+            "ok": True,
+            "command": command,
+            "arguments": dict(arguments or {}),
+        },
+    )
+    status, payload = agent.handle_http_request("GET", "/v1/screenshot", {})
+    assert status == 200
+    assert payload["command"] == "screenshot"
+    assert payload["arguments"]["capture"] is True
+    status, payload = agent.handle_http_request(
+        "GET", "/v1/screenshot?capture=false", {}
+    )
+    assert payload["arguments"]["capture"] is False
+
+
+def test_screenshot_command_requires_gui(monkeypatch) -> None:
+    monkeypatch.setattr(agent, "_gui", lambda: None)
+    payload = agent.screenshot_command({"capture": True})
+    assert payload["ok"] is False
+    assert payload["failure_code"] == "GUI_REQUIRED"
+
+
+def test_screenshot_command_returns_presentation_attachment(monkeypatch) -> None:
+    consumed: list[dict] = []
+
+    class _Service:
+        def capture_view_screenshot(self):
+            return {"ok": True}
+
+        def view_screenshot_summary(self):
+            return {
+                "captured": True,
+                "artifact": {"path": r"C:\tmp\view.png"},
+            }
+
+        def consume_view_screenshot_attachment(self, screenshot):
+            consumed.append(dict(screenshot))
+            return {"consumed": True}
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: _Service()),
+    )
+    payload = agent.screenshot_command({"capture": True})
+    assert payload["ok"] is True
+    assert payload["attachment"]["path"] == r"C:\tmp\view.png"
+    assert payload["attachment"]["presentation_only"] is True
+    assert payload["attachment"]["claim_ceiling"] == "not_measured"
+    assert payload["screenshot"]["claim_ceiling"] == "not_measured"
+    assert consumed[0]["path"] == r"C:\tmp\view.png"
+
+
+def test_bot_turn_packet_exposes_screenshot_attachment() -> None:
+    packet = agent._bot_turn_packet(
+        {
+            "view_screenshot": {
+                "captured": True,
+                "artifact": {"path": r"C:\tmp\view.png"},
+            },
+            "_vibecad_debug": {"must": "not leak"},
+        }
+    )
+    assert packet["attachments"][0]["path"] == r"C:\tmp\view.png"
+    assert packet["attachments"][0]["claim_ceiling"] == "not_measured"
+    assert packet["view_screenshot"]["path"] == r"C:\tmp\view.png"
+    assert "_vibecad_debug" not in packet
 
 
 def test_native_command_requires_capability() -> None:

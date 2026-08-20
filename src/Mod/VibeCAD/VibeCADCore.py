@@ -1953,8 +1953,18 @@ class VibeCADService:
         if self._last_view_screenshot is None:
             return {"captured": False, "path": None}
         summary = dict(self._last_view_screenshot)
-        if summary.get("captured"):
+        path = str(summary.get("path") or "")
+        artifact = summary.get("artifact")
+        if not path and isinstance(artifact, dict):
+            path = str(artifact.get("path") or "")
+        attachment = summary.get("_vibecad_image_attachment")
+        if not path and isinstance(attachment, dict):
+            path = str(attachment.get("path") or "")
+        if path:
+            summary["path"] = path
+        if summary.get("captured") or path:
             # Viewport pixels are presentation evidence, not measurements.
+            summary["captured"] = True
             summary["presentation_only"] = True
             summary["artifact_class"] = "presentation"
             summary["claim_ceiling"] = "not_measured"
@@ -1976,6 +1986,9 @@ class VibeCADService:
         if not isinstance(current, dict) or not expected.get("captured"):
             return {"consumed": False, "reason": "no_pending_attachment"}
         current_path = str(current.get("path") or "")
+        artifact = current.get("artifact")
+        if not current_path and isinstance(artifact, dict):
+            current_path = str(artifact.get("path") or "")
         expected_path = str(expected.get("path") or "")
         if not current_path or current_path != expected_path:
             return {
