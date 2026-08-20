@@ -303,6 +303,16 @@ class NativeTurnDispatcher:
         self._debug_sink = debug_sink
         self._calls: OrderedDict[str, _CallRecord] = OrderedDict()
         self._lock = threading.RLock()
+        self._auto_apply_previews = False
+        self._auto_applying = False
+
+    @property
+    def auto_apply_previews(self) -> bool:
+        return self._auto_apply_previews
+
+    @auto_apply_previews.setter
+    def auto_apply_previews(self, enabled: bool) -> None:
+        self._auto_apply_previews = bool(enabled)
 
     def _guard_document(self) -> None:
         active = self._active_document()
@@ -633,6 +643,7 @@ class NativeTurnDispatcher:
                         "A Native capability returned an invalid result contract.",
                     )
                 self._guard_after_call(variant, payload)
+                payload = self._maybe_auto_apply_payload(dict(payload))
                 definition = self._registry.definition(name)
                 if (
                     definition is not None
@@ -684,6 +695,37 @@ class NativeTurnDispatcher:
     def call_count(self) -> int:
         with self._lock:
             return len(self._calls)
+
+    def _maybe_auto_apply_payload(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if (
+            not self._auto_apply_previews
+            or self._auto_applying
+            or payload.get("applied") is not False
+        ):
+            return payload
+        preview_id = str(payload.get("preview_id") or "").strip()
+        if not preview_id:
+            return payload
+        self._auto_applying = True
+        try:
+            applied = self.apply_pending_preview(preview_id)
+        except NativeDispatchError as exc:
+            if exc.code != "NATIVE_REVISION_CONFLICT":
+                raise
+            payload["auto_applied"] = False
+            payload["stale"] = True
+            return payload
+        finally:
+            self._auto_applying = False
+        result = {
+            name: value
+            for name, value in dict(applied).items()
+            if name != "ok"
+        }
+        result["auto_applied"] = True
+        return result
 
     def pending_previews(self) -> list[dict[str, Any]]:
         """List unconsumed allowlisted previews. Store only; does not apply."""
