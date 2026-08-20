@@ -65,6 +65,10 @@ def test_transform_contract_uses_one_compact_typed_pattern_variant() -> None:
         "linear",
         "circular",
     ]
+    assert branch["properties"]["stage"]["enum"] == ["propose", "apply"]
+    assert branch["properties"]["preview_id"]["minLength"] == 1
+    assert "stage" not in branch["required"]
+    assert "preview_id" not in branch["required"]
 
 
 def test_provider_transform_definition_names_fields_for_each_kind() -> None:

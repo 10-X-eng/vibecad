@@ -45,6 +45,7 @@ _FIELDS = {
     "pattern": frozenset({"label", "source", "definition"}),
     "scale": frozenset({"label", "targets", "definition", "stage", "preview_id"}),
 }
+_PATTERN_PREVIEW_FIELDS = ("stage", "preview_id")
 
 
 class NativeModelTransformRuntime:
@@ -96,16 +97,75 @@ class NativeModelTransformRuntime:
             if name not in {"stage", "preview_id", "operation"}
         }
 
+    def _maybe_preview_linear_pattern(
+        self, values: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage == "apply":
+            return None
+        if stage != "propose":
+            raise NativeModelError(
+                "model.transform linear pattern stage must be propose or apply."
+            )
+        return self._context.state.propose_mutation_preview(
+            self._context.document_uid,
+            capability_name="model.transform",
+            arguments={"operation": "pattern", **dict(values)},
+        )
+
+    def _linear_apply_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage != "apply":
+            return {
+                name: value
+                for name, value in values.items()
+                if name not in {"stage", "preview_id"}
+            }
+        preview_id = str(values.get("preview_id") or "").strip()
+        if not preview_id:
+            raise NativeModelError(
+                "model.transform linear pattern apply needs preview_id."
+            )
+        try:
+            stored = self._context.state.consume_mutation_preview(
+                self._context.document_uid,
+                preview_id,
+                capability_name="model.transform",
+            )
+        except NativeRevisionConflict:
+            raise
+        except NativeStateError as exc:
+            raise NativeModelError(str(exc)) from exc
+        definition = stored.get("definition")
+        stored_kind = ""
+        if isinstance(definition, Mapping):
+            stored_kind = str(definition.get("kind") or "")
+        if str(stored.get("operation") or "") != "pattern" or stored_kind != "linear":
+            raise NativeModelError("preview_id is not a linear pattern preview.")
+        return {
+            name: value
+            for name, value in stored.items()
+            if name not in {"stage", "preview_id", "operation"}
+        }
+
     def mutate_transform(
         self,
         arguments: Mapping[str, Any],
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
+        raw = dict(arguments)
+        preview_fields = {}
+        if str(raw.get("operation") or "") == "pattern":
+            for name in _PATTERN_PREVIEW_FIELDS:
+                if name in raw:
+                    preview_fields[name] = raw.pop(name)
         operation, values = strict_variant_arguments(
-            arguments,
+            raw,
             _FIELDS,
         )
+        if preview_fields:
+            values = {**values, **preview_fields}
         label = str(values["label"] or "").strip()
         if not label or len(label) > 160:
             raise NativeModelError(
@@ -132,6 +192,17 @@ class NativeModelTransformRuntime:
             )
         definition = values.get("definition")
         kind = str(definition.get("kind") or "") if isinstance(definition, Mapping) else ""
+        if kind == "linear":
+            previewed = self._maybe_preview_linear_pattern(values)
+            if previewed is not None:
+                return previewed
+            values = self._linear_apply_values(values)
+            definition = values.get("definition")
+            kind = (
+                str(definition.get("kind") or "")
+                if isinstance(definition, Mapping)
+                else ""
+            )
         if kind == "mirror":
             prepared = prepare_design_mirror(self._context.document_uid, values)
             preflight = preflight_design_mirror
