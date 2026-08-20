@@ -25,6 +25,7 @@ import shutil
 import socket
 import sys
 import threading
+import time
 import traceback
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
@@ -38,6 +39,8 @@ TOKEN_FILENAME = "token"
 ENDPOINT_FILENAME = "endpoint.json"
 AGENT_BRIEF_FILENAME = "AGENTS.md"
 GROK_BOT_CMD_ENV = "VIBECAD_GROK_BOT_CMD"
+NATIVE_SESSION_IDLE_ENV = "VIBECAD_NATIVE_SESSION_IDLE_SECONDS"
+NATIVE_SESSION_IDLE_SECONDS = 300
 TOKEN_BYTES = 32
 MAX_BODY_BYTES = 1_048_576
 COMMANDS = (
@@ -55,6 +58,7 @@ COMMANDS = (
 )
 
 _native_sessions: dict[str, Any] = {}
+_native_session_last_used: dict[str, float] = {}
 _native_sessions_lock = threading.RLock()
 _server_lock = threading.RLock()
 _server: ThreadingHTTPServer | None = None
@@ -201,7 +205,8 @@ CAD path for Grok Bot (same quality as in-app Grok):
 3. POST `/v1/native` using a name from that freeze. Keep returning
    `session_id` on later calls so undo and the 256-call budget stay on one
    Native turn. GET `/v1/native/session` to inspect the held session without
-   opening a new turn. Close with `{{"close":true,"session_id":"..."}}`.
+   opening a new turn. Idle sessions close after 300s without POST `/v1/native`.
+   Close with `{{"close":true,"session_id":"..."}}`.
 4. POST `/v1/prompt` `{{"text":"..."}}` to start an in-app Build turn if you
    need the chat loop.
 `model.extrude`, `model.revolve`, `model.helix`, `model.loft`,
@@ -905,9 +910,49 @@ def _summarize_native_session(session_id: str, execution: Any) -> dict[str, Any]
     return summary
 
 
+def _native_session_idle_seconds() -> float:
+    raw = str(os.environ.get(NATIVE_SESSION_IDLE_ENV) or "").strip()
+    if raw:
+        try:
+            seconds = float(raw)
+        except ValueError:
+            seconds = float(NATIVE_SESSION_IDLE_SECONDS)
+        return max(0.0, seconds)
+    return float(NATIVE_SESSION_IDLE_SECONDS)
+
+
+def _touch_native_session(session_id: str, *, now: float | None = None) -> None:
+    token = str(session_id or "").strip()
+    if not token:
+        return
+    stamp = time.monotonic() if now is None else float(now)
+    with _native_sessions_lock:
+        if token in _native_sessions:
+            _native_session_last_used[token] = stamp
+
+
+def expire_idle_native_sessions(*, now: float | None = None) -> list[str]:
+    """Close held Bot Native sessions that sat idle. Does not run document undo."""
+
+    stamp = time.monotonic() if now is None else float(now)
+    idle_after = _native_session_idle_seconds()
+    with _native_sessions_lock:
+        stale = [
+            session_id
+            for session_id, used in _native_session_last_used.items()
+            if stamp - used >= idle_after
+        ]
+    closed: list[str] = []
+    for session_id in stale:
+        if _close_native_session(session_id):
+            closed.append(session_id)
+    return closed
+
+
 def native_session_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     """Report held Native sessions. Does not create a turn."""
 
+    expire_idle_native_sessions()
     args = dict(arguments or {})
     wanted = str(args.get("session_id") or "").strip()
     with _native_sessions_lock:
@@ -935,6 +980,7 @@ def native_session_command(arguments: dict[str, Any] | None = None) -> dict[str,
 def _close_native_session(session_id: str) -> bool:
     with _native_sessions_lock:
         execution = _native_sessions.pop(session_id, None)
+        _native_session_last_used.pop(session_id, None)
     if execution is None:
         return False
     closer = getattr(execution, "close", None)
@@ -951,6 +997,8 @@ def native_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
 
     args = dict(arguments or {})
     session_id = str(args.get("session_id") or "").strip()
+    if not args.get("close"):
+        expire_idle_native_sessions()
     if args.get("close"):
         if not session_id:
             return failure(
@@ -1019,6 +1067,7 @@ def native_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         created = True
         with _native_sessions_lock:
             _native_sessions[session_id] = execution
+    _touch_native_session(session_id)
     encoded = json.dumps(payload_args, ensure_ascii=True, separators=(",", ":"))
     call_id = str(args.get("call_id") or secrets.token_hex(16))
     try:

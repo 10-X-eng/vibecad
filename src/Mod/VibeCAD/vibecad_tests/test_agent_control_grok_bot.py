@@ -623,6 +623,110 @@ def test_get_native_session_reports_held_session_without_opening_a_turn(
     assert routed["held"] is True
 
 
+def test_idle_timeout_closes_held_native_session(monkeypatch) -> None:
+    agent._native_sessions.clear()
+    agent._native_session_last_used.clear()
+    closed: list[int] = []
+
+    class _Dispatcher:
+        call_count = 1
+
+        def call(self, *_args, **_kwargs):
+            return {"ok": True}
+
+        def pending_previews(self):
+            return []
+
+    class _Execution:
+        dispatcher = _Dispatcher()
+        run_id = "run-idle"
+
+        def close(self):
+            closed.append(1)
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeDispatch",
+        SimpleNamespace(
+            NativeDispatchError=type("NativeDispatchError", (Exception,), {"code": "X"})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeSessionFactory",
+        SimpleNamespace(
+            create_live_native_session_execution=lambda **_kwargs: _Execution()
+        ),
+    )
+    monkeypatch.setenv(agent.NATIVE_SESSION_IDLE_ENV, "10")
+    opened = agent.native_command({"capability": "model.extrude", "arguments": {}})
+    session_id = opened["session_id"]
+    assert session_id in agent._native_sessions
+    now = agent._native_session_last_used[session_id] + 10
+    closed_ids = agent.expire_idle_native_sessions(now=now)
+    assert closed_ids == [session_id]
+    assert closed == [1]
+    assert session_id not in agent._native_sessions
+    missing = agent.native_command(
+        {
+            "capability": "model.extrude",
+            "session_id": session_id,
+            "arguments": {},
+        }
+    )
+    assert missing["ok"] is False
+    assert missing["failure_code"] == "NATIVE_SESSION_MISSING"
+
+
+def test_idle_timeout_does_not_close_a_fresh_session(monkeypatch) -> None:
+    agent._native_sessions.clear()
+    agent._native_session_last_used.clear()
+    closed: list[int] = []
+
+    class _Dispatcher:
+        def call(self, *_args, **_kwargs):
+            return {"ok": True}
+
+    class _Execution:
+        dispatcher = _Dispatcher()
+
+        def close(self):
+            closed.append(1)
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeDispatch",
+        SimpleNamespace(
+            NativeDispatchError=type("NativeDispatchError", (Exception,), {"code": "X"})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeSessionFactory",
+        SimpleNamespace(
+            create_live_native_session_execution=lambda **_kwargs: _Execution()
+        ),
+    )
+    monkeypatch.setenv(agent.NATIVE_SESSION_IDLE_ENV, "30")
+    opened = agent.native_command({"capability": "model.extrude", "arguments": {}})
+    used = agent._native_session_last_used[opened["session_id"]]
+    assert agent.expire_idle_native_sessions(now=used + 29) == []
+    assert opened["session_id"] in agent._native_sessions
+    assert closed == []
+
+
 def test_prompt_command_requires_text() -> None:
     payload = agent.prompt_command({"text": "  "})
     assert payload["ok"] is False
