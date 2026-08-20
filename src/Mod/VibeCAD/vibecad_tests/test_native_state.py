@@ -547,6 +547,38 @@ def test_dressup_apply_once_then_consumed() -> None:
         )
 
 
+def test_sweep_preview_propose_apply_and_stale() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.sweep",
+        arguments={"label": "Sweep", "stage": "propose"},
+    )
+    assert preview["capability"] == "model.sweep"
+    assert preview["applied"] is False
+    assert store.current_revision("doc-1") == 0
+    stored = store.consume_mutation_preview(
+        "doc-1",
+        preview["preview_id"],
+        capability_name="model.sweep",
+    )
+    assert stored["label"] == "Sweep"
+    store.ensure_document("doc-2")
+    stale = store.propose_mutation_preview(
+        "doc-2",
+        capability_name="model.sweep",
+        arguments={"label": "Sweep2"},
+    )
+    store.note_structural_change("doc-2")
+    with pytest.raises(NativeRevisionConflict):
+        store.consume_mutation_preview(
+            "doc-2",
+            stale["preview_id"],
+            capability_name="model.sweep",
+        )
+
+
 def test_loft_preview_propose_apply_and_stale() -> None:
     store = NativeDocumentStateStore()
     store.ensure_document("doc-1")

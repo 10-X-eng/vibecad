@@ -544,7 +544,7 @@ def focused_model_profile_variant(
                             "maxLength": 64,
                         },
                     }
-                    if kind in {"extrude", "revolve", "helix", "loft"}
+                    if kind in {"extrude", "revolve", "helix", "loft", "sweep"}
                     else {}
                 ),
             },
