@@ -93,26 +93,62 @@ def _append_preview_group(
     return group
 
 
+def _ribbon_page(main_window: Any, qt_widgets: Any) -> Any | None:
+    if main_window is None:
+        return None
+    finder = getattr(main_window, "findChild", None)
+    if not callable(finder):
+        return None
+    try:
+        page = finder(qt_widgets.QWidget, RIBBON_PAGE_OBJECT_NAME)
+    except TypeError:
+        page = finder(RIBBON_PAGE_OBJECT_NAME)
+    except Exception:
+        return None
+    if page is main_window:
+        return None
+    return page
+
+
 def install_native_preview_ribbon(
     *,
     gui: Any | None = None,
     qt_widgets: Any | None = None,
+    qt_core: Any | None = None,
+    remaining_attempts: int = 40,
 ) -> bool:
-    """Put Apply/Reject on the current ribbon page. Not a C++ rebuild."""
+    """Put Apply/Reject on VibeCADRibbonPage. Never patch QMainWindow."""
 
     if gui is None:
         import FreeCADGui as gui  # type: ignore[no-redef]
     if qt_widgets is None:
         from PySide import QtWidgets as qt_widgets  # type: ignore[no-redef]
+    if qt_core is None and remaining_attempts > 0:
+        try:
+            from PySide import QtCore as qt_core  # type: ignore[no-redef]
+        except Exception:
+            qt_core = None
 
     from VibeCADNativePreviewCommands import register_preview_commands
 
     register_preview_commands(gui)
     main_window = gui.getMainWindow() if gui is not None else None
-    if main_window is None:
-        return False
-    page = main_window.findChild(qt_widgets.QWidget, RIBBON_PAGE_OBJECT_NAME)
+    page = _ribbon_page(main_window, qt_widgets)
     if page is None:
-        page = main_window
+        if remaining_attempts <= 0:
+            return False
+        timer = getattr(qt_core, "QTimer", None)
+        if timer is None or not hasattr(timer, "singleShot"):
+            return False
+        timer.singleShot(
+            250,
+            lambda: install_native_preview_ribbon(
+                gui=gui,
+                qt_widgets=qt_widgets,
+                qt_core=qt_core,
+                remaining_attempts=remaining_attempts - 1,
+            ),
+        )
+        return False
     _append_preview_group(page, qt_widgets, gui)
     return True
