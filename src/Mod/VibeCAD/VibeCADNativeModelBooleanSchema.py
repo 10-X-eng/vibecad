@@ -123,7 +123,19 @@ def model_boolean_capability_definition() -> NativeCapabilityDefinition:
                 transaction_behavior="document",
                 background_required=False,
                 parameters=parameters_schema(
-                    {"label": LABEL_SCHEMA, "definition": _combine_definition()},
+                    {
+                        "label": LABEL_SCHEMA,
+                        "definition": _combine_definition(),
+                        "stage": {
+                            "type": "string",
+                            "enum": ["propose", "apply"],
+                        },
+                        "preview_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64,
+                        },
+                    },
                     ("label", "definition"),
                 ),
             ),

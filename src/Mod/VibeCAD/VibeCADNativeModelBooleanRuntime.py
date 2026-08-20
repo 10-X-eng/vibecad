@@ -28,12 +28,16 @@ from VibeCADNativePartSection import (
     verify_part_section,
 )
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
-from VibeCADNativeState import NativeCallTicket
+from VibeCADNativeState import (
+    NativeCallTicket,
+    NativeRevisionConflict,
+    NativeStateError,
+)
 
 
 _OUTER_FIELDS = {
     "section": frozenset({"label", "definition"}),
-    "combine": frozenset({"label", "definition"}),
+    "combine": frozenset({"label", "definition", "stage", "preview_id"}),
     "split": frozenset({"label", "definition"}),
 }
 
@@ -43,6 +47,53 @@ class NativeModelBooleanRuntime:
         if not isinstance(context, NativeRuntimeContext):
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
+
+    def _maybe_preview_boolean_cut(
+        self, values: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage == "apply":
+            return None
+        if stage != "propose":
+            raise NativeModelError("model.boolean cut stage must be propose or apply.")
+        return self._context.state.propose_mutation_preview(
+            self._context.document_uid,
+            capability_name="model.boolean",
+            arguments={"operation": "combine", **dict(values)},
+        )
+
+    def _boolean_cut_apply_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage != "apply":
+            return {
+                name: value
+                for name, value in values.items()
+                if name not in {"stage", "preview_id"}
+            }
+        preview_id = str(values.get("preview_id") or "").strip()
+        if not preview_id:
+            raise NativeModelError("model.boolean cut apply needs preview_id.")
+        try:
+            stored = self._context.state.consume_mutation_preview(
+                self._context.document_uid,
+                preview_id,
+                capability_name="model.boolean",
+            )
+        except NativeRevisionConflict:
+            raise
+        except NativeStateError as exc:
+            raise NativeModelError(str(exc)) from exc
+        definition = stored.get("definition")
+        mode = ""
+        if isinstance(definition, Mapping):
+            mode = str(definition.get("mode") or "")
+        if mode != "cut":
+            raise NativeModelError("preview_id is not a boolean cut preview.")
+        return {
+            name: value
+            for name, value in stored.items()
+            if name not in {"stage", "preview_id", "operation"}
+        }
 
     def mutate_boolean(
         self,
@@ -73,9 +124,19 @@ class NativeModelBooleanRuntime:
                 verify=verify_part_section,
             )
         if operation == "combine":
+            definition = values["definition"]
+            mode = ""
+            if isinstance(definition, Mapping):
+                mode = str(definition.get("mode") or "")
+            if mode == "cut":
+                previewed = self._maybe_preview_boolean_cut(values)
+                if previewed is not None:
+                    return previewed
+                values = self._boolean_cut_apply_values(values)
+                definition = values["definition"]
             spec = prepare_design_combine(
                 self._context.document_uid,
-                values["definition"],
+                definition,
             )
             self._context.guard()
             prepared = preflight_design_combine(self._context.document, spec)
