@@ -200,6 +200,15 @@ def model_dressup_capability_definition() -> NativeCapabilityDefinition:
             },
             "join": {"type": "string", "enum": ["arc", "intersection"]},
             "intersection_handling": {"type": "boolean"},
+            "stage": {
+                "type": "string",
+                "enum": ["propose", "apply"],
+            },
+            "preview_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
         },
         (
             "label",
