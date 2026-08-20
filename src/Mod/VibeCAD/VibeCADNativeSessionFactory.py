@@ -35,6 +35,8 @@ class NativeSessionExecution:
     run_id: str
 
     def close(self) -> None:
+        """End this Bot/assistant run. Must not pop the document undo stack."""
+
         self.undo_ledger.end_run(self.run_id)
 
 

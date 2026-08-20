@@ -727,6 +727,122 @@ def test_idle_timeout_does_not_close_a_fresh_session(monkeypatch) -> None:
     assert closed == []
 
 
+def test_bot_session_close_does_not_steal_document_undo(monkeypatch) -> None:
+    agent._native_sessions.clear()
+    agent._native_session_last_used.clear()
+    document_undos: list[str] = []
+    ended: list[str] = []
+
+    class _Document:
+        UndoCount = 3
+
+        def undo(self):
+            document_undos.append("document.undo")
+            self.UndoCount -= 1
+
+    class _Ledger:
+        def end_run(self, run_id):
+            ended.append(run_id)
+
+        def undo_latest(self, **_kwargs):
+            _Document().undo()
+
+    class _Dispatcher:
+        def call(self, *_args, **_kwargs):
+            return {"ok": True}
+
+    class _Execution:
+        dispatcher = _Dispatcher()
+        undo_ledger = _Ledger()
+        run_id = "run-bot"
+        document = _Document()
+
+        def close(self):
+            self.undo_ledger.end_run(self.run_id)
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeDispatch",
+        SimpleNamespace(
+            NativeDispatchError=type("NativeDispatchError", (Exception,), {"code": "X"})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeSessionFactory",
+        SimpleNamespace(
+            create_live_native_session_execution=lambda **_kwargs: _Execution()
+        ),
+    )
+    opened = agent.native_command({"capability": "model.extrude", "arguments": {}})
+    session_id = opened["session_id"]
+    assert agent._native_sessions[session_id].document.UndoCount == 3
+    closed = agent.native_command({"close": True, "session_id": session_id})
+    assert closed["closed"] is True
+    assert ended == ["run-bot"]
+    assert document_undos == []
+
+
+def test_idle_close_does_not_steal_document_undo(monkeypatch) -> None:
+    agent._native_sessions.clear()
+    agent._native_session_last_used.clear()
+    document_undos: list[str] = []
+
+    class _Document:
+        UndoCount = 4
+
+        def undo(self):
+            document_undos.append("document.undo")
+            self.UndoCount -= 1
+
+    class _Execution:
+        dispatcher = SimpleNamespace(call=lambda *_a, **_k: {"ok": True})
+        run_id = "run-idle"
+        document = _Document()
+        undo_ledger = SimpleNamespace(
+            end_run=lambda run_id: None,
+            undo_latest=lambda **_k: _Document().undo(),
+        )
+
+        def close(self):
+            self.undo_ledger.end_run(self.run_id)
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeDispatch",
+        SimpleNamespace(
+            NativeDispatchError=type("NativeDispatchError", (Exception,), {"code": "X"})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeSessionFactory",
+        SimpleNamespace(
+            create_live_native_session_execution=lambda **_kwargs: _Execution()
+        ),
+    )
+    monkeypatch.setenv(agent.NATIVE_SESSION_IDLE_ENV, "5")
+    opened = agent.native_command({"capability": "model.extrude", "arguments": {}})
+    session_id = opened["session_id"]
+    document = agent._native_sessions[session_id].document
+    now = agent._native_session_last_used[session_id] + 5
+    agent.expire_idle_native_sessions(now=now)
+    assert document_undos == []
+    assert document.UndoCount == 4
+
+
 def test_prompt_command_requires_text() -> None:
     payload = agent.prompt_command({"text": "  "})
     assert payload["ok"] is False
