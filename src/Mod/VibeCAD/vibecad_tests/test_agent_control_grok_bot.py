@@ -91,6 +91,42 @@ def test_run_script_refuses_aero_repair_exec() -> None:
     assert blocked["failure_code"] == "AERO_USE_V1_AERO"
 
 
+def test_run_script_refuses_partdesign_and_document_mutations() -> None:
+    pad = agent.run_script(python="import PartDesign\nobj = PartDesign.makePad()")
+    assert pad["ok"] is False
+    assert pad["failure_code"] == "RUN_USE_V1_NATIVE"
+    added = agent.run_script(
+        python='App.ActiveDocument.addObject("Part::Box", "Box")'
+    )
+    assert added["ok"] is False
+    assert added["failure_code"] == "RUN_USE_V1_NATIVE"
+
+
+def test_run_script_still_allows_non_cad_python(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent,
+        "_app",
+        lambda: SimpleNamespace(ActiveDocument=None),
+    )
+    payload = agent.run_script(python="result = 2 + 2")
+    assert payload["ok"] is True
+    assert payload["result"] == 4
+    assert "run" in agent.COMMANDS
+
+
+def test_v1_run_route_is_still_registered(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent,
+        "_app",
+        lambda: SimpleNamespace(ActiveDocument=None),
+    )
+    assert "run" in agent.COMMANDS
+    status, payload = agent.handle_http_request("POST", "/v1/run", {"python": "result = 1"})
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["result"] == 1
+
+
 def test_aero_http_routes_are_registered(monkeypatch) -> None:
     monkeypatch.setattr(
         agent,
