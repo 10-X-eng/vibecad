@@ -5241,6 +5241,12 @@ def ensure_commands_registered() -> None:
         action.setProperty("VibeCADTimelineOperationDeleter", True)
     Gui.addCommand("VibeCAD_AuthStatus", AuthStatusCommand())
     try:
+        from VibeCADNativePreviewCommands import register_preview_commands
+
+        register_preview_commands(Gui)
+    except Exception as exc:
+        _warn(f"VibeCAD Native preview command registration failed: {exc}")
+    try:
         from VibeCADScriptedEditor import ensure_scripted_model_editor_registered
 
         # InitGui runs before startup workbench setup and the one native
