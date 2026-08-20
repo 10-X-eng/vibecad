@@ -983,6 +983,8 @@ def _close_native_session(session_id: str) -> bool:
         _native_session_last_used.pop(session_id, None)
     if execution is None:
         return False
+    # Bot session close ends the assistant run only. It must not call
+    # document.undo() or undo_latest — that would steal in-app undo.
     closer = getattr(execution, "close", None)
     if callable(closer):
         try:
