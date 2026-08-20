@@ -29,6 +29,7 @@ NATIVE_PREVIEW_FAMILIES = frozenset(
         "model.revolve",
         "model.helix",
         "model.loft",
+        "model.sweep",
         "model.dressup",
     }
 )

@@ -395,7 +395,7 @@ def _focused_feature(kind: str):
             raise TypeError("A Model feature call requires its exact runtime.")
         if not isinstance(arguments, Mapping):
             raise TypeError("A Model feature call requires argument data.")
-        if kind in {"extrude", "revolve", "helix", "loft"}:
+        if kind in {"extrude", "revolve", "helix", "loft", "sweep"}:
             previewed = _maybe_preview_or_apply_profile(
                 runtime, arguments, capability_name=f"model.{kind}"
             )
