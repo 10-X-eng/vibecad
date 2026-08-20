@@ -547,6 +547,80 @@ def test_native_command_passes_operation_into_arguments_json(monkeypatch) -> Non
 
 def test_dispatch_native_is_in_commands() -> None:
     assert "native" in agent.COMMANDS
+    assert "native_session" in agent.COMMANDS
+
+
+def test_get_native_session_reports_empty_without_opening_a_turn() -> None:
+    agent._native_sessions.clear()
+    payload = agent.native_session_command()
+    assert payload == {"ok": True, "held": False, "sessions": []}
+
+
+def test_get_native_session_reports_held_session_without_opening_a_turn(
+    monkeypatch,
+) -> None:
+    agent._native_sessions.clear()
+    created: list[int] = []
+
+    class _Dispatcher:
+        call_count = 2
+
+        def call(self, *_args, **_kwargs):
+            created.append(99)
+            return {"ok": True}
+
+        def pending_previews(self):
+            return [{"preview_id": "preview-extrude-1", "applied": False}]
+
+    class _Execution:
+        dispatcher = _Dispatcher()
+        run_id = "run-held"
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeDispatch",
+        SimpleNamespace(
+            NativeDispatchError=type("NativeDispatchError", (Exception,), {"code": "X"})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeSessionFactory",
+        SimpleNamespace(
+            create_live_native_session_execution=lambda **_kwargs: created.append(1)
+            or _Execution()
+        ),
+    )
+    opened = agent.native_command({"capability": "model.extrude", "arguments": {}})
+    session_id = opened["session_id"]
+    created.clear()
+    payload = agent.native_session_command({"session_id": session_id})
+    assert payload["ok"] is True
+    assert payload["held"] is True
+    assert payload["session_id"] == session_id
+    assert payload["run_id"] == "run-held"
+    assert payload["call_count"] == 2
+    assert payload["pending_previews"][0]["preview_id"] == "preview-extrude-1"
+    assert created == []
+    listed = agent.native_session_command()
+    assert listed["session_id"] == session_id
+    assert listed["held"] is True
+    missing = agent.native_session_command({"session_id": "missing"})
+    assert missing["ok"] is False
+    assert missing["failure_code"] == "NATIVE_SESSION_MISSING"
+    status, routed = agent.handle_http_request("GET", "/v1/native/session")
+    assert status == 200
+    assert routed["session_id"] == session_id
+    assert routed["held"] is True
 
 
 def test_prompt_command_requires_text() -> None:
