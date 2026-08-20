@@ -14,7 +14,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeProviderSurface,
     provider_visible_native_schema,
 )
-from VibeCADNativeDispatch import NativeTurnDispatcher
+from VibeCADNativeDispatch import NativeDispatchError, NativeTurnDispatcher
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeSurface import NativeSurfaceSnapshot
 from VibeCADNativeTargets import NativeTargetError
@@ -111,6 +111,44 @@ def _arguments(value: int) -> str:
     return json.dumps({"operation": "read", "value": value})
 
 
+def _extrude_parameters() -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 160},
+            "stage": {"type": "string", "enum": ["propose", "apply"]},
+            "preview_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    }
+
+
+def _extrude_dispatcher(handler):
+    definition = NativeCapabilityDefinition(
+        name="model.extrude",
+        description="Extrude one exact Sketch.",
+        primary_classification="mutation",
+        variants=(
+            NativeCapabilityVariant(
+                operation="extrude",
+                description="Extrude one exact Sketch.",
+                action_ids=frozenset({"VibeCAD_Test"}),
+                surface_ids=frozenset({"model"}),
+                exact_target_type=None,
+                transaction_behavior="none",
+                background_required=False,
+                parameters=_extrude_parameters(),
+            ),
+        ),
+    )
+    return _dispatcher(handler, definition=definition)
+
+
 def test_dispatcher_pending_previews_are_store_only() -> None:
     observed = []
     dispatcher, state, _debug = _dispatcher(
@@ -130,6 +168,56 @@ def test_dispatcher_pending_previews_are_store_only() -> None:
     assert pending[0]["capability"] == "model.extrude"
     assert pending[0]["applied"] is False
     assert pending[0]["stale"] is False
+
+
+def test_dispatcher_apply_pending_preview_routes_once() -> None:
+    observed = []
+    dispatcher, state, _debug = _extrude_dispatcher(
+        lambda call: observed.append(dict(call.arguments)) or {"geometry": "applied"},
+    )
+    preview = state.propose_mutation_preview(
+        "document-a",
+        capability_name="model.extrude",
+        arguments={"operation": "extrude", "label": "Pad"},
+    )
+    result = dispatcher.apply_pending_preview()
+    assert result["ok"] is True
+    assert result["geometry"] == "applied"
+    assert observed[0]["stage"] == "apply"
+    assert observed[0]["preview_id"] == preview["preview_id"]
+    assert observed[0]["label"] == "Pad"
+
+
+def test_dispatcher_apply_pending_preview_rejects_stale() -> None:
+    dispatcher, state, _debug = _extrude_dispatcher(
+        lambda _call: pytest.fail("stale preview must not dispatch"),
+    )
+    state.propose_mutation_preview(
+        "document-a",
+        capability_name="model.extrude",
+        arguments={"operation": "extrude", "label": "Pad"},
+    )
+    state.note_structural_change("document-a")
+    with pytest.raises(NativeDispatchError, match="changed after this preview"):
+        dispatcher.apply_pending_preview()
+
+
+def test_dispatcher_reject_pending_preview_does_not_dispatch() -> None:
+    observed = []
+    dispatcher, state, _debug = _extrude_dispatcher(
+        lambda call: observed.append(dict(call.arguments)) or {"geometry": "applied"},
+    )
+    preview = state.propose_mutation_preview(
+        "document-a",
+        capability_name="model.extrude",
+        arguments={"operation": "extrude", "label": "Pad"},
+    )
+    rejected = dispatcher.reject_pending_preview()
+    assert rejected["applied"] is False
+    assert rejected["rejected"] is True
+    assert rejected["preview_id"] == preview["preview_id"]
+    assert observed == []
+    assert dispatcher.pending_previews() == []
 
 
 def test_dispatch_resolves_one_hidden_frozen_operation() -> None:

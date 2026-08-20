@@ -509,6 +509,38 @@ def test_list_mutation_previews_is_store_only() -> None:
     assert stale[0]["current_revision"] == 1
 
 
+def test_reject_mutation_preview_does_not_apply_and_allows_stale() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.extrude",
+        arguments={"operation": "extrude", "label": "Pad"},
+    )
+    store.note_structural_change("doc-1")
+    rejected = store.reject_mutation_preview("doc-1", preview["preview_id"])
+    assert rejected["applied"] is False
+    assert rejected["rejected"] is True
+    assert rejected["stale"] is True
+    assert store.list_mutation_previews("doc-1") == []
+    with pytest.raises(NativeStateError, match="NATIVE_PREVIEW_CONSUMED"):
+        store.reject_mutation_preview("doc-1", preview["preview_id"])
+
+
+def test_get_mutation_preview_does_not_consume() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.extrude",
+        arguments={"operation": "extrude", "label": "Pad"},
+    )
+    fetched = store.get_mutation_preview("doc-1", preview["preview_id"])
+    assert fetched["arguments"]["label"] == "Pad"
+    assert fetched["applied"] is False
+    assert store.list_mutation_previews("doc-1")[0]["preview_id"] == preview["preview_id"]
+
+
 def test_preview_rejects_other_families() -> None:
     store = NativeDocumentStateStore()
     with pytest.raises(NativeStateError, match="model.extrude"):

@@ -466,6 +466,60 @@ class NativeDocumentStateStore:
                 )
             return pending
 
+    def get_mutation_preview(
+        self,
+        document_uid: str,
+        preview_id: str,
+    ) -> dict[str, Any]:
+        """Return one unconsumed preview, including arguments. Does not consume."""
+
+        uid = _required_text(document_uid, "document UID")
+        token = _required_text(preview_id, "preview id")
+        with self._lock:
+            record = self._records.setdefault(uid, _DocumentRecord())
+            preview = record.previews.get(token)
+            if preview is None:
+                raise NativeStateError(NATIVE_PREVIEW_MISSING)
+            if preview.get("consumed"):
+                raise NativeStateError(NATIVE_PREVIEW_CONSUMED)
+            expected = int(preview["expected_revision"])
+            arguments = dict(preview.get("arguments") or {})
+            return {
+                "preview_id": str(preview["preview_id"]),
+                "capability": str(preview["capability_name"]),
+                "arguments": arguments,
+                "expected_revision": expected,
+                "current_revision": record.revision,
+                "applied": False,
+                "stale": record.revision != expected,
+            }
+
+    def reject_mutation_preview(
+        self,
+        document_uid: str,
+        preview_id: str,
+    ) -> dict[str, Any]:
+        """Consume one preview without applying. Stale previews may be rejected."""
+
+        uid = _required_text(document_uid, "document UID")
+        token = _required_text(preview_id, "preview id")
+        with self._lock:
+            record = self._records.setdefault(uid, _DocumentRecord())
+            preview = record.previews.get(token)
+            if preview is None:
+                raise NativeStateError(NATIVE_PREVIEW_MISSING)
+            if preview.get("consumed"):
+                raise NativeStateError(NATIVE_PREVIEW_CONSUMED)
+            expected = int(preview["expected_revision"])
+            preview["consumed"] = True
+            return {
+                "preview_id": token,
+                "capability": str(preview["capability_name"]),
+                "applied": False,
+                "rejected": True,
+                "stale": record.revision != expected,
+            }
+
     def authorize_mutation(
         self,
         ticket: NativeCallTicket,

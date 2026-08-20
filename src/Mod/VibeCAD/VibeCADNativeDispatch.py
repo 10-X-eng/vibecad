@@ -691,3 +691,70 @@ class NativeTurnDispatcher:
         with self._lock:
             self._guard_document()
             return self._state.list_mutation_previews(self._document_uid)
+
+    def _select_pending_preview(
+        self,
+        preview_id: str | None,
+        *,
+        require_fresh: bool,
+    ) -> dict[str, Any]:
+        pending = self.pending_previews()
+        if preview_id:
+            token = str(preview_id).strip()
+            selected = next(
+                (item for item in pending if item["preview_id"] == token),
+                None,
+            )
+        elif require_fresh:
+            selected = next(
+                (item for item in reversed(pending) if not item["stale"]),
+                None,
+            )
+            if selected is None and pending:
+                selected = pending[-1]
+        else:
+            selected = pending[-1] if pending else None
+        if selected is None:
+            raise NativeDispatchError(
+                "NATIVE_PREVIEW_MISSING",
+                "There is no unconsumed Native preview to apply or reject.",
+            )
+        return selected
+
+    def apply_pending_preview(
+        self,
+        preview_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply one non-stale pending preview through the frozen dispatcher."""
+
+        selected = self._select_pending_preview(preview_id, require_fresh=True)
+        if selected["stale"]:
+            raise NativeDispatchError(
+                "NATIVE_REVISION_CONFLICT",
+                "The document changed after this preview was prepared. "
+                "Read its current state and retry.",
+            )
+        preview = self._state.get_mutation_preview(
+            self._document_uid,
+            selected["preview_id"],
+        )
+        arguments = dict(preview["arguments"])
+        arguments["stage"] = "apply"
+        arguments["preview_id"] = selected["preview_id"]
+        return self.call(
+            selected["capability"],
+            json.dumps(arguments, ensure_ascii=True, separators=(",", ":")),
+            f"preview-apply-{selected['preview_id']}",
+        )
+
+    def reject_pending_preview(
+        self,
+        preview_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Reject one pending preview without mutating CAD. Stale is allowed."""
+
+        selected = self._select_pending_preview(preview_id, require_fresh=False)
+        return self._state.reject_mutation_preview(
+            self._document_uid,
+            selected["preview_id"],
+        )
