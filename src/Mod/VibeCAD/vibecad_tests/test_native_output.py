@@ -113,7 +113,30 @@ def test_step_export_stamps_artifact_class_exact(tmp_path: Path) -> None:
 
 def test_asmt_export_is_not_stamped_exact() -> None:
     assert native_output_artifact_class("Assembly.asmt") is None
-    assert native_output_artifact_class("mesh.stl") is None
+
+
+def test_mesh_stl_export_stamps_artifact_class_derived(tmp_path: Path) -> None:
+    request = NativeOutputRequest(
+        purpose="export_mesh",
+        title="Export Mesh",
+        suggested_file_name="Part.stl",
+        allowed_suffixes=(".stl",),
+        name_filter="STL (*.stl)",
+        maximum_bytes=1024,
+    )
+    destination = tmp_path / "Part.stl"
+    authorization = authorize_native_output_path(request, destination)
+    artifact = publish_authorized_output(
+        request,
+        authorization,
+        writer=lambda path: Path(path).write_bytes(b"solid mesh"),
+        guard=lambda: None,
+    )
+    assert native_output_artifact_class("mesh.stl") == "derived"
+    assert native_output_artifact_class("cloud.ply") == "derived"
+    assert native_output_artifact_class("Part.step") == "exact"
+    assert artifact.artifact_class == "derived"
+    assert artifact.summary()["artifact_class"] == "derived"
 
 
 def test_destination_drift_fails_before_writer(tmp_path: Path) -> None:
