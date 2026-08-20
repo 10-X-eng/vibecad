@@ -477,14 +477,25 @@ def verify_solver_execution(document: Any, draft: NativeMutationDraft) -> dict[s
             + ", ".join(failures)
             + "."
         )
-    return {
-        "solver": solver_state(solver),
-        "result": _result_summary(root, resources, solver),
-        "execution": {
-            "backend": request.target.kind,
-            "implementation": request.implementation,
-            "input_sha256": request.input_sha256,
-            "input_file_count": request.input_file_count,
-            "stages": list(prepared.stages),
-        },
-    }
+    return stamp_solver_execution_unqualified(
+        {
+            "solver": solver_state(solver),
+            "result": _result_summary(root, resources, solver),
+            "execution": {
+                "backend": request.target.kind,
+                "implementation": request.implementation,
+                "input_sha256": request.input_sha256,
+                "input_file_count": request.input_file_count,
+                "stages": list(prepared.stages),
+            },
+        }
+    )
+
+
+def stamp_solver_execution_unqualified(payload: dict[str, Any]) -> dict[str, Any]:
+    """A completed FEM solve is not a qualified model."""
+
+    payload["claim_ceiling"] = "model_unqualified"
+    payload["solved"] = True
+    payload["qualified"] = False
+    return payload
