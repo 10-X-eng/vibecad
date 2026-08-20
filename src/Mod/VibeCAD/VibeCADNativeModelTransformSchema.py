@@ -219,6 +219,15 @@ def model_transform_capability_definition() -> NativeCapabilityDefinition:
                 "uniqueItems": True,
             },
             "definition": _scale_definition_schema(),
+            "stage": {
+                "type": "string",
+                "enum": ["propose", "apply"],
+            },
+            "preview_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
         },
         ("label", "targets", "definition"),
     )
