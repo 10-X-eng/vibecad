@@ -53,6 +53,8 @@ COMMANDS = (
     "screenshot",
 )
 
+_native_sessions: dict[str, Any] = {}
+_native_sessions_lock = threading.RLock()
 _server_lock = threading.RLock()
 _server: ThreadingHTTPServer | None = None
 _server_thread: threading.Thread | None = None
@@ -172,7 +174,7 @@ channel. Use it to drive VibeCAD without clicking menus.
 | GET  | `/v1/context`     |                                   | Frozen ribbon catalog + native_state + presentation screenshot path |
 | GET  | `/v1/screenshot`  | optional `?capture=true`          | Capture viewport PNG path. Pixels are not measurements. |
 | POST | `/v1/prompt`      | `{{"text":"..."}}`                | Start an in-app Build turn (same path as in-app Grok) |
-| POST | `/v1/native`      | `{{"capability":"inspect.query","arguments":{{"operation":"..."}}}}` | Same Native dispatcher as in-app Grok |
+| POST | `/v1/native`      | `{{"capability":"...","arguments":{{...}},"session_id":"..."}}` | Same Native dispatcher; reuse session_id until `{{"close":true,"session_id":"..."}}` |
 | GET  | `/v1/aero`        |                                   | Flight card + AeroReport stamps |
 | POST | `/v1/aero`        | `{{"operation":"analyze"}}` (also section, vlm, export_jsbsim, report, propose_repairs, apply_repairs, reject_repairs, flight_card) | Same Aero wrapper as in-app Grok |
 | POST | `/v1/preferences` |                                   | Show VibeCAD Preferences |
@@ -193,7 +195,9 @@ CAD path for Grok Bot (same quality as in-app Grok):
    `provider_tool_schemas`) and `native_state`. Do not invent capability names.
 2. GET `/v1/screenshot` for a presentation-only PNG path. Open that file.
    Pixels never prove dimensions, CL, or airworthiness (`claim_ceiling=not_measured`).
-3. POST `/v1/native` using a name from that freeze (same dispatcher).
+3. POST `/v1/native` using a name from that freeze. Keep returning
+   `session_id` on later calls so undo and the 256-call budget stay on one
+   Native turn. Close with `{{"close":true,"session_id":"..."}}`.
 4. POST `/v1/prompt` `{{"text":"..."}}` to start an in-app Build turn if you
    need the chat loop.
 
@@ -859,10 +863,34 @@ def prompt_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"ok": True, "started": True}
 
 
+def _close_native_session(session_id: str) -> bool:
+    with _native_sessions_lock:
+        execution = _native_sessions.pop(session_id, None)
+    if execution is None:
+        return False
+    closer = getattr(execution, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:
+            pass
+    return True
+
+
 def native_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run one Native capability through the same dispatcher as in-app Grok."""
 
     args = dict(arguments or {})
+    session_id = str(args.get("session_id") or "").strip()
+    if args.get("close"):
+        if not session_id:
+            return failure(
+                "NATIVE_SESSION_REQUIRED",
+                'Pass JSON {"close":true,"session_id":"..."}.',
+                stage="schema",
+            )
+        closed = _close_native_session(session_id)
+        return {"ok": True, "closed": closed, "session_id": session_id}
     tool = str(args.get("capability") or args.get("tool") or "").strip()
     if not tool:
         return failure(
@@ -896,33 +924,56 @@ def native_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     except Exception as exc:
         return failure("NATIVE_UNAVAILABLE", str(exc), stage="precondition")
     execution = None
+    created = False
+    if session_id:
+        with _native_sessions_lock:
+            execution = _native_sessions.get(session_id)
+        if execution is None:
+            return failure(
+                "NATIVE_SESSION_MISSING",
+                f"No held Native session {session_id}.",
+                stage="precondition",
+            )
+    else:
+        try:
+            service = get_service()
+            execution = create_live_native_session_execution(
+                service=service,
+                document_thread_dispatch=_on_document_thread,
+            )
+        except NativeDispatchError as exc:
+            code = str(getattr(exc, "code", "") or "NATIVE_DISPATCH")
+            return failure(code, str(exc), stage="precondition")
+        except Exception as exc:
+            return failure("NATIVE_UNAVAILABLE", str(exc), stage="precondition")
+        session_id = secrets.token_hex(16)
+        created = True
+        with _native_sessions_lock:
+            _native_sessions[session_id] = execution
+    encoded = json.dumps(payload_args, ensure_ascii=True, separators=(",", ":"))
+    call_id = str(args.get("call_id") or secrets.token_hex(16))
     try:
-        service = get_service()
-        execution = create_live_native_session_execution(
-            service=service,
-            document_thread_dispatch=_on_document_thread,
-        )
-        encoded = json.dumps(payload_args, ensure_ascii=True, separators=(",", ":"))
-        call_id = str(args.get("call_id") or secrets.token_hex(16))
         result = execution.dispatcher.call(tool, encoded, call_id)
     except NativeDispatchError as exc:
+        if created:
+            _close_native_session(session_id)
         code = str(getattr(exc, "code", "") or "NATIVE_DISPATCH")
         return failure(code, str(exc), stage="precondition")
     except Exception as exc:
+        if created:
+            _close_native_session(session_id)
         return failure("NATIVE_UNAVAILABLE", str(exc), stage="precondition")
-    finally:
-        if execution is not None:
-            try:
-                execution.close()
-            except Exception:
-                pass
     if not isinstance(result, dict):
+        if created:
+            _close_native_session(session_id)
         return failure(
             "NATIVE_RESULT_INVALID",
             "Native dispatcher returned a non-object result.",
             stage="internal",
         )
-    return result
+    held = dict(result)
+    held["session_id"] = session_id
+    return held
 
 
 def show_preferences() -> dict[str, Any]:

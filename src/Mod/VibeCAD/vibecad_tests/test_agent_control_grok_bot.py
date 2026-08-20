@@ -240,6 +240,7 @@ def test_native_command_requires_gui(monkeypatch) -> None:
 
 
 def test_native_command_calls_live_dispatcher(monkeypatch) -> None:
+    agent._native_sessions.clear()
     calls: list[tuple[str, str, str]] = []
 
     class _Dispatcher:
@@ -297,6 +298,64 @@ def test_native_command_calls_live_dispatcher(monkeypatch) -> None:
     assert calls[0][0] == "inspect.query"
     assert '"operation":"geometry_validity"' in calls[0][1]
     assert captured["document_thread_dispatch"] is agent._on_document_thread
+    assert payload["session_id"]
+    assert payload["session_id"] in agent._native_sessions
+
+
+def test_native_command_reuses_held_session(monkeypatch) -> None:
+    agent._native_sessions.clear()
+    created: list[int] = []
+    closed: list[int] = []
+
+    class _Dispatcher:
+        def call(self, tool_name, arguments_json, provider_call_id):
+            return {"ok": True, "tool": tool_name}
+
+    class _Execution:
+        dispatcher = _Dispatcher()
+
+        def close(self):
+            closed.append(1)
+
+    def _create_live(**_kwargs):
+        created.append(1)
+        return _Execution()
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeDispatch",
+        SimpleNamespace(
+            NativeDispatchError=type("NativeDispatchError", (Exception,), {"code": "X"})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeSessionFactory",
+        SimpleNamespace(create_live_native_session_execution=_create_live),
+    )
+    first = agent.native_command({"capability": "inspect.query", "arguments": {}})
+    second = agent.native_command(
+        {
+            "capability": "inspect.query",
+            "arguments": {},
+            "session_id": first["session_id"],
+        }
+    )
+    assert first["session_id"] == second["session_id"]
+    assert created == [1]
+    closed_payload = agent.native_command(
+        {"close": True, "session_id": first["session_id"]}
+    )
+    assert closed_payload["ok"] is True
+    assert closed_payload["closed"] is True
+    assert closed == [1]
+    assert first["session_id"] not in agent._native_sessions
 
 
 def test_native_command_rejects_invalid_arguments_type() -> None:
