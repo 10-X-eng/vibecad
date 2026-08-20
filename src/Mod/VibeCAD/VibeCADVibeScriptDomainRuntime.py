@@ -22653,7 +22653,7 @@ class CAMDomainAdapter(DeclarativeDomainAdapter):
                         "this CAM graph here, then describe any upstream or downstream work."
                     ),
                     "upstream": {
-                        "Part Design/Part": "accepted manufacturable solid geometry and semantic machining faces",
+                        "Part Design/Part": "accepted Native B-rep geometry and semantic machining faces",
                         "Assembly": "accepted component/fixture intent; CAM does not derive clamp geometry",
                         "Material": "material identity used by a human to choose validated feeds and speeds",
                     },
