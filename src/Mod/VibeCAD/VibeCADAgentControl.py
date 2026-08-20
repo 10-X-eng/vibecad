@@ -593,6 +593,36 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _run_script_document_mutation_error(source: str) -> dict[str, Any] | None:
+    """Refuse PartDesign / App document mutations. Keep /v1/run for non-CAD Python."""
+
+    compact = "".join(source.split())
+    lowered = compact.lower()
+    if "partdesign" in lowered:
+        return failure(
+            "RUN_USE_V1_NATIVE",
+            "PartDesign mutations go through POST /v1/native, not /v1/run exec.",
+            stage="schema",
+        )
+    markers = (
+        "ActiveDocument.addObject",
+        "ActiveDocument.removeObject",
+        "ActiveDocument.copyObject",
+        "ActiveDocument.moveObject",
+        "App.newDocument",
+        "FreeCAD.newDocument",
+        "App.closeDocument",
+        "FreeCAD.closeDocument",
+    )
+    if any(marker in compact for marker in markers):
+        return failure(
+            "RUN_USE_V1_NATIVE",
+            "App document mutations go through POST /v1/native, not /v1/run exec.",
+            stage="schema",
+        )
+    return None
+
+
 def run_script(
     *,
     python: str | None = None,
@@ -621,6 +651,9 @@ def run_script(
             "Aero CAD changes go through POST /v1/aero, not /v1/run exec.",
             stage="schema",
         )
+    blocked = _run_script_document_mutation_error(source)
+    if blocked is not None:
+        return blocked
     opened = None
     if path:
         opened = open_document(path)
