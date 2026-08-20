@@ -63,7 +63,7 @@ _THICKNESS_FIELDS = frozenset(
         "intersection_handling",
     }
 )
-_THICKNESS_PREVIEW_FIELDS = ("stage", "preview_id")
+_OPTIONAL_PREVIEW_FIELDS = ("stage", "preview_id")
 
 
 class NativeModelDressupRuntime:
@@ -203,6 +203,49 @@ class NativeModelDressupRuntime:
             if name not in {"stage", "preview_id", "operation"}
         }
 
+    def _maybe_preview_draft(
+        self, values: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage == "apply":
+            return None
+        if stage != "propose":
+            raise NativeModelError("model.dressup draft stage must be propose or apply.")
+        return self._context.state.propose_mutation_preview(
+            self._context.document_uid,
+            capability_name="model.dressup",
+            arguments={"operation": "draft", **dict(values)},
+        )
+
+    def _draft_apply_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage != "apply":
+            return {
+                name: value
+                for name, value in values.items()
+                if name not in {"stage", "preview_id"}
+            }
+        preview_id = str(values.get("preview_id") or "").strip()
+        if not preview_id:
+            raise NativeModelError("model.dressup draft apply needs preview_id.")
+        try:
+            stored = self._context.state.consume_mutation_preview(
+                self._context.document_uid,
+                preview_id,
+                capability_name="model.dressup",
+            )
+        except NativeRevisionConflict:
+            raise
+        except NativeStateError as exc:
+            raise NativeModelError(str(exc)) from exc
+        if str(stored.get("operation") or "") != "draft":
+            raise NativeModelError("preview_id is not a draft preview.")
+        return {
+            name: value
+            for name, value in stored.items()
+            if name not in {"stage", "preview_id", "operation"}
+        }
+
     def mutate_dressup(
         self,
         arguments: Mapping[str, Any],
@@ -211,8 +254,8 @@ class NativeModelDressupRuntime:
     ) -> dict[str, Any]:
         raw = dict(arguments)
         preview_fields = {}
-        if str(raw.get("operation") or "") == "thickness":
-            for name in _THICKNESS_PREVIEW_FIELDS:
+        if str(raw.get("operation") or "") in {"draft", "thickness"}:
+            for name in _OPTIONAL_PREVIEW_FIELDS:
                 if name in raw:
                     preview_fields[name] = raw.pop(name)
         operation, values = strict_variant_arguments(
@@ -248,6 +291,10 @@ class NativeModelDressupRuntime:
             preflight = preflight_design_chamfer
             create = create_design_chamfer
         elif operation == "draft":
+            previewed = self._maybe_preview_draft(values)
+            if previewed is not None:
+                return previewed
+            values = self._draft_apply_values(values)
             prepared = prepare_design_draft(self._context.document_uid, values)
             preflight = preflight_design_draft
             create = create_design_draft

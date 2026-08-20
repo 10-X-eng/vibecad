@@ -305,8 +305,16 @@ def test_draft_runtime_preflights_then_routes_one_immediate_mutation(
         lambda context, **kwargs: captured.update(kwargs) or {"routed": True},
     )
 
-    result = runtime.mutate_dressup(
+    preview = runtime.mutate_dressup(
         _draft_arguments(),
+        ticket=state.begin_call(document.Uid, "model.dressup"),
+    )
+    assert preview["applied"] is False
+    apply_arguments = dict(_draft_arguments())
+    apply_arguments["stage"] = "apply"
+    apply_arguments["preview_id"] = preview["preview_id"]
+    result = runtime.mutate_dressup(
+        apply_arguments,
         ticket=state.begin_call(document.Uid, "model.dressup"),
     )
 

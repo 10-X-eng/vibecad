@@ -108,6 +108,14 @@ def test_chamfer_contract_exposes_preview_stage_fields() -> None:
     assert "stage" not in branch["required"]
 
 
+def test_draft_contract_exposes_preview_stage_fields() -> None:
+    branch = model_dressup_capability_definition().variants[2].parameters
+    assert branch["properties"]["stage"]["enum"] == ["propose", "apply"]
+    assert branch["properties"]["preview_id"]["minLength"] == 1
+    assert "stage" not in branch["required"]
+    assert "preview_id" not in branch["required"]
+
+
 def test_thickness_contract_exposes_preview_stage_fields() -> None:
     branch = model_dressup_capability_definition().variants[3].parameters
     assert branch["properties"]["stage"]["enum"] == ["propose", "apply"]
