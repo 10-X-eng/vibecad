@@ -33,7 +33,7 @@ def test_native_surface_continuation_preserves_conversation_and_build_obligation
     assert captured["session_trigger"] == {"workspace": "assembly"}
     assert captured["persist_input_as_user"] is False
     assert captured["prompt_section"] == "CURRENT_SESSION_EVENT"
-    assert captured["interaction_mode"] == "build"
+    assert "interaction_mode" not in captured
     assert captured["prompt"] == (
         "Assembly work is now available. Continue the current design from its "
         "existing document state. Do not repeat completed operations."
@@ -62,4 +62,4 @@ def test_native_edit_continuation_accepts_exact_opened_sketch(monkeypatch) -> No
 
     assert captured["session_trigger"] == {"workspace": "sketching"}
     assert captured["persist_input_as_user"] is False
-    assert captured["interaction_mode"] == "build"
+    assert "interaction_mode" not in captured

@@ -634,7 +634,7 @@ def test_unsaved_run_prompt_reaches_provider_and_includes_active_thread_once(
     monkeypatch.setattr(
         session,
         "_build_context_for_provider",
-        lambda active_service, trigger, interaction_mode, dispatch: dict(context),
+        lambda active_service, trigger, dispatch: dict(context),
     )
     monkeypatch.setattr(
         session,
@@ -671,7 +671,6 @@ def test_unsaved_run_prompt_reaches_provider_and_includes_active_thread_once(
                 "model_selection": "explicit",
                 "reasoning_effort": "xhigh",
                 "model_fallback_allowed": False,
-                "interaction_mode": "build",
             }
         },
     }

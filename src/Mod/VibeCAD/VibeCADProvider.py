@@ -63,7 +63,7 @@ VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical engineer for th
 
 CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Meet explicit requirements; decide only ordinary details required for function. Ask only when an answer changes function or geometry. Build editable parametric geometry. Preserve existing identity and history unless replacement is requested; a correction changes only the named design. Search catalogs only for requested or required unspecified components; explicit dimensions are not catalog requests.
 
-Use only exposed tools and exact returned state. Never invent names, references, revisions, or API members. Act decisively; do not narrate plans or revisit settled arithmetic. Resolve a failed operation before dependent work and never repeat an unchanged failure. Verify requested and function-critical geometry, interfaces, clearances, motion, manufacture, and appearance before claiming completion. Before claiming appearance is good, capture at least isometric, front, and top via core.set_view, fit (frame='all' or fit_all/set_isometric), and core.capture_view_screenshot; one random view is not enough. Pixels never invent dimensions, clearance, or fit; cite the view and tag presentation_only vs needs_measurement. If the next screenshot is unchanged (same faceting, clipping, or lighting), stop retrying that view; change tessellation, display, or section, or measure. Do not claim STEP, STL, or export quality from a screenshot. Aero mass, CL, hover power, and stability come from aero.solve / aero.inspect / the aero flight card, never from screenshots. Those numbers are not airworthy. Never claim work or verification not performed."""
+Use only exposed tools and exact returned state. Never invent names, references, revisions, or API members. Act decisively; do not revisit settled arithmetic. Resolve a failed operation before dependent work and never repeat an unchanged failure. Verify requested and function-critical geometry, interfaces, clearances, motion, manufacture, and appearance before claiming completion. Before claiming appearance is good, capture at least isometric, front, and top via core.set_view, fit (frame='all' or fit_all/set_isometric), and core.capture_view_screenshot; one random view is not enough. Pixels never invent dimensions, clearance, or fit; cite the view and tag presentation_only vs needs_measurement. If the next screenshot is unchanged (same faceting, clipping, or lighting), stop retrying that view; change tessellation, display, or section, or measure. Do not claim STEP, STL, or export quality from a screenshot. Aero mass, CL, hover power, and stability come from aero.solve / aero.inspect / the aero flight card, never from screenshots. Those numbers are not airworthy. Never claim work or verification not performed."""
 
 
 ANTHROPIC_TURN_COMPACTION_INSTRUCTIONS = """You compact one unfinished VibeCAD agent turn.
@@ -827,38 +827,18 @@ class CodexProvider(BaseProvider):
                         ),
                     },
                 )
-        interaction_mode = (
-            str(live_context.get("_vibecad_interaction_mode") or "build")
-            .strip()
-            .lower()
-        )
-        if interaction_mode not in {"build", "plan"}:
-            raise ProviderUnavailable(
-                f"Unknown VibeCAD interaction mode {interaction_mode!r}."
-            )
-        plan_mode = interaction_mode == "plan"
         namespaced_tools = _codex_uses_namespaced_tools(
             auth_mode=self.auth_mode,
             base_url=self.base_url,
         )
-        current_dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(
+        dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(
             live_context,
             namespaced=namespaced_tools,
         )
-        if not current_dynamic_tools:
+        if not dynamic_tools:
             raise ProviderUnavailable(
                 "Codex mode has no declared VibeCAD tools for the current workbench."
             )
-        thread_surface = live_context.get("_vibecad_codex_thread_surface")
-        if isinstance(thread_surface, dict):
-            thread_context = dict(live_context)
-            thread_context.update(thread_surface)
-        else:
-            thread_context = live_context
-        thread_dynamic_tools, _thread_name_map = _codex_dynamic_tool_surface(
-            thread_context,
-            namespaced=namespaced_tools,
-        )
         skill_call_key = (
             ("skills", "read")
             if namespaced_tools
@@ -1037,12 +1017,6 @@ class CodexProvider(BaseProvider):
 
             tool_name = dynamic_name_map.get((namespace, function_name))
             if tool_name is None:
-                declared_name = _thread_name_map.get((namespace, function_name))
-                if declared_name is not None:
-                    raise CodexAppServerError(
-                        f"VibeCAD tool {declared_name} is not available in this "
-                        f"{interaction_mode} turn."
-                    )
                 raise CodexAppServerError(
                     f"Unknown VibeCAD dynamic tool {namespace}.{function_name}."
                 )
@@ -1170,7 +1144,7 @@ class CodexProvider(BaseProvider):
             else None
         )
         session_identity = live_context.get("_vibecad_codex_session")
-        thread_declaration = thread_context.get("provider_tool_surface")
+        thread_declaration = live_context.get("provider_tool_surface")
         managed = bool(
             isinstance(session_identity, dict)
             and str(session_identity.get("conversation_id") or "").strip()
@@ -1277,7 +1251,7 @@ class CodexProvider(BaseProvider):
                     cwd=codex_workspace(),
                 )
                 if skill_catalog:
-                    thread_dynamic_tools.append(
+                    dynamic_tools.append(
                         _codex_skill_read_tool(namespaced=namespaced_tools)
                     )
 
@@ -1310,11 +1284,10 @@ class CodexProvider(BaseProvider):
                 "developerInstructions": developer_instructions,
                 "ephemeral": not managed,
                 "environments": [],
-                "dynamicTools": thread_dynamic_tools,
+                "dynamicTools": dynamic_tools,
                 "config": vibecad_thread_config(
                     web_search_enabled=self.web_search_enabled,
                     skills_enabled=self.skills_enabled,
-                    collaboration_mode_enabled=plan_mode,
                     openai_base_url=(
                         (codex_base_url or "")
                         if self.auth_mode == "api_key"
@@ -1387,28 +1360,7 @@ class CodexProvider(BaseProvider):
                 "environments": [],
             }
             effort = _provider_reasoning_effort(self.reasoning_effort)
-            if plan_mode:
-                effective_model = str(
-                    thread_result.get("model")
-                    if isinstance(thread_result, dict)
-                    else ""
-                ).strip()
-                if not effective_model:
-                    effective_model = self.model
-                if not effective_model:
-                    raise ProviderUnavailable(
-                        "Codex did not report the model required for Plan mode."
-                    )
-                turn_request["collaborationMode"] = {
-                    "mode": "plan",
-                    "settings": {
-                        "model": effective_model,
-                        "reasoning_effort": effort or "medium",
-                        "developer_instructions": None,
-                    },
-                }
-                turn_request["summary"] = "auto"
-            elif effort:
+            if effort:
                 turn_request["effort"] = effort
                 turn_request["summary"] = "auto"
             else:
@@ -1477,7 +1429,6 @@ class CodexProvider(BaseProvider):
                     final_output="",
                     raw={
                         "thread_id": thread_id,
-                        "interaction_mode": interaction_mode,
                         "auth_mode": self.auth_mode,
                         "cad_transition": True,
                     },
@@ -1494,7 +1445,6 @@ class CodexProvider(BaseProvider):
                     final_output="",
                     raw={
                         "thread_id": thread_id,
-                        "interaction_mode": interaction_mode,
                         "auth_mode": self.auth_mode,
                         "cad_transition": True,
                     },
@@ -1514,7 +1464,6 @@ class CodexProvider(BaseProvider):
                 final_output=final_output,
                 raw={
                     "thread_id": thread_id,
-                    "interaction_mode": interaction_mode,
                     "auth_mode": self.auth_mode,
                     **(
                         {

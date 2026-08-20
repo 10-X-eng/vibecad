@@ -356,7 +356,6 @@ class _HostToolSession:
                 service,
                 workbench,
                 runtime_state=runtime_state,
-                interaction_mode="build",
             )
             document = getattr(App, "ActiveDocument", None)
             document_identity = ""
@@ -441,7 +440,6 @@ class _HostToolSession:
         context = _build_context_for_provider(
             service,
             None,
-            "build",
             self._dispatch,
         )
         self._runner = make_provider_tool_runner(
@@ -477,7 +475,6 @@ class _HostToolSession:
                 if isinstance(context.get("editable_sources"), dict)
                 else None
             ),
-            interaction_mode="build",
             provider_calls_allowed=False,
         )
         self._runner_signature = signature

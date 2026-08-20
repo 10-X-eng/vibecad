@@ -153,7 +153,7 @@ When using a `.env` file for this fallback, use `OPENAI_API_KEY`; VibeCAD resolv
 3. Open **View > Panels > VibeCAD Assistant** if the assistant is not visible.
 4. Describe the intended result, including the dimensions, interfaces, material, manufacturing process, and constraints that matter.
 5. Use **Attach Image** for a reference design, or paste an image into the message box with `Ctrl+V`. Use **Attach View** to include the current viewport in the next model request only; it is consumed after that delivery.
-6. Choose **Build** to let Codex edit the document, or **Plan** to let it inspect and propose work with only read/view CAD tools. Then click **Send**. While work is running, the same input becomes **Steer**, so corrections stay in the same conversation. **Stop** ends the run after the current provider or CAD step returns.
+6. Click **Send**. Ask for a plan when you want one, revise it in the same conversation, then say **Build it** when you are ready. While work is running, the same input becomes **Steer**, so corrections stay in that conversation. **Stop** ends the run after the current provider or CAD step returns.
 7. Save the CAD document normally. Reopening it restores the associated VibeCAD conversations and project records.
 
 Be explicit about functional intent, not only appearance. For an existing model, identify what should be preserved and what should change. For a new part, provide mating geometry and critical dimensions whenever they are known.

@@ -125,21 +125,10 @@ def _run() -> None:
         )
         assert "set_virtual_space" in json.dumps(constraint_schema, sort_keys=True)
 
-        plan_context = _capture_context_for_provider(
-            service,
-            interaction_mode="plan",
-        )
-        plan_names = plan_context["provider_tool_surface"]["tool_names"]
-        assert plan_names
-        assert set(plan_names) < set(production.tool_names)
-        assert "sketch.geometry" not in plan_names
-        assert "sketch.constraint" not in plan_names
-        assert plan_context["_vibecad_codex_thread_surface"][
-            "provider_tool_surface"
-        ]["tool_names"] == list(production.tool_names)
-
         _phase("provider_surface")
         context = _capture_context_for_provider(service)
+        assert "_vibecad_interaction_mode" not in context
+        assert "_vibecad_codex_thread_surface" not in context
         turn_surface = context["provider_tool_surface"]
         schemas = context["provider_tool_schemas"]
         assert turn_surface["kind"] == "turn_start_snapshot", turn_surface

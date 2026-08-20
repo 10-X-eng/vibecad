@@ -45,23 +45,13 @@ def resolve_production_native_surface(
     return registry, surface
 
 
-def native_provider_tool_schemas(
-    *,
-    interaction_mode: str,
-) -> list[dict[str, Any]]:
-    registry, surface = resolve_production_native_surface()
-    return schemas_for_native_provider_surface(
-        surface,
-        interaction_mode=interaction_mode,
-        registry=registry,
-    )
+def native_provider_tool_schemas() -> list[dict[str, Any]]:
+    _registry, surface = resolve_production_native_surface()
+    return schemas_for_native_provider_surface(surface)
 
 
 def schemas_for_native_provider_surface(
     surface: NativeProviderSurface,
-    *,
-    interaction_mode: str,
-    registry: NativeCapabilityRegistry | None = None,
 ) -> list[dict[str, Any]]:
     """Copy schemas from one already-resolved live manifest surface."""
 
@@ -69,31 +59,7 @@ def schemas_for_native_provider_surface(
         raise TypeError("surface must be a NativeProviderSurface")
     if not surface.available:
         return []
-    mode = str(interaction_mode or "build").strip().lower()
-    if mode == "build":
-        schemas = surface.schemas
-    elif mode == "plan":
-        if registry is None:
-            from VibeCADNativeRegistry import build_native_capability_registry
-
-            selected_registry = build_native_capability_registry()
-        else:
-            selected_registry = registry
-        schemas = []
-        for name, schema in zip(
-            surface.tool_names,
-            surface.schemas,
-            strict=True,
-        ):
-            definition = selected_registry.definition(name)
-            if (
-                definition is not None
-                and definition.primary_classification in {"read", "view"}
-            ):
-                schemas.append(schema)
-    else:
-        raise ValueError(f"Unknown Native interaction mode {mode!r}.")
-    return [provider_visible_native_schema(schema) for schema in schemas]
+    return [provider_visible_native_schema(schema) for schema in surface.schemas]
 
 
 def native_active_state(service: Any) -> dict[str, Any]:

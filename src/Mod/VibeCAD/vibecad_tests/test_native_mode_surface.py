@@ -63,6 +63,9 @@ class _NativeService:
     def modeling_engine(self) -> str:
         return "native"
 
+    def provider_debug_config(self) -> dict:
+        return {}
+
 
 def test_native_schema_assembly_never_reads_the_legacy_service_registry(
     monkeypatch,
@@ -84,7 +87,7 @@ def test_native_schema_assembly_never_reads_the_legacy_service_registry(
     monkeypatch.setattr(
         provider_context,
         "native_provider_tool_schemas",
-        lambda *, interaction_mode: schemas if interaction_mode == "build" else [],
+        lambda: schemas,
     )
     monkeypatch.setattr(
         session,
@@ -128,19 +131,7 @@ def test_native_availability_queries_use_the_manifest_surface(
 
     assert session.is_provider_safe_tool(service, "model.feature") is True
     assert session.is_provider_safe_tool(service, "part.make_box") is False
-    assert (
-        session.is_provider_safe_tool(
-            service,
-            "state.read",
-            interaction_mode="plan",
-        )
-        is True
-    )
-    assert session.is_provider_safe_tool(
-        service,
-        "model.feature",
-        interaction_mode="plan",
-    ) is False
+    assert session.is_provider_safe_tool(service, "state.read") is True
 
 
 def test_native_runner_assembly_returns_before_the_vibescript_runner_path(
