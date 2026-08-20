@@ -23,7 +23,9 @@ NATIVE_REVISION_CONFLICT = "NATIVE_REVISION_CONFLICT"
 NATIVE_AUTHORITY_CONFLICT = "NATIVE_AUTHORITY_CONFLICT"
 NATIVE_PREVIEW_MISSING = "NATIVE_PREVIEW_MISSING"
 NATIVE_PREVIEW_CONSUMED = "NATIVE_PREVIEW_CONSUMED"
-NATIVE_PREVIEW_FAMILY = "model.extrude"
+NATIVE_PREVIEW_FAMILIES = frozenset(
+    {"model.extrude", "model.revolve", "model.helix", "model.dressup"}
+)
 NATIVE_STATE_SCHEMA = "vibecad-native-state-v1"
 
 PRESENTATION_PROPERTY_NAMES = frozenset(
@@ -364,13 +366,15 @@ class NativeDocumentStateStore:
         capability_name: str,
         arguments: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Record one model.extrude proposal. Does not mutate CAD."""
+        """Record one authorized preview-family proposal. Does not mutate CAD."""
 
         uid = _required_text(document_uid, "document UID")
         capability = _required_text(capability_name, "capability name")
-        if capability != NATIVE_PREVIEW_FAMILY:
+        if capability not in NATIVE_PREVIEW_FAMILIES:
             raise NativeStateError(
-                f"Native preview is only authorized for {NATIVE_PREVIEW_FAMILY}."
+                "Native preview is only authorized for "
+                + ", ".join(sorted(NATIVE_PREVIEW_FAMILIES))
+                + "."
             )
         if not isinstance(arguments, Mapping):
             raise NativeStateError("Native preview arguments must be an object.")

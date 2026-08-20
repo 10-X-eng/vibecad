@@ -343,39 +343,43 @@ def _focused_extrude_definition(arguments: Mapping[str, Any]) -> dict[str, Any]:
     return {"kind": "extrude", "direction": direction, "extent": extent}
 
 
-def _maybe_preview_or_apply_extrude(
+def _maybe_preview_or_apply_profile(
     runtime: NativeModelFeatureRuntime,
     arguments: Mapping[str, Any],
+    *,
+    capability_name: str,
 ) -> Mapping[str, Any] | None:
     stage = str(arguments.get("stage") or "propose").strip()
     if stage == "apply":
         return None
     if stage != "propose":
-        raise NativeModelError("model.extrude stage must be propose or apply.")
+        raise NativeModelError(f"{capability_name} stage must be propose or apply.")
     uid = document_uid(runtime._context.document)
     return runtime._context.state.propose_mutation_preview(
         uid,
-        capability_name="model.extrude",
+        capability_name=capability_name,
         arguments=arguments,
     )
 
 
-def _extrude_apply_arguments(
+def _profile_apply_arguments(
     runtime: NativeModelFeatureRuntime,
     arguments: Mapping[str, Any],
+    *,
+    capability_name: str,
 ) -> Mapping[str, Any]:
     stage = str(arguments.get("stage") or "propose").strip()
     if stage != "apply":
         return arguments
     preview_id = str(arguments.get("preview_id") or "").strip()
     if not preview_id:
-        raise NativeModelError("model.extrude apply needs preview_id.")
+        raise NativeModelError(f"{capability_name} apply needs preview_id.")
     uid = document_uid(runtime._context.document)
     try:
         return runtime._context.state.consume_mutation_preview(
             uid,
             preview_id,
-            capability_name="model.extrude",
+            capability_name=capability_name,
         )
     except NativeRevisionConflict:
         raise
@@ -391,11 +395,15 @@ def _focused_feature(kind: str):
             raise TypeError("A Model feature call requires its exact runtime.")
         if not isinstance(arguments, Mapping):
             raise TypeError("A Model feature call requires argument data.")
-        if kind == "extrude":
-            previewed = _maybe_preview_or_apply_extrude(runtime, arguments)
+        if kind in {"extrude", "revolve", "helix"}:
+            previewed = _maybe_preview_or_apply_profile(
+                runtime, arguments, capability_name=f"model.{kind}"
+            )
             if previewed is not None:
                 return previewed
-            arguments = _extrude_apply_arguments(runtime, arguments)
+            arguments = _profile_apply_arguments(
+                runtime, arguments, capability_name=f"model.{kind}"
+            )
         profile = dict(arguments["profile"])
         profile_scope = str(arguments["profile_scope"])
         internal_faces = arguments.get("internal_faces")

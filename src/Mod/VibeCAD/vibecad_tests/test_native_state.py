@@ -479,6 +479,157 @@ def test_preview_rejects_other_families() -> None:
     with pytest.raises(NativeStateError, match="model.extrude"):
         store.propose_mutation_preview(
             "doc-1",
+            capability_name="model.fillet",
+            arguments={"label": "Fillet"},
+        )
+
+
+def test_dressup_preview_does_not_change_revision() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.dressup",
+        arguments={"operation": "fillet", "label": "Edge Rounds", "stage": "propose"},
+    )
+    assert preview["applied"] is False
+    assert preview["evidence_state"] == "evidence_waiting"
+    assert preview["expected_revision"] == 0
+    assert preview["capability"] == "model.dressup"
+    assert store.current_revision("doc-1") == 0
+
+
+def test_dressup_apply_is_stale_after_structural_change() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.dressup",
+        arguments={"operation": "fillet", "label": "Edge Rounds"},
+    )
+    store.note_structural_change("doc-1")
+    with pytest.raises(NativeRevisionConflict) as caught:
+        store.consume_mutation_preview(
+            "doc-1",
+            preview["preview_id"],
+            capability_name="model.dressup",
+        )
+    assert caught.value.failure()["error_code"] == NATIVE_REVISION_CONFLICT
+
+
+def test_dressup_apply_once_then_consumed() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.dressup",
+        arguments={
+            "operation": "fillet",
+            "label": "Edge Rounds",
+            "radius_mm": 1.5,
+            "stage": "propose",
+        },
+    )
+    stored = store.consume_mutation_preview(
+        "doc-1",
+        preview["preview_id"],
+        capability_name="model.dressup",
+    )
+    assert stored["label"] == "Edge Rounds"
+    assert stored["operation"] == "fillet"
+    assert stored["radius_mm"] == 1.5
+    assert "stage" not in stored
+    with pytest.raises(NativeStateError, match="NATIVE_PREVIEW_CONSUMED"):
+        store.consume_mutation_preview(
+            "doc-1",
+            preview["preview_id"],
+            capability_name="model.dressup",
+        )
+
+
+def test_helix_preview_propose_apply_and_stale() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.helix",
+        arguments={"label": "Helix", "stage": "propose"},
+    )
+    assert preview["capability"] == "model.helix"
+    assert preview["applied"] is False
+    assert store.current_revision("doc-1") == 0
+    stored = store.consume_mutation_preview(
+        "doc-1",
+        preview["preview_id"],
+        capability_name="model.helix",
+    )
+    assert stored["label"] == "Helix"
+    store.ensure_document("doc-2")
+    stale = store.propose_mutation_preview(
+        "doc-2",
+        capability_name="model.helix",
+        arguments={"label": "Helix2"},
+    )
+    store.note_structural_change("doc-2")
+    with pytest.raises(NativeRevisionConflict):
+        store.consume_mutation_preview(
+            "doc-2",
+            stale["preview_id"],
+            capability_name="model.helix",
+        )
+
+
+def test_revolve_preview_does_not_change_revision() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.revolve",
+        arguments={"label": "Rev", "stage": "propose"},
+    )
+    assert preview["applied"] is False
+    assert preview["evidence_state"] == "evidence_waiting"
+    assert preview["expected_revision"] == 0
+    assert preview["capability"] == "model.revolve"
+    assert store.current_revision("doc-1") == 0
+
+
+def test_revolve_apply_is_stale_after_structural_change() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.revolve",
+        arguments={"label": "Rev"},
+    )
+    store.note_structural_change("doc-1")
+    with pytest.raises(NativeRevisionConflict) as caught:
+        store.consume_mutation_preview(
+            "doc-1",
+            preview["preview_id"],
             capability_name="model.revolve",
-            arguments={"label": "Rev"},
+        )
+    assert caught.value.failure()["error_code"] == NATIVE_REVISION_CONFLICT
+
+
+def test_revolve_apply_once_then_consumed() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.revolve",
+        arguments={"label": "Rev", "profile_scope": "entire_sketch"},
+    )
+    stored = store.consume_mutation_preview(
+        "doc-1",
+        preview["preview_id"],
+        capability_name="model.revolve",
+    )
+    assert stored["label"] == "Rev"
+    assert "stage" not in stored
+    with pytest.raises(NativeStateError, match="NATIVE_PREVIEW_CONSUMED"):
+        store.consume_mutation_preview(
+            "doc-1",
+            preview["preview_id"],
+            capability_name="model.revolve",
         )

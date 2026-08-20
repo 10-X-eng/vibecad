@@ -154,6 +154,8 @@ def test_profile_features_publish_focused_direct_contracts() -> None:
         "extent",
         "combine",
         "destination_component",
+        "stage",
+        "preview_id",
     }
     assert revolve["required"] == [
         "label",
@@ -195,6 +197,10 @@ def test_profile_features_publish_focused_direct_contracts() -> None:
     assert extrude_example["profile_scope"] == "entire_sketch"
     assert extrude_example["extent"] == {"kind": "length", "length_mm": 1.0}
 
+    helix = definitions["model.helix"].variants[0].parameters
+    assert helix["properties"]["stage"]["enum"] == ["propose", "apply"]
+    assert helix["properties"]["preview_id"]["minLength"] == 1
+
     encoded_size = sum(
         len(
             json.dumps(
@@ -206,4 +212,4 @@ def test_profile_features_publish_focused_direct_contracts() -> None:
         )
         for definition in definitions.values()
     )
-    assert encoded_size < 16_000
+    assert encoded_size < 17_000

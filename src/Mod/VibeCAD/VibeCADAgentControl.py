@@ -200,6 +200,10 @@ CAD path for Grok Bot (same quality as in-app Grok):
    Native turn. Close with `{{"close":true,"session_id":"..."}}`.
 4. POST `/v1/prompt` `{{"text":"..."}}` to start an in-app Build turn if you
    need the chat loop.
+`model.extrude`, `model.revolve`, and `model.helix` use `stage=propose`
+then `stage=apply` on `/v1/native` (propose does not mutate CAD and
+returns `preview_id`; apply needs that `preview_id` and rejects a stale
+document revision). Fillet, pocket, Boolean, and sketch still live-commit.
 
 Peak Aero loop for Grok Bot (same quality as in-app Grok):
 1. GET `/v1/aero` for the stamped flight card.
