@@ -15,6 +15,7 @@ import ast
 import base64
 import binascii
 from dataclasses import dataclass
+import errno
 import hashlib
 import inspect
 import json
@@ -17038,11 +17039,69 @@ def restore_prepared_delete(prepared: Mapping[str, Any]) -> None:
         trash.replace(original)
 
 
+def _ignore_missing_artifact_cleanup_error(
+    _function: Callable[..., Any],
+    _path: str,
+    exc_info: tuple[type[BaseException], BaseException, Any],
+) -> None:
+    error = exc_info[1]
+    if isinstance(error, FileNotFoundError):
+        return
+    raise error.with_traceback(exc_info[2])
+
+
+def _deleted_program_cleanup_path(trash: Path) -> str | Path:
+    if os.name != "nt":
+        return trash
+    # Packaged Windows Python can report WinError 3 for descendants beyond
+    # MAX_PATH unless recursive cleanup starts from an extended-length path.
+    absolute = os.path.abspath(os.fspath(trash))
+    if absolute.startswith("\\\\?\\"):
+        return absolute
+    if absolute.startswith("\\\\"):
+        return f"\\\\?\\UNC\\{absolute[2:]}"
+    return f"\\\\?\\{absolute}"
+
+
+def _remove_deleted_program_artifacts(trash: Path) -> None:
+    cleanup_path = _deleted_program_cleanup_path(trash)
+    last_transient_error: OSError | None = None
+    # A worker or filesystem scanner can still create a final cache entry
+    # between rmtree's directory scan and its parent-directory removal.
+    for attempt in range(5):
+        try:
+            shutil.rmtree(
+                cleanup_path,
+                onerror=_ignore_missing_artifact_cleanup_error,
+            )
+        except OSError as exc:
+            retryable = isinstance(exc, FileNotFoundError) or (
+                exc.errno == errno.ENOTEMPTY or getattr(exc, "winerror", None) == 145
+            )
+            if not retryable:
+                raise
+            if not os.path.exists(cleanup_path):
+                return
+            last_transient_error = exc
+        else:
+            if not os.path.exists(cleanup_path):
+                return
+            last_transient_error = OSError(
+                errno.ENOTEMPTY,
+                "Deleted-program artifacts remain after cleanup",
+                trash,
+            )
+        if attempt < 4:
+            time.sleep(0.05 * (attempt + 1))
+    assert last_transient_error is not None
+    raise last_transient_error
+
+
 def finish_delete(
     prepared: Mapping[str, Any], publication: Mapping[str, Any]
 ) -> dict[str, Any]:
     trash = Path(str(prepared["trash_directory"]))
-    shutil.rmtree(trash)
+    _remove_deleted_program_artifacts(trash)
     deleted_objects = list(publication.get("deleted_objects") or [])
     return {
         "ok": True,
