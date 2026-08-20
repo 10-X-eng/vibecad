@@ -441,6 +441,31 @@ class NativeDocumentStateStore:
             preview["consumed"] = True
             return dict(preview["arguments"])
 
+    def list_mutation_previews(self, document_uid: str) -> list[dict[str, Any]]:
+        """Return unconsumed allowlisted previews. Does not mutate CAD."""
+
+        uid = _required_text(document_uid, "document UID")
+        with self._lock:
+            record = self._records.setdefault(uid, _DocumentRecord())
+            pending: list[dict[str, Any]] = []
+            for preview in record.previews.values():
+                if preview.get("consumed"):
+                    continue
+                arguments = dict(preview.get("arguments") or {})
+                expected = int(preview["expected_revision"])
+                pending.append(
+                    {
+                        "preview_id": str(preview["preview_id"]),
+                        "capability": str(preview["capability_name"]),
+                        "operation": str(arguments.get("operation") or ""),
+                        "expected_revision": expected,
+                        "current_revision": record.revision,
+                        "applied": False,
+                        "stale": record.revision != expected,
+                    }
+                )
+            return pending
+
     def authorize_mutation(
         self,
         ticket: NativeCallTicket,

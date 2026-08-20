@@ -111,6 +111,27 @@ def _arguments(value: int) -> str:
     return json.dumps({"operation": "read", "value": value})
 
 
+def test_dispatcher_pending_previews_are_store_only() -> None:
+    observed = []
+    dispatcher, state, _debug = _dispatcher(
+        lambda call: observed.append(dict(call.arguments)) or {"value": 1},
+    )
+    assert dispatcher.pending_previews() == []
+    preview = state.propose_mutation_preview(
+        "document-a",
+        capability_name="model.extrude",
+        arguments={"operation": "extrude", "label": "Pad"},
+    )
+    pending = dispatcher.pending_previews()
+    assert observed == []
+    assert dispatcher.call_count == 0
+    assert len(pending) == 1
+    assert pending[0]["preview_id"] == preview["preview_id"]
+    assert pending[0]["capability"] == "model.extrude"
+    assert pending[0]["applied"] is False
+    assert pending[0]["stale"] is False
+
+
 def test_dispatch_resolves_one_hidden_frozen_operation() -> None:
     observed = []
     dispatcher, _state, _debug = _dispatcher(
