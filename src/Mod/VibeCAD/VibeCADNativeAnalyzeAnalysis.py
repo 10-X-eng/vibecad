@@ -130,5 +130,13 @@ def verify_analysis_create(
         result["created_solver"] = concise_object(solver)
     else:
         result["created_solver"] = None
-    return result
+    return stamp_created_fem_graph(result)
+
+
+def stamp_created_fem_graph(payload: dict[str, Any]) -> dict[str, Any]:
+    """Creating an analysis graph is not a solve."""
+
+    payload["claim_ceiling"] = "not_solved"
+    payload["solved"] = False
+    return payload
 
