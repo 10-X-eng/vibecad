@@ -30,6 +30,7 @@ from VibeCADIntentMemory import (
     active_memory_context,
     apply_memory_update,
     empty_memory,
+    require_user_explicit_preserved,
     uncovered_turns,
 )
 from VibeCADModelingSurface import resolve_modeling_surface
@@ -4385,6 +4386,7 @@ class VibeCADService:
             expected_turns=snapshot["uncovered_turns"],
             known_turn_ids=known_turn_ids,
         )
+        require_user_explicit_preserved(current, rebuilt)
         return self._project_store.write_intent_memory(rebuilt)
 
     def update_project_summary(

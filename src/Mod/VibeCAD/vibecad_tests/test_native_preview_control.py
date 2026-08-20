@@ -11,7 +11,9 @@ from VibeCADNativePreviewCommands import (
     RejectNativePreviewCommand,
     register_preview_commands,
 )
+from VibeCADIntentMemory import empty_memory, require_user_explicit_preserved
 from VibeCADNativePreviewControl import (
+    apply_document_preview,
     maybe_auto_apply_pending_preview,
     pending_document_previews,
     reject_document_preview,
@@ -80,6 +82,60 @@ def test_apply_command_is_active_only_for_fresh_previews(monkeypatch) -> None:
     store.note_structural_change("document-preview")
     assert command.IsActive() is False
     assert reject.IsActive() is True
+
+
+def test_native_preview_apply_does_not_drop_user_explicit() -> None:
+    memory = empty_memory("project-a")
+    memory["entries"] = [
+        {
+            "id": "wall",
+            "category": "constraint",
+            "statement": "2 mm wall",
+            "authority": "user_explicit",
+            "source_turn_ids": ["a" * 32],
+            "status": "active",
+            "superseded_by": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+    ]
+    dispatcher = SimpleNamespace(
+        apply_pending_preview=lambda *_args, **_kwargs: {"ok": True, "applied": True}
+    )
+    result = apply_document_preview(
+        dispatcher,
+        intent_before=memory,
+        intent_after=memory,
+    )
+    assert result["applied"] is True
+    require_user_explicit_preserved(memory, memory)
+
+
+def test_native_preview_apply_refuses_dropped_user_explicit() -> None:
+    before = empty_memory("project-a")
+    before["entries"] = [
+        {
+            "id": "wall",
+            "category": "constraint",
+            "statement": "2 mm wall",
+            "authority": "user_explicit",
+            "source_turn_ids": ["a" * 32],
+            "status": "active",
+            "superseded_by": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+    ]
+    after = empty_memory("project-a")
+    dispatcher = SimpleNamespace(
+        apply_pending_preview=lambda *_args, **_kwargs: {"ok": True, "applied": True}
+    )
+    with pytest.raises(RuntimeError, match="dropped user_explicit"):
+        apply_document_preview(
+            dispatcher,
+            intent_before=before,
+            intent_after=after,
+        )
 
 
 def test_maybe_auto_apply_is_off_by_default() -> None:

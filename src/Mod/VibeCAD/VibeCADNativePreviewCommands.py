@@ -46,11 +46,26 @@ class ApplyNativePreviewCommand(_PreviewCommand):
         from VibeCADNativePreviewControl import apply_document_preview
         from VibeCADNativeSessionFactory import create_live_native_session_execution
 
-        execution = create_live_native_session_execution(service=get_service())
+        service = get_service()
+        before = None
+        after = None
+        if hasattr(service, "intent_memory"):
+            before = service.intent_memory()
+        execution = create_live_native_session_execution(service=service)
         try:
-            apply_document_preview(execution.dispatcher)
+            result = apply_document_preview(
+                execution.dispatcher,
+                intent_before=before,
+            )
         finally:
             execution.close()
+        if before is not None and hasattr(service, "intent_memory"):
+            after = service.intent_memory()
+            apply_document_preview_intent = after
+            from VibeCADIntentMemory import require_user_explicit_preserved
+
+            require_user_explicit_preserved(before, apply_document_preview_intent)
+        return result
 
 
 class RejectNativePreviewCommand(_PreviewCommand):

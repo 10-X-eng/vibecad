@@ -436,7 +436,65 @@ def apply_memory_update(
         "updated_at": now_iso(),
     }
     updated["revision"] = memory_revision(updated)
-    return validate_memory(updated, project_id=updated["project_id"])
+    validated = validate_memory(updated, project_id=updated["project_id"])
+    require_user_explicit_preserved(memory, validated)
+    return validated
+
+
+def active_user_explicit_entries(memory: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(memory, dict):
+        return ()
+    preserved: list[tuple[str, str]] = []
+    for item in memory.get("entries") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("authority") or "") != "user_explicit":
+            continue
+        if str(item.get("status") or "active") != "active":
+            continue
+        entry_id = str(item.get("id") or "").strip()
+        statement = str(item.get("statement") or "").strip()
+        if entry_id and statement:
+            preserved.append((entry_id, statement))
+    return tuple(preserved)
+
+
+def require_user_explicit_preserved(before: Any, after: Any) -> None:
+    """Refuse apply/rebuild that drops or silent-changes user_explicit rows."""
+
+    after_by_id: dict[str, dict[str, Any]] = {}
+    if isinstance(after, dict):
+        for item in after.get("entries") or []:
+            if isinstance(item, dict) and str(item.get("id") or "").strip():
+                after_by_id[str(item["id"]).strip()] = item
+    for entry_id, statement in active_user_explicit_entries(before):
+        item = after_by_id.get(entry_id)
+        if item is None:
+            raise RuntimeError(
+                f"Intent Memory apply dropped user_explicit entry {entry_id}."
+            )
+        authority = str(item.get("authority") or "")
+        if authority not in {"user_explicit", "user_confirmed"}:
+            raise RuntimeError(
+                f"Intent Memory apply dropped user_explicit entry {entry_id}."
+            )
+        if str(item.get("statement") or "").strip() != statement:
+            raise RuntimeError(
+                f"Intent Memory apply changed user_explicit entry {entry_id}."
+            )
+        status = str(item.get("status") or "active")
+        if status == "active":
+            continue
+        successors = item.get("superseded_by") or []
+        if status == "superseded" and any(
+            str(after_by_id.get(str(successor), {}).get("authority") or "")
+            in {"user_explicit", "user_confirmed"}
+            for successor in successors
+        ):
+            continue
+        raise RuntimeError(
+            f"Intent Memory apply dropped user_explicit entry {entry_id}."
+        )
 
 
 _CATEGORY_HEADINGS = {
