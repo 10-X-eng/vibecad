@@ -253,6 +253,21 @@ try:
             except Exception:
                 pass
 
+    def _setup_native_preview_ribbon() -> None:
+        try:
+            import VibeCADNativePreviewRibbon
+
+            VibeCADNativePreviewRibbon.install_native_preview_ribbon()
+        except Exception as exc:
+            try:
+                import FreeCAD as _App
+
+                _App.Console.PrintWarning(
+                    f"VibeCAD Native preview ribbon failed to install: {exc}\n"
+                )
+            except Exception:
+                pass
+
     def _setup_aero_ribbon() -> None:
         try:
             import VibeCADAeroRibbon
@@ -270,6 +285,7 @@ try:
 
     QtCore.QTimer.singleShot(0, _setup_always_on_grid)
     QtCore.QTimer.singleShot(0, _setup_agent_control)
+    QtCore.QTimer.singleShot(0, _setup_native_preview_ribbon)
     QtCore.QTimer.singleShot(0, _setup_aero_ribbon)
 except Exception as exc:
     _warn(f"VibeCAD GUI bootstrap failed: {exc}")
