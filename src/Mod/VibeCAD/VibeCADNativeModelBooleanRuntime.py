@@ -132,7 +132,7 @@ class NativeModelBooleanRuntime:
             mode = ""
             if isinstance(definition, Mapping):
                 mode = str(definition.get("mode") or "")
-            if mode in {"cut", "join"}:
+            if mode in {"cut", "join", "intersect"}:
                 previewed = self._maybe_preview_boolean(values, mode=mode)
                 if previewed is not None:
                     return previewed
