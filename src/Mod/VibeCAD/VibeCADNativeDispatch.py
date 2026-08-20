@@ -684,3 +684,10 @@ class NativeTurnDispatcher:
     def call_count(self) -> int:
         with self._lock:
             return len(self._calls)
+
+    def pending_previews(self) -> list[dict[str, Any]]:
+        """List unconsumed allowlisted previews. Store only; does not apply."""
+
+        with self._lock:
+            self._guard_document()
+            return self._state.list_mutation_previews(self._document_uid)
