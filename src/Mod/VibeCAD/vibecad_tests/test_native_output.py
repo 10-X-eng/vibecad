@@ -14,6 +14,7 @@ from VibeCADNativeOutput import (
     NativeOutputBundleItem,
     NativeOutputRequest,
     authorize_native_output_path,
+    native_output_artifact_class,
     publish_authorized_output,
     publish_authorized_output_bundle,
 )
@@ -84,6 +85,35 @@ def test_authorized_output_is_private_atomic_bounded_and_one_shot(
             writer=lambda _path: None,
             guard=lambda: None,
         )
+    assert artifact.summary().get("artifact_class") is None
+
+
+def test_step_export_stamps_artifact_class_exact(tmp_path: Path) -> None:
+    request = NativeOutputRequest(
+        purpose="export_step",
+        title="Export STEP",
+        suggested_file_name="Part.step",
+        allowed_suffixes=(".step", ".stp"),
+        name_filter="STEP (*.step *.stp)",
+        maximum_bytes=1024,
+    )
+    destination = tmp_path / "Part.step"
+    authorization = authorize_native_output_path(request, destination)
+    artifact = publish_authorized_output(
+        request,
+        authorization,
+        writer=lambda path: Path(path).write_bytes(b"ISO-10303-21;"),
+        guard=lambda: None,
+    )
+    assert native_output_artifact_class("Part.stp") == "exact"
+    assert artifact.artifact_class == "exact"
+    assert artifact.summary()["artifact_class"] == "exact"
+    assert artifact.summary()["file_name"] == "Part.step"
+
+
+def test_asmt_export_is_not_stamped_exact() -> None:
+    assert native_output_artifact_class("Assembly.asmt") is None
+    assert native_output_artifact_class("mesh.stl") is None
 
 
 def test_destination_drift_fails_before_writer(tmp_path: Path) -> None:

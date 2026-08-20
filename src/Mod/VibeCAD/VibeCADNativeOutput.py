@@ -18,6 +18,14 @@ MAX_NATIVE_OUTPUT_FILE_NAME_CHARACTERS = 255
 MAX_NATIVE_OUTPUT_REQUEST_TEXT_CHARACTERS = 256
 NATIVE_OUTPUT_AUTHORIZATION_FAILED = "NATIVE_OUTPUT_AUTHORIZATION_FAILED"
 NATIVE_OUTPUT_FAILED = "NATIVE_OUTPUT_FAILED"
+_STEP_SUFFIXES = frozenset({".step", ".stp"})
+
+
+def native_output_artifact_class(file_name: str) -> str | None:
+    suffix = Path(file_name).suffix.casefold()
+    if suffix in _STEP_SUFFIXES:
+        return "exact"
+    return None
 
 
 class NativeOutputError(RuntimeError):
@@ -182,14 +190,18 @@ class NativeOutputArtifact:
     size_bytes: int
     sha256: str
     replaced_existing: bool
+    artifact_class: str | None = None
 
     def summary(self) -> dict[str, Any]:
-        return {
+        payload = {
             "file_name": self.file_name,
             "size_bytes": self.size_bytes,
             "sha256": self.sha256,
             "replaced_existing": self.replaced_existing,
         }
+        if self.artifact_class:
+            payload["artifact_class"] = self.artifact_class
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,7 +405,13 @@ def publish_authorized_output(
         replaced = authorization._destination_state.exists
         os.replace(temporary, destination)
         temporary = None
-        return NativeOutputArtifact(destination.name, size, digest, replaced)
+        return NativeOutputArtifact(
+            destination.name,
+            size,
+            digest,
+            replaced,
+            artifact_class=native_output_artifact_class(destination.name),
+        )
     except NativeOutputError:
         raise
     except Exception as exc:
@@ -544,6 +562,7 @@ def publish_authorized_output_bundle(
                 entry.size,
                 entry.digest,
                 entry.replaced,
+                artifact_class=native_output_artifact_class(entry.destination.name),
             )
             for entry in prepared
         )
