@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADIntentMemory import require_user_explicit_preserved
 from VibeCADNativeState import NATIVE_PREVIEW_MISSING, NativeStateError
 from VibeCADNativeTargets import document_uid
 
@@ -32,8 +33,20 @@ def reject_document_preview(service: Any, preview_id: str | None = None) -> dict
     return state.reject_mutation_preview(uid, token)
 
 
-def apply_document_preview(dispatcher: Any, preview_id: str | None = None) -> dict[str, Any]:
-    return dispatcher.apply_pending_preview(preview_id)
+def apply_document_preview(
+    dispatcher: Any,
+    preview_id: str | None = None,
+    *,
+    intent_before: Any = None,
+    intent_after: Any = None,
+) -> dict[str, Any]:
+    result = dispatcher.apply_pending_preview(preview_id)
+    if intent_before is not None:
+        require_user_explicit_preserved(
+            intent_before,
+            intent_after if intent_after is not None else intent_before,
+        )
+    return result
 
 
 def maybe_auto_apply_pending_preview(
