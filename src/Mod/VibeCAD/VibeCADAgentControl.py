@@ -1065,6 +1065,19 @@ def _close_native_session(session_id: str) -> bool:
     return True
 
 
+def _unify_native_codes(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose one Native failure code as both failure_code and error_code."""
+
+    result = dict(payload)
+    if result.get("ok") is not False:
+        return result
+    code = str(result.get("failure_code") or result.get("error_code") or "").strip()
+    if code:
+        result["failure_code"] = code
+        result["error_code"] = code
+    return result
+
+
 def native_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run one Native capability through the same dispatcher as in-app Grok."""
 
@@ -1074,55 +1087,67 @@ def native_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         expire_idle_native_sessions()
     if args.get("close"):
         if not session_id:
-            return failure(
-                "NATIVE_SESSION_REQUIRED",
-                'Pass JSON {"close":true,"session_id":"..."}.',
-                stage="schema",
+            return _unify_native_codes(
+                failure(
+                    "NATIVE_SESSION_REQUIRED",
+                    'Pass JSON {"close":true,"session_id":"..."}.',
+                    stage="schema",
+                )
             )
         closed = _close_native_session(session_id)
         return {"ok": True, "closed": closed, "session_id": session_id}
     tool = str(args.get("capability") or args.get("tool") or "").strip()
     if not tool:
-        return failure(
-            "NATIVE_TOOL_REQUIRED",
-            'Pass JSON {"capability":"inspect.query","arguments":{...}}.',
-            stage="schema",
+        return _unify_native_codes(
+            failure(
+                "NATIVE_TOOL_REQUIRED",
+                'Pass JSON {"capability":"inspect.query","arguments":{...}}.',
+                stage="schema",
+            )
         )
     extra = args.get("arguments")
     if extra is None:
         extra = {}
     if not isinstance(extra, dict):
-        return failure(
-            "NATIVE_ARGUMENTS_INVALID",
-            "Native arguments must be a JSON object.",
-            stage="schema",
+        return _unify_native_codes(
+            failure(
+                "NATIVE_ARGUMENTS_INVALID",
+                "Native arguments must be a JSON object.",
+                stage="schema",
+            )
         )
     payload_args = dict(extra)
     operation = args.get("operation")
     if operation not in (None, "") and "operation" not in payload_args:
         payload_args["operation"] = operation
     if _gui() is None:
-        return failure(
-            "GUI_REQUIRED",
-            "POST /v1/native requires the running VibeCAD GUI.",
-            stage="precondition",
+        return _unify_native_codes(
+            failure(
+                "GUI_REQUIRED",
+                "POST /v1/native requires the running VibeCAD GUI.",
+                stage="precondition",
+            )
         )
     try:
         from VibeCADCore import get_service
         from VibeCADNativeDispatch import NativeDispatchError
         from VibeCADNativeSessionFactory import create_live_native_session_execution
     except Exception as exc:
-        return failure("NATIVE_UNAVAILABLE", str(exc), stage="precondition")
+        return _unify_native_codes(
+            failure("NATIVE_UNAVAILABLE", str(exc), stage="precondition")
+        )
     execution = None
     created = False
     if session_id:
         with _native_sessions_lock:
             execution = _native_sessions.get(session_id)
         if execution is None:
-            return failure(
-                "NATIVE_SESSION_MISSING",
-                f"No held Native session {session_id}.",
-                stage="precondition",
+            return _unify_native_codes(
+                failure(
+                    "NATIVE_SESSION_MISSING",
+                    f"No held Native session {session_id}.",
+                    stage="precondition",
+                )
             )
     else:
         try:
@@ -1133,9 +1158,11 @@ def native_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
             )
         except NativeDispatchError as exc:
             code = str(getattr(exc, "code", "") or "NATIVE_DISPATCH")
-            return failure(code, str(exc), stage="precondition")
+            return _unify_native_codes(failure(code, str(exc), stage="precondition"))
         except Exception as exc:
-            return failure("NATIVE_UNAVAILABLE", str(exc), stage="precondition")
+            return _unify_native_codes(
+                failure("NATIVE_UNAVAILABLE", str(exc), stage="precondition")
+            )
         session_id = secrets.token_hex(16)
         created = True
         with _native_sessions_lock:
@@ -1149,22 +1176,26 @@ def native_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         if created:
             _close_native_session(session_id)
         code = str(getattr(exc, "code", "") or "NATIVE_DISPATCH")
-        return failure(code, str(exc), stage="precondition")
+        return _unify_native_codes(failure(code, str(exc), stage="precondition"))
     except Exception as exc:
         if created:
             _close_native_session(session_id)
-        return failure("NATIVE_UNAVAILABLE", str(exc), stage="precondition")
+        return _unify_native_codes(
+            failure("NATIVE_UNAVAILABLE", str(exc), stage="precondition")
+        )
     if not isinstance(result, dict):
         if created:
             _close_native_session(session_id)
-        return failure(
-            "NATIVE_RESULT_INVALID",
-            "Native dispatcher returned a non-object result.",
-            stage="internal",
+        return _unify_native_codes(
+            failure(
+                "NATIVE_RESULT_INVALID",
+                "Native dispatcher returned a non-object result.",
+                stage="internal",
+            )
         )
     held = dict(result)
     held["session_id"] = session_id
-    return held
+    return _unify_native_codes(held)
 
 
 def show_preferences() -> dict[str, Any]:
