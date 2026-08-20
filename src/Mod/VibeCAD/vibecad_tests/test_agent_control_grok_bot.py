@@ -276,6 +276,7 @@ def test_native_command_requires_capability() -> None:
     payload = agent.native_command({})
     assert payload["ok"] is False
     assert payload["failure_code"] == "NATIVE_TOOL_REQUIRED"
+    assert payload["error_code"] == "NATIVE_TOOL_REQUIRED"
 
 
 def test_native_command_requires_gui(monkeypatch) -> None:
@@ -283,6 +284,51 @@ def test_native_command_requires_gui(monkeypatch) -> None:
     payload = agent.native_command({"capability": "inspect.query"})
     assert payload["ok"] is False
     assert payload["failure_code"] == "GUI_REQUIRED"
+    assert payload["error_code"] == "GUI_REQUIRED"
+
+
+def test_native_command_unifies_dispatcher_error_code(monkeypatch) -> None:
+    agent._native_sessions.clear()
+
+    class _Dispatcher:
+        def call(self, *_args, **_kwargs):
+            return {
+                "ok": False,
+                "error_code": "NATIVE_ARGUMENTS_INVALID",
+                "error": "arguments were rejected",
+            }
+
+    class _Execution:
+        dispatcher = _Dispatcher()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeDispatch",
+        SimpleNamespace(
+            NativeDispatchError=type("NativeDispatchError", (Exception,), {"code": "X"})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeSessionFactory",
+        SimpleNamespace(
+            create_live_native_session_execution=lambda **_kwargs: _Execution()
+        ),
+    )
+    payload = agent.native_command({"capability": "model.extrude", "arguments": {}})
+    assert payload["ok"] is False
+    assert payload["failure_code"] == "NATIVE_ARGUMENTS_INVALID"
+    assert payload["error_code"] == "NATIVE_ARGUMENTS_INVALID"
+    assert payload["session_id"]
 
 
 def test_native_command_calls_live_dispatcher(monkeypatch) -> None:
