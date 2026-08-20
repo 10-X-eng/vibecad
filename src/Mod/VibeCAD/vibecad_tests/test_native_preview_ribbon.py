@@ -121,6 +121,14 @@ def test_install_registers_commands_and_returns_true() -> None:
     )
 
 
+def test_cpp_ribbon_lists_native_preview_apply_and_reject() -> None:
+    source = Path(__file__).resolve().parents[4] / "src" / "Gui" / "VibeCADRibbon.cpp"
+    text = source.read_text(encoding="utf-8")
+    assert "VibeCAD_ApplyNativePreview" in text
+    assert "VibeCAD_RejectNativePreview" in text
+    assert 'QObject::tr("Preview")' in text
+
+
 def test_initgui_schedules_native_preview_ribbon() -> None:
     source = Path(__file__).resolve().parents[1] / "InitGui.py"
     text = source.read_text(encoding="utf-8")

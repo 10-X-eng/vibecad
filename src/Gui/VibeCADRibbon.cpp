@@ -1364,6 +1364,13 @@ struct Gui::VibeCADRibbon::Private
         );
         addGroup(QObject::tr("View"), std::move(viewEntries));
 
+        if (!sketchEdit) {
+            CommandEntries previewEntries = resolveUniqueEntries(
+                {"VibeCAD_ApplyNativePreview", "VibeCAD_RejectNativePreview"}
+            );
+            addGroup(QObject::tr("Preview"), std::move(previewEntries));
+        }
+
         for (const auto& [title, commands] : pageGroups(sketchEdit)) {
             if (!sketchEdit && title == QObject::tr("Fasteners")) {
                 addInspectionGroup();
