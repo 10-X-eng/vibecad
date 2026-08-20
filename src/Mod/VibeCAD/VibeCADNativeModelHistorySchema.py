@@ -83,7 +83,21 @@ def model_history_capability_definition() -> NativeCapabilityDefinition:
                     "features in dependency-safe order."
                 ),
                 "VibeCAD_NativeDeleteModelFeatures",
-                _parameters({"targets": _targets()}, ("targets",)),
+                _parameters(
+                    {
+                        "targets": _targets(),
+                        "stage": {
+                            "type": "string",
+                            "enum": ["propose", "apply"],
+                        },
+                        "preview_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64,
+                        },
+                    },
+                    ("targets",),
+                ),
                 "ModelHistoryOperationOrStandaloneFeature[]",
             ),
             _variant(

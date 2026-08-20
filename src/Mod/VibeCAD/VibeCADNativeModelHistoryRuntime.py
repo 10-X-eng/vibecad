@@ -12,7 +12,11 @@ from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
-from VibeCADNativeState import NativeCallTicket
+from VibeCADNativeState import (
+    NativeCallTicket,
+    NativeRevisionConflict,
+    NativeStateError,
+)
 from VibeCADNativeTargets import (
     NativeObjectRef,
     object_identity,
@@ -23,6 +27,7 @@ from VibeCADNativeTargets import (
 
 _MAX_TARGETS = 16
 _RESOURCE_ROLES = frozenset({"internal", "resource"})
+_DELETE_PREVIEW_FIELDS = ("stage", "preview_id")
 
 
 def _timeline_role(obj: Any) -> str:
@@ -464,19 +469,79 @@ class NativeModelHistoryRuntime:
             )
         return tuple(targets)
 
+    def _maybe_preview_delete_features(
+        self, values: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage == "apply":
+            return None
+        if stage != "propose":
+            raise NativeModelError(
+                "model.history delete_features stage must be propose or apply."
+            )
+        return self._context.state.propose_mutation_preview(
+            self._context.document_uid,
+            capability_name="model.history",
+            arguments={"operation": "delete_features", **dict(values)},
+        )
+
+    def _delete_apply_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage != "apply":
+            return {
+                name: value
+                for name, value in values.items()
+                if name not in {"stage", "preview_id"}
+            }
+        preview_id = str(values.get("preview_id") or "").strip()
+        if not preview_id:
+            raise NativeModelError(
+                "model.history delete_features apply needs preview_id."
+            )
+        try:
+            stored = self._context.state.consume_mutation_preview(
+                self._context.document_uid,
+                preview_id,
+                capability_name="model.history",
+            )
+        except NativeRevisionConflict:
+            raise
+        except NativeStateError as exc:
+            raise NativeModelError(str(exc)) from exc
+        if str(stored.get("operation") or "") != "delete_features":
+            raise NativeModelError("preview_id is not a delete_features preview.")
+        return {
+            name: value
+            for name, value in stored.items()
+            if name not in {"stage", "preview_id", "operation"}
+        }
+
     def control_history(
         self,
         arguments: Mapping[str, Any],
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
+        raw = dict(arguments)
+        preview_fields = {}
+        if str(raw.get("operation") or "") == "delete_features":
+            for name in _DELETE_PREVIEW_FIELDS:
+                if name in raw:
+                    preview_fields[name] = raw.pop(name)
         operation, values = strict_variant_arguments(
-            arguments,
+            raw,
             {
                 "delete_features": frozenset({"targets"}),
                 "set_suppressed": frozenset({"target", "suppressed"}),
             },
         )
+        if preview_fields:
+            values = {**values, **preview_fields}
+        if operation == "delete_features":
+            previewed = self._maybe_preview_delete_features(values)
+            if previewed is not None:
+                return previewed
+            values = self._delete_apply_values(values)
         self._context.guard()
         if operation == "set_suppressed":
             target = self._targets([values["target"]])[0]
