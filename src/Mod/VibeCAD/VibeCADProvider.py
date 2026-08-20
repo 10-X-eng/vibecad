@@ -2314,6 +2314,9 @@ def _model_visible_native_context(context: Mapping[str, Any]) -> dict[str, Any]:
         if name in snapshot and snapshot[name] not in (None, "", [], {})
     }
     result: dict[str, Any] = {"work": work, "state": state}
+    from VibeCADNativeState import native_preview_catalog
+
+    result["native_preview"] = native_preview_catalog()
     if document_name:
         result["document"] = {"name": document_name}
     for name in ("view_screenshot", "reference_images"):

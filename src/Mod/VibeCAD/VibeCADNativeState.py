@@ -39,6 +39,18 @@ NATIVE_PREVIEW_FAMILIES = frozenset(
 )
 NATIVE_STATE_SCHEMA = "vibecad-native-state-v1"
 
+
+def native_preview_catalog() -> dict[str, Any]:
+    """Frozen-catalog contract for allowlisted preview families only."""
+
+    return {
+        "stage": ["propose", "apply"],
+        "preview_id": {"required_on": "apply", "minLength": 1, "maxLength": 64},
+        "families": sorted(NATIVE_PREVIEW_FAMILIES),
+        "applied": False,
+        "claim_ceiling": "geometry_applied",
+    }
+
 PRESENTATION_PROPERTY_NAMES = frozenset(
     {
         "DisplayMode",

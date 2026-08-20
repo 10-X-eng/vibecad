@@ -192,7 +192,8 @@ return a JSON value. Stdout, stderr, and exceptions come back in the payload.
 
 CAD path for Grok Bot (same quality as in-app Grok):
 1. GET `/v1/context` for the frozen ribbon (`provider_tool_surface.tool_names`,
-   `provider_tool_schemas`) and `native_state`. Do not invent capability names.
+   `provider_tool_schemas`), `native_state`, and `native_preview` (`stage` /
+   `preview_id` for allowlisted families only). Do not invent capability names.
 2. GET `/v1/screenshot` for a presentation-only PNG path. Open that file.
    Pixels never prove dimensions, CL, or airworthiness (`claim_ceiling=not_measured`).
 3. POST `/v1/native` using a name from that freeze. Keep returning
@@ -705,6 +706,7 @@ _BOT_TURN_KEYS = (
     "workbench",
     "modeling_surface",
     "native_state",
+    "native_preview",
     "document",
     "selection",
     "view_screenshot",
@@ -730,6 +732,10 @@ def _bot_turn_packet(captured: Mapping[str, Any]) -> dict[str, Any]:
             continue
         if value not in (None, "", [], {}):
             packet[key] = value
+    if packet.get("native_state") or packet.get("provider_tool_schemas"):
+        from VibeCADNativeState import native_preview_catalog
+
+        packet["native_preview"] = native_preview_catalog()
     screenshot = packet.get("view_screenshot")
     attachment = _presentation_attachment(screenshot if isinstance(screenshot, Mapping) else {})
     if attachment is not None:
