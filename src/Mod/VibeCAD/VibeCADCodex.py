@@ -111,7 +111,6 @@ def vibecad_thread_config(
     *,
     web_search_enabled: bool = False,
     skills_enabled: bool = False,
-    collaboration_mode_enabled: bool = False,
     openai_base_url: str | None = None,
     model_context_window: int | None = None,
     model_auto_compact_token_limit: int | None = None,
@@ -120,9 +119,7 @@ def vibecad_thread_config(
     config: dict[str, Any] = {
         "web_search": "live" if web_search_enabled else "disabled",
         "include_apps_instructions": False,
-        "include_collaboration_mode_instructions": bool(
-            collaboration_mode_enabled
-        ),
+        "include_collaboration_mode_instructions": False,
         "include_environment_context": False,
         "include_permissions_instructions": False,
         "orchestrator.mcp.enabled": False,

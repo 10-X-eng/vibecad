@@ -37,7 +37,6 @@ def _live_tool_contracts() -> list[dict[str, Any]]:
             service,
             workbench,
             runtime_state=_minimal_runtime_state(service),
-            interaction_mode="build",
         ),
         *controller_tool_schemas(),
     ]

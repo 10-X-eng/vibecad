@@ -34,7 +34,6 @@ from VibeCADPromptStarters import (
 )
 from VibeCADSession import (
     _format_document_delta,
-    normalize_interaction_mode,
     rebuild_intent_memory,
     run_native_surface_continuation,
     run_prompt,
@@ -2832,7 +2831,6 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     conversation_selector = _find_child("QComboBox", "VibeConversationSelector", dock)
     new_conversation = _find_child("QToolButton", "VibeNewConversation", dock)
     prompt_starters = _find_child("QToolButton", "VibePromptStarters", dock)
-    interaction_mode = _find_child("QComboBox", "VibeInteractionMode", dock)
     authoring_mode = _find_child("QComboBox", "VibeAuthoringMode", dock)
     composer_buttons = _find_child("QWidget", "VibeComposerButtons", dock)
 
@@ -2860,28 +2858,6 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
         new_conversation.setEnabled(internal_available and document_ready and not busy)
     if prompt_starters is not None:
         prompt_starters.setEnabled(internal_available and document_ready and not busy)
-    if interaction_mode is not None:
-        try:
-            supports_plan = get_service().provider_name() in {
-                "openai",
-                "chatgpt",
-                "grok",
-            }
-        except Exception:
-            supports_plan = False
-        if not supports_plan and interaction_mode.currentData() == "plan":
-            interaction_mode.setCurrentIndex(0)
-        interaction_mode.setEnabled(
-            internal_available and document_ready and not busy and supports_plan
-        )
-        interaction_mode.setToolTip(
-            (
-                "Build can change the active document; Plan inspects it without "
-                "making changes"
-            )
-            if supports_plan
-            else "Plan mode requires ChatGPT, OpenAI, or Grok running through Codex"
-        )
     if authoring_mode is not None:
         _refresh_authoring_mode_selector(dock)
     if composer_buttons is not None:
@@ -3028,7 +3004,6 @@ def start_aero_designer_turn(prompt: str) -> bool:
         dock,
         service,
         prompt=clean,
-        interaction_mode="build",
     )
     return True
 
@@ -3104,7 +3079,6 @@ def _execute_assistant_run(
     *,
     prompt: str | None = None,
     continuation_event: dict[str, Any] | None = None,
-    interaction_mode: str = "build",
 ) -> None:
     global _assistant_run_thread
     if not _internal_agent_allowed():
@@ -3119,11 +3093,6 @@ def _execute_assistant_run(
         )
         return
     clean_prompt = str(prompt or "").strip()
-    clean_interaction_mode = (
-        "build"
-        if continuation_event is not None
-        else normalize_interaction_mode(interaction_mode)
-    )
     if bool(clean_prompt) == bool(continuation_event):
         raise ValueError(
             "A VibeCAD run requires exactly one user prompt or continuation event."
@@ -3309,7 +3278,6 @@ def _execute_assistant_run(
             else:
                 response = run_prompt(
                     clean_prompt,
-                    interaction_mode=clean_interaction_mode,
                     **common_arguments,
                 )
         except BaseException as exc:
@@ -3528,17 +3496,12 @@ def _run_prompt_from_panel() -> None:
 
     # The background session persists the prompt after capturing only the
     # active document identity on the GUI thread.
-    interaction_mode = _find_child("QComboBox", "VibeInteractionMode", dock)
-    selected_mode = (
-        interaction_mode.currentData() if interaction_mode is not None else "build"
-    )
     _append_conversation("User", prompt)
     prompt_box.clear()
     _execute_assistant_run(
         dock,
         service,
         prompt=prompt,
-        interaction_mode=normalize_interaction_mode(selected_mode),
     )
 
 
@@ -4626,16 +4589,6 @@ def _build_panel_widget():
     )
     prompt_starters.setMenu(prompt_starter_menu)
 
-    interaction_mode = QtWidgets.QComboBox(composer_buttons)
-    interaction_mode.setObjectName("VibeInteractionMode")
-    interaction_mode.addItem("Build", "build")
-    interaction_mode.addItem("Plan", "plan")
-    interaction_mode.setToolTip(
-        "Build can change the active document; Plan inspects it without making changes"
-    )
-    interaction_mode.setAccessibleName("Interaction mode")
-    interaction_mode.setEnabled(False)
-
     send_button = QtWidgets.QPushButton("Send", composer_buttons)
     send_button.setObjectName("VibeSend")
     send_button.setIcon(QtGui.QIcon(_icon_path(ICON_SEND)))
@@ -4657,7 +4610,6 @@ def _build_panel_widget():
     buttons_layout.addWidget(attach_button)
     buttons_layout.addWidget(attach_image_button)
     buttons_layout.addStretch(1)
-    buttons_layout.addWidget(interaction_mode)
     buttons_layout.addWidget(send_button)
     buttons_layout.addWidget(stop_button)
     _install_composer_width_filter(composer_buttons)

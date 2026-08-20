@@ -52,11 +52,6 @@ class _FilteredCodexProvider(CodexProvider):
             return result
 
         filtered.update(filter_surface(filtered))
-        thread_surface = filtered.get("_vibecad_codex_thread_surface")
-        if isinstance(thread_surface, dict):
-            filtered["_vibecad_codex_thread_surface"] = filter_surface(
-                thread_surface
-            )
         return filtered
 
     def run(self, prompt, context, *args, **kwargs):

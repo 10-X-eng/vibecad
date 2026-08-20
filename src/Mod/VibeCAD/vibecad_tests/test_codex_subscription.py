@@ -892,7 +892,7 @@ def test_tool_runner_revalidates_each_call_against_the_live_surface(
     monkeypatch.setattr(
         session,
         "_live_provider_surface_state",
-        lambda _service, _interaction_mode="build": {
+        lambda _service: {
             "workbench": "AssemblyWorkbench",
             "runtime_state": {"edit_mode": "none"},
             "tool_names": ["assembly.solve"],
@@ -1089,13 +1089,12 @@ def test_codex_thread_config_enables_only_web_and_skill_capabilities() -> None:
     assert config["features.plugins"] is False
 
 
-def test_codex_thread_config_enables_plan_and_api_key_provider() -> None:
+def test_codex_thread_config_keeps_one_conversation_mode_with_api_key_provider() -> None:
     config = codex.vibecad_thread_config(
-        collaboration_mode_enabled=True,
         openai_base_url="https://api.example.test/v1/",
     )
 
-    assert config["include_collaboration_mode_instructions"] is True
+    assert config["include_collaboration_mode_instructions"] is False
     assert config["model_provider"] == codex.CODEX_OPENAI_PROVIDER_ID
     prefix = f"model_providers.{codex.CODEX_OPENAI_PROVIDER_ID}"
     assert config[f"{prefix}.base_url"] == "https://api.example.test/v1"
@@ -1359,44 +1358,7 @@ def test_choose_provider_enables_web_search_for_api_providers(
         assert selected.compaction_model == "memory-model"
 
 
-def test_plan_surface_excludes_document_mutation_tools(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _Spec:
-        def supports_edit_mode(self, _edit_mode: str) -> bool:
-            return True
-
-    tools = {
-        "core.read": SimpleNamespace(
-            safety=SafetyLevel.READ,
-            spec=_Spec(),
-            to_schema=lambda **_kwargs: _tool_schema("core.read"),
-        ),
-        "core.view": SimpleNamespace(
-            safety=SafetyLevel.VIEW,
-            spec=_Spec(),
-            to_schema=lambda **_kwargs: _tool_schema("core.view"),
-        ),
-        "partdesign.write": SimpleNamespace(
-            safety=SafetyLevel.SAFE_WRITE,
-            spec=_Spec(),
-            to_schema=lambda **_kwargs: _tool_schema("partdesign.write"),
-        ),
-    }
-    service = SimpleNamespace(registry=SimpleNamespace(get=lambda name: tools[name]))
-    monkeypatch.setattr(session, "_surface_tool_names", lambda *_args: set(tools))
-
-    schemas = session.provider_tool_schemas(
-        service,
-        "PartDesignWorkbench",
-        runtime_state={"edit_mode": False, "active_sketch": None},
-        interaction_mode="plan",
-    )
-
-    assert [schema["name"] for schema in schemas] == ["core.read", "core.view"]
-
-
-def test_openai_api_key_and_plan_mode_run_through_codex(
+def test_natural_plan_request_uses_the_normal_codex_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Client:
@@ -1433,7 +1395,10 @@ def test_openai_api_key_and_plan_mode_run_through_codex(
                     {
                         "threadId": "thread-1",
                         "turnId": "turn-1",
-                        "item": {"type": "plan", "text": "Inspect, then revise."},
+                        "item": {
+                            "type": "agentMessage",
+                            "text": "Inspect, then revise.",
+                        },
                     },
                 )
                 self.notification_handler(
@@ -1460,7 +1425,6 @@ def test_openai_api_key_and_plan_mode_run_through_codex(
         reasoning_effort="high",
     )
     context = _surface_context("core.set_view")
-    context["_vibecad_interaction_mode"] = "plan"
 
     result = active_provider.run("Plan the change.", context)
 
@@ -1472,7 +1436,7 @@ def test_openai_api_key_and_plan_mode_run_through_codex(
         params for method, params in client.requests if method == "thread/start"
     )
     assert thread_request["modelProvider"] == codex.CODEX_OPENAI_PROVIDER_ID
-    assert thread_request["config"]["include_collaboration_mode_instructions"] is True
+    assert thread_request["config"]["include_collaboration_mode_instructions"] is False
     assert "Operate only through the supplied VibeCAD tools" in thread_request[
         "developerInstructions"
     ]
@@ -1482,19 +1446,13 @@ def test_openai_api_key_and_plan_mode_run_through_codex(
     turn_request = next(
         params for method, params in client.requests if method == "turn/start"
     )
-    assert turn_request["collaborationMode"] == {
-        "mode": "plan",
-        "settings": {
-            "model": "gpt-test",
-            "reasoning_effort": "high",
-            "developer_instructions": None,
-        },
-    }
+    assert "collaborationMode" not in turn_request
+    assert turn_request["effort"] == "high"
     assert result.final_output == "Inspect, then revise."
-    assert result.raw["interaction_mode"] == "plan"
+    assert "interaction_mode" not in result.raw
 
 
-def test_codex_plan_and_build_resume_one_schema_thread_across_surface_revisions(
+def test_codex_plan_then_build_reuses_one_normal_conversation_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Client:
@@ -1541,15 +1499,18 @@ def test_codex_plan_and_build_resume_one_schema_thread_across_surface_revisions(
             if method == "turn/start":
                 self.turn_number += 1
                 turn_id = f"turn-{self.turn_number}"
-                item_type = "plan" if "collaborationMode" in params else "agentMessage"
                 self.notification_handler(
                     "item/completed",
                     {
                         "threadId": "shared-thread",
                         "turnId": turn_id,
                         "item": {
-                            "type": item_type,
-                            "text": "Plan saved." if item_type == "plan" else "Plan used.",
+                            "type": "agentMessage",
+                            "text": (
+                                "Plan saved."
+                                if self.turn_number == 1
+                                else "Plan used."
+                            ),
                         },
                     },
                 )
@@ -1570,28 +1531,9 @@ def test_codex_plan_and_build_resume_one_schema_thread_across_surface_revisions(
     codex.reset_managed_codex_sessions()
     monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
     context = _surface_context("core.set_view")
-    context["_vibecad_codex_thread_surface"] = {
-        "provider_tool_schemas": list(context["provider_tool_schemas"]),
-        "provider_tool_surface": dict(context["provider_tool_surface"]),
-    }
     context["_vibecad_codex_session"] = {
         "conversation_id": "a" * 32,
         "conversation_path": "/project/conversations/" + "a" * 32 + ".json",
-    }
-    plan_context = dict(context)
-    plan_context["_vibecad_interaction_mode"] = "plan"
-    build_context = dict(context)
-    build_context["_vibecad_interaction_mode"] = "build"
-    build_context["_vibecad_codex_thread_surface"] = {
-        "provider_tool_schemas": list(context["provider_tool_schemas"]),
-        "provider_tool_surface": {
-            **dict(context["provider_tool_surface"]),
-            "surface_id": "vibecad/surface/native/model/revision-2",
-        },
-        "modeling_surface": {
-            **dict(context["modeling_surface"]),
-            "surface_id": "vibecad/surface/native/model/revision-2",
-        },
     }
     first_provider = provider.CodexProvider(
         model="gpt-test",
@@ -1603,10 +1545,10 @@ def test_codex_plan_and_build_resume_one_schema_thread_across_surface_revisions(
         api_key="test-key",
         auth_mode="api_key",
     )
-    first_prompt = session._provider_prompt("Make a plan.", plan_context)
+    first_prompt = session._provider_prompt("Make a plan.", context)
     second_prompt = session._provider_prompt(
         "Build it.",
-        build_context,
+        context,
         recent_conversation=[
             {"role": "user", "content": "Make a plan."},
             {"role": "assistant", "content": "Plan saved."},
@@ -1615,8 +1557,8 @@ def test_codex_plan_and_build_resume_one_schema_thread_across_surface_revisions(
 
     requests_before_cleanup: list[tuple[str, dict]] = []
     try:
-        planned = first_provider.run(first_prompt, plan_context)
-        built = second_provider.run(second_prompt, build_context)
+        planned = first_provider.run(first_prompt, context)
+        built = second_provider.run(second_prompt, context)
     finally:
         if _Client.instance is not None:
             requests_before_cleanup = list(_Client.instance.requests)
@@ -1631,14 +1573,20 @@ def test_codex_plan_and_build_resume_one_schema_thread_across_surface_revisions(
     assert methods.count("thread/resume") == 1
     assert methods.count("turn/start") == 2
     assert "thread/delete" not in methods
-    second_turn = [
+    turns = [
         params for method, params in requests_before_cleanup if method == "turn/start"
-    ][1]
+    ]
+    assert all("collaborationMode" not in turn for turn in turns)
+    second_turn = turns[1]
     text_input = next(
         item["text"] for item in second_turn["input"] if item["type"] == "text"
     )
     assert '"turns":[]' in text_input
     assert "Plan saved." not in text_input
+
+
+def test_system_instructions_do_not_forbid_requested_planning() -> None:
+    assert "do not narrate plans" not in provider.VIBECAD_SYSTEM_INSTRUCTIONS.lower()
 
 
 def test_codex_client_initializes_and_reads_account_from_json_rpc(

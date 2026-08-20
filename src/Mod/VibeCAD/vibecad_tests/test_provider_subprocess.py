@@ -1102,7 +1102,6 @@ def test_editable_source_manifests_complete_after_document_thread_capture(
     context = session._build_context_for_provider(
         service,
         None,
-        "build",
         dispatch,
     )
 

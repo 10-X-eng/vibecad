@@ -192,20 +192,8 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
                 "VibeComposerButtons",
             )
             self.assertIsNotNone(composer)
-            interaction_mode = root.findChild(
-                QtWidgets.QComboBox,
-                "VibeInteractionMode",
-            )
-            self.assertIsNotNone(interaction_mode)
-            self.assertEqual(
-                [
-                    (
-                        interaction_mode.itemText(index),
-                        interaction_mode.itemData(index),
-                    )
-                    for index in range(interaction_mode.count())
-                ],
-                [("Build", "build"), ("Plan", "plan")],
+            self.assertIsNone(
+                root.findChild(QtWidgets.QComboBox, "VibeInteractionMode")
             )
             self.assertLess(
                 composer.width(),
@@ -232,17 +220,18 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
                 buttons["VibeAttachImage"].icon().cacheKey(),
             )
 
-            # This is the width from the reported dock screenshot: it exceeds
-            # the old 500 px guess but still cannot fit all four full labels.
+            # Removing the mode selector leaves enough room for all four
+            # actions at the width from the reported dock screenshot.
             root.resize(520, 800)
             application.processEvents()
-            self.assertLess(
+            self.assertGreaterEqual(
                 composer.width(),
                 int(composer.property("VibeFullLabelRequiredWidth")),
             )
-            for button in buttons.values():
-                self.assertEqual(button.text(), "")
-                self.assertTrue(button.property("VibeCompactMode"))
+            self.assertEqual(buttons["VibeAttachView"].text(), "Attach View")
+            self.assertEqual(buttons["VibeAttachImage"].text(), "Attach Image")
+            self.assertEqual(buttons["VibeSend"].text(), "Send")
+            self.assertEqual(buttons["VibeStop"].text(), "Stop")
 
             root.resize(760, 800)
             application.processEvents()
