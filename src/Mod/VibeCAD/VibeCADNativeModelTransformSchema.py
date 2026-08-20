@@ -205,6 +205,15 @@ def model_transform_capability_definition() -> NativeCapabilityDefinition:
                     ),
                 ]
             },
+            "stage": {
+                "type": "string",
+                "enum": ["propose", "apply"],
+            },
+            "preview_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
         },
         ("label", "source", "definition"),
     )
