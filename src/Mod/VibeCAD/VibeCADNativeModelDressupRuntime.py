@@ -31,10 +31,14 @@ from VibeCADNativeDesignResults import verify_design_operation
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
-from VibeCADNativeState import NativeCallTicket
+from VibeCADNativeState import (
+    NativeCallTicket,
+    NativeRevisionConflict,
+    NativeStateError,
+)
 
 
-_FILLET_FIELDS = frozenset({"label", "selection", "radius_mm"})
+_FILLET_FIELDS = frozenset({"label", "selection", "radius_mm", "stage", "preview_id"})
 _CHAMFER_FIELDS = frozenset({"label", "selection", "definition"})
 _DRAFT_FIELDS = frozenset(
     {
@@ -65,6 +69,47 @@ class NativeModelDressupRuntime:
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
 
+    def _maybe_preview_fillet(
+        self, values: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage == "apply":
+            return None
+        if stage != "propose":
+            raise NativeModelError("model.dressup fillet stage must be propose or apply.")
+        return self._context.state.propose_mutation_preview(
+            self._context.document_uid,
+            capability_name="model.dressup",
+            arguments={"operation": "fillet", **dict(values)},
+        )
+
+    def _fillet_apply_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage != "apply":
+            return {
+                name: value
+                for name, value in values.items()
+                if name not in {"stage", "preview_id"}
+            }
+        preview_id = str(values.get("preview_id") or "").strip()
+        if not preview_id:
+            raise NativeModelError("model.dressup fillet apply needs preview_id.")
+        try:
+            stored = self._context.state.consume_mutation_preview(
+                self._context.document_uid,
+                preview_id,
+                capability_name="model.dressup",
+            )
+        except NativeRevisionConflict:
+            raise
+        except NativeStateError as exc:
+            raise NativeModelError(str(exc)) from exc
+        return {
+            name: value
+            for name, value in stored.items()
+            if name not in {"stage", "preview_id", "operation"}
+        }
+
     def mutate_dressup(
         self,
         arguments: Mapping[str, Any],
@@ -86,6 +131,10 @@ class NativeModelDressupRuntime:
                 f"A visible {operation.title()} label must contain 1 to 160 characters."
             )
         if operation == "fillet":
+            previewed = self._maybe_preview_fillet(values)
+            if previewed is not None:
+                return previewed
+            values = self._fillet_apply_values(values)
             prepared = prepare_design_fillet(self._context.document_uid, values)
             preflight = preflight_design_fillet
             create = create_design_fillet

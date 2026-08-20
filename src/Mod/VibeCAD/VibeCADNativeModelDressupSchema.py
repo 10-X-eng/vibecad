@@ -137,6 +137,15 @@ def model_dressup_capability_definition() -> NativeCapabilityDefinition:
             "label": LABEL_SCHEMA,
             "selection": _selection_schema(),
             "radius_mm": POSITIVE_MM_SCHEMA,
+            "stage": {
+                "type": "string",
+                "enum": ["propose", "apply"],
+            },
+            "preview_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
         },
         ("label", "selection", "radius_mm"),
     )

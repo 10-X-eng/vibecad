@@ -101,6 +101,14 @@ def test_fillet_contract_matches_current_radius_reference_and_all_edge_controls(
     assert explicit["items"]["properties"]["subelements"]["maxItems"] == 64
 
 
+def test_fillet_contract_exposes_preview_stage_fields() -> None:
+    branch = model_dressup_capability_definition().variants[0].parameters
+    assert branch["properties"]["stage"]["enum"] == ["propose", "apply"]
+    assert branch["properties"]["preview_id"]["minLength"] == 1
+    assert "stage" not in branch["required"]
+    assert "preview_id" not in branch["required"]
+
+
 def test_fillet_contract_has_no_gui_or_retired_body_tip_escape_hatch() -> None:
     serialized = json.dumps(
         model_dressup_capability_definition().provider_schema(("fillet",)),
