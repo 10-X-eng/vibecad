@@ -9,6 +9,7 @@ import pytest
 import VibeCADNativeState as state_module
 from VibeCADNativeState import (
     NATIVE_AUTHORITY_CONFLICT,
+    NATIVE_PREVIEW_FAMILIES,
     NATIVE_REVISION_CONFLICT,
     NativeAuthorityConflict,
     NativeDocumentStateStore,
@@ -17,6 +18,7 @@ from VibeCADNativeState import (
     NativeRevisionConflict,
     NativeStateError,
     is_structural_property,
+    native_preview_catalog,
 )
 
 
@@ -472,6 +474,18 @@ def test_extrude_apply_once_then_consumed() -> None:
             preview["preview_id"],
             capability_name="model.extrude",
         )
+
+
+def test_native_preview_catalog_documents_allowlisted_stage_fields() -> None:
+    catalog = native_preview_catalog()
+    assert catalog["stage"] == ["propose", "apply"]
+    assert catalog["preview_id"]["required_on"] == "apply"
+    assert catalog["applied"] is False
+    assert catalog["families"] == sorted(NATIVE_PREVIEW_FAMILIES)
+    assert "model.extrude" in catalog["families"]
+    assert "model.history" in catalog["families"]
+    assert "model.sketch" not in catalog["families"]
+    assert "sketch.delete" not in catalog["families"]
 
 
 def test_list_mutation_previews_is_store_only() -> None:

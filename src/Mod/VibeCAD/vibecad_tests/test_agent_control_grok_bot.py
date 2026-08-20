@@ -495,6 +495,10 @@ def test_context_command_returns_frozen_catalog_and_native_state(monkeypatch) ->
     assert "inspect.query" in context["provider_tool_surface"]["tool_names"]
     assert context["provider_tool_schemas"][0]["name"] == "inspect.query"
     assert context["intent"][0]["text"] == "2 mm wall"
+    assert context["native_preview"]["stage"] == ["propose", "apply"]
+    assert context["native_preview"]["preview_id"]["required_on"] == "apply"
+    assert "model.extrude" in context["native_preview"]["families"]
+    assert "model.sketch" not in context["native_preview"]["families"]
     assert "_vibecad_debug" not in context
 
 
