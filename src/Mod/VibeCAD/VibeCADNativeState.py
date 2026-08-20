@@ -33,6 +33,7 @@ NATIVE_PREVIEW_FAMILIES = frozenset(
         "model.dressup",
         "model.boolean",
         "model.transform",
+        "model.hole",
     }
 )
 NATIVE_STATE_SCHEMA = "vibecad-native-state-v1"

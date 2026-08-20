@@ -211,6 +211,15 @@ def model_hole_capability_definition() -> NativeCapabilityDefinition:
             "taper": _taper(),
             "reversed": {"type": "boolean"},
             "targets": targets,
+            "stage": {
+                "type": "string",
+                "enum": ["propose", "apply"],
+            },
+            "preview_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
         },
         (
             "label",

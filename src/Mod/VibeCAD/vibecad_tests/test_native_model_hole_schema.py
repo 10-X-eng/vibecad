@@ -30,6 +30,14 @@ def _plain_arguments() -> dict[str, object]:
     }
 
 
+def test_hole_contract_exposes_preview_stage_fields() -> None:
+    branch = model_hole_capability_definition().variants[0].parameters
+    assert branch["properties"]["stage"]["enum"] == ["propose", "apply"]
+    assert branch["properties"]["preview_id"]["minLength"] == 1
+    assert "stage" not in branch["required"]
+    assert "preview_id" not in branch["required"]
+
+
 def test_hole_contract_matches_the_current_typed_task_controls() -> None:
     definition = model_hole_capability_definition()
     schema = definition.provider_schema(("hole",))
