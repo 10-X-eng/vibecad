@@ -34,3 +34,24 @@ def reject_document_preview(service: Any, preview_id: str | None = None) -> dict
 
 def apply_document_preview(dispatcher: Any, preview_id: str | None = None) -> dict[str, Any]:
     return dispatcher.apply_pending_preview(preview_id)
+
+
+def maybe_auto_apply_pending_preview(
+    dispatcher: Any,
+    *,
+    enabled: bool | None = None,
+) -> dict[str, Any]:
+    """Apply the latest fresh preview only. Default off. Stale is refused."""
+
+    if enabled is None:
+        enabled = bool(getattr(dispatcher, "auto_apply_previews", False))
+    if not enabled:
+        return {"auto_applied": False, "reason": "disabled"}
+    pending = dispatcher.pending_previews()
+    fresh = [item for item in pending if not item.get("stale")]
+    if not fresh:
+        if pending:
+            return {"auto_applied": False, "reason": "stale", "stale": True}
+        return {"auto_applied": False, "reason": "empty"}
+    result = dispatcher.apply_pending_preview(fresh[-1]["preview_id"])
+    return {"auto_applied": True, **result}

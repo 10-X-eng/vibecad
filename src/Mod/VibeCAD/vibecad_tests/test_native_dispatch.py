@@ -220,6 +220,82 @@ def test_dispatcher_reject_pending_preview_does_not_dispatch() -> None:
     assert dispatcher.pending_previews() == []
 
 
+def test_dispatcher_auto_apply_default_off_leaves_preview() -> None:
+    observed = []
+    holder = {}
+
+    def handler(call):
+        arguments = dict(call.arguments)
+        observed.append(arguments)
+        if arguments.get("stage") == "apply":
+            return {"geometry": "applied"}
+        return holder["state"].propose_mutation_preview(
+            "document-a",
+            capability_name="model.extrude",
+            arguments=arguments,
+        )
+
+    dispatcher, state, _debug = _extrude_dispatcher(handler)
+    holder["state"] = state
+    result = dispatcher.call(
+        "model.extrude",
+        json.dumps({"operation": "extrude", "label": "Pad"}),
+        "propose-call",
+    )
+    assert result["ok"] is True
+    assert result["applied"] is False
+    assert "preview_id" in result
+    assert dispatcher.auto_apply_previews is False
+    assert not any(item.get("stage") == "apply" for item in observed)
+
+
+def test_dispatcher_auto_apply_runs_only_while_revision_matches() -> None:
+    observed = []
+    holder = {}
+
+    def handler(call):
+        arguments = dict(call.arguments)
+        observed.append(arguments)
+        if arguments.get("stage") == "apply":
+            return {"geometry": "applied"}
+        return holder["state"].propose_mutation_preview(
+            "document-a",
+            capability_name="model.extrude",
+            arguments=arguments,
+        )
+
+    dispatcher, state, _debug = _extrude_dispatcher(handler)
+    holder["state"] = state
+    dispatcher.auto_apply_previews = True
+    result = dispatcher.call(
+        "model.extrude",
+        json.dumps({"operation": "extrude", "label": "Pad"}),
+        "auto-apply-call",
+    )
+    assert result["ok"] is True
+    assert result["auto_applied"] is True
+    assert result["geometry"] == "applied"
+    assert any(item.get("stage") == "apply" for item in observed)
+
+
+def test_dispatcher_auto_apply_refuses_stale_preview() -> None:
+    dispatcher, state, _debug = _extrude_dispatcher(
+        lambda _call: pytest.fail("stale auto-apply must not dispatch"),
+    )
+    dispatcher.auto_apply_previews = True
+    state.propose_mutation_preview(
+        "document-a",
+        capability_name="model.extrude",
+        arguments={"operation": "extrude", "label": "Pad"},
+    )
+    state.note_structural_change("document-a")
+    from VibeCADNativePreviewControl import maybe_auto_apply_pending_preview
+
+    result = maybe_auto_apply_pending_preview(dispatcher)
+    assert result["auto_applied"] is False
+    assert result["stale"] is True
+
+
 def test_dispatch_resolves_one_hidden_frozen_operation() -> None:
     observed = []
     dispatcher, _state, _debug = _dispatcher(

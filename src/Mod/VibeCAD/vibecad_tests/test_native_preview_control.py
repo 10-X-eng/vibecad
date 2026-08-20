@@ -12,6 +12,7 @@ from VibeCADNativePreviewCommands import (
     register_preview_commands,
 )
 from VibeCADNativePreviewControl import (
+    maybe_auto_apply_pending_preview,
     pending_document_previews,
     reject_document_preview,
 )
@@ -79,6 +80,27 @@ def test_apply_command_is_active_only_for_fresh_previews(monkeypatch) -> None:
     store.note_structural_change("document-preview")
     assert command.IsActive() is False
     assert reject.IsActive() is True
+
+
+def test_maybe_auto_apply_is_off_by_default() -> None:
+    dispatcher = SimpleNamespace(
+        auto_apply_previews=False,
+        pending_previews=lambda: [{"preview_id": "x", "stale": False}],
+        apply_pending_preview=lambda *_args, **_kwargs: pytest.fail("disabled"),
+    )
+    result = maybe_auto_apply_pending_preview(dispatcher)
+    assert result == {"auto_applied": False, "reason": "disabled"}
+
+
+def test_maybe_auto_apply_refuses_stale() -> None:
+    dispatcher = SimpleNamespace(
+        auto_apply_previews=True,
+        pending_previews=lambda: [{"preview_id": "x", "stale": True}],
+        apply_pending_preview=lambda *_args, **_kwargs: pytest.fail("stale"),
+    )
+    result = maybe_auto_apply_pending_preview(dispatcher)
+    assert result["auto_applied"] is False
+    assert result["stale"] is True
 
 
 def test_register_preview_commands_adds_apply_and_reject() -> None:
